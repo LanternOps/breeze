@@ -227,6 +227,31 @@ describe('vulnerability fleet GET / — site-axis narrowing', () => {
   });
 });
 
+describe('GET /vulnerabilities — kevOnly/patchAvailable params', () => {
+  beforeEach(() => {
+    granted.clear();
+    delete permissionsState.allowedSiteIds;
+    granted.add('devices:read');
+    vi.mocked(db.select).mockReset();
+  });
+
+  it('accepts kevOnly/patchAvailable and still 200s', async () => {
+    // db.select falls back to the default mock chain (resolves []), so an
+    // empty fleet is fine — this asserts schema acceptance, not data flow.
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }),
+    } as never);
+    const res = await app().request('/vulnerabilities?kevOnly=true&patchAvailable=false');
+    expect(res.status).toBe(200);
+    expect((await res.json()).items).toEqual([]);
+  });
+
+  it('400s on malformed boolean params', async () => {
+    const res = await app().request('/vulnerabilities?kevOnly=1');
+    expect(res.status).toBe(400);
+  });
+});
+
 import { enqueueVulnCorrelation } from '../jobs/vulnerabilityJobs';
 import { writeRouteAudit } from '../services/auditEvents';
 

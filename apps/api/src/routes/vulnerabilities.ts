@@ -34,10 +34,20 @@ const severitySchema = z
   .transform((value) => value.toLowerCase())
   .pipe(z.enum(['low', 'medium', 'high', 'critical']));
 
+// Query-string boolean: accepts "true"/"false" (any case), rejects everything else.
+const boolQuerySchema = z
+  .string()
+  .trim()
+  .transform((value) => value.toLowerCase())
+  .pipe(z.enum(['true', 'false']))
+  .transform((value) => value === 'true');
+
 const listQuerySchema = z.object({
   status: statusSchema.default('open'),
   severity: severitySchema.optional(),
   cve: z.string().trim().min(1).max(32).optional(),
+  kevOnly: boolQuerySchema.optional(),
+  patchAvailable: boolQuerySchema.optional(),
 });
 
 const deviceParamSchema = z.object({
@@ -60,14 +70,6 @@ const acceptRiskSchema = z.object({
 const mitigateSchema = z.object({
   note: z.string().trim().min(1).max(2000),
 });
-
-// Query-string boolean: accepts "true"/"false" (any case), rejects everything else.
-const boolQuerySchema = z
-  .string()
-  .trim()
-  .transform((value) => value.toLowerCase())
-  .pipe(z.enum(['true', 'false']))
-  .transform((value) => value === 'true');
 
 const softwareQuerySchema = z.object({
   status: statusSchema.default('open'),
@@ -224,7 +226,7 @@ function mergeRows(deviceRows: DeviceVulnerabilityRow[], catalogRows: CatalogRow
 
 async function readCatalogRows(
   vulnerabilityIds: string[],
-  filters: { severity?: string; cve?: string },
+  filters: { severity?: string; cve?: string; kevOnly?: boolean; patchAvailable?: boolean },
 ): Promise<CatalogRow[]> {
   if (vulnerabilityIds.length === 0) return [];
 
@@ -233,7 +235,13 @@ async function readCatalogRows(
     conditions.push(eq(vulnerabilities.severity, filters.severity));
   }
   if (filters.cve) {
-    conditions.push(ilike(vulnerabilities.cveId, filters.cve));
+    conditions.push(ilike(vulnerabilities.cveId, `%${filters.cve}%`));
+  }
+  if (filters.kevOnly) {
+    conditions.push(eq(vulnerabilities.knownExploited, true));
+  }
+  if (filters.patchAvailable) {
+    conditions.push(eq(vulnerabilities.patchAvailable, true));
   }
 
   return runOutsideDbContext(() =>
@@ -261,6 +269,8 @@ async function listVulnerabilities(filters: {
   deviceId?: string;
   severity?: string;
   cve?: string;
+  kevOnly?: boolean;
+  patchAvailable?: boolean;
   /** Site-axis narrowing: when set, only return findings for devices in these sites.
    *  Empty array = caller has no in-scope sites → return nothing (fail-closed). */
   allowedSiteIds?: string[];
@@ -309,6 +319,8 @@ async function listVulnerabilities(filters: {
   const catalogRows = await readCatalogRows(vulnerabilityIds, {
     severity: filters.severity,
     cve: filters.cve,
+    kevOnly: filters.kevOnly,
+    patchAvailable: filters.patchAvailable,
   });
 
   return mergeRows(deviceRows, catalogRows);
@@ -325,6 +337,8 @@ type FleetRow = {
   epssScore: number | null;
   riskScore: number | null;
   deviceCount: number;
+  patchAvailable: boolean;
+  statuses: string[];
 };
 
 /**
@@ -335,7 +349,15 @@ type FleetRow = {
  */
 function aggregateFleet(items: MergedItem[]): FleetRow[] {
   const byVuln = new Map<string, FleetRow>();
+  const statusesByVuln = new Map<string, Set<string>>();
   for (const item of items) {
+    const statuses = statusesByVuln.get(item.vulnerabilityId);
+    if (statuses) {
+      statuses.add(item.status);
+    } else {
+      statusesByVuln.set(item.vulnerabilityId, new Set([item.status]));
+    }
+
     const existing = byVuln.get(item.vulnerabilityId);
     if (existing) {
       existing.deviceCount += 1;
@@ -353,7 +375,14 @@ function aggregateFleet(items: MergedItem[]): FleetRow[] {
       epssScore: item.epssScore,
       riskScore: item.riskScore,
       deviceCount: 1,
+      patchAvailable: item.patchAvailable,
+      statuses: [],
     });
+  }
+
+  for (const row of byVuln.values()) {
+    const statuses = statusesByVuln.get(row.id);
+    row.statuses = statuses ? [...statuses].sort() : [];
   }
 
   return Array.from(byVuln.values()).sort((a, b) => {
