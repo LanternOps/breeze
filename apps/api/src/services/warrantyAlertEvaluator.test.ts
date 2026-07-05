@@ -17,7 +17,7 @@ vi.mock('../db', () => ({
 vi.mock('../db/schema', () => ({
   deviceWarranty: { deviceId: 'deviceWarranty.deviceId' },
   devices: { id: 'devices.id', orgId: 'devices.orgId', siteId: 'devices.siteId' },
-  alerts: { deviceId: 'alerts.deviceId', configItemName: 'alerts.configItemName', status: 'alerts.status', id: 'alerts.id', orgId: 'alerts.orgId' },
+  alerts: { deviceId: 'alerts.deviceId', configItemName: 'alerts.configItemName', status: 'alerts.status', id: 'alerts.id', orgId: 'alerts.orgId', context: 'alerts.context', suppressedUntil: 'alerts.suppressedUntil' },
   configPolicyFeatureLinks: { featureType: 'configPolicyFeatureLinks.featureType', inlineSettings: 'configPolicyFeatureLinks.inlineSettings', configPolicyId: 'configPolicyFeatureLinks.configPolicyId' },
   configPolicyAssignments: { configPolicyId: 'configPolicyAssignments.configPolicyId', targetId: 'configPolicyAssignments.targetId', level: 'configPolicyAssignments.level', priority: 'configPolicyAssignments.priority' },
   configurationPolicies: { id: 'configurationPolicies.id', status: 'configurationPolicies.status' },
@@ -148,6 +148,8 @@ describe('evaluateWarrantyAlerts gating', () => {
     );
     // 6: existing open warranty alert check → none
     selectMock.mockReturnValueOnce(queueSelect([]));
+    // 7: dismissed warranty alert check → none
+    selectMock.mockReturnValueOnce(queueSelect([]));
 
     const result = await evaluateWarrantyAlerts(DEVICE_ID);
 
@@ -233,7 +235,32 @@ describe('evaluateWarrantyAlerts gating', () => {
     expect(insertMock).not.toHaveBeenCalled();
   });
 
-  it('auto-resolves a STALE SUPPRESSED expiry alert when the device is now a subscription (#1320)', async () => {
+  it('does NOT re-create an alert the user has DISMISSED (permanent dismissal)', async () => {
+    // 1: warranty row (expiring, fixed-term)
+    selectMock.mockReturnValueOnce(queueSelect([baseWarranty]));
+    // 2: device row (evaluate)
+    selectMock.mockReturnValueOnce(queueSelect([baseDevice]));
+    // 3: device row (resolveWarrantySettings)
+    selectMock.mockReturnValueOnce(queueSelect([{ orgId: ORG_ID, siteId: null }]));
+    // 4: device group memberships → none
+    selectMock.mockReturnValueOnce(queueSelect([]));
+    // 5: warranty feature link, enabled at org level
+    selectMock.mockReturnValueOnce(
+      queueSelect([{ inlineSettings: { enabled: true, warnDays: 90, criticalDays: 30 }, level: 'organization', priority: 0 }])
+    );
+    // 6: existing open warranty alert check → none (it was dismissed, not open)
+    selectMock.mockReturnValueOnce(queueSelect([]));
+    // 7: dismissed warranty alert check (scoped to this warranty end date) → HIT
+    selectMock.mockReturnValueOnce(queueSelect([{ id: 'alert-dismissed-1' }]));
+
+    const result = await evaluateWarrantyAlerts(DEVICE_ID);
+
+    expect(result).toBeNull();
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(publishEventMock).not.toHaveBeenCalled();
+  });
+
+  it('auto-resolves a stale TIMED-SUPPRESSED expiry alert when the device is now a subscription (#1320)', async () => {
     const set = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
     updateMock.mockReturnValue({ set });
 
@@ -241,11 +268,13 @@ describe('evaluateWarrantyAlerts gating', () => {
     selectMock.mockReturnValueOnce(
       queueSelect([{ ...baseWarranty, status: 'subscription_active', isSubscription: true, warrantyEndDate: inDays(28) }])
     );
-    // 2: autoResolveWarrantyAlerts open-alert select → a stale SUPPRESSED alert.
-    // Before the fix this status was excluded, so it would never clear yet still
-    // block a fresh alert via the dedupe gate.
+    // 2: autoResolveWarrantyAlerts open-alert select → a stale TIMED-suppressed
+    // alert (suppressedUntil set). Timed suppressions still auto-resolve; only
+    // indefinite "Forever" suppressions (suppressedUntil NULL) are excluded from
+    // this query — that carve-out is verified in the integration test since the
+    // mock here ignores the WHERE predicate.
     selectMock.mockReturnValueOnce(
-      queueSelect([{ id: 'alert-suppressed-1', orgId: ORG_ID, deviceId: DEVICE_ID, status: 'suppressed' }])
+      queueSelect([{ id: 'alert-suppressed-1', orgId: ORG_ID, deviceId: DEVICE_ID, status: 'suppressed', suppressedUntil: new Date(Date.now() + 86_400_000) }])
     );
 
     const result = await evaluateWarrantyAlerts(DEVICE_ID);

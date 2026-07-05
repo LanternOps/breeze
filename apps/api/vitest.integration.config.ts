@@ -54,6 +54,11 @@ export default defineConfig({
       // asserts the SQL predicate (incl. the Forever-exclusion invariant)
       // that mocked unit tests can't cover.
       'src/jobs/suppressionExpiryReaper.integration.test.ts',
+      // Co-located real-DB integration test for the warranty alert evaluator:
+      // asserts the dismissed-dedup JSONB end-date scoping and the auto-resolve
+      // Forever-suppression exclusion — SQL predicates the mocked unit tests
+      // (which ignore the WHERE clause) can't verify.
+      'src/services/warrantyAlertEvaluator.integration.test.ts',
     ],
     exclude: [
       // rls.integration.test.ts is a mocked unit test in integration's

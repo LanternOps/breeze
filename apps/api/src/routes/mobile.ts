@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, desc, eq, gte, ilike, inArray, isNull, like, or, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, ilike, inArray, isNull, like, ne, or, sql } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { db } from '../db';
 import {
@@ -241,7 +241,7 @@ const inboxQuerySchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
   cursor: z.string().optional(),
-  status: z.enum(['active', 'acknowledged', 'resolved', 'suppressed']).optional(),
+  status: z.enum(['active', 'acknowledged', 'resolved', 'suppressed', 'dismissed']).optional(),
   orgId: z.string().guid().optional()
 });
 
@@ -602,6 +602,9 @@ mobileRoutes.get(
 
     if (query.status) {
       conditions.push(eq(alerts.status, query.status));
+    } else {
+      // Dismissed alerts are permanently closed — hidden unless asked for by name.
+      conditions.push(ne(alerts.status, 'dismissed'));
     }
 
     if (cursor) {
@@ -769,6 +772,11 @@ mobileRoutes.post(
 
     if (alert.status === 'resolved') {
       return c.json({ error: 'Alert is already resolved' }, 400);
+    }
+    if (alert.status === 'dismissed') {
+      // Dismissed is terminal (matches POST /alerts/:id/resolve): resolving it
+      // would silently un-dismiss and let synthetic evaluators re-create it.
+      return c.json({ error: 'Cannot resolve a dismissed alert' }, 400);
     }
 
     const resolvedAt = new Date();

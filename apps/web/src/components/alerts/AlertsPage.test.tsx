@@ -88,7 +88,7 @@ describe('AlertsPage — acknowledge in-flight feedback', () => {
     fetchMock.mockImplementation((input, init) => {
       const url = String(input);
       const method = init?.method ?? 'GET';
-      if (url === '/alerts' && method === 'GET') {
+      if ((url === '/alerts' || url.startsWith('/alerts?')) && method === 'GET') {
         return Promise.resolve(makeJsonResponse({ data: [activeAlert] }));
       }
       if (url === '/devices' && method === 'GET') {
@@ -133,7 +133,7 @@ describe('AlertsPage — acknowledge in-flight feedback', () => {
     fetchMock.mockImplementation((input, init) => {
       const url = String(input);
       const method = init?.method ?? 'GET';
-      if (url === '/alerts' && method === 'GET') {
+      if ((url === '/alerts' || url.startsWith('/alerts?')) && method === 'GET') {
         return Promise.resolve(makeJsonResponse({ data: [activeAlert] }));
       }
       if (url === '/devices' && method === 'GET') {
@@ -182,7 +182,7 @@ describe('AlertsPage — acknowledge in-flight feedback', () => {
     fetchMock.mockImplementation((input, init) => {
       const url = String(input);
       const method = init?.method ?? 'GET';
-      if (url === '/alerts' && method === 'GET') {
+      if ((url === '/alerts' || url.startsWith('/alerts?')) && method === 'GET') {
         return Promise.resolve(makeJsonResponse({ data: [activeAlert] }));
       }
       if (url === '/devices' && method === 'GET') {
@@ -228,7 +228,7 @@ describe('AlertsPage — acknowledge in-flight feedback', () => {
     fetchMock.mockImplementation((input, init) => {
       const url = String(input);
       const method = init?.method ?? 'GET';
-      if (url === '/alerts' && method === 'GET') {
+      if ((url === '/alerts' || url.startsWith('/alerts?')) && method === 'GET') {
         return Promise.resolve(makeJsonResponse({ data: [activeAlert] }));
       }
       if (url === '/devices' && method === 'GET') {
@@ -254,7 +254,7 @@ describe('AlertsPage — acknowledge in-flight feedback', () => {
     fetchMock.mockImplementation((input, init) => {
       const url = String(input);
       const method = init?.method ?? 'GET';
-      if (url === '/alerts' && method === 'GET') {
+      if ((url === '/alerts' || url.startsWith('/alerts?')) && method === 'GET') {
         return Promise.resolve(makeJsonResponse({
           data: [{
             ...activeAlert,
@@ -288,7 +288,7 @@ describe('AlertsPage — acknowledge in-flight feedback', () => {
       if (url === '/config/ml-feature-flags' && method === 'GET') {
         return Promise.resolve(makeJsonResponse(remediationFlags(true, false)));
       }
-      if (url === '/alerts' && method === 'GET') {
+      if ((url === '/alerts' || url.startsWith('/alerts?')) && method === 'GET') {
         return Promise.resolve(makeJsonResponse({
           data: [{
             ...activeAlert,
@@ -318,7 +318,7 @@ describe('AlertsPage — acknowledge in-flight feedback', () => {
     fetchMock.mockImplementation((input, init) => {
       const url = String(input);
       const method = init?.method ?? 'GET';
-      if (url === '/alerts' && method === 'GET') {
+      if ((url === '/alerts' || url.startsWith('/alerts?')) && method === 'GET') {
         return Promise.resolve(makeJsonResponse({
           data: [{
             ...activeAlert,
@@ -381,7 +381,7 @@ describe('AlertsPage — suppress duration picker', () => {
     fetchMock.mockImplementation((input, init) => {
       const url = String(input);
       const method = init?.method ?? 'GET';
-      if (url === '/alerts' && method === 'GET') {
+      if ((url === '/alerts' || url.startsWith('/alerts?')) && method === 'GET') {
         return Promise.resolve(makeJsonResponse({ data: [activeAlert] }));
       }
       if (url === '/devices' && method === 'GET') {
@@ -475,7 +475,7 @@ describe('AlertsPage — suppress duration picker', () => {
     fetchMock.mockImplementation((input, init) => {
       const url = String(input);
       const method = init?.method ?? 'GET';
-      if (url === '/alerts' && method === 'GET') {
+      if ((url === '/alerts' || url.startsWith('/alerts?')) && method === 'GET') {
         return Promise.resolve(makeJsonResponse({ data: [resolvedAlert] }));
       }
       if (url === '/devices' && method === 'GET') {
@@ -502,7 +502,7 @@ describe('AlertsPage — bulk suppress', () => {
     fetchMock.mockImplementation((input, init) => {
       const url = String(input);
       const method = init?.method ?? 'GET';
-      if (url === '/alerts' && method === 'GET') {
+      if ((url === '/alerts' || url.startsWith('/alerts?')) && method === 'GET') {
         return Promise.resolve(makeJsonResponse({ data: [activeAlert] }));
       }
       if (url === '/devices' && method === 'GET') {
@@ -584,7 +584,7 @@ describe('AlertsPage — bulk suppress', () => {
     fetchMock.mockImplementation((input, init) => {
       const url = String(input);
       const method = init?.method ?? 'GET';
-      if (url === '/alerts' && method === 'GET') {
+      if ((url === '/alerts' || url.startsWith('/alerts?')) && method === 'GET') {
         return Promise.resolve(makeJsonResponse({ data: [activeAlert] }));
       }
       if (url === '/devices' && method === 'GET') {
@@ -611,5 +611,87 @@ describe('AlertsPage — bulk suppress', () => {
       );
     });
     expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+  });
+});
+
+describe('AlertsPage — dismiss', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const resolvedAlert = { ...activeAlert, status: 'resolved' };
+
+  const dismissMock = (rows: unknown[]) =>
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url.startsWith('/alerts?') && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ data: rows }));
+      }
+      if (url === '/devices' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ data: [] }));
+      }
+      if (url === '/alerts/bulk' && method === 'POST') {
+        return Promise.resolve(makeJsonResponse({ updated: 1, skipped: 0, failed: 0 }));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
+    });
+
+  it('offers Dismiss on a RESOLVED alert (which has no other row actions)', async () => {
+    dismissMock([resolvedAlert]);
+    render(<AlertsPage />);
+
+    // Resolved alerts have no Ack/Resolve/Mute, but Dismiss must still be there —
+    // this is the exact dead-end the feature exists to fix.
+    expect(await screen.findByRole('button', { name: /Dismiss: High CPU on SRV-01/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Suppress: High CPU on SRV-01/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Resolve: High CPU on SRV-01/i })).not.toBeInTheDocument();
+  });
+
+  it('shows the confirm bar for a SINGLE dismiss (unlike ack/resolve) and POSTs action:dismiss', async () => {
+    dismissMock([resolvedAlert]);
+    render(<AlertsPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /Dismiss: High CPU on SRV-01/i }));
+
+    // A single dismiss must still confirm (permanent, no un-dismiss) — the
+    // "Permanently dismiss" confirm bar appears and no POST has fired yet.
+    expect(await screen.findByText(/Permanently dismiss 1 alert\?/i)).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalledWith('/alerts/bulk', expect.anything());
+
+    fireEvent.click(screen.getByRole('button', { name: /^Confirm$/i }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/alerts/bulk',
+        expect.objectContaining({ method: 'POST', body: expect.any(String) }),
+      );
+    });
+    const call = fetchMock.mock.calls.find(([url]) => url === '/alerts/bulk')!;
+    const body = JSON.parse((call[1] as RequestInit).body as string);
+    expect(body.action).toBe('dismiss');
+    expect(body.alertIds).toEqual([ALERT_ID]);
+
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ message: '1 alert dismissed' }));
+    });
+  });
+
+  it('hides a dismissed alert from the default view, and shows it without a Dismiss button under the Dismissed filter', async () => {
+    dismissMock([{ ...activeAlert, status: 'dismissed' }]);
+    render(<AlertsPage />);
+
+    // Default "All Status" view excludes dismissed alerts entirely.
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(screen.queryByText('High CPU on SRV-01')).not.toBeInTheDocument();
+
+    // Select the Dismissed filter: the row now shows, but with no Dismiss action
+    // (it's already dismissed — terminal).
+    fireEvent.click(screen.getByRole('button', { name: /Filters/i }));
+    // The status filter is the first <select> in the filter panel.
+    fireEvent.change(screen.getAllByRole('combobox')[0], { target: { value: 'dismissed' } });
+
+    expect(await screen.findByText('High CPU on SRV-01')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Dismiss: High CPU on SRV-01/i })).not.toBeInTheDocument();
   });
 });

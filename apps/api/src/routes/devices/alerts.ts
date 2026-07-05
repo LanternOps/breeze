@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { eq, and, desc, gte, lte } from 'drizzle-orm';
+import { eq, and, desc, gte, lte, ne } from 'drizzle-orm';
 import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 import { db } from '../../db';
@@ -13,7 +13,7 @@ export const alertsRoutes = new Hono();
 alertsRoutes.use('*', authMiddleware);
 
 const alertsQuerySchema = z.object({
-  status: z.enum(['active', 'acknowledged', 'resolved', 'all']).optional(),
+  status: z.enum(['active', 'acknowledged', 'resolved', 'dismissed', 'all']).optional(),
   startDate: z.string().optional(),
   endDate: z.string().optional(),
   limit: z.string().optional().transform(v => v ? parseInt(v, 10) : 50),
@@ -43,6 +43,10 @@ alertsRoutes.get(
 
     if (query.status && query.status !== 'all') {
       conditions.push(eq(alerts.status, query.status));
+    } else {
+      // 'all' / omitted still hides dismissed alerts — they're permanently
+      // closed and only shown when requested by name.
+      conditions.push(ne(alerts.status, 'dismissed'));
     }
 
     if (query.startDate) {

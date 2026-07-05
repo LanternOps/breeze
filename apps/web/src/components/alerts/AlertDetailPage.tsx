@@ -66,6 +66,7 @@ const statusIcons: Record<AlertStatus, typeof Bell> = {
   acknowledged: CheckCircle,
   resolved: CheckCircle,
   suppressed: Bell,
+  dismissed: Bell,
 };
 
 export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {

@@ -573,7 +573,7 @@ async function mutateAlerts(alertRows: AlertRow[], action: 'acknowledge' | 'reso
   const now = new Date();
   const eligible = action === 'acknowledge'
     ? alertRows.filter((alert) => alert.status === 'active')
-    : alertRows.filter((alert) => alert.status !== 'resolved');
+    : alertRows.filter((alert) => alert.status !== 'resolved' && alert.status !== 'dismissed');
 
   if (eligible.length === 0) {
     return { updated: 0, skipped: alertRows.length };

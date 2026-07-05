@@ -394,8 +394,8 @@ describe('alert correlation RCA evidence builder', () => {
       windowHours: 4,
       maxEvidenceItems: 20,
       alerts: [
-        { id: ALERT_1, orgId: ORG_ID, deviceId: DEVICE_ID, ruleId: 'rule-1', configPolicyId: null, configItemName: null, status: 'active', severity: 'critical', title: 'CPU high', message: 'CPU over 90%', context: { threshold: 90, observed: 96 }, triggeredAt: new Date('2026-06-18T12:00:00Z'), acknowledgedAt: null, acknowledgedBy: null, resolvedAt: null, resolvedBy: null, resolutionNote: null, suppressedUntil: null, createdAt: new Date('2026-06-18T12:00:00Z') },
-        { id: ALERT_2, orgId: ORG_ID, deviceId: DEVICE_ID, ruleId: null, configPolicyId: 'cpar-1', configItemName: 'ram_percent', status: 'active', severity: 'high', title: 'Memory high', message: 'RAM over 90%', context: { threshold: 90, observed: 94 }, triggeredAt: new Date('2026-06-18T12:02:00Z'), acknowledgedAt: null, acknowledgedBy: null, resolvedAt: null, resolvedBy: null, resolutionNote: null, suppressedUntil: null, createdAt: new Date('2026-06-18T12:02:00Z') },
+        { id: ALERT_1, orgId: ORG_ID, deviceId: DEVICE_ID, ruleId: 'rule-1', configPolicyId: null, configItemName: null, status: 'active', severity: 'critical', title: 'CPU high', message: 'CPU over 90%', context: { threshold: 90, observed: 96 }, triggeredAt: new Date('2026-06-18T12:00:00Z'), acknowledgedAt: null, acknowledgedBy: null, resolvedAt: null, resolvedBy: null, resolutionNote: null, suppressedUntil: null, dismissedAt: null, dismissedBy: null, createdAt: new Date('2026-06-18T12:00:00Z') },
+        { id: ALERT_2, orgId: ORG_ID, deviceId: DEVICE_ID, ruleId: null, configPolicyId: 'cpar-1', configItemName: 'ram_percent', status: 'active', severity: 'high', title: 'Memory high', message: 'RAM over 90%', context: { threshold: 90, observed: 94 }, triggeredAt: new Date('2026-06-18T12:02:00Z'), acknowledgedAt: null, acknowledgedBy: null, resolvedAt: null, resolvedBy: null, resolutionNote: null, suppressedUntil: null, dismissedAt: null, dismissedBy: null, createdAt: new Date('2026-06-18T12:02:00Z') },
       ],
     });
 
@@ -568,7 +568,7 @@ describe('alert correlation RCA evidence builder', () => {
       // change must survive even though 5 of the 8 context items are earlier in time.
       maxEvidenceItems: 5,
       alerts: [
-        { id: ALERT_1, orgId: ORG_ID, deviceId: DEVICE_ID, ruleId: 'rule-1', configPolicyId: null, configItemName: null, status: 'active', severity: 'critical', title: 'CPU high', message: 'CPU over 90%', context: {}, triggeredAt: new Date('2026-06-18T12:00:00Z'), acknowledgedAt: null, acknowledgedBy: null, resolvedAt: null, resolvedBy: null, resolutionNote: null, suppressedUntil: null, createdAt: new Date('2026-06-18T12:00:00Z') },
+        { id: ALERT_1, orgId: ORG_ID, deviceId: DEVICE_ID, ruleId: 'rule-1', configPolicyId: null, configItemName: null, status: 'active', severity: 'critical', title: 'CPU high', message: 'CPU over 90%', context: {}, triggeredAt: new Date('2026-06-18T12:00:00Z'), acknowledgedAt: null, acknowledgedBy: null, resolvedAt: null, resolvedBy: null, resolutionNote: null, suppressedUntil: null, dismissedAt: null, dismissedBy: null, createdAt: new Date('2026-06-18T12:00:00Z') },
       ],
     });
 
@@ -618,7 +618,7 @@ describe('alert correlation RCA evidence builder', () => {
       windowHours: 4,
       maxEvidenceItems: 20,
       alerts: [
-        { id: ALERT_1, orgId: ORG_ID, deviceId: DEVICE_ID, ruleId: 'rule-1', configPolicyId: null, configItemName: null, status: 'active', severity: 'critical', title: 'CPU high', message: 'CPU over 90%', context: {}, triggeredAt: new Date('2026-01-15T12:00:00Z'), acknowledgedAt: null, acknowledgedBy: null, resolvedAt: null, resolvedBy: null, resolutionNote: null, suppressedUntil: null, createdAt: new Date('2026-01-15T12:00:00Z') },
+        { id: ALERT_1, orgId: ORG_ID, deviceId: DEVICE_ID, ruleId: 'rule-1', configPolicyId: null, configItemName: null, status: 'active', severity: 'critical', title: 'CPU high', message: 'CPU over 90%', context: {}, triggeredAt: new Date('2026-01-15T12:00:00Z'), acknowledgedAt: null, acknowledgedBy: null, resolvedAt: null, resolvedBy: null, resolutionNote: null, suppressedUntil: null, dismissedAt: null, dismissedBy: null, createdAt: new Date('2026-01-15T12:00:00Z') },
       ],
     });
 

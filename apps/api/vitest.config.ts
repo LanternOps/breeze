@@ -29,6 +29,10 @@ export default defineConfig({
       'src/services/cpeMap.integration.test.ts',
       'src/services/exploitFeeds.integration.test.ts',
       'src/jobs/vulnerability*.integration.test.ts',
+      // Warranty alert evaluator real-DB test: imports `__tests__/integration/setup`
+      // (real postgres + autoMigrate). Belongs to vitest.integration.config.ts;
+      // the no-DB unit runner would fail it on connect.
+      'src/services/warrantyAlertEvaluator.integration.test.ts',
       // Suppression-expiry reaper real-DB test: imports `__tests__/integration/setup`
       // (real postgres pool + autoMigrate in its beforeAll), so the unit runner's
       // no-DB environment fails the suite on connect. Belongs to vitest.integration.config.ts.
