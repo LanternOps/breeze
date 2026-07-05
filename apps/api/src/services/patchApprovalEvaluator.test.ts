@@ -1214,6 +1214,22 @@ describe('third-party severity exemption for ring auto-approve (#2218)', () => {
     expect(result).toEqual([]);
   });
 
+  it('does NOT exempt severity when sources is ["custom"] without an explicit "third_party" selection', async () => {
+    // A custom-source patch passes the source gate on sources:['custom']
+    // (buildAllowedPatchSources admits explicit 'custom'), but the exemption
+    // reads the RAW policy array for the literal 'third_party', which is
+    // absent here — so the unknown-severity custom patch stays held. This pins
+    // the raw-array vs expanded-bucket lockstep documented in the source.
+    mockPendingAndApprovals([wingetRow({ source: 'custom' })], []);
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ...thirdPartyRing,
+      sources: ['custom'],
+    });
+
+    expect(result).toEqual([]);
+  });
+
   it('OS patch severity gating is unchanged on a third_party-enabled ring', async () => {
     mockPendingAndApprovals(
       [
@@ -1297,7 +1313,7 @@ describe('deferral first-seen fallback for third-party patches (#2218)', () => {
     expect(result[0]?.approvalReason).toBe('ring_auto_approve');
   });
 
-  it('prefers releaseDate over first-seen when both exist', async () => {
+  it('prefers releaseDate over first-seen when releaseDate is past the window', async () => {
     // Released 10 days ago but only first seen yesterday: releaseDate anchors
     // the window, so the patch is past the 7-day hold.
     const tenDaysAgo = new Date(Date.now() - 10 * 24 * 3600 * 1000).toISOString();
@@ -1310,6 +1326,43 @@ describe('deferral first-seen fallback for third-party patches (#2218)', () => {
     const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, deferredRing);
 
     expect(result).toHaveLength(1);
+    expect(result[0]?.approvalReason).toBe('ring_auto_approve');
+  });
+
+  it('prefers releaseDate over first-seen when releaseDate is inside the window (held)', async () => {
+    // Complementary direction: released yesterday (inside the 7-day hold) but
+    // first seen 10 days ago. releaseDate must win, so the patch is HELD — a
+    // bug that anchored on the older/more-permissive first-seen would approve.
+    const yesterday = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+    const tenDaysAgo = new Date(Date.now() - 10 * 24 * 3600 * 1000);
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, source: 'third_party', severity: 'unknown', releaseDate: yesterday, firstSeenAt: tenDaysAgo })],
+      []
+    );
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, deferredRing);
+
+    expect(result).toEqual([]);
+  });
+
+  it('fails closed for a third-party patch with an unparseable releaseDate (does NOT fall through to first-seen)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      // A present-but-garbage releaseDate is a truthy Invalid Date, so the
+      // first-seen fallback is skipped; the Number.isNaN guard then holds it.
+      const tenDaysAgo = new Date(Date.now() - 10 * 24 * 3600 * 1000);
+      mockPendingAndApprovals(
+        [pendingRow({ patchId: P1, source: 'third_party', severity: 'unknown', releaseDate: 'not-a-date', firstSeenAt: tenDaysAgo })],
+        []
+      );
+
+      const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, deferredRing);
+
+      expect(result).toEqual([]);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('its releaseDate value is unparseable'));
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('still fails closed for a third-party patch with neither releaseDate nor firstSeenAt', async () => {
@@ -1323,7 +1376,11 @@ describe('deferral first-seen fallback for third-party patches (#2218)', () => {
       const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, deferredRing);
 
       expect(result).toEqual([]);
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('cannot prove its age'));
+      // Assert the specific reason so the anchor-differentiation feature can't
+      // silently regress to the generic message.
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('it has no releaseDate and no first-seen fallback timestamp')
+      );
     } finally {
       warnSpy.mockRestore();
     }
@@ -1344,7 +1401,10 @@ describe('deferral first-seen fallback for third-party patches (#2218)', () => {
       });
 
       expect(result).toEqual([]);
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('cannot prove its age'));
+      // OS path never mentions a first-seen fallback: bare "it has no releaseDate".
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('but it has no releaseDate, so it cannot prove its age')
+      );
     } finally {
       warnSpy.mockRestore();
     }
