@@ -9,6 +9,15 @@ export function formatNumber(num: number): string {
   return new Intl.NumberFormat().format(num);
 }
 
+/**
+ * Count + correctly pluralized noun: `plural(1, 'device')` → "1 device",
+ * `plural(3, 'finding')` → "3 findings". Pass `pluralWord` for irregular
+ * nouns (`plural(2, 'entry', 'entries')`).
+ */
+export function plural(n: number, word: string, pluralWord?: string): string {
+  return `${n} ${n === 1 ? word : (pluralWord ?? `${word}s`)}`;
+}
+
 export function formatBytes(bytes: number, decimals = 2): string {
   if (bytes === 0) return '0 Bytes';
 

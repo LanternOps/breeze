@@ -1,11 +1,15 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { Drawer } from '../shared/Drawer';
 import { SeverityBadge } from './SeverityBadge';
+import { KevBadge } from './KevBadge';
+import { CVSS_EXPLANATION, EPSS_EXPLANATION } from './vulnExplanations';
+import { FindingStatus } from './FindingStatus';
 import { VulnBulkActionModal } from './VulnBulkActionModal';
 import { CreateVulnTicketModal } from './CreateVulnTicketModal';
 import { usePermissions } from '../../lib/permissions';
 import { handleActionError } from '../../lib/runAction';
+import { plural } from '../../lib/utils';
 import {
   bulkAcceptVulnRisk,
   bulkMitigateVulns,
@@ -37,8 +41,14 @@ export function SoftwareGroupDrawer({
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState<'remediate' | 'accept' | 'mitigate' | 'ticket' | null>(null);
-  const [modal, setModal] = useState<'accept' | 'mitigate' | null>(null);
+  const [modal, setModal] = useState<'remediate' | 'accept' | 'mitigate' | null>(null);
+  // Inline failure message for the bulk-action modal (in addition to the
+  // toast, which is easy to miss while the modal stays open).
+  const [modalError, setModalError] = useState<string | null>(null);
   const [ticketModal, setTicketModal] = useState(false);
+  // Synchronous double-submission guard: `busy` state lags one render behind,
+  // so a rapid double-activation could fire the mutation twice without this.
+  const busyRef = useRef(false);
 
   const { can } = usePermissions();
   const canRemediate = can('devices', 'execute');
@@ -73,10 +83,14 @@ export function SoftwareGroupDrawer({
   };
 
   const selectedIds = [...selected];
+  const selectedDeviceCount = detail
+    ? new Set(detail.findings.filter((f) => selected.has(f.deviceVulnerabilityId)).map((f) => f.deviceId)).size
+    : 0;
 
   const runBulk = useCallback(
     async (kind: 'remediate' | 'accept' | 'mitigate' | 'ticket', action: () => Promise<unknown>, fallback: string) => {
-      if (busy || selectedIds.length === 0) return;
+      if (busy || busyRef.current || selectedIds.length === 0) return;
+      busyRef.current = true;
       setBusy(kind);
       try {
         await action();
@@ -85,7 +99,9 @@ export function SoftwareGroupDrawer({
         onActionComplete();
       } catch (err) {
         handleActionError(err, fallback);
+        setModalError(err instanceof Error && err.message ? err.message : fallback);
       } finally {
+        busyRef.current = false;
         setBusy(null);
       }
     },
@@ -97,11 +113,7 @@ export function SoftwareGroupDrawer({
     <span className="flex min-w-0 items-center gap-2">
       <span className="truncate">{detail.group.name}</span>
       <SeverityBadge severity={detail.group.worstSeverity} />
-      {detail.group.kevCveCount > 0 && (
-        <span className="rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-[11px] font-semibold text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300">
-          KEV
-        </span>
-      )}
+      {detail.group.kevCveCount > 0 && <KevBadge />}
     </span>
   ) : (
     'Software group'
@@ -125,21 +137,24 @@ export function SoftwareGroupDrawer({
         {detail && (
           <>
             <div className="text-sm text-muted-foreground">
-              {[detail.group.vendor, `${detail.group.deviceCount} devices`, `max risk ${detail.group.maxRiskScore ?? '—'}`]
+              {/* Round the risk score the same way the tables do, so the same
+                  number never shows two different values. */}
+              {[detail.group.vendor, plural(detail.group.deviceCount, 'device'), `max risk ${detail.group.maxRiskScore === null ? '—' : Math.round(detail.group.maxRiskScore)}`]
                 .filter(Boolean)
                 .join(' · ')}
             </div>
 
-            {detail.group.ticketIds.length > 0 && (
+            {detail.group.tickets.length > 0 && (
               <div className="flex flex-wrap gap-2">
-                {detail.group.ticketIds.map((tid) => (
+                {detail.group.tickets.map((t) => (
                   <a
-                    key={tid}
-                    href={`/tickets#${tid}`}
-                    data-testid={`vuln-ticket-chip-${tid}`}
+                    key={t.id}
+                    // TicketsPage resolves the hash by internalNumber or id.
+                    href={`/tickets#${t.number ?? t.id}`}
+                    data-testid={`vuln-ticket-chip-${t.id}`}
                     className="inline-flex items-center rounded-full border bg-muted/40 px-2.5 py-1 text-xs font-medium hover:bg-muted"
                   >
-                    Ticket · {tid.slice(0, 8)}
+                    {t.number ? `Ticket ${t.number}` : 'View ticket'}
                   </a>
                 ))}
               </div>
@@ -159,9 +174,9 @@ export function SoftwareGroupDrawer({
                       <span className="font-medium">{cve.cveId}</span>
                       <span className="flex items-center gap-2 text-xs text-muted-foreground">
                         <SeverityBadge severity={cve.severity} />
-                        <span className="tabular-nums">CVSS {cve.cvssScore ?? '—'}</span>
-                        <span className="tabular-nums">EPSS {fmtEpss(cve.epssScore)}</span>
-                        {cve.knownExploited && <span className="font-semibold text-red-600">KEV</span>}
+                        <span className="tabular-nums" title={CVSS_EXPLANATION}>CVSS {cve.cvssScore ?? '—'}</span>
+                        <span className="tabular-nums" title={EPSS_EXPLANATION}>EPSS {fmtEpss(cve.epssScore)}</span>
+                        {cve.knownExploited && <KevBadge />}
                       </span>
                     </button>
                   </li>
@@ -171,14 +186,25 @@ export function SoftwareGroupDrawer({
 
             <section>
               <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                Devices ({detail.findings.length} findings)
+                Devices ({plural(detail.findings.length, 'finding')})
               </h3>
+              {detail.findings.length === 0 ? (
+                // Reachable when every finding was resolved (or moved out of the
+                // caller's scope) between the list loading and the drawer opening.
+                <p
+                  data-testid="vuln-drawer-no-findings"
+                  className="mt-2 rounded-md border border-dashed px-3 py-4 text-center text-xs text-muted-foreground"
+                >
+                  No device findings remain in this group — nothing to act on.
+                </p>
+              ) : (
               <ul className="mt-2 divide-y rounded-md border">
                 {detail.findings.map((f) => (
                   <li key={f.deviceVulnerabilityId} className="flex items-center gap-3 px-3 py-2 text-sm">
                     <input
                       type="checkbox"
                       data-testid={`vuln-finding-check-${f.deviceVulnerabilityId}`}
+                      aria-label={`Select ${f.cveId} finding on ${f.deviceName}`}
                       checked={selected.has(f.deviceVulnerabilityId)}
                       onChange={() => toggle(f.deviceVulnerabilityId)}
                       className="h-4 w-4 rounded border"
@@ -189,20 +215,21 @@ export function SoftwareGroupDrawer({
                         {[f.orgName, f.cveId].filter(Boolean).join(' · ')}
                       </span>
                     </span>
-                    <span className="text-xs capitalize text-muted-foreground">{f.status}</span>
+                    <FindingStatus status={f.status} acceptedUntil={f.acceptedUntil} />
                     <span className="text-xs">{f.patchAvailable ? 'Patch' : '—'}</span>
                     {f.ticketId && (
                       <a
-                        href={`/tickets#${f.ticketId}`}
+                        href={`/tickets#${f.ticketNumber ?? f.ticketId}`}
                         data-testid={`vuln-finding-ticket-${f.deviceVulnerabilityId}`}
                         className="text-xs underline"
                       >
-                        Ticket
+                        {f.ticketNumber ?? 'Ticket'}
                       </a>
                     )}
                   </li>
                 ))}
               </ul>
+              )}
             </section>
           </>
         )}
@@ -217,7 +244,10 @@ export function SoftwareGroupDrawer({
               data-testid="vuln-action-remediate"
               className={`${ACTION_BTN} bg-primary text-primary-foreground hover:bg-primary/90`}
               disabled={busy !== null || selectedIds.length === 0}
-              onClick={() => void runBulk('remediate', () => remediateVuln(selectedIds), 'Failed to schedule remediation')}
+              onClick={() => {
+                setModalError(null);
+                setModal('remediate');
+              }}
             >
               Remediate
             </button>
@@ -228,7 +258,10 @@ export function SoftwareGroupDrawer({
               data-testid="vuln-action-accept"
               className={ACTION_BTN}
               disabled={busy !== null || selectedIds.length === 0}
-              onClick={() => setModal('accept')}
+              onClick={() => {
+                setModalError(null);
+                setModal('accept');
+              }}
             >
               Accept risk
             </button>
@@ -239,7 +272,10 @@ export function SoftwareGroupDrawer({
               data-testid="vuln-action-mitigate"
               className={ACTION_BTN}
               disabled={busy !== null || selectedIds.length === 0}
-              onClick={() => setModal('mitigate')}
+              onClick={() => {
+                setModalError(null);
+                setModal('mitigate');
+              }}
             >
               Mitigate
             </button>
@@ -262,10 +298,18 @@ export function SoftwareGroupDrawer({
         <VulnBulkActionModal
           kind={modal}
           count={selectedIds.length}
+          deviceCount={selectedDeviceCount}
           busy={busy !== null}
-          onCancel={() => setModal(null)}
+          errorMessage={modalError}
+          onCancel={() => {
+            setModal(null);
+            setModalError(null);
+          }}
           onSubmit={(payload) => {
-            if (modal === 'accept') {
+            setModalError(null);
+            if (modal === 'remediate') {
+              void runBulk('remediate', () => remediateVuln(selectedIds), 'Failed to schedule remediation');
+            } else if (modal === 'accept') {
               void runBulk(
                 'accept',
                 () => bulkAcceptVulnRisk(selectedIds, { reason: payload.reason ?? '', acceptedUntil: payload.acceptedUntil ?? '' }),

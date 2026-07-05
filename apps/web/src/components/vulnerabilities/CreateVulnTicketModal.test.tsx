@@ -15,7 +15,9 @@ function finding(overrides: Partial<GroupFinding> = {}): GroupFinding {
     patchAvailable: true,
     riskScore: 95,
     detectedAt: '2026-06-01T00:00:00.000Z',
+    acceptedUntil: null,
     ticketId: null,
+    ticketNumber: null,
     ...overrides,
   };
 }
@@ -48,6 +50,25 @@ describe('CreateVulnTicketModal', () => {
       />,
     );
     expect(screen.getByTestId('vuln-ticket-cross-org-note')).toHaveTextContent('2 organizations');
+  });
+
+  it('is a named dialog and closes on Escape without submitting', () => {
+    const onCancel = vi.fn();
+    const onSubmit = vi.fn();
+    render(<CreateVulnTicketModal findings={[finding()]} defaultTitle="T" busy={false} onCancel={onCancel} onSubmit={onSubmit} />);
+    expect(screen.getByRole('dialog')).toHaveAccessibleName('Create ticket — 1 finding');
+    fireEvent.keyDown(screen.getByTestId('vuln-ticket-modal'), { key: 'Escape' });
+    expect(onCancel).toHaveBeenCalled();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('ignores Escape and disables buttons while busy', () => {
+    const onCancel = vi.fn();
+    render(<CreateVulnTicketModal findings={[finding()]} defaultTitle="T" busy onCancel={onCancel} onSubmit={() => {}} />);
+    fireEvent.keyDown(screen.getByTestId('vuln-ticket-modal'), { key: 'Escape' });
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(screen.getByTestId('vuln-ticket-cancel')).toBeDisabled();
+    expect(screen.getByTestId('vuln-ticket-submit')).toBeDisabled();
   });
 
   it('submits title/description/priority and blocks empty titles', () => {

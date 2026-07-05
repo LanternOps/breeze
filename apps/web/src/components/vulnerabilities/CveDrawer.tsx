@@ -1,11 +1,15 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { Drawer } from '../shared/Drawer';
 import { SeverityBadge } from './SeverityBadge';
+import { KevBadge } from './KevBadge';
+import { CVSS_EXPLANATION, EPSS_EXPLANATION } from './vulnExplanations';
+import { FindingStatus } from './FindingStatus';
 import { VulnBulkActionModal } from './VulnBulkActionModal';
 import { CreateVulnTicketModal } from './CreateVulnTicketModal';
 import { usePermissions } from '../../lib/permissions';
 import { handleActionError } from '../../lib/runAction';
+import { plural } from '../../lib/utils';
 import {
   bulkAcceptVulnRisk,
   bulkMitigateVulns,
@@ -51,8 +55,14 @@ export function CveDrawer({
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState<'remediate' | 'accept' | 'mitigate' | 'ticket' | 'reopen' | null>(null);
-  const [modal, setModal] = useState<'accept' | 'mitigate' | null>(null);
+  const [modal, setModal] = useState<'remediate' | 'accept' | 'mitigate' | null>(null);
+  // Inline failure message for the bulk-action modal (in addition to the
+  // toast, which is easy to miss while the modal stays open).
+  const [modalError, setModalError] = useState<string | null>(null);
   const [ticketModal, setTicketModal] = useState(false);
+  // Synchronous double-submission guard: `busy` state lags one render behind,
+  // so a rapid double-activation could fire the mutation twice without this.
+  const busyRef = useRef(false);
 
   const { can } = usePermissions();
   const canRemediate = can('devices', 'execute');
@@ -87,10 +97,14 @@ export function CveDrawer({
   };
 
   const selectedIds = [...selected];
+  const selectedDeviceCount = payload
+    ? new Set(payload.findings.filter((f) => selected.has(f.deviceVulnerabilityId)).map((f) => f.deviceId)).size
+    : 0;
 
   const runBulk = useCallback(
     async (kind: 'remediate' | 'accept' | 'mitigate' | 'ticket', action: () => Promise<unknown>, fallback: string) => {
-      if (busy || selectedIds.length === 0) return;
+      if (busy || busyRef.current || selectedIds.length === 0) return;
+      busyRef.current = true;
       setBusy(kind);
       try {
         await action();
@@ -99,7 +113,9 @@ export function CveDrawer({
         onActionComplete();
       } catch (err) {
         handleActionError(err, fallback);
+        setModalError(err instanceof Error && err.message ? err.message : fallback);
       } finally {
+        busyRef.current = false;
         setBusy(null);
       }
     },
@@ -109,7 +125,8 @@ export function CveDrawer({
 
   const onReopen = useCallback(
     async (id: string) => {
-      if (busy) return;
+      if (busy || busyRef.current) return;
+      busyRef.current = true;
       setBusy('reopen');
       try {
         await reopenVuln(id);
@@ -118,6 +135,7 @@ export function CveDrawer({
       } catch (err) {
         handleActionError(err, 'Failed to reopen finding');
       } finally {
+        busyRef.current = false;
         setBusy(null);
       }
     },
@@ -153,14 +171,14 @@ export function CveDrawer({
             <section data-testid="vuln-cve-meta" className="space-y-2 text-sm">
               <p>{payload.cve.description}</p>
               <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-                <dt className="text-muted-foreground">CVSS {payload.cve.cvssVersion ?? ''}</dt>
+                <dt className="text-muted-foreground" title={CVSS_EXPLANATION}>CVSS {payload.cve.cvssVersion ?? ''}</dt>
                 <dd className="tabular-nums">{payload.cve.cvssScore ?? '—'}</dd>
                 <dt className="text-muted-foreground">Vector</dt>
                 <dd className="break-all">{payload.cve.cvssVector ?? '—'}</dd>
-                <dt className="text-muted-foreground">EPSS</dt>
+                <dt className="text-muted-foreground" title={EPSS_EXPLANATION}>EPSS</dt>
                 <dd className="tabular-nums">{fmtEpss(payload.cve.epssScore)}</dd>
                 <dt className="text-muted-foreground">Known exploited</dt>
-                <dd>{payload.cve.knownExploited ? 'KEV' : 'No'}</dd>
+                <dd>{payload.cve.knownExploited ? <KevBadge /> : 'No'}</dd>
                 <dt className="text-muted-foreground">Published</dt>
                 <dd>{payload.cve.publishedAt ? new Date(payload.cve.publishedAt).toLocaleDateString() : '—'}</dd>
                 <dt className="text-muted-foreground">Modified</dt>
@@ -187,14 +205,25 @@ export function CveDrawer({
 
             <section>
               <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                Devices ({payload.findings.length} findings)
+                Devices ({plural(payload.findings.length, 'finding')})
               </h3>
+              {payload.findings.length === 0 ? (
+                // Reachable when every finding was resolved (or moved out of the
+                // caller's scope) between the list loading and the drawer opening.
+                <p
+                  data-testid="vuln-drawer-no-findings"
+                  className="mt-2 rounded-md border border-dashed px-3 py-4 text-center text-xs text-muted-foreground"
+                >
+                  No devices in your fleet are affected by this CVE right now — nothing to act on.
+                </p>
+              ) : (
               <ul className="mt-2 divide-y rounded-md border">
                 {payload.findings.map((f) => (
                   <li key={f.deviceVulnerabilityId} className="flex items-center gap-3 px-3 py-2 text-sm">
                     <input
                       type="checkbox"
                       data-testid={`vuln-finding-check-${f.deviceVulnerabilityId}`}
+                      aria-label={`Select finding on ${f.deviceName}`}
                       checked={selected.has(f.deviceVulnerabilityId)}
                       onChange={() => toggle(f.deviceVulnerabilityId)}
                       className="h-4 w-4 rounded border"
@@ -203,15 +232,15 @@ export function CveDrawer({
                       <span className="block truncate font-medium">{f.deviceName}</span>
                       <span className="block truncate text-xs text-muted-foreground">{f.orgName ?? ''}</span>
                     </span>
-                    <span className="text-xs capitalize text-muted-foreground">{f.status}</span>
+                    <FindingStatus status={f.status} acceptedUntil={f.acceptedUntil} />
                     <span className="text-xs">{f.patchAvailable ? 'Patch' : '—'}</span>
                     {f.ticketId && (
                       <a
-                        href={`/tickets#${f.ticketId}`}
+                        href={`/tickets#${f.ticketNumber ?? f.ticketId}`}
                         data-testid={`vuln-finding-ticket-${f.deviceVulnerabilityId}`}
                         className="text-xs underline"
                       >
-                        Ticket
+                        {f.ticketNumber ?? 'Ticket'}
                       </a>
                     )}
                     {canAcceptRisk && (f.status === 'accepted' || f.status === 'mitigated') && (
@@ -228,6 +257,7 @@ export function CveDrawer({
                   </li>
                 ))}
               </ul>
+              )}
             </section>
           </>
         )}
@@ -242,7 +272,10 @@ export function CveDrawer({
               data-testid="vuln-action-remediate"
               className={`${ACTION_BTN} bg-primary text-primary-foreground hover:bg-primary/90`}
               disabled={busy !== null || selectedIds.length === 0}
-              onClick={() => void runBulk('remediate', () => remediateVuln(selectedIds), 'Failed to schedule remediation')}
+              onClick={() => {
+                setModalError(null);
+                setModal('remediate');
+              }}
             >
               Remediate
             </button>
@@ -253,7 +286,10 @@ export function CveDrawer({
               data-testid="vuln-action-accept"
               className={ACTION_BTN}
               disabled={busy !== null || selectedIds.length === 0}
-              onClick={() => setModal('accept')}
+              onClick={() => {
+                setModalError(null);
+                setModal('accept');
+              }}
             >
               Accept risk
             </button>
@@ -264,7 +300,10 @@ export function CveDrawer({
               data-testid="vuln-action-mitigate"
               className={ACTION_BTN}
               disabled={busy !== null || selectedIds.length === 0}
-              onClick={() => setModal('mitigate')}
+              onClick={() => {
+                setModalError(null);
+                setModal('mitigate');
+              }}
             >
               Mitigate
             </button>
@@ -287,10 +326,18 @@ export function CveDrawer({
         <VulnBulkActionModal
           kind={modal}
           count={selectedIds.length}
+          deviceCount={selectedDeviceCount}
           busy={busy !== null}
-          onCancel={() => setModal(null)}
+          errorMessage={modalError}
+          onCancel={() => {
+            setModal(null);
+            setModalError(null);
+          }}
           onSubmit={(bulkPayload) => {
-            if (modal === 'accept') {
+            setModalError(null);
+            if (modal === 'remediate') {
+              void runBulk('remediate', () => remediateVuln(selectedIds), 'Failed to schedule remediation');
+            } else if (modal === 'accept') {
               void runBulk(
                 'accept',
                 () => bulkAcceptVulnRisk(selectedIds, { reason: bulkPayload.reason ?? '', acceptedUntil: bulkPayload.acceptedUntil ?? '' }),

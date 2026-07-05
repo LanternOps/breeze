@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, desc, eq, ilike, inArray, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gt, ilike, inArray, lte, type SQL } from 'drizzle-orm';
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { deviceVulnerabilities, devices, vulnerabilities } from '../db/schema';
@@ -43,12 +43,17 @@ const boolQuerySchema = z
   .pipe(z.enum(['true', 'false']))
   .transform((value) => value === 'true');
 
+// Query-string integer: accepted-risk expiry window in days (the stat card
+// sends 14). Coerced from the raw string; bounded to keep the window sane.
+const expiringWithinDaysSchema = z.coerce.number().int().min(1).max(365);
+
 const listQuerySchema = z.object({
   status: statusSchema.default('open'),
   severity: severitySchema.optional(),
   cve: z.string().trim().min(1).max(32).optional(),
   kevOnly: boolQuerySchema.optional(),
   patchAvailable: boolQuerySchema.optional(),
+  expiringWithinDays: expiringWithinDaysSchema.optional(),
 });
 
 const deviceParamSchema = z.object({
@@ -96,9 +101,13 @@ const softwareQuerySchema = z.object({
   search: z.string().trim().min(1).max(200).optional(),
   kevOnly: boolQuerySchema.optional(),
   patchAvailable: boolQuerySchema.optional(),
+  expiringWithinDays: expiringWithinDaysSchema.optional(),
 });
 
 const SOFTWARE_GROUP_CAP = 500;
+// Same cap + hasMore contract for the by-CVE fleet view (one row per CVE, so
+// cardinality is catalog-bounded; a cap with a truncation notice beats pagination).
+const FLEET_CVE_CAP = 500;
 
 const groupKeyParamSchema = z.object({
   // Opaque group key: sw:<name>|<vendor> or os:<platform>. Hono decodes the
@@ -346,6 +355,8 @@ async function listVulnerabilities(filters: {
   cve?: string;
   kevOnly?: boolean;
   patchAvailable?: boolean;
+  /** Only findings whose accepted-risk window expires within N days from now. */
+  expiringWithinDays?: number;
   /** Site-axis narrowing: when set, only return findings for devices in these sites.
    *  Empty array = caller has no in-scope sites → return nothing (fail-closed). */
   allowedSiteIds?: string[];
@@ -358,6 +369,14 @@ async function listVulnerabilities(filters: {
   }
   if (filters.deviceId) {
     conditions.push(eq(deviceVulnerabilities.deviceId, filters.deviceId));
+  }
+  // Accepted-risk expiry window (backs the "Accepted, expiring soon" stat card,
+  // matching computeStats in vulnerabilityFleetAggregation.ts: acceptedUntil in
+  // (now, now + N days]). Rows without acceptedUntil never match.
+  if (filters.expiringWithinDays !== undefined) {
+    const now = new Date();
+    const soon = new Date(now.getTime() + filters.expiringWithinDays * 24 * 60 * 60 * 1000);
+    conditions.push(gt(deviceVulnerabilities.acceptedUntil, now), lte(deviceVulnerabilities.acceptedUntil, soon));
   }
   // Site-axis (app-layer only; RLS does NOT enforce site isolation). Mirrors
   // assertDeviceSiteAccess used by per-device routes in this file and
@@ -484,7 +503,11 @@ vulnerabilityRoutes.get('/', zValidator('query', listQuerySchema), async (c) => 
     ...query,
     allowedSiteIds: perms?.allowedSiteIds,
   });
-  return c.json({ items: aggregateFleet(items) });
+  const rows = aggregateFleet(items);
+  return c.json({
+    items: rows.slice(0, FLEET_CVE_CAP),
+    hasMore: rows.length > FLEET_CVE_CAP,
+  });
 });
 
 // Fleet work queue: one row per remediation unit (software product or OS
@@ -502,6 +525,7 @@ vulnerabilityRoutes.get('/software', zValidator('query', softwareQuerySchema), a
     severity: query.severity,
     kevOnly: query.kevOnly,
     patchAvailable: query.patchAvailable,
+    expiringWithinDays: query.expiringWithinDays,
   });
   const groups = groupFindings(filtered, { search: query.search });
   return c.json({
@@ -525,7 +549,9 @@ vulnerabilityRoutes.get('/software/:groupKey', zValidator('param', groupKeyParam
 });
 
 // The four stat-card numbers in one call. Needs every status: open findings
-// feed three cards, accepted findings feed the expiring-soon card.
+// feed three cards, accepted findings feed the expiring-soon card. Also carries
+// totalFindings/lastDetectedAt (computed from the same rows — no extra query)
+// so the empty states can tell a clean fleet from one that never produced data.
 vulnerabilityRoutes.get('/stats', async (c) => {
   const perms = c.get('permissions') as UserPermissions | undefined;
   const rows = await fetchFleetFindingRows({

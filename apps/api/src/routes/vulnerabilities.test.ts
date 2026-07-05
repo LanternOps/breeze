@@ -49,7 +49,7 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
-  deviceVulnerabilities: { id: 'dv.id', orgId: 'dv.orgId', deviceId: 'dv.deviceId', status: 'dv.status' },
+  deviceVulnerabilities: { id: 'dv.id', orgId: 'dv.orgId', deviceId: 'dv.deviceId', status: 'dv.status', acceptedUntil: 'dv.acceptedUntil' },
   devices: { id: 'd.id', orgId: 'd.orgId', siteId: 'd.siteId' },
   vulnerabilities: {},
 }));
@@ -104,6 +104,7 @@ function fleetRow(overrides: Partial<FleetFindingRow> = {}): FleetFindingRow {
     detectedAt: '2026-06-01T00:00:00.000Z',
     acceptedUntil: null,
     ticketId: null,
+    ticketNumber: null,
     softwareInventoryId: 'sw-1',
     softwareName: 'Google Chrome',
     softwareVendor: 'Google LLC',
@@ -249,12 +250,26 @@ describe('GET /vulnerabilities — kevOnly/patchAvailable params', () => {
     } as never);
     const res = await app().request('/vulnerabilities?kevOnly=true&patchAvailable=false');
     expect(res.status).toBe(200);
-    expect((await res.json()).items).toEqual([]);
+    const body = await res.json();
+    expect(body.items).toEqual([]);
+    // Fleet list mirrors /software's truncation contract: items + hasMore.
+    expect(body.hasMore).toBe(false);
   });
 
   it('400s on malformed boolean params', async () => {
     const res = await app().request('/vulnerabilities?kevOnly=1');
     expect(res.status).toBe(400);
+  });
+
+  it('accepts expiringWithinDays and rejects out-of-range / non-numeric values', async () => {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }),
+    } as never);
+    const ok = await app().request('/vulnerabilities?status=accepted&expiringWithinDays=14');
+    expect(ok.status).toBe(200);
+    expect((await app().request('/vulnerabilities?expiringWithinDays=abc')).status).toBe(400);
+    expect((await app().request('/vulnerabilities?expiringWithinDays=0')).status).toBe(400);
+    expect((await app().request('/vulnerabilities?expiringWithinDays=366')).status).toBe(400);
   });
 });
 
@@ -343,6 +358,26 @@ describe('GET /vulnerabilities/software (fleet work queue)', () => {
 
   it('400s on an invalid boolean param', async () => {
     const res = await app().request('/vulnerabilities/software?kevOnly=yes');
+    expect(res.status).toBe(400);
+  });
+
+  it('applies the expiringWithinDays window to accepted findings', async () => {
+    const soon = new Date(Date.now() + 5 * 864e5).toISOString();
+    const far = new Date(Date.now() + 60 * 864e5).toISOString();
+    vi.mocked(fetchFleetFindingRows).mockResolvedValue([
+      fleetRow({ deviceVulnerabilityId: 'dv-soon', status: 'accepted', acceptedUntil: soon }),
+      fleetRow({ deviceVulnerabilityId: 'dv-far', deviceId: 'dev-2', status: 'accepted', acceptedUntil: far }),
+    ]);
+    const res = await app().request('/vulnerabilities/software?status=accepted&expiringWithinDays=14');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    // Only the finding expiring inside the window survives; the group counts reflect that.
+    expect(body.items).toHaveLength(1);
+    expect(body.items[0].deviceCount).toBe(1);
+  });
+
+  it('400s on a non-numeric expiringWithinDays', async () => {
+    const res = await app().request('/vulnerabilities/software?expiringWithinDays=soon');
     expect(res.status).toBe(400);
   });
 });
@@ -529,7 +564,7 @@ describe('GET /vulnerabilities/stats', () => {
     expect(res.status).toBe(403);
   });
 
-  it('fetches ALL statuses and returns the four stat numbers', async () => {
+  it('fetches ALL statuses and returns the stat numbers plus detection activity', async () => {
     vi.mocked(fetchFleetFindingRows).mockResolvedValue([
       fleetRow(), // open critical KEV patch-ready
       fleetRow({ deviceVulnerabilityId: 'dv-2', status: 'accepted', acceptedUntil: new Date(Date.now() + 5 * 864e5).toISOString() }),
@@ -546,6 +581,8 @@ describe('GET /vulnerabilities/stats', () => {
       kevDeviceCount: 1,
       patchReadyFindingCount: 1,
       acceptedExpiringSoon: 1,
+      totalFindings: 2,
+      lastDetectedAt: '2026-06-01T00:00:00.000Z',
     });
   });
 });

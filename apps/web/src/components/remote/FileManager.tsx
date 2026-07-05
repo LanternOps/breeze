@@ -1127,7 +1127,8 @@ export default function FileManager({
         >
           <div className="flex items-center gap-2">
             <Sparkles className="h-4 w-4 text-violet-400" />
-            <span className="text-sm font-medium bg-linear-to-r from-violet-400 to-blue-400 bg-clip-text text-transparent">Disk Cleanup Intelligence</span>
+            {/* Solid brand color + weight (gradient text is banned — PRODUCT.md). */}
+            <span className="text-sm font-semibold text-primary">Disk Cleanup Intelligence</span>
           </div>
           {showDiskIntel ? <ChevronUp className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
         </button>

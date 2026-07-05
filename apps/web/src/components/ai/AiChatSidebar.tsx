@@ -122,8 +122,9 @@ export default function AiChatSidebar() {
           isOpen ? 'translate-x-0' : 'translate-x-full pointer-events-none'
         }`}
       >
-        {/* Header */}
-        <div className="flex items-center justify-between border-b bg-card px-4 py-3">
+        {/* Header — one flat surface with the panel (no stacked card-on-card
+            backgrounds); the bottom border alone separates it. */}
+        <div className="flex items-center justify-between border-b px-4 py-3">
           <div className="flex items-center gap-2">
             {showHistory ? (
               <button

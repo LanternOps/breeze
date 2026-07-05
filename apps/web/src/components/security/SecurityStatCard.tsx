@@ -16,6 +16,9 @@ interface SecurityStatCardProps {
   value: string | number;
   variant?: Variant;
   detail?: string;
+  /** Calm skeleton while the stat is being fetched — distinct from the
+   *  "—" placeholder, which callers reserve for missing/failed data. */
+  loading?: boolean;
 }
 
 export default function SecurityStatCard({
@@ -23,21 +26,30 @@ export default function SecurityStatCard({
   label,
   value,
   variant = 'default',
-  detail
+  detail,
+  loading = false
 }: SecurityStatCardProps) {
   return (
-    <div className="rounded-lg border bg-card p-4 shadow-xs">
+    <div className="h-full rounded-lg border bg-card p-4 shadow-xs">
       <div className="flex items-center gap-3">
         <div className="rounded-full border bg-muted/30 p-2">
           <Icon className="h-4 w-4 text-muted-foreground" />
         </div>
         <div className="min-w-0">
           <p className="text-xs text-muted-foreground">{label}</p>
-          <p className={cn('text-xl font-semibold', variantStyles[variant])}>
-            {value}
-          </p>
-          {detail && (
-            <p className="text-xs text-muted-foreground">{detail}</p>
+          {loading ? (
+            <div className="py-1.5" aria-hidden="true" data-testid="stat-card-skeleton">
+              <div className="h-5 w-10 rounded bg-muted motion-safe:animate-pulse" />
+            </div>
+          ) : (
+            <>
+              <p className={cn('text-xl font-semibold', variantStyles[variant])}>
+                {value}
+              </p>
+              {detail && (
+                <p className="text-xs text-muted-foreground">{detail}</p>
+              )}
+            </>
           )}
         </div>
       </div>

@@ -7,6 +7,11 @@ const SEEDED_CVE = 'CVE-2025-E2E-0001';
 
 const rowSelector = '[data-testid^="vulnerability-row-"]';
 
+// These tests mutate the SAME seeded finding (accept/reopen/remediate on the
+// one open CVE), so they must not run concurrently — under fullyParallel the
+// accept-risk test removes the row the remediate test is about to open.
+test.describe.configure({ mode: 'default' });
+
 test.describe('Vulnerabilities', () => {
   test('fleet dashboard lists CVE rows', async ({ authedPage }) => {
     await authedPage.goto('/vulnerabilities#cves');
@@ -34,6 +39,26 @@ test.describe('Vulnerabilities', () => {
 
     // The tab re-fetches status=open findings, so the accepted one disappears.
     await expect(authedPage.locator(rowSelector)).toHaveCount(before - 1, { timeout: 15_000 });
+  });
+
+  test('remediate shows a confirmation with counts and cancel leaves state untouched', async ({ authedPage }) => {
+    const vulnPage = new VulnerabilitiesPage(authedPage);
+    await vulnPage.goto();
+
+    await expect(vulnPage.groupRows().first()).toBeVisible({ timeout: 15_000 });
+    await vulnPage.groupRows().first().click();
+    await expect(vulnPage.softwareDrawer()).toBeVisible();
+
+    // Remediate no longer fires immediately — a confirmation stands in between.
+    await vulnPage.actionRemediate().click();
+    await expect(vulnPage.bulkModal()).toBeVisible();
+    await expect(vulnPage.remediateSummary()).toContainText('finding');
+    await expect(vulnPage.remediateSummary()).toContainText('device');
+
+    // Cancel: no mutation, drawer still open and usable.
+    await vulnPage.bulkCancel().click();
+    await expect(vulnPage.bulkModal()).toBeHidden();
+    await expect(vulnPage.softwareDrawer()).toBeVisible();
   });
 
   test('fleet triage: accept risk from software drawer, reopen from CVE drawer', async ({ authedPage }) => {

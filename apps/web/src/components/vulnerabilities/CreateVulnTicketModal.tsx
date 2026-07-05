@@ -1,9 +1,13 @@
-import { useMemo, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
 
+import { Dialog } from '../shared/Dialog';
 import type { GroupFinding } from '../../lib/api/vulnerabilities';
 
 const BTN =
-  'inline-flex items-center rounded-md border px-3 py-1.5 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50';
+  'inline-flex items-center rounded-md border px-3 py-1.5 text-sm font-medium transition focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed disabled:opacity-50';
+
+const INPUT =
+  'mt-1 w-full rounded-md border bg-background px-2 py-1 text-sm focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary';
 
 const PRIORITIES = ['low', 'normal', 'high', 'urgent'] as const;
 type Priority = (typeof PRIORITIES)[number];
@@ -35,13 +39,23 @@ export function CreateVulnTicketModal({
   const [title, setTitle] = useState(defaultTitle);
   const [description, setDescription] = useState(() => buildDescription(findings));
   const [priority, setPriority] = useState<Priority>('normal');
+  const titleId = useId();
 
   const orgCount = useMemo(() => new Set(findings.map((f) => f.orgId)).size, [findings]);
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true">
-      <div className="w-full max-w-md rounded-lg border bg-card p-5 shadow-lg" data-testid="vuln-ticket-modal">
-        <h3 className="text-base font-semibold">Create ticket — {findings.length} finding{findings.length === 1 ? '' : 's'}</h3>
+    <Dialog
+      open
+      onClose={() => {
+        if (!busy) onCancel();
+      }}
+      title="Create ticket"
+      labelledBy={titleId}
+      maxWidth="md"
+      className="p-5"
+    >
+      <div data-testid="vuln-ticket-modal">
+        <h3 id={titleId} className="text-base font-semibold">Create ticket — {findings.length} finding{findings.length === 1 ? '' : 's'}</h3>
         {orgCount > 1 && (
           <p data-testid="vuln-ticket-cross-org-note" className="mt-1 text-xs text-amber-600 dark:text-amber-400">
             Selection spans {orgCount} organizations — one ticket per organization will be created.
@@ -55,7 +69,7 @@ export function CreateVulnTicketModal({
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               maxLength={255}
-              className="mt-1 w-full rounded-md border bg-background px-2 py-1 text-sm"
+              className={INPUT}
             />
           </label>
           <label className="block text-sm">
@@ -65,7 +79,7 @@ export function CreateVulnTicketModal({
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               rows={5}
-              className="mt-1 w-full rounded-md border bg-background px-2 py-1 text-sm"
+              className={INPUT}
             />
           </label>
           <label className="block text-sm">
@@ -74,7 +88,7 @@ export function CreateVulnTicketModal({
               data-testid="vuln-ticket-priority"
               value={priority}
               onChange={(e) => setPriority(e.target.value as Priority)}
-              className="mt-1 w-full rounded-md border bg-background px-2 py-1 text-sm"
+              className={INPUT}
             >
               {PRIORITIES.map((p) => (
                 <option key={p} value={p}>{p[0]!.toUpperCase() + p.slice(1)}</option>
@@ -83,7 +97,7 @@ export function CreateVulnTicketModal({
           </label>
         </div>
         <div className="mt-5 flex justify-end gap-2">
-          <button type="button" className={BTN} onClick={onCancel} disabled={busy}>
+          <button type="button" data-testid="vuln-ticket-cancel" className={`${BTN} hover:bg-muted`} onClick={onCancel} disabled={busy}>
             Cancel
           </button>
           <button
@@ -97,7 +111,7 @@ export function CreateVulnTicketModal({
           </button>
         </div>
       </div>
-    </div>
+    </Dialog>
   );
 }
 

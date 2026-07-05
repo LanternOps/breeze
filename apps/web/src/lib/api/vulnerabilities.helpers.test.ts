@@ -11,6 +11,11 @@ describe('buildVulnQuery', () => {
   it('returns empty string when nothing is set', () => {
     expect(buildVulnQuery({ severity: undefined, kevOnly: false })).toBe('');
   });
+
+  it('serializes numeric params (expiringWithinDays)', () => {
+    expect(buildVulnQuery({ status: 'accepted', expiringWithinDays: 14 })).toBe('?status=accepted&expiringWithinDays=14');
+    expect(buildVulnQuery({ expiringWithinDays: undefined })).toBe('');
+  });
 });
 
 describe('bulkSummary', () => {

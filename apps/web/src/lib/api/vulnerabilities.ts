@@ -40,12 +40,14 @@ export interface VulnerabilityFilters {
   cve?: string;
   kevOnly?: boolean;
   patchAvailable?: boolean;
+  /** Only findings whose accepted-risk window expires within N days. */
+  expiringWithinDays?: number;
 }
 
 /** Fleet dashboard: CVEs across all accessible devices, aggregated + risk-sorted by the server. */
 export async function fetchVulnerabilities(
   filters: VulnerabilityFilters = {},
-): Promise<{ items: FleetVulnerability[] }> {
+): Promise<{ items: FleetVulnerability[]; hasMore: boolean }> {
   const res = await fetchWithAuth(
     `/vulnerabilities${buildVulnQuery({
       status: filters.status,
@@ -53,13 +55,14 @@ export async function fetchVulnerabilities(
       cve: filters.cve,
       kevOnly: filters.kevOnly,
       patchAvailable: filters.patchAvailable,
+      expiringWithinDays: filters.expiringWithinDays,
     })}`,
   );
   if (!res.ok) {
     throw new Error(`Failed to load vulnerabilities (${res.status})`);
   }
-  const body = (await res.json()) as { items?: FleetVulnerability[] };
-  return { items: body.items ?? [] };
+  const body = (await res.json()) as { items?: FleetVulnerability[]; hasMore?: boolean };
+  return { items: body.items ?? [], hasMore: body.hasMore ?? false };
 }
 
 /** Per-device findings (one row per CVE on the device) for the device tab. */
@@ -91,6 +94,9 @@ export interface VulnFleetFilters {
   status: string; // 'open' default
   kevOnly: boolean;
   patchAvailable: boolean;
+  /** Only findings whose accepted-risk window expires within N days (set by the
+   *  "Accepted, expiring soon" stat card; no visible filter-bar control). */
+  expiringWithinDays?: number;
 }
 
 export interface SoftwareGroup {
@@ -108,7 +114,8 @@ export interface SoftwareGroup {
   maxEpss: number | null;
   patchReadyFindingCount: number;
   patchReadyDeviceCount: number;
-  ticketIds: string[];
+  /** Distinct linked tickets; `number` is the human ticket number (null for legacy tickets). */
+  tickets: Array<{ id: string; number: string | null }>;
 }
 
 export interface GroupCve {
@@ -133,7 +140,10 @@ export interface GroupFinding {
   patchAvailable: boolean;
   riskScore: number | null;
   detectedAt: string;
+  /** ISO expiry of an accepted-risk window; null unless status is 'accepted'. */
+  acceptedUntil: string | null;
   ticketId: string | null;
+  ticketNumber: string | null;
 }
 
 export interface SoftwareGroupDetail {
@@ -148,6 +158,11 @@ export interface FleetVulnStats {
   kevDeviceCount: number;
   patchReadyFindingCount: number;
   acceptedExpiringSoon: number;
+  /** Findings across ALL statuses — "has scanning ever produced data". Feeds
+   *  the clean-fleet vs never-scanned empty-state split. */
+  totalFindings: number;
+  /** Most recent detectedAt across all findings (ISO), null when none exist. */
+  lastDetectedAt: string | null;
 }
 
 export interface CveCatalogRecord {
@@ -184,7 +199,7 @@ export interface VulnTicketResult {
 
 // ---- Pure helpers (exported for tests) ----
 
-export function buildVulnQuery(params: Record<string, string | boolean | undefined>): string {
+export function buildVulnQuery(params: Record<string, string | number | boolean | undefined>): string {
   const q = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
     if (value === undefined || value === '' || value === false) continue;
@@ -212,6 +227,7 @@ export async function fetchSoftwareGroups(
       search: filters.search,
       kevOnly: filters.kevOnly,
       patchAvailable: filters.patchAvailable,
+      expiringWithinDays: filters.expiringWithinDays,
     })}`,
   );
   if (!res.ok) throw new Error('Failed to load software groups');

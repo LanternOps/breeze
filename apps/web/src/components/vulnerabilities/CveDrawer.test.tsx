@@ -52,7 +52,9 @@ const PAYLOAD: CveDevicesPayload = {
       patchAvailable: true,
       riskScore: 95,
       detectedAt: '2026-06-01T00:00:00.000Z',
+      acceptedUntil: null,
       ticketId: null,
+      ticketNumber: null,
     },
     {
       deviceVulnerabilityId: 'dv-2',
@@ -65,7 +67,9 @@ const PAYLOAD: CveDevicesPayload = {
       patchAvailable: true,
       riskScore: 95,
       detectedAt: '2026-06-01T00:00:00.000Z',
+      acceptedUntil: '2026-08-01T12:00:00.000Z',
       ticketId: null,
+      ticketNumber: null,
     },
   ],
 };
@@ -85,6 +89,19 @@ describe('CveDrawer', () => {
     expect(meta).toHaveTextContent('42.0%');
     expect(meta).toHaveTextContent('KEV');
     expect(screen.getByTestId('vuln-cve-reference-0')).toHaveAttribute('href', 'https://example.test/advisory');
+  });
+
+  it('shows an empty message instead of a bare heading when the CVE has no fleet findings', async () => {
+    vi.mocked(api.fetchCveDevices).mockResolvedValue({ ...PAYLOAD, findings: [] });
+    render(<CveDrawer cveId="CVE-2026-0001" onClose={() => {}} onActionComplete={() => {}} />);
+    expect(await screen.findByTestId('vuln-drawer-no-findings')).toHaveTextContent('No devices in your fleet are affected');
+    expect(screen.queryByTestId('vuln-finding-check-dv-1')).toBeNull();
+  });
+
+  it('shows when an accepted finding expires ("Accepted until"), not a bare status chip', async () => {
+    render(<CveDrawer cveId="CVE-2026-0001" onClose={() => {}} onActionComplete={() => {}} />);
+    const drawer = await screen.findByTestId('vuln-cve-drawer');
+    expect(drawer).toHaveTextContent(`Accepted until ${new Date('2026-08-01T12:00:00.000Z').toLocaleDateString()}`);
   });
 
   it('shows Reopen only on accepted/mitigated findings and calls the API', async () => {
@@ -113,5 +130,37 @@ describe('CveDrawer', () => {
     fireEvent.change(screen.getByTestId('vuln-bulk-until'), { target: { value: '2030-01-01' } });
     fireEvent.click(screen.getByTestId('vuln-bulk-submit'));
     await waitFor(() => expect(api.bulkAcceptVulnRisk).toHaveBeenCalledWith(['dv-1'], expect.anything()));
+  });
+
+  it('remediate opens a confirmation and only fires on confirm', async () => {
+    vi.mocked(api.remediateVuln).mockResolvedValue({ scheduled: 1, skipped: [] });
+    render(<CveDrawer cveId="CVE-2026-0001" onClose={() => {}} onActionComplete={() => {}} />);
+    fireEvent.click(await screen.findByTestId('vuln-action-remediate'));
+    expect(api.remediateVuln).not.toHaveBeenCalled();
+    expect(screen.getByTestId('vuln-bulk-remediate-summary')).toHaveTextContent('1 finding on 1 device');
+    fireEvent.click(screen.getByTestId('vuln-bulk-submit'));
+    await waitFor(() => expect(api.remediateVuln).toHaveBeenCalledWith(['dv-1']));
+  });
+
+  it('surfaces a remediate failure inline in the confirmation modal (not just the toast)', async () => {
+    vi.mocked(api.remediateVuln).mockRejectedValue(new Error('No available patch mapped to these findings'));
+    render(<CveDrawer cveId="CVE-2026-0001" onClose={() => {}} onActionComplete={() => {}} />);
+    fireEvent.click(await screen.findByTestId('vuln-action-remediate'));
+    fireEvent.click(screen.getByTestId('vuln-bulk-submit'));
+    expect(await screen.findByTestId('vuln-bulk-error')).toHaveTextContent('No available patch mapped to these findings');
+    expect(screen.getByTestId('vuln-bulk-modal')).toBeInTheDocument();
+  });
+
+  it('pluralizes the findings heading for a single finding', async () => {
+    vi.mocked(api.fetchCveDevices).mockResolvedValue({ ...PAYLOAD, findings: [PAYLOAD.findings[0]!] });
+    render(<CveDrawer cveId="CVE-2026-0001" onClose={() => {}} onActionComplete={() => {}} />);
+    const drawer = await screen.findByTestId('vuln-cve-drawer');
+    expect(drawer).toHaveTextContent('Devices (1 finding)');
+    expect(drawer).not.toHaveTextContent('1 findings');
+  });
+
+  it('names each finding checkbox after its device for screen readers', async () => {
+    render(<CveDrawer cveId="CVE-2026-0001" onClose={() => {}} onActionComplete={() => {}} />);
+    expect(await screen.findByTestId('vuln-finding-check-dv-1')).toHaveAttribute('aria-label', 'Select finding on WS-01');
   });
 });
