@@ -56,6 +56,10 @@ vi.mock('../db/schema', () => ({
 vi.mock('../services/vulnerabilityRemediation', () => ({
   remediateVulnerabilities: vi.fn(async () => ({ scheduled: 0, skipped: [] })),
 }));
+vi.mock('../services/vulnerabilityFleetQueries', () => ({
+  fetchFleetFindingRows: vi.fn(async () => []),
+  fetchCveCatalogRecord: vi.fn(async () => null),
+}));
 vi.mock('../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 vi.mock('../middleware/platformAdmin', () => ({ platformAdminMiddleware: (_c: any, next: any) => next() }));
 vi.mock('../middleware/userRateLimit', () => ({ userRateLimit: () => (_c: any, next: any) => next() }));
@@ -65,6 +69,8 @@ vi.mock('../jobs/vulnerabilityJobs', () => ({
 }));
 
 import { vulnerabilityRoutes, vulnerabilitySyncRoutes } from './vulnerabilities';
+import { fetchFleetFindingRows, fetchCveCatalogRecord } from '../services/vulnerabilityFleetQueries';
+import type { FleetFindingRow } from '../services/vulnerabilityFleetAggregation';
 
 const ID = '11111111-1111-1111-8111-111111111111';
 
@@ -80,6 +86,34 @@ async function post(path: string, body: unknown) {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
+}
+
+function fleetRow(overrides: Partial<FleetFindingRow> = {}): FleetFindingRow {
+  return {
+    deviceVulnerabilityId: 'dv-1',
+    deviceId: 'dev-1',
+    orgId: 'org-1',
+    status: 'open',
+    riskScore: 75,
+    detectedAt: '2026-06-01T00:00:00.000Z',
+    acceptedUntil: null,
+    ticketId: null,
+    softwareInventoryId: 'sw-1',
+    softwareName: 'Google Chrome',
+    softwareVendor: 'Google LLC',
+    softwareVersion: '126.0.1',
+    deviceName: 'WS-01',
+    deviceOsType: 'windows',
+    orgName: 'Acme',
+    cveId: 'CVE-2026-0001',
+    vulnerabilityId: 'v-1',
+    severity: 'critical',
+    cvssScore: 9.1,
+    epssScore: 0.4,
+    knownExploited: true,
+    patchAvailable: true,
+    ...overrides,
+  };
 }
 
 const future = new Date(Date.now() + 7 * 864e5).toISOString();
@@ -224,5 +258,92 @@ describe('POST /vulnerabilities/sync/correlate (admin manual trigger)', () => {
       expect.anything(),
       expect.objectContaining({ action: 'vulnerability.manual_correlate', resourceType: 'vulnerability_source' }),
     );
+  });
+});
+
+describe('GET /vulnerabilities/software (fleet work queue)', () => {
+  beforeEach(() => {
+    vi.mocked(fetchFleetFindingRows).mockReset().mockResolvedValue([]);
+  });
+
+  it('403s without devices:read', async () => {
+    granted.clear();
+    const res = await app().request('/vulnerabilities/software');
+    expect(res.status).toBe(403);
+  });
+
+  it('groups findings and returns items + hasMore', async () => {
+    vi.mocked(fetchFleetFindingRows).mockResolvedValue([
+      fleetRow(),
+      fleetRow({ deviceVulnerabilityId: 'dv-2', deviceId: 'dev-2', softwareName: 'google chrome ' }),
+    ]);
+    const res = await app().request('/vulnerabilities/software');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.hasMore).toBe(false);
+    expect(body.items).toHaveLength(1);
+    expect(body.items[0]).toMatchObject({
+      groupKey: 'sw:google chrome|google llc',
+      kind: 'software',
+      deviceCount: 2,
+    });
+  });
+
+  it('passes status through and forwards allowedSiteIds from the permissions context', async () => {
+    permissionsState.allowedSiteIds = ['site-1'];
+    const res = await app().request('/vulnerabilities/software?status=accepted');
+    expect(res.status).toBe(200);
+    expect(vi.mocked(fetchFleetFindingRows)).toHaveBeenCalledWith({
+      status: 'accepted',
+      allowedSiteIds: ['site-1'],
+    });
+  });
+
+  it('applies severity/kevOnly/patchAvailable/search filters', async () => {
+    vi.mocked(fetchFleetFindingRows).mockResolvedValue([
+      fleetRow(),
+      fleetRow({ deviceVulnerabilityId: 'dv-2', softwareName: 'Zoom', softwareVendor: 'Zoom', severity: 'low', knownExploited: false, patchAvailable: false, cveId: 'CVE-2026-2' }),
+    ]);
+    const res = await app().request('/vulnerabilities/software?severity=critical&kevOnly=true&patchAvailable=true&search=chrome');
+    const body = await res.json();
+    expect(body.items).toHaveLength(1);
+    expect(body.items[0].name).toBe('Google Chrome');
+  });
+
+  it('400s on an invalid boolean param', async () => {
+    const res = await app().request('/vulnerabilities/software?kevOnly=yes');
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('GET /vulnerabilities/stats', () => {
+  beforeEach(() => {
+    vi.mocked(fetchFleetFindingRows).mockReset().mockResolvedValue([]);
+  });
+
+  it('403s without devices:read', async () => {
+    granted.clear();
+    const res = await app().request('/vulnerabilities/stats');
+    expect(res.status).toBe(403);
+  });
+
+  it('fetches ALL statuses and returns the four stat numbers', async () => {
+    vi.mocked(fetchFleetFindingRows).mockResolvedValue([
+      fleetRow(), // open critical KEV patch-ready
+      fleetRow({ deviceVulnerabilityId: 'dv-2', status: 'accepted', acceptedUntil: new Date(Date.now() + 5 * 864e5).toISOString() }),
+    ]);
+    const res = await app().request('/vulnerabilities/stats');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(vi.mocked(fetchFleetFindingRows)).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'all' }),
+    );
+    expect(body).toEqual({
+      criticalOpen: 1,
+      kevCveCount: 1,
+      kevDeviceCount: 1,
+      patchReadyFindingCount: 1,
+      acceptedExpiringSoon: 1,
+    });
   });
 });

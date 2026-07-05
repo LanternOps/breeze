@@ -8,6 +8,8 @@ import { deviceVulnerabilities, devices, vulnerabilities } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { remediateVulnerabilities } from '../services/vulnerabilityRemediation';
+import { computeStats, filterFindings, groupFindings } from '../services/vulnerabilityFleetAggregation';
+import { fetchFleetFindingRows } from '../services/vulnerabilityFleetQueries';
 import { writeRouteAudit } from '../services/auditEvents';
 import { platformAdminMiddleware } from '../middleware/platformAdmin';
 import { userRateLimit } from '../middleware/userRateLimit';
@@ -58,6 +60,24 @@ const acceptRiskSchema = z.object({
 const mitigateSchema = z.object({
   note: z.string().trim().min(1).max(2000),
 });
+
+// Query-string boolean: accepts "true"/"false" (any case), rejects everything else.
+const boolQuerySchema = z
+  .string()
+  .trim()
+  .transform((value) => value.toLowerCase())
+  .pipe(z.enum(['true', 'false']))
+  .transform((value) => value === 'true');
+
+const softwareQuerySchema = z.object({
+  status: statusSchema.default('open'),
+  severity: severitySchema.optional(),
+  search: z.string().trim().min(1).max(200).optional(),
+  kevOnly: boolQuerySchema.optional(),
+  patchAvailable: boolQuerySchema.optional(),
+});
+
+const SOFTWARE_GROUP_CAP = 500;
 
 const requireVulnerabilityWrite = requirePermission(
   PERMISSIONS.DEVICES_WRITE.resource,
@@ -350,6 +370,40 @@ vulnerabilityRoutes.get('/', zValidator('query', listQuerySchema), async (c) => 
     allowedSiteIds: perms?.allowedSiteIds,
   });
   return c.json({ items: aggregateFleet(items) });
+});
+
+// Fleet work queue: one row per remediation unit (software product or OS
+// pseudo-group). Group cardinality is fleet-bounded; hard cap + hasMore
+// instead of pagination.
+vulnerabilityRoutes.get('/software', zValidator('query', softwareQuerySchema), async (c) => {
+  const query = c.req.valid('query');
+  const perms = c.get('permissions') as UserPermissions | undefined;
+  const rows = await fetchFleetFindingRows({
+    status: query.status,
+    allowedSiteIds: perms?.allowedSiteIds,
+  });
+  const filtered = filterFindings(rows, {
+    status: query.status,
+    severity: query.severity,
+    kevOnly: query.kevOnly,
+    patchAvailable: query.patchAvailable,
+  });
+  const groups = groupFindings(filtered, { search: query.search });
+  return c.json({
+    items: groups.slice(0, SOFTWARE_GROUP_CAP),
+    hasMore: groups.length > SOFTWARE_GROUP_CAP,
+  });
+});
+
+// The four stat-card numbers in one call. Needs every status: open findings
+// feed three cards, accepted findings feed the expiring-soon card.
+vulnerabilityRoutes.get('/stats', async (c) => {
+  const perms = c.get('permissions') as UserPermissions | undefined;
+  const rows = await fetchFleetFindingRows({
+    status: 'all',
+    allowedSiteIds: perms?.allowedSiteIds,
+  });
+  return c.json(computeStats(rows, new Date()));
 });
 
 vulnerabilityRoutes.get(
