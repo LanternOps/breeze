@@ -11,7 +11,16 @@ import "github.com/breeze-rmm/agent/internal/patching"
 func (h *Heartbeat) registerSystemWinget() {
 	res := patching.EnsureWinget(patching.NewEnsureDeps(h.config))
 	if patching.RegisterSystemWinget(h.patchMgr, res, patching.DefaultRunner) {
-		log.Info("winget provider registered (SYSTEM, machine scope)", "version", res.Version)
+		if res.Reason != "" {
+			// Registered, but on a degraded fallback: an older winget is in use
+			// because provisioning a newer one failed. Log at Warn so a fleet
+			// silently stuck on stale winget after repeated failed upgrades
+			// stays visible rather than reading as a clean registration.
+			log.Warn("winget provider registered on stale install; provisioning failed",
+				"version", res.Version, "reason", res.Reason)
+		} else {
+			log.Info("winget provider registered (SYSTEM, machine scope)", "version", res.Version)
+		}
 	} else {
 		log.Info("winget provider not registered", "reason", res.Reason)
 	}

@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -114,6 +115,8 @@ func resolveWingetCommand() string {
 	}
 	if path, _, err := patching.LocateSystemWinget(); err == nil {
 		return path
+	} else {
+		slog.Warn("resolveWingetCommand: winget not found via PATH or WindowsApps locate", "error", err.Error())
 	}
 	return "winget"
 }

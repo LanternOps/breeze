@@ -128,7 +128,11 @@ func appxStackAvailable(run cmdRunner) bool {
 
 // EnsureResult reports the outcome of EnsureWinget: either a usable winget
 // binary (Available with WingetPath/Version populated) or an unavailability
-// Reason suitable for surfacing to the patching job / UI.
+// Reason suitable for surfacing to the patching job / UI. Reason may also be
+// set on a degraded-but-available result (Available true) when provisioning a
+// newer winget failed and an older install is being used as a fallback — the
+// caller should log that at Warn so a fleet stuck on stale winget stays
+// visible.
 type EnsureResult struct {
 	WingetPath string
 	Version    string
@@ -169,8 +173,16 @@ func EnsureWinget(deps EnsureDeps) EnsureResult {
 			if err == nil && path != "" {
 				// Provisioning a newer winget failed, but an older install was
 				// located — old winget beats nothing, mirroring decideBootstrap's
-				// no-Appx-stack fallback.
-				return EnsureResult{WingetPath: path, Version: ver, Available: true}
+				// no-Appx-stack fallback. Record the provisioning failure on
+				// Reason (even though Available stays true) so the caller can
+				// surface a fleet silently stuck on stale winget instead of
+				// logging "provider registered" as if all is well.
+				return EnsureResult{
+					WingetPath: path,
+					Version:    ver,
+					Available:  true,
+					Reason:     "using existing winget " + ver + " after provisioning failed: " + perr.Error(),
+				}
 			}
 			return EnsureResult{Available: false, Reason: "winget provisioning failed: " + perr.Error()}
 		}

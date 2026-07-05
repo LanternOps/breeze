@@ -2,6 +2,7 @@ package patching
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -67,5 +68,14 @@ func TestEnsureWinget_ProvisionFailsFallsBackToExisting(t *testing.T) {
 	})
 	if !res.Available || res.WingetPath != `C:\wg\winget.exe` || res.Version != "1.2.0.0" {
 		t.Fatalf("want fallback to existing install, got %+v", res)
+	}
+	// The provisioning failure must be recorded on Reason (even though the
+	// result stays Available) so the caller can log it at Warn — a fleet stuck
+	// on stale winget after repeated failed upgrades must not be invisible.
+	if res.Reason == "" {
+		t.Fatalf("want provisioning failure recorded on Reason, got empty; %+v", res)
+	}
+	if !strings.Contains(res.Reason, "dism boom") {
+		t.Fatalf("want Reason to contain provisioning error %q, got %q", "dism boom", res.Reason)
 	}
 }
