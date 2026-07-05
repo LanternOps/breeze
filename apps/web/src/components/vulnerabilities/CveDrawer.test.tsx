@@ -137,7 +137,7 @@ describe('CveDrawer', () => {
     render(<CveDrawer cveId="CVE-2026-0001" onClose={() => {}} onActionComplete={() => {}} />);
     fireEvent.click(await screen.findByTestId('vuln-action-remediate'));
     expect(api.remediateVuln).not.toHaveBeenCalled();
-    expect(screen.getByTestId('vuln-bulk-remediate-summary')).toHaveTextContent('1 finding on 1 device');
+    expect(screen.getByTestId('vuln-bulk-consequence')).toHaveTextContent('on 1 device (1 finding)');
     fireEvent.click(screen.getByTestId('vuln-bulk-submit'));
     await waitFor(() => expect(api.remediateVuln).toHaveBeenCalledWith(['dv-1']));
   });
@@ -162,5 +162,34 @@ describe('CveDrawer', () => {
   it('names each finding checkbox after its device for screen readers', async () => {
     render(<CveDrawer cveId="CVE-2026-0001" onClose={() => {}} onActionComplete={() => {}} />);
     expect(await screen.findByTestId('vuln-finding-check-dv-1')).toHaveAttribute('aria-label', 'Select finding on WS-01');
+  });
+
+  it('select-all toggles between every finding and none, with indeterminate for partial selection', async () => {
+    render(<CveDrawer cveId="CVE-2026-0001" onClose={() => {}} onActionComplete={() => {}} />);
+    const selectAll = (await screen.findByTestId('vuln-select-all')) as HTMLInputElement;
+    // Pre-selection is open-only (dv-1 of 2) — partial, so indeterminate.
+    expect(selectAll.checked).toBe(false);
+    expect(selectAll.indeterminate).toBe(true);
+    expect(selectAll).toHaveAccessibleName('Select all findings');
+
+    fireEvent.click(selectAll); // partial → all
+    expect(screen.getByTestId('vuln-finding-check-dv-2')).toBeChecked();
+    expect(selectAll.checked).toBe(true);
+    expect(selectAll.indeterminate).toBe(false);
+    expect(selectAll).toHaveAccessibleName('Deselect all findings');
+
+    fireEvent.click(selectAll); // all → none
+    expect(screen.getByTestId('vuln-finding-check-dv-1')).not.toBeChecked();
+    expect(screen.getByTestId('vuln-finding-check-dv-2')).not.toBeChecked();
+    expect(selectAll.indeterminate).toBe(false);
+    expect(screen.getByTestId('vuln-action-remediate')).toBeDisabled();
+  });
+
+  it('passes the selected device names (no CVE id — the drawer IS the CVE) to the bulk modal summary', async () => {
+    render(<CveDrawer cveId="CVE-2026-0001" onClose={() => {}} onActionComplete={() => {}} />);
+    fireEvent.click(await screen.findByTestId('vuln-action-accept'));
+    const summary = screen.getByTestId('vuln-bulk-selection');
+    expect(summary).toHaveTextContent('WS-01');
+    expect(summary).not.toHaveTextContent('CVE-2026-0001');
   });
 });

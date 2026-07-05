@@ -16,6 +16,7 @@ import {
   createVulnTicket,
   fetchSoftwareGroupDetail,
   remediateVuln,
+  reopenVuln,
   type SoftwareGroupDetail,
 } from '../../lib/api/vulnerabilities';
 
@@ -40,7 +41,7 @@ export function SoftwareGroupDrawer({
   const [detail, setDetail] = useState<SoftwareGroupDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [busy, setBusy] = useState<'remediate' | 'accept' | 'mitigate' | 'ticket' | null>(null);
+  const [busy, setBusy] = useState<'remediate' | 'accept' | 'mitigate' | 'ticket' | 'reopen' | null>(null);
   const [modal, setModal] = useState<'remediate' | 'accept' | 'mitigate' | null>(null);
   // Inline failure message for the bulk-action modal (in addition to the
   // toast, which is easy to miss while the modal stays open).
@@ -83,9 +84,16 @@ export function SoftwareGroupDrawer({
   };
 
   const selectedIds = [...selected];
-  const selectedDeviceCount = detail
-    ? new Set(detail.findings.filter((f) => selected.has(f.deviceVulnerabilityId)).map((f) => f.deviceId)).size
-    : 0;
+  const selectedFindings = detail ? detail.findings.filter((f) => selected.has(f.deviceVulnerabilityId)) : [];
+  const selectedDeviceCount = new Set(selectedFindings.map((f) => f.deviceId)).size;
+
+  // All/none toggle for the pre-checked findings list — deselecting a large
+  // pre-selection one checkbox at a time is unreasonable.
+  const allSelected = detail !== null && detail.findings.length > 0 && detail.findings.every((f) => selected.has(f.deviceVulnerabilityId));
+  const toggleAll = () => {
+    if (!detail) return;
+    setSelected(allSelected ? new Set() : new Set(detail.findings.map((f) => f.deviceVulnerabilityId)));
+  };
 
   const runBulk = useCallback(
     async (kind: 'remediate' | 'accept' | 'mitigate' | 'ticket', action: () => Promise<unknown>, fallback: string) => {
@@ -107,6 +115,28 @@ export function SoftwareGroupDrawer({
     },
     // selectedIds is derived from `selected`; depend on the source set.
     [busy, selected, load, onActionComplete],
+  );
+
+  // Per-finding Reopen for accepted/mitigated rows — same behavior as the CVE
+  // drawer, so a tech reviewing a waiver in the software view doesn't have to
+  // re-find the finding under By CVE.
+  const onReopen = useCallback(
+    async (id: string) => {
+      if (busy || busyRef.current) return;
+      busyRef.current = true;
+      setBusy('reopen');
+      try {
+        await reopenVuln(id);
+        await load();
+        onActionComplete();
+      } catch (err) {
+        handleActionError(err, 'Failed to reopen finding');
+      } finally {
+        busyRef.current = false;
+        setBusy(null);
+      }
+    },
+    [busy, load, onActionComplete],
   );
 
   const title = detail ? (
@@ -169,7 +199,16 @@ export function SoftwareGroupDrawer({
                       type="button"
                       data-testid={`vuln-drawer-cve-${cve.cveId}`}
                       className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-muted/40"
-                      onClick={() => onSelectCve(cve.cveId)}
+                      onClick={() => {
+                        // Cross-nav to the CVE drawer unmounts this drawer AND the
+                        // By-software tab content, so the new drawer would capture a
+                        // soon-to-be-detached element as its focus-restore target and
+                        // Escape would strand focus. Hand focus to the persistent
+                        // "By CVE" tab first so Escape restores somewhere real. No-op
+                        // when this drawer is rendered outside the fleet page.
+                        document.querySelector<HTMLElement>('[data-testid="vuln-tab-cves"]')?.focus();
+                        onSelectCve(cve.cveId);
+                      }}
                     >
                       <span className="font-medium">{cve.cveId}</span>
                       <span className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -185,9 +224,28 @@ export function SoftwareGroupDrawer({
             </section>
 
             <section>
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                Devices ({plural(detail.findings.length, 'finding')})
-              </h3>
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Devices ({plural(detail.findings.length, 'finding')})
+                </h3>
+                {detail.findings.length > 0 && (
+                  <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground">
+                    <input
+                      type="checkbox"
+                      data-testid="vuln-select-all"
+                      aria-label={allSelected ? 'Deselect all findings' : 'Select all findings'}
+                      checked={allSelected}
+                      // Native indeterminate has no attribute form — set it via ref.
+                      ref={(el) => {
+                        if (el) el.indeterminate = !allSelected && selected.size > 0;
+                      }}
+                      onChange={toggleAll}
+                      className="h-4 w-4 rounded border"
+                    />
+                    Select all
+                  </label>
+                )}
+              </div>
               {detail.findings.length === 0 ? (
                 // Reachable when every finding was resolved (or moved out of the
                 // caller's scope) between the list loading and the drawer opening.
@@ -225,6 +283,17 @@ export function SoftwareGroupDrawer({
                       >
                         {f.ticketNumber ?? 'Ticket'}
                       </a>
+                    )}
+                    {canAcceptRisk && (f.status === 'accepted' || f.status === 'mitigated') && (
+                      <button
+                        type="button"
+                        data-testid={`vuln-reopen-${f.deviceVulnerabilityId}`}
+                        className="text-xs font-medium text-primary hover:underline disabled:opacity-50"
+                        disabled={busy !== null}
+                        onClick={() => void onReopen(f.deviceVulnerabilityId)}
+                      >
+                        Reopen
+                      </button>
                     )}
                   </li>
                 ))}
@@ -299,6 +368,9 @@ export function SoftwareGroupDrawer({
           kind={modal}
           count={selectedIds.length}
           deviceCount={selectedDeviceCount}
+          // Software groups span CVEs — include the CVE id per device so the
+          // summary says which finding, not just which machine.
+          selection={selectedFindings.map((f) => ({ deviceName: f.deviceName, cveId: f.cveId }))}
           busy={busy !== null}
           errorMessage={modalError}
           onCancel={() => {

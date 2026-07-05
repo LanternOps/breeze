@@ -97,9 +97,16 @@ export function CveDrawer({
   };
 
   const selectedIds = [...selected];
-  const selectedDeviceCount = payload
-    ? new Set(payload.findings.filter((f) => selected.has(f.deviceVulnerabilityId)).map((f) => f.deviceId)).size
-    : 0;
+  const selectedFindings = payload ? payload.findings.filter((f) => selected.has(f.deviceVulnerabilityId)) : [];
+  const selectedDeviceCount = new Set(selectedFindings.map((f) => f.deviceId)).size;
+
+  // All/none toggle for the pre-checked findings list — deselecting a large
+  // pre-selection one checkbox at a time is unreasonable.
+  const allSelected = payload !== null && payload.findings.length > 0 && payload.findings.every((f) => selected.has(f.deviceVulnerabilityId));
+  const toggleAll = () => {
+    if (!payload) return;
+    setSelected(allSelected ? new Set() : new Set(payload.findings.map((f) => f.deviceVulnerabilityId)));
+  };
 
   const runBulk = useCallback(
     async (kind: 'remediate' | 'accept' | 'mitigate' | 'ticket', action: () => Promise<unknown>, fallback: string) => {
@@ -204,9 +211,28 @@ export function CveDrawer({
             </section>
 
             <section>
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                Devices ({plural(payload.findings.length, 'finding')})
-              </h3>
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Devices ({plural(payload.findings.length, 'finding')})
+                </h3>
+                {payload.findings.length > 0 && (
+                  <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground">
+                    <input
+                      type="checkbox"
+                      data-testid="vuln-select-all"
+                      aria-label={allSelected ? 'Deselect all findings' : 'Select all findings'}
+                      checked={allSelected}
+                      // Native indeterminate has no attribute form — set it via ref.
+                      ref={(el) => {
+                        if (el) el.indeterminate = !allSelected && selected.size > 0;
+                      }}
+                      onChange={toggleAll}
+                      className="h-4 w-4 rounded border"
+                    />
+                    Select all
+                  </label>
+                )}
+              </div>
               {payload.findings.length === 0 ? (
                 // Reachable when every finding was resolved (or moved out of the
                 // caller's scope) between the list loading and the drawer opening.
@@ -327,6 +353,9 @@ export function CveDrawer({
           kind={modal}
           count={selectedIds.length}
           deviceCount={selectedDeviceCount}
+          // Every finding here is the same CVE (it's in the drawer title), so
+          // the summary lists device names only.
+          selection={selectedFindings.map((f) => ({ deviceName: f.deviceName }))}
           busy={busy !== null}
           errorMessage={modalError}
           onCancel={() => {

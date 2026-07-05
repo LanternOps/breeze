@@ -17,6 +17,7 @@ vi.mock('../../lib/api/vulnerabilities', () => ({
   remediateVuln: vi.fn(),
   bulkAcceptVulnRisk: vi.fn(),
   bulkMitigateVulns: vi.fn(),
+  reopenVuln: vi.fn(),
   createVulnTicket: vi.fn(),
 }));
 
@@ -178,7 +179,7 @@ describe('SoftwareGroupDrawer', () => {
     // Nothing fired yet — the confirmation stands between the button and the mutation.
     expect(api.remediateVuln).not.toHaveBeenCalled();
     expect(screen.getByTestId('vuln-bulk-modal')).toHaveTextContent('Remediate findings — 1 finding');
-    expect(screen.getByTestId('vuln-bulk-remediate-summary')).toHaveTextContent('1 finding on 1 device');
+    expect(screen.getByTestId('vuln-bulk-consequence')).toHaveTextContent('on 1 device (1 finding)');
     fireEvent.click(screen.getByTestId('vuln-bulk-submit'));
     await waitFor(() => expect(api.remediateVuln).toHaveBeenCalledWith(['dv-1']));
   });
@@ -272,6 +273,84 @@ describe('SoftwareGroupDrawer', () => {
     );
     await screen.findByTestId('vuln-software-drawer');
     expect(screen.queryByTestId('vuln-action-ticket')).toBeNull();
+  });
+
+  it('shows Reopen only on accepted/mitigated findings and calls the API', async () => {
+    vi.mocked(api.reopenVuln).mockResolvedValue(undefined as never);
+    const onActionComplete = vi.fn();
+    render(
+      <SoftwareGroupDrawer groupKey="sw:google chrome|google llc" onClose={() => {}} onActionComplete={onActionComplete} onSelectCve={() => {}} />,
+    );
+    await screen.findByTestId('vuln-software-drawer');
+    expect(screen.queryByTestId('vuln-reopen-dv-1')).toBeNull();      // open finding
+    fireEvent.click(screen.getByTestId('vuln-reopen-dv-2'));          // accepted finding
+    await waitFor(() => expect(api.reopenVuln).toHaveBeenCalledWith('dv-2'));
+    await waitFor(() => expect(onActionComplete).toHaveBeenCalled());
+    expect(api.fetchSoftwareGroupDetail).toHaveBeenCalledTimes(2); // initial + reload
+  });
+
+  it('hides Reopen without vulnerabilities:accept_risk', async () => {
+    authState.permissions = [{ resource: 'devices', action: 'read' }];
+    render(
+      <SoftwareGroupDrawer groupKey="sw:google chrome|google llc" onClose={() => {}} onActionComplete={() => {}} onSelectCve={() => {}} />,
+    );
+    await screen.findByTestId('vuln-software-drawer');
+    expect(screen.queryByTestId('vuln-reopen-dv-2')).toBeNull();
+  });
+
+  it('select-all toggles between every finding and none, with indeterminate for partial selection', async () => {
+    render(
+      <SoftwareGroupDrawer groupKey="sw:google chrome|google llc" onClose={() => {}} onActionComplete={() => {}} onSelectCve={() => {}} />,
+    );
+    const selectAll = (await screen.findByTestId('vuln-select-all')) as HTMLInputElement;
+    // Pre-selection is open-only (dv-1 of 2) — partial, so indeterminate.
+    expect(selectAll.checked).toBe(false);
+    expect(selectAll.indeterminate).toBe(true);
+    expect(selectAll).toHaveAccessibleName('Select all findings');
+
+    fireEvent.click(selectAll); // partial → all
+    expect(screen.getByTestId('vuln-finding-check-dv-1')).toBeChecked();
+    expect(screen.getByTestId('vuln-finding-check-dv-2')).toBeChecked();
+    expect(selectAll.checked).toBe(true);
+    expect(selectAll.indeterminate).toBe(false);
+    expect(selectAll).toHaveAccessibleName('Deselect all findings');
+
+    fireEvent.click(selectAll); // all → none
+    expect(screen.getByTestId('vuln-finding-check-dv-1')).not.toBeChecked();
+    expect(screen.getByTestId('vuln-finding-check-dv-2')).not.toBeChecked();
+    expect(selectAll.checked).toBe(false);
+    expect(selectAll.indeterminate).toBe(false);
+    // Nothing selected — the bulk actions disable.
+    expect(screen.getByTestId('vuln-action-remediate')).toBeDisabled();
+  });
+
+  it('passes the selected devices (with CVE ids) to the bulk modal summary', async () => {
+    render(
+      <SoftwareGroupDrawer groupKey="sw:google chrome|google llc" onClose={() => {}} onActionComplete={() => {}} onSelectCve={() => {}} />,
+    );
+    fireEvent.click(await screen.findByTestId('vuln-action-accept'));
+    // dv-1 (open) is pre-selected; the group context mixes CVEs so the CVE id is shown.
+    expect(screen.getByTestId('vuln-bulk-selection')).toHaveTextContent('WS-01 (CVE-2026-0001)');
+  });
+
+  it('hands focus to the By CVE tab before cross-navigating to the CVE drawer', async () => {
+    const onSelectCve = vi.fn();
+    render(
+      <div>
+        {/* Stand-in for the fleet page's persistent tab, which survives the drawer swap. */}
+        <button type="button" data-testid="vuln-tab-cves">
+          By CVE
+        </button>
+        <SoftwareGroupDrawer groupKey="sw:google chrome|google llc" onClose={() => {}} onActionComplete={() => {}} onSelectCve={onSelectCve} />
+      </div>,
+    );
+    const cveLink = await screen.findByTestId('vuln-drawer-cve-CVE-2026-0001');
+    cveLink.focus();
+    fireEvent.click(cveLink);
+    expect(onSelectCve).toHaveBeenCalledWith('CVE-2026-0001');
+    // Focus moved off the soon-to-unmount link so the incoming CVE drawer
+    // captures a live focus-restore target.
+    expect(document.activeElement).toBe(screen.getByTestId('vuln-tab-cves'));
   });
 
   it('shows an inline retry on fetch failure', async () => {

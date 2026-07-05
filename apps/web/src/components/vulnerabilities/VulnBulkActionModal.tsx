@@ -23,6 +23,24 @@ const HEADINGS: Record<'remediate' | 'accept' | 'mitigate', string> = {
   mitigate: 'Mark mitigated',
 };
 
+/** One entry per selected finding, for the "which devices" summary line. */
+export interface SelectionPreviewItem {
+  deviceName: string;
+  /** Shown after the device name when set — the software drawer's selection
+   *  mixes CVEs, so "WS-01 (CVE-2026-0001)" disambiguates. The CVE drawer
+   *  omits it (every finding there is the same CVE). */
+  cveId?: string | null;
+}
+
+// "WS-01 (CVE-2026-0001), WS-02, WS-03 and 4 more" — the first three findings
+// by device name, so the user can see WHAT they selected behind the overlay
+// without the modal becoming a wall.
+export function formatSelectionPreview(items: SelectionPreviewItem[]): string {
+  const shown = items.slice(0, 3).map((i) => (i.cveId ? `${i.deviceName} (${i.cveId})` : i.deviceName));
+  const rest = items.length - shown.length;
+  return rest > 0 ? `${shown.join(', ')} and ${rest} more` : shown.join(', ');
+}
+
 const CONFIRM_LABELS: Record<'remediate' | 'accept' | 'mitigate', string> = {
   remediate: 'Remediate',
   accept: 'Accept risk',
@@ -33,6 +51,7 @@ export function VulnBulkActionModal({
   kind,
   count,
   deviceCount,
+  selection,
   busy,
   errorMessage,
   onCancel,
@@ -42,6 +61,10 @@ export function VulnBulkActionModal({
   count: number;
   /** Distinct devices in the selection (shown in the confirmation copy). */
   deviceCount: number;
+  /** The selected findings (device name + optional CVE id), shown as a compact
+   *  summary so the user doesn't have to remember what's checked behind the
+   *  overlay. Optional to stay additive for existing callers/tests. */
+  selection?: SelectionPreviewItem[];
   busy: boolean;
   /** Failure from the last submit, surfaced inline (the toast alone is easy to
    *  miss while the modal stays open). */
@@ -55,6 +78,18 @@ export function VulnBulkActionModal({
   const isAccept = kind === 'accept';
   const isRemediate = kind === 'remediate';
   const canSubmit = isRemediate ? true : isAccept ? text.trim().length > 0 && until.length > 0 : text.trim().length > 0;
+
+  // One factually-accurate consequence sentence per action, matching what the
+  // API really does (see routes/vulnerabilities.ts + vulnerabilityRemediation.ts):
+  // remediate queues targeted install commands for approved patches; accept
+  // hides findings until the expiry date but NOTHING auto-reopens them (they
+  // surface via the "Accepted, expiring soon" card); mitigate only records the
+  // note as a compensating control.
+  const consequence = isRemediate
+    ? `Installs the approved patch for each CVE on ${plural(deviceCount, 'device')} (${plural(count, 'finding')}). Findings without an approved, applicable patch are skipped.`
+    : isAccept
+      ? `Hides ${plural(count, 'finding')} on ${plural(deviceCount, 'device')} from the open queue until the date you set. They do not reopen automatically — expiring acceptances surface in the “Accepted, expiring soon” card.`
+      : `Marks ${plural(count, 'finding')} on ${plural(deviceCount, 'device')} mitigated, with your note recorded as the compensating control. Breeze does not change the devices.`;
 
   return (
     <Dialog
@@ -71,11 +106,15 @@ export function VulnBulkActionModal({
         <h3 id={titleId} className="text-base font-semibold">
           {HEADINGS[kind]} — {plural(count, 'finding')}
         </h3>
-        {isRemediate ? (
-          <p data-testid="vuln-bulk-remediate-summary" className="mt-3 text-sm text-muted-foreground">
-            This schedules remediation for {plural(count, 'finding')} on {plural(deviceCount, 'device')}.
+        {selection && selection.length > 0 && (
+          <p data-testid="vuln-bulk-selection" className="mt-2 text-sm">
+            {formatSelectionPreview(selection)}
           </p>
-        ) : (
+        )}
+        <p data-testid="vuln-bulk-consequence" className="mt-2 text-sm text-muted-foreground">
+          {consequence}
+        </p>
+        {!isRemediate && (
           <div className="mt-4 space-y-3">
             <label className="block text-sm">
               <span className="text-muted-foreground">{isAccept ? 'Reason' : 'Mitigation note'}</span>

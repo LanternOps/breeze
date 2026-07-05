@@ -36,11 +36,15 @@ export class VulnerabilitiesPage {
   bulkUntil = () => this.page.getByTestId('vuln-bulk-until');
   bulkSubmit = () => this.page.getByTestId('vuln-bulk-submit');
   bulkCancel = () => this.page.getByTestId('vuln-bulk-cancel');
-  remediateSummary = () => this.page.getByTestId('vuln-bulk-remediate-summary');
+  // Per-action consequence line (all kinds; formerly vuln-bulk-remediate-summary).
+  remediateSummary = () => this.page.getByTestId('vuln-bulk-consequence');
+  bulkSelection = () => this.page.getByTestId('vuln-bulk-selection');
 
   // CVE drawer
   cveDrawer = () => this.page.getByTestId('vuln-cve-drawer');
+  // Present in BOTH drawers (only one renders at a time).
   reopenButtons = (): Locator => this.page.locator('[data-testid^="vuln-reopen-"]');
+  selectAllFindings = () => this.page.getByTestId('vuln-select-all');
 
   drawerClose = (drawer: 'vuln-software-drawer' | 'vuln-cve-drawer') => this.page.getByTestId(`${drawer}-close`);
 }

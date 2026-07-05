@@ -19,6 +19,11 @@ interface SecurityStatCardProps {
   /** Calm skeleton while the stat is being fetched — distinct from the
    *  "—" placeholder, which callers reserve for missing/failed data. */
   loading?: boolean;
+  /** Hover affordance for cards wrapped in a button (filter shortcuts).
+   *  Purely visual — the wrapping button owns focus/aria semantics. */
+  interactive?: boolean;
+  /** Selected treatment when the card's filter preset is currently applied. */
+  active?: boolean;
 }
 
 export default function SecurityStatCard({
@@ -27,10 +32,20 @@ export default function SecurityStatCard({
   value,
   variant = 'default',
   detail,
-  loading = false
+  loading = false,
+  interactive = false,
+  active = false
 }: SecurityStatCardProps) {
   return (
-    <div className="h-full rounded-lg border bg-card p-4 shadow-xs">
+    <div
+      className={cn(
+        'h-full rounded-lg border bg-card p-4 shadow-xs',
+        interactive && 'transition hover:shadow-sm',
+        interactive && !active && 'hover:border-primary/40',
+        active && 'border-primary bg-primary/5'
+      )}
+      data-active={active || undefined}
+    >
       <div className="flex items-center gap-3">
         <div className="rounded-full border bg-muted/30 p-2">
           <Icon className="h-4 w-4 text-muted-foreground" />
