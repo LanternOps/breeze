@@ -20,6 +20,7 @@ import {
   listAssignments,
   validateAssignmentTarget,
   canManagePartnerWidePolicies,
+  policyAccessCondition,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
 } from './configurationPolicy';
 import {
@@ -30,10 +31,6 @@ import {
 
 function getOrgId(auth: AuthContext): string | null {
   return auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
-}
-
-function orgWhere(auth: AuthContext, orgIdCol: any): SQL | undefined {
-  return auth.orgCondition(orgIdCol) ?? undefined;
 }
 
 function safeHandler(
@@ -72,7 +69,10 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
     },
     handler: safeHandler('list_configuration_policies', async (input, auth) => {
       const conditions: SQL[] = [];
-      const oc = orgWhere(auth, configurationPolicies.orgId);
+      // Dual-axis visibility (#1724): a partner-scoped caller must also see
+      // partner-OWNED policies (org_id NULL), which auth.orgCondition alone
+      // excludes. policyAccessCondition is the same reader the HTTP routes use.
+      const oc = policyAccessCondition(auth);
       if (oc) conditions.push(oc);
       if (typeof input.status === 'string') {
         conditions.push(eq(configurationPolicies.status, input.status as 'active' | 'inactive' | 'archived'));
@@ -204,17 +204,38 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: safeHandler('apply_configuration_policy', async (input, auth) => {
+      // Dual-axis reader so a partner-scoped caller can reach a partner-OWNED
+      // policy (org_id NULL) to assign it — auth.orgCondition alone hid these.
       const conditions: SQL[] = [eq(configurationPolicies.id, input.configPolicyId as string)];
-      const oc = orgWhere(auth, configurationPolicies.orgId);
+      const oc = policyAccessCondition(auth);
       if (oc) conditions.push(oc);
 
       const [policy] = await db.select().from(configurationPolicies).where(and(...conditions)).limit(1);
       if (!policy) return JSON.stringify({ error: 'Configuration policy not found or access denied' });
 
+      // Partner-level assignments are only valid for partner-OWNED policies and
+      // the target is the partner itself, derived server-side — never from a
+      // client-supplied value (#1724). They push config to ALL orgs under the
+      // partner, so they carry the same capability gate as the HTTP route.
+      let targetId = input.targetId as string;
+      if (input.level === 'partner') {
+        const derived = policy.partnerId ?? auth.partnerId;
+        if (!derived) {
+          return JSON.stringify({ error: 'Partner-wide assignments require partner scope' });
+        }
+        if (!canManagePartnerWidePolicies(auth)) {
+          return JSON.stringify({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+        }
+        targetId = derived;
+      }
+      if (!targetId) {
+        return JSON.stringify({ error: 'targetId is required for this assignment level' });
+      }
+
       const targetValidation = await validateAssignmentTarget(
         { orgId: policy.orgId, partnerId: policy.partnerId },
         input.level as any,
-        input.targetId as string
+        targetId
       );
       if (!targetValidation.valid) {
         return JSON.stringify({ error: targetValidation.error ?? 'Assignment target is not valid for this policy organization' });
@@ -227,7 +248,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       const assignment = await assignPolicy(
         input.configPolicyId as string,
         input.level as any,
-        input.targetId as string,
+        targetId,
         Number(input.priority) || 0,
         auth.user.id,
         (input.roleFilter as string[] | undefined),
@@ -240,7 +261,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
 
       return JSON.stringify({
         success: true,
-        message: `Policy "${policy.name}" assigned to ${input.level} ${input.targetId}`,
+        message: `Policy "${policy.name}" assigned to ${input.level} ${targetId}`,
         assignmentId: assignment.id,
       });
     }),
@@ -261,9 +282,12 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: safeHandler('remove_configuration_policy_assignment', async (input, auth) => {
-      // First verify the assignment belongs to an accessible policy (with org isolation)
+      // Verify the assignment belongs to a policy the caller can see. The
+      // dual-axis reader keeps partner-OWNED policies (org_id NULL) reachable
+      // for partner-scoped callers; policyOrgId is selected so the partner-wide
+      // write gate below can fire.
       const conditions: SQL[] = [eq(configPolicyAssignments.id, input.assignmentId as string)];
-      const oc = orgWhere(auth, configurationPolicies.orgId);
+      const oc = policyAccessCondition(auth);
       if (oc) conditions.push(oc);
 
       const [assignment] = await db
@@ -271,6 +295,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
           id: configPolicyAssignments.id,
           configPolicyId: configPolicyAssignments.configPolicyId,
           policyName: configurationPolicies.name,
+          policyOrgId: configurationPolicies.orgId,
           level: configPolicyAssignments.level,
           targetId: configPolicyAssignments.targetId,
         })
@@ -280,6 +305,12 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
         .limit(1);
 
       if (!assignment) return JSON.stringify({ error: 'Assignment not found' });
+
+      // Unassigning a partner-wide policy strips config from ALL orgs under the
+      // partner — same blast radius and capability gate as assigning it.
+      if (assignment.policyOrgId === null && !canManagePartnerWidePolicies(auth)) {
+        return JSON.stringify({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+      }
 
       const deleted = await unassignPolicy(input.assignmentId as string, assignment.configPolicyId);
       if (!deleted) return JSON.stringify({ error: 'Assignment not found' });
@@ -327,7 +358,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
     tier: 1,
     definition: {
       name: 'manage_configuration_policy',
-      description: 'Create, update, activate, deactivate, or delete configuration policies. Configuration policies bundle feature settings (patch, alert, compliance, etc.) and are assigned to targets in the hierarchy.',
+      description: 'Create, update, activate, deactivate, or delete configuration policies. Configuration policies bundle feature settings (patch, alert, compliance, etc.) and are assigned to targets in the hierarchy. On create, ownerScope "partner" makes a partner-wide ("all organizations") policy that applies to every org under the partner (requires full partner org access); "organization" (default) owns it in a single org.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -336,7 +367,8 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
           name: { type: 'string', description: 'Policy name (required for create)' },
           description: { type: 'string', description: 'Policy description' },
           status: { type: 'string', enum: ['active', 'inactive', 'archived'], description: 'Policy status (for create/update)' },
-          orgId: { type: 'string', description: 'Organization UUID (for create; defaults to current org)' },
+          ownerScope: { type: 'string', enum: ['organization', 'partner'], description: 'Ownership for create: "organization" (default, owned by one org) or "partner" (partner-wide "all orgs" template applying to every org under the partner; requires full partner org access)' },
+          orgId: { type: 'string', description: 'Organization UUID (for org-scoped create; defaults to current org). Ignored when ownerScope is "partner".' },
         },
         required: ['action'],
       },
@@ -345,12 +377,56 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       const action = input.action as string;
 
       if (action === 'create') {
+        if (!input.name) return JSON.stringify({ error: 'name is required for create' });
+
+        // Partner-wide ("all orgs") policy (#1724). The partner is ALWAYS derived
+        // from the caller's own token — never a client-supplied value — so a
+        // caller cannot create a policy owned by another partner. A partner-wide
+        // policy pushes config to EVERY org under the partner, so only callers
+        // with full partner org access (orgAccess='all', or system scope) may
+        // create one — the same gate the HTTP route enforces.
+        if (input.ownerScope === 'partner') {
+          if (!auth.partnerId) {
+            return JSON.stringify({ error: 'Partner-wide policies require partner scope' });
+          }
+          if (!canManagePartnerWidePolicies(auth)) {
+            return JSON.stringify({ error: 'Partner-wide policies require full partner org access (orgAccess must be "all")' });
+          }
+
+          // Duplicate-name check within the partner's own partner-wide policies.
+          const [existing] = await db.select({ id: configurationPolicies.id, status: configurationPolicies.status })
+            .from(configurationPolicies)
+            .where(and(
+              eq(configurationPolicies.partnerId, auth.partnerId),
+              eq(configurationPolicies.name, input.name as string),
+            ))
+            .limit(1);
+          if (existing) {
+            return JSON.stringify({
+              error: `A partner-wide configuration policy named "${input.name}" already exists (id: ${existing.id}, status: ${existing.status}). Use get_configuration_policy to view it, or choose a different name.`,
+            });
+          }
+
+          const policy = await createConfigPolicy({ partnerId: auth.partnerId }, {
+            name: input.name as string,
+            description: input.description as string | undefined,
+            status: (input.status as 'active' | 'inactive' | 'archived') ?? 'active',
+          }, auth.user.id);
+
+          // Seed the partner-level assignment so the policy applies immediately —
+          // ownership and the assignment that drives resolution stay in lockstep,
+          // mirroring the HTTP create route (otherwise it resolves to no devices
+          // until the user separately finds the Assignments tab).
+          await assignPolicy(policy.id, 'partner', auth.partnerId, 0, auth.user.id);
+
+          return JSON.stringify({ success: true, policy });
+        }
+
         const orgId = (input.orgId as string) || getOrgId(auth);
         if (!orgId) return JSON.stringify({ error: 'Organization context required' });
         if (input.orgId && !auth.canAccessOrg(input.orgId as string)) {
           return JSON.stringify({ error: 'Access denied to this organization' });
         }
-        if (!input.name) return JSON.stringify({ error: 'name is required for create' });
 
         // Check for duplicate name in same org
         const [existing] = await db.select({ id: configurationPolicies.id, status: configurationPolicies.status })
@@ -426,9 +502,10 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       const action = input.action as string;
 
       if (action === 'summary') {
-        // Get all config policies for this org
+        // Get all config policies the caller can see — org-owned AND partner-wide
+        // (org_id NULL) for partner-scoped callers, via the dual-axis reader.
         const conditions: SQL[] = [];
-        const oc = orgWhere(auth, configurationPolicies.orgId);
+        const oc = policyAccessCondition(auth);
         if (oc) conditions.push(oc);
 
         const policies = await db

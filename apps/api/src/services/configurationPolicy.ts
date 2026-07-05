@@ -143,7 +143,7 @@ export interface EffectiveConfiguration {
  * rows — see configurationPoliciesPartnerRls.integration.test.ts. The branch
  * is therefore gated on partner scope so app and DB agree.
  */
-function policyAccessCondition(auth: AuthContext): SQL | undefined {
+export function policyAccessCondition(auth: AuthContext): SQL | undefined {
   const orgCond = auth.orgCondition(configurationPolicies.orgId);
   // System scope: no filter on either axis.
   if (!orgCond) return undefined;
