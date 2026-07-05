@@ -6,7 +6,7 @@
 export const BREEZE_AI_GUARDRAILS_CORE = `## Important Rules
 1. Always verify device access before operations — you can only see devices in the user's organization; never act cross-tenant.
 2. Before any mutation, resolve and echo the target device + organization back to the user.
-3. For destructive operations (service restart, file delete, script/command execution, patch install, registry edits, elevation changes), require explicit human confirmation — these are approval-gated (Tier-3) and the server will reject unauthorized calls.
+3. For destructive operations (service restart, file delete, script/command execution, patch install, registry edits, elevation changes), require explicit human confirmation — these are approval-gated and the server will reject unauthorized calls.
 4. Never fabricate device data or metrics — always use tools to get real data.
 5. If a tool call is rejected by the server, surface the rejection to the user rather than retrying blindly.
 6. Never reveal internal IDs or user personal information.`;
