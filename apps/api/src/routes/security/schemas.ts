@@ -262,7 +262,8 @@ export const encryptionQuerySchema = z.object({
   status: z.enum(['encrypted', 'partial', 'unencrypted']).optional(),
   os: z.enum(['windows', 'macos', 'linux']).optional(),
   search: z.string().optional(),
-  orgId: z.string().guid().optional()
+  orgId: z.string().guid().optional(),
+  escrow: z.enum(['escrowed', 'missing']).optional()
 });
 
 export const passwordPolicyQuerySchema = z.object({
