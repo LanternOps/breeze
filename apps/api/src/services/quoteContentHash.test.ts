@@ -26,4 +26,23 @@ describe('computeQuoteSha256', () => {
     const evolved = { ...quote, status: 'converted', quoteNumber: 'Q-9999-9999' };
     expect(computeQuoteSha256(evolved, blocks, lines)).toBe(computeQuoteSha256(quote, blocks, lines));
   });
+  it('hash is UNCHANGED for quotes without a deposit (backward compat with stored acceptances)', () => {
+    const quote = { id: 'q1', currencyCode: 'USD', subtotal: '10.00', taxTotal: '0.00', total: '10.00',
+      oneTimeTotal: '10.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00' };
+    const legacy = computeQuoteSha256(quote as any, [], []);
+    const withNone = computeQuoteSha256({ ...quote, depositType: 'none', depositPercent: null, depositAmount: null } as any, [], []);
+    expect(withNone).toBe(legacy);
+  });
+  it('deposit config and line eligibility change the hash', () => {
+    const quote = { id: 'q1', currencyCode: 'USD', subtotal: '10.00', taxTotal: '0.00', total: '10.00',
+      oneTimeTotal: '10.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00' };
+    const line = { id: 'l1', description: 'x', quantity: '1', unitPrice: '10.00', lineTotal: '10.00',
+      recurrence: 'one_time', taxable: false, customerVisible: true, sortOrder: 0 };
+    const base = computeQuoteSha256(quote as any, [], [line as any]);
+    const withDeposit = computeQuoteSha256(
+      { ...quote, depositType: 'percent', depositPercent: '30.00', depositAmount: '3.00' } as any, [], [line as any]);
+    const withFlag = computeQuoteSha256(quote as any, [], [{ ...line, depositEligible: true } as any]);
+    expect(withDeposit).not.toBe(base);
+    expect(withFlag).not.toBe(base);
+  });
 });

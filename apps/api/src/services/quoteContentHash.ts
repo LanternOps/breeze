@@ -4,11 +4,13 @@ type HashableQuote = {
   id: string; currencyCode: string;
   subtotal: string; taxTotal: string; total: string;
   oneTimeTotal: string; monthlyRecurringTotal: string; annualRecurringTotal: string;
+  depositType?: string | null; depositPercent?: string | null; depositAmount?: string | null;
 };
 type HashableBlock = { id: string; blockType: string; content: unknown; sortOrder: number };
 type HashableLine = {
   id: string; description: string; quantity: string; unitPrice: string; lineTotal: string;
   recurrence: string; taxable: boolean; customerVisible: boolean; sortOrder: number;
+  depositEligible?: boolean;
 };
 
 /**
@@ -29,7 +31,7 @@ export function computeQuoteSha256(
   blocks: HashableBlock[],
   lines: HashableLine[]
 ): string {
-  const canonical = {
+  const canonical: { quote: Record<string, unknown>; blocks: unknown[]; lines: unknown[] } = {
     quote: {
       id: quote.id, currency: quote.currencyCode,
       subtotal: quote.subtotal, taxTotal: quote.taxTotal, total: quote.total,
@@ -44,7 +46,17 @@ export function computeQuoteSha256(
         id: l.id, description: l.description, quantity: l.quantity, unitPrice: l.unitPrice,
         lineTotal: l.lineTotal, recurrence: l.recurrence, taxable: l.taxable,
         customerVisible: l.customerVisible, sortOrder: l.sortOrder,
+        ...(l.depositEligible ? { depositEligible: true } : {}),
       })),
   };
+  // Deposit terms are part of what the customer signs. Included ONLY when a
+  // deposit is configured so every pre-deposit acceptance hash stays verifiable.
+  if (quote.depositType && quote.depositType !== 'none') {
+    canonical.quote.deposit = {
+      type: quote.depositType,
+      percent: quote.depositPercent ?? null,
+      amount: quote.depositAmount ?? null,
+    };
+  }
   return createHash('sha256').update(JSON.stringify(canonical)).digest('hex');
 }
