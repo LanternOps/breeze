@@ -146,6 +146,17 @@ Ships as a signed + notarized **`.app` wrapper** — TCC attributes Screen Recor
 2. **Phase 2:** macOS `.app` packaging, notarization, TCC guided flow, LaunchDaemon tier.
 3. **Phase 3:** niceties — mid-session elevation request UX polish, partner-configurable TTLs, session history reporting by attributed org.
 
+## Implementation notes (adaptations made during planning — see `docs/superpowers/plans/2026-07-06-quick-support-phase1.md`)
+
+- `organizations.kind` is implemented by adding a `'quick_support'` value to the existing `org_type` enum instead of a new column.
+- `failed_attempts` is dropped: codes are looked up by hash, so unknown codes have no row to count against; per-IP rate limits + 44-bit entropy + 15-min TTL cover guessing.
+- `active` is a derived status (live `remote_sessions` for the device), not stored; stored states are `pending/claimed/ready/ended/expired`.
+- v1 status "window" is a console window with status text + Ctrl+C/close to stop; a native window is Phase 3 polish.
+- Landing URL is `/quick?code=<CODE>` (static Astro pages can't serve dynamic path segments).
+- End-user-initiated stop is detected via agent-offline (reaper marks `ended/end_user` after 5 min offline) rather than a dedicated client→API call.
+- Creating support sessions requires partner-scope (or system) tokens in v1 — org-scoped tokens can't reach the hidden org through RLS.
+- Tier 2 elevation in v1 = "Run as administrator" relaunch installs the temporary service; a mid-session elevation request is Phase 3.
+
 ## Out of scope (v1)
 
 - User-generated codes / anonymous session queue (TeamViewer-style).
