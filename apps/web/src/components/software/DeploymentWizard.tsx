@@ -125,7 +125,12 @@ function getSelectedTargetSummary(
   };
 }
 
-export default function DeploymentWizard() {
+interface DeploymentWizardProps {
+  /** When launched from a specific package's Deploy button, preselect it. */
+  initialCatalogId?: string;
+}
+
+export default function DeploymentWizard({ initialCatalogId }: DeploymentWizardProps = {}) {
   const [activeStepIndex, setActiveStepIndex] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -285,7 +290,12 @@ export default function DeploymentWizard() {
       setTargetTree(tree);
 
       if (normalizedCatalog.length > 0 && !selectedSoftwareId) {
-        const firstDeployable = normalizedCatalog.find((item) => item.versions.length > 0);
+        // Preselect the package the user launched from (per-card Deploy), falling
+        // back to the first deployable one when none was passed or it has no version.
+        const preferred = initialCatalogId
+          ? normalizedCatalog.find((item) => item.id === initialCatalogId && item.versions.length > 0)
+          : undefined;
+        const firstDeployable = preferred ?? normalizedCatalog.find((item) => item.versions.length > 0);
         if (firstDeployable) {
           setSelectedSoftwareId(firstDeployable.id);
           setSelectedVersionId(firstDeployable.versions.find((version) => version.isLatest)?.id ?? firstDeployable.versions[0]?.id ?? '');
@@ -296,7 +306,7 @@ export default function DeploymentWizard() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [initialCatalogId]);
 
   useEffect(() => {
     fetchData();

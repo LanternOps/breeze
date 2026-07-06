@@ -11,8 +11,10 @@ import {
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError } from '../../lib/runAction';
+import { Dialog } from '../shared/Dialog';
 import DeploymentWizard from './DeploymentWizard';
 import SoftwareVersionManager from './SoftwareVersionManager';
+import AddPackageModal, { type CreatedPackage } from './AddPackageModal';
 
 type IntegrationProvider = 'huntress' | 'sentinelone';
 
@@ -62,20 +64,19 @@ export default function SoftwareCatalog() {
   const [category, setCategory] = useState<string>('all');
   const [selectedSoftware, setSelectedSoftware] = useState<SoftwareItem | null>(null);
   const [showDeployWizard, setShowDeployWizard] = useState(false);
-  const [showAddForm, setShowAddForm] = useState(false);
+  const [deployCatalogId, setDeployCatalogId] = useState<string | undefined>();
+  const [showAddModal, setShowAddModal] = useState(false);
   const [detailTab, setDetailTab] = useState<'details' | 'versions'>('details');
   const [catalogItems, setCatalogItems] = useState<SoftwareItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
-  const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<SoftwareItem | null>(null);
   const [deleting, setDeleting] = useState(false);
-  const [addForm, setAddForm] = useState({
-    name: '',
-    vendor: '',
-    category: 'utility',
-    description: ''
-  });
+
+  const openDeploy = (catalogId?: string) => {
+    setDeployCatalogId(catalogId);
+    setShowDeployWizard(true);
+  };
 
   const fetchCatalog = useCallback(async () => {
     try {
@@ -129,44 +130,20 @@ export default function SoftwareCatalog() {
     });
   }, [query, category, catalogItems]);
 
-  const handleAddPackage = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (!addForm.name.trim()) return;
-
-    try {
-      setSaving(true);
-      const response = await fetchWithAuth('/software/catalog', {
-        method: 'POST',
-        body: JSON.stringify({
-          name: addForm.name.trim(),
-          vendor: addForm.vendor.trim() || undefined,
-          category: addForm.category,
-          description: addForm.description.trim() || undefined,
-        })
-      });
-
-      if (!response.ok) {
-        const errData = await response.json().catch(() => ({}));
-        throw new Error(errData.error ?? 'Failed to create package');
-      }
-
-      const result = await response.json();
-      const newItem = result.data ?? result;
-      setCatalogItems(prev => [...prev, {
-        id: String(newItem.id),
-        name: String(newItem.name ?? ''),
-        vendor: String(newItem.vendor ?? ''),
-        category: String(newItem.category ?? 'utility'),
-        description: String(newItem.description ?? ''),
-        createdAt: String(newItem.createdAt ?? ''),
-      }]);
-      setAddForm({ name: '', vendor: '', category: 'utility', description: '' });
-      setShowAddForm(false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to add package');
-    } finally {
-      setSaving(false);
-    }
+  const handleCreated = (pkg: CreatedPackage) => {
+    setCatalogItems(prev => [
+      {
+        id: pkg.id,
+        name: pkg.name,
+        vendor: pkg.vendor,
+        category: pkg.category,
+        description: pkg.description,
+        createdAt: pkg.createdAt,
+        versionCount: pkg.versionCount,
+      },
+      ...prev,
+    ]);
+    setShowAddModal(false);
   };
 
   const handleDeletePackage = async (item: SoftwareItem) => {
@@ -208,7 +185,7 @@ export default function SoftwareCatalog() {
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={() => setShowAddForm(true)}
+            onClick={() => setShowAddModal(true)}
             className="inline-flex h-10 items-center justify-center gap-2 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted"
           >
             <Plus className="h-4 w-4" />
@@ -216,7 +193,7 @@ export default function SoftwareCatalog() {
           </button>
           <button
             type="button"
-            onClick={() => setShowDeployWizard(true)}
+            onClick={() => openDeploy(undefined)}
             className="inline-flex h-10 items-center justify-center gap-2 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted"
           >
             <Rocket className="h-4 w-4" />
@@ -333,7 +310,7 @@ export default function SoftwareCatalog() {
                   }
                   onClick={event => {
                     event.stopPropagation();
-                    setShowDeployWizard(true);
+                    openDeploy(item.id);
                   }}
                   className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-xs font-semibold text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
                 >
@@ -347,15 +324,24 @@ export default function SoftwareCatalog() {
 
       {/* Detail modal */}
       {selectedSoftware && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 overflow-y-auto">
-          <div className="w-full max-w-5xl rounded-lg border bg-card p-6 shadow-lg my-8">
+        <Dialog
+          open={!!selectedSoftware}
+          onClose={() => setSelectedSoftware(null)}
+          title={selectedSoftware.name}
+          labelledBy="software-detail-title"
+          maxWidth="4xl"
+          alignTop
+          className="flex max-h-[90vh] flex-col"
+        >
+          {/* Sticky header: identity + tabs + close */}
+          <div className="border-b px-6 pt-5">
             <div className="flex items-start justify-between">
               <div className="flex items-center gap-3">
                 <div className="flex h-12 w-12 items-center justify-center rounded-md bg-muted">
                   <Package className="h-6 w-6 text-muted-foreground" />
                 </div>
                 <div>
-                  <h2 className="text-lg font-semibold">{selectedSoftware.name}</h2>
+                  <h2 id="software-detail-title" className="text-lg font-semibold">{selectedSoftware.name}</h2>
                   <p className="text-sm text-muted-foreground">{selectedSoftware.vendor || 'Unknown vendor'}</p>
                 </div>
                 {selectedSoftware.category && (
@@ -372,13 +358,14 @@ export default function SoftwareCatalog() {
               <button
                 type="button"
                 onClick={() => setSelectedSoftware(null)}
+                aria-label="Close"
                 className="inline-flex h-9 w-9 items-center justify-center rounded-md border bg-background hover:bg-muted"
               >
                 <X className="h-4 w-4" />
               </button>
             </div>
 
-            <div className="mt-4 flex items-center gap-1 border-b">
+            <div className="mt-4 flex items-center gap-1">
               <button
                 type="button"
                 onClick={() => setDetailTab('details')}
@@ -404,9 +391,12 @@ export default function SoftwareCatalog() {
                 Versions
               </button>
             </div>
+          </div>
 
+          {/* Scrollable body */}
+          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
             {detailTab === 'details' && (
-              <div className="mt-4">
+              <div>
                 {selectedSoftware.description && (
                   <div className="rounded-md border bg-muted/30 p-4 text-sm text-muted-foreground">
                     {selectedSoftware.description}
@@ -431,8 +421,9 @@ export default function SoftwareCatalog() {
                     type="button"
                     title={selectedSoftware.integrationProvider ? 'Deploys to mapped organizations only' : undefined}
                     onClick={() => {
+                      const id = selectedSoftware.id;
                       setSelectedSoftware(null);
-                      setShowDeployWizard(true);
+                      openDeploy(id);
                     }}
                     className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90"
                   >
@@ -443,152 +434,90 @@ export default function SoftwareCatalog() {
             )}
 
             {detailTab === 'versions' && (
-              <div className="mt-4">
-                <SoftwareVersionManager catalogId={selectedSoftware.id} />
-              </div>
+              <SoftwareVersionManager catalogId={selectedSoftware.id} embedded />
             )}
           </div>
-        </div>
+        </Dialog>
       )}
 
       {/* Delete confirmation modal */}
       {confirmDelete && (
-        <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-lg">
-            <div className="flex items-start gap-3">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-destructive/10">
-                <Trash2 className="h-5 w-5 text-destructive" />
-              </div>
-              <div>
-                <h2 className="text-lg font-semibold">Delete package?</h2>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  This removes <span className="font-medium text-foreground">{confirmDelete.name}</span> from
-                  the software library, along with all of its versions and stored installer references. This
-                  cannot be undone.
-                </p>
-              </div>
+        <Dialog
+          open={!!confirmDelete}
+          onClose={() => (deleting ? undefined : setConfirmDelete(null))}
+          title="Delete package?"
+          labelledBy="delete-package-title"
+          maxWidth="md"
+          className="p-6"
+        >
+          <div className="flex items-start gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-destructive/10">
+              <Trash2 className="h-5 w-5 text-destructive" />
             </div>
-            <div className="mt-6 flex items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setConfirmDelete(null)}
-                disabled={deleting}
-                className="inline-flex h-9 items-center justify-center rounded-md border bg-background px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => handleDeletePackage(confirmDelete)}
-                disabled={deleting}
-                className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-destructive px-4 text-sm font-semibold text-destructive-foreground hover:bg-destructive/90 disabled:opacity-50"
-              >
-                {deleting && <Loader2 className="h-4 w-4 animate-spin" />}
-                {deleting ? 'Deleting...' : 'Delete'}
-              </button>
+            <div>
+              <h2 id="delete-package-title" className="text-lg font-semibold">Delete package?</h2>
+              <p className="mt-1 text-sm text-muted-foreground">
+                This removes <span className="font-medium text-foreground">{confirmDelete.name}</span> from
+                the software library, along with all of its versions and stored installer references. This
+                cannot be undone.
+              </p>
             </div>
           </div>
-        </div>
+          <div className="mt-6 flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setConfirmDelete(null)}
+              disabled={deleting}
+              className="inline-flex h-9 items-center justify-center rounded-md border bg-background px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => handleDeletePackage(confirmDelete)}
+              disabled={deleting}
+              className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-destructive px-4 text-sm font-semibold text-destructive-foreground hover:bg-destructive/90 disabled:opacity-50"
+            >
+              {deleting && <Loader2 className="h-4 w-4 animate-spin" />}
+              {deleting ? 'Deleting...' : 'Delete'}
+            </button>
+          </div>
+        </Dialog>
       )}
 
-      {/* Add Package modal */}
-      {showAddForm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-lg">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold">Add Software Package</h2>
-              <button
-                type="button"
-                onClick={() => setShowAddForm(false)}
-                className="h-8 w-8 rounded-md hover:bg-muted flex items-center justify-center"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-            <form onSubmit={handleAddPackage} className="space-y-4">
-              <div>
-                <label className="text-xs font-semibold uppercase text-muted-foreground">Name</label>
-                <input
-                  type="text"
-                  value={addForm.name}
-                  onChange={e => setAddForm(prev => ({ ...prev, name: e.target.value }))}
-                  placeholder="e.g. Google Chrome"
-                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                />
-              </div>
-              <div>
-                <label className="text-xs font-semibold uppercase text-muted-foreground">Vendor</label>
-                <input
-                  type="text"
-                  value={addForm.vendor}
-                  onChange={e => setAddForm(prev => ({ ...prev, vendor: e.target.value }))}
-                  placeholder="e.g. Google"
-                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                />
-              </div>
-              <div>
-                <label className="text-xs font-semibold uppercase text-muted-foreground">Category</label>
-                <select
-                  value={addForm.category}
-                  onChange={e => setAddForm(prev => ({ ...prev, category: e.target.value }))}
-                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                >
-                  <option value="browser">Browser</option>
-                  <option value="utility">Utility</option>
-                  <option value="compression">Compression</option>
-                  <option value="productivity">Productivity</option>
-                  <option value="communication">Communication</option>
-                  <option value="developer">Developer</option>
-                  <option value="media">Media</option>
-                  <option value="security">Security</option>
-                </select>
-              </div>
-              <div>
-                <label className="text-xs font-semibold uppercase text-muted-foreground">Description</label>
-                <textarea
-                  value={addForm.description}
-                  onChange={e => setAddForm(prev => ({ ...prev, description: e.target.value }))}
-                  placeholder="Brief description of the software"
-                  className="mt-2 u-min-h-px-80 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                />
-              </div>
-              <div className="flex items-center justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => setShowAddForm(false)}
-                  className="inline-flex h-9 items-center justify-center rounded-md border bg-background px-3 text-sm font-medium hover:bg-muted"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={saving || !addForm.name.trim()}
-                  className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-                >
-                  {saving ? 'Creating...' : 'Create Package'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+      <AddPackageModal
+        open={showAddModal}
+        onClose={() => setShowAddModal(false)}
+        onCreated={handleCreated}
+      />
 
       {showDeployWizard && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8 overflow-y-auto">
-          <div className="w-full max-w-4xl rounded-lg border bg-card p-6 shadow-xs">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold">Bulk Software Deployment</h2>
-              <button
-                type="button"
-                onClick={() => setShowDeployWizard(false)}
-                className="h-8 w-8 rounded-md hover:bg-muted flex items-center justify-center"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-            <DeploymentWizard />
+        <Dialog
+          open={showDeployWizard}
+          onClose={() => setShowDeployWizard(false)}
+          title="Software deployment"
+          labelledBy="deploy-wizard-title"
+          maxWidth="4xl"
+          alignTop
+          className="flex max-h-[90vh] flex-col"
+        >
+          <div className="flex items-center justify-between border-b px-6 py-4">
+            <h2 id="deploy-wizard-title" className="text-lg font-semibold">
+              {deployCatalogId ? 'Deploy Software' : 'Bulk Software Deployment'}
+            </h2>
+            <button
+              type="button"
+              onClick={() => setShowDeployWizard(false)}
+              aria-label="Close"
+              className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
+            >
+              <X className="h-4 w-4" />
+            </button>
           </div>
-        </div>
+          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+            <DeploymentWizard initialCatalogId={deployCatalogId} />
+          </div>
+        </Dialog>
       )}
     </div>
   );

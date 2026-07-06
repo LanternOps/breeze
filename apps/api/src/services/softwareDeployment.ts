@@ -3,11 +3,14 @@ import { db } from '../db';
 import {
   deploymentResults,
   devices,
+  organizations,
+  sites,
   softwareCatalog,
   softwareDeployments,
   softwareVersions,
 } from '../db/schema';
 import { resolveEdrInstaller, type ResolvedInstaller } from './edrInstallerResolver';
+import { resolveInstallerVariables, type InstallerVariableContext } from './installerVariables';
 import { getPresignedUrl, isS3Configured, isS3NotFound } from './s3Storage';
 import { sendCommandToAgent, type AgentCommand } from '../routes/agentWs';
 
@@ -195,9 +198,16 @@ export async function createSoftwareDeployment(
       };
     }
 
-    // Get agentIds for target devices
+    // Get agentIds + variable context for target devices. hostname/siteId/
+    // customFields feed deploy-time `{{...}}` variable substitution below.
     const targetDevices = await db
-      .select({ id: devices.id, agentId: devices.agentId })
+      .select({
+        id: devices.id,
+        agentId: devices.agentId,
+        siteId: devices.siteId,
+        hostname: devices.hostname,
+        customFields: devices.customFields,
+      })
       .from(devices)
       .where(
         and(
@@ -205,6 +215,29 @@ export async function createSoftwareDeployment(
           inArray(devices.id, deviceIds),
         ),
       );
+
+    // Load org + site names once so per-device `{{org.name}}` / `{{site.name}}`
+    // resolve without an N+1. Only needed when a template actually references
+    // variables, but the two lookups are cheap and keep the loop simple.
+    const templatesUseVariables =
+      (finalDownloadUrl?.includes('{{') ?? false) ||
+      (finalSilentInstallArgs?.includes('{{') ?? false);
+
+    let orgName = '';
+    const siteNames = new Map<string, string>();
+    if (templatesUseVariables) {
+      const [org] = await db
+        .select({ name: organizations.name })
+        .from(organizations)
+        .where(eq(organizations.id, orgId))
+        .limit(1);
+      orgName = org?.name ?? '';
+      const siteRows = await db
+        .select({ id: sites.id, name: sites.name })
+        .from(sites)
+        .where(eq(sites.orgId, orgId));
+      for (const s of siteRows) siteNames.set(s.id, s.name);
+    }
 
     // Detection rules (#2022) and the force-reinstall toggle ride along with the
     // install command so the agent can skip-if-already-present and verify the
@@ -217,17 +250,55 @@ export async function createSoftwareDeployment(
 
     const dispatchedDeviceIds: string[] = [];
     for (const device of targetDevices) {
+      // Resolve `{{...}}` variables against this device's org/site/device context.
+      // A no-op when the templates contain no variables (fast path inside the
+      // resolver). An unresolvable token fails THIS device rather than shipping a
+      // literal `{{...}}` to the agent.
+      let deviceDownloadUrl = finalDownloadUrl;
+      let deviceSilentInstallArgs = finalSilentInstallArgs;
+      if (templatesUseVariables) {
+        const ctx: InstallerVariableContext = {
+          org: { id: orgId, name: orgName },
+          site: { id: device.siteId, name: siteNames.get(device.siteId) ?? '' },
+          device: {
+            hostname: device.hostname,
+            customFields: (device.customFields as Record<string, unknown> | null) ?? {},
+          },
+        };
+        const resolved = resolveInstallerVariables(finalDownloadUrl, finalSilentInstallArgs, ctx);
+        if (resolved.unresolved.length > 0) {
+          await db
+            .update(deploymentResults)
+            .set({
+              status: 'failed',
+              errorMessage: `Could not resolve installer variable(s): ${resolved.unresolved.join(', ')}`,
+              completedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(deploymentResults.deploymentId, deployment.id),
+                eq(deploymentResults.deviceId, device.id),
+              ),
+            );
+          continue;
+        }
+        // Substituting a non-null template yields a non-null string; the ?? keeps
+        // the type as string (finalDownloadUrl is non-null past the guard above).
+        deviceDownloadUrl = resolved.downloadUrl ?? finalDownloadUrl;
+        deviceSilentInstallArgs = resolved.silentInstallArgs;
+      }
+
       const command: AgentCommand = {
         id: `sw-install-${deployment.id}-${device.id}`,
         type: 'software_install',
         payload: {
           deploymentId: deployment.id,
-          downloadUrl: finalDownloadUrl,
+          downloadUrl: deviceDownloadUrl,
           checksum: versionRecord.checksum,
           fileName:
             versionRecord.originalFileName ?? `package.${versionRecord.fileType ?? 'exe'}`,
           fileType: versionRecord.fileType ?? 'exe',
-          silentInstallArgs: finalSilentInstallArgs,
+          silentInstallArgs: deviceSilentInstallArgs,
           softwareName: catalogItem.name,
           version: versionRecord.version,
           ...(detectionRules ? { detectionRules } : {}),
