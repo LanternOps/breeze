@@ -59,6 +59,9 @@ export const partners = pgTable('partners', {
   // added or imported. Partners can opt out if their jurisdiction treats hardware
   // as non-taxable or they prefer to set taxability item-by-item.
   autoTaxHardware: boolean('auto_tax_hardware').notNull().default(true),
+  // Partner-authored AI copy style for enrich/polish (NULL = built-in house
+  // format: generic customer-friendly name + "• "-bulleted spec description).
+  catalogAiStyle: text('catalog_ai_style'),
   // AI for Office is a per-partner entitlement the platform operator grants
   // (off by default). The session-minting exchange and the /client-ai/admin
   // surface gate on this; it is NOT in settings JSONB because that is

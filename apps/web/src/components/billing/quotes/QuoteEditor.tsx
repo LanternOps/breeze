@@ -1767,7 +1767,7 @@ function ReadonlyLineRow({ line: l, quoteId, currency, taxRate, isFirst, showInt
               : l.catalogItemId && <CatalogLineThumb catalogItemId={l.catalogItemId} />}
             <div>
               <div className="font-medium">{lineTitle(l)}</div>
-              {lineBlurb(l) && <div className="text-xs text-muted-foreground">{lineBlurb(l)}</div>}
+              {lineBlurb(l) && <div className="whitespace-pre-line text-xs text-muted-foreground">{lineBlurb(l)}</div>}
             </div>
           </div>
         </td>

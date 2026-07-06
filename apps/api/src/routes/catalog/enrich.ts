@@ -1,5 +1,8 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
+import { eq } from 'drizzle-orm';
+import { db } from '../../db';
+import { partners } from '../../db/schema/orgs';
 import { requireScope, requirePermission, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { enrichRequestSchema, polishTextRequestSchema } from '@breeze/shared';
@@ -10,6 +13,21 @@ export const catalogEnrichRoutes = new Hono();
 const scopes = requireScope('partner', 'system');
 const writePerm = requirePermission(PERMISSIONS.CATALOG_WRITE.resource, PERMISSIONS.CATALOG_WRITE.action);
 
+// Partner-configured AI copy style (partners.catalog_ai_style). Best-effort:
+// no partner on the token, a missing row, or a read failure all just mean the
+// built-in house format applies.
+async function loadPartnerStyle(auth: AuthContext): Promise<string | null> {
+  const partnerId = auth.partnerId ?? null;
+  if (!partnerId) return null;
+  try {
+    const [row] = await db.select({ style: partners.catalogAiStyle }).from(partners)
+      .where(eq(partners.id, partnerId)).limit(1);
+    return row?.style ?? null;
+  } catch {
+    return null;
+  }
+}
+
 catalogEnrichRoutes.post('/enrich', scopes, writePerm, zValidator('json', enrichRequestSchema), async (c) => {
   const { query, hint } = c.req.valid('json');
   const auth = c.get('auth') as AuthContext;
@@ -18,7 +36,8 @@ catalogEnrichRoutes.post('/enrich', scopes, writePerm, zValidator('json', enrich
   // skips budget/rate checks and logs a warning.
   const orgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
   try {
-    const data = await enrichCatalogItem(query, hint, { userId: auth.user.id, orgId });
+    const style = await loadPartnerStyle(auth);
+    const data = await enrichCatalogItem(query, hint, { userId: auth.user.id, orgId }, style);
     return c.json({ data });
   } catch (err) {
     if (err instanceof EnrichmentError) return c.json({ error: err.message, code: err.code }, err.status);
@@ -39,7 +58,8 @@ catalogEnrichRoutes.post('/polish', scopes, zValidator('json', polishTextRequest
   const auth = c.get('auth') as AuthContext;
   const orgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
   try {
-    const data = await polishCatalogText({ name, description }, { userId: auth.user.id, orgId });
+    const style = await loadPartnerStyle(auth);
+    const data = await polishCatalogText({ name, description }, { userId: auth.user.id, orgId }, style);
     return c.json({ data });
   } catch (err) {
     if (err instanceof EnrichmentError) return c.json({ error: err.message, code: err.code }, err.status);

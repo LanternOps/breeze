@@ -353,7 +353,7 @@ function LineTable({ lines, currency, label, testId, taxRate, showTax }: { lines
                 <tr key={l.id} className="border-t" data-testid={`quote-detail-line-${l.id}`}>
                   <td className="px-3 py-2">
                     <div className="font-medium text-foreground">{lineTitle(l)}</div>
-                    {lineBlurb(l) && <div className="text-xs text-muted-foreground">{lineBlurb(l)}</div>}
+                    {lineBlurb(l) && <div className="whitespace-pre-line text-xs text-muted-foreground">{lineBlurb(l)}</div>}
                   </td>
                   <td className="px-3 py-2 text-right tabular-nums">{l.quantity}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{formatMoney(l.unitPrice, currency)}</td>

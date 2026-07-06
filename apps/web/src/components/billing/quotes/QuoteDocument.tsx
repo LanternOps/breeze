@@ -103,7 +103,7 @@ function PricingTable({ lines, quoteId, currency, label, taxRate, showTax }: { l
                           </span>
                         )}
                         {lineBlurb(l) && (
-                          <p className="mt-0.5 text-xs text-muted-foreground">{lineBlurb(l)}</p>
+                          <p className="mt-0.5 whitespace-pre-line text-xs text-muted-foreground">{lineBlurb(l)}</p>
                         )}
                       </div>
                     </div>

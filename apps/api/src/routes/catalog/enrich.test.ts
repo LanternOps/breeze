@@ -13,6 +13,13 @@ const { enrichCatalogItem, polishCatalogText, EnrichmentError } = vi.hoisted(() 
 });
 vi.mock('../../services/catalogEnrichmentService', () => ({ enrichCatalogItem, polishCatalogText, EnrichmentError }));
 
+// The route reads partners.catalog_ai_style; stub the db so unit tests never
+// touch a pool. `styleRows` is what the select resolves to.
+const { styleRows } = vi.hoisted(() => ({ styleRows: { value: [] as Array<{ style: string | null }> } }));
+vi.mock('../../db', () => ({
+  db: { select: () => ({ from: () => ({ where: () => ({ limit: async () => styleRows.value }) }) }) },
+}));
+
 // Auth middleware stubs: inject an auth context and pass through.
 vi.mock('../../middleware/auth', () => ({
   requireScope: () => async (_c: unknown, next: () => Promise<void>) => next(),
@@ -26,14 +33,14 @@ import { catalogEnrichRoutes } from './enrich';
 
 const fakeAuth = { user: { id: 'u1' }, orgId: 'o1', accessibleOrgIds: ['o1'] } as unknown as AuthContext;
 
-function app() {
+function app(auth: AuthContext = fakeAuth) {
   const a = new Hono();
-  a.use('*', async (c, next) => { c.set('auth', fakeAuth); await next(); });
+  a.use('*', async (c, next) => { c.set('auth', auth); await next(); });
   a.route('/', catalogEnrichRoutes);
   return a;
 }
 
-beforeEach(() => { enrichCatalogItem.mockReset(); polishCatalogText.mockReset(); });
+beforeEach(() => { enrichCatalogItem.mockReset(); polishCatalogText.mockReset(); styleRows.value = []; });
 
 describe('POST /catalog/enrich', () => {
   it('returns the enrichment result', async () => {
@@ -44,7 +51,22 @@ describe('POST /catalog/enrich', () => {
     });
     expect(res.status).toBe(200);
     expect((await res.json()).data.draft.name).toBe('X');
-    expect(enrichCatalogItem).toHaveBeenCalledWith('APC UPS', undefined, { userId: 'u1', orgId: 'o1' });
+    // No partner on the token → no style override (built-in house format).
+    expect(enrichCatalogItem).toHaveBeenCalledWith('APC UPS', undefined, { userId: 'u1', orgId: 'o1' }, null);
+  });
+
+  it('passes the partner catalog_ai_style through to the service', async () => {
+    styleRows.value = [{ style: 'Terse, single-paragraph descriptions.' }];
+    enrichCatalogItem.mockResolvedValueOnce({ draft: { name: 'X' }, priceGuidance: null, estimatedCost: null, provenance: { source: 'ai_enrich' } });
+    const withPartner = { ...(fakeAuth as unknown as Record<string, unknown>), partnerId: 'p1' } as unknown as AuthContext;
+    const res = await app(withPartner).request('/enrich', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: 'APC UPS' }),
+    });
+    expect(res.status).toBe(200);
+    expect(enrichCatalogItem).toHaveBeenCalledWith(
+      'APC UPS', undefined, { userId: 'u1', orgId: 'o1' }, 'Terse, single-paragraph descriptions.',
+    );
   });
 
   it('400s an empty query', async () => {
@@ -80,6 +102,7 @@ describe('POST /catalog/polish', () => {
     expect(polishCatalogText).toHaveBeenCalledWith(
       { name: 'spl clean name disti', description: 'clean desc' },
       { userId: 'u1', orgId: 'o1' },
+      null,
     );
   });
 

@@ -13,6 +13,7 @@ interface PartnerBilling {
   invoiceTermsDays: number;
   defaultMarkupPercent: string | null;
   autoTaxHardware: boolean;
+  catalogAiStyle: string | null;
   invoiceFooter: string | null;
   billingCompanyName: string | null;
   billingPhone: string | null;
@@ -40,6 +41,8 @@ export default function PartnerBillingSettings() {
   const [markupPercent, setMarkupPercent] = useState('');
   // When true, hardware catalog items default to taxable on import.
   const [autoTaxHardware, setAutoTaxHardware] = useState(true);
+  // Partner AI copy style for Auto-fill/Polish; empty = built-in house format.
+  const [aiStyle, setAiStyle] = useState('');
   const [footer, setFooter] = useState('');
   const [companyName, setCompanyName] = useState('');
   const [phone, setPhone] = useState('');
@@ -66,6 +69,7 @@ export default function PartnerBillingSettings() {
       setTermsDays(String(p.invoiceTermsDays ?? 30));
       setMarkupPercent(p.defaultMarkupPercent != null ? String(Number(p.defaultMarkupPercent)) : '');
       setAutoTaxHardware(p.autoTaxHardware ?? true);
+      setAiStyle(p.catalogAiStyle ?? '');
       setFooter(p.invoiceFooter ?? '');
       setCompanyName(p.billingCompanyName ?? '');
       setPhone(p.billingPhone ?? '');
@@ -104,6 +108,7 @@ export default function PartnerBillingSettings() {
             invoiceTermsDays: Number(termsDays),
             defaultMarkupPercent,
             autoTaxHardware,
+            catalogAiStyle: aiStyle.trim() === '' ? null : aiStyle.trim(),
             invoiceFooter: footer.trim() === '' ? null : footer,
             billingCompanyName: companyName.trim() === '' ? null : companyName.trim(),
             billingPhone: phone.trim() === '' ? null : phone.trim(),
@@ -127,7 +132,7 @@ export default function PartnerBillingSettings() {
     } finally {
       setSaving(false);
     }
-  }, [saving, currencyCode, taxPercent, prefix, termsDays, markupPercent, autoTaxHardware, footer,
+  }, [saving, currencyCode, taxPercent, prefix, termsDays, markupPercent, autoTaxHardware, aiStyle, footer,
       companyName, phone, website, addr1, addr2, city, region, postal, country, terms, load]);
 
   if (loading) return <p className="text-sm text-muted-foreground">Loading billing settings…</p>;
@@ -212,6 +217,20 @@ export default function PartnerBillingSettings() {
           </label>
           <p className="mt-1 text-xs text-muted-foreground">
             Newly imported hardware defaults to taxable.
+          </p>
+        </div>
+        <div className="mt-4">
+          <label className="text-sm font-medium" htmlFor="pb-ai-style">AI product copy style</label>
+          <textarea
+            id="pb-ai-style" rows={4} value={aiStyle} maxLength={2000}
+            onChange={(e) => setAiStyle(e.target.value)}
+            placeholder={'Default: the item name is a short, generic customer-friendly name ("Wireless Access Point"); the description starts with the full product name, then bullet-point specs precise enough to verify an order against. Describe your own style here to override it.'}
+            data-testid="partner-billing-ai-style"
+            className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
+          />
+          <p className="mt-1 text-xs text-muted-foreground">
+            Shapes how &ldquo;Auto-fill from web&rdquo; and &ldquo;Polish with AI&rdquo; write product names and
+            descriptions on quotes, invoices, and catalog items. Leave blank for the default format.
           </p>
         </div>
         <div className="mt-4">

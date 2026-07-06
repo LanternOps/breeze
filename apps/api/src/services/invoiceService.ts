@@ -307,6 +307,7 @@ export async function updatePartnerBillingSettings(
   patch: {
     currencyCode: string; defaultTaxRate?: number | null; invoiceNumberPrefix: string;
     invoiceTermsDays: number; defaultMarkupPercent?: number | null; autoTaxHardware?: boolean;
+    catalogAiStyle?: string | null;
     invoiceFooter?: string | null;
     billingCompanyName?: string | null; billingPhone?: string | null; billingWebsite?: string | null;
     billingAddressLine1?: string | null; billingAddressLine2?: string | null; billingAddressCity?: string | null;
@@ -329,6 +330,7 @@ export async function updatePartnerBillingSettings(
     set.defaultMarkupPercent = patch.defaultMarkupPercent === null ? null : Number(patch.defaultMarkupPercent).toFixed(2);
   }
   if (patch.autoTaxHardware !== undefined) set.autoTaxHardware = patch.autoTaxHardware;
+  if (patch.catalogAiStyle !== undefined) set.catalogAiStyle = patch.catalogAiStyle?.trim() || null;
   if (patch.invoiceFooter !== undefined) set.invoiceFooter = patch.invoiceFooter;
   for (const key of [
     'billingCompanyName', 'billingPhone', 'billingWebsite', 'billingAddressLine1', 'billingAddressLine2',
@@ -341,7 +343,7 @@ export async function updatePartnerBillingSettings(
     currencyCode: partners.currencyCode, defaultTaxRate: partners.defaultTaxRate,
     invoiceNumberPrefix: partners.invoiceNumberPrefix, invoiceTermsDays: partners.invoiceTermsDays,
     defaultMarkupPercent: partners.defaultMarkupPercent, autoTaxHardware: partners.autoTaxHardware,
-    invoiceFooter: partners.invoiceFooter,
+    catalogAiStyle: partners.catalogAiStyle, invoiceFooter: partners.invoiceFooter,
   });
   if (!row) throw new InvoiceServiceError('Partner could not be resolved', 400, 'PARTNER_UNRESOLVABLE');
   return row;

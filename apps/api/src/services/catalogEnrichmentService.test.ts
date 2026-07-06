@@ -71,6 +71,26 @@ describe('enrichCatalogItem', () => {
     expect(res.estimatedCost).toBe(80);
   });
 
+  it('appends the partner style override to the system prompt (and omits it by default)', async () => {
+    const reply = {
+      name: 'X', description: null, itemType: 'service', unitOfMeasure: 'each', taxable: true,
+      taxCategory: null, priceLow: null, priceHigh: null, currency: null, confidence: 0.5, notes: '',
+    };
+    create.mockResolvedValueOnce(aiMessage(reply));
+    await enrichCatalogItem('X', undefined, actor, 'One-line descriptions, no bullets.');
+    const styled = (create.mock.calls[0]![0] as { system: string }).system;
+    expect(styled).toContain('MSP STYLE OVERRIDE');
+    expect(styled).toContain('<msp_style>One-line descriptions, no bullets.</msp_style>');
+
+    create.mockResolvedValueOnce(aiMessage(reply));
+    await enrichCatalogItem('X', undefined, actor);
+    const plain = (create.mock.calls[1]![0] as { system: string }).system;
+    expect(plain).not.toContain('MSP STYLE OVERRIDE');
+    // The built-in house format is the default: generic name + bulleted specs.
+    expect(plain).toContain('customer-friendly item name');
+    expect(plain).toContain('"• "');
+  });
+
   it('returns null priceGuidance when no usable range', async () => {
     create.mockResolvedValueOnce(aiMessage({
       name: 'Mystery', description: null, itemType: 'service',
