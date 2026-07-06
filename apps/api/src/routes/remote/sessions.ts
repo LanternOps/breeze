@@ -2,13 +2,14 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, eq, sql, desc, gte, lte, inArray } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
   remoteSessions,
   devices,
   deviceHardware,
   users,
-  organizations
+  organizations,
+  partners
 } from '../../db/schema';
 import { requireScope, requirePermission } from '../../middleware/auth';
 import { sendCommandToAgent } from '../agentWs';
@@ -925,16 +926,30 @@ sessionRoutes.post(
         .from(users)
         .where(eq(users.id, session.userId))
         .limit(1);
-      const [org] = await db
-        .select({ name: organizations.name })
-        .from(organizations)
-        .where(eq(organizations.id, device.orgId))
-        .limit(1);
+      // The dialog shows who the technician WORKS FOR — the MSP (partner) —
+      // not the client org the device belongs to. Showing the client's own
+      // company name is what a social engineer would claim anyway.
+      //
+      // Runs in a system DB context: this route serves org-scoped callers,
+      // and an org-scope RLS context's accessiblePartnerIds is always empty
+      // (computeAccessiblePartnerIds in middleware/auth.ts) — org tokens
+      // never pass breeze_has_partner_access, so a plain `db.select` here
+      // would silently return 0 rows under FORCE RLS on `partners`.
+      const [partnerRow] = await runOutsideDbContext(() =>
+        withSystemDbAccessContext(() =>
+          db
+            .select({ name: partners.name })
+            .from(organizations)
+            .innerJoin(partners, eq(organizations.partnerId, partners.id))
+            .where(eq(organizations.id, device.orgId))
+            .limit(1)
+        )
+      );
       const technicianDisplay = buildTechnicianDisplay(
         promptCfg.identityLevel,
         tech?.name ?? null,
         tech?.email ?? null,
-        org?.name ?? null,
+        partnerRow?.name ?? null,
       );
       prompt = {
         mode: promptCfg.mode,
