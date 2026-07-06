@@ -7,6 +7,7 @@ import { requireScope, requirePermission, type AuthContext } from '../../middlew
 import { PERMISSIONS } from '../../services/permissions';
 import { enrichRequestSchema, polishTextRequestSchema } from '@breeze/shared';
 import { enrichCatalogItem, polishCatalogText, EnrichmentError } from '../../services/catalogEnrichmentService';
+import { captureException } from '../../services/sentry';
 
 export const catalogEnrichRoutes = new Hono();
 
@@ -23,7 +24,12 @@ async function loadPartnerStyle(auth: AuthContext): Promise<string | null> {
     const [row] = await db.select({ style: partners.catalogAiStyle }).from(partners)
       .where(eq(partners.id, partnerId)).limit(1);
     return row?.style ?? null;
-  } catch {
+  } catch (err) {
+    // Falling back to the house format is the right behavior, but a swallowed
+    // read failure here (dropped/renamed column, pool exhaustion, RLS misconfig)
+    // would make EVERY partner silently lose their configured style with no
+    // signal. Keep the graceful fallback, but leave a forensic trail.
+    captureException(err instanceof Error ? err : new Error(String(err)));
     return null;
   }
 }

@@ -15,6 +15,7 @@
 
 import PDFDocument from 'pdfkit';
 import { sellerAddressLines, type SellerSnapshot } from './sellerSnapshot';
+import { captureException } from './sentry';
 
 // ---------------------------------------------------------------------------
 // Formatting helpers (kept in lock-step with invoicePdf.ts conventions)
@@ -229,7 +230,11 @@ async function renderLineTable(
         if (img?.data) imageByLine.set(l.id, img.data);
       }
     } catch (e) {
+      // Degrade to "no thumbnail" (never abort the customer document), but report
+      // to Sentry — a systemic image-serving break would otherwise be invisible
+      // behind console.error.
       console.error('[quotePdf] line image load failed', l.imageId ?? l.catalogItemId, e instanceof Error ? e.message : e);
+      captureException(e instanceof Error ? e : new Error(String(e)));
     }
   }
   // Reserve a thumbnail gutter only when at least one line has an image, so the
@@ -460,6 +465,7 @@ export async function renderQuotePdf(
         img = imageId ? await loadImage(imageId) : null;
       } catch (e) {
         console.error('[quotePdf] loadImage failed', imageId, e instanceof Error ? e.message : e);
+        captureException(e instanceof Error ? e : new Error(String(e)));
         img = null;
       }
       if (img?.data) {
