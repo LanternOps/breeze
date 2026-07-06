@@ -60,6 +60,14 @@ func handleEncryptionRotateKey(h *Heartbeat, cmd Command) tools.CommandResult {
 			h.mu.Lock()
 			h.pendingRecoveryKeys = append(h.pendingRecoveryKeys, key)
 			h.mu.Unlock()
+			// The rotated key now protects the volume but isn't escrowed yet. A
+			// FileVault personal recovery key in particular cannot be
+			// re-collected, and the parked copy lives only in memory — an agent
+			// restart before the next-tick retry loses it. Log loudly (never the
+			// key material) so ops sees it; the command result below also returns
+			// failed so the tech is signalled to re-rotate.
+			log.Error("recovery key rotated but escrow upload failed — key is parked in memory and will be LOST on agent restart; re-rotate if this persists",
+				"keyType", key.KeyType, "volumeMount", key.Mount, "error", pushErr.Error())
 			if rotateErr == nil {
 				rotateErr = fmt.Errorf("key rotated but escrow upload failed; will retry on next security tick: %w", pushErr)
 			}

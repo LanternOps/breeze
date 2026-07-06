@@ -2312,6 +2312,11 @@ func (h *Heartbeat) sendRecoveryKeys() {
 			h.mu.Lock()
 			h.pendingRecoveryKeys = append(pending, h.pendingRecoveryKeys...)
 			h.mu.Unlock()
+			// Re-park failed: these rotated keys are still unescrowed and remain
+			// in memory only (lost on restart). Escalate above the generic
+			// inventory WARN so the risk is greppable; no key material logged.
+			log.Error("parked recovery key escrow retry failed — keys remain in memory only and will be LOST on agent restart",
+				"count", len(pending), "error", err.Error())
 		}
 	}
 

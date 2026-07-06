@@ -169,9 +169,9 @@ func xmlEscape(s string) string {
 	return b.String()
 }
 
-// buildFileVaultAuthPlist builds the -inputplist body for fdesetup. With a
-// username the auth is user credentials; without, Password carries the
-// current personal recovery key.
+// buildFileVaultAuthPlist builds the -inputplist body for fdesetup. With both a
+// username and a non-empty password the auth is user credentials; otherwise
+// Password carries the current personal recovery key.
 func buildFileVaultAuthPlist(username, password, currentRecoveryKey string) string {
 	// Only use user-credential auth when we actually have both a username and a
 	// password. A username with an empty password but a present recovery key
