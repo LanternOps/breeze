@@ -65,6 +65,32 @@ describe('quoteService deposits', () => {
     expect(setMock.mock.calls[1]![0]).toMatchObject({ depositAmount: '330.00' });
   });
 
+  it('updateQuote validates + totals a deposit against a tax rate changed in the SAME patch', async () => {
+    // Regression guard for the effectiveTaxRate branch: a taxRate and a deposit
+    // arriving in one patch must be coherent — the persisted deposit_amount uses
+    // the NEW rate (25%), not the stale persisted one (0%). A $100 one-time taxable
+    // line at 25% tax → dueOnAcceptance $125; a 50% percent deposit → $62.50.
+    // loadDraft
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', taxRate: '0.00000', depositType: 'none', depositPercent: null }]);
+    // deposit-validation lines fetch
+    queueResult([{ quantity: '1', unitPrice: '100.00', taxable: true, customerVisible: true, recurrence: 'one_time', depositEligible: false }]);
+    queueResult([]); // updateQuote's own header update
+    // recomputeAndPersist: header select now reflects the just-persisted 25% rate + deposit config
+    queueResult([{ taxRate: '0.25000', depositType: 'percent', depositPercent: '50.00' }]);
+    queueResult([{ quantity: '1', unitPrice: '100.00', taxable: true, customerVisible: true, recurrence: 'one_time', depositEligible: false, itemType: 'hardware' }]);
+    queueResult([]); // recomputeAndPersist's own update
+    queueResult([{ id: 'q1', orgId: 'org1', taxRate: '0.25000', depositType: 'percent', depositPercent: '50.00', depositAmount: '62.50' }]);
+
+    const updated = await svc.updateQuote('q1', { taxRate: 0.25, depositType: 'percent', depositPercent: 50 }, actor);
+    expect(updated.depositAmount).toBe('62.50');
+
+    const setMock = (db as unknown as Chain).set;
+    // Header update persists both the new rate and the deposit config in one write.
+    expect(setMock.mock.calls[0]![0]).toMatchObject({ taxRate: '0.25000', depositType: 'percent', depositPercent: '50.00' });
+    // Recompute persists the deposit_amount computed on the NEW 25% rate.
+    expect(setMock.mock.calls[1]![0]).toMatchObject({ depositAmount: '62.50' });
+  });
+
   it('updateQuote throws DEPOSIT_REQUIRES_ONE_TIME_LINES when the quote has no one-time visible lines', async () => {
     queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', taxRate: null, depositType: 'none', depositPercent: null }]);
     queueResult([]); // no lines at all — dueOnAcceptanceTotal is $0

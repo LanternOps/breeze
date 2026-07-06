@@ -183,6 +183,22 @@ describe('sendQuote deposit validation', () => {
     await expect(sendQuote('q1', actor)).rejects.toMatchObject({ status: 409, code: 'DEPOSIT_INVALID' });
   });
 
+  it('throws 409 DEPOSIT_INVALID for a selected_lines deposit that lost all its eligible lines', async () => {
+    // A selected_lines deposit becomes unsatisfiable when the flagged one-time
+    // lines are removed/unflagged after the deposit was set — the send gate must
+    // hard-stop it (DEPOSIT_NO_ELIGIBLE_LINES, surfaced as DEPOSIT_INVALID) rather
+    // than send a quote whose deposit computes to nothing.
+    queueResult([{
+      id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft',
+      taxRate: null, depositType: 'selected_lines', depositPercent: null,
+    }]);
+    queueResult([]); // blocks
+    // A one-time line exists (so dueOnAcceptance > 0) but NONE are depositEligible.
+    queueResult([{ quantity: '1', unitPrice: '1000.00', taxable: true, customerVisible: true, recurrence: 'one_time', depositEligible: false }]);
+
+    await expect(sendQuote('q1', actor)).rejects.toMatchObject({ status: 409, code: 'DEPOSIT_INVALID' });
+  });
+
   it('does NOT gate a quote with no deposit configured (depositType none)', async () => {
     queueResult([{
       id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent', // non-draft -> INVALID_STATE, not DEPOSIT_INVALID
