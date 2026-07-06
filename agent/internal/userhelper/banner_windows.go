@@ -177,12 +177,14 @@ func showBannerOS(label string) bool {
 	bannerMu.Unlock()
 
 	ready := make(chan uintptr, 1)
-	go bannerWindowLoop(ready)
+	abandoned := make(chan struct{})
+	go bannerWindowLoop(ready, abandoned)
 	var hwnd uintptr
 	select {
 	case hwnd = <-ready:
 	case <-time.After(bannerCreateTimeout):
 		log.Warn("banner window creation timed out", "timeout", bannerCreateTimeout)
+		close(abandoned)
 		return false
 	}
 	if hwnd == 0 {
@@ -204,7 +206,12 @@ func hideBannerOS() {
 	}
 }
 
-func bannerWindowLoop(ready chan<- uintptr) {
+// bannerWindowLoop creates the banner window and pumps its message loop.
+// abandoned is closed by showBannerOS if it gave up waiting on ready (the
+// bannerCreateTimeout elapsed); if creation completes after that point, the
+// window is torn down immediately instead of being shown, so a late-creating
+// window never leaks an unclosable, unmanaged topmost pill.
+func bannerWindowLoop(ready chan<- uintptr, abandoned <-chan struct{}) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
@@ -229,6 +236,21 @@ func bannerWindowLoop(ready chan<- uintptr) {
 		ready <- 0
 		return
 	}
+
+	// The caller may have already given up waiting (bannerCreateTimeout
+	// elapsed) by the time we get here. ready is buffered with capacity 1, so
+	// a send on it always "succeeds" into the buffer whether or not
+	// showBannerOS is still receiving — send success alone can't signal
+	// whether the caller gave up. abandoned is the explicit signal: check it
+	// before doing anything visible, and if it's closed, tear down our own
+	// window and return without showing or pumping it.
+	select {
+	case <-abandoned:
+		procDestroyWindow.Call(hwnd)
+		return
+	default:
+	}
+
 	procSetLayeredWindowAttrs.Call(hwnd, 0, bannerAlpha, bLWAAlpha)
 	procShowWindow.Call(hwnd, bswShowNoactivate)
 	ready <- hwnd
