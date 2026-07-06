@@ -9,6 +9,12 @@
 // runtime code), so the two-branch rule is re-implemented here with integer-cents
 // math. Keeping it identical to the server rule guarantees the Pay button label can
 // never advertise a different amount than the checkout route actually charges.
+//
+// The input contract is sourced from @breeze/shared (type-only — erased at build,
+// as with InvoiceStatus in invoiceStatus.ts) so this re-implemented copy can never
+// structurally drift from the server's computeChargeNow signature.
+import type { DepositChargeInput } from '@breeze/shared';
+export type { DepositChargeInput };
 
 /** Money string → integer cents (mirrors quoteMath.toCents). Compare money in cents,
  *  never as floats. Null/empty/non-finite → 0. */
@@ -16,12 +22,6 @@ export function toCents(v: string | null): number {
   if (v === null || v === '') return 0;
   const n = Number(v);
   return Number.isFinite(n) ? Math.round(n * 100) : 0;
-}
-
-export interface DepositChargeInput {
-  depositDue: string | null;
-  amountPaid: string;
-  balance: string;
 }
 
 /** Deposit-first charge amount: when a deposit is set and still unmet, charge the

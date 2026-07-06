@@ -7,11 +7,16 @@ import { toCents, fromCents } from './quoteMath';
  * Stripe charge past what is owed. Pure + browser-safe: shared by the API
  * checkout paths and the portal/web "Pay" button labels.
  */
-export function computeChargeNow(inv: {
+/** Input to the deposit-first charge rule. Exported so the portal's re-implemented
+ *  copy (which can't import runtime code from this package) can import the TYPE and
+ *  cannot structurally drift from the server's contract. */
+export interface DepositChargeInput {
   depositDue: string | null;
   amountPaid: string;
   balance: string;
-}): { amount: string; isDeposit: boolean } {
+}
+
+export function computeChargeNow(inv: DepositChargeInput): { amount: string; isDeposit: boolean } {
   const balanceCents = toCents(inv.balance);
   const depositCents = inv.depositDue !== null ? toCents(inv.depositDue) : 0;
   const paidCents = toCents(inv.amountPaid);
