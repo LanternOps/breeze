@@ -2,19 +2,22 @@ import './setup';
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
+import { and, eq } from 'drizzle-orm';
 
 import { db, withSystemDbAccessContext } from '../../db';
 import {
   devices,
   deviceVulnerabilities,
+  organizationUsers,
   softwareProducts,
   softwareVulnerabilities,
   vulnerabilities,
   vulnerabilitySources,
 } from '../../db/schema';
 import { vulnerabilityRoutes } from '../../routes/vulnerabilities';
+import { clearPermissionCache } from '../../services/permissions';
 import { getTestDb } from './setup';
-import { setupTestEnvironment, type TestEnvironment } from './db-utils';
+import { createSite, setupTestEnvironment, type TestEnvironment } from './db-utils';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -28,6 +31,39 @@ function authHeaders(env: TestEnvironment) {
   return { Authorization: `Bearer ${env.token}` };
 }
 
+async function postJson(env: TestEnvironment, path: string, body: unknown): Promise<Response> {
+  return buildApp().request(path, {
+    method: 'POST',
+    headers: { ...authHeaders(env), 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+/** Read a device_vulnerabilities row bypassing RLS, to verify persisted state. */
+async function readFinding(id: string) {
+  return withSystemDbAccessContext(async () => {
+    const [row] = await db
+      .select()
+      .from(deviceVulnerabilities)
+      .where(eq(deviceVulnerabilities.id, id))
+      .limit(1);
+    return row;
+  });
+}
+
+/** Restrict an org-scope user to a specific set of sites (drives allowedSiteIds). */
+async function restrictUserToSites(env: TestEnvironment, siteIds: string[]) {
+  await withSystemDbAccessContext(async () => {
+    await db
+      .update(organizationUsers)
+      .set({ siteIds })
+      .where(and(eq(organizationUsers.userId, env.user.id), eq(organizationUsers.orgId, env.organization.id)));
+  });
+  // Permissions (incl. allowedSiteIds) are hot-cached per user — invalidate so
+  // the next request re-resolves the mutated membership.
+  await clearPermissionCache(env.user.id);
+}
+
 beforeEach(async () => {
   await withSystemDbAccessContext(async () => {
     await db.delete(deviceVulnerabilities);
@@ -38,12 +74,12 @@ beforeEach(async () => {
   });
 });
 
-async function seedDevice(env: TestEnvironment, suffix: string): Promise<string> {
+async function seedDevice(env: TestEnvironment, suffix: string, siteId?: string): Promise<string> {
   const [device] = await getTestDb()
     .insert(devices)
     .values({
       orgId: env.organization.id,
-      siteId: env.site.id,
+      siteId: siteId ?? env.site.id,
       agentId: `vuln-route-agent-${suffix}-${Date.now()}`,
       hostname: `vuln-route-host-${suffix}`,
       osType: 'windows',
@@ -495,5 +531,184 @@ describe('vulnerabilityRoutes', () => {
         patchAvailable: true,
       }),
     ]);
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // fetchFleetFindingRows-backed endpoints (GET /software, GET /stats) exercised
+  // against the REAL DB layer. Every unit test mocks this query; these prove the
+  // org-RLS + system-context catalog join actually runs end-to-end.
+  // ──────────────────────────────────────────────────────────────────────────
+
+  // System-context catalog join returns data: a regression that breaks the
+  // runOutsideDbContext+withSystemDbAccessContext catalog read makes every
+  // finding look orphaned (catalog row missing) and the queue silently empty.
+  runDb('GET /api/v1/vulnerabilities/software returns findings (system-context catalog join works)', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const deviceId = await seedDevice(env, 'sw-join');
+    const vuln = await seedCatalogVulnerability({
+      cveId: 'CVE-2026-90001',
+      severity: 'critical',
+      cvssScore: '9.5',
+      knownExploited: true,
+      patchAvailable: true,
+    });
+    await seedDeviceFinding({ orgId: env.organization.id, deviceId, vulnerabilityId: vuln, riskScore: '9.50' });
+
+    const res = await buildApp().request('/api/v1/vulnerabilities/software', { headers: authHeaders(env) });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { items: Array<{ deviceCount: number; cveIds: string[] }> };
+    // Not empty — the catalog join resolved the CVE so the finding stayed in the queue.
+    expect(body.items.length).toBeGreaterThan(0);
+    const totalDevices = body.items.reduce((sum, g) => sum + g.deviceCount, 0);
+    expect(totalDevices).toBe(1);
+    expect(body.items.some((g) => g.cveIds.includes('CVE-2026-90001'))).toBe(true);
+  });
+
+  // C2: cross-org isolation of the fleet queue. The software group key collapses
+  // same-product findings across orgs, so a leak here is fleet-wide. Seed findings
+  // in TWO orgs and prove an org-A caller sees only org-A rows/counts.
+  runDb('GET /software and GET /stats do not leak another org\'s findings into the fleet queue', async () => {
+    const envA = await setupTestEnvironment({ scope: 'organization' });
+    const envB = await setupTestEnvironment({ scope: 'organization' });
+    const deviceA = await seedDevice(envA, 'iso-a');
+    const deviceB = await seedDevice(envB, 'iso-b');
+
+    // Org A: a plain high finding, no KEV. Org B: a KEV critical finding — if it
+    // leaked, org A's kev/critical counts would be inflated.
+    const vulnA = await seedCatalogVulnerability({ cveId: 'CVE-2026-91001', severity: 'high', cvssScore: '7.5' });
+    const vulnB = await seedCatalogVulnerability({
+      cveId: 'CVE-2026-91002',
+      severity: 'critical',
+      cvssScore: '9.9',
+      knownExploited: true,
+    });
+    await seedDeviceFinding({ orgId: envA.organization.id, deviceId: deviceA, vulnerabilityId: vulnA, riskScore: '7.50' });
+    await seedDeviceFinding({ orgId: envB.organization.id, deviceId: deviceB, vulnerabilityId: vulnB, riskScore: '9.90' });
+
+    const swRes = await buildApp().request('/api/v1/vulnerabilities/software', { headers: authHeaders(envA) });
+    expect(swRes.status).toBe(200);
+    const swBody = await swRes.json() as { items: Array<{ deviceCount: number; cveIds: string[]; kevCveCount: number }> };
+    // Exactly org A's single device across all groups; org B's device never appears.
+    expect(swBody.items.reduce((sum, g) => sum + g.deviceCount, 0)).toBe(1);
+    expect(swBody.items.some((g) => g.cveIds.includes('CVE-2026-91002'))).toBe(false);
+    expect(swBody.items.every((g) => g.kevCveCount === 0)).toBe(true);
+
+    const statsRes = await buildApp().request('/api/v1/vulnerabilities/stats', { headers: authHeaders(envA) });
+    expect(statsRes.status).toBe(200);
+    const stats = await statsRes.json() as {
+      totalFindings: number;
+      criticalOpen: number;
+      kevCveCount: number;
+      kevDeviceCount: number;
+    };
+    expect(stats.totalFindings).toBe(1); // only org A's finding
+    expect(stats.criticalOpen).toBe(0); // org B's critical must not leak
+    expect(stats.kevCveCount).toBe(0);
+    expect(stats.kevDeviceCount).toBe(0);
+  });
+
+  // Site narrowing + fail-closed: an org-scope caller restricted to a site sees
+  // only that site's findings; an empty allowed-sites set returns nothing.
+  runDb('GET /software narrows to the caller\'s allowed sites and fails closed when empty', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const siteB = await createSite({ orgId: env.organization.id, name: 'Second Site' });
+    const deviceInSiteA = await seedDevice(env, 'site-a', env.site.id);
+    const deviceInSiteB = await seedDevice(env, 'site-b', siteB.id);
+
+    const vulnA = await seedCatalogVulnerability({ cveId: 'CVE-2026-92001', severity: 'high', cvssScore: '7.5' });
+    const vulnB = await seedCatalogVulnerability({ cveId: 'CVE-2026-92002', severity: 'high', cvssScore: '7.4' });
+    await seedDeviceFinding({ orgId: env.organization.id, deviceId: deviceInSiteA, vulnerabilityId: vulnA, riskScore: '7.50' });
+    await seedDeviceFinding({ orgId: env.organization.id, deviceId: deviceInSiteB, vulnerabilityId: vulnB, riskScore: '7.40' });
+
+    // Restrict to site A only: only site-A's finding is visible.
+    await restrictUserToSites(env, [env.site.id]);
+    const narrowedRes = await buildApp().request('/api/v1/vulnerabilities/software', { headers: authHeaders(env) });
+    expect(narrowedRes.status).toBe(200);
+    const narrowed = await narrowedRes.json() as { items: Array<{ deviceCount: number; cveIds: string[] }> };
+    expect(narrowed.items.reduce((sum, g) => sum + g.deviceCount, 0)).toBe(1);
+    expect(narrowed.items.some((g) => g.cveIds.includes('CVE-2026-92002'))).toBe(false);
+
+    // Empty allowed-sites → fail closed (no findings at all).
+    await restrictUserToSites(env, []);
+    const closedRes = await buildApp().request('/api/v1/vulnerabilities/software', { headers: authHeaders(env) });
+    expect(closedRes.status).toBe(200);
+    const closed = await closedRes.json() as { items: unknown[] };
+    expect(closed.items).toEqual([]);
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Bulk-write isolation + lifecycle against the REAL DB.
+  // ──────────────────────────────────────────────────────────────────────────
+
+  // test#3: a cross-org finding id submitted to /bulk/accept-risk is SKIPPED
+  // (RLS hides it → not_found) and the row stays untouched in the other org.
+  runDb('POST /bulk/accept-risk skips a cross-org finding id and leaves the row untouched', async () => {
+    const envA = await setupTestEnvironment({ scope: 'organization' });
+    const envB = await setupTestEnvironment({ scope: 'organization' });
+    const deviceB = await seedDevice(envB, 'xorg-b');
+    const vulnB = await seedCatalogVulnerability({ cveId: 'CVE-2026-93001', severity: 'high', cvssScore: '7.5' });
+    const findingB = await seedDeviceFinding({
+      orgId: envB.organization.id,
+      deviceId: deviceB,
+      vulnerabilityId: vulnB,
+      status: 'open',
+    });
+
+    const future = new Date(Date.now() + 30 * 864e5).toISOString();
+    const res = await postJson(envA, '/api/v1/vulnerabilities/bulk/accept-risk', {
+      deviceVulnerabilityIds: [findingB],
+      reason: 'attempted cross-org accept',
+      acceptedUntil: future,
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { success: boolean; succeeded: number; skipped: Array<{ id: string; reason: string }> };
+    expect(body.success).toBe(false);
+    expect(body.succeeded).toBe(0);
+    expect(body.skipped).toEqual([{ id: findingB, reason: 'not_found' }]);
+
+    // The org-B row is unchanged: still open, no acceptance metadata written.
+    const row = await readFinding(findingB);
+    expect(row?.status).toBe('open');
+    expect(row?.acceptedBy).toBeNull();
+    expect(row?.acceptedUntil).toBeNull();
+    expect(row?.mitigationNote).toBeNull();
+  });
+
+  // test#4: reopen clears every resolution field so the finding is newly-open.
+  runDb('POST /:id/reopen clears status + acceptedBy/acceptedUntil/mitigationNote/resolvedAt', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const deviceId = await seedDevice(env, 'reopen');
+    const vuln = await seedCatalogVulnerability({ cveId: 'CVE-2026-94001', severity: 'high', cvssScore: '7.5' });
+    const finding = await seedDeviceFinding({
+      orgId: env.organization.id,
+      deviceId,
+      vulnerabilityId: vuln,
+      status: 'open',
+    });
+
+    const future = new Date(Date.now() + 30 * 864e5).toISOString();
+    const acceptRes = await postJson(env, `/api/v1/vulnerabilities/${finding}/accept-risk`, {
+      reason: 'temporary waiver',
+      acceptedUntil: future,
+    });
+    expect(acceptRes.status).toBe(200);
+
+    // Acceptance persisted the full waiver metadata.
+    const accepted = await readFinding(finding);
+    expect(accepted?.status).toBe('accepted');
+    expect(accepted?.acceptedBy).toBe(env.user.id);
+    expect(accepted?.acceptedUntil).not.toBeNull();
+    expect(accepted?.mitigationNote).toBe('temporary waiver');
+
+    const reopenRes = await postJson(env, `/api/v1/vulnerabilities/${finding}/reopen`, {});
+    expect(reopenRes.status).toBe(200);
+
+    // Reopen wiped every resolution field.
+    const reopened = await readFinding(finding);
+    expect(reopened?.status).toBe('open');
+    expect(reopened?.acceptedBy).toBeNull();
+    expect(reopened?.acceptedUntil).toBeNull();
+    expect(reopened?.mitigationNote).toBeNull();
+    expect(reopened?.resolvedAt).toBeNull();
   });
 });

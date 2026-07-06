@@ -1,5 +1,37 @@
+import {
+  VULN_SKIP_REASON_LABELS,
+  type BulkActionResult,
+  type CveCatalogRecord,
+  type FleetVulnStats,
+  type GroupFinding,
+  type RemediateResult,
+  type SkippedItem,
+  type SoftwareGroup,
+  type SoftwareGroupDetail,
+  type VulnSeverity,
+  type VulnSkipReason,
+  type VulnStatus,
+  type VulnTicketPriority,
+  type VulnTicketResult,
+} from '@breeze/shared';
+
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction } from '../runAction';
+
+// Re-export the shared fleet-triage domain types so existing web call sites that
+// import them from this module keep working (single source of truth is
+// @breeze/shared; this module is just the web-side barrel for them).
+export type {
+  BulkActionResult,
+  CveCatalogRecord,
+  FleetVulnStats,
+  GroupCve,
+  GroupFinding,
+  RemediateResult,
+  SoftwareGroup,
+  SoftwareGroupDetail,
+  VulnTicketResult,
+} from '@breeze/shared';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
@@ -11,11 +43,11 @@ export interface DeviceVulnerabilityItem {
   cveId: string;
   cvssScore: number | null;
   cvssVector: string | null;
-  severity: string | null;
+  severity: VulnSeverity | null;
   knownExploited: boolean;
   epssScore: number | null;
   riskScore: number | null;
-  status: string;
+  status: VulnStatus;
   detectedAt: string;
   patchAvailable: boolean;
 }
@@ -25,13 +57,13 @@ export interface FleetVulnerability {
   id: string; // vulnerabilityId (stable aggregate key)
   cveId: string;
   cvssScore: number | null;
-  severity: string | null;
+  severity: VulnSeverity | null;
   knownExploited: boolean;
   epssScore: number | null;
   riskScore: number | null;
   deviceCount: number;
   patchAvailable: boolean;
-  statuses: string[];
+  statuses: VulnStatus[];
 }
 
 export interface VulnerabilityFilters {
@@ -99,102 +131,10 @@ export interface VulnFleetFilters {
   expiringWithinDays?: number;
 }
 
-export interface SoftwareGroup {
-  groupKey: string;
-  kind: 'software' | 'os';
-  name: string;
-  vendor: string | null;
-  versions: string[];
-  deviceCount: number;
-  cveCount: number;
-  cveIds: string[];
-  worstSeverity: string | null;
-  maxRiskScore: number | null;
-  kevCveCount: number;
-  maxEpss: number | null;
-  patchReadyFindingCount: number;
-  patchReadyDeviceCount: number;
-  /** Distinct linked tickets; `number` is the human ticket number (null for legacy tickets). */
-  tickets: Array<{ id: string; number: string | null }>;
-}
-
-export interface GroupCve {
-  cveId: string;
-  vulnerabilityId: string;
-  severity: string | null;
-  cvssScore: number | null;
-  epssScore: number | null;
-  knownExploited: boolean;
-  patchAvailable: boolean;
-  maxRiskScore: number | null;
-}
-
-export interface GroupFinding {
-  deviceVulnerabilityId: string;
-  deviceId: string;
-  deviceName: string;
-  orgId: string;
-  orgName: string | null;
-  cveId: string;
-  status: string;
-  patchAvailable: boolean;
-  riskScore: number | null;
-  detectedAt: string;
-  /** ISO expiry of an accepted-risk window; null unless status is 'accepted'. */
-  acceptedUntil: string | null;
-  ticketId: string | null;
-  ticketNumber: string | null;
-}
-
-export interface SoftwareGroupDetail {
-  group: SoftwareGroup;
-  cves: GroupCve[];
-  findings: GroupFinding[];
-}
-
-export interface FleetVulnStats {
-  criticalOpen: number;
-  kevCveCount: number;
-  kevDeviceCount: number;
-  patchReadyFindingCount: number;
-  acceptedExpiringSoon: number;
-  /** Findings across ALL statuses — "has scanning ever produced data". Feeds
-   *  the clean-fleet vs never-scanned empty-state split. */
-  totalFindings: number;
-  /** Most recent detectedAt across all findings (ISO), null when none exist. */
-  lastDetectedAt: string | null;
-}
-
-export interface CveCatalogRecord {
-  cveId: string;
-  description: string;
-  references: unknown;
-  cvssVersion: string | null;
-  cvssVector: string | null;
-  cvssScore: number | null;
-  epssScore: number | null;
-  knownExploited: boolean;
-  patchAvailable: boolean;
-  severity: string | null;
-  publishedAt: string | null;
-  modifiedAt: string | null;
-}
-
+/** GET /vulnerabilities/:cveId/devices — the catalog record plus its findings. Web-only wire wrapper. */
 export interface CveDevicesPayload {
   cve: CveCatalogRecord;
   findings: GroupFinding[];
-}
-
-export interface BulkActionResult {
-  success: boolean;
-  succeeded: number;
-  skipped: Array<{ id: string; reason: string }>;
-}
-
-export interface VulnTicketResult {
-  success: boolean;
-  tickets: Array<{ ticketId: string; orgId: string; findingCount: number }>;
-  skipped: Array<{ id: string; reason: string }>;
 }
 
 // ---- Pure helpers (exported for tests) ----
@@ -209,10 +149,25 @@ export function buildVulnQuery(params: Record<string, string | number | boolean 
   return s ? `?${s}` : '';
 }
 
-export function bulkSummary(verb: string, succeeded: number, skipped: Array<{ id: string; reason: string }>): string {
+/**
+ * Summarize a `skipped[]` list as distinct reasons with counts, mapping each
+ * `VulnSkipReason` CODE to its human label (`VULN_SKIP_REASON_LABELS`). Unknown
+ * codes fall back to the 'unknown' label so a new server code never renders raw.
+ * e.g. "10 not found, 8 site access denied".
+ */
+export function summarizeSkipReasons(skipped: SkippedItem[]): string {
+  const counts = new Map<string, number>();
+  for (const { reason } of skipped) {
+    const label = VULN_SKIP_REASON_LABELS[reason as VulnSkipReason] ?? VULN_SKIP_REASON_LABELS.unknown;
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  return [...counts.entries()].map(([label, count]) => `${count} ${label}`).join(', ');
+}
+
+export function bulkSummary(verb: string, succeeded: number, skipped: SkippedItem[]): string {
   const base = `${succeeded} ${verb}`;
   if (skipped.length === 0) return base;
-  return `${base}, ${skipped.length} skipped — ${skipped[0]!.reason}`;
+  return `${base}, ${skipped.length} skipped — ${summarizeSkipReasons(skipped)}`;
 }
 
 // ---- Reads: fleet triage ----
@@ -254,11 +209,6 @@ export async function fetchCveDevices(cveId: string): Promise<CveDevicesPayload>
 
 // ---- Mutations (all wrapped in runAction so every outcome surfaces a toast) ----
 
-export interface RemediateResult {
-  scheduled: number;
-  skipped: Array<{ id: string; reason: string }>;
-}
-
 export async function remediateVuln(deviceVulnerabilityIds: string[]): Promise<RemediateResult> {
   return runAction<RemediateResult>({
     request: () =>
@@ -270,7 +220,7 @@ export async function remediateVuln(deviceVulnerabilityIds: string[]): Promise<R
     errorFallback: 'Failed to schedule remediation',
     successMessage: (d) => bulkSummary(`remediation${d.scheduled === 1 ? '' : 's'} scheduled`, d.scheduled, d.skipped),
     parseSuccess: (data) => {
-      const d = data as { scheduled?: number; skipped?: Array<{ id: string; reason: string }> };
+      const d = data as { scheduled?: number; skipped?: SkippedItem[] };
       return { scheduled: d.scheduled ?? 0, skipped: d.skipped ?? [] };
     },
   });
@@ -323,6 +273,11 @@ function parseBulk(data: unknown): BulkActionResult {
   return { success: d.success ?? false, succeeded: d.succeeded ?? 0, skipped: d.skipped ?? [] };
 }
 
+/** Trailing skip clause for a ticket toast, e.g. ", 18 skipped — 18 access denied". */
+function ticketSkipSuffix(skipped: SkippedItem[]): string {
+  return skipped.length === 0 ? '' : `, ${skipped.length} skipped — ${summarizeSkipReasons(skipped)}`;
+}
+
 export async function bulkAcceptVulnRisk(
   deviceVulnerabilityIds: string[],
   payload: { reason: string; acceptedUntil: string },
@@ -359,7 +314,7 @@ export async function bulkMitigateVulns(
 
 export async function createVulnTicket(
   deviceVulnerabilityIds: string[],
-  payload: { title: string; description?: string; priority: 'low' | 'normal' | 'high' | 'urgent' },
+  payload: { title: string; priority: VulnTicketPriority; note?: string },
 ): Promise<VulnTicketResult> {
   return runAction<VulnTicketResult>({
     request: () =>
@@ -369,8 +324,15 @@ export async function createVulnTicket(
         body: JSON.stringify({ deviceVulnerabilityIds, ...payload }),
       }),
     errorFallback: 'Failed to create ticket',
-    successMessage: (d) =>
-      d.tickets.length === 1 ? 'Ticket created' : `${d.tickets.length} tickets created (one per organization)`,
+    // The server builds each org's device/CVE description itself, one ticket per
+    // org. Surface both the created count AND any per-org skips (SF#1) so a
+    // partial success (e.g. access denied on some orgs) is never silent. When
+    // ALL orgs are skipped the server returns success:false and runAction
+    // surfaces its message instead — this only runs on success.
+    successMessage: (d) => {
+      const base = d.tickets.length === 1 ? 'Ticket created' : `${d.tickets.length} tickets created (one per organization)`;
+      return `${base}${ticketSkipSuffix(d.skipped)}`;
+    },
     parseSuccess: (data) => {
       const d = data as Partial<VulnTicketResult>;
       return { success: d.success ?? false, tickets: d.tickets ?? [], skipped: d.skipped ?? [] };

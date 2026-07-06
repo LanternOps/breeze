@@ -26,7 +26,7 @@ vi.mock('../../lib/api/vulnerabilities', () => ({
   reopenVuln: vi.fn(),
 }));
 
-const sampleItem = {
+const sampleItem: api.DeviceVulnerabilityItem = {
   id: 'dv1',
   deviceId: 'd1',
   vulnerabilityId: 'v1',
@@ -42,14 +42,14 @@ const sampleItem = {
   patchAvailable: true,
 };
 
-const noPatchItem = {
+const noPatchItem: api.DeviceVulnerabilityItem = {
   ...sampleItem,
   id: 'dv3',
   cveId: 'CVE-2025-3',
   patchAvailable: false,
 };
 
-const acceptedItem = {
+const acceptedItem: api.DeviceVulnerabilityItem = {
   ...sampleItem,
   id: 'dv2',
   status: 'accepted',

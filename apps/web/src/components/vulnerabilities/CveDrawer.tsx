@@ -75,7 +75,7 @@ export function CveDrawer({
     try {
       const p = await fetchCveDevices(cveId);
       setPayload(p);
-      // Open findings are the actionable ones — pre-select them (spec: all selected by default).
+      // Pre-select only OPEN findings — they're the actionable ones; accepted/mitigated/patched rows start unchecked.
       setSelected(new Set(p.findings.filter((f) => f.status === 'open').map((f) => f.deviceVulnerabilityId)));
     } catch (err) {
       setPayload(null);

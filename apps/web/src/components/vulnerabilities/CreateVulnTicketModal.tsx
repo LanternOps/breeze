@@ -1,5 +1,7 @@
 import { useId, useMemo, useState } from 'react';
 
+import { VULN_TICKET_PRIORITIES, type VulnTicketPriority } from '@breeze/shared';
+
 import { Dialog } from '../shared/Dialog';
 import type { GroupFinding } from '../../lib/api/vulnerabilities';
 
@@ -8,20 +10,6 @@ const BTN =
 
 const INPUT =
   'mt-1 w-full rounded-md border bg-background px-2 py-1 text-sm focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary';
-
-const PRIORITIES = ['low', 'normal', 'high', 'urgent'] as const;
-type Priority = (typeof PRIORITIES)[number];
-
-function buildDescription(findings: GroupFinding[]): string {
-  const cves = [...new Set(findings.map((f) => f.cveId))].sort();
-  const devices = [...new Set(findings.map((f) => f.deviceName))].sort();
-  return [
-    `CVEs (${cves.length}): ${cves.join(', ')}`,
-    `Devices (${devices.length}): ${devices.join(', ')}`,
-    '',
-    'Created from the Breeze vulnerabilities triage queue.',
-  ].join('\n');
-}
 
 export function CreateVulnTicketModal({
   findings,
@@ -34,11 +22,11 @@ export function CreateVulnTicketModal({
   defaultTitle: string;
   busy: boolean;
   onCancel: () => void;
-  onSubmit: (payload: { title: string; description: string; priority: Priority }) => void;
+  onSubmit: (payload: { title: string; priority: VulnTicketPriority; note: string }) => void;
 }) {
   const [title, setTitle] = useState(defaultTitle);
-  const [description, setDescription] = useState(() => buildDescription(findings));
-  const [priority, setPriority] = useState<Priority>('normal');
+  const [note, setNote] = useState('');
+  const [priority, setPriority] = useState<VulnTicketPriority>('normal');
   const titleId = useId();
 
   const orgCount = useMemo(() => new Set(findings.map((f) => f.orgId)).size, [findings]);
@@ -73,24 +61,31 @@ export function CreateVulnTicketModal({
             />
           </label>
           <label className="block text-sm">
-            <span className="text-muted-foreground">Description</span>
+            <span className="text-muted-foreground">Note (optional)</span>
             <textarea
-              data-testid="vuln-ticket-description"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              rows={5}
+              data-testid="vuln-ticket-note"
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              rows={4}
+              placeholder="Add any context for the technician (optional)"
               className={INPUT}
             />
           </label>
+          {/* The affected devices and CVEs are enumerated server-side, scoped to
+              each organization, so a cross-org selection never leaks one org's
+              device/CVE list into another org's ticket. */}
+          <p data-testid="vuln-ticket-auto-detail-note" className="text-xs text-muted-foreground">
+            Device and CVE details are added automatically, per organization.
+          </p>
           <label className="block text-sm">
             <span className="text-muted-foreground">Priority</span>
             <select
               data-testid="vuln-ticket-priority"
               value={priority}
-              onChange={(e) => setPriority(e.target.value as Priority)}
+              onChange={(e) => setPriority(e.target.value as VulnTicketPriority)}
               className={INPUT}
             >
-              {PRIORITIES.map((p) => (
+              {VULN_TICKET_PRIORITIES.map((p) => (
                 <option key={p} value={p}>{p[0]!.toUpperCase() + p.slice(1)}</option>
               ))}
             </select>
@@ -105,7 +100,7 @@ export function CreateVulnTicketModal({
             data-testid="vuln-ticket-submit"
             className={`${BTN} bg-primary text-primary-foreground hover:bg-primary/90`}
             disabled={busy || title.trim().length === 0}
-            onClick={() => onSubmit({ title: title.trim(), description, priority })}
+            onClick={() => onSubmit({ title: title.trim(), priority, note: note.trim() })}
           >
             Create ticket
           </button>

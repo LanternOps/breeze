@@ -3,6 +3,15 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, desc, eq, gt, ilike, inArray, lte, type SQL } from 'drizzle-orm';
 
+import {
+  VULN_STATUS_FILTERS,
+  VULN_SEVERITIES,
+  VULN_TICKET_PRIORITIES,
+  VULN_SKIP_REASON_LABELS,
+  type SkippedItem,
+  type VulnSkipReason,
+} from '@breeze/shared';
+
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { deviceVulnerabilities, devices, vulnerabilities } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
@@ -11,7 +20,7 @@ import { remediateVulnerabilities } from '../services/vulnerabilityRemediation';
 import { buildGroupDetail, computeStats, filterFindings, groupFindings, toGroupFinding } from '../services/vulnerabilityFleetAggregation';
 import { fetchCveCatalogRecord, fetchFleetFindingRows } from '../services/vulnerabilityFleetQueries';
 import { writeRouteAudit } from '../services/auditEvents';
-import { createTicket, TicketServiceError } from '../services/ticketService';
+import { createTicket } from '../services/ticketService';
 import { platformAdminMiddleware } from '../middleware/platformAdmin';
 import { userRateLimit } from '../middleware/userRateLimit';
 import { enqueueVulnSourceSync, enqueueVulnCorrelation } from '../jobs/vulnerabilityJobs';
@@ -27,13 +36,13 @@ const statusSchema = z
   .string()
   .trim()
   .transform((value) => value.toLowerCase())
-  .pipe(z.enum(['open', 'patched', 'mitigated', 'accepted', 'all']));
+  .pipe(z.enum(VULN_STATUS_FILTERS));
 
 const severitySchema = z
   .string()
   .trim()
   .transform((value) => value.toLowerCase())
-  .pipe(z.enum(['low', 'medium', 'high', 'critical']));
+  .pipe(z.enum(VULN_SEVERITIES));
 
 // Query-string boolean: accepts "true"/"false" (any case), rejects everything else.
 const boolQuerySchema = z
@@ -88,11 +97,17 @@ const bulkMitigateSchema = z.object({
   note: z.string().trim().min(1).max(2000),
 });
 
+// The client sends ONLY the finding ids, a title, a priority, and an optional
+// free-text note. It does NOT send a `description`: the old `description` field
+// enumerated device names + CVE ids across ALL selected orgs and was passed
+// verbatim into every per-org ticket, leaking one org's hostnames/CVEs into
+// another org's (org-readable) ticket. The server now builds each ticket's
+// description itself, per org, from that org's rows only (see the /tickets route).
 const bulkTicketSchema = z.object({
   deviceVulnerabilityIds: z.array(z.string().uuid()).min(1).max(200),
   title: z.string().trim().min(1).max(255),
-  description: z.string().max(50_000).optional(),
-  priority: z.enum(['low', 'normal', 'high', 'urgent']).default('normal'),
+  note: z.string().trim().max(50_000).optional(),
+  priority: z.enum(VULN_TICKET_PRIORITIES).default('normal'),
 });
 
 const softwareQuerySchema = z.object({
@@ -184,8 +199,44 @@ async function loadFindingForWrite(id: string, auth: AuthContext): Promise<Findi
   return { ok: true, row };
 }
 
-type BulkFindingRow = { id: string; orgId: string; deviceId: string; status: string };
-type BulkAccess = { valid: BulkFindingRow[]; skipped: Array<{ id: string; reason: string }> };
+type BulkFindingRow = { id: string; orgId: string; deviceId: string; vulnerabilityId: string; status: string };
+type BulkAccess = { valid: BulkFindingRow[]; skipped: SkippedItem[] };
+
+/** Summarize distinct skip CODES as human prose for an all-skipped outcome, e.g.
+ *  "5 no available patch, 2 not an open vulnerability" (labels from the shared map). */
+function describeSkips(skipped: SkippedItem[]): string {
+  const counts = new Map<VulnSkipReason, number>();
+  for (const s of skipped) counts.set(s.reason, (counts.get(s.reason) ?? 0) + 1);
+  return [...counts.entries()].map(([reason, n]) => `${n} ${VULN_SKIP_REASON_LABELS[reason]}`).join(', ');
+}
+
+/**
+ * Build a ticket description for ONE org's findings, from server-resolved data
+ * only. `rows` MUST all belong to the same org (the caller groups by org first),
+ * so the deduped CVE ids and device names below reference nothing outside that
+ * tenant. The optional user `note` is appended verbatim. Ids missing from the
+ * lookup maps (device deleted / catalog purged mid-request) are dropped rather
+ * than surfaced as blanks.
+ */
+function buildTicketDescription(
+  rows: BulkFindingRow[],
+  deviceNameById: Map<string, string>,
+  cveByVulnId: Map<string, string>,
+  note?: string,
+): string {
+  const cves = [...new Set(rows.map((r) => cveByVulnId.get(r.vulnerabilityId)).filter((v): v is string => !!v))].sort();
+  const deviceNames = [
+    ...new Set(rows.map((r) => deviceNameById.get(r.deviceId)).filter((v): v is string => !!v)),
+  ].sort((a, b) => a.localeCompare(b));
+
+  const lines = [`Vulnerability remediation request covering ${rows.length} finding(s).`, ''];
+  lines.push(`CVEs (${cves.length}): ${cves.length > 0 ? cves.join(', ') : 'n/a'}`);
+  lines.push(`Affected devices (${deviceNames.length}): ${deviceNames.length > 0 ? deviceNames.join(', ') : 'n/a'}`);
+  if (note) {
+    lines.push('', note);
+  }
+  return lines.join('\n');
+}
 
 /**
  * Batch analogue of loadFindingForWrite: resolves each id to a finding the
@@ -200,6 +251,7 @@ async function loadFindingsForBulkWrite(ids: string[], auth: AuthContext): Promi
       id: deviceVulnerabilities.id,
       orgId: deviceVulnerabilities.orgId,
       deviceId: deviceVulnerabilities.deviceId,
+      vulnerabilityId: deviceVulnerabilities.vulnerabilityId,
       status: deviceVulnerabilities.status,
     })
     .from(deviceVulnerabilities)
@@ -218,21 +270,21 @@ async function loadFindingsForBulkWrite(ids: string[], auth: AuthContext): Promi
   const deviceById = new Map(deviceRows.map((d) => [d.id, d]));
 
   const valid: BulkFindingRow[] = [];
-  const skipped: Array<{ id: string; reason: string }> = [];
+  const skipped: SkippedItem[] = [];
   for (const id of unique) {
     const row = byId.get(id);
     if (!row) {
-      skipped.push({ id, reason: 'finding not found' });
+      skipped.push({ id, reason: 'not_found' });
       continue;
     }
     const device = deviceById.get(row.deviceId);
     if (!device) {
       // Device outside the caller's org scope reads as not-found (no existence leak).
-      skipped.push({ id, reason: 'finding not found' });
+      skipped.push({ id, reason: 'not_found' });
       continue;
     }
     if (auth.canAccessSite && !auth.canAccessSite(device.siteId)) {
-      skipped.push({ id, reason: 'site access denied' });
+      skipped.push({ id, reason: 'site_access_denied' });
       continue;
     }
     valid.push(row);
@@ -619,10 +671,17 @@ vulnerabilityRoutes.post(
       auth,
     );
     // runAction treats {success:false} as a failure; report success when at least
-    // one finding was scheduled (or nothing was asked).
+    // one finding was scheduled (or nothing was asked). When nothing was scheduled
+    // but items were skipped, surface WHY (distinct skip reasons) so the client
+    // shows the real cause instead of a generic "Failed to schedule remediation."
+    const message =
+      result.scheduled === 0 && result.skipped.length > 0
+        ? `Nothing scheduled: ${describeSkips(result.skipped)}`
+        : undefined;
     return c.json({
       success: result.scheduled > 0 || deviceVulnerabilityIds.length === 0,
       ...result,
+      ...(message ? { message } : {}),
     });
   },
 );
@@ -704,15 +763,20 @@ vulnerabilityRoutes.post(
 // POST /tickets — create native ticket(s) from vulnerability findings, splitting
 // a cross-org selection into one ticket per org (a ticket is org-owned, so
 // grouping by org avoids leaking device/finding data across tenants into a
-// single ticket). Static single-segment path — registered alongside the other
-// bulk POST routes above, before the `/:id/*` POST routes below.
+// single ticket). BOTH the finding<->ticket linkage AND the ticket description
+// CONTENT are org-scoped server-side: each ticket's description is built here
+// from ONLY that org's findings (its own device names + CVE ids, resolved from
+// server-side data, never from client input), so org A's hostnames/CVEs can
+// never appear in org B's ticket. The client supplies only ids/title/priority
+// and an optional free-text note. Static single-segment path — registered
+// alongside the other bulk POST routes above, before the `/:id/*` POST routes.
 vulnerabilityRoutes.post(
   '/tickets',
   requirePermission(PERMISSIONS.TICKETS_WRITE.resource, PERMISSIONS.TICKETS_WRITE.action),
   zValidator('json', bulkTicketSchema),
   async (c) => {
     const auth = c.get('auth');
-    const { deviceVulnerabilityIds, title, description, priority } = c.req.valid('json');
+    const { deviceVulnerabilityIds, title, note, priority } = c.req.valid('json');
 
     const { valid, skipped } = await loadFindingsForBulkWrite(deviceVulnerabilityIds, auth);
 
@@ -723,12 +787,43 @@ vulnerabilityRoutes.post(
       else byOrg.set(row.orgId, [row]);
     }
 
+    // Resolve display data (device names + CVE ids) for the accessible findings
+    // ONCE, from server-side tables — NOT from client input. Device names come
+    // from the request (RLS-scoped) context; the CVE catalog is global reference
+    // data read under a system context (mirrors readCatalogRows). These maps are
+    // consumed per-org below so each ticket's description contains only its own
+    // org's data.
+    const validDeviceIds = [...new Set(valid.map((r) => r.deviceId))];
+    const deviceNameRows =
+      validDeviceIds.length > 0
+        ? await db
+            .select({ id: devices.id, hostname: devices.hostname, displayName: devices.displayName })
+            .from(devices)
+            .where(inArray(devices.id, validDeviceIds))
+        : [];
+    const deviceNameById = new Map(deviceNameRows.map((d) => [d.id, d.displayName ?? d.hostname]));
+
+    const validVulnIds = [...new Set(valid.map((r) => r.vulnerabilityId))];
+    const cveRows =
+      validVulnIds.length > 0
+        ? await runOutsideDbContext(() =>
+            withSystemDbAccessContext(() =>
+              db
+                .select({ id: vulnerabilities.id, cveId: vulnerabilities.cveId })
+                .from(vulnerabilities)
+                .where(inArray(vulnerabilities.id, validVulnIds)),
+            ),
+          )
+        : [];
+    const cveByVulnId = new Map(cveRows.map((v) => [v.id, v.cveId]));
+
     const tickets: Array<{ ticketId: string; orgId: string; findingCount: number }> = [];
     for (const [orgId, rows] of byOrg) {
       if (!auth.canAccessOrg(orgId)) {
-        for (const r of rows) skipped.push({ id: r.id, reason: 'access to organization denied' });
+        for (const r of rows) skipped.push({ id: r.id, reason: 'org_access_denied' });
         continue;
       }
+      const description = buildTicketDescription(rows, deviceNameById, cveByVulnId, note);
       try {
         const ticket = await createTicket(
           { orgId, subject: title, description, priority, source: 'manual' },
@@ -746,13 +841,19 @@ vulnerabilityRoutes.post(
           details: { deviceVulnerabilityIds: rows.map((r) => r.id), title },
         });
         tickets.push({ ticketId: ticket.id, orgId, findingCount: rows.length });
-      } catch (err) {
-        const reason = err instanceof TicketServiceError ? err.message : 'failed to create ticket';
-        for (const r of rows) skipped.push({ id: r.id, reason });
+      } catch {
+        // TicketServiceError message is dynamic prose; collapse to the closest code.
+        for (const r of rows) skipped.push({ id: r.id, reason: 'ticket_create_failed' });
       }
     }
 
-    return c.json({ success: tickets.length > 0, tickets, skipped });
+    // All-skipped surfacing: when no ticket was created but items were skipped,
+    // tell the client WHY (distinct skip reasons) instead of a generic failure.
+    const message =
+      tickets.length === 0 && skipped.length > 0
+        ? `No tickets created: ${describeSkips(skipped)}`
+        : undefined;
+    return c.json({ success: tickets.length > 0, tickets, skipped, ...(message ? { message } : {}) });
   },
 );
 

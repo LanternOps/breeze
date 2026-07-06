@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useId, useRef, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
-// Extracted verbatim from settings/CatalogItemEditorDrawer.tsx so both drawers
-// keep identical chrome, animations, and a11y behavior.
+// Chrome/animation/a11y were copied from settings/CatalogItemEditorDrawer.tsx,
+// which still carries its own inline copy and was NOT migrated onto this
+// primitive — the two are independent duplicates; changes here do not
+// propagate there.
 const FOCUSABLE =
   'a[href],button:not([disabled]),textarea:not([disabled]),input:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])';
 

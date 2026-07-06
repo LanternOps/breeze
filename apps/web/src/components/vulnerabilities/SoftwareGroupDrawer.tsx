@@ -62,7 +62,7 @@ export function SoftwareGroupDrawer({
     try {
       const d = await fetchSoftwareGroupDetail(groupKey);
       setDetail(d);
-      // Open findings are the actionable ones — pre-select them (spec: all selected by default).
+      // Pre-select only OPEN findings — they're the actionable ones; accepted/mitigated/patched rows start unchecked.
       setSelected(new Set(d.findings.filter((f) => f.status === 'open').map((f) => f.deviceVulnerabilityId)));
     } catch (err) {
       setDetail(null);

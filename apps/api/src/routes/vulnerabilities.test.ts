@@ -459,15 +459,34 @@ describe('GET /vulnerabilities/:cveId/devices (CVE drawer payload)', () => {
   });
 });
 
-function mockBulkSelects(findingRows: unknown[], deviceRows: unknown[]) {
+/**
+ * Stub the db.select chain for a bulk-write route.
+ *
+ * loadFindingsForBulkWrite issues TWO selects (findings, then the site-gate
+ * devices lookup). The /tickets route issues TWO MORE after that when it has
+ * accessible findings: a device-name lookup (hostname/displayName) and a
+ * system-context CVE-id catalog lookup used to build each per-org ticket
+ * description server-side. Pass `deviceNameRows`/`cveRows` for /tickets; omit
+ * them for accept-risk / mitigate (which only consume the first two).
+ */
+function mockBulkSelects(
+  findingRows: unknown[],
+  deviceRows: unknown[],
+  deviceNameRows?: unknown[],
+  cveRows?: unknown[],
+) {
   const selectMock = vi.mocked(db.select);
   selectMock.mockReset();
-  selectMock.mockReturnValueOnce({
-    from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(findingRows) }),
-  } as never);
-  selectMock.mockReturnValueOnce({
-    from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(deviceRows) }),
-  } as never);
+  const resolveWhere = (rows: unknown[]) =>
+    ({ from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(rows) }) }) as never;
+  selectMock.mockReturnValueOnce(resolveWhere(findingRows));
+  selectMock.mockReturnValueOnce(resolveWhere(deviceRows));
+  if (deviceNameRows !== undefined) {
+    selectMock.mockReturnValueOnce(resolveWhere(deviceNameRows));
+  }
+  if (cveRows !== undefined) {
+    selectMock.mockReturnValueOnce(resolveWhere(cveRows));
+  }
 }
 
 const DV1 = '11111111-1111-1111-8111-111111111111';
@@ -510,7 +529,7 @@ describe('POST /vulnerabilities/bulk/accept-risk', () => {
     expect(body).toMatchObject({
       success: true,
       succeeded: 1,
-      skipped: [{ id: DV2, reason: 'finding not found' }],
+      skipped: [{ id: DV2, reason: 'not_found' }],
     });
     expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(
@@ -550,6 +569,57 @@ describe('POST /vulnerabilities/bulk/mitigate', () => {
       expect.anything(),
       expect.objectContaining({ action: 'vulnerability.mitigate', resourceId: DV1 }),
     );
+  });
+
+  // Parity with bulk/accept-risk: validation bounds + all-skipped outcome.
+  it('400s on validation failures (empty ids, >200 ids)', async () => {
+    granted.add('devices:write');
+    expect((await post('/bulk/mitigate', { deviceVulnerabilityIds: [], note: 'x' })).status).toBe(400);
+    expect((await post('/bulk/mitigate', {
+      deviceVulnerabilityIds: Array.from({ length: 201 }, () => DV1),
+      note: 'x',
+    })).status).toBe(400);
+  });
+
+  it('reports success:false when every item is skipped', async () => {
+    granted.add('devices:write');
+    mockBulkSelects([], []);
+    const res = await post('/bulk/mitigate', { deviceVulnerabilityIds: [DV1], note: 'firewalled' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(false);
+    expect(body.skipped).toHaveLength(1);
+  });
+});
+
+import { remediateVulnerabilities } from '../services/vulnerabilityRemediation';
+
+describe('POST /vulnerabilities/remediate — all-skipped surfacing', () => {
+  beforeEach(() => {
+    vi.mocked(remediateVulnerabilities).mockReset();
+  });
+
+  // SF#2: when nothing is scheduled but items were skipped, the route reports
+  // success:false AND a `message` naming the distinct skip reasons, so the
+  // client shows the real cause instead of a generic failure toast.
+  it('returns success:false plus a message when scheduled is 0 and items are skipped', async () => {
+    granted.add('devices:execute');
+    vi.mocked(remediateVulnerabilities).mockResolvedValue({
+      scheduled: 0,
+      skipped: [
+        { id: DV1, reason: 'no_available_patch' },
+        { id: DV2, reason: 'patch_not_approved' },
+      ],
+    });
+    const res = await post('/remediate', { deviceVulnerabilityIds: [DV1, DV2] });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(false);
+    expect(body.scheduled).toBe(0);
+    expect(typeof body.message).toBe('string');
+    // Human labels for the distinct skip codes appear in the summary.
+    expect(body.message).toContain('no available patch');
+    expect(body.message).toContain('patch not approved');
   });
 });
 
@@ -613,13 +683,23 @@ describe('POST /vulnerabilities/tickets', () => {
     granted.add('tickets:write');
     mockBulkSelects(
       [
-        { id: DV1, orgId: 'org-1', deviceId: 'dev-1', status: 'open' },
-        { id: DV2, orgId: 'org-1', deviceId: 'dev-1', status: 'open' },
-        { id: DV_ORG2, orgId: 'org-2', deviceId: 'dev-2', status: 'open' },
+        { id: DV1, orgId: 'org-1', deviceId: 'dev-1', vulnerabilityId: 'v-1', status: 'open' },
+        { id: DV2, orgId: 'org-1', deviceId: 'dev-1', vulnerabilityId: 'v-1', status: 'open' },
+        { id: DV_ORG2, orgId: 'org-2', deviceId: 'dev-2', vulnerabilityId: 'v-2', status: 'open' },
       ],
       [
         { id: 'dev-1', siteId: 'site-1' },
         { id: 'dev-2', siteId: 'site-2' },
+      ],
+      // device-name lookup + CVE catalog lookup (the two new server-side selects
+      // that build each per-org ticket description).
+      [
+        { id: 'dev-1', hostname: 'host-1', displayName: 'WS-01' },
+        { id: 'dev-2', hostname: 'host-2', displayName: 'WS-02' },
+      ],
+      [
+        { id: 'v-1', cveId: 'CVE-2026-0001' },
+        { id: 'v-2', cveId: 'CVE-2026-0002' },
       ],
     );
     vi.mocked(createTicket)
@@ -629,7 +709,7 @@ describe('POST /vulnerabilities/tickets', () => {
     const res = await post('/tickets', {
       deviceVulnerabilityIds: [DV1, DV2, DV_ORG2],
       title: 'Patch Chrome fleet-wide',
-      description: 'CVE-2026-0001',
+      note: 'Coordinate with the affected teams.',
       priority: 'high',
     });
     expect(res.status).toBe(200);
@@ -652,28 +732,111 @@ describe('POST /vulnerabilities/tickets', () => {
 
   it('skips findings in an org the caller cannot access', async () => {
     granted.add('tickets:write');
+    // The finding passes the org(RLS)+site gate (valid), so the two per-org
+    // description selects DO run before the byOrg canAccessOrg check rejects it.
     mockBulkSelects(
-      [{ id: DV1, orgId: 'org-denied', deviceId: 'dev-1', status: 'open' }],
+      [{ id: DV1, orgId: 'org-denied', deviceId: 'dev-1', vulnerabilityId: 'v-1', status: 'open' }],
       [{ id: 'dev-1', siteId: 'site-1' }],
+      [{ id: 'dev-1', hostname: 'host-1', displayName: 'WS-01' }],
+      [{ id: 'v-1', cveId: 'CVE-2026-0001' }],
     );
     const res = await post('/tickets', { deviceVulnerabilityIds: [DV1], title: 'x' });
     const body = await res.json();
     expect(body.success).toBe(false);
     expect(body.tickets).toEqual([]);
-    expect(body.skipped).toEqual([{ id: DV1, reason: 'access to organization denied' }]);
+    expect(body.skipped).toEqual([{ id: DV1, reason: 'org_access_denied' }]);
     expect(vi.mocked(createTicket)).not.toHaveBeenCalled();
   });
 
-  it('maps a TicketServiceError into per-item skips without failing the batch', async () => {
+  it('maps a TicketServiceError into per-item skips (ticket_create_failed) without failing the batch', async () => {
     granted.add('tickets:write');
     mockBulkSelects(
-      [{ id: DV1, orgId: 'org-1', deviceId: 'dev-1', status: 'open' }],
+      [{ id: DV1, orgId: 'org-1', deviceId: 'dev-1', vulnerabilityId: 'v-1', status: 'open' }],
       [{ id: 'dev-1', siteId: 'site-1' }],
+      [{ id: 'dev-1', hostname: 'host-1', displayName: 'WS-01' }],
+      [{ id: 'v-1', cveId: 'CVE-2026-0001' }],
     );
     vi.mocked(createTicket).mockRejectedValue(new TicketServiceError('Organization not found', 404));
     const res = await post('/tickets', { deviceVulnerabilityIds: [DV1], title: 'x' });
     const body = await res.json();
     expect(body.success).toBe(false);
-    expect(body.skipped).toEqual([{ id: DV1, reason: 'Organization not found' }]);
+    // Dynamic TicketServiceError prose collapses to the stable skip code.
+    expect(body.skipped).toEqual([{ id: DV1, reason: 'ticket_create_failed' }]);
+  });
+
+  // C1 REGRESSION GUARD (critical cross-tenant leak fix): the server now builds
+  // each per-org ticket's description ITSELF from ONLY that org's rows. Prove
+  // org A's description references org A's device/CVE and NEVER org B's, and vice
+  // versa — the old client-supplied `description` enumerated every org's data and
+  // was passed verbatim into every ticket, leaking hostnames/CVEs across tenants.
+  it('C1: per-org ticket description contains only that org\'s device names and CVEs (no cross-tenant leak)', async () => {
+    granted.add('tickets:write');
+    mockBulkSelects(
+      [
+        { id: DV1, orgId: 'org-1', deviceId: 'dev-a', vulnerabilityId: 'v-a', status: 'open' },
+        { id: DV_ORG2, orgId: 'org-2', deviceId: 'dev-b', vulnerabilityId: 'v-b', status: 'open' },
+      ],
+      [
+        { id: 'dev-a', siteId: 'site-1' },
+        { id: 'dev-b', siteId: 'site-2' },
+      ],
+      [
+        { id: 'dev-a', hostname: 'host-a', displayName: 'WS-ALPHA' },
+        { id: 'dev-b', hostname: 'host-b', displayName: 'WS-BRAVO' },
+      ],
+      [
+        { id: 'v-a', cveId: 'CVE-2026-AAAA' },
+        { id: 'v-b', cveId: 'CVE-2026-BBBB' },
+      ],
+    );
+    vi.mocked(createTicket)
+      .mockResolvedValueOnce({ id: 't-a' } as never)
+      .mockResolvedValueOnce({ id: 't-b' } as never);
+
+    const res = await post('/tickets', {
+      deviceVulnerabilityIds: [DV1, DV_ORG2],
+      title: 'Remediate fleet',
+    });
+    expect(res.status).toBe(200);
+
+    // Map each createTicket call's org to the description the server built for it.
+    const descByOrg = new Map<string, string>();
+    for (const [payload] of vi.mocked(createTicket).mock.calls) {
+      descByOrg.set((payload as { orgId: string }).orgId, (payload as { description: string }).description);
+    }
+
+    const orgADesc = descByOrg.get('org-1')!;
+    const orgBDesc = descByOrg.get('org-2')!;
+    expect(orgADesc).toBeDefined();
+    expect(orgBDesc).toBeDefined();
+
+    // Org A's ticket carries ONLY org A's device + CVE.
+    expect(orgADesc).toContain('WS-ALPHA');
+    expect(orgADesc).toContain('CVE-2026-AAAA');
+    expect(orgADesc).not.toContain('WS-BRAVO');
+    expect(orgADesc).not.toContain('CVE-2026-BBBB');
+
+    // Org B's ticket carries ONLY org B's device + CVE.
+    expect(orgBDesc).toContain('WS-BRAVO');
+    expect(orgBDesc).toContain('CVE-2026-BBBB');
+    expect(orgBDesc).not.toContain('WS-ALPHA');
+    expect(orgBDesc).not.toContain('CVE-2026-AAAA');
+  });
+
+  // SF#1: all-skipped /tickets surfaces WHY via a `message` (not a silent
+  // success:false). Every id is unknown → not_found; no ticket is created.
+  it('SF#1: returns success:false plus a message summarizing skip reasons when nothing is ticketed', async () => {
+    granted.add('tickets:write');
+    // Empty findings → every id skipped as not_found; the two per-org selects
+    // never run (no accessible findings), so only the first select is consumed.
+    mockBulkSelects([], []);
+    const res = await post('/tickets', { deviceVulnerabilityIds: [DV1, DV2], title: 'x' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(false);
+    expect(body.tickets).toEqual([]);
+    expect(typeof body.message).toBe('string');
+    // Message summarizes the distinct skip reasons using the human label.
+    expect(body.message).toContain('finding not found');
   });
 });

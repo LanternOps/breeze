@@ -192,4 +192,32 @@ describe('CveDrawer', () => {
     expect(summary).toHaveTextContent('WS-01');
     expect(summary).not.toHaveTextContent('CVE-2026-0001');
   });
+
+  it('shows an inline retry on fetch failure and recovers on retry', async () => {
+    vi.mocked(api.fetchCveDevices).mockRejectedValueOnce(new Error('boom'));
+    render(<CveDrawer cveId="CVE-2026-0001" onClose={() => {}} onActionComplete={() => {}} />);
+    expect(await screen.findByTestId('vuln-drawer-error')).toHaveTextContent('boom');
+    fireEvent.click(screen.getByTestId('vuln-drawer-retry'));
+    expect(await screen.findByTestId('vuln-finding-check-dv-1')).toBeInTheDocument();
+  });
+
+  it('reloads and notifies after a partial-skip bulk accept (some findings skipped)', async () => {
+    // A partial success (non-empty skipped) is still a success: the drawer reloads
+    // and notifies. The summarized skip prose is produced by runAction inside the
+    // (mocked-out) api layer; that string is unit-tested in bulkSummary/summarizeSkipReasons.
+    vi.mocked(api.bulkAcceptVulnRisk).mockResolvedValue({
+      success: true,
+      succeeded: 1,
+      skipped: [{ id: 'dv-1', reason: 'site_access_denied' }],
+    });
+    const onActionComplete = vi.fn();
+    render(<CveDrawer cveId="CVE-2026-0001" onClose={() => {}} onActionComplete={onActionComplete} />);
+    fireEvent.click(await screen.findByTestId('vuln-action-accept'));
+    fireEvent.change(screen.getByTestId('vuln-bulk-text'), { target: { value: 'ok' } });
+    fireEvent.change(screen.getByTestId('vuln-bulk-until'), { target: { value: '2030-01-01' } });
+    fireEvent.click(screen.getByTestId('vuln-bulk-submit'));
+    await waitFor(() => expect(api.bulkAcceptVulnRisk).toHaveBeenCalledWith(['dv-1'], expect.anything()));
+    await waitFor(() => expect(onActionComplete).toHaveBeenCalled());
+    expect(api.fetchCveDevices).toHaveBeenCalledTimes(2); // initial + reload
+  });
 });

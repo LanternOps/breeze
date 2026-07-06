@@ -23,7 +23,7 @@ function finding(overrides: Partial<GroupFinding> = {}): GroupFinding {
 }
 
 describe('CreateVulnTicketModal', () => {
-  it('pre-fills the title and a description listing CVEs and devices', () => {
+  it('pre-fills the title, starts with an empty note, and shows the auto-detail helper', () => {
     render(
       <CreateVulnTicketModal
         findings={[finding(), finding({ deviceVulnerabilityId: 'dv-2', deviceId: 'dev-2', deviceName: 'WS-02', cveId: 'CVE-2026-0002' })]}
@@ -34,9 +34,11 @@ describe('CreateVulnTicketModal', () => {
       />,
     );
     expect(screen.getByTestId('vuln-ticket-title')).toHaveValue('Remediate Google Chrome');
-    const description = screen.getByTestId('vuln-ticket-description');
-    expect((description as HTMLTextAreaElement).value).toContain('CVE-2026-0001');
-    expect((description as HTMLTextAreaElement).value).toContain('WS-02');
+    // The note is optional and empty by default — device/CVE enumeration is server-side now.
+    expect(screen.getByTestId('vuln-ticket-note')).toHaveValue('');
+    expect(screen.getByTestId('vuln-ticket-auto-detail-note')).toHaveTextContent(
+      'Device and CVE details are added automatically, per organization.',
+    );
   });
 
   it('warns when the selection spans multiple organizations', () => {
@@ -71,14 +73,16 @@ describe('CreateVulnTicketModal', () => {
     expect(screen.getByTestId('vuln-ticket-submit')).toBeDisabled();
   });
 
-  it('submits title/description/priority and blocks empty titles', () => {
+  it('submits title/priority/note and blocks empty titles', () => {
     const onSubmit = vi.fn();
     render(<CreateVulnTicketModal findings={[finding()]} defaultTitle="T" busy={false} onCancel={() => {}} onSubmit={onSubmit} />);
     fireEvent.change(screen.getByTestId('vuln-ticket-title'), { target: { value: '' } });
     expect(screen.getByTestId('vuln-ticket-submit')).toBeDisabled();
     fireEvent.change(screen.getByTestId('vuln-ticket-title'), { target: { value: 'Patch it' } });
     fireEvent.change(screen.getByTestId('vuln-ticket-priority'), { target: { value: 'high' } });
+    // The optional note flows into the payload.
+    fireEvent.change(screen.getByTestId('vuln-ticket-note'), { target: { value: 'Handle during the next window' } });
     fireEvent.click(screen.getByTestId('vuln-ticket-submit'));
-    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ title: 'Patch it', priority: 'high' }));
+    expect(onSubmit).toHaveBeenCalledWith({ title: 'Patch it', priority: 'high', note: 'Handle during the next window' });
   });
 });

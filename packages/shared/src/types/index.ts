@@ -762,6 +762,12 @@ export * from './ai';
 export * from './billing-enums';
 
 // ============================================
+// Vulnerability fleet-triage SSOT
+// ============================================
+
+export * from './vulnerability';
+
+// ============================================
 // Security & Compliance Posture Report
 // ============================================
 
