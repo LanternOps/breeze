@@ -245,17 +245,30 @@ func withConsentGranted(result tools.CommandResult, prompt *ipc.DesktopPrompt) t
 }
 
 func connectedNotifyBody(prompt *ipc.DesktopPrompt) string {
-	if name := derefString(prompt.TechnicianName); name != "" {
-		return name + " connected to your computer"
-	}
-	return "A technician connected to your computer"
+	return technicianLine(prompt) + " connected to your computer"
 }
 
 func bannerLabel(prompt *ipc.DesktopPrompt) string {
-	if name := derefString(prompt.TechnicianName); name != "" {
-		return name + " is connected"
+	return technicianLine(prompt) + " is connected"
+}
+
+// technicianLine renders the who-is-this prefix: "Billy from Olive Technology",
+// "Billy", "A technician from Olive Technology", or "A technician". The partner
+// name is the trust anchor for the end user, so it is kept even when the
+// identity level redacts the technician's name.
+func technicianLine(prompt *ipc.DesktopPrompt) string {
+	name := derefString(prompt.TechnicianName)
+	org := derefString(prompt.OrgName)
+	switch {
+	case name != "" && org != "":
+		return name + " from " + org
+	case name != "":
+		return name
+	case org != "":
+		return "A technician from " + org
+	default:
+		return "A technician"
 	}
-	return "A technician is connected"
 }
 
 func derefString(s *string) string {
