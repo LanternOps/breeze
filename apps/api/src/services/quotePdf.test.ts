@@ -14,15 +14,16 @@ const ONE_BY_ONE_PNG = Buffer.from(
 // with its WinAnsi-encoded Helvetica the hex bytes ARE the character codes, so a
 // straight hex→latin1 decode reconstructs the visible text. Literal `(...)`
 // strings are handled too for robustness.
-function extractPdfText(pdf: Buffer): string {
+function extractPdfTextByStream(pdf: Buffer): string[] {
   const s = pdf.toString('latin1');
   const streamRe = /stream\r?\n([\s\S]*?)\r?\nendstream/g;
-  let out = '';
+  const streams: string[] = [];
   let sm: RegExpExecArray | null;
   while ((sm = streamRe.exec(s))) {
     let body: string;
     try { body = zlib.inflateSync(Buffer.from(sm[1]!, 'latin1')).toString('latin1'); } catch { continue; }
     const tokenRe = /<([0-9a-fA-F]+)>|\(((?:[^()\\]|\\.)*)\)/g;
+    let out = '';
     let tm: RegExpExecArray | null;
     while ((tm = tokenRe.exec(body))) {
       if (tm[1] !== undefined) {
@@ -32,9 +33,13 @@ function extractPdfText(pdf: Buffer): string {
         out += tm[2]!.replace(/\\([()\\])/g, '$1');
       }
     }
-    out += ' ';
+    streams.push(out);
   }
-  return out;
+  return streams;
+}
+
+function extractPdfText(pdf: Buffer): string {
+  return extractPdfTextByStream(pdf).join(' ');
 }
 
 describe('renderQuotePdf', () => {
@@ -231,6 +236,54 @@ describe('renderQuotePdf', () => {
     expect(text).toContain('Due on acceptance');
     expect(text).not.toContain('Deposit due on acceptance');
     expect(text).not.toContain('Remaining balance');
+  });
+
+  it('page-breaks the summary when deposit + breakdown rows would overflow the bottom margin', async () => {
+    // 25 one-time lines leave the cursor in the 90–160px band above the bottom
+    // margin: the legacy 90px reservation would NOT break the page, so the
+    // deposit (extra 18px row) + 4-category breakdown (4×12+4px, ~160px total)
+    // rows would crowd into the bottom margin / footer band (and pdfkit's
+    // auto-page-add on the overflowing last row spawns a stray page). The sized
+    // reservation must instead move the WHOLE summary to page 2 — asserted by
+    // requiring the deposit row to live in a different content stream (page)
+    // from the line rows. A no-deposit, no-breakdown twin of the same quote
+    // stays single-page — proving the extra rows (not the line table) forced
+    // the break.
+    const mkLines = () => Array.from({ length: 25 }, (_, i) => ({
+      id: `l${i}`, blockId: 'b1', description: `Item ${i + 1}`,
+      quantity: '1', unitPrice: '10', lineTotal: '10.00', recurrence: 'one_time' as const,
+    }));
+    const base = {
+      id: 'q1', quoteNumber: 'Q-BRK',
+      oneTimeTotal: '1000.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00',
+      dueOnAcceptanceTotal: '1000.00', total: '1000.00', currencyCode: 'USD',
+    };
+    const blocks = [{ id: 'b1', blockType: 'line_items' as const, sortOrder: 0, content: {} }];
+    const pageCount = (buf: Buffer) => (buf.toString('latin1').match(/\/Type \/Page[^s]/g) ?? []).length;
+
+    const plain = await renderQuotePdf(base, blocks, mkLines(), async () => null, {});
+    expect(pageCount(plain)).toBe(1);
+
+    const withDeposit = await renderQuotePdf(
+      {
+        ...base,
+        depositType: 'percent', depositAmount: '300.00',
+        categoryBreakdown: [
+          { category: 'hardware', oneTimeTotal: '400.00', monthlyTotal: '0.00', annualTotal: '0.00' },
+          { category: 'software', oneTimeTotal: '300.00', monthlyTotal: '0.00', annualTotal: '0.00' },
+          { category: 'service', oneTimeTotal: '200.00', monthlyTotal: '0.00', annualTotal: '0.00' },
+          { category: 'other', oneTimeTotal: '100.00', monthlyTotal: '0.00', annualTotal: '0.00' },
+        ],
+      },
+      blocks, mkLines(), async () => null, {},
+    );
+    expect(pageCount(withDeposit)).toBe(2);
+    const streams = extractPdfTextByStream(withDeposit);
+    const summaryStream = streams.find((t) => t.includes('Deposit due on acceptance'));
+    expect(summaryStream).toBeDefined();
+    expect(summaryStream).toContain('Remaining balance');
+    // The summary page must be its own page — none of the 25 line rows on it.
+    expect(summaryStream).not.toContain('Item ');
   });
 
   it('renderQuotePdf includes the From block and T&C', async () => {

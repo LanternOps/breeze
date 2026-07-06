@@ -324,7 +324,17 @@ async function renderLineTable(
 
 function renderRecurringSummary(doc: PDFKit.PDFDocument, quote: QuoteHeader, currency: string, primary: string, startY: number, showTax = false): number {
   const c = columnsFor(doc, showTax);
-  let y = ensureSpace(doc, startY + 6, 90);
+  // Hoisted above ensureSpace so the page-break reservation can size itself to
+  // the actual content drawn below.
+  const breakdown = quote.categoryBreakdown ?? [];
+  const hasDeposit = quote.depositType && quote.depositType !== 'none' && quote.depositAmount != null;
+  // 90px covered the legacy footer. Category rows add 12px each (+4px gap) and a
+  // deposit adds the extra bold remainder row (18px) — reserve for them, or
+  // ensureSpace won't break the page and the new rows draw past the bottom
+  // margin (pdfkit doesn't auto-paginate explicit-coordinate text). Stays 90 for
+  // a no-deposit, ≤1-category quote so those render exactly as before.
+  const needed = 90 + (breakdown.length > 1 ? breakdown.length * 12 + 4 : 0) + (hasDeposit ? 18 : 0);
+  let y = ensureSpace(doc, startY + 6, needed);
 
   // Wider label column than the line table's so the emphasised "Due on
   // acceptance" figure (14pt) and the recurring labels never wrap/overlap.
@@ -337,7 +347,6 @@ function renderRecurringSummary(doc: PDFKit.PDFDocument, quote: QuoteHeader, cur
 
   // Per-category subtotals (muted) — only worth showing when the quote spans more
   // than one category. Drawn above the One-time/Monthly/Annual roll-up.
-  const breakdown = quote.categoryBreakdown ?? [];
   if (breakdown.length > 1) {
     for (const b of breakdown) {
       const label = b.category === 'other' ? 'Other' : b.category[0]!.toUpperCase() + b.category.slice(1);
@@ -378,7 +387,6 @@ function renderRecurringSummary(doc: PDFKit.PDFDocument, quote: QuoteHeader, cur
   // configured the emphasised figure becomes the deposit due, with the remaining
   // balance beneath (remainder = due-on-acceptance − deposit, in cents). Fall
   // back to the one-time total if the derived field is somehow absent.
-  const hasDeposit = quote.depositType && quote.depositType !== 'none' && quote.depositAmount != null;
   if (hasDeposit) {
     drawRow('Deposit due on acceptance', quote.depositAmount, '', { emphasis: true });
     const remainderCents = toCents(quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal) - toCents(quote.depositAmount);
