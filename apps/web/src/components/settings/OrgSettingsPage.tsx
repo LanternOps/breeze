@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   Copy,
   Check,
+  CreditCard,
   FileSignature,
   Fingerprint,
   Globe,
@@ -17,6 +18,7 @@ import {
   Ticket
 } from 'lucide-react';
 import ContractsList from '../contracts/ContractsList';
+import OrgBillingSettings from '../billing/OrgBillingSettings';
 import SettingsSectionNav, { type SettingsNavGroup } from './SettingsSectionNav';
 import OrgBrandingEditor from './OrgBrandingEditor';
 import OrgPortalSettingsEditor from './OrgPortalSettingsEditor';
@@ -36,7 +38,7 @@ import { formatTime as formatUserTime } from '@/lib/dateTimeFormat';
 
 type TabKey =
   | 'general' | 'branding' | 'portal' | 'notifications' | 'security'
-  | 'approval-security' | 'event-logs' | 'remote-access' | 'ticketing' | 'contracts';
+  | 'approval-security' | 'event-logs' | 'remote-access' | 'ticketing' | 'contracts' | 'billing';
 
 // Grouped sidebar definition — same anatomy as PartnerSettingsPage (shared
 // SettingsSectionNav). Hashes are the section keys (already kebab-case).
@@ -46,6 +48,7 @@ const TAB_GROUPS: (Omit<SettingsNavGroup, 'items'> & { items: (SettingsNavGroup[
     items: [
       { key: 'general', hash: 'general', label: 'General', description: 'Profile and defaults', icon: Building2 },
       { key: 'contracts', hash: 'contracts', label: 'Contracts', description: 'Recurring agreements', icon: FileSignature },
+      { key: 'billing', hash: 'billing', label: 'Billing', description: 'Tax and billing address', icon: CreditCard },
     ],
   },
   {
@@ -536,6 +539,12 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
         return effectiveOrgId ? (
           <div data-testid="org-tab-contracts">
             <ContractsList lockedOrgId={effectiveOrgId} />
+          </div>
+        ) : null;
+      case 'billing':
+        return effectiveOrgId ? (
+          <div data-testid="org-tab-billing">
+            <OrgBillingSettings orgId={effectiveOrgId} />
           </div>
         ) : null;
       case 'general':
