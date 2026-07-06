@@ -114,6 +114,36 @@ describe('QuoteEditor deposit controls', () => {
     await waitFor(() => expect(updateLineMock).toHaveBeenCalledWith('q-1', 'l-1', { depositEligible: true }));
   });
 
+  it('reverts the type select to the persisted value when the deposit PATCH is rejected', async () => {
+    // The deposit PATCH 400s (e.g. selecting Selected lines when the deposit would
+    // equal the full due-on-acceptance total); every other request still succeeds.
+    fetchMock.mockImplementation(async (path, init) => {
+      const isDepositPatch = path === '/quotes/q-1'
+        && (init as RequestInit | undefined)?.method === 'PATCH'
+        && String((init as RequestInit).body).includes('deposit');
+      if (isDepositPatch) {
+        return json(
+          { error: 'Deposit must be less than the amount due on acceptance — remove the deposit instead', code: 'DEPOSIT_NOT_BELOW_TOTAL' },
+          false,
+          400,
+        );
+      }
+      return json({ data: {} });
+    });
+
+    render(<QuoteEditor detail={detail()} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-deposit-controls')).toBeInTheDocument());
+
+    const select = screen.getByTestId('quote-deposit-type') as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: 'selected_lines' } });
+
+    // The optimistic switch fires one PATCH, which is rejected...
+    await waitFor(() => expect(depositPatchCalls()).toHaveLength(1));
+    // ...so the select snaps back to the persisted 'none' instead of lying as
+    // 'selected_lines' — a mode that never saved and would vanish on reload.
+    await waitFor(() => expect(select.value).toBe('none'));
+  });
+
   it('renders no deposit controls figure when deposit is none', async () => {
     render(<QuoteEditor detail={detail()} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-deposit-controls')).toBeInTheDocument());
