@@ -7,6 +7,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
+	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
 
 // consentTimeoutGraceMs is the extra time the service waits on the helper's
@@ -83,7 +84,7 @@ func (h *Heartbeat) requestConsent(sessionID string, prompt *ipc.DesktopPrompt) 
 	if h.sessionBroker == nil {
 		return "", false, false
 	}
-	session := h.sessionBroker.PreferredSessionWithScope("consent_ui")
+	session := h.consentUISession()
 	if session == nil {
 		return "", false, false
 	}
@@ -125,6 +126,16 @@ func (h *Heartbeat) requestConsent(sessionID string, prompt *ipc.DesktopPrompt) 
 		}
 	}
 	return result.Decision, true, false
+}
+
+// consentUISession returns the best helper session able to render consent UI:
+// the Tauri assist helper (rich branded dialog) when connected, else a
+// user-helper that advertised native fallback dialogs at auth.
+func (h *Heartbeat) consentUISession() *sessionbroker.Session {
+	if s := h.sessionBroker.PreferredSessionWithScope("consent_ui"); s != nil {
+		return s
+	}
+	return h.sessionBroker.PreferredSessionWithScope(ipc.ScopeConsentUIFallback)
 }
 
 // afterDesktopStart fires the start-of-session notice + banner for a session that
@@ -171,9 +182,9 @@ func (h *Heartbeat) sendBannerShow(sessionID string, prompt *ipc.DesktopPrompt) 
 	if h.sessionBroker == nil {
 		return
 	}
-	session := h.sessionBroker.PreferredSessionWithScope("consent_ui")
+	session := h.consentUISession()
 	if session == nil {
-		log.Warn("no consent_ui-capable helper for session banner", "sessionId", sessionID)
+		log.Warn("no consent-ui-capable helper for session banner", "sessionId", sessionID)
 		return
 	}
 	req := ipc.BannerShowRequest{
@@ -191,7 +202,7 @@ func (h *Heartbeat) sendBannerHide(sessionID string) {
 	if h.sessionBroker == nil {
 		return
 	}
-	session := h.sessionBroker.PreferredSessionWithScope("consent_ui")
+	session := h.consentUISession()
 	if session == nil {
 		return
 	}
