@@ -5,6 +5,7 @@ import { organizations, partners } from '../db/schema/orgs';
 import { portalBranding } from '../db/schema/portal';
 import { getQuote } from './quoteService';
 import { QuoteServiceError, type QuoteActor } from './quoteTypes';
+import { validateQuoteDeposit, type QuoteLineForMath } from './quoteMath';
 import { allocateQuoteCounter, formatQuoteNumber } from './quoteNumbers';
 import { createQuoteAcceptToken } from './quoteAcceptToken';
 import { buildQuoteTemplate } from './quoteEmail';
@@ -86,6 +87,20 @@ export async function sendQuote(id: string, actor: QuoteActor): Promise<{ quote:
   if (quote.status !== 'draft') {
     // Phase 2 send is issue-once: a non-draft quote (already sent/viewed/etc.) cannot be re-sent.
     throw new QuoteServiceError(`Cannot send a quote in status ${quote.status}`, 409, 'INVALID_STATE');
+  }
+
+  // A deposit config can silently become unsatisfiable while drafting (e.g. the
+  // last one-time line was deleted after the deposit was set) — recompute stores
+  // NULL then, and this hard gate stops the quote going out with broken terms.
+  if (quote.depositType && quote.depositType !== 'none') {
+    const check = validateQuoteDeposit(
+      lines as QuoteLineForMath[],
+      quote.taxRate ? parseFloat(quote.taxRate) : null,
+      { type: quote.depositType, percent: quote.depositPercent },
+    );
+    if (!check.ok) {
+      throw new QuoteServiceError(`Cannot send: ${check.message}`, 409, 'DEPOSIT_INVALID');
+    }
   }
 
   // Quotes are numbered at creation now; keep that number on issue. Only legacy

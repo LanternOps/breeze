@@ -192,6 +192,12 @@ export async function acceptQuote(
     issueFields.sellerSnapshot = quote.sellerSnapshot ?? null;
     issueFields.termsAndConditions = quote.termsAndConditions ?? null;
     issueFields.terms = quote.terms ?? null;
+    // Deposit terms travel from the signed quote onto the issued invoice.
+    // depositAmount was validated < dueOnAcceptanceTotal at send and the quote
+    // is locked since, so it is safe to snapshot verbatim.
+    if (quote.depositType !== 'none' && quote.depositAmount !== null) {
+      issueFields.depositDue = quote.depositAmount;
+    }
   }
   await db.update(invoices).set(issueFields).where(eq(invoices.id, invoice!.id));
 

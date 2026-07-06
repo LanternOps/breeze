@@ -33,7 +33,12 @@ export type QuoteServiceErrorCode =
   | 'BLOCK_NOT_LINE_ITEMS'
   // Deposit validation codes, sourced from the shared validateQuoteDeposit contract
   // (Extract keeps this union in lockstep with @breeze/shared without duplicating it).
-  | Extract<QuoteDepositValidation, { ok: false }>['code'];
+  | Extract<QuoteDepositValidation, { ok: false }>['code']
+  // Send-time deposit gate (quoteLifecycle.sendQuote): a deposit config that has
+  // become unsatisfiable since it was set (e.g. the last one-time line was
+  // deleted) blocks the send with this single code, regardless of which
+  // underlying validateQuoteDeposit rule failed.
+  | 'DEPOSIT_INVALID';
 
 export class QuoteServiceError extends Error {
   constructor(

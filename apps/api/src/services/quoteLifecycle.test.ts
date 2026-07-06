@@ -1,5 +1,34 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { buildPublicQuoteAcceptUrl, portalBase } from './quoteLifecycle';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// Controllable Drizzle chain mock (same pattern as quoteService.test.ts): every
+// builder method returns the same chain; a query resolves when awaited (the
+// chain is a thenable that yields the next queued result). Tests queue the rows
+// each db call should resolve to, in call order.
+const results: unknown[][] = [];
+function queueResult(rows: unknown[]) { results.push(rows); }
+
+vi.mock('../db', () => {
+  const makeChain = () => {
+    const chain: Record<string, unknown> = {};
+    const methods = ['select', 'from', 'where', 'limit', 'orderBy', 'insert', 'values', 'returning', 'update', 'set', 'delete', 'for', 'innerJoin', 'execute', 'transaction'];
+    for (const m of methods) chain[m] = vi.fn(() => chain);
+    (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) => {
+      const rows = results.shift() ?? [];
+      return Promise.resolve(rows).then(resolve);
+    };
+    return chain;
+  };
+  const db = makeChain();
+  return {
+    db,
+    runOutsideDbContext: (fn: () => unknown) => fn(),
+    withSystemDbAccessContext: (fn: () => unknown) => fn(),
+  };
+});
+
+import { buildPublicQuoteAcceptUrl, portalBase, sendQuote } from './quoteLifecycle';
+
+const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
 
 /**
  * Regression coverage for the malformed public quote accept link
@@ -101,5 +130,51 @@ describe('quoteLifecycle portal URL', () => {
     const url = buildPublicQuoteAcceptUrl('a/b?c#d');
     expect(url).toBe('https://example.com/portal/quote/a%2Fb%3Fc%23d');
     expect(new URL(url).pathname).toBe('/portal/quote/a%2Fb%3Fc%23d');
+  });
+});
+
+/**
+ * Send-time deposit gate (Task 7): a deposit config can silently become
+ * unsatisfiable while drafting (recomputeAndPersist stores NULL deposit_amount
+ * in that case, per quoteService). sendQuote is the hard stop that keeps a
+ * quote with broken deposit terms from ever reaching the customer.
+ */
+describe('sendQuote deposit validation', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+
+  it('throws 409 DEPOSIT_INVALID when a deposit is configured but there are zero one-time lines', async () => {
+    // getQuote (called internally): select quote, select blocks, select lines.
+    queueResult([{
+      id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft',
+      taxRate: null, depositType: 'percent', depositPercent: '30.00',
+    }]);
+    queueResult([]); // blocks
+    queueResult([]); // lines — none at all, so dueOnAcceptanceTotal is $0
+
+    await expect(sendQuote('q1', actor)).rejects.toMatchObject({ status: 409, code: 'DEPOSIT_INVALID' });
+  });
+
+  it('throws 409 DEPOSIT_INVALID when the deposit config is otherwise unsatisfiable (e.g. percent >= 100)', async () => {
+    queueResult([{
+      id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft',
+      taxRate: null, depositType: 'percent', depositPercent: '100.00',
+    }]);
+    queueResult([]); // blocks
+    queueResult([{ quantity: '1', unitPrice: '1000.00', taxable: true, customerVisible: true, recurrence: 'one_time', depositEligible: false }]);
+
+    await expect(sendQuote('q1', actor)).rejects.toMatchObject({ status: 409, code: 'DEPOSIT_INVALID' });
+  });
+
+  it('does NOT gate a quote with no deposit configured (depositType none)', async () => {
+    queueResult([{
+      id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent', // non-draft -> INVALID_STATE, not DEPOSIT_INVALID
+      taxRate: null, depositType: 'none', depositPercent: null,
+    }]);
+    queueResult([]); // blocks
+    queueResult([]); // lines
+
+    // Proves the deposit gate is skipped for depositType 'none' — the failure
+    // that surfaces is the pre-existing status guard, never DEPOSIT_INVALID.
+    await expect(sendQuote('q1', actor)).rejects.toMatchObject({ status: 409, code: 'INVALID_STATE' });
   });
 });
