@@ -211,7 +211,7 @@ describe('POST /api/v1/vulnerabilities/remediate', () => {
     expect(res.status).toBe(200);
     const body = await res.json() as { scheduled: number; skipped: Array<{ reason: string }> };
     expect(body.scheduled).toBe(0);
-    expect(body.skipped[0]!.reason).toMatch(/not approved/i);
+    expect(body.skipped[0]!.reason).toBe('patch_not_approved');
   });
 
   runDb('skips a vuln with no pending matching patch', async () => {
@@ -224,7 +224,7 @@ describe('POST /api/v1/vulnerabilities/remediate', () => {
     expect(res.status).toBe(200);
     const body = await res.json() as { scheduled: number; skipped: Array<{ reason: string }> };
     expect(body.scheduled).toBe(0);
-    expect(body.skipped[0]!.reason).toMatch(/no available patch/i);
+    expect(body.skipped[0]!.reason).toBe('no_available_patch');
   });
 
   runDb('rejects an unauthenticated caller', async () => {
