@@ -223,6 +223,9 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
   );
 
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
+  // Distinguishes "catalog genuinely empty" from "catalog failed to load" so the
+  // picker's empty state never tells a tech to re-create items they already have.
+  const [catalogLoadFailed, setCatalogLoadFailed] = useState(false);
   const [ecActive, setEcActive] = useState(false);
   const [pax8Active, setPax8Active] = useState(false);
   const [terms, setTerms] = useState(quote.termsAndConditions ?? '');
@@ -324,9 +327,10 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
   const loadCatalog = useCallback(async () => {
     const res = await listCatalog({ isActive: true, limit: 200 });
     if (res.status === 401) return UNAUTHORIZED();
-    if (!res.ok) return; // catalog is optional context; don't block the editor
+    if (!res.ok) { setCatalogLoadFailed(true); return; } // don't block the editor, but remember it failed
     const body = (await res.json().catch(() => null)) as { data?: CatalogItem[] } | null;
-    if (!body) return;
+    if (!body) { setCatalogLoadFailed(true); return; }
+    setCatalogLoadFailed(false);
     setCatalog((body.data ?? []).filter((i) => !i.isBundle));
   }, []);
 
@@ -1039,6 +1043,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                 currency={currency}
                 taxRate={quote.taxRate}
                 catalog={catalog}
+                catalogLoadFailed={catalogLoadFailed}
                 isPending={isPending}
                 canWrite={canWrite}
                 showInternal={showInternal}
@@ -1312,7 +1317,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
 
 // ── A single block, with an inline line builder when it is a pricing table ──
 function BlockCard({
-  block, quoteId, lines, currency, taxRate, catalog, isPending, canWrite, showInternal, ecActive, pax8Active, defaultMarkupPct, isFirst, isLast, onAddCatalog, onImportAddDistributor, onImportAddPax8, onAddManual, onEditLine, onEditBlock, onMoveBlock, onMoveLine, onRemoveLine, onRemoveBlock, onLineDraft,
+  block, quoteId, lines, currency, taxRate, catalog, catalogLoadFailed, isPending, canWrite, showInternal, ecActive, pax8Active, defaultMarkupPct, isFirst, isLast, onAddCatalog, onImportAddDistributor, onImportAddPax8, onAddManual, onEditLine, onEditBlock, onMoveBlock, onMoveLine, onRemoveLine, onRemoveBlock, onLineDraft,
   moveTargets, onMoveLineToBlock,
 }: {
   block: QuoteBlock;
@@ -1321,6 +1326,7 @@ function BlockCard({
   currency: string;
   taxRate: string | null;
   catalog: CatalogItem[];
+  catalogLoadFailed: boolean;
   isPending: (key: string) => boolean;
   canWrite: boolean;
   showInternal: boolean;
@@ -1637,10 +1643,16 @@ function BlockCard({
                 />
               ) : mode === 'catalog' ? (
                 catalog.length === 0 ? (
-                  <p className="text-xs text-muted-foreground" data-testid={`quote-catalog-empty-${block.id}`}>
-                    No catalog items.{' '}
-                    <a href="/settings/catalog" className="underline hover:text-foreground">Add some in Product Catalog</a>.
-                  </p>
+                  catalogLoadFailed ? (
+                    <p className="text-xs text-muted-foreground" data-testid={`quote-catalog-error-${block.id}`}>
+                      Couldn&apos;t load the catalog. Reopen the editor to retry — your existing items are safe.
+                    </p>
+                  ) : (
+                    <p className="text-xs text-muted-foreground" data-testid={`quote-catalog-empty-${block.id}`}>
+                      No catalog items.{' '}
+                      <a href="/settings/catalog" className="underline hover:text-foreground">Add some in Product Catalog</a>.
+                    </p>
+                  )
                 ) : (
                   <CatalogItemPicker
                     items={catalog}
