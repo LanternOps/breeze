@@ -862,6 +862,9 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
           taxable: form.taxable,
           customerVisible: true,
           recurrence: form.recurrence,
+          // Manual lines are never deposit-eligible by default (no catalog itemType
+          // to infer hardware from); the user flags it later in the line editor.
+          depositEligible: false,
         }),
         errorFallback: 'Could not add the line.',
         successMessage: 'Line added',
