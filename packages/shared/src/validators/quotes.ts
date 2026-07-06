@@ -98,7 +98,15 @@ export const updateQuoteSchema = z.object({
   billToName: z.string().max(255).nullable().optional(),
   depositType: quoteDepositTypeSchema.optional(),
   depositPercent: depositPercent.nullable().optional(),
-});
+}).refine(
+  // A percent value is only meaningful for a 'percent' deposit. Reject a patch
+  // that pairs a non-percent type with a percent in the same request, so the
+  // contradiction is caught at the boundary instead of being silently nulled by
+  // the service. (A bare { depositPercent } patch is still allowed — the service
+  // derives the type from the stored quote.)
+  (d) => !(d.depositType && d.depositType !== 'percent' && d.depositPercent != null),
+  { message: 'depositPercent is only valid when depositType is "percent"', path: ['depositPercent'] },
+);
 
 // A reorder payload must be a clean permutation of the existing ids, so the id
 // list has to be unique — without this, a duplicated id (e.g. [A, A] for blocks

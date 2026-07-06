@@ -43,8 +43,11 @@ export const quotes = pgTable('quotes', {
   annualRecurringTotal: numeric('annual_recurring_total', { precision: 12, scale: 2 }).notNull().default('0'),
   depositType: quoteDepositTypeEnum('deposit_type').notNull().default('none'),
   // Whole-percent scale (30.00 = 30%), only meaningful for deposit_type='percent'.
+  // CHECK quotes_deposit_percent_range_chk (0<pct<100) + quotes_deposit_percent_type_chk
+  // (non-percent types carry no percent), migration 2026-07-06-z, enforce it at the DB.
   depositPercent: numeric('deposit_percent', { precision: 5, scale: 2 }),
   // Stored snapshot of the computed deposit due; recomputed on every draft edit.
+  // CHECK quotes_deposit_amount_nonneg_chk (migration 2026-07-06-z) forbids negatives.
   depositAmount: numeric('deposit_amount', { precision: 12, scale: 2 }),
   billToName: varchar('bill_to_name', { length: 255 }),
   billToAddress: jsonb('bill_to_address'),

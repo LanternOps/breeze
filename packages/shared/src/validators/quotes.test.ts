@@ -164,6 +164,16 @@ describe('deposit validator fields', () => {
     expect(updateQuoteSchema.safeParse({ depositPercent: 100 }).success).toBe(false);
     expect(updateQuoteSchema.safeParse({ depositPercent: 12.345 }).success).toBe(false);
   });
+  it('rejects a percent value paired with a non-percent deposit type', () => {
+    // The contradiction (percent is meaningless for none/selected_lines) is caught
+    // at the boundary rather than silently nulled by the service.
+    expect(updateQuoteSchema.safeParse({ depositType: 'none', depositPercent: 30 }).success).toBe(false);
+    expect(updateQuoteSchema.safeParse({ depositType: 'selected_lines', depositPercent: 30 }).success).toBe(false);
+    // A bare percent patch is still allowed — the service derives the type from the stored quote.
+    expect(updateQuoteSchema.safeParse({ depositPercent: 30 }).success).toBe(true);
+    // Clearing the percent alongside a non-percent type is fine.
+    expect(updateQuoteSchema.safeParse({ depositType: 'selected_lines', depositPercent: null }).success).toBe(true);
+  });
   it('accepts depositEligible on line create and update', () => {
     const base = { sourceType: 'manual', name: 'x', quantity: 1, unitPrice: 5, taxable: false };
     expect(quoteLineInputSchema.parse({ ...base, depositEligible: true })).toMatchObject({ depositEligible: true });
