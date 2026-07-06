@@ -151,3 +151,23 @@ describe('moveQuoteLineSchema', () => {
     expect(moveQuoteLineSchema.safeParse({ blockId: null }).success).toBe(false);
   });
 });
+
+describe('deposit validator fields', () => {
+  it('accepts deposit config on quote update', () => {
+    expect(updateQuoteSchema.parse({ depositType: 'percent', depositPercent: 30 }))
+      .toMatchObject({ depositType: 'percent', depositPercent: 30 });
+    expect(updateQuoteSchema.parse({ depositType: 'none', depositPercent: null }))
+      .toMatchObject({ depositType: 'none', depositPercent: null });
+  });
+  it('rejects out-of-range percent', () => {
+    expect(updateQuoteSchema.safeParse({ depositPercent: 0 }).success).toBe(false);
+    expect(updateQuoteSchema.safeParse({ depositPercent: 100 }).success).toBe(false);
+    expect(updateQuoteSchema.safeParse({ depositPercent: 12.345 }).success).toBe(false);
+  });
+  it('accepts depositEligible on line create and update', () => {
+    const base = { sourceType: 'manual', name: 'x', quantity: 1, unitPrice: 5, taxable: false };
+    expect(quoteLineInputSchema.parse({ ...base, depositEligible: true })).toMatchObject({ depositEligible: true });
+    expect(quoteLineInputSchema.parse(base)).toMatchObject({ depositEligible: false }); // default
+    expect(updateQuoteLineSchema.parse({ depositEligible: true })).toMatchObject({ depositEligible: true });
+  });
+});

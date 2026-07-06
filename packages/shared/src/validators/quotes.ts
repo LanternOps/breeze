@@ -13,6 +13,10 @@ export const quoteStatusSchema = z.enum(['draft', 'sent', 'viewed', 'accepted', 
 export const quoteLineRecurrenceSchema = z.enum(['one_time', 'monthly', 'annual']);
 export const quoteLineSourceTypeSchema = z.enum(['catalog', 'bundle', 'manual']);
 export const quoteBlockTypeSchema = z.enum(['heading', 'rich_text', 'image', 'line_items']);
+export const quoteDepositTypeSchema = z.enum(['none', 'percent', 'selected_lines']);
+
+// Whole-percent, 2dp, exclusive bounds per spec (100% = "no deposit" — rejected).
+const depositPercent = z.number().gt(0).lt(100).multipleOf(0.01);
 
 // Block content shapes, discriminated by blockType.
 const headingContent = z.object({ text: z.string().min(1).max(300), level: z.number().int().min(1).max(3).default(2) });
@@ -45,6 +49,7 @@ export const quoteLineInputSchema = z.object({
   unitCost: money.nullable().optional(),
   sku: z.string().max(100).nullable().optional(),
   partNumber: z.string().max(100).nullable().optional(),
+  depositEligible: z.boolean().default(false),
 }).refine((d) => Boolean(d.name?.trim() || d.description?.trim()), {
   message: 'A line needs a name or a description', path: ['name'],
 });
@@ -68,6 +73,7 @@ export const updateQuoteLineSchema = z.object({
   // Attach/replace (guid) or clear (null) the line's product image. Must be a
   // quote_images row on the same quote — the service enforces ownership.
   imageId: z.string().guid().nullable().optional(),
+  depositEligible: z.boolean().optional(),
 });
 
 export const createQuoteSchema = z.object({
@@ -90,6 +96,8 @@ export const updateQuoteSchema = z.object({
   termsAndConditions: z.string().max(20_000).nullable().optional(),
   taxRate: taxRate.nullable().optional(),
   billToName: z.string().max(255).nullable().optional(),
+  depositType: quoteDepositTypeSchema.optional(),
+  depositPercent: depositPercent.nullable().optional(),
 });
 
 // A reorder payload must be a clean permutation of the existing ids, so the id
