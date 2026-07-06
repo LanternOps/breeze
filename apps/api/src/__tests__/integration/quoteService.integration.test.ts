@@ -142,6 +142,7 @@ describe('quoteService (breeze_app, real DB)', () => {
         taxable: false,
         customerVisible: true,
         recurrence: 'one_time',
+        depositEligible: false,
       }, fx.actorA)
     );
     expect(line.lineTotal).toBe('300.00'); // 3 * 100.00 via computeLineTotal
@@ -197,7 +198,7 @@ describe('quoteService (breeze_app, real DB)', () => {
     const line = await withDbAccessContext(fx.ctxA, () =>
       addManualLine(quote.id, {
         sourceType: 'manual', description: 'Widget', quantity: 2, unitPrice: 50,
-        taxable: false, customerVisible: true, recurrence: 'one_time',
+        taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false,
       }, fx.actorA)
     );
     let fetched = await withDbAccessContext(fx.ctxA, () => getQuote(quote.id, fx.actorA));
@@ -252,7 +253,7 @@ describe('quoteService (breeze_app, real DB)', () => {
     await withDbAccessContext(fx.ctxA, () =>
       addManualLine(quote.id, {
         sourceType: 'manual', description: 'Doomed line', quantity: 1, unitPrice: 10,
-        taxable: false, customerVisible: true, recurrence: 'one_time',
+        taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false,
       }, fx.actorA)
     );
 
@@ -279,19 +280,19 @@ describe('quoteService (breeze_app, real DB)', () => {
     await withDbAccessContext(fx.ctxA, () =>
       addManualLine(quote.id, {
         sourceType: 'manual', description: 'Sub-cent unit price', quantity: 3, unitPrice: 0.34,
-        taxable: false, customerVisible: true, recurrence: 'one_time',
+        taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false,
       }, fx.actorA)
     );
     await withDbAccessContext(fx.ctxA, () =>
       addManualLine(quote.id, {
         sourceType: 'manual', description: 'Monthly seat', quantity: 7, unitPrice: 12.50,
-        taxable: false, customerVisible: true, recurrence: 'monthly',
+        taxable: false, customerVisible: true, recurrence: 'monthly', depositEligible: false,
       }, fx.actorA)
     );
     await withDbAccessContext(fx.ctxA, () =>
       addManualLine(quote.id, {
         sourceType: 'manual', description: 'Internal cost (hidden)', quantity: 1, unitPrice: 999.99,
-        taxable: false, customerVisible: false, recurrence: 'one_time',
+        taxable: false, customerVisible: false, recurrence: 'one_time', depositEligible: false,
       }, fx.actorA)
     );
 
@@ -337,13 +338,13 @@ describe('quoteService (breeze_app, real DB)', () => {
     const oneTime = await withDbAccessContext(fx.ctxA, () =>
       addManualLine(quote.id, {
         sourceType: 'manual', description: 'Setup fee', quantity: 2, unitPrice: 75,
-        taxable: false, customerVisible: true, recurrence: 'one_time', blockId: block.id,
+        taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, blockId: block.id,
       }, fx.actorA)
     );
     const monthly = await withDbAccessContext(fx.ctxA, () =>
       addManualLine(quote.id, {
         sourceType: 'manual', description: 'Monthly support', quantity: 4, unitPrice: 25,
-        taxable: false, customerVisible: true, recurrence: 'monthly', blockId: block.id,
+        taxable: false, customerVisible: true, recurrence: 'monthly', depositEligible: false, blockId: block.id,
       }, fx.actorA)
     );
 
@@ -627,7 +628,7 @@ describe('quoteService (breeze_app, real DB)', () => {
       const mk = (name: string, blockId: string) =>
         addManualLine(quote.id, {
           sourceType: 'manual', name, description: null, quantity: 1, unitPrice: 10,
-          taxable: false, customerVisible: true, recurrence: 'one_time', blockId,
+          taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, blockId,
         }, fx.actorA);
       const lineA1 = await mk('A1', blockA.id);
       const lineA2 = await mk('A2', blockA.id);
