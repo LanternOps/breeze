@@ -10,7 +10,7 @@ import {
 } from './commandDispatch';
 import { commandAuditDetails } from './commandAudit';
 import { recordCommandDispatch } from './anomalyMetrics';
-import { decryptSensitivePayloadFields } from './sensitiveCommandPayload';
+import { decryptCommandForDelivery } from './sensitiveCommandPayload';
 
 // Sentinel error string for the WS-pre-check fast-fail path. The fileBrowser
 // route (and any other interactive caller) matches on this substring to map
@@ -545,11 +545,13 @@ export async function queueCommandForExecution(
   if (device.agentId && !preferHeartbeat) {
     const claimed = await claimPendingCommandForDelivery(command.id);
     if (claimed) {
-      const sent = sendCommandToAgent(device.agentId, {
-        id: command.id,
-        type,
-        payload: decryptSensitivePayloadFields(type, payload) as CommandPayload
-      });
+      // Decrypt sensitive fields just-in-time; a decrypt failure returns null
+      // (logged) and skips the send so the command is released for retry rather
+      // than throwing out of the enqueue path.
+      const delivered = decryptCommandForDelivery({ id: command.id, type, payload });
+      const sent = delivered
+        ? sendCommandToAgent(device.agentId, delivered as { id: string; type: string; payload: CommandPayload })
+        : false;
       if (sent) {
         return {
           command: {
@@ -790,13 +792,12 @@ export async function executeCommand(
     if (device.agentId && dispatchViaWs) {
       const claimed = await claimPendingCommandForDelivery(command.id);
       if (claimed) {
+        // Decrypt once up-front; null means the payload can't be decrypted, so
+        // there's nothing deliverable to retry — skip the send loop and release.
+        const delivered = decryptCommandForDelivery({ id: command.id, type, payload });
         let sent = false;
-        for (let attempt = 0; attempt < SEND_RETRY_ATTEMPTS; attempt++) {
-          sent = sendCommandToAgent(device.agentId, {
-            id: command.id,
-            type,
-            payload: decryptSensitivePayloadFields(type, payload) as CommandPayload,
-          });
+        for (let attempt = 0; delivered && attempt < SEND_RETRY_ATTEMPTS; attempt++) {
+          sent = sendCommandToAgent(device.agentId, delivered as { id: string; type: string; payload: CommandPayload });
           if (sent) {
             if (attempt > 0) {
               console.warn('[commandQueue] sendCommandToAgent recovered after retry', {

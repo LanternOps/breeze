@@ -39,7 +39,7 @@ import type { AgentAuthContext } from '../../middleware/agentAuth';
 import { captureException } from '../../services/sentry';
 import { resolveRemoteAccessForDevice } from '../../services/remoteAccessPolicy';
 import { getActiveTrustKeyset, type ManifestTrustKey } from '../../services/manifestSigning';
-import { decryptSensitivePayloadFields } from '../../services/sensitiveCommandPayload';
+import { decryptCommandsForDelivery } from '../../services/sensitiveCommandPayload';
 
 /**
  * #1121 — pure collapse detector for the watchdogState tolerance gap.
@@ -362,11 +362,11 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     }
 
     return c.json({
-      commands: watchdogCommands.map(cmd => ({
+      commands: decryptCommandsForDelivery(watchdogCommands.map(cmd => ({
         id: cmd.id,
         type: cmd.type,
-        payload: decryptSensitivePayloadFields(cmd.type, cmd.payload),
-      })),
+        payload: cmd.payload,
+      }))),
       watchdogUpgradeTo,
       upgradeTo: agentUpgradeTo,
     });
@@ -826,11 +826,11 @@ if (latestHelper) {
   return {
     deviceOrgId: device.orgId,
     mainResponse: {
-      commands: commands.map(cmd => ({
+      commands: decryptCommandsForDelivery(commands.map(cmd => ({
         id: cmd.id,
         type: cmd.type,
-        payload: decryptSensitivePayloadFields(cmd.type, cmd.payload)
-      })),
+        payload: cmd.payload
+      }))),
       configUpdate: mergedConfigUpdate,
       upgradeTo,
       helperUpgradeTo: helperUpgradeTo ?? undefined,

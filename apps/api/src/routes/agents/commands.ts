@@ -24,7 +24,7 @@ import { captureException } from '../../services/sentry';
 import { processCollectedAuditPolicyCommandResult } from '../../services/auditBaselineService';
 import { CommandTypes, queueCommandForExecution } from '../../services/commandQueue';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
-import { decryptSensitivePayloadFields, hasSensitivePayload } from '../../services/sensitiveCommandPayload';
+import { decryptCommandsForDelivery, hasSensitivePayload } from '../../services/sensitiveCommandPayload';
 import { applyVaultSyncCommandResult } from '../../services/vaultSyncPersistence';
 import { processBackupVerificationResult } from '../backup/verificationService';
 import { updateRestoreJobByCommandId } from '../../services/restoreResultPersistence';
@@ -125,11 +125,11 @@ commandsRoutes.get('/:id/commands', async (c) => {
   );
 
   return c.json({
-    commands: commands.map(cmd => ({
+    commands: decryptCommandsForDelivery(commands.map(cmd => ({
       id: cmd.id,
       type: cmd.type,
-      payload: decryptSensitivePayloadFields(cmd.type, cmd.payload),
-    })),
+      payload: cmd.payload,
+    }))),
   });
 });
 
