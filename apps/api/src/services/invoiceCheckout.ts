@@ -1,4 +1,5 @@
 import { eq } from 'drizzle-orm';
+import { computeChargeNow } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { invoices, invoiceStripePayments } from '../db/schema';
 import { getPartnerStripeClient, PartnerStripeError } from './partnerStripe';
@@ -38,9 +39,15 @@ export async function createInvoicePayLink(invoiceId: string, actor: InvoiceActo
   requireOrgAccess(actor, inv.orgId);
   if (!PAYABLE.has(inv.status)) throw new InvoiceServiceError('Invoice is not payable', 409, 'NOT_PAYABLE');
 
+  // Deposit-first: charge the deposit remaining while unmet, else the full
+  // balance. computeChargeNow clamps to balance and handles every state (no
+  // deposit, deposit partially/fully paid) — never reimplement that logic here.
+  const chargeNow = computeChargeNow({
+    depositDue: inv.depositDue, amountPaid: inv.amountPaid, balance: inv.balance,
+  });
   // Currency-aware minor units (zero-decimal currencies must not be ×100).
-  const balanceMinor = toMinorUnits(inv.balance, inv.currencyCode);
-  if (balanceMinor <= 0) throw new InvoiceServiceError('Nothing to pay', 409, 'NOTHING_TO_PAY');
+  const chargeMinor = toMinorUnits(chargeNow.amount, inv.currencyCode);
+  if (chargeMinor <= 0) throw new InvoiceServiceError('Nothing to pay', 409, 'NOTHING_TO_PAY');
 
   // The partner charges on their OWN Stripe account using their stored key (no
   // platform/Connect). stripe_connect_accounts is a partner-axis table (reused by
@@ -75,8 +82,12 @@ export async function createInvoicePayLink(invoiceId: string, actor: InvoiceActo
     line_items: [{
       price_data: {
         currency: inv.currencyCode.toLowerCase(),
-        unit_amount: balanceMinor,
-        product_data: { name: `Invoice ${inv.invoiceNumber ?? inv.id}` },
+        unit_amount: chargeMinor,
+        product_data: {
+          name: chargeNow.isDeposit
+            ? `Deposit — Invoice ${inv.invoiceNumber ?? inv.id}`
+            : `Invoice ${inv.invoiceNumber ?? inv.id}`,
+        },
       },
       quantity: 1,
     }],
@@ -89,12 +100,16 @@ export async function createInvoicePayLink(invoiceId: string, actor: InvoiceActo
       invoice_id: inv.id,
       org_id: inv.orgId,
       partner_id: inv.partnerId,
-      invoice_balance_cents: String(balanceMinor),
+      // Historically the full balance; now the amount actually charged in THIS
+      // session (deposit or balance). Write-only — the settle path (stripeSettle.ts)
+      // records what Stripe reports paid via session.amount_total, never this field.
+      invoice_balance_cents: String(chargeMinor),
     },
   }, {
-    // Identical (invoice, balance) reuses the session instead of creating a
-    // second pending mapping — safe for repeated "send link" clicks.
-    idempotencyKey: `inv_${inv.id}_${balanceMinor}`,
+    // Identical (invoice, charge-now amount) reuses the session instead of creating
+    // a second pending mapping — safe for repeated "send link" clicks. Amount-sensitive
+    // so a deposit session and a later full-balance session never collide.
+    idempotencyKey: `inv_${inv.id}_${chargeMinor}`,
   }));
 
   if (!session.url) throw new InvoiceServiceError('Stripe did not return a checkout URL', 500, 'STRIPE_NO_URL');
@@ -109,7 +124,7 @@ export async function createInvoicePayLink(invoiceId: string, actor: InvoiceActo
       stripeObjectType: 'checkout_session',
       stripeObjectId: session.id,
       stripePaymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : null,
-      amount: Number(inv.balance).toFixed(2),
+      amount: chargeNow.amount,
       currency: inv.currencyCode,
       status: 'pending',
     })

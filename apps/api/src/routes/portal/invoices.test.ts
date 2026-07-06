@@ -213,6 +213,58 @@ describe('portal invoices routes', () => {
     }));
   });
 
+  it('POST /invoices/:id/pay charges the deposit-remaining amount while the deposit is unmet', async () => {
+    dbResults.push([{
+      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      balance: '10000.00', depositDue: '3000.00', amountPaid: '0.00',
+      currencyCode: 'USD', invoiceNumber: 'INV-DEP',
+    }]);
+    getPartnerStripeClientMock.mockResolvedValue(partnerClient('acct_9'));
+    sessionsCreateMock.mockResolvedValue({ id: 'cs_dep', url: 'https://checkout.stripe.com/c/cs_dep', payment_intent: 'pi_dep' });
+
+    const res = await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(sessionsCreateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        line_items: [expect.objectContaining({
+          price_data: expect.objectContaining({
+            unit_amount: 300000,
+            product_data: { name: 'Deposit — Invoice INV-DEP' },
+          }),
+        })],
+        metadata: expect.objectContaining({ invoice_balance_cents: '300000' }),
+      }),
+      { idempotencyKey: `inv_${INV_ID}_300000` },
+    );
+    expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({ amount: '3000.00' }));
+  });
+
+  it('POST /invoices/:id/pay charges the remaining balance (plain name) once the deposit is satisfied', async () => {
+    dbResults.push([{
+      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'partially_paid',
+      balance: '7000.00', depositDue: '3000.00', amountPaid: '3000.00',
+      currencyCode: 'USD', invoiceNumber: 'INV-DEP',
+    }]);
+    getPartnerStripeClientMock.mockResolvedValue(partnerClient('acct_9'));
+    sessionsCreateMock.mockResolvedValue({ id: 'cs_dep2', url: 'https://checkout.stripe.com/c/cs_dep2', payment_intent: 'pi_dep2' });
+
+    const res = await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(sessionsCreateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        line_items: [expect.objectContaining({
+          price_data: expect.objectContaining({
+            unit_amount: 700000,
+            product_data: { name: 'Invoice INV-DEP' },
+          }),
+        })],
+        metadata: expect.objectContaining({ invoice_balance_cents: '700000' }),
+      }),
+      { idempotencyKey: `inv_${INV_ID}_700000` },
+    );
+    expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({ amount: '7000.00' }));
+  });
+
   it('POST /invoices/:id/pay returns 409 when the partner has no Stripe key configured', async () => {
     dbResults.push([{
       id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',

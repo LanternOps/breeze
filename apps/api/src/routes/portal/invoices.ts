@@ -18,6 +18,7 @@ import { InvoiceServiceError } from '../../services/invoiceTypes';
 import { getPartnerStripeClient, PartnerStripeError } from '../../services/partnerStripe';
 import { settleCheckoutSession } from '../../services/stripeSettle';
 import { toMinorUnits } from '../../services/stripeMoney';
+import { computeChargeNow } from '@breeze/shared';
 
 // The Checkout session id Stripe substitutes into success_url ({CHECKOUT_SESSION_ID}).
 const settleSchema = z.object({ sessionId: z.string().trim().min(1).max(255) });
@@ -159,10 +160,16 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
   if (!inv) return c.json({ error: 'Invoice not found' }, 404);
   if (!PAYABLE.has(inv.status)) return c.json({ error: 'Invoice is not payable' }, 409);
 
+  // Deposit-first: charge the deposit remaining while unmet, else the full
+  // balance. computeChargeNow clamps to balance and handles every state (no
+  // deposit, deposit partially/fully paid) — never reimplement that logic here.
+  const chargeNow = computeChargeNow({
+    depositDue: inv.depositDue, amountPaid: inv.amountPaid, balance: inv.balance,
+  });
   // Currency-aware minor units: zero-decimal currencies (JPY, KRW, …) must NOT be
   // multiplied by 100, or the customer is over-charged 100x (see stripeMoney.ts).
-  const balanceMinor = toMinorUnits(inv.balance, inv.currencyCode);
-  if (balanceMinor <= 0) return c.json({ error: 'Nothing to pay' }, 409);
+  const chargeMinor = toMinorUnits(chargeNow.amount, inv.currencyCode);
+  if (chargeMinor <= 0) return c.json({ error: 'Nothing to pay' }, 409);
 
   // stripe_connect_accounts is a partner-axis table (reused by the #1610 API-key
   // model). This handler runs with NO ambient DB context (#1448 opt-out), and even
@@ -206,8 +213,12 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
     line_items: [{
       price_data: {
         currency: inv.currencyCode.toLowerCase(),
-        unit_amount: balanceMinor,
-        product_data: { name: `Invoice ${inv.invoiceNumber ?? inv.id}` },
+        unit_amount: chargeMinor,
+        product_data: {
+          name: chargeNow.isDeposit
+            ? `Deposit — Invoice ${inv.invoiceNumber ?? inv.id}`
+            : `Invoice ${inv.invoiceNumber ?? inv.id}`,
+        },
       },
       quantity: 1,
     }],
@@ -219,12 +230,16 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
       invoice_id: inv.id,
       org_id: inv.orgId,
       partner_id: inv.partnerId,
-      invoice_balance_cents: String(balanceMinor),
+      // Historically the full balance; now the amount actually charged in THIS
+      // session (deposit or balance). Write-only — the settle path (stripeSettle.ts)
+      // records what Stripe reports paid via session.amount_total, never this field.
+      invoice_balance_cents: String(chargeMinor),
     },
   }, {
-    // Dedupe double-click / retry: identical (invoice, balance) reuses the same
-    // Checkout session instead of creating a second pending mapping row.
-    idempotencyKey: `inv_${inv.id}_${balanceMinor}`,
+    // Dedupe double-click / retry: identical (invoice, charge-now amount) reuses the
+    // same Checkout session instead of creating a second pending mapping row. Amount-
+    // sensitive so a deposit session and a later full-balance session never collide.
+    idempotencyKey: `inv_${inv.id}_${chargeMinor}`,
   }));
 
   // Fresh short context so the pending-mapping write isn't a contextless 0-row
@@ -237,7 +252,7 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
       stripeObjectType: 'checkout_session',
       stripeObjectId: session.id,
       stripePaymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : null,
-      amount: Number(inv.balance).toFixed(2),
+      amount: chargeNow.amount,
       currency: inv.currencyCode,
       status: 'pending',
     })
