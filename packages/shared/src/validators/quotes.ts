@@ -106,6 +106,12 @@ export const reorderLinesSchema = z.object({ lineIds: uniqueReorderIds });
 export type ReorderLinesInput = z.infer<typeof reorderLinesSchema>;
 export type ReorderBlocksInput = z.infer<typeof reorderBlocksSchema>;
 
+// Move a line to a different pricing-table (line_items) block on the same
+// quote. The service appends it to the end of the target block's sort order;
+// bundle children follow their parent.
+export const moveQuoteLineSchema = z.object({ blockId: z.string().guid() });
+export type MoveQuoteLineInput = z.infer<typeof moveQuoteLineSchema>;
+
 export const acceptQuoteSchema = z.object({
   signerName: z.string().min(1).max(255),
   signerEmail: z.string().email().max(255).optional(),
