@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -60,6 +61,12 @@ const (
 	bannerAlpha     = 230
 	bannerWidth     = 460
 	bannerHeight    = 34
+
+	// bannerCreateTimeout bounds the wait for bannerWindowLoop to hand back its
+	// window handle. showBannerOS is called with bannerOpMu held (see banner.go);
+	// without a bound, a hang in native window creation would wedge the banner
+	// subsystem forever.
+	bannerCreateTimeout = 5 * time.Second
 )
 
 var (
@@ -171,7 +178,13 @@ func showBannerOS(label string) bool {
 
 	ready := make(chan uintptr, 1)
 	go bannerWindowLoop(ready)
-	hwnd := <-ready
+	var hwnd uintptr
+	select {
+	case hwnd = <-ready:
+	case <-time.After(bannerCreateTimeout):
+		log.Warn("banner window creation timed out", "timeout", bannerCreateTimeout)
+		return false
+	}
 	if hwnd == 0 {
 		return false
 	}
