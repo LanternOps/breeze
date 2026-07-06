@@ -77,6 +77,7 @@ vi.mock('../../services/remoteAccessLauncher', () => ({
 vi.mock('../agentWs', () => ({
   sendCommandToAgent: vi.fn(),
   isAgentConnected: vi.fn().mockReturnValue(false),
+  disconnectAgent: vi.fn().mockReturnValue(true),
 }));
 
 vi.mock('../../services/commandQueue', () => ({
@@ -99,6 +100,7 @@ vi.mock('../../services/remoteSessionTeardown', () => ({
 import { coreRoutes } from './core';
 import { db } from '../../db';
 import { terminateDeviceRemoteSessions } from '../../services/remoteSessionTeardown';
+import { disconnectAgent } from '../agentWs';
 
 const DEVICE_ID = '11111111-1111-4111-8111-111111111111';
 
@@ -163,5 +165,35 @@ describe('DELETE /devices/:id (decommission) — remote-session teardown wiring'
 
     expect(res.status).toBe(400);
     expect(terminateDeviceRemoteSessions).not.toHaveBeenCalled();
+    expect(disconnectAgent).not.toHaveBeenCalled();
+  });
+
+  // #2230: the status flip is only enforced at WS connect time, so a live
+  // agent socket would keep full command/control after decommission (and its
+  // heartbeats used to flip the row back to 'online'). The endpoint must
+  // force-close the agent's WS control channel; the handshake gate then
+  // rejects the reconnect.
+  it('force-closes the agent WS control channel when the device has an agent', async () => {
+    rigDecommission({ ...ONLINE_DEVICE, agentId: 'agent-abc-123' });
+
+    const res = await app.request(`/devices/${DEVICE_ID}`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(disconnectAgent).toHaveBeenCalledWith('agent-abc-123', 4001, 'Device decommissioned');
+  });
+
+  it('skips the WS disconnect when the device has no agentId', async () => {
+    rigDecommission(ONLINE_DEVICE);
+
+    const res = await app.request(`/devices/${DEVICE_ID}`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(disconnectAgent).not.toHaveBeenCalled();
   });
 });

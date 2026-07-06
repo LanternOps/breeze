@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { WSContext } from 'hono/ws';
 import { z } from 'zod';
-import { eq, and, inArray, sql } from 'drizzle-orm';
+import { eq, and, inArray, notInArray, sql } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../db';
 import { devices, deviceCommands, discoveryJobs, scriptExecutions, scriptExecutionBatches, remoteSessions, backupJobs, restoreJobs, tunnelSessions } from '../db/schema';
@@ -840,8 +840,17 @@ export async function validateAgentToken(agentId: string, token: string): Promis
 }
 
 /**
- * Update device status when WebSocket connects/disconnects
+ * Update device status when WebSocket connects/disconnects.
+ *
+ * Never overwrites terminal lifecycle statuses: decommission/quarantine are
+ * only enforced at WS connect time, so an agent whose socket was already open
+ * when the device was decommissioned keeps sending heartbeats — an unguarded
+ * write here flipped the row back to 'online' and resurrected the device in
+ * the dashboard (#2230). The disconnect path has the same hole
+ * ('decommissioned' → 'offline' makes the row visible again).
  */
+const TERMINAL_DEVICE_STATUSES = ['decommissioned', 'quarantined'] as const;
+
 async function updateDeviceStatus(agentId: string, status: 'online' | 'offline'): Promise<void> {
   try {
     await db
@@ -851,7 +860,10 @@ async function updateDeviceStatus(agentId: string, status: 'online' | 'offline')
         lastSeenAt: new Date(),
         updatedAt: new Date()
       })
-      .where(eq(devices.agentId, agentId));
+      .where(and(
+        eq(devices.agentId, agentId),
+        notInArray(devices.status, [...TERMINAL_DEVICE_STATUSES])
+      ));
   } catch (error) {
     console.error(`Failed to update device status for ${agentId}:`, error);
   }

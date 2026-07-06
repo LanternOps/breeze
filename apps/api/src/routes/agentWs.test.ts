@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
+import { and, eq, notInArray } from 'drizzle-orm';
 
 const updateRestoreJobFromResultMock = vi.fn().mockResolvedValue(true);
 
@@ -155,6 +156,7 @@ vi.mock('../services/tenantStatus', () => ({
 }));
 
 import { db } from '../db';
+import { devices } from '../db/schema';
 import {
   createAgentWsHandlers,
   createAgentWsRoutes,
@@ -172,6 +174,7 @@ import { processBackupVerificationResult } from './backup/verificationService';
 import { updateRestoreJobFromResult } from '../services/restoreResultPersistence';
 import { rateLimiter } from '../services/rate-limit';
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
+import { publishEvent } from '../services/eventBus';
 
 function wsMock() {
   return {
@@ -318,6 +321,71 @@ describe('agent websocket handshake', () => {
     } as any, ws as any);
 
     expect(vi.mocked(handleTerminalOutput)).toHaveBeenCalledWith(sessionId, 'café\n');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2230: WS lifecycle status writes must never overwrite terminal statuses.
+// Decommission/quarantine only gate the WS handshake — an agent whose socket
+// was already open when the device was decommissioned keeps sending heartbeats,
+// and an unguarded `UPDATE devices SET status='online' WHERE agent_id=?` flips
+// the row back to 'online', resurrecting the device in the dashboard. The
+// disconnect path has the same hole ('decommissioned' → 'offline' becomes
+// visible again). These tests pin the notInArray guard in updateDeviceStatus.
+// ---------------------------------------------------------------------------
+describe('WS lifecycle status writes — terminal-status guard (#2230)', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  const TERMINAL_GUARD = notInArray(devices.status, ['decommissioned', 'quarantined']);
+
+  function rigStatusUpdateCapture() {
+    const whereMock = vi.fn().mockResolvedValue([]);
+    const setMock = vi.fn().mockReturnValue({ where: whereMock });
+    vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
+    return { whereMock, setMock };
+  }
+
+  it('excludes decommissioned/quarantined rows when flipping a device online on connect', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+    const { whereMock, setMock } = rigStatusUpdateCapture();
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    await handlers.onOpen({}, wsMock() as any);
+
+    expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ status: 'online' }));
+    expect(whereMock).toHaveBeenCalledWith(
+      and(eq(devices.agentId, 'agent-123'), TERMINAL_GUARD)
+    );
+  });
+
+  it('excludes decommissioned/quarantined rows when flipping a device offline on disconnect', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    // Connect first so onClose sees this ws as the active connection.
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) } as any);
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+    await handlers.onOpen({}, ws as any);
+
+    vi.clearAllMocks();
+    vi.mocked(publishEvent).mockResolvedValue('event-id');
+    const { whereMock, setMock } = rigStatusUpdateCapture();
+    // onClose status pre-check select — return a live row so the offline write runs.
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([
+      { id: 'device-123', siteId: 'site-1', status: 'online', hostname: 'host-1' },
+    ]) as any);
+
+    await handlers.onClose({}, ws as any);
+
+    expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ status: 'offline' }));
+    expect(whereMock).toHaveBeenCalledWith(
+      and(eq(devices.agentId, 'agent-123'), TERMINAL_GUARD)
+    );
   });
 });
 

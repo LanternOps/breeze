@@ -48,7 +48,7 @@ import {
 import { captureException } from '../../services/sentry';
 import type { InheritableRemoteAccessSettings, PartnerSettings } from '@breeze/shared';
 import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
-import { sendCommandToAgent, isAgentConnected } from '../agentWs';
+import { sendCommandToAgent, isAgentConnected, disconnectAgent } from '../agentWs';
 import { terminateDeviceRemoteSessions, TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
 import { CommandTypes } from '../../services/commandQueue';
 import { getGlobalEnrollmentSecret } from '../agents/enrollment';
@@ -1219,13 +1219,25 @@ coreRoutes.delete(
     // recorded in the audit trail so there's a record live control may persist.
     const teardownResult = await terminateDeviceRemoteSessions(deviceId);
 
+    // Same connect-time-only gap applies to the agent's own WS control
+    // channel (#2230): a connected agent would keep its full command channel
+    // after decommission. Force-close it; the handshake gate
+    // (validateAgentToken) rejects the reconnect for decommissioned devices.
+    let agentWsDisconnected = false;
+    if (device.agentId) {
+      agentWsDisconnected = disconnectAgent(device.agentId, 4001, 'Device decommissioned');
+    }
+
     writeRouteAudit(c, {
       orgId: device.orgId,
       action: 'device.decommission',
       resourceType: 'device',
       resourceId: updated?.id ?? deviceId,
       resourceName: updated?.hostname ?? updated?.displayName ?? device.hostname,
-      details: { remoteSessionTeardown: teardownResult === TEARDOWN_FAILED ? 'failed' : 'ok' },
+      details: {
+        remoteSessionTeardown: teardownResult === TEARDOWN_FAILED ? 'failed' : 'ok',
+        agentWsDisconnected,
+      },
     });
 
     return c.json({ success: true, device: updated ? stripSensitiveDeviceFields(updated) : updated });
