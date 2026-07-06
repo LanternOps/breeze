@@ -24,6 +24,7 @@ import { captureException } from '../../services/sentry';
 import { processCollectedAuditPolicyCommandResult } from '../../services/auditBaselineService';
 import { CommandTypes, queueCommandForExecution } from '../../services/commandQueue';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
+import { decryptSensitivePayloadFields, hasSensitivePayload } from '../../services/sensitiveCommandPayload';
 import { applyVaultSyncCommandResult } from '../../services/vaultSyncPersistence';
 import { processBackupVerificationResult } from '../backup/verificationService';
 import { updateRestoreJobByCommandId } from '../../services/restoreResultPersistence';
@@ -127,7 +128,7 @@ commandsRoutes.get('/:id/commands', async (c) => {
     commands: commands.map(cmd => ({
       id: cmd.id,
       type: cmd.type,
-      payload: cmd.payload,
+      payload: decryptSensitivePayloadFields(cmd.type, cmd.payload),
     })),
   });
 });
@@ -237,7 +238,10 @@ commandsRoutes.post(
         .set({
           status: normalizedData.status === 'completed' ? 'completed' : 'failed',
           completedAt: new Date(),
-          result: buildStoredCommandResult(normalizedData, stdout)
+          result: buildStoredCommandResult(normalizedData, stdout),
+          // Credentials ride the payload for some commands (e.g. FileVault
+          // rotation); blank them once the command is terminal.
+          ...(hasSensitivePayload(command.type) ? { payload: null } : {}),
         })
         .where(and(
           eq(deviceCommands.id, commandId),

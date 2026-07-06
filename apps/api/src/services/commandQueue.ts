@@ -10,6 +10,7 @@ import {
 } from './commandDispatch';
 import { commandAuditDetails } from './commandAudit';
 import { recordCommandDispatch } from './anomalyMetrics';
+import { decryptSensitivePayloadFields } from './sensitiveCommandPayload';
 
 // Sentinel error string for the WS-pre-check fast-fail path. The fileBrowser
 // route (and any other interactive caller) matches on this substring to map
@@ -112,6 +113,10 @@ export const CommandTypes = {
   ENCRYPT_FILE: 'encrypt_file',
   SECURE_DELETE_FILE: 'secure_delete_file',
   QUARANTINE_FILE: 'quarantine_file',
+
+  // Disk encryption (BitLocker / FileVault)
+  ENCRYPTION_COLLECT_KEYS: 'encryption_collect_keys',
+  ENCRYPTION_ROTATE_KEY: 'encryption_rotate_key',
 
   // Peripheral control — pushes full active policy set to agent
   PERIPHERAL_POLICY_SYNC: 'peripheral_policy_sync',
@@ -543,7 +548,7 @@ export async function queueCommandForExecution(
       const sent = sendCommandToAgent(device.agentId, {
         id: command.id,
         type,
-        payload
+        payload: decryptSensitivePayloadFields(type, payload) as CommandPayload
       });
       if (sent) {
         return {
@@ -790,7 +795,7 @@ export async function executeCommand(
           sent = sendCommandToAgent(device.agentId, {
             id: command.id,
             type,
-            payload,
+            payload: decryptSensitivePayloadFields(type, payload) as CommandPayload,
           });
           if (sent) {
             if (attempt > 0) {
