@@ -180,6 +180,10 @@ export function validateQuoteDeposit(
   if (deposit.type === 'selected_lines' && depositCents <= 0) {
     return { ok: false, code: 'DEPOSIT_NO_ELIGIBLE_LINES', message: 'Flag at least one one-time line as deposit-eligible' };
   }
+  // Spec rule 0 < deposit: a percent so small it rounds to $0.00 is no deposit.
+  if (deposit.type === 'percent' && depositCents <= 0) {
+    return { ok: false, code: 'DEPOSIT_PERCENT_INVALID', message: 'Deposit percent is too small for this quote total' };
+  }
   if (depositCents >= toCents(totals.dueOnAcceptanceTotal)) {
     return { ok: false, code: 'DEPOSIT_NOT_BELOW_TOTAL',
       message: 'Deposit must be less than the amount due on acceptance — remove the deposit instead' };

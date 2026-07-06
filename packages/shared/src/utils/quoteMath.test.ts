@@ -159,6 +159,11 @@ describe('quoteMath (shared)', () => {
       expect(validateQuoteDeposit([line({})], null, { type: 'percent', percent: 100 }))
         .toMatchObject({ ok: false, code: 'DEPOSIT_PERCENT_INVALID' });
     });
+    it('rejects a percent that rounds the deposit to zero cents', () => {
+      // dueOnAcceptance 1.00; 0.4% => 0.4 cents => rounds to 0 — a $0.00 deposit is no deposit
+      const r = validateQuoteDeposit([line({ unitPrice: '1.00' })], null, { type: 'percent', percent: 0.4 });
+      expect(r).toMatchObject({ ok: false, code: 'DEPOSIT_PERCENT_INVALID' });
+    });
     it('rejects selected_lines with no eligible one-time line', () => {
       const r = validateQuoteDeposit([line({ depositEligible: false })], null, { type: 'selected_lines' });
       expect(r).toMatchObject({ ok: false, code: 'DEPOSIT_NO_ELIGIBLE_LINES' });
