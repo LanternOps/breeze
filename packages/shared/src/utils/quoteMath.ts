@@ -132,6 +132,11 @@ export function computeQuoteTotals(
   } else if (deposit && deposit.type === 'selected_lines') {
     depositCents = eligibleCents + Math.floor(eligibleTaxableCents * rate + 0.5);
   }
+  // A deposit that computes to $0.00 or less is "no deposit": collapse to null so
+  // the persisted snapshot (recomputeAndPersist) and the accept-time `!= null`
+  // guard agree with the documented contract, rather than storing a bogus "0.00".
+  // validateQuoteDeposit still hard-blocks these before a quote can be sent.
+  if (depositCents !== null && depositCents <= 0) depositCents = null;
 
   return {
     subtotal: fromCents(subtotal),

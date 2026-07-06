@@ -124,6 +124,16 @@ describe('quoteMath (shared)', () => {
       expect(computeQuoteTotals([line({})], null, { type: 'none' }).depositDueTotal).toBeNull();
     });
 
+    it('depositDueTotal is null (not "0.00") when a deposit computes to zero', () => {
+      // A percent so small it rounds to $0.00, and a selected_lines deposit with no
+      // eligible lines, must both collapse to null so the persisted snapshot and the
+      // accept-time guard read them as "no deposit", not a bogus $0.00 deposit.
+      expect(computeQuoteTotals([line({ unitPrice: '1.00' })], null, { type: 'percent', percent: 0.4 }).depositDueTotal).toBeNull();
+      expect(computeQuoteTotals([line({ unitPrice: '100.00', depositEligible: false })], null, { type: 'selected_lines' }).depositDueTotal).toBeNull();
+      // And null when the only one-time line was "deleted" (percent type, no one-time lines left).
+      expect(computeQuoteTotals([line({ recurrence: 'monthly' })], null, { type: 'percent', percent: 30 }).depositDueTotal).toBeNull();
+    });
+
     it('categoryBreakdown groups by itemType with manual lines under other, omitting empty categories', () => {
       const lines = [
         line({ unitPrice: '6200.00', itemType: 'hardware' }),

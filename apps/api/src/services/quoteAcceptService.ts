@@ -194,8 +194,11 @@ export async function acceptQuote(
     issueFields.terms = quote.terms ?? null;
     // Deposit terms travel from the signed quote onto the issued invoice.
     // depositAmount was validated < dueOnAcceptanceTotal at send and the quote
-    // is locked since, so it is safe to snapshot verbatim.
-    if (quote.depositType !== 'none' && quote.depositAmount !== null) {
+    // is locked since, so it is safe to snapshot verbatim. Guard on a POSITIVE
+    // amount, not just non-null: a $0.00 deposit is "no deposit" and must never
+    // be snapshotted. (computeQuoteTotals now persists null for a zero deposit;
+    // this is belt-and-suspenders against any legacy/foreign write that stored "0.00".)
+    if (quote.depositType !== 'none' && Number(quote.depositAmount) > 0) {
       issueFields.depositDue = quote.depositAmount;
     }
   }
