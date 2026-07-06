@@ -21,7 +21,19 @@ const readPerm = requirePermission(PERMISSIONS.INVOICES_READ.resource, PERMISSIO
 const writePerm = requirePermission(PERMISSIONS.INVOICES_WRITE.resource, PERMISSIONS.INVOICES_WRITE.action);
 const idParam = z.object({ id: z.string().guid() });
 const lineParam = z.object({ id: z.string().guid(), lineId: z.string().guid() });
-const dueDateSchema = z.object({ dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'expected YYYY-MM-DD') });
+const dueDateSchema = z.object({
+  dueDate: z.string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'expected YYYY-MM-DD')
+    .refine((s) => {
+      // The regex alone accepts non-calendar dates like 2026-13-40 — Date parses
+      // those by rolling over into the next month/year, so round-trip the parsed
+      // date back to a YYYY-MM-DD string and require it to match verbatim. A
+      // rolled-over date silently reaches the invoiceService update and 500s at
+      // the Postgres DATE column instead of failing validation here.
+      const d = new Date(`${s}T00:00:00Z`);
+      return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+    }, 'invalid calendar date'),
+});
 
 export function invoiceActorFrom(c: { get: (k: string) => unknown }): InvoiceActor {
   const auth = c.get('auth') as AuthContext;

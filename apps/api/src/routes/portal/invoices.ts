@@ -237,10 +237,12 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
       invoice_balance_cents: String(chargeMinor),
     },
   }, {
-    // Dedupe double-click / retry: identical (invoice, charge-now amount) reuses the
-    // same Checkout session instead of creating a second pending mapping row. Amount-
-    // sensitive so a deposit session and a later full-balance session never collide.
-    idempotencyKey: `inv_${inv.id}_${chargeMinor}`,
+    // Dedupe double-click / retry: identical (invoice, charge-now amount, phase) reuses
+    // the same Checkout session instead of creating a second pending mapping row. A
+    // 50%-deposit invoice has the SAME chargeMinor for the deposit and the later
+    // balance charge (different product name but equal amount), so the amount alone
+    // can't disambiguate — the explicit dep/bal discriminator does.
+    idempotencyKey: `inv_${inv.id}_${chargeMinor}_${chargeNow.isDeposit ? 'dep' : 'bal'}`,
   }));
 
   // Fresh short context so the pending-mapping write isn't a contextless 0-row

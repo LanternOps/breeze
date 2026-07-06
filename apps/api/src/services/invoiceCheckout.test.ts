@@ -85,7 +85,7 @@ describe('createInvoicePayLink', () => {
         })],
         metadata: expect.objectContaining({ invoice_balance_cents: '300000' }),
       }),
-      { idempotencyKey: `inv_${INV_ID}_300000` },
+      { idempotencyKey: `inv_${INV_ID}_300000_dep` },
     );
     expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({ amount: '3000.00' }));
   });
@@ -111,7 +111,7 @@ describe('createInvoicePayLink', () => {
         })],
         metadata: expect.objectContaining({ invoice_balance_cents: '700000' }),
       }),
-      { idempotencyKey: `inv_${INV_ID}_700000` },
+      { idempotencyKey: `inv_${INV_ID}_700000_bal` },
     );
     expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({ amount: '7000.00' }));
   });
@@ -137,9 +137,43 @@ describe('createInvoicePayLink', () => {
         })],
         metadata: expect.objectContaining({ invoice_balance_cents: '10000' }),
       }),
-      { idempotencyKey: `inv_${INV_ID}_10000` },
+      { idempotencyKey: `inv_${INV_ID}_10000_bal` },
     );
     expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({ amount: '100.00' }));
+  });
+
+  it('deposit-phase and balance-phase idempotency keys differ for the SAME charge amount (#idempotency-collision)', async () => {
+    // A 50%-deposit invoice: depositDue exactly equals the eventual balance
+    // charge amount, so chargeMinor is IDENTICAL for the deposit session and the
+    // later full-balance session. Without a phase discriminator the two Stripe
+    // idempotencyKeys would collide and the second session creation would be
+    // rejected with idempotency_error for ~24h.
+    dbResults.push([{
+      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      balance: '10000.00', depositDue: '5000.00', amountPaid: '0.00',
+      currencyCode: 'USD', invoiceNumber: 'INV-EQ',
+    }]);
+    getPartnerStripeClientMock.mockResolvedValue(partnerClient());
+    sessionsCreateMock.mockResolvedValue({ id: 'cs_dep_eq', url: 'https://checkout.stripe.com/c/cs_dep_eq', payment_intent: 'pi_dep_eq' });
+    await createInvoicePayLink(INV_ID, actor);
+    const depositKey = (sessionsCreateMock.mock.calls[0]?.[1] as { idempotencyKey: string }).idempotencyKey;
+    expect(depositKey).toBe(`inv_${INV_ID}_500000_dep`);
+
+    vi.clearAllMocks();
+    // Deposit now fully paid: the balance charge is ALSO 5000.00 (equal minor
+    // amount to the deposit above) — simulating the exact collision scenario.
+    dbResults.push([{
+      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'partially_paid',
+      balance: '5000.00', depositDue: '5000.00', amountPaid: '5000.00',
+      currencyCode: 'USD', invoiceNumber: 'INV-EQ',
+    }]);
+    getPartnerStripeClientMock.mockResolvedValue(partnerClient());
+    sessionsCreateMock.mockResolvedValue({ id: 'cs_bal_eq', url: 'https://checkout.stripe.com/c/cs_bal_eq', payment_intent: 'pi_bal_eq' });
+    await createInvoicePayLink(INV_ID, actor);
+    const balanceKey = (sessionsCreateMock.mock.calls[0]?.[1] as { idempotencyKey: string }).idempotencyKey;
+    expect(balanceKey).toBe(`inv_${INV_ID}_500000_bal`);
+
+    expect(depositKey).not.toBe(balanceKey);
   });
 
   it('throws NOTHING_TO_PAY when the charge-now amount is zero', async () => {

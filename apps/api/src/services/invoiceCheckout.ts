@@ -106,10 +106,12 @@ export async function createInvoicePayLink(invoiceId: string, actor: InvoiceActo
       invoice_balance_cents: String(chargeMinor),
     },
   }, {
-    // Identical (invoice, charge-now amount) reuses the session instead of creating
-    // a second pending mapping — safe for repeated "send link" clicks. Amount-sensitive
-    // so a deposit session and a later full-balance session never collide.
-    idempotencyKey: `inv_${inv.id}_${chargeMinor}`,
+    // Identical (invoice, charge-now amount, phase) reuses the session instead of
+    // creating a second pending mapping — safe for repeated "send link" clicks. A
+    // 50%-deposit invoice has the SAME chargeMinor for the deposit and the later
+    // balance charge (different product name but equal amount), so the amount
+    // alone can't disambiguate — the explicit dep/bal discriminator does.
+    idempotencyKey: `inv_${inv.id}_${chargeMinor}_${chargeNow.isDeposit ? 'dep' : 'bal'}`,
   }));
 
   if (!session.url) throw new InvoiceServiceError('Stripe did not return a checkout URL', 500, 'STRIPE_NO_URL');

@@ -209,6 +209,20 @@ describe('invoice due-date route', () => {
     expect(svc.updateIssuedDueDate).not.toHaveBeenCalled();
   });
 
+  it('PATCH /:id/due-date rejects a non-calendar date that passes the regex (400, no service call)', async () => {
+    // 2026-13-40 matches \d{4}-\d{2}-\d{2} but is not a real date — Date would
+    // silently roll it over to a later valid date instead of erroring, and
+    // without the round-trip refine this used to reach the service and 500 at
+    // the Postgres DATE column.
+    const res = await app().request(`/${INV_ID}/due-date`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ dueDate: '2026-13-40' })
+    });
+    expect(res.status).toBe(400);
+    expect(svc.updateIssuedDueDate).not.toHaveBeenCalled();
+  });
+
   it('PATCH /:id/due-date updates the due date and writes invoice.due_date.updated to the audit chain', async () => {
     (svc.updateIssuedDueDate as any).mockResolvedValue({
       invoice: { id: INV_ID, dueDate: '2026-09-01', status: 'sent' },

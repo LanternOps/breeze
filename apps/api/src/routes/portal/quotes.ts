@@ -55,7 +55,13 @@ quoteRoutes.get('/quotes/:id/pdf', zValidator('param', idParam), async (c) => {
   const [quote] = await db.select().from(quotes).where(and(eq(quotes.id, id), eq(quotes.orgId, auth.user.orgId))).limit(1);
   if (!quote || quote.status === 'draft') return c.json({ error: 'Quote not found' }, 404);
   const blocks = await db.select().from(quoteBlocks).where(eq(quoteBlocks.quoteId, id)).orderBy(quoteBlocks.sortOrder);
-  const lines = toCustomerLines(await db.select().from(quoteLines).where(eq(quoteLines.quoteId, id)).orderBy(quoteLines.sortOrder));
+  const lines = toCustomerLines((await db.select().from(quoteLines).where(eq(quoteLines.quoteId, id)).orderBy(quoteLines.sortOrder)).filter((l) => l.customerVisible));
+  // Same totals sweep as GET /quotes/:id: derive the amount due on acceptance
+  // (one-time only, tax-inclusive) + per-category subtotals so the PDF's
+  // "Remaining balance" line matches the portal detail view instead of falling
+  // back to renderQuotePdf's oneTimeTotal default (tax-exclusive on taxed
+  // deposit quotes).
+  const totals = computeQuoteTotals(lines as QuoteLineForMath[], quote.taxRate ? parseFloat(quote.taxRate) : null, { type: quote.depositType, percent: quote.depositPercent });
   // partners is a partner-axis RLS table — the portal request runs in ORG scope,
   // where breeze_has_partner_access is false. A bare read returns 0 rows with NO
   // error (the #1375 class), causing buildSellerSnapshot(undefined) to produce an
@@ -83,7 +89,12 @@ quoteRoutes.get('/quotes/:id/pdf', zValidator('param', idParam), async (c) => {
   const { renderQuotePdf } = await import('../../services/quotePdf');
   // Legacy/draft docs have no frozen snapshot; synthesize from the live partner so
   // the From block still renders (issued docs use the frozen column).
-  const quoteForRender = { ...quote, sellerSnapshot: quote.sellerSnapshot ?? (partner ? buildSellerSnapshot(partner) : null) };
+  const quoteForRender = {
+    ...quote,
+    sellerSnapshot: quote.sellerSnapshot ?? (partner ? buildSellerSnapshot(partner) : null),
+    dueOnAcceptanceTotal: totals.dueOnAcceptanceTotal,
+    categoryBreakdown: totals.categoryBreakdown,
+  };
   const pdf = await renderQuotePdf(quoteForRender, blocks, lines, loadImage, {
     partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null,
     footer: quote.terms ?? partner?.invoiceFooter ?? brand?.footerText ?? null, currencyCode: quote.currencyCode ?? partner?.currencyCode ?? 'USD',

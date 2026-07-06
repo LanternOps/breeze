@@ -178,8 +178,9 @@ describe('portal invoices routes', () => {
         success_url: expect.stringContaining('session_id={CHECKOUT_SESSION_ID}'),
       }),
       // No Connect stripeAccount option — the client is already the partner's. Only an
-      // idempotency key keyed on (invoice, balance) so a double-click reuses the session.
-      { idempotencyKey: `inv_${INV_ID}_10000` },
+      // idempotency key keyed on (invoice, balance, phase) so a double-click reuses
+      // the session.
+      { idempotencyKey: `inv_${INV_ID}_10000_bal` },
     );
     // the Stripe object → payment mapping row is recorded
     expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -206,7 +207,7 @@ describe('portal invoices routes', () => {
         })],
         metadata: expect.objectContaining({ invoice_balance_cents: '1000' }),
       }),
-      { idempotencyKey: `inv_${INV_ID}_1000` },
+      { idempotencyKey: `inv_${INV_ID}_1000_bal` },
     );
     expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({
       stripeObjectId: 'cs_jpy', amount: '1000.00', currency: 'JPY',
@@ -234,7 +235,7 @@ describe('portal invoices routes', () => {
         })],
         metadata: expect.objectContaining({ invoice_balance_cents: '300000' }),
       }),
-      { idempotencyKey: `inv_${INV_ID}_300000` },
+      { idempotencyKey: `inv_${INV_ID}_300000_dep` },
     );
     expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({ amount: '3000.00' }));
   });
@@ -260,9 +261,39 @@ describe('portal invoices routes', () => {
         })],
         metadata: expect.objectContaining({ invoice_balance_cents: '700000' }),
       }),
-      { idempotencyKey: `inv_${INV_ID}_700000` },
+      { idempotencyKey: `inv_${INV_ID}_700000_bal` },
     );
     expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({ amount: '7000.00' }));
+  });
+
+  it('POST /invoices/:id/pay deposit-phase and balance-phase idempotency keys differ for the SAME charge amount', async () => {
+    // Mirrors the equivalent invoiceCheckout.test.ts case: a 50%-deposit invoice
+    // where depositDue equals the eventual balance charge, so chargeMinor is
+    // identical across the two sessions — only the dep/bal suffix disambiguates.
+    dbResults.push([{
+      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      balance: '10000.00', depositDue: '5000.00', amountPaid: '0.00',
+      currencyCode: 'USD', invoiceNumber: 'INV-EQ',
+    }]);
+    getPartnerStripeClientMock.mockResolvedValue(partnerClient('acct_9'));
+    sessionsCreateMock.mockResolvedValue({ id: 'cs_dep_eq', url: 'https://checkout.stripe.com/c/cs_dep_eq', payment_intent: 'pi_dep_eq' });
+    await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST' });
+    const depositKey = (sessionsCreateMock.mock.calls[0]?.[1] as { idempotencyKey: string }).idempotencyKey;
+    expect(depositKey).toBe(`inv_${INV_ID}_500000_dep`);
+
+    vi.clearAllMocks();
+    dbResults.push([{
+      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'partially_paid',
+      balance: '5000.00', depositDue: '5000.00', amountPaid: '5000.00',
+      currencyCode: 'USD', invoiceNumber: 'INV-EQ',
+    }]);
+    getPartnerStripeClientMock.mockResolvedValue(partnerClient('acct_9'));
+    sessionsCreateMock.mockResolvedValue({ id: 'cs_bal_eq', url: 'https://checkout.stripe.com/c/cs_bal_eq', payment_intent: 'pi_bal_eq' });
+    await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST' });
+    const balanceKey = (sessionsCreateMock.mock.calls[0]?.[1] as { idempotencyKey: string }).idempotencyKey;
+    expect(balanceKey).toBe(`inv_${INV_ID}_500000_bal`);
+
+    expect(depositKey).not.toBe(balanceKey);
   });
 
   it('POST /invoices/:id/pay returns 409 Nothing to pay when the charge-now amount is zero', async () => {
