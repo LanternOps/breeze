@@ -345,6 +345,16 @@ describe('polishCatalogText', () => {
     expect(res.changed).toBe(false);
   });
 
+  it('reports changed=false when the input differs only by surrounding whitespace', async () => {
+    // A trailing textarea newline must not count as a "change" — that produced
+    // preview dialogs showing two visually identical blocks.
+    create.mockResolvedValueOnce(aiMessage({ name: 'Already Clean Name', description: 'Battery backup.' }));
+    const res = await polishCatalogText({ name: 'Already Clean Name ', description: 'Battery backup.\n' }, actor);
+    expect(res.changed).toBe(false);
+    expect(res.name).toBe('Already Clean Name');
+    expect(res.description).toBe('Battery backup.');
+  });
+
   it('throws AI_LIMIT (429) when rate-limited, before calling the model', async () => {
     checkAiRateLimit.mockResolvedValueOnce('Too many AI requests');
     await expect(polishCatalogText({ name: 'x' }, actor))

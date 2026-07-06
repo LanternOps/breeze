@@ -589,9 +589,15 @@ export async function polishCatalogText(
 
       // Only accept fields that were actually requested — never let the model
       // invent a name when the caller only sent a description, or vice versa.
-      const outName = wantName ? (coerceString(raw.name)?.trim().slice(0, NAME_MAX) || (input.name ?? null)) : null;
+      // `changed` must compare like with like: the output is trimmed, so the
+      // input must be trimmed for the comparison too — otherwise a trailing
+      // newline in a textarea makes an identical polish read as "changed" and
+      // the user gets a preview dialog with two visually identical blocks.
+      const normName = input.name?.trim() || null;
+      const normDescription = input.description?.trim() || null;
+      const outName = wantName ? (coerceString(raw.name)?.trim().slice(0, NAME_MAX) || normName) : null;
       const outDescription = wantDescription
-        ? (coerceString(raw.description)?.trim().slice(0, DESCRIPTION_MAX) || (input.description ?? null))
+        ? (coerceString(raw.description)?.trim().slice(0, DESCRIPTION_MAX) || normDescription)
         : null;
 
       if (!factsPreserved(input, { name: outName, description: outDescription })) {
@@ -599,7 +605,7 @@ export async function polishCatalogText(
         continue;
       }
 
-      const changed = outName !== (input.name ?? null) || outDescription !== (input.description ?? null);
+      const changed = outName !== normName || outDescription !== normDescription;
       result = { name: outName, description: outDescription, changed };
       break;
     }

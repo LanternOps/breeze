@@ -63,6 +63,27 @@ describe('PolishButton', () => {
     expect(onApply).not.toHaveBeenCalled();
   });
 
+  it('toasts instead of opening a preview of two visually identical blocks', async () => {
+    // Server says changed (e.g. it only stripped a trailing newline), but what
+    // the user would SEE is identical — the dialog must not open.
+    polishTextRequest.mockResolvedValue(ok({
+      name: 'APC Back-UPS 600VA', description: 'Battery backup.', changed: true,
+    }));
+    const onApply = vi.fn();
+    render(
+      <PolishButton
+        idSuffix="t"
+        getText={() => ({ name: 'APC Back-UPS 600VA ', description: 'Battery backup.\n' })}
+        onApply={onApply}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('polish-btn-t'));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' })));
+    expect(screen.queryByTestId('polish-apply-t')).not.toBeInTheDocument();
+    expect(onApply).not.toHaveBeenCalled();
+  });
+
   it('does not apply when the user cancels the preview', async () => {
     polishTextRequest.mockResolvedValue(ok({ name: 'Polished', description: null, changed: true }));
     const onApply = vi.fn();

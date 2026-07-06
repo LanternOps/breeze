@@ -99,7 +99,15 @@ export default function PolishButton({
         parseSuccess: (data) => (data as { data: PolishResult }).data,
         onUnauthorized: UNAUTHORIZED,
       });
-      if (!result.changed) {
+      // Server-side `changed` plus a client-side visual check: if what the user
+      // would SEE in the preview is identical after whitespace normalization
+      // (e.g. the only difference is a trailing newline), a before/after dialog
+      // of two identical blocks is worse than useless — toast instead.
+      const trimEq = (a: string | null | undefined, b: string | null | undefined) =>
+        (a ?? '').trim() === (b ?? '').trim();
+      const nameVisiblySame = result.name === null || trimEq(result.name, name);
+      const descVisiblySame = result.description === null || trimEq(result.description, description);
+      if (!result.changed || (nameVisiblySame && descVisiblySame)) {
         showToast({ message: 'Already looks good — no changes suggested.', type: 'success' });
         return;
       }
