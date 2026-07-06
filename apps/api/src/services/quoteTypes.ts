@@ -26,7 +26,11 @@ export type QuoteServiceErrorCode =
   | 'INVALID_STATE'
   | 'QUOTE_EXPIRED'
   | 'NOT_CONVERTED'
-  | 'REORDER_IDS_MISMATCH';
+  | 'REORDER_IDS_MISMATCH'
+  // Line-move validation codes (moveLineToBlock): a bundle child can't be moved
+  // independently of its parent, and lines can only move into a line-items block.
+  | 'LINE_IS_BUNDLE_CHILD'
+  | 'BLOCK_NOT_LINE_ITEMS';
 
 export class QuoteServiceError extends Error {
   constructor(
