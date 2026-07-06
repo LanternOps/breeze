@@ -7,12 +7,12 @@ import { PERMISSIONS } from '../../services/permissions';
 import {
   createQuoteSchema, updateQuoteSchema, quoteLineInputSchema, catalogQuoteLineSchema,
   updateQuoteLineSchema, quoteBlockInputSchema, listQuotesQuerySchema,
-  reorderBlocksSchema, reorderLinesSchema,
+  reorderBlocksSchema, reorderLinesSchema, moveQuoteLineSchema,
 } from '@breeze/shared';
 import {
   createQuote, getQuote, listQuotes, updateQuote, deleteDraftQuote,
   addManualLine, addCatalogLine, updateLine, removeLine, addBlock, updateBlock, deleteBlock,
-  reorderBlocks, reorderLines,
+  reorderBlocks, reorderLines, moveLineToBlock,
 } from '../../services/quoteService';
 import { QuoteServiceError, type QuoteActor } from '../../services/quoteTypes';
 import { db } from '../../db';
@@ -94,6 +94,10 @@ quoteCrudRoutes.post('/:id/lines/catalog', scopes, writePerm, zValidator('param'
 });
 quoteCrudRoutes.patch('/:id/lines/:lineId', scopes, writePerm, zValidator('param', lineParam), zValidator('json', updateQuoteLineSchema), async (c) => {
   try { const p = c.req.valid('param'); return c.json({ data: await updateLine(p.id, p.lineId, c.req.valid('json'), quoteActorFrom(c)) }); }
+  catch (err) { return handleServiceError(c, err); }
+});
+quoteCrudRoutes.patch('/:id/lines/:lineId/move', scopes, writePerm, zValidator('param', lineParam), zValidator('json', moveQuoteLineSchema), async (c) => {
+  try { const p = c.req.valid('param'); return c.json({ data: await moveLineToBlock(p.id, p.lineId, c.req.valid('json').blockId, quoteActorFrom(c)) }); }
   catch (err) { return handleServiceError(c, err); }
 });
 quoteCrudRoutes.delete('/:id/lines/:lineId', scopes, writePerm, zValidator('param', lineParam), async (c) => {

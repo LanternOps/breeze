@@ -16,6 +16,7 @@ vi.mock('../../services/quoteService', () => ({
   removeLine: vi.fn(),
   reorderBlocks: vi.fn(),
   reorderLines: vi.fn(),
+  moveLineToBlock: vi.fn(),
 }));
 
 // QuoteServiceError lives in quoteTypes; routes import the class from there.
@@ -307,6 +308,56 @@ describe('quote crud + lines routes', () => {
       });
       expect(res.status).toBe(400);
       expect(svc.reorderLines).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('PATCH /:id/lines/:lineId/move', () => {
+    const LINE_ID = '44444444-4444-4444-4444-444444444444';
+    it('returns 200 { data: line } and calls moveLineToBlock with ids + actor', async () => {
+      (svc.moveLineToBlock as any).mockResolvedValue({ id: LINE_ID, blockId: BLOCK_ID, sortOrder: 3 });
+      const res = await app().request(`/${QUOTE_ID}/lines/${LINE_ID}/move`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ blockId: BLOCK_ID }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.blockId).toBe(BLOCK_ID);
+      expect(svc.moveLineToBlock).toHaveBeenCalledWith(QUOTE_ID, LINE_ID, BLOCK_ID, expect.anything());
+    });
+
+    it('400s on a non-guid blockId without calling the service', async () => {
+      const res = await app().request(`/${QUOTE_ID}/lines/${LINE_ID}/move`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ blockId: 'nope' }),
+      });
+      expect(res.status).toBe(400);
+      expect(svc.moveLineToBlock).not.toHaveBeenCalled();
+    });
+
+    it('maps QuoteServiceError to its status + code', async () => {
+      (svc.moveLineToBlock as any).mockRejectedValue(
+        new QuoteServiceError('Target block is not a pricing table', 400, 'BLOCK_NOT_LINE_ITEMS')
+      );
+      const res = await app().request(`/${QUOTE_ID}/lines/${LINE_ID}/move`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ blockId: BLOCK_ID }),
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json()).code).toBe('BLOCK_NOT_LINE_ITEMS');
+    });
+
+    it('is blocked by the write-permission gate', async () => {
+      gate.permGate = async (c: any) => c.json({ error: 'forbidden' }, 403);
+      const res = await app().request(`/${QUOTE_ID}/lines/${LINE_ID}/move`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ blockId: BLOCK_ID }),
+      });
+      expect(res.status).toBe(403);
+      expect(svc.moveLineToBlock).not.toHaveBeenCalled();
     });
   });
 
