@@ -249,6 +249,7 @@ export async function createSoftwareDeployment(
     const forceReinstall = options?.forceReinstall === true;
 
     const dispatchedDeviceIds: string[] = [];
+    let variableFailureCount = 0;
     for (const device of targetDevices) {
       // Resolve `{{...}}` variables against this device's org/site/device context.
       // A no-op when the templates contain no variables (fast path inside the
@@ -280,6 +281,7 @@ export async function createSoftwareDeployment(
                 eq(deploymentResults.deviceId, device.id),
               ),
             );
+          variableFailureCount++;
           continue;
         }
         // Substituting a non-null template yields a non-null string; the ?? keeps
@@ -307,6 +309,19 @@ export async function createSoftwareDeployment(
       };
       sendCommandToAgent(device.agentId, command);
       dispatchedDeviceIds.push(device.id);
+    }
+
+    // If installer variables were in play and NOTHING dispatched because every
+    // target failed resolution, report failure — mirrors the EDR/no-installer
+    // paths rather than reporting a false 'pending' success to the caller.
+    if (variableFailureCount > 0 && dispatchedDeviceIds.length === 0) {
+      return {
+        deploymentId: deployment.id,
+        deployment,
+        status: 'failed',
+        message: 'All target devices failed installer variable resolution',
+        dispatchedDeviceIds: [],
+      };
     }
     return { deploymentId: deployment.id, deployment, status: 'pending', dispatchedDeviceIds };
   }

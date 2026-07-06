@@ -47,7 +47,16 @@ vi.mock('../db/schema', () => ({
     deviceId: 'dr.deviceId',
     status: 'dr.status',
   },
-  devices: { id: 'd.id', orgId: 'd.orgId', agentId: 'd.agentId' },
+  devices: {
+    id: 'd.id',
+    orgId: 'd.orgId',
+    agentId: 'd.agentId',
+    siteId: 'd.siteId',
+    hostname: 'd.hostname',
+    customFields: 'd.customFields',
+  },
+  organizations: { id: 'o.id', name: 'o.name' },
+  sites: { id: 's.id', name: 's.name', orgId: 's.orgId' },
 }));
 
 import { createSoftwareDeployment } from './softwareDeployment';
@@ -61,6 +70,17 @@ function sel(rows: unknown[]) {
   return {
     from: vi.fn().mockReturnValue({
       where: vi.fn().mockResolvedValue(rows),
+    }),
+  };
+}
+
+/** Chainable select ending in .limit(): db.select().from().where().limit() → Promise<rows> */
+function selLimit(rows: unknown[]) {
+  return {
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue(rows),
+      }),
     }),
   };
 }
@@ -144,6 +164,93 @@ describe('createSoftwareDeployment', () => {
     expect(result.dispatchedDeviceIds).toEqual(['dev-1', 'dev-2']);
     expect(sendCommandMock).toHaveBeenCalledTimes(2);
     expect(sendCommandMock.mock.calls[0]![1].type).toBe('software_install');
+  });
+
+  it('substitutes {{...}} installer variables per device from org/site/device context', async () => {
+    const versionRecord = {
+      id: 'ver-var',
+      catalogId: 'cat-1',
+      s3Key: null,
+      downloadUrl: 'https://dl/{{org.id}}/{{device.customField.license_key}}/app.msi',
+      checksum: null,
+      originalFileName: 'app.msi',
+      fileType: 'msi',
+      silentInstallArgs: null,
+      version: '2.0.0',
+    };
+    const catalogItem = { id: 'cat-1', orgId: null, name: 'TestApp', integrationProvider: null };
+    const deployment = { id: 'dep-var', orgId: 'org-1' };
+    const targetDevices = [
+      { id: 'dev-1', agentId: 'agent-1', siteId: 'site-1', hostname: 'WKS-1', customFields: { license_key: 'KEY-1' } },
+    ];
+
+    selectMock
+      .mockReturnValueOnce(sel([versionRecord]))
+      .mockReturnValueOnce(sel([catalogItem]))
+      .mockReturnValueOnce(sel(targetDevices))
+      .mockReturnValueOnce(selLimit([{ name: 'Acme' }])) // organizations
+      .mockReturnValueOnce(sel([{ id: 'site-1', name: 'HQ' }])); // sites
+    insertMock.mockReturnValueOnce(insWithReturning([deployment])).mockReturnValueOnce(ins());
+
+    const result = await createSoftwareDeployment({
+      orgId: 'org-1',
+      softwareVersionId: 'ver-var',
+      deploymentType: 'install',
+      deviceIds: ['dev-1'],
+      scheduleType: 'immediate',
+      createdBy: null,
+    });
+
+    expect(result.status).toBe('pending');
+    expect(result.dispatchedDeviceIds).toEqual(['dev-1']);
+    expect(sendCommandMock.mock.calls[0]![1].payload.downloadUrl).toBe(
+      'https://dl/org-1/KEY-1/app.msi',
+    );
+  });
+
+  it('fails a device (and never dispatches) when an installer variable cannot be resolved', async () => {
+    const versionRecord = {
+      id: 'ver-bad',
+      catalogId: 'cat-1',
+      s3Key: null,
+      downloadUrl: 'https://dl/{{device.customField.missing}}/app.msi',
+      checksum: null,
+      originalFileName: 'app.msi',
+      fileType: 'msi',
+      silentInstallArgs: null,
+      version: '2.0.0',
+    };
+    const catalogItem = { id: 'cat-1', orgId: null, name: 'TestApp', integrationProvider: null };
+    const deployment = { id: 'dep-bad', orgId: 'org-1' };
+    const targetDevices = [
+      { id: 'dev-1', agentId: 'agent-1', siteId: 'site-1', hostname: 'WKS-1', customFields: {} },
+    ];
+
+    selectMock
+      .mockReturnValueOnce(sel([versionRecord]))
+      .mockReturnValueOnce(sel([catalogItem]))
+      .mockReturnValueOnce(sel(targetDevices))
+      .mockReturnValueOnce(selLimit([{ name: 'Acme' }]))
+      .mockReturnValueOnce(sel([{ id: 'site-1', name: 'HQ' }]));
+    insertMock.mockReturnValueOnce(insWithReturning([deployment])).mockReturnValueOnce(ins());
+    const failWhere = vi.fn().mockResolvedValue(undefined);
+    updateMock.mockReturnValue({ set: vi.fn().mockReturnValue({ where: failWhere }) });
+
+    const result = await createSoftwareDeployment({
+      orgId: 'org-1',
+      softwareVersionId: 'ver-bad',
+      deploymentType: 'install',
+      deviceIds: ['dev-1'],
+      scheduleType: 'immediate',
+      createdBy: null,
+    });
+
+    // Every target failed resolution → overall failure, nothing dispatched, the
+    // device's result row was marked failed instead of shipping a literal token.
+    expect(result.status).toBe('failed');
+    expect(result.dispatchedDeviceIds).toEqual([]);
+    expect(sendCommandMock).not.toHaveBeenCalled();
+    expect(failWhere).toHaveBeenCalledTimes(1);
   });
 
   it('threads detection rules and forceReinstall into the dispatched install payload', async () => {
