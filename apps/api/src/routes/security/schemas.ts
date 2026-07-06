@@ -205,6 +205,18 @@ export const deviceIdParamSchema = z.object({
   deviceId: z.string().guid()
 });
 
+export const recoveryKeyRevealParamSchema = z.object({
+  deviceId: z.string().guid(),
+  keyId: z.string().guid()
+});
+
+export const rotateRecoveryKeySchema = z.object({
+  volumeMount: z.string().regex(/^[A-Za-z]:$/).optional(),
+  username: z.string().min(1).max(255).optional(),
+  password: z.string().min(1).max(1024).optional(),
+  currentRecoveryKey: z.string().min(8).max(128).optional()
+});
+
 export const threatIdParamSchema = z.object({
   id: z.string().guid()
 });
