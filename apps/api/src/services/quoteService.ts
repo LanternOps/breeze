@@ -465,3 +465,54 @@ export async function reorderLines(quoteId: string, blockId: string, lineIds: st
     }
   });
 }
+
+/**
+ * Move a line to a different line_items block on the SAME quote, appending it
+ * (and any bundle children, preserving their relative order) to the end of the
+ * target block's sort order. Bundle children can never be moved independently
+ * — they ride with their parent. Totals are untouched: a move changes no
+ * amounts, so there is no recomputeAndPersist here.
+ */
+export async function moveLineToBlock(
+  quoteId: string,
+  lineId: string,
+  targetBlockId: string,
+  actor: QuoteActor
+) {
+  await loadDraft(quoteId, actor);
+  const [line] = await db.select().from(quoteLines)
+    .where(and(eq(quoteLines.id, lineId), eq(quoteLines.quoteId, quoteId))).limit(1);
+  if (!line) throw new QuoteServiceError('Line not found', 404, 'LINE_NOT_FOUND');
+  if (line.parentLineId) {
+    throw new QuoteServiceError('Bundle child lines move with their parent', 400, 'LINE_IS_BUNDLE_CHILD');
+  }
+  const [block] = await db.select({ id: quoteBlocks.id, blockType: quoteBlocks.blockType })
+    .from(quoteBlocks)
+    .where(and(eq(quoteBlocks.id, targetBlockId), eq(quoteBlocks.quoteId, quoteId))).limit(1);
+  if (!block) throw new QuoteServiceError('Block not found', 404, 'BLOCK_NOT_FOUND');
+  if (block.blockType !== 'line_items') {
+    throw new QuoteServiceError('Target block is not a pricing table', 400, 'BLOCK_NOT_LINE_ITEMS');
+  }
+  if (line.blockId === targetBlockId) return line; // already there — no-op
+
+  const [maxRow] = await db
+    .select({ max: sql<number>`COALESCE(MAX(${quoteLines.sortOrder}), -1)` })
+    .from(quoteLines)
+    .where(and(eq(quoteLines.quoteId, quoteId), eq(quoteLines.blockId, targetBlockId)));
+  const base = Number(maxRow?.max ?? -1) + 1;
+
+  await db.transaction(async (tx) => {
+    await tx.update(quoteLines).set({ blockId: targetBlockId, sortOrder: base })
+      .where(and(eq(quoteLines.id, lineId), eq(quoteLines.quoteId, quoteId)));
+    const children = await tx.select({ id: quoteLines.id }).from(quoteLines)
+      .where(and(eq(quoteLines.quoteId, quoteId), eq(quoteLines.parentLineId, lineId)))
+      .orderBy(quoteLines.sortOrder);
+    for (const [i, child] of children.entries()) {
+      await tx.update(quoteLines).set({ blockId: targetBlockId, sortOrder: base + 1 + i })
+        .where(eq(quoteLines.id, child.id));
+    }
+  });
+
+  const [updated] = await db.select().from(quoteLines).where(eq(quoteLines.id, lineId)).limit(1);
+  return updated!;
+}
