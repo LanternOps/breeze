@@ -265,6 +265,24 @@ describe('portal invoices routes', () => {
     expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({ amount: '7000.00' }));
   });
 
+  it('POST /invoices/:id/pay returns 409 Nothing to pay when the charge-now amount is zero', async () => {
+    // A payable-status invoice whose charge-now amount computes to zero must be
+    // rejected BEFORE any Stripe work (the guard now fires on chargeMinor, the
+    // computeChargeNow output, not the raw balance).
+    dbResults.push([{
+      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      balance: '0.00', depositDue: null, amountPaid: '0.00',
+      currencyCode: 'USD', invoiceNumber: 'INV-ZERO',
+    }]);
+
+    const res = await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST' });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: 'Nothing to pay' });
+    expect(getPartnerStripeClientMock).not.toHaveBeenCalled();
+    expect(sessionsCreateMock).not.toHaveBeenCalled();
+    expect(insertValuesMock).not.toHaveBeenCalled();
+  });
+
   it('POST /invoices/:id/pay returns 409 when the partner has no Stripe key configured', async () => {
     dbResults.push([{
       id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
