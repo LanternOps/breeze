@@ -7,6 +7,7 @@ import { partners, organizations } from './orgs';
 // Reuse the exported `bytea` custom type (Buffer-mapped) from users.ts instead
 // of redefining it locally — same pattern as users.avatarData.
 import { users, bytea } from './users';
+import { catalogItemTypeEnum } from './catalog';
 
 export const quoteStatusEnum = pgEnum('quote_status', [
   'draft', 'sent', 'viewed', 'accepted', 'declined', 'expired', 'converted'
@@ -14,6 +15,7 @@ export const quoteStatusEnum = pgEnum('quote_status', [
 export const quoteLineSourceTypeEnum = pgEnum('quote_line_source_type', ['catalog', 'bundle', 'manual']);
 export const quoteLineRecurrenceEnum = pgEnum('quote_line_recurrence', ['one_time', 'monthly', 'annual']);
 export const quoteBlockTypeEnum = pgEnum('quote_block_type', ['heading', 'rich_text', 'image', 'line_items']);
+export const quoteDepositTypeEnum = pgEnum('quote_deposit_type', ['none', 'percent', 'selected_lines']);
 
 function sqlNumberPresent(t: { quoteNumber: unknown }): SQL { return sql`${t.quoteNumber} IS NOT NULL`; }
 function sqlOpenForExpiry(t: { status: unknown }): SQL { return sql`${t.status} IN ('sent','viewed')`; }
@@ -39,6 +41,11 @@ export const quotes = pgTable('quotes', {
   oneTimeTotal: numeric('one_time_total', { precision: 12, scale: 2 }).notNull().default('0'),
   monthlyRecurringTotal: numeric('monthly_recurring_total', { precision: 12, scale: 2 }).notNull().default('0'),
   annualRecurringTotal: numeric('annual_recurring_total', { precision: 12, scale: 2 }).notNull().default('0'),
+  depositType: quoteDepositTypeEnum('deposit_type').notNull().default('none'),
+  // Whole-percent scale (30.00 = 30%), only meaningful for deposit_type='percent'.
+  depositPercent: numeric('deposit_percent', { precision: 5, scale: 2 }),
+  // Stored snapshot of the computed deposit due; recomputed on every draft edit.
+  depositAmount: numeric('deposit_amount', { precision: 12, scale: 2 }),
   billToName: varchar('bill_to_name', { length: 255 }),
   billToAddress: jsonb('bill_to_address'),
   billToTaxId: varchar('bill_to_tax_id', { length: 100 }),
@@ -101,6 +108,11 @@ export const quoteLines = pgTable('quote_lines', {
   billingFrequency: varchar('billing_frequency', { length: 20 }),
   // Internal builder economics — never serialized to the customer document.
   unitCost: numeric('unit_cost', { precision: 12, scale: 2 }),
+  // Counts toward a 'selected_lines' deposit. Catalog hardware defaults it on.
+  depositEligible: boolean('deposit_eligible').notNull().default(false),
+  // Catalog item type snapshotted at add-time (null for manual lines) — drives
+  // the per-category subtotal breakdown without a portal-invisible catalog join.
+  itemType: catalogItemTypeEnum('item_type'),
   sku: varchar('sku', { length: 100 }),
   partNumber: varchar('part_number', { length: 100 }),
   // Optional per-line product image (quote_images row on the SAME quote; the

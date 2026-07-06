@@ -40,6 +40,8 @@ export const invoices = pgTable('invoices', {
   total: numeric('total', { precision: 12, scale: 2 }).notNull().default('0'),
   amountPaid: numeric('amount_paid', { precision: 12, scale: 2 }).notNull().default('0'),
   balance: numeric('balance', { precision: 12, scale: 2 }).notNull().default('0'),
+  // Deposit due at acceptance, snapshotted from the quote. NULL = ordinary invoice.
+  depositDue: numeric('deposit_due', { precision: 12, scale: 2 }),
   billToName: varchar('bill_to_name', { length: 255 }),
   billToAddress: jsonb('bill_to_address'),
   billToTaxId: varchar('bill_to_tax_id', { length: 100 }),
