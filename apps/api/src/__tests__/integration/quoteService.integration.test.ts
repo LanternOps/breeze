@@ -759,7 +759,7 @@ describe('quoteService (breeze_app, real DB)', () => {
       const b2 = await addBlock(q2.id, { blockType: 'line_items', content: {} }, fx.actorA);
       return addManualLine(q2.id, {
         sourceType: 'manual', name: 'foreign', description: null, quantity: 1, unitPrice: 10,
-        taxable: false, customerVisible: true, recurrence: 'one_time', blockId: b2.id,
+        taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, blockId: b2.id,
       }, fx.actorA);
     });
     await expect(withDbAccessContext(fx.ctxA, () =>
