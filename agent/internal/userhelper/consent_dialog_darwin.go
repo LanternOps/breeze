@@ -23,10 +23,25 @@ func showConsentDialogOS(req ipc.ConsentRequest) (allow bool, answered bool) {
 	if req.TimeoutMs > 0 {
 		script += fmt.Sprintf(" giving up after %d", (req.TimeoutMs+999)/1000)
 	}
-	out, err := exec.Command("osascript", "-e", script).Output()
+	// CombinedOutput (not Output) so stderr is available to distinguish an
+	// explicit user cancel from an infra failure below. On success osascript
+	// writes its "button returned:..."/"gave up:..." record to stdout and
+	// exits 0, so the err==nil parsing below is unaffected by also capturing
+	// stderr.
+	out, err := exec.Command("osascript", "-e", script).CombinedOutput()
 	if err != nil {
-		// Cancel button (Deny) makes osascript exit non-zero (user canceled -128).
-		return false, true
+		result := string(out)
+		if strings.Contains(result, "-128") {
+			// User clicked Deny/cancel: osascript reports "User canceled. (-128)".
+			// This is a real decision, not an infra failure.
+			return false, true
+		}
+		// Any other failure (osascript missing, no window server, execution
+		// error) is not a user decision — log it for diagnosability and report
+		// answered=false so decideConsent applies the onTimeout/unavailable
+		// policy instead of recording a fake user deny, matching Linux's intent.
+		log.Warn("osascript consent dialog failed", "error", err.Error())
+		return false, false
 	}
 	result := string(out)
 	if strings.Contains(result, "gave up:true") {

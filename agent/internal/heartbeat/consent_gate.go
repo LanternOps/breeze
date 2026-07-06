@@ -68,8 +68,10 @@ func parseDesktopPrompt(payload map[string]any) *ipc.DesktopPrompt {
 }
 
 // requestConsent asks the local user (via the consent_ui-capable helper) to
-// allow or deny a remote session. It uses PreferredSessionWithScope("consent_ui")
-// to locate the assist helper. Returns (verdict, helperPresent, timedOut):
+// allow or deny a remote session. It uses h.consentUISession() to locate the
+// best consent-UI helper: the Tauri assist helper (consent_ui) when present,
+// else a native user-helper that advertised consent_ui_fallback. Returns
+// (verdict, helperPresent, timedOut):
 //   - no consent_ui-capable helper connected -> ("", false, false)  [helper_absent]
 //   - helper present but IPC timed out        -> ("", true, true)   [timeout]
 //   - helper replied with a valid decision    -> (result.Decision, true, false)
@@ -176,8 +178,9 @@ func (h *Heartbeat) sendSessionNotify(body string) {
 	}
 }
 
-// sendBannerShow tells the assist helper to display the on-screen session
-// indicator banner. Fire-and-forget; the helper renders it.
+// sendBannerShow tells the consent-UI helper (assist app, or the native
+// user-helper as fallback) to display the on-screen session indicator
+// banner. Fire-and-forget; the helper renders it.
 func (h *Heartbeat) sendBannerShow(sessionID string, prompt *ipc.DesktopPrompt) {
 	if h.sessionBroker == nil {
 		return
@@ -197,7 +200,8 @@ func (h *Heartbeat) sendBannerShow(sessionID string, prompt *ipc.DesktopPrompt) 
 	}
 }
 
-// sendBannerHide tells the assist helper to remove the session banner.
+// sendBannerHide tells the consent-UI helper (assist app, or the native
+// user-helper as fallback) to remove the session banner.
 func (h *Heartbeat) sendBannerHide(sessionID string) {
 	if h.sessionBroker == nil {
 		return

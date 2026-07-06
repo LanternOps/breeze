@@ -13,7 +13,12 @@ func TestBannerSessionTracking(t *testing.T) {
 	shown := []string{}
 	hidden := 0
 	origShow, origHide := showBannerFn, hideBannerFn
-	defer func() { showBannerFn, hideBannerFn = origShow, origHide }()
+	defer func() {
+		showBannerFn, hideBannerFn = origShow, origHide
+		bannerOpMu.Lock()
+		bannerSessionID = ""
+		bannerOpMu.Unlock()
+	}()
 	showBannerFn = func(label string) bool { shown = append(shown, label); return true }
 	hideBannerFn = func() { hidden++ }
 

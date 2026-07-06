@@ -173,7 +173,9 @@ type AuthRequest struct {
 	DesktopContext  string `json:"desktopContext,omitempty"`
 
 	// SupportsConsentUI advertises that this helper can natively render the
-	// remote-session consent dialog (consent_request) and banner messages.
+	// remote-session consent dialog (consent_request). The granted
+	// consent_ui_fallback scope also carries the active-session banner
+	// messages (banner_show/banner_hide), not only the consent dialog itself.
 	// Drives the consent_ui_fallback scope grant. Additive: absent/false on
 	// older helpers.
 	SupportsConsentUI bool `json:"supportsConsentUi,omitempty"`

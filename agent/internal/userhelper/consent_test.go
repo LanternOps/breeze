@@ -1,8 +1,10 @@
 package userhelper
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
 )
@@ -77,6 +79,22 @@ func TestSanitizeConsentRequest(t *testing.T) {
 	if req.OnTimeout != "proceed" {
 		t.Errorf("onTimeout not normalized: %q", req.OnTimeout)
 	}
+
+	negative := sanitizeConsentRequest(ipc.ConsentRequest{TimeoutMs: -5})
+	if negative.TimeoutMs != 0 {
+		t.Errorf("negative timeout not clamped to 0: %d", negative.TimeoutMs)
+	}
+
+	controlChars := sanitizeConsentRequest(ipc.ConsentRequest{
+		TechnicianEmail: "billy\x00@olive.co",
+		OrgName:         "Olive\x7f Technology",
+	})
+	if strings.ContainsAny(controlChars.TechnicianEmail, "\x00") || controlChars.TechnicianEmail != "billy@olive.co" {
+		t.Errorf("email control chars not stripped: %q", controlChars.TechnicianEmail)
+	}
+	if strings.ContainsAny(controlChars.OrgName, "\x7f") || controlChars.OrgName != "Olive Technology" {
+		t.Errorf("org name control chars not stripped: %q", controlChars.OrgName)
+	}
 }
 
 func TestConsentDecisionMapping(t *testing.T) {
@@ -113,5 +131,145 @@ func TestShowConsentDialogFnInjectable(t *testing.T) {
 	allow, answered := showConsentDialogFn(ipc.ConsentRequest{})
 	if !called || !allow || !answered {
 		t.Fatal("injection seam broken")
+	}
+}
+
+// consentRequestPayload marshals a minimal valid ConsentRequest for use as an
+// envelope payload in the handleConsentRequest wiring tests below.
+func consentRequestPayload(t *testing.T, sessionID string) json.RawMessage {
+	t.Helper()
+	raw, err := json.Marshal(ipc.ConsentRequest{SessionID: sessionID, OnTimeout: "block"})
+	if err != nil {
+		t.Fatalf("marshal consent request: %v", err)
+	}
+	return raw
+}
+
+func TestHandleConsentRequest_RepliesSameEnvelopeId(t *testing.T) {
+	tests := []struct {
+		name         string
+		dialogAllow  bool
+		dialogAnswer bool
+		wantDecision string
+	}{
+		{"allow", true, true, "allow"},
+		{"deny", false, true, "deny"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			orig := showConsentDialogFn
+			defer func() { showConsentDialogFn = orig }()
+			showConsentDialogFn = func(req ipc.ConsentRequest) (bool, bool) {
+				return tt.dialogAllow, tt.dialogAnswer
+			}
+
+			client, peer, cleanup := createClientPipe(t)
+			defer cleanup()
+
+			const reqID = "consent-req-1"
+			done := make(chan struct{})
+			go func() {
+				client.handleConsentRequest(&ipc.Envelope{
+					ID:      reqID,
+					Payload: consentRequestPayload(t, "session-1"),
+				})
+				close(done)
+			}()
+
+			peer.SetReadDeadline(time.Now().Add(2 * time.Second))
+			env, err := peer.Recv()
+			if err != nil {
+				t.Fatalf("Recv: %v", err)
+			}
+			<-done
+
+			if env.ID != reqID {
+				t.Fatalf("response id = %q, want %q", env.ID, reqID)
+			}
+			if env.Type != ipc.TypeConsentResult {
+				t.Fatalf("response type = %q, want %q", env.Type, ipc.TypeConsentResult)
+			}
+			var result ipc.ConsentResult
+			if err := json.Unmarshal(env.Payload, &result); err != nil {
+				t.Fatalf("unmarshal payload: %v", err)
+			}
+			if result.Decision != tt.wantDecision {
+				t.Fatalf("decision = %q, want %q", result.Decision, tt.wantDecision)
+			}
+		})
+	}
+}
+
+func TestHandleConsentRequest_BadPayloadFailsClosed(t *testing.T) {
+	client, peer, cleanup := createClientPipe(t)
+	defer cleanup()
+
+	const reqID = "consent-req-bad"
+	done := make(chan struct{})
+	go func() {
+		client.handleConsentRequest(&ipc.Envelope{
+			ID:      reqID,
+			Payload: []byte("{not json"),
+		})
+		close(done)
+	}()
+
+	peer.SetReadDeadline(time.Now().Add(2 * time.Second))
+	env, err := peer.Recv()
+	if err != nil {
+		t.Fatalf("Recv: %v", err)
+	}
+	<-done
+
+	if env.ID != reqID {
+		t.Fatalf("response id = %q, want %q", env.ID, reqID)
+	}
+	if env.Error == "" {
+		t.Fatal("expected a fail-closed error reply for a bad payload")
+	}
+	var result ipc.ConsentResult
+	_ = json.Unmarshal(env.Payload, &result)
+	if result.Decision == "allow" {
+		t.Fatal("bad payload must never yield an allow decision")
+	}
+}
+
+func TestHandleConsentRequest_PanicFailsClosed(t *testing.T) {
+	orig := showConsentDialogFn
+	defer func() { showConsentDialogFn = orig }()
+	showConsentDialogFn = func(req ipc.ConsentRequest) (bool, bool) {
+		panic("simulated Win32 syscall crash")
+	}
+
+	client, peer, cleanup := createClientPipe(t)
+	defer cleanup()
+
+	const reqID = "consent-req-panic"
+	done := make(chan struct{})
+	go func() {
+		client.handleConsentRequest(&ipc.Envelope{
+			ID:      reqID,
+			Payload: consentRequestPayload(t, "session-panic"),
+		})
+		close(done)
+	}()
+
+	peer.SetReadDeadline(time.Now().Add(2 * time.Second))
+	env, err := peer.Recv()
+	if err != nil {
+		t.Fatalf("Recv: %v", err)
+	}
+	<-done
+
+	if env.ID != reqID {
+		t.Fatalf("response id = %q, want %q", env.ID, reqID)
+	}
+	if env.Error == "" {
+		t.Fatal("expected a fail-closed error reply when the dialog handler panics")
+	}
+	var result ipc.ConsentResult
+	_ = json.Unmarshal(env.Payload, &result)
+	if result.Decision == "allow" {
+		t.Fatal("panic path must never yield an allow decision")
 	}
 }

@@ -126,6 +126,7 @@ func bannerWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 			label := bannerLabelU16
 			bannerMu.Unlock()
 			if len(label) > 0 {
+				// -1: exclude the NUL terminator UTF16FromString appends.
 				procDrawTextW.Call(hdc, uintptr(unsafe.Pointer(&label[0])), uintptr(len(label)-1),
 					uintptr(unsafe.Pointer(&rc)), bdtCenter|bdtVCenter|bdtSingleline)
 			}
@@ -176,7 +177,10 @@ func showBannerOS(label string) bool {
 	}
 	bannerMu.Unlock()
 
-	ready := make(chan uintptr, 1)
+	// ready is unbuffered: bannerWindowLoop's handoff select (see below) only
+	// succeeds if showBannerOS is actively receiving, which is what makes the
+	// abandon guard atomic with the show — see bannerWindowLoop's doc comment.
+	ready := make(chan uintptr)
 	abandoned := make(chan struct{})
 	go bannerWindowLoop(ready, abandoned)
 	var hwnd uintptr
@@ -208,9 +212,14 @@ func hideBannerOS() {
 
 // bannerWindowLoop creates the banner window and pumps its message loop.
 // abandoned is closed by showBannerOS if it gave up waiting on ready (the
-// bannerCreateTimeout elapsed); if creation completes after that point, the
-// window is torn down immediately instead of being shown, so a late-creating
-// window never leaks an unclosable, unmanaged topmost pill.
+// bannerCreateTimeout elapsed). The handle handoff (ready <- hwnd) and the
+// abandon check happen in a SINGLE select, and ready is unbuffered — so the
+// send only succeeds if showBannerOS is actively receiving. This makes "did
+// the caller commit to this window" atomic: the window is only shown (and
+// its handle stored in bannerHwnd by showBannerOS) after the caller has
+// actually received it, so a late-creating window can never leak as an
+// unclosable, unmanaged topmost pill. It's either fully handed off and shown,
+// or destroyed here without ever being made visible.
 func bannerWindowLoop(ready chan<- uintptr, abandoned <-chan struct{}) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -233,27 +242,31 @@ func bannerWindowLoop(ready chan<- uintptr, abandoned <-chan struct{}) {
 		0, 0, hInst, 0,
 	)
 	if hwnd == 0 {
-		ready <- 0
+		select {
+		case ready <- 0:
+		case <-abandoned:
+		}
 		return
 	}
 
-	// The caller may have already given up waiting (bannerCreateTimeout
-	// elapsed) by the time we get here. ready is buffered with capacity 1, so
-	// a send on it always "succeeds" into the buffer whether or not
-	// showBannerOS is still receiving — send success alone can't signal
-	// whether the caller gave up. abandoned is the explicit signal: check it
-	// before doing anything visible, and if it's closed, tear down our own
-	// window and return without showing or pumping it.
+	// Hand off the handle and check for abandonment in one select. Because
+	// ready is unbuffered, the "ready <- hwnd" case can only proceed if
+	// showBannerOS is still on the receiving end of it; if showBannerOS
+	// already took its bannerCreateTimeout branch and closed abandoned, this
+	// send permanently blocks and the select takes the <-abandoned case
+	// instead. That means the window is destroyed here WITHOUT ever being
+	// shown — there's no window between "caller gave up" and "we notice" for
+	// a race to slip through.
 	select {
+	case ready <- hwnd:
+		// The caller committed to receiving this handle (and will store it in
+		// bannerHwnd), so it's now safe to make the window visible.
 	case <-abandoned:
 		procDestroyWindow.Call(hwnd)
 		return
-	default:
 	}
-
 	procSetLayeredWindowAttrs.Call(hwnd, 0, bannerAlpha, bLWAAlpha)
 	procShowWindow.Call(hwnd, bswShowNoactivate)
-	ready <- hwnd
 
 	var msg bannerMsg
 	for {

@@ -9,8 +9,11 @@ import (
 	"github.com/breeze-rmm/agent/internal/ipc"
 )
 
-// showConsentDialogOS renders the consent prompt via zenity (presence was
-// verified by consentUISupported before the fallback scope was granted).
+// showConsentDialogOS renders the consent prompt via zenity. consentUISupported
+// only verifies zenity + a display are present at auth time; if zenity is
+// later missing or crashes (TOCTOU: uninstalled or the display went away
+// between auth and this call), the exec.ExitError branch below still handles
+// it explicitly by denying rather than silently pretending a timeout.
 // zenity exit codes: 0=OK(Allow), 1=Cancel(Deny), 5=timeout.
 func showConsentDialogOS(req ipc.ConsentRequest) (allow bool, answered bool) {
 	title, body := buildConsentDialogText(req)
