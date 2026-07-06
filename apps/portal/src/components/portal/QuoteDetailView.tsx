@@ -130,6 +130,13 @@ export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
   const taxRate = quote.taxRate ? Number(quote.taxRate) : 0;
   const showTax = Number(quote.taxTotal ?? 0) > 0;
   const taxPct = taxRate > 0 ? Number((taxRate * 100).toFixed(3)) : 0;
+  const categoryBreakdown = quote.categoryBreakdown ?? [];
+  const depositDue = quote.depositDueTotal ?? null;
+  const dueOnAcceptance = quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal ?? quote.total;
+  // Remaining balance in integer cents so the subtraction never drifts on floats.
+  const remainderCents = depositDue != null
+    ? Math.round(Number(dueOnAcceptance) * 100) - Math.round(Number(depositDue) * 100)
+    : 0;
 
   return (
     <div className="space-y-5" data-testid="quote-detail">
@@ -201,12 +208,43 @@ export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
                 <span className="tabular-nums text-foreground">{money(quote.annualRecurringTotal ?? 0, currency)}<span className="text-xs text-muted-foreground">/yr</span></span>
               </div>
             )}
-            <div className="flex items-baseline justify-between border-t pt-3" style={{ borderColor: 'var(--doc-accent)' }}>
-              <span className="text-sm font-semibold text-foreground">{hasRecurring ? 'Due on acceptance' : 'Total'}</span>
-              <span className="text-2xl font-semibold tabular-nums" style={{ color: 'var(--doc-accent)' }}>
-                {money(quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal ?? quote.total, currency)}
-              </span>
-            </div>
+            {categoryBreakdown.length > 1 && (
+              <div className="space-y-0.5 text-sm text-muted-foreground" data-testid="quote-category-breakdown">
+                {categoryBreakdown.map((b) => (
+                  <div key={b.category} className="flex justify-between">
+                    <span className="capitalize">{b.category}</span>
+                    <span className="tabular-nums">
+                      {[
+                        Number(b.oneTimeTotal) > 0 ? money(b.oneTimeTotal, currency) : null,
+                        Number(b.monthlyTotal) > 0 ? `${money(b.monthlyTotal, currency)}/mo` : null,
+                        Number(b.annualTotal) > 0 ? `${money(b.annualTotal, currency)}/yr` : null,
+                      ].filter(Boolean).join(' + ')}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {depositDue != null ? (
+              <>
+                <div className="flex items-baseline justify-between border-t pt-3" style={{ borderColor: 'var(--doc-accent)' }} data-testid="quote-deposit-due">
+                  <span className="text-sm font-semibold text-foreground">Deposit due on acceptance</span>
+                  <span className="text-2xl font-semibold tabular-nums" style={{ color: 'var(--doc-accent)' }}>
+                    {money(depositDue, currency)}
+                  </span>
+                </div>
+                <div className="flex justify-between text-sm" data-testid="quote-deposit-remainder">
+                  <span className="text-muted-foreground">Remaining balance (due per terms)</span>
+                  <span className="tabular-nums text-foreground">{money(remainderCents / 100, currency)}</span>
+                </div>
+              </>
+            ) : (
+              <div className="flex items-baseline justify-between border-t pt-3" style={{ borderColor: 'var(--doc-accent)' }}>
+                <span className="text-sm font-semibold text-foreground">{hasRecurring ? 'Due on acceptance' : 'Total'}</span>
+                <span className="text-2xl font-semibold tabular-nums" style={{ color: 'var(--doc-accent)' }}>
+                  {money(dueOnAcceptance, currency)}
+                </span>
+              </div>
+            )}
             {hasRecurring && (
               <div className="space-y-1.5 rounded-lg bg-muted/40 p-3 text-sm">
                 <div className="flex justify-between">

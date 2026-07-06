@@ -43,9 +43,10 @@ quoteRoutes.get('/quotes/:id', zValidator('param', idParam), async (c) => {
   const lines = toCustomerLines((await db.select().from(quoteLines).where(eq(quoteLines.quoteId, id)).orderBy(quoteLines.sortOrder)).filter((l) => l.customerVisible));
   try { await markQuoteViewed(id, auth.user.orgId); } catch (err) { console.error('[portal] quote markViewed failed', { id, err }); }
   // Derive the amount accept actually invoices (one-time only) so the customer
-  // sees an accurate "due on acceptance" instead of the recurring-inclusive total.
-  const dueOnAcceptanceTotal = computeQuoteTotals(lines as QuoteLineForMath[], quote.taxRate ? parseFloat(quote.taxRate) : null).dueOnAcceptanceTotal;
-  return c.json({ data: { quote: { ...quote, dueOnAcceptanceTotal }, blocks, lines } });
+  // sees an accurate "due on acceptance" instead of the recurring-inclusive total,
+  // plus the deposit due + per-category subtotals for the summary panel.
+  const totals = computeQuoteTotals(lines as QuoteLineForMath[], quote.taxRate ? parseFloat(quote.taxRate) : null, { type: quote.depositType, percent: quote.depositPercent });
+  return c.json({ data: { quote: { ...quote, dueOnAcceptanceTotal: totals.dueOnAcceptanceTotal, depositDueTotal: totals.depositDueTotal, categoryBreakdown: totals.categoryBreakdown }, blocks, lines } });
 });
 
 // GET /quotes/:id/pdf

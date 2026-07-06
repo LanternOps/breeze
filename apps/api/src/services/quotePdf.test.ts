@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import zlib from 'node:zlib';
 import { renderQuotePdf } from './quotePdf';
 
 // A minimal valid 1x1 transparent PNG (the smallest real PNG pdfkit will accept).
@@ -6,6 +7,35 @@ const ONE_BY_ONE_PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
   'base64',
 );
+
+// pdfkit flate-compresses its content streams, so the drawn text isn't greppable
+// in the raw bytes. Inflate every stream, then decode the show-text operands.
+// pdfkit emits text as hex strings inside TJ arrays (e.g. `[<5072> 20 <...>] TJ`);
+// with its WinAnsi-encoded Helvetica the hex bytes ARE the character codes, so a
+// straight hex→latin1 decode reconstructs the visible text. Literal `(...)`
+// strings are handled too for robustness.
+function extractPdfText(pdf: Buffer): string {
+  const s = pdf.toString('latin1');
+  const streamRe = /stream\r?\n([\s\S]*?)\r?\nendstream/g;
+  let out = '';
+  let sm: RegExpExecArray | null;
+  while ((sm = streamRe.exec(s))) {
+    let body: string;
+    try { body = zlib.inflateSync(Buffer.from(sm[1]!, 'latin1')).toString('latin1'); } catch { continue; }
+    const tokenRe = /<([0-9a-fA-F]+)>|\(((?:[^()\\]|\\.)*)\)/g;
+    let tm: RegExpExecArray | null;
+    while ((tm = tokenRe.exec(body))) {
+      if (tm[1] !== undefined) {
+        const hex = tm[1].length % 2 ? `${tm[1]}0` : tm[1];
+        out += Buffer.from(hex, 'hex').toString('latin1');
+      } else {
+        out += tm[2]!.replace(/\\([()\\])/g, '$1');
+      }
+    }
+    out += ' ';
+  }
+  return out;
+}
 
 describe('renderQuotePdf', () => {
   it('produces a PDF buffer (heading + line_items block)', async () => {
@@ -155,6 +185,52 @@ describe('renderQuotePdf', () => {
     );
     const pageCount = (buf.toString('latin1').match(/\/Type \/Page[^s]/g) ?? []).length;
     expect(pageCount).toBe(1);
+  });
+
+  it('renders deposit rows + category breakdown when a deposit is configured', async () => {
+    const buf = await renderQuotePdf(
+      {
+        id: 'q1', quoteNumber: 'Q-DEP',
+        oneTimeTotal: '1100.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00',
+        dueOnAcceptanceTotal: '1100.00', total: '1100.00', currencyCode: 'USD',
+        depositType: 'percent', depositAmount: '330.00',
+        categoryBreakdown: [
+          { category: 'hardware', oneTimeTotal: '1000.00', monthlyTotal: '0.00', annualTotal: '0.00' },
+          { category: 'other', oneTimeTotal: '100.00', monthlyTotal: '0.00', annualTotal: '0.00' },
+        ],
+      },
+      [{ id: 'b1', blockType: 'line_items', sortOrder: 0, content: {} }],
+      [
+        { id: 'l1', blockId: 'b1', description: 'Firewall', quantity: '1', unitPrice: '1000', lineTotal: '1000.00', recurrence: 'one_time' },
+        { id: 'l2', blockId: 'b1', description: 'Cabling', quantity: '1', unitPrice: '100', lineTotal: '100.00', recurrence: 'one_time' },
+      ],
+      async () => null,
+      {},
+    );
+    expect(buf.subarray(0, 4).toString()).toBe('%PDF');
+    const text = extractPdfText(buf);
+    expect(text).toContain('Deposit due on acceptance');
+    expect(text).toContain('Remaining balance');
+    // Remainder = dueOnAcceptance 1100.00 − deposit 330.00 = 770.00 (cents math).
+    expect(text).toContain('770.00');
+    // Category rows (>1 category) present.
+    expect(text).toContain('Hardware');
+    expect(text).toContain('Other');
+  });
+
+  it('a no-deposit quote still renders the plain Due on acceptance row (no deposit rows)', async () => {
+    const buf = await renderQuotePdf(
+      { id: 'q1', quoteNumber: 'Q-NODEP', oneTimeTotal: '500.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00', dueOnAcceptanceTotal: '500.00', total: '500.00', currencyCode: 'USD' },
+      [{ id: 'b1', blockType: 'line_items', sortOrder: 0, content: {} }],
+      [{ id: 'l1', blockId: 'b1', description: 'Setup', quantity: '1', unitPrice: '500', lineTotal: '500.00', recurrence: 'one_time' }],
+      async () => null,
+      {},
+    );
+    expect(buf.subarray(0, 4).toString()).toBe('%PDF');
+    const text = extractPdfText(buf);
+    expect(text).toContain('Due on acceptance');
+    expect(text).not.toContain('Deposit due on acceptance');
+    expect(text).not.toContain('Remaining balance');
   });
 
   it('renderQuotePdf includes the From block and T&C', async () => {

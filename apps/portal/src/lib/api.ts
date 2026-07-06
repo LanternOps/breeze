@@ -407,6 +407,13 @@ export interface QuoteHeader extends QuoteSummary {
   annualRecurringTotal?: string;
   /** Amount invoiced on accept (one-time + one-time tax); derived server-side. */
   dueOnAcceptanceTotal?: string;
+  /** Deposit config (persisted); type 'none' or a null amount means no deposit. */
+  depositType?: string | null;
+  depositAmount?: string | null;
+  /** Deposit due at acceptance, or null when no valid deposit is configured. */
+  depositDueTotal?: string | null;
+  /** Per-category subtotals over customer-visible lines; empty categories omitted. */
+  categoryBreakdown?: { category: string; oneTimeTotal: string; monthlyTotal: string; annualTotal: string }[];
   billToName?: string | null;
   sellerSnapshot?: SellerSnapshot | null;
   termsAndConditions?: string | null;

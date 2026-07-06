@@ -56,9 +56,10 @@ quotesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) => 
     const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor }).from(portalBranding).where(eq(portalBranding.orgId, quote.orgId)).limit(1);
     await markQuoteViewed(quote.id, quote.orgId);
     // Derive the amount accept actually invoices (one-time only) so the prospect
-    // sees an accurate "due on acceptance" instead of the recurring-inclusive total.
-    const dueOnAcceptanceTotal = computeQuoteTotals(lines as QuoteLineForMath[], quote.taxRate ? parseFloat(quote.taxRate) : null).dueOnAcceptanceTotal;
-    return { quote: { ...quote, status: quote.status === 'sent' ? 'viewed' : quote.status, dueOnAcceptanceTotal }, blocks, lines, branding: { partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null } };
+    // sees an accurate "due on acceptance" instead of the recurring-inclusive total,
+    // plus the deposit due + per-category subtotals for the summary panel.
+    const totals = computeQuoteTotals(lines as QuoteLineForMath[], quote.taxRate ? parseFloat(quote.taxRate) : null, { type: quote.depositType, percent: quote.depositPercent });
+    return { quote: { ...quote, status: quote.status === 'sent' ? 'viewed' : quote.status, dueOnAcceptanceTotal: totals.dueOnAcceptanceTotal, depositDueTotal: totals.depositDueTotal, categoryBreakdown: totals.categoryBreakdown }, blocks, lines, branding: { partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null } };
   }));
   if (!data) return c.json({ error: 'Quote not found' }, 404);
   return c.json({ data });
