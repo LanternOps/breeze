@@ -374,6 +374,9 @@ func (c *Client) commandLoop() error {
 		case ipc.TypePamRequestDialog:
 			safeGo("pam_dialog", func() { c.handlePamDialog(env) })
 
+		case ipc.TypeConsentRequest:
+			safeGo("consent_request", func() { c.handleConsentRequest(env) })
+
 		case ipc.TypeTrayUpdate:
 			safeGo("tray_update", func() { c.handleTrayUpdate(env) })
 
