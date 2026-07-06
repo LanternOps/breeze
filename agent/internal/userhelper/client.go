@@ -377,6 +377,12 @@ func (c *Client) commandLoop() error {
 		case ipc.TypeConsentRequest:
 			safeGo("consent_request", func() { c.handleConsentRequest(env) })
 
+		case ipc.TypeBannerShow:
+			safeGo("banner_show", func() { c.handleBannerShowEnvelope(env) })
+
+		case ipc.TypeBannerHide:
+			safeGo("banner_hide", func() { c.handleBannerHideEnvelope(env) })
+
 		case ipc.TypeTrayUpdate:
 			safeGo("tray_update", func() { c.handleTrayUpdate(env) })
 
