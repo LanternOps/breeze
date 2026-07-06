@@ -28,7 +28,7 @@ Techs need to remote into machines that do **not** run a permanently enrolled Br
 
 ### End user
 
-1. Opens the link → minimal public landing page: "Your technician wants to help — Download for Windows / Mac", with plain-language copy about what runs and that it removes itself.
+1. Opens the link → minimal public landing page: "Your technician wants to help — Download for Windows / Mac", with plain-language copy about what runs and that it removes itself. Alternatively (phone-call scenario), the user browses to `https://<region>.2breeze.app/quick` — a public code-entry page — and types the code the tech reads out; a valid code routes to the same landing page.
 2. Runs the download. Code rides in the download filename where possible (MSI-filename pattern; mind the bracket-collision gotcha from #1956); manual code entry is the fallback.
 3. Client shows a small status window: "Connected — waiting for technician", with an always-visible **Stop sharing** button. Running the code-bearing client **is** the consent act; the window is the ongoing indicator.
 4. Optionally approves one UAC prompt (Windows) / admin prompt (macOS) for elevated control.
@@ -87,7 +87,9 @@ Boolean default false. Ephemeral devices: excluded from partner `maxDevices` lic
 
 ### Public, unauthenticated (the code is the auth — mirrors `installer.ts` bootstrap redemption)
 
-- `GET /quick/:code` — download landing page (web app route).
+- `GET /quick` — code-entry page (web app route): single code input; on submit routes to `/quick/:code`.
+- `GET /quick/:code` — download landing page (web app route). Soft-validates the code first via `GET /support/check/:code` and shows a clear "code invalid or expired" state on failure so typos are caught before any download.
+- `GET /support/check/:code` — rate-limited public soft-check; returns only valid/invalid + platform hints, never session details, and does **not** consume the code. Guessing-oracle risk accepted: ≥40-bit codes, 15-min TTL, per-IP rate limit, per-code lockout.
 - `GET /support/download/:platform` — serves the client via existing `binarySource` machinery, code embedded in filename.
 - `POST /support/redeem` — rate-limited (per-IP like `/agents/enroll` + per-code attempt lockout). Atomically flips `pending → claimed`; returns a **single-use child enrollment key** scoped to the hidden org (exact installer-bootstrap pattern). Client then calls the normal `POST /agents/enroll`.
 
