@@ -53,6 +53,15 @@ describe('useEdrReadiness (huntress)', () => {
     expect(screen.getByTestId('gap')).toHaveTextContent('accountKey');
   });
 
+  it('reports incomplete with the org-mapping gap when connected + key set but no orgs mapped', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ data: { isActive: true, hasAccountKey: true, lastSyncOrgs: 0 } }),
+    );
+    render(<HuntressProbe />);
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('incomplete'));
+    expect(screen.getByTestId('gap')).toHaveTextContent('orgsMapped');
+  });
+
   it('reports incomplete/disconnected when data is null', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ data: null }));
     render(<HuntressProbe />);
