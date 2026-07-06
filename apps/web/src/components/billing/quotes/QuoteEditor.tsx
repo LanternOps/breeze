@@ -923,6 +923,15 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
   const moveLineTo = useCallback((line: QuoteLine, targetBlockId: string) => {
     const sourceBlockId = line.blockId;
     if (!sourceBlockId || sourceBlockId === targetBlockId) return;
+    // A pending chevron-reorder PATCH for either panel would fire with a stale
+    // id list that still contains the moved line — the server rejects it
+    // (REORDER_IDS_MISMATCH) and its catch handler would then wipe this move's
+    // optimistic order. Cancel those timers; the move's refresh() re-syncs
+    // order from the server anyway.
+    for (const bid of [sourceBlockId, targetBlockId]) {
+      const t = lineReorderTimers.current[bid];
+      if (t) { clearTimeout(t); delete lineReorderTimers.current[bid]; }
+    }
     const movedIds = [line.id, ...lines.filter((l) => l.parentLineId === line.id).map((l) => l.id)];
     const sourceIds = (lineReorderBase.current[sourceBlockId] ?? linesForBlock(sourceBlockId).map((l) => l.id))
       .filter((id) => !movedIds.includes(id));
