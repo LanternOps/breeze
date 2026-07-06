@@ -26,6 +26,24 @@ vi.mock('../db', () => {
   };
 });
 
+// Capture the args renderQuotePdf is invoked with, and stub the email service —
+// so the customer-facing send path (sendQuote's email attachment) can run to
+// completion without a real PDF renderer or SMTP transport.
+let capturedPdfArgs: unknown[] | null = null;
+const sendEmailMock = vi.fn().mockResolvedValue(undefined);
+
+vi.mock('./quotePdf', () => ({
+  renderQuotePdf: vi.fn((...args: unknown[]) => {
+    capturedPdfArgs = args;
+    return Promise.resolve(Buffer.from('%PDF-fake'));
+  }),
+}));
+
+vi.mock('./email', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./email')>();
+  return { ...actual, getEmailService: vi.fn(() => ({ sendEmail: sendEmailMock })) };
+});
+
 import { buildPublicQuoteAcceptUrl, portalBase, sendQuote } from './quoteLifecycle';
 
 const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
@@ -176,5 +194,71 @@ describe('sendQuote deposit validation', () => {
     // Proves the deposit gate is skipped for depositType 'none' — the failure
     // that surfaces is the pre-existing status guard, never DEPOSIT_INVALID.
     await expect(sendQuote('q1', actor)).rejects.toMatchObject({ status: 409, code: 'INVALID_STATE' });
+  });
+});
+
+/**
+ * Data-exposure regression: `sendQuote` emails the quote PDF to the customer.
+ * Internal-only lines (`customerVisible: false` — e.g. cost-basis/markup lines
+ * a tech added for their own bookkeeping) must NEVER reach that PDF, mirroring
+ * the portal-download route (apps/api/src/routes/portal/quotes.ts) which
+ * already filters via `toCustomerLines(lines.filter(l => l.customerVisible))`.
+ * The deposit send-gate upstream still validates over ALL lines — this test
+ * exercises the full send-to-email path, not the gate.
+ */
+describe('sendQuote customer-facing PDF', () => {
+  beforeEach(() => {
+    results.length = 0;
+    vi.clearAllMocks();
+    capturedPdfArgs = null;
+    sendEmailMock.mockResolvedValue(undefined);
+  });
+
+  it('excludes customerVisible=false lines from the emailed PDF while keeping visible lines', async () => {
+    const visibleLine = {
+      id: 'line-visible', quoteId: 'q1', sortOrder: 0, name: 'Managed Firewall', description: null,
+      quantity: '1', unitPrice: '100.00', unitCost: '10.00', lineTotal: '100.00',
+      recurrence: 'one_time', taxable: false, customerVisible: true, depositEligible: false,
+    };
+    const internalLine = {
+      id: 'line-internal', quoteId: 'q1', sortOrder: 1, name: 'Internal markup buffer', description: null,
+      quantity: '1', unitPrice: '50.00', unitCost: '5.00', lineTotal: '50.00',
+      recurrence: 'one_time', taxable: false, customerVisible: false, depositEligible: false,
+    };
+
+    // getQuote: select quote, select blocks, select lines (unfiltered — matches prod).
+    queueResult([{
+      id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft',
+      taxRate: null, depositType: 'none', depositPercent: null,
+      quoteNumber: 'Q-2026-0001', issueDate: '2026-01-01', expiryDate: null,
+      total: '100.00', currencyCode: 'USD', terms: null, termsAndConditions: null,
+      sellerSnapshot: null,
+    }]);
+    queueResult([]); // blocks
+    queueResult([visibleLine, internalLine]); // lines
+
+    queueResult([{ id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null }]); // partnerRow
+    queueResult([{ id: 'q1' }]); // update ... returning (claimed)
+    queueResult([{ billingContact: { email: 'billing@customer.example' } }]); // org billingContact
+    queueResult([{ name: 'Acme MSP' }]); // partner name
+    queueResult([]); // portalBranding — none configured
+    queueResult([{ // final re-select
+      id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent',
+      taxRate: null, depositType: 'none', depositPercent: null,
+      quoteNumber: 'Q-2026-0001', total: '100.00', currencyCode: 'USD',
+    }]);
+
+    const result = await sendQuote('q1', actor);
+
+    expect(result.emailed).toBe(true);
+    expect(capturedPdfArgs).not.toBeNull();
+    // renderQuotePdf(quote, blocks, lines, loadImage, branding, loadCatalogImage) — lines is arg index 2.
+    const renderedLines = capturedPdfArgs![2] as Array<Record<string, unknown>>;
+    expect(renderedLines).toHaveLength(1);
+    expect(renderedLines[0]?.id).toBe('line-visible');
+    expect(renderedLines.some((l) => l.id === 'line-internal')).toBe(false);
+    expect(renderedLines.some((l) => l.name === 'Internal markup buffer')).toBe(false);
+    // toCustomerLines also strips the cost-basis field, same as the portal route.
+    expect(renderedLines[0]).not.toHaveProperty('unitCost');
   });
 });
