@@ -15,8 +15,9 @@ import { Dialog } from '../shared/Dialog';
 import DeploymentWizard from './DeploymentWizard';
 import SoftwareVersionManager from './SoftwareVersionManager';
 import AddPackageModal, { type CreatedPackage } from './AddPackageModal';
-
-type IntegrationProvider = 'huntress' | 'sentinelone';
+import { getProviderBranding, isIntegrationProvider, type IntegrationProvider } from './providerBranding';
+import { useEdrReadiness, type EdrReadiness } from './useEdrReadiness';
+import BuiltinPackageDetail from './BuiltinPackageDetail';
 
 type SoftwareItem = {
   id: string;
@@ -30,15 +31,6 @@ type SoftwareItem = {
   partnerId?: string;
   /** Number of uploaded versions; built-in S1 needs >=1 before it can deploy. */
   versionCount?: number;
-};
-
-/** Human label for a built-in package's integration provider, or null if not built-in. */
-const providerLabel = (provider?: IntegrationProvider): string | null => {
-  switch (provider) {
-    case 'huntress': return 'Huntress';
-    case 'sentinelone': return 'SentinelOne';
-    default: return null;
-  }
 };
 
 /**
@@ -58,6 +50,24 @@ const categoryStyles: Record<string, string> = {
   compression: 'bg-orange-500/20 text-orange-700 border-orange-500/40',
   media: 'bg-pink-500/20 text-pink-700 border-pink-500/40',
 };
+
+/** Small at-a-glance readiness chip for a built-in EDR card. */
+function ReadinessPill({ status }: { status: EdrReadiness['status'] }) {
+  if (status === 'ready')
+    return (
+      <span className="inline-flex items-center rounded-full border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:text-emerald-400">
+        Ready
+      </span>
+    );
+  if (status === 'incomplete')
+    return (
+      <span className="inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400">
+        Setup needed
+      </span>
+    );
+  if (status === 'loading') return <span className="text-xs text-muted-foreground">Checking…</span>;
+  return null;
+}
 
 export default function SoftwareCatalog() {
   const [query, setQuery] = useState('');
@@ -129,6 +139,18 @@ export default function SoftwareCatalog() {
       return matchesQuery && matchesCategory;
     });
   }, [query, category, catalogItems]);
+
+  // Built-in EDR readiness: one fetch per present provider (there's one
+  // integration per partner), shared by the cards and the detail panel.
+  const builtinProviders = useMemo(
+    () => Array.from(new Set(catalogItems.map(i => i.integrationProvider).filter(isIntegrationProvider))),
+    [catalogItems],
+  );
+  const s1VersionCount = useMemo(
+    () => catalogItems.find(i => i.integrationProvider === 'sentinelone')?.versionCount ?? 0,
+    [catalogItems],
+  );
+  const readinessMap = useEdrReadiness(builtinProviders, { s1VersionCount });
 
   const handleCreated = (pkg: CreatedPackage) => {
     setCatalogItems(prev => [
@@ -261,19 +283,35 @@ export default function SoftwareCatalog() {
             >
               <div className="flex items-start justify-between">
                 <div className="flex items-center gap-3">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-md bg-muted">
-                    <Package className="h-5 w-5 text-muted-foreground" />
-                  </div>
+                  {isIntegrationProvider(item.integrationProvider) ? (() => {
+                    const branding = getProviderBranding(item.integrationProvider);
+                    const Icon = branding.icon;
+                    return (
+                      <div className={cn('flex h-10 w-10 items-center justify-center rounded-md border', branding.accent)}>
+                        <Icon className="h-5 w-5" />
+                      </div>
+                    );
+                  })() : (
+                    <div className="flex h-10 w-10 items-center justify-center rounded-md bg-muted">
+                      <Package className="h-5 w-5 text-muted-foreground" />
+                    </div>
+                  )}
                   <div>
                     <p className="text-sm font-semibold">{item.name}</p>
                     <p className="text-xs text-muted-foreground">{item.vendor || 'Unknown vendor'}</p>
                   </div>
                 </div>
                 <div className="flex flex-col items-end gap-1.5">
-                  {providerLabel(item.integrationProvider) && (
-                    <span className="inline-flex items-center rounded-full border border-emerald-500/40 bg-emerald-500/15 px-2.5 py-1 text-xs font-medium text-emerald-700">
-                      Built-in · {providerLabel(item.integrationProvider)}
-                    </span>
+                  {isIntegrationProvider(item.integrationProvider) && (
+                    <div className="flex items-center gap-1.5">
+                      <ReadinessPill status={readinessMap[item.integrationProvider].status} />
+                      <span className={cn(
+                        'inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium',
+                        getProviderBranding(item.integrationProvider).accent,
+                      )}>
+                        Built-in
+                      </span>
+                    </div>
                   )}
                   {item.category && (
                     <span
@@ -396,18 +434,25 @@ export default function SoftwareCatalog() {
           {/* Scrollable body */}
           <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
             {detailTab === 'details' && (
-              <div>
-                {selectedSoftware.description && (
-                  <div className="rounded-md border bg-muted/30 p-4 text-sm text-muted-foreground">
-                    {selectedSoftware.description}
-                  </div>
-                )}
-                <div className="mt-5 flex items-center justify-between">
-                  {selectedSoftware.integrationProvider ? (
-                    <p className="text-xs text-muted-foreground">
-                      Built-in package managed by the {providerLabel(selectedSoftware.integrationProvider)} integration.
-                    </p>
-                  ) : (
+              isIntegrationProvider(selectedSoftware.integrationProvider) ? (
+                <BuiltinPackageDetail
+                  name={selectedSoftware.name}
+                  provider={selectedSoftware.integrationProvider}
+                  readiness={readinessMap[selectedSoftware.integrationProvider]}
+                  onDeploy={() => {
+                    const id = selectedSoftware.id;
+                    setSelectedSoftware(null);
+                    openDeploy(id);
+                  }}
+                />
+              ) : (
+                <div>
+                  {selectedSoftware.description && (
+                    <div className="rounded-md border bg-muted/30 p-4 text-sm text-muted-foreground">
+                      {selectedSoftware.description}
+                    </div>
+                  )}
+                  <div className="mt-5 flex items-center justify-between">
                     <button
                       type="button"
                       onClick={() => setConfirmDelete(selectedSoftware)}
@@ -416,21 +461,20 @@ export default function SoftwareCatalog() {
                       <Trash2 className="h-4 w-4" />
                       Delete
                     </button>
-                  )}
-                  <button
-                    type="button"
-                    title={selectedSoftware.integrationProvider ? 'Deploys to mapped organizations only' : undefined}
-                    onClick={() => {
-                      const id = selectedSoftware.id;
-                      setSelectedSoftware(null);
-                      openDeploy(id);
-                    }}
-                    className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-                  >
-                    Deploy
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const id = selectedSoftware.id;
+                        setSelectedSoftware(null);
+                        openDeploy(id);
+                      }}
+                      className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+                    >
+                      Deploy
+                    </button>
+                  </div>
                 </div>
-              </div>
+              )
             )}
 
             {detailTab === 'versions' && (
