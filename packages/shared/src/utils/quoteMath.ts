@@ -36,6 +36,13 @@ export function computeLineTotal(quantity: string | number, unitPrice: string | 
   return fromCents(roundHalfUp(fractionalCents));
 }
 
+export type QuoteDepositType = 'none' | 'percent' | 'selected_lines';
+export interface QuoteDepositConfig {
+  type: QuoteDepositType;
+  /** Required for type 'percent'. Whole-percent scale (30 = 30%), 2dp. */
+  percent?: number | string | null;
+}
+
 export interface QuoteLineForMath {
   quantity: string;
   unitPrice: string;
@@ -43,6 +50,17 @@ export interface QuoteLineForMath {
   taxable: boolean;
   customerVisible: boolean;
   recurrence: 'one_time' | 'monthly' | 'annual';
+  /** Counts toward a 'selected_lines' deposit (one-time lines only). */
+  depositEligible?: boolean;
+  /** Catalog item type snapshotted at add-time; null/undefined = manual → 'other'. */
+  itemType?: 'hardware' | 'software' | 'service' | null;
+}
+
+export interface QuoteCategorySubtotal {
+  category: 'hardware' | 'software' | 'service' | 'other';
+  oneTimeTotal: string;
+  monthlyTotal: string;
+  annualTotal: string;
 }
 
 export interface QuoteTotals {
@@ -60,10 +78,21 @@ export interface QuoteTotals {
    * period. Must equal quoteAcceptService's invoice math.
    */
   dueOnAcceptanceTotal: string;
+  /** Deposit due at acceptance, or null when no (valid) deposit is configured. */
+  depositDueTotal: string | null;
+  /** Per-category subtotals over customer-visible lines; empty categories omitted. */
+  categoryBreakdown: QuoteCategorySubtotal[];
 }
 
-export function computeQuoteTotals(lines: QuoteLineForMath[], taxRate: number | null): QuoteTotals {
+export function computeQuoteTotals(
+  lines: QuoteLineForMath[],
+  taxRate: number | null,
+  deposit?: QuoteDepositConfig | null,
+): QuoteTotals {
   let oneTime = 0, monthly = 0, annual = 0, taxableBasis = 0, oneTimeTaxableBasis = 0;
+  let eligibleCents = 0, eligibleTaxableCents = 0;
+  const CATEGORY_ORDER = ['hardware', 'software', 'service', 'other'] as const;
+  const cat: Record<string, { oneTime: number; monthly: number; annual: number }> = {};
   for (const l of lines) {
     if (!l.customerVisible) continue;
     // Route per-line cents through computeLineTotal so they equal the persisted
@@ -76,6 +105,15 @@ export function computeQuoteTotals(lines: QuoteLineForMath[], taxRate: number | 
       taxableBasis += lineCents;
       if (l.recurrence === 'one_time') oneTimeTaxableBasis += lineCents;
     }
+    if (l.depositEligible && l.recurrence === 'one_time') {
+      eligibleCents += lineCents;
+      if (l.taxable) eligibleTaxableCents += lineCents;
+    }
+    const key = l.itemType ?? 'other';
+    const bucket = (cat[key] ??= { oneTime: 0, monthly: 0, annual: 0 });
+    if (l.recurrence === 'monthly') bucket.monthly += lineCents;
+    else if (l.recurrence === 'annual') bucket.annual += lineCents;
+    else bucket.oneTime += lineCents;
   }
   // First-period basis: one-time + first monthly period + first annual period.
   const subtotal = oneTime + monthly + annual;
@@ -83,6 +121,18 @@ export function computeQuoteTotals(lines: QuoteLineForMath[], taxRate: number | 
   const taxCents = Math.floor(taxableBasis * rate + 0.5);
   // Tax on ONLY the one-time taxable lines — what accept actually invoices.
   const oneTimeTaxCents = Math.floor(oneTimeTaxableBasis * rate + 0.5);
+  const dueOnAcceptanceCents = oneTime + oneTimeTaxCents;
+
+  let depositCents: number | null = null;
+  if (deposit && deposit.type === 'percent') {
+    const pct = Number(deposit.percent);
+    if (Number.isFinite(pct) && pct > 0) {
+      depositCents = Math.floor(dueOnAcceptanceCents * (pct / 100) + 0.5);
+    }
+  } else if (deposit && deposit.type === 'selected_lines') {
+    depositCents = eligibleCents + Math.floor(eligibleTaxableCents * rate + 0.5);
+  }
+
   return {
     subtotal: fromCents(subtotal),
     taxTotal: fromCents(taxCents),
@@ -90,8 +140,51 @@ export function computeQuoteTotals(lines: QuoteLineForMath[], taxRate: number | 
     oneTimeTotal: fromCents(oneTime),
     monthlyRecurringTotal: fromCents(monthly),
     annualRecurringTotal: fromCents(annual),
-    dueOnAcceptanceTotal: fromCents(oneTime + oneTimeTaxCents),
+    dueOnAcceptanceTotal: fromCents(dueOnAcceptanceCents),
+    depositDueTotal: depositCents !== null ? fromCents(depositCents) : null,
+    categoryBreakdown: CATEGORY_ORDER
+      .filter((k) => cat[k])
+      .map((k) => ({
+        category: k,
+        oneTimeTotal: fromCents(cat[k]!.oneTime),
+        monthlyTotal: fromCents(cat[k]!.monthly),
+        annualTotal: fromCents(cat[k]!.annual),
+      })),
   };
+}
+
+export type QuoteDepositValidation =
+  | { ok: true; depositDueTotal: string | null }
+  | { ok: false; code: 'DEPOSIT_REQUIRES_ONE_TIME_LINES' | 'DEPOSIT_PERCENT_INVALID'
+      | 'DEPOSIT_NO_ELIGIBLE_LINES' | 'DEPOSIT_NOT_BELOW_TOTAL'; message: string };
+
+/** Spec rule: deposit needs ≥1 one-time visible line; 0 < deposit < dueOnAcceptanceTotal. */
+export function validateQuoteDeposit(
+  lines: QuoteLineForMath[],
+  taxRate: number | null,
+  deposit: QuoteDepositConfig,
+): QuoteDepositValidation {
+  if (deposit.type === 'none') return { ok: true, depositDueTotal: null };
+  const totals = computeQuoteTotals(lines, taxRate, deposit);
+  if (toCents(totals.dueOnAcceptanceTotal) <= 0) {
+    return { ok: false, code: 'DEPOSIT_REQUIRES_ONE_TIME_LINES',
+      message: 'A deposit needs at least one one-time, customer-visible line' };
+  }
+  if (deposit.type === 'percent') {
+    const pct = Number(deposit.percent);
+    if (!Number.isFinite(pct) || pct <= 0 || pct >= 100) {
+      return { ok: false, code: 'DEPOSIT_PERCENT_INVALID', message: 'Deposit percent must be between 0 and 100 (exclusive)' };
+    }
+  }
+  const depositCents = totals.depositDueTotal !== null ? toCents(totals.depositDueTotal) : 0;
+  if (deposit.type === 'selected_lines' && depositCents <= 0) {
+    return { ok: false, code: 'DEPOSIT_NO_ELIGIBLE_LINES', message: 'Flag at least one one-time line as deposit-eligible' };
+  }
+  if (depositCents >= toCents(totals.dueOnAcceptanceTotal)) {
+    return { ok: false, code: 'DEPOSIT_NOT_BELOW_TOTAL',
+      message: 'Deposit must be less than the amount due on acceptance — remove the deposit instead' };
+  }
+  return { ok: true, depositDueTotal: totals.depositDueTotal };
 }
 
 /** markup on cost = (price − cost) / cost · 100. Null when cost is absent/≤0. */

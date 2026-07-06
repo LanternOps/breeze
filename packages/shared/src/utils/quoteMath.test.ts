@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeQuoteTotals, computeLineTotal, toCents, fromCents, markupPct, priceFromMarkup, computeQuoteProfit, type QuoteLineForMath } from './quoteMath';
+import { computeQuoteTotals, computeLineTotal, toCents, fromCents, markupPct, priceFromMarkup, computeQuoteProfit, validateQuoteDeposit, type QuoteLineForMath } from './quoteMath';
 
 const line = (over: Partial<QuoteLineForMath>): QuoteLineForMath => ({
   quantity: '1', unitPrice: '0', taxable: false, recurrence: 'one_time', customerVisible: true, ...over,
@@ -79,3 +79,93 @@ describe('quoteMath (shared)', () => {
     expect(r.linesMissingCost).toBe(1);
   });
 });
+
+// Block-scoped so this `line` helper (default unitPrice '100.00') doesn't
+// collide with the module-level `line` helper above (default unitPrice '0').
+{
+  const line = (over: Partial<QuoteLineForMath>): QuoteLineForMath => ({
+    quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true,
+    recurrence: 'one_time', ...over,
+  });
+
+  describe('deposit math', () => {
+    it('percent deposit = percent of dueOnAcceptanceTotal (one-time + one-time tax)', () => {
+      const lines = [
+        line({ unitPrice: '1000.00', taxable: true }),
+        line({ unitPrice: '500.00', recurrence: 'monthly' }), // recurring excluded
+      ];
+      // dueOnAcceptance = 1000 + 10% tax = 1100.00; 30% => 330.00
+      const t = computeQuoteTotals(lines, 0.1, { type: 'percent', percent: 30 });
+      expect(t.dueOnAcceptanceTotal).toBe('1100.00');
+      expect(t.depositDueTotal).toBe('330.00');
+    });
+
+    it('percent deposit rounds half-up at the cent boundary', () => {
+      // 33.335 => 33.34 (dueOnAcceptance 100.00, 33.335%)
+      const t = computeQuoteTotals([line({ unitPrice: '100.00' })], null, { type: 'percent', percent: 33.335 });
+      expect(t.depositDueTotal).toBe('33.34');
+    });
+
+    it('selected_lines deposit sums flagged one-time lines + tax on flagged taxable lines', () => {
+      const lines = [
+        line({ unitPrice: '6200.00', taxable: true, depositEligible: true, itemType: 'hardware' }),
+        line({ unitPrice: '1100.00', taxable: false, depositEligible: true, itemType: 'hardware' }),
+        line({ unitPrice: '2400.00', taxable: true, depositEligible: false }),           // not flagged
+        line({ unitPrice: '99.00', depositEligible: true, recurrence: 'monthly' }),      // recurring never counts
+        line({ unitPrice: '50.00', depositEligible: true, customerVisible: false }),     // hidden never counts
+      ];
+      // 6200 + 1100 + 10% of 6200 = 7920.00
+      const t = computeQuoteTotals(lines, 0.1, { type: 'selected_lines' });
+      expect(t.depositDueTotal).toBe('7920.00');
+    });
+
+    it('depositDueTotal is null for type none / missing config', () => {
+      expect(computeQuoteTotals([line({})], null).depositDueTotal).toBeNull();
+      expect(computeQuoteTotals([line({})], null, { type: 'none' }).depositDueTotal).toBeNull();
+    });
+
+    it('categoryBreakdown groups by itemType with manual lines under other, omitting empty categories', () => {
+      const lines = [
+        line({ unitPrice: '6200.00', itemType: 'hardware' }),
+        line({ unitPrice: '1100.00', itemType: 'hardware' }),
+        line({ unitPrice: '300.00', itemType: 'service', recurrence: 'monthly' }),
+        line({ unitPrice: '2400.00' }), // manual, no itemType
+        line({ unitPrice: '10.00', customerVisible: false, itemType: 'software' }), // hidden excluded entirely
+      ];
+      const t = computeQuoteTotals(lines, null);
+      expect(t.categoryBreakdown).toEqual([
+        { category: 'hardware', oneTimeTotal: '7300.00', monthlyTotal: '0.00', annualTotal: '0.00' },
+        { category: 'service', oneTimeTotal: '0.00', monthlyTotal: '300.00', annualTotal: '0.00' },
+        { category: 'other', oneTimeTotal: '2400.00', monthlyTotal: '0.00', annualTotal: '0.00' },
+      ]);
+    });
+  });
+
+  describe('validateQuoteDeposit', () => {
+    it('accepts a valid percent deposit', () => {
+      const r = validateQuoteDeposit([line({ unitPrice: '1000.00' })], null, { type: 'percent', percent: 30 });
+      expect(r).toEqual({ ok: true, depositDueTotal: '300.00' });
+    });
+    it('type none is always ok with null total', () => {
+      expect(validateQuoteDeposit([], null, { type: 'none' })).toEqual({ ok: true, depositDueTotal: null });
+    });
+    it('rejects deposit without one-time customer-visible lines', () => {
+      const r = validateQuoteDeposit([line({ recurrence: 'monthly' })], null, { type: 'percent', percent: 30 });
+      expect(r).toMatchObject({ ok: false, code: 'DEPOSIT_REQUIRES_ONE_TIME_LINES' });
+    });
+    it('rejects percent type without a usable percent', () => {
+      expect(validateQuoteDeposit([line({})], null, { type: 'percent', percent: null }))
+        .toMatchObject({ ok: false, code: 'DEPOSIT_PERCENT_INVALID' });
+      expect(validateQuoteDeposit([line({})], null, { type: 'percent', percent: 100 }))
+        .toMatchObject({ ok: false, code: 'DEPOSIT_PERCENT_INVALID' });
+    });
+    it('rejects selected_lines with no eligible one-time line', () => {
+      const r = validateQuoteDeposit([line({ depositEligible: false })], null, { type: 'selected_lines' });
+      expect(r).toMatchObject({ ok: false, code: 'DEPOSIT_NO_ELIGIBLE_LINES' });
+    });
+    it('rejects deposit >= dueOnAcceptanceTotal (all lines flagged = "no deposit")', () => {
+      const r = validateQuoteDeposit([line({ depositEligible: true })], null, { type: 'selected_lines' });
+      expect(r).toMatchObject({ ok: false, code: 'DEPOSIT_NOT_BELOW_TOTAL' });
+    });
+  });
+}
