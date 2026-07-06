@@ -4,4 +4,12 @@
 // `./quoteMath` import sites (quoteService, quotesPublic, portal/quotes) stable.
 // The quoteMath.test.ts beside this file exercises the shared implementation and
 // guards parity.
-export { computeQuoteTotals, type QuoteLineForMath, type QuoteTotals } from '@breeze/shared';
+export {
+  computeQuoteTotals,
+  validateQuoteDeposit,
+  type QuoteLineForMath,
+  type QuoteTotals,
+  type QuoteDepositConfig,
+  type QuoteDepositType,
+  type QuoteDepositValidation,
+} from '@breeze/shared';

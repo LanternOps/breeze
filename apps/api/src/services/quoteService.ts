@@ -4,7 +4,7 @@ import { quotes, quoteLines, quoteBlocks, quoteImages } from '../db/schema/quote
 import { organizations, partners } from '../db/schema/orgs';
 import { catalogItems } from '../db/schema/catalog';
 import { computeLineTotal, resolveEffectiveTaxRate } from './invoiceMath';
-import { computeQuoteTotals, type QuoteLineForMath } from './quoteMath';
+import { computeQuoteTotals, validateQuoteDeposit, type QuoteLineForMath } from './quoteMath';
 import { QuoteServiceError, type QuoteActor } from './quoteTypes';
 import { allocateQuoteCounter, formatQuoteNumber } from './quoteNumbers';
 import type {
@@ -50,15 +50,22 @@ function assertOrg(actor: QuoteActor, orgId: string): void {
  * totals are penny-consistent with the persisted line_total and with invoices.
  */
 async function recomputeAndPersist(quoteId: string): Promise<void> {
-  const [q] = await db.select({ taxRate: quotes.taxRate }).from(quotes).where(eq(quotes.id, quoteId)).limit(1);
+  const [q] = await db.select({
+    taxRate: quotes.taxRate,
+    depositType: quotes.depositType,
+    depositPercent: quotes.depositPercent,
+  }).from(quotes).where(eq(quotes.id, quoteId)).limit(1);
   const lines = await db.select({
     quantity: quoteLines.quantity,
     unitPrice: quoteLines.unitPrice,
     taxable: quoteLines.taxable,
     customerVisible: quoteLines.customerVisible,
     recurrence: quoteLines.recurrence,
+    depositEligible: quoteLines.depositEligible,
+    itemType: quoteLines.itemType,
   }).from(quoteLines).where(eq(quoteLines.quoteId, quoteId));
-  const totals = computeQuoteTotals(lines as QuoteLineForMath[], q?.taxRate ? parseFloat(q.taxRate) : null);
+  const deposit = { type: q?.depositType ?? 'none', percent: q?.depositPercent ?? null } as const;
+  const totals = computeQuoteTotals(lines as QuoteLineForMath[], q?.taxRate ? parseFloat(q.taxRate) : null, deposit);
   await db.update(quotes).set({
     subtotal: totals.subtotal,
     taxTotal: totals.taxTotal,
@@ -66,6 +73,9 @@ async function recomputeAndPersist(quoteId: string): Promise<void> {
     oneTimeTotal: totals.oneTimeTotal,
     monthlyRecurringTotal: totals.monthlyRecurringTotal,
     annualRecurringTotal: totals.annualRecurringTotal,
+    // Null when no deposit configured OR the config is currently unsatisfiable
+    // (e.g. the last one-time line was deleted) — sendQuote re-validates hard.
+    depositAmount: totals.depositDueTotal,
     updatedAt: new Date(),
   }).where(eq(quotes.id, quoteId));
 }
@@ -163,8 +173,20 @@ export async function getQuote(id: string, actor: QuoteActor) {
   // contract). Computed from the canonical quoteMath so it stays penny-consistent
   // with quoteAcceptService's invoice, and so the UI can advertise an accurate
   // "due on acceptance" instead of the recurring-inclusive `total` (see #bug).
-  const totals = computeQuoteTotals(lines as QuoteLineForMath[], q.taxRate ? parseFloat(q.taxRate) : null);
-  return { quote: { ...q, dueOnAcceptanceTotal: totals.dueOnAcceptanceTotal }, blocks, lines };
+  const totals = computeQuoteTotals(
+    lines as QuoteLineForMath[],
+    q.taxRate ? parseFloat(q.taxRate) : null,
+    { type: q.depositType, percent: q.depositPercent },
+  );
+  return {
+    quote: {
+      ...q,
+      dueOnAcceptanceTotal: totals.dueOnAcceptanceTotal,
+      depositDueTotal: totals.depositDueTotal,
+      categoryBreakdown: totals.categoryBreakdown,
+    },
+    blocks, lines,
+  };
 }
 
 export async function listQuotes(query: ListQuotesQuery, actor: QuoteActor) {
@@ -191,7 +213,7 @@ export async function listQuotes(query: ListQuotesQuery, actor: QuoteActor) {
 /** Draft-only header edit. Only provided fields are written; nullable fields can be
  *  explicitly cleared with null. A tax-rate change triggers a totals recompute. */
 export async function updateQuote(id: string, input: UpdateQuoteInput, actor: QuoteActor) {
-  await loadDraft(id, actor);
+  const q = await loadDraft(id, actor);
   const set: Record<string, unknown> = { updatedAt: new Date() };
   if (input.siteId !== undefined) set.siteId = input.siteId;
   if (input.title !== undefined) set.title = input.title === null ? null : input.title.trim() || null;
@@ -202,6 +224,25 @@ export async function updateQuote(id: string, input: UpdateQuoteInput, actor: Qu
   if (input.billToName !== undefined) set.billToName = input.billToName;
   // Numeric tax_rate takes a fixed-string value; null clears it.
   if (input.taxRate !== undefined) set.taxRate = input.taxRate === null ? null : Number(input.taxRate).toFixed(5);
+  if (input.depositType !== undefined || input.depositPercent !== undefined) {
+    const lines = await db.select({
+      quantity: quoteLines.quantity, unitPrice: quoteLines.unitPrice,
+      taxable: quoteLines.taxable, customerVisible: quoteLines.customerVisible,
+      recurrence: quoteLines.recurrence, depositEligible: quoteLines.depositEligible,
+    }).from(quoteLines).where(eq(quoteLines.quoteId, id));
+    const nextType = input.depositType ?? q.depositType;
+    const nextPercent = input.depositPercent !== undefined ? input.depositPercent : q.depositPercent;
+    // Include an in-flight taxRate change from THIS SAME patch — a deposit
+    // validated against the stale persisted rate could pass here and then fail
+    // (or silently mis-total) once the new tax rate lands via recomputeAndPersist.
+    const effectiveTaxRate = (input.taxRate !== undefined ? input.taxRate : (q.taxRate ? parseFloat(q.taxRate) : null));
+    const check = validateQuoteDeposit(lines as QuoteLineForMath[], effectiveTaxRate === null ? null : Number(effectiveTaxRate), {
+      type: nextType, percent: nextPercent,
+    });
+    if (!check.ok) throw new QuoteServiceError(check.message, 400, check.code);
+    set.depositType = nextType;
+    set.depositPercent = nextType === 'percent' && nextPercent != null ? Number(nextPercent).toFixed(2) : null;
+  }
   await db.update(quotes).set(set).where(eq(quotes.id, id));
   await recomputeAndPersist(id);
   const [updated] = await db.select().from(quotes).where(eq(quotes.id, id)).limit(1);
@@ -296,6 +337,8 @@ export async function addManualLine(quoteId: string, input: QuoteLineInput, acto
     unitCost: input.unitCost != null ? Number(input.unitCost).toFixed(2) : null,
     sku: input.sku ?? null,
     partNumber: input.partNumber ?? null,
+    depositEligible: input.depositEligible ?? false,
+    itemType: null,
     sortOrder,
   }).returning();
   await recomputeAndPersist(quoteId);
@@ -359,6 +402,12 @@ export async function addCatalogLine(
     unitCost: item.costBasis ?? null,
     sku: item.sku ?? null,
     partNumber: options?.partNumber ?? null,
+    // Deposit eligibility defaults from the catalog item's type — hardware is the
+    // one category a deposit typically secures (custom order, restocking risk).
+    // itemType is snapshotted at add-time so a later catalog recategorization
+    // never reshuffles an existing quote's category breakdown or deposit math.
+    depositEligible: item.itemType === 'hardware',
+    itemType: item.itemType,
     sortOrder,
   }).returning();
   await recomputeAndPersist(quoteId);
@@ -375,6 +424,7 @@ export async function updateLine(
     termMonths?: number | null; sortOrder?: number;
     unitCost?: number | null; sku?: string | null; partNumber?: string | null;
     imageId?: string | null;
+    depositEligible?: boolean;
   },
   actor: QuoteActor
 ) {
@@ -401,6 +451,7 @@ export async function updateLine(
   if (input.unitCost !== undefined) set.unitCost = input.unitCost != null ? Number(input.unitCost).toFixed(2) : null;
   if (input.sku !== undefined) set.sku = input.sku;
   if (input.partNumber !== undefined) set.partNumber = input.partNumber;
+  if (input.depositEligible !== undefined) set.depositEligible = input.depositEligible;
   if (input.imageId !== undefined) {
     // Ownership check: the image must be a quote_images row on THIS quote, or a
     // caller could point a line at another tenant's image and exfiltrate its
