@@ -26,7 +26,7 @@ import {
   withSystemDbAccessContext,
   type DbAccessContext,
 } from '../../db';
-import { quotes, quoteLines, quoteBlocks } from '../../db/schema/quotes';
+import { quotes, quoteLines } from '../../db/schema/quotes';
 import { catalogItems } from '../../db/schema/catalog';
 import { createOrganization, createPartner } from './db-utils';
 import {

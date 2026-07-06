@@ -65,9 +65,9 @@ unaffected (existing org-scoped policies on `quotes`/`quote_blocks`/`quote_lines
 - `EditableLineRow` actions cell gains a "Move to…" icon button (lucide `FolderInput`,
   `data-testid="quote-line-move-to-${line.id}"`). Rendered only when the quote has ≥2
   `line_items` blocks and the line is not a bundle child.
-- Clicking opens a small dropdown listing the *other* pricing panels, labeled the same
-  way panel headers are ("Pricing table · {tableLabel}", falling back to
-  "Pricing table N" by position).
+- Clicking opens a small dropdown listing the *other* pricing panels, labeled by the
+  author's table label ("Hardware"), falling back to "Pricing table N" by position
+  when a panel has no label.
 - Selecting a panel performs an optimistic move: update the line's `blockId` in local
   state (lines are a flat array), append its ID to the target panel's optimistic
   `lineOrder`, then persist via `runAction`-wrapped `moveLine`. On failure, revert the
