@@ -324,15 +324,10 @@ describe('agent websocket handshake', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// #2230: WS lifecycle status writes must never overwrite terminal statuses.
-// Decommission/quarantine only gate the WS handshake — an agent whose socket
-// was already open when the device was decommissioned keeps sending heartbeats,
-// and an unguarded `UPDATE devices SET status='online' WHERE agent_id=?` flips
-// the row back to 'online', resurrecting the device in the dashboard. The
-// disconnect path has the same hole ('decommissioned' → 'offline' becomes
-// visible again). These tests pin the notInArray guard in updateDeviceStatus.
-// ---------------------------------------------------------------------------
+// Regression coverage for #2230 — see the updateDeviceStatus() doc comment in
+// agentWs.ts for the full incident writeup. These tests pin the terminal-status
+// guard on every agent-driven status write: connect, WS heartbeat (the actual
+// resurrection vector), disconnect, and the update_status self-update message.
 describe('WS lifecycle status writes — terminal-status guard (#2230)', () => {
   beforeEach(() => {
     vi.resetAllMocks();
@@ -383,6 +378,42 @@ describe('WS lifecycle status writes — terminal-status guard (#2230)', () => {
     await handlers.onClose({}, ws as any);
 
     expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ status: 'offline' }));
+    expect(whereMock).toHaveBeenCalledWith(
+      and(eq(devices.agentId, 'agent-123'), TERMINAL_GUARD)
+    );
+  });
+
+  it('excludes decommissioned/quarantined rows when a WS heartbeat flips a device online', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+    const { whereMock, setMock } = rigStatusUpdateCapture();
+    // getPendingCommands device lookup — no row, so no command claim follows.
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    await handlers.onMessage({
+      data: JSON.stringify({ type: 'heartbeat', timestamp: 1234567890 }),
+    } as any, ws as any);
+
+    expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ status: 'online' }));
+    expect(whereMock).toHaveBeenCalledWith(
+      and(eq(devices.agentId, 'agent-123'), TERMINAL_GUARD)
+    );
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"heartbeat_ack"'));
+  });
+
+  it('excludes decommissioned/quarantined rows when update_status flips a device to updating', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+    const { whereMock, setMock } = rigStatusUpdateCapture();
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+
+    await handlers.onMessage({
+      data: JSON.stringify({ type: 'update_status', targetVersion: '1.2.3' }),
+    } as any, wsMock() as any);
+
+    expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ status: 'updating' }));
     expect(whereMock).toHaveBeenCalledWith(
       and(eq(devices.agentId, 'agent-123'), TERMINAL_GUARD)
     );

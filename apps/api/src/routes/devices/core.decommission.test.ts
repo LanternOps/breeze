@@ -77,7 +77,7 @@ vi.mock('../../services/remoteAccessLauncher', () => ({
 vi.mock('../agentWs', () => ({
   sendCommandToAgent: vi.fn(),
   isAgentConnected: vi.fn().mockReturnValue(false),
-  disconnectAgent: vi.fn().mockReturnValue(true),
+  disconnectAgent: vi.fn().mockReturnValue('closed'),
 }));
 
 vi.mock('../../services/commandQueue', () => ({
@@ -101,6 +101,7 @@ import { coreRoutes } from './core';
 import { db } from '../../db';
 import { terminateDeviceRemoteSessions } from '../../services/remoteSessionTeardown';
 import { disconnectAgent } from '../agentWs';
+import { writeRouteAudit } from '../../services/auditEvents';
 
 const DEVICE_ID = '11111111-1111-4111-8111-111111111111';
 
@@ -168,12 +169,11 @@ describe('DELETE /devices/:id (decommission) — remote-session teardown wiring'
     expect(disconnectAgent).not.toHaveBeenCalled();
   });
 
-  // #2230: the status flip is only enforced at WS connect time, so a live
-  // agent socket would keep full command/control after decommission (and its
-  // heartbeats used to flip the row back to 'online'). The endpoint must
-  // force-close the agent's WS control channel; the handshake gate then
-  // rejects the reconnect.
-  it('force-closes the agent WS control channel when the device has an agent', async () => {
+  // Regression coverage for #2230 — see the updateDeviceStatus() doc comment
+  // in routes/agentWs.ts for the full incident writeup. The endpoint must
+  // force-close the agent's live WS control channel; the handshake gate then
+  // rejects the reconnect, and the outcome lands in the audit trail.
+  it('force-closes the agent WS control channel and audits the outcome', async () => {
     rigDecommission({ ...ONLINE_DEVICE, agentId: 'agent-abc-123' });
 
     const res = await app.request(`/devices/${DEVICE_ID}`, {
@@ -182,7 +182,26 @@ describe('DELETE /devices/:id (decommission) — remote-session teardown wiring'
     });
 
     expect(res.status).toBe(200);
-    expect(disconnectAgent).toHaveBeenCalledWith('agent-abc-123', 4001, 'Device decommissioned');
+    expect(disconnectAgent).toHaveBeenCalledWith('agent-abc-123', 4041, 'Device decommissioned');
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'device.decommission',
+      details: expect.objectContaining({ agentWsDisconnect: 'closed' }),
+    }));
+  });
+
+  it('audits a close failure instead of collapsing it into success', async () => {
+    rigDecommission({ ...ONLINE_DEVICE, agentId: 'agent-abc-123' });
+    vi.mocked(disconnectAgent).mockReturnValueOnce('close-failed');
+
+    const res = await app.request(`/devices/${DEVICE_ID}`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      details: expect.objectContaining({ agentWsDisconnect: 'close-failed' }),
+    }));
   });
 
   it('skips the WS disconnect when the device has no agentId', async () => {
@@ -195,5 +214,8 @@ describe('DELETE /devices/:id (decommission) — remote-session teardown wiring'
 
     expect(res.status).toBe(200);
     expect(disconnectAgent).not.toHaveBeenCalled();
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      details: expect.objectContaining({ agentWsDisconnect: 'not-connected' }),
+    }));
   });
 });

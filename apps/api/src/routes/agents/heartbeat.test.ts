@@ -46,6 +46,7 @@ vi.mock('../../db', () => ({
 vi.mock('../../db/schema', () => ({
   devices: {
     id: 'devices.id',
+    status: 'devices.status',
     orgId: 'devices.org_id',
     siteId: 'devices.site_id',
     hostname: 'devices.hostname',
@@ -163,7 +164,9 @@ vi.mock('../../services/manifestSigning', () => ({
   },
 }));
 
+import { and, eq, notInArray } from 'drizzle-orm';
 import { heartbeatRoutes } from './heartbeat';
+import { devices } from '../../db/schema';
 
 // Builds a thenable mock-chain so any `.from().where().limit()` access
 // resolves to the given value.
@@ -1846,5 +1849,59 @@ describe('POST /agents/:id/heartbeat — version-pin threading (#2124)', () => {
     expect(resp.status).toBe(200);
     const body = (await resp.json()) as { watchdogUpgradeTo?: string | null };
     expect(body.watchdogUpgradeTo).toBeFalsy();
+  });
+});
+
+// Regression coverage for #2230 — see the updateDeviceStatus() doc comment in
+// routes/agentWs.ts for the full incident writeup. The REST heartbeat is the
+// polling counterpart: agentAuthMiddleware 403s terminal-status devices up
+// front, but a decommission landing mid-request must not be flipped back to
+// 'online' by the devices write at the end of the handler.
+describe('POST /agents/:id/heartbeat — terminal-status guard (#2230)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    selectMock.mockReset();
+    updateMock.mockReset();
+    insertMock.mockReset();
+    runOutsideDbContextMock.mockClear();
+    getActiveTrustKeysetMock.mockReset();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+  });
+
+  it('the devices status write excludes decommissioned/quarantined rows', async () => {
+    selectMock.mockReturnValueOnce(
+      selectChainResolving([
+        {
+          id: 'device-1',
+          orgId: 'org-1',
+          siteId: 'site-1',
+          hostname: 'host',
+          osType: 'windows',
+          architecture: 'amd64',
+          agentVersion: '0.65.15',
+          deviceRoleSource: 'auto',
+          mainAgentSilentSince: null,
+        },
+      ]),
+    );
+    const whereSpy = vi.fn().mockResolvedValue(undefined);
+    const setSpy = vi.fn(() => ({ where: whereSpy }));
+    updateMock.mockReturnValue({ set: setSpy });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+    selectMock.mockReturnValue(selectChainResolving([]));
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+    expect(resp.status).toBe(200);
+
+    // The first devices update is the deviceUpdates write.
+    const firstSet = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(firstSet.status).toBe('online');
+    expect(whereSpy.mock.calls[0]?.[0]).toEqual(
+      and(eq(devices.id, 'device-1'), notInArray(devices.status, ['decommissioned', 'quarantined'])),
+    );
   });
 });

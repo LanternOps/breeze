@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { zValidator } from '@hono/zod-validator';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, notInArray } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import {
   devices,
@@ -466,10 +466,17 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     deviceUpdates.batteryStatus = battery;
   }
 
+  // agentAuthMiddleware already 403s decommissioned/quarantined devices, but
+  // a decommission landing mid-request (between the auth fetch and this
+  // write) would be silently flipped back to 'online' (#2230). Mirrors
+  // TERMINAL_DEVICE_STATUSES in routes/agentWs.ts.
   await db
     .update(devices)
     .set(deviceUpdates)
-    .where(eq(devices.id, device.id));
+    .where(and(
+      eq(devices.id, device.id),
+      notInArray(devices.status, ['decommissioned', 'quarantined'])
+    ));
 
   // Publish event when agent version changes (for real-time UI updates)
   if (data.agentVersion && data.agentVersion !== device.agentVersion) {

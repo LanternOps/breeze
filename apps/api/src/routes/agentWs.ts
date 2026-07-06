@@ -839,6 +839,10 @@ export async function validateAgentToken(agentId: string, token: string): Promis
   };
 }
 
+// Statuses that agent-driven writes must never overwrite. Mirrored inline in
+// routes/agents/heartbeat.ts (the REST polling counterpart).
+const TERMINAL_DEVICE_STATUSES = ['decommissioned', 'quarantined'] as const;
+
 /**
  * Update device status when WebSocket connects/disconnects.
  *
@@ -849,8 +853,6 @@ export async function validateAgentToken(agentId: string, token: string): Promis
  * the dashboard (#2230). The disconnect path has the same hole
  * ('decommissioned' → 'offline' makes the row visible again).
  */
-const TERMINAL_DEVICE_STATUSES = ['decommissioned', 'quarantined'] as const;
-
 async function updateDeviceStatus(agentId: string, status: 'online' | 'offline'): Promise<void> {
   try {
     await db
@@ -1740,6 +1742,9 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
           if (agentDb) {
             await runWithAgentDbAccess(async () => {
               try {
+                // Same terminal-status guard as updateDeviceStatus (#2230):
+                // this write must not resurrect a decommissioned/quarantined
+                // row to 'updating'.
                 await db
                   .update(devices)
                   .set({
@@ -1747,7 +1752,10 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                     lastSeenAt: new Date(),
                     updatedAt: new Date()
                   })
-                  .where(eq(devices.agentId, agentId));
+                  .where(and(
+                    eq(devices.agentId, agentId),
+                    notInArray(devices.status, [...TERMINAL_DEVICE_STATUSES])
+                  ));
                 console.log(`[AgentWs] Agent ${agentId} entering update to ${message.targetVersion}`);
               } catch (error) {
                 console.error(`[AgentWs] Failed to set updating status for ${agentId}:`, error);
@@ -2542,28 +2550,34 @@ export function sendCommandToAgent(agentId: string, command: AgentCommand): bool
   }
 }
 
+export type AgentWsDisconnectResult = 'closed' | 'close-failed' | 'not-connected';
+
 /**
  * Force-close an agent's active WS connection so it reconnects with a fresh
  * handshake (and re-resolves its orgId/siteId via agentAuth). Use this after
  * any server-side change that invalidates the orgId baked into the live
  * connection — e.g. a cross-org move where every per-message
  * runWithAgentDbAccess call would otherwise keep using the stale orgId for
- * RLS (see preValidatedAgent closure capture in createAgentWsHandlers).
+ * RLS (see preValidatedAgent closure capture in createAgentWsHandlers), or a
+ * decommission that must sever the live command channel (#2230).
  *
- * Returns true if a connection was found and close() was called.
- * Returns false if no active connection exists for this agentId.
+ * Callers that record the outcome (audit trails) must not collapse
+ * 'close-failed' into success: a throwing close() plausibly leaves the
+ * channel live, which is exactly what e.g. a decommission needs to know.
  */
-export function disconnectAgent(agentId: string, code: number = 4040, reason: string = 'orgId changed, reconnect required'): boolean {
+export function disconnectAgent(agentId: string, code: number = 4040, reason: string = 'orgId changed, reconnect required'): AgentWsDisconnectResult {
   const ws = activeConnections.get(agentId);
-  if (!ws) return false;
+  if (!ws) return 'not-connected';
   try {
     ws.close(code, reason);
   } catch (error) {
     console.error(`disconnectAgent(${agentId.slice(0,12)}) close threw:`, error);
+    captureException(error instanceof Error ? error : new Error(String(error)));
+    return 'close-failed';
   }
   // Don't delete from map here — the WS onClose handler does that itself
   // (lines ~1905-1907) and we don't want to race with reconnect logic.
-  return true;
+  return 'closed';
 }
 
 /**

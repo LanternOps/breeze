@@ -1223,10 +1223,12 @@ coreRoutes.delete(
     // channel (#2230): a connected agent would keep its full command channel
     // after decommission. Force-close it; the handshake gate
     // (validateAgentToken) rejects the reconnect for decommissioned devices.
-    let agentWsDisconnected = false;
-    if (device.agentId) {
-      agentWsDisconnected = disconnectAgent(device.agentId, 4001, 'Device decommissioned');
-    }
+    // ('close-failed' means the channel may still be live — recorded in the
+    // audit trail below. Quarantine flows don't force-close the socket; they
+    // rely on the terminal-status write guard in agentWs.updateDeviceStatus.)
+    const agentWsDisconnect = device.agentId
+      ? disconnectAgent(device.agentId, 4041, 'Device decommissioned')
+      : 'not-connected';
 
     writeRouteAudit(c, {
       orgId: device.orgId,
@@ -1236,7 +1238,7 @@ coreRoutes.delete(
       resourceName: updated?.hostname ?? updated?.displayName ?? device.hostname,
       details: {
         remoteSessionTeardown: teardownResult === TEARDOWN_FAILED ? 'failed' : 'ok',
-        agentWsDisconnected,
+        agentWsDisconnect,
       },
     });
 
