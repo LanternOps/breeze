@@ -224,18 +224,19 @@ func (c *Client) authenticate() error {
 	sessionID := fmt.Sprintf("helper-%s-%d", username, os.Getpid())
 
 	authReq := ipc.AuthRequest{
-		ProtocolVersion: ipc.ProtocolVersion,
-		UID:             uint32(uid),
-		SID:             sid,
-		Username:        username,
-		SessionID:       sessionID,
-		DisplayEnv:      displayEnv,
-		PID:             os.Getpid(),
-		BinaryHash:      binaryHash,
-		WinSessionID:    currentWinSessionID(),
-		HelperRole:      c.role,
-		BinaryKind:      c.binaryKind,
-		DesktopContext:  c.context,
+		ProtocolVersion:   ipc.ProtocolVersion,
+		UID:               uint32(uid),
+		SID:               sid,
+		Username:          username,
+		SessionID:         sessionID,
+		DisplayEnv:        displayEnv,
+		PID:               os.Getpid(),
+		BinaryHash:        binaryHash,
+		WinSessionID:      currentWinSessionID(),
+		HelperRole:        c.role,
+		BinaryKind:        c.binaryKind,
+		DesktopContext:    c.context,
+		SupportsConsentUI: consentUISupported(),
 	}
 
 	if err := c.conn.SendTyped("auth", ipc.TypeAuthRequest, authReq); err != nil {

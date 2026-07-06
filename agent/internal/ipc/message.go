@@ -131,6 +131,13 @@ const (
 	ScopeAssist    = "assist"     // IPC scope granted to the assist helper
 	ScopePam       = "pam"        // IPC scope granted to the user helper for PAM dialogs
 	ScopeConsentUI = "consent_ui" // narrow IPC scope: lets the assist helper receive remote-session consent prompt + active-session banner messages (UI only; NOT desktop/clipboard/notify)
+
+	// ScopeConsentUIFallback lets a user-role helper that advertised native
+	// consent-dialog support (AuthRequest.SupportsConsentUI) receive the
+	// remote-session consent prompt + banner messages when no assist helper
+	// (ScopeConsentUI) is connected. Granted only on explicit advertisement so
+	// older helpers keep helper_absent semantics instead of timing out.
+	ScopeConsentUIFallback = "consent_ui_fallback"
 )
 
 const (
@@ -164,6 +171,12 @@ type AuthRequest struct {
 	HelperRole      string `json:"helperRole,omitempty"`   // "system" | "user" | "watchdog" | "assist" (default: "system")
 	BinaryKind      string `json:"binaryKind,omitempty"`   // "user_helper", "desktop_helper", or "assist_helper"
 	DesktopContext  string `json:"desktopContext,omitempty"`
+
+	// SupportsConsentUI advertises that this helper can natively render the
+	// remote-session consent dialog (consent_request) and banner messages.
+	// Drives the consent_ui_fallback scope grant. Additive: absent/false on
+	// older helpers.
+	SupportsConsentUI bool `json:"supportsConsentUi,omitempty"`
 }
 
 // AuthResponse is sent by the root daemon back to the user helper.
