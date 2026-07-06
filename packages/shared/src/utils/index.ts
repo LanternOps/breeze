@@ -5,5 +5,6 @@ export * from './timezone';
 export * from './assuranceLevel';
 export * from './ticketTemplate';
 export * from './quoteMath';
+export * from './depositMath';
 export * from './csvExport';
 export * from './reportSchedule';
