@@ -99,6 +99,7 @@ export function QuotesPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [newOrgId, setNewOrgId] = useState('');
   const [newSiteId, setNewSiteId] = useState('');
+  const [newTitle, setNewTitle] = useState('');
   const [newSites, setNewSites] = useState<Site[]>([]);
   const [creating, setCreating] = useState(false);
 
@@ -192,12 +193,13 @@ export function QuotesPage() {
     setCreating(true);
     try {
       const result = await runAction<{ data: { id?: string; quote?: { id?: string } } }>({
-        request: () => createQuote({ orgId: newOrgId, siteId: newSiteId || undefined, currencyCode: 'USD' }),
+        request: () => createQuote({ orgId: newOrgId, siteId: newSiteId || undefined, title: newTitle.trim() || undefined, currencyCode: 'USD' }),
         errorFallback: 'Could not create a draft quote.',
         successMessage: 'Draft quote created',
         onUnauthorized: UNAUTHORIZED,
       });
       setCreateOpen(false);
+      setNewTitle('');
       const newId = result?.data?.quote?.id ?? result?.data?.id;
       if (newId) void navigateTo(`/billing/quotes/${newId}`);
       else void loadQuotes(filters);
@@ -206,7 +208,7 @@ export function QuotesPage() {
     } finally {
       setCreating(false);
     }
-  }, [creating, newOrgId, newSiteId, filters, loadQuotes]);
+  }, [creating, newOrgId, newSiteId, newTitle, filters, loadQuotes]);
 
   const toggleSort = (key: SortKey) =>
     setSort((s) => (s?.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'desc' }));
@@ -238,7 +240,9 @@ export function QuotesPage() {
     const q = search.trim().toLowerCase();
     let out = quotes.filter((qt) => {
       if (!q) return true;
-      return (qt.quoteNumber ?? '').toLowerCase().includes(q) || orgName(qt.orgId).toLowerCase().includes(q);
+      return (qt.quoteNumber ?? '').toLowerCase().includes(q)
+        || (qt.title ?? '').toLowerCase().includes(q)
+        || orgName(qt.orgId).toLowerCase().includes(q);
     });
     if (sort) {
       const dir = sort.dir === 'asc' ? 1 : -1;
@@ -484,6 +488,11 @@ export function QuotesPage() {
                         >
                           {qt.quoteNumber ?? <span aria-hidden="true" className="text-muted-foreground">—</span>}
                         </a>
+                        {qt.title?.trim() && (
+                          <div className="mt-0.5 max-w-[18rem] truncate text-xs text-muted-foreground" data-testid={`quotes-title-${qt.id}`}>
+                            {qt.title}
+                          </div>
+                        )}
                       </td>
                       <td className="px-3 py-3">{orgName(qt.orgId)}</td>
                       <td className="px-3 py-3">
@@ -564,6 +573,18 @@ export function QuotesPage() {
                 <option key={o.id} value={o.id}>{o.name}</option>
               ))}
             </select>
+          </label>
+          <label className="flex flex-col gap-1 text-sm">
+            Title (optional)
+            <input
+              type="text"
+              value={newTitle}
+              maxLength={200}
+              placeholder="e.g. Office network refresh"
+              onChange={(e) => setNewTitle(e.target.value)}
+              data-testid="quotes-create-title"
+              className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+            />
           </label>
           <label className="flex flex-col gap-1 text-sm">
             Site (optional)

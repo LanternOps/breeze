@@ -1,11 +1,12 @@
 import { and, desc, eq, lt, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { quotes, quoteLines, quoteBlocks } from '../db/schema/quotes';
+import { quotes, quoteLines, quoteBlocks, quoteImages } from '../db/schema/quotes';
 import { organizations, partners } from '../db/schema/orgs';
 import { catalogItems } from '../db/schema/catalog';
 import { computeLineTotal, resolveEffectiveTaxRate } from './invoiceMath';
 import { computeQuoteTotals, type QuoteLineForMath } from './quoteMath';
 import { QuoteServiceError, type QuoteActor } from './quoteTypes';
+import { allocateQuoteCounter, formatQuoteNumber } from './quoteNumbers';
 import type {
   CreateQuoteInput, UpdateQuoteInput, QuoteLineInput, QuoteBlockInput, ListQuotesQuery
 } from '@breeze/shared';
@@ -127,10 +128,19 @@ export async function createQuote(input: CreateQuoteInput, actor: QuoteActor) {
   const partnerId = resolvePartner(actor);
   assertOrg(actor, input.orgId);
   const taxRate = await resolveQuoteTaxRate(input.orgId, partnerId);
+  // Number at creation (not at send): techs reference the number while drafting
+  // and in the list. A deleted draft leaves a counter gap, which the numbering
+  // contract explicitly tolerates (see allocateQuoteCounter). sendQuote keeps
+  // this number and only allocates for legacy drafts that predate it.
+  const year = new Date().getUTCFullYear();
+  const counter = await allocateQuoteCounter(partnerId, year);
+  const quoteNumber = formatQuoteNumber('Q', year, counter);
   const [row] = await db.insert(quotes).values({
     partnerId,
     orgId: input.orgId,
     siteId: input.siteId ?? null,
+    quoteNumber,
+    title: input.title?.trim() || null,
     currencyCode: input.currencyCode,
     taxRate,
     expiryDate: input.expiryDate ?? null,
@@ -184,6 +194,7 @@ export async function updateQuote(id: string, input: UpdateQuoteInput, actor: Qu
   await loadDraft(id, actor);
   const set: Record<string, unknown> = { updatedAt: new Date() };
   if (input.siteId !== undefined) set.siteId = input.siteId;
+  if (input.title !== undefined) set.title = input.title === null ? null : input.title.trim() || null;
   if (input.expiryDate !== undefined) set.expiryDate = input.expiryDate;
   if (input.introNotes !== undefined) set.introNotes = input.introNotes;
   if (input.terms !== undefined) set.terms = input.terms;
@@ -363,6 +374,7 @@ export async function updateLine(
     recurrence?: 'one_time' | 'monthly' | 'annual';
     termMonths?: number | null; sortOrder?: number;
     unitCost?: number | null; sku?: string | null; partNumber?: string | null;
+    imageId?: string | null;
   },
   actor: QuoteActor
 ) {
@@ -389,6 +401,17 @@ export async function updateLine(
   if (input.unitCost !== undefined) set.unitCost = input.unitCost != null ? Number(input.unitCost).toFixed(2) : null;
   if (input.sku !== undefined) set.sku = input.sku;
   if (input.partNumber !== undefined) set.partNumber = input.partNumber;
+  if (input.imageId !== undefined) {
+    // Ownership check: the image must be a quote_images row on THIS quote, or a
+    // caller could point a line at another tenant's image and exfiltrate its
+    // bytes through the customer document/PDF.
+    if (input.imageId !== null) {
+      const [img] = await db.select({ id: quoteImages.id }).from(quoteImages)
+        .where(and(eq(quoteImages.id, input.imageId), eq(quoteImages.quoteId, quoteId))).limit(1);
+      if (!img) throw new QuoteServiceError('Image not found on this quote', 404, 'IMAGE_NOT_FOUND');
+    }
+    set.imageId = input.imageId;
+  }
   await db.update(quoteLines).set(set).where(eq(quoteLines.id, lineId));
   await recomputeAndPersist(quoteId);
   const [updated] = await db.select().from(quoteLines).where(eq(quoteLines.id, lineId)).limit(1);

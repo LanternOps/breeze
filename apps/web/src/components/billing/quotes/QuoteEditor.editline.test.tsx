@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import QuoteEditor from './QuoteEditor';
 import type { QuoteDetail as QuoteDetailData } from './quoteTypes';
-import { updateLine } from '../../../lib/api/quotes';
+import { updateLine, uploadQuoteImage } from '../../../lib/api/quotes';
 
 // Writer permissions so the inline line editor renders (read-only hides it).
 vi.mock('../../../stores/auth', () => ({
@@ -250,25 +250,32 @@ describe('QuoteEditor — inline line editing', () => {
     expect(screen.getByTestId('quote-total-monthly')).toHaveTextContent('$1.01');
   });
 
-  it('reflects a tax-rate edit optimistically in the rail (due on acceptance)', async () => {
-    // A $100 one-time taxable line, no rate yet. Typing a 10% rate must move the
-    // rail's "due on acceptance" to $110 immediately — before blur/save/refresh.
-    const taxableOneTime: QuoteDetailData = {
+  it('renders the tax rate read-only (set at creation, not editable per-quote)', async () => {
+    const withRate: QuoteDetailData = {
       ...detail,
-      quote: {
-        ...detail.quote, taxRate: null, oneTimeTotal: '100.00', monthlyRecurringTotal: '0.00',
-        subtotal: '100.00', total: '100.00', dueOnAcceptanceTotal: '100.00',
-      },
-      lines: [{ ...line, recurrence: 'one_time', taxable: true, unitPrice: '100.00', quantity: '1.00', lineTotal: '100.00' }],
+      quote: { ...detail.quote, taxRate: '0.0895' },
     };
-    render(<QuoteEditor detail={taxableOneTime} onChanged={vi.fn()} />);
+    render(<QuoteEditor detail={withRate} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
-    expect(screen.getByTestId('quote-total-due-on-acceptance')).toHaveTextContent('$100.00');
 
-    fireEvent.change(screen.getByTestId('quote-tax-rate'), { target: { value: '10' } });
+    const rate = screen.getByTestId('quote-tax-rate');
+    expect(rate.tagName).not.toBe('INPUT');
+    expect(rate).toHaveTextContent('8.95%');
+  });
+
+  it('rejects a fractional quantity with a cue and no PATCH', async () => {
+    render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+
+    const qtyEl = screen.getByTestId('quote-line-qty-line-1') as HTMLInputElement;
+    fireEvent.change(qtyEl, { target: { value: '2.5' } });
+    fireEvent.blur(qtyEl);
+
     await waitFor(() =>
-      expect(screen.getByTestId('quote-total-due-on-acceptance')).toHaveTextContent('$110.00'),
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })),
     );
+    expect(updateLineMock).not.toHaveBeenCalled();
+    expect(qtyEl.value).toBe('1.00'); // snapped back to the persisted qty
   });
 
   it('surfaces a cue (and reverts) when an invalid quantity is committed', async () => {
@@ -308,5 +315,58 @@ describe('QuoteEditor — inline line editing', () => {
 
     // The 7 survives — the stale-but-changed prop did not clobber the edit.
     expect((screen.getByTestId('quote-line-qty-line-1') as HTMLInputElement).value).toBe('7');
+  });
+
+  it('a slow qty save never disables the other fields (scoped pending)', async () => {
+    // Tab-through editing: commit qty, tab to price, keep typing. Only the
+    // in-flight control may disable — a whole-row freeze ejects focus and eats
+    // keystrokes (the scoped-pending backport from InvoiceEditor).
+    let resolvePatch!: (r: Response) => void;
+    updateLineMock.mockReturnValueOnce(new Promise<Response>((r) => { resolvePatch = r; }));
+
+    render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+
+    const qtyEl = screen.getByTestId('quote-line-qty-line-1') as HTMLInputElement;
+    fireEvent.change(qtyEl, { target: { value: '3' } });
+    fireEvent.blur(qtyEl); // commit starts; PATCH held open
+
+    expect(qtyEl).toBeDisabled();
+    expect(screen.getByTestId('quote-line-price-line-1')).not.toBeDisabled();
+    expect(screen.getByTestId('quote-line-name-line-1')).not.toBeDisabled();
+    expect(screen.getByTestId('quote-line-desc-line-1')).not.toBeDisabled();
+
+    resolvePatch({ ok: true, status: 200, statusText: 'OK', json: vi.fn().mockResolvedValue({ data: {} }) } as unknown as Response);
+    await waitFor(() => expect(qtyEl).not.toBeDisabled());
+  });
+
+  it('attaching a line image uploads it, then PATCHes the line with the imageId', async () => {
+    vi.mocked(uploadQuoteImage).mockResolvedValue(
+      { ok: true, status: 200, statusText: 'OK', json: vi.fn().mockResolvedValue({ data: { imageId: 'img-9' } }) } as unknown as Response,
+    );
+    render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+
+    const file = new File(['png-bytes'], 'u7-pro.png', { type: 'image/png' });
+    fireEvent.change(screen.getByTestId('quote-line-image-input-line-1'), { target: { files: [file] } });
+
+    await waitFor(() => expect(uploadQuoteImage).toHaveBeenCalledWith('q-1', file));
+    await waitFor(() =>
+      expect(updateLineMock).toHaveBeenCalledWith('q-1', 'line-1', { imageId: 'img-9' }),
+    );
+  });
+
+  it('removing a line image PATCHes imageId: null', async () => {
+    const withImage: QuoteDetailData = {
+      ...detail,
+      lines: [{ ...line, imageId: 'img-9' }],
+    };
+    render(<QuoteEditor detail={withImage} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('quote-line-image-remove-line-1'));
+    await waitFor(() =>
+      expect(updateLineMock).toHaveBeenCalledWith('q-1', 'line-1', { imageId: null }),
+    );
   });
 });

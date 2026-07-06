@@ -288,7 +288,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
             <table className="w-full text-sm" data-testid="invoice-editor-lines">
               <thead>
                 <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
-                  <th className="px-3 py-2 font-medium">Description</th>
+                  <th className="px-3 py-2 font-medium">Item</th>
                   <th className="px-3 py-2 text-right font-medium">Qty</th>
                   <th className="px-3 py-2 text-right font-medium">Price</th>
                   <th className="px-3 py-2 text-center font-medium">Tax</th>

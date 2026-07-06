@@ -34,6 +34,9 @@ export default function QuoteWorkspace({ id }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [tab, setTab] = useState<Tab>('editor');
+  // True while the editor has an in-flight save or a dirty rail field — the
+  // header Send button waits for quiescence so it can't race a blur-save.
+  const [editorSavePending, setEditorSavePending] = useState(false);
 
   // A `quiet` reload (after an inline edit) refetches without flipping `loading`,
   // so the editor stays mounted — a full-page spinner would remount the form and
@@ -119,16 +122,16 @@ export default function QuoteWorkspace({ id }: Props) {
       idPrefix="quote"
       backHref="/billing/quotes"
       backLabel="Quotes"
-      title={detail.quote.quoteNumber ?? 'Draft quote'}
+      title={detail.quote.title?.trim() || detail.quote.quoteNumber || 'Draft quote'}
       // Primary actions live in the header so Send (the money-moment) and Download
       // are reachable from any tab, not buried inside the Detail tab.
-      actions={<QuoteActions detail={detail} onChanged={reload} variant="header" />}
+      actions={<QuoteActions detail={detail} onChanged={reload} variant="header" savePending={editorSavePending} />}
       tabs={tabs}
       activeTab={activeTab}
       onTabChange={selectTab}
     >
       {activeTab === 'editor' && isDraft && (
-        <QuoteEditor detail={detail} onChanged={() => void reload()} />
+        <QuoteEditor detail={detail} onChanged={() => void reload()} onPendingEditsChange={setEditorSavePending} />
       )}
       {activeTab === 'preview' && (
         <QuoteDocumentPreview detail={detail} />

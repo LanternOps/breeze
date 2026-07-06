@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronUp, ChevronDown, Eye, EyeOff } from 'lucide-react';
+import { ChevronUp, ChevronDown, Eye, EyeOff, Loader2 } from 'lucide-react';
 import { navigateTo } from '@/lib/navigation';
 import { fetchWithAuth } from '../../../stores/auth';
 import { runAction, handleActionError } from '../../../lib/runAction';
@@ -28,6 +28,7 @@ import DistributorLookup from './DistributorLookup';
 import Pax8ProductLookup from './Pax8ProductLookup';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import { UnsavedBadge, RecurringBillingNote, MarginPanel } from '../billingUi';
+import { useAuthedImage } from './useQuoteImage';
 import {
   type QuoteDetail as QuoteDetailData,
   type QuoteBlock,
@@ -76,11 +77,17 @@ type LineUpdate = Partial<{
   unitCost: number | null;
   sku: string | null;
   partNumber: string | null;
+  imageId: string | null;
 }>;
 
 interface Props {
   detail: QuoteDetailData;
   onChanged: () => void;
+  /** Fires whenever the editor's save state changes: true while any mutation is
+   *  in flight or a rail field (terms/tax) sits dirty. The workspace uses it to
+   *  hold Send until the quote is quiescent, so the irreversible money-moment
+   *  can't race a blur-save. */
+  onPendingEditsChange?: (hasPendingEdits: boolean) => void;
 }
 
 // Per-field blur-saves are confirmed by the amber dirty-ring clearing (sighted)
@@ -165,7 +172,7 @@ function MoveControls({
   );
 }
 
-export default function QuoteEditor({ detail, onChanged }: Props) {
+export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }: Props) {
   const { can } = usePermissions();
   const canWrite = can('quotes', 'write');
   // Cost/margin is a read affordance, not a write one: read-only users already see
@@ -219,17 +226,25 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
   const [pax8Active, setPax8Active] = useState(false);
   const [terms, setTerms] = useState(quote.termsAndConditions ?? '');
   const [termsDirty, setTermsDirty] = useState(false);
-  // Tax rate is stored as a fraction ('0.07'); the input edits it as a percent ('7').
-  const [taxPct, setTaxPct] = useState(pctFromFraction(quote.taxRate));
-  const [taxDirty, setTaxDirty] = useState(false);
-  // Inline validation message for the tax field — an out-of-range/non-numeric
-  // entry no longer silently reverts; we keep the bad value and explain why.
-  const [taxError, setTaxError] = useState<string | null>(null);
-  // Quiet "Saved" cues for the right-rail blur-to-save fields, matching the
+  // Editable quote title (shown in the workspace header, document, and PDF).
+  const [title, setTitle] = useState(quote.title ?? '');
+  const [titleDirty, setTitleDirty] = useState(false);
+  // Quiet "Saved" cues for the blur-to-save title/terms fields, matching the
   // per-line/per-block cue so the whole editor speaks one save language.
   const [termsSaved, flashTermsSaved] = useSavedFlash();
-  const [taxSaved, flashTaxSaved] = useSavedFlash();
+  const [titleSaved, flashTitleSaved] = useSavedFlash();
   const canCatalogWrite = can('catalog', 'write');
+
+  // Surface "is anything still saving / sitting dirty?" to the workspace so the
+  // Send button can wait for quiescence. Pending covers every in-flight mutation
+  // (line/block/terms/add/remove); the terms dirty flag covers the rail's
+  // blur-to-save field. Per-line dirty state isn't lifted — clicking Send blurs
+  // the focused field, whose commit lands in `pending` before the dialog opens.
+  const hasPendingEdits = pending.size > 0 || termsDirty || titleDirty;
+  useEffect(() => { onPendingEditsChange?.(hasPendingEdits); }, [hasPendingEdits, onPendingEditsChange]);
+  // Clear on unmount so a stale `true` can't lock Send after the editor is gone
+  // (e.g. the quote was just issued and the tab switched).
+  useEffect(() => () => onPendingEditsChange?.(false), [onPendingEditsChange]);
 
   // ---- add-block form ------------------------------------------------------
   const [addType, setAddType] = useState<AddableBlockType>('heading');
@@ -240,7 +255,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
   const [imageCaption, setImageCaption] = useState('');
 
   useEffect(() => { setTerms(quote.termsAndConditions ?? ''); setTermsDirty(false); }, [quote.termsAndConditions]);
-  useEffect(() => { setTaxPct(pctFromFraction(quote.taxRate)); setTaxDirty(false); }, [quote.taxRate]);
+  useEffect(() => { setTitle(quote.title ?? ''); setTitleDirty(false); }, [quote.title]);
 
   // Coalesce re-pulls: each mutation calls refresh(), but tab-through editing
   // would otherwise fire one full GET /quotes/:id per field. This is a LEADING +
@@ -289,41 +304,21 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
     if (ok) flashTermsSaved();
   }, [termsDirty, terms, quote.id, refresh, runScoped, flashTermsSaved]);
 
-  // Persist the tax rate as a fraction. Empty clears it (null); otherwise the
-  // percent is validated against 0–100 (fraction 0–1, matching updateQuoteSchema).
-  // An out-of-range/non-numeric entry is kept in the field with an inline error
-  // rather than saved or silently reverted. The server recomputes taxTotal/total,
-  // so refresh() re-pulls.
-  const saveTaxRate = useCallback(async () => {
-    if (!taxDirty) return;
-    const trimmed = taxPct.trim();
-    let fraction: number | null;
-    if (trimmed === '') {
-      fraction = null;
-    } else {
-      const pct = Number(trimmed);
-      if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
-        // Keep the user's entry (don't snap it away) and explain the constraint
-        // inline instead of swallowing it.
-        setTaxError('Enter a rate from 0 to 100.');
-        return;
-      }
-      fraction = Number((pct / 100).toFixed(5));
-    }
-    setTaxError(null);
-    const ok = await runScoped('tax', async () => {
+  const saveTitle = useCallback(async () => {
+    if (!titleDirty) return;
+    const ok = await runScoped('title', async () => {
       await runAction({
         request: () => fetchWithAuth(`/quotes/${quote.id}`, {
-          method: 'PATCH', body: JSON.stringify({ taxRate: fraction }),
+          method: 'PATCH', body: JSON.stringify({ title: title.trim() || null }),
         }),
-        errorFallback: 'Could not save the tax rate.',
+        errorFallback: 'Could not save the title.',
         onUnauthorized: UNAUTHORIZED,
       });
-      setTaxDirty(false);
+      setTitleDirty(false);
       refresh();
-    }, 'Could not save the tax rate.');
-    if (ok) flashTaxSaved();
-  }, [taxDirty, taxPct, quote.id, refresh, runScoped, flashTaxSaved]);
+    }, 'Could not save the title.');
+    if (ok) flashTitleSaved();
+  }, [titleDirty, title, quote.id, refresh, runScoped, flashTitleSaved]);
 
   const loadCatalog = useCallback(async () => {
     const res = await listCatalog({ isActive: true, limit: 200 });
@@ -335,6 +330,25 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
   }, []);
 
   useEffect(() => { void loadCatalog(); }, [loadCatalog]);
+
+  // Partner default markup % (billing settings) — lets "Auto-fill from web"
+  // pre-price a manual line at cost × (1 + default markup). Optional context:
+  // org-scoped tokens or a failed fetch leave it null, and auto-fill then fills
+  // the cost but leaves pricing to the user.
+  const [defaultMarkupPct, setDefaultMarkupPct] = useState<number | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetchWithAuth('/orgs/partners/me');
+        if (!res.ok) return; // optional context; never block the editor
+        const body = (await res.json().catch(() => null)) as { defaultMarkupPercent?: string | number | null } | null;
+        const n = body?.defaultMarkupPercent == null ? NaN : Number(body.defaultMarkupPercent);
+        if (!cancelled && Number.isFinite(n) && n >= 0) setDefaultMarkupPct(n);
+      } catch { /* optional context — auto-fill simply won't pre-price */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   const loadEcStatus = useCallback(async () => {
     if (!canCatalogWrite) { setEcActive(false); return; }
@@ -412,26 +426,15 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
     });
   }, [lines]);
 
-  // The effective tax rate the rail should reflect: the committed server rate
-  // normally, but the live tax-field value while it's mid-edit (and valid). An
-  // out-of-range/non-numeric entry isn't applied — it falls back to the committed
-  // rate, matching saveTaxRate's own rejection of out-of-range values — so the
-  // rail never previews garbage.
-  const committedRate = quote.taxRate ? parseFloat(quote.taxRate) : null;
-  const effectiveRate = useMemo<number | null>(() => {
-    if (!taxDirty) return committedRate;
-    const trimmed = taxPct.trim();
-    if (trimmed === '') return null;
-    const pct = Number(trimmed);
-    if (!Number.isFinite(pct) || pct < 0 || pct > 100) return committedRate;
-    return Number((pct / 100).toFixed(5));
-  }, [taxDirty, taxPct, committedRate]);
-  const rateChanged = effectiveRate !== committedRate;
+  // The tax rate is fixed at quote creation (org tax settings → partner default)
+  // and read-only in the editor, so the rail always computes with the committed
+  // server rate.
+  const effectiveRate = quote.taxRate ? parseFloat(quote.taxRate) : null;
 
-  // The figures the rail renders: optimistic recompute when any line is mid-edit
-  // OR the tax rate is mid-edit, otherwise the authoritative server values.
+  // The figures the rail renders: optimistic recompute when any line is mid-edit,
+  // otherwise the authoritative server values.
   const optimisticTotals = useMemo<QuoteTotals | null>(() => {
-    if (Object.keys(lineDrafts).length === 0 && !rateChanged) return null;
+    if (Object.keys(lineDrafts).length === 0) return null;
     const merged: QuoteLineForMath[] = lines.map((l) => {
       const d = lineDrafts[l.id];
       return d ?? {
@@ -440,7 +443,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
       };
     });
     return computeQuoteTotals(merged, effectiveRate);
-  }, [lineDrafts, lines, effectiveRate, rateChanged]);
+  }, [lineDrafts, lines, effectiveRate]);
   const railOneTime = optimisticTotals?.oneTimeTotal ?? quote.oneTimeTotal;
   const railMonthly = optimisticTotals?.monthlyRecurringTotal ?? quote.monthlyRecurringTotal;
   const railAnnual = optimisticTotals?.annualRecurringTotal ?? quote.annualRecurringTotal;
@@ -708,8 +711,8 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
     // Guard qty 0 / non-numeric here too — the inline edit path already does, and
     // a silent $0-quantity line is a real footgun on the add path.
     const qtyNum = Number(form.quantity);
-    if (!Number.isFinite(qtyNum) || qtyNum <= 0) {
-      handleActionError(new Error('invalid quantity'), 'Enter a quantity greater than 0.');
+    if (!Number.isFinite(qtyNum) || qtyNum <= 0 || !Number.isInteger(qtyNum)) {
+      handleActionError(new Error('invalid quantity'), 'Enter a whole-number quantity greater than 0.');
       return Promise.resolve(false);
     }
     // Guard the unit price too (parity with the inline edit path's commitPrice):
@@ -791,8 +794,11 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
   // surfaced, then refresh() re-pulls the quote so totals recompute. Returns
   // whether it succeeded so the row can flash a quiet "Saved" cue — routine
   // inline edits no longer fire a success toast (that was per-field spam).
-  const editLine = useCallback((lineId: string, body: LineUpdate) =>
-    runScoped(`line:${lineId}`, async () => {
+  // `scopeKey` narrows the pending key to one field (`line:<id>:<field>`) so a
+  // slow qty save never disables the price input mid-tab (the scoped-pending
+  // backport from InvoiceEditor); omitting it falls back to the whole row.
+  const editLine = useCallback((lineId: string, body: LineUpdate, scopeKey?: string) =>
+    runScoped(scopeKey ?? `line:${lineId}`, async () => {
       await runAction({
         request: () => updateLine(quote.id, lineId, body),
         errorFallback: 'Could not update the line.',
@@ -913,6 +919,24 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
           {showInternal ? 'Hide cost & margin' : 'Show cost & margin'}
         </button>
       </div>
+      {canWrite && (
+        <div className="max-w-xl">
+          <label htmlFor="quote-title" className="mb-1 block text-xs text-muted-foreground">Quote title</label>
+          <input
+            id="quote-title"
+            type="text"
+            value={title}
+            maxLength={200}
+            placeholder="e.g. Office network refresh"
+            onChange={(e) => { setTitle(e.target.value); setTitleDirty(true); }}
+            onBlur={() => void saveTitle()}
+            disabled={isPending('title')}
+            data-testid="quote-title"
+            className={`h-9 w-full rounded-md border bg-background px-3 text-sm font-medium transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(titleDirty, titleSaved)}`}
+          />
+          <SrSaved show={titleSaved} testId="quote-title-saved" />
+        </div>
+      )}
       <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
         {/* ── blocks ─────────────────────────────────────────────────── */}
         {/* min-w-0: this 1fr grid track holds a pricing table with min-w-[640px]
@@ -943,6 +967,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
                 showInternal={showInternal}
                 ecActive={ecActive}
                 pax8Active={pax8Active}
+                defaultMarkupPct={defaultMarkupPct}
                 isFirst={idx === 0}
                 isLast={idx === sortedBlocks.length - 1}
                 onAddCatalog={addCatalog}
@@ -1087,42 +1112,19 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
               )}
             </dl>
             {canSeeMargin && <MarginPanel profit={profit} currency={currency} />}
-            {canWrite && (
-              <div className="mt-2 border-t pt-2">
-                <div className="flex items-center justify-between gap-2">
-                  <label htmlFor="quote-tax-rate" className="flex items-center gap-2 text-sm text-muted-foreground">
-                    Tax rate
-                  </label>
-                  <div className="flex items-center gap-1">
-                    <input
-                      id="quote-tax-rate"
-                      type="number"
-                      min="0"
-                      max="100"
-                      step="0.001"
-                      value={taxPct}
-                      onChange={(e) => { setTaxPct(e.target.value); setTaxDirty(true); if (taxError) setTaxError(null); }}
-                      onBlur={() => void saveTaxRate()}
-                      disabled={isPending('tax')}
-                      placeholder="0"
-                      aria-invalid={taxError !== null}
-                      aria-describedby={taxError ? 'quote-tax-rate-error' : undefined}
-                      data-testid="quote-tax-rate"
-                      className={`h-8 w-20 rounded-md border bg-background px-2 text-right text-sm tabular-nums transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${
-                        taxError ? 'border-destructive ring-1 ring-destructive' : fieldRing(taxDirty, taxSaved)
-                      }`}
-                    />
-                    <span className="text-sm text-muted-foreground">%</span>
-                  </div>
-                </div>
-                {taxError ? (
-                  <p className="mt-1 text-xs text-destructive" id="quote-tax-rate-error" role="alert" data-testid="quote-tax-rate-error">{taxError}</p>
-                ) : (
-                  <p className="mt-1 text-xs text-muted-foreground">Applies to lines marked taxable.</p>
-                )}
-                <SrSaved show={taxSaved} testId="quote-tax-saved" />
+            {/* Read-only: the rate is resolved at quote creation (org tax settings,
+                falling back to the partner default) and isn't editable per-quote. */}
+            <div className="mt-2 border-t pt-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm text-muted-foreground">Tax rate</span>
+                <span className="text-sm tabular-nums" data-testid="quote-tax-rate">
+                  {quote.taxRate ? `${pctFromFraction(quote.taxRate)}%` : '—'}
+                </span>
               </div>
-            )}
+              <p className="mt-1 text-xs text-muted-foreground">
+                Applies to lines marked taxable. Set in the organization&rsquo;s tax settings.
+              </p>
+            </div>
             <div className="mt-3 flex items-end justify-between gap-2 border-t pt-3">
               <span className="shrink-0 text-xs font-medium uppercase tracking-wide text-muted-foreground">Due on acceptance</span>
               {/* Visual figure only; the SR-only summary node above announces the
@@ -1227,7 +1229,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
 
 // ── A single block, with an inline line builder when it is a pricing table ──
 function BlockCard({
-  block, quoteId, lines, currency, taxRate, catalog, isPending, canWrite, showInternal, ecActive, pax8Active, isFirst, isLast, onAddCatalog, onImportAddDistributor, onImportAddPax8, onAddManual, onEditLine, onEditBlock, onMoveBlock, onMoveLine, onRemoveLine, onRemoveBlock, onLineDraft,
+  block, quoteId, lines, currency, taxRate, catalog, isPending, canWrite, showInternal, ecActive, pax8Active, defaultMarkupPct, isFirst, isLast, onAddCatalog, onImportAddDistributor, onImportAddPax8, onAddManual, onEditLine, onEditBlock, onMoveBlock, onMoveLine, onRemoveLine, onRemoveBlock, onLineDraft,
 }: {
   block: QuoteBlock;
   quoteId: string;
@@ -1240,6 +1242,8 @@ function BlockCard({
   showInternal: boolean;
   ecActive: boolean;
   pax8Active: boolean;
+  /** Partner default markup % for pre-pricing AI auto-filled lines; null = unknown. */
+  defaultMarkupPct: number | null;
   isFirst: boolean;
   isLast: boolean;
   onAddCatalog: (blockId: string, item: CatalogItem) => void;
@@ -1249,7 +1253,7 @@ function BlockCard({
     blockId: string,
     form: { name: string; description: string; quantity: string; unitPrice: string; cost: string; sku: string; partNumber: string; taxable: boolean; recurrence: QuoteLineRecurrence; saveToCatalog: boolean },
   ) => Promise<boolean>;
-  onEditLine: (lineId: string, body: LineUpdate) => Promise<boolean>;
+  onEditLine: (lineId: string, body: LineUpdate, scopeKey?: string) => Promise<boolean>;
   onEditBlock: (block: QuoteBlock, content: Record<string, unknown>) => Promise<boolean>;
   onMoveBlock: (block: QuoteBlock, direction: 'up' | 'down') => void;
   onMoveLine: (line: QuoteLine, direction: 'up' | 'down') => void;
@@ -1268,11 +1272,53 @@ function BlockCard({
   const [qty, setQty] = useState('1');
   const [price, setPrice] = useState('0.00');
   const [cost, setCost] = useState('');
+  const [markup, setMarkup] = useState('');
   const [sku, setSku] = useState('');
   const [partNumber, setPartNumber] = useState('');
   const [taxable, setTaxable] = useState(false);
   const [recurrence, setRecurrence] = useState<QuoteLineRecurrence>('one_time');
   const [saveToCatalog, setSaveToCatalog] = useState(false);
+  // What the last auto-fill touched, for the "Auto-filled: …" summary line.
+  // Cleared when the form resets (successful add) or a new query starts.
+  const [autoFilled, setAutoFilled] = useState<string[] | null>(null);
+
+  // Two-way price ↔ markup% coupling (cost is always an input, never derived).
+  // Whichever of price/markup the user set last stays authoritative: editing it
+  // recomputes the other, and a later cost edit recomputes the derived one.
+  const priceAuthority = useRef<'price' | 'markup'>('price');
+  // Live mirrors for the enrich onApply callback: the web lookup takes seconds,
+  // so the closure's cost/price are stale by the time the result lands — the
+  // pristine-field checks must read the CURRENT values or auto-fill could
+  // overwrite a number the user typed mid-search.
+  const costRef = useRef(cost); costRef.current = cost;
+  const priceRef = useRef(price); priceRef.current = price;
+  const deriveMarkup = (nextPrice: string, nextCost: string) => {
+    // A zero/empty price is the form's pristine state, not a -100% pricing
+    // decision — show no markup rather than a misleading negative.
+    if (nextPrice.trim() === '' || Number(nextPrice) === 0) { setMarkup(''); return; }
+    const mk = markupPct(nextPrice, nextCost);
+    setMarkup(mk === null ? '' : String(Number(mk.toFixed(2))));
+  };
+  const derivePrice = (nextMarkup: string, nextCost: string) => {
+    const m = Number(nextMarkup);
+    if (nextCost.trim() === '' || nextMarkup.trim() === '' || !Number.isFinite(m) || Number(nextCost) <= 0) return;
+    setPrice(priceFromMarkup(nextCost, m));
+  };
+  const onPriceChange = (v: string) => {
+    setPrice(v);
+    priceAuthority.current = 'price';
+    deriveMarkup(v, cost);
+  };
+  const onMarkupChange = (v: string) => {
+    setMarkup(v);
+    priceAuthority.current = 'markup';
+    derivePrice(v, cost);
+  };
+  const onCostChange = (v: string) => {
+    setCost(v);
+    if (priceAuthority.current === 'markup') derivePrice(markup, v);
+    else deriveMarkup(price, v);
+  };
 
   const isTable = block.blockType === 'line_items';
   const heading = (block.content?.text as string | undefined) ?? '';
@@ -1325,7 +1371,11 @@ function BlockCard({
     const ok = await onAddManual(block.id, { name, description: desc, quantity: qty, unitPrice: price, cost, sku, partNumber, taxable, recurrence, saveToCatalog });
     // Only clear the form on success, so a rejected add (e.g. qty 0) keeps the
     // user's input to correct rather than wiping it.
-    if (ok) { setName(''); setDesc(''); setQty('1'); setPrice('0.00'); setCost(''); setSku(''); setPartNumber(''); setTaxable(false); setRecurrence('one_time'); setSaveToCatalog(false); }
+    if (ok) {
+      setName(''); setDesc(''); setQty('1'); setPrice('0.00'); setCost(''); setMarkup(''); setSku(''); setPartNumber('');
+      setTaxable(false); setRecurrence('one_time'); setSaveToCatalog(false); setAutoFilled(null);
+      priceAuthority.current = 'price';
+    }
   };
 
   return (
@@ -1413,7 +1463,7 @@ function BlockCard({
             <table className="w-full min-w-[640px] text-sm" data-testid={`quote-block-lines-${block.id}`}>
               <thead>
                 <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
-                  <th className="px-2 py-2 font-medium">Description</th>
+                  <th className="px-2 py-2 font-medium">Item</th>
                   <th className="px-2 py-2 text-right font-medium">Qty</th>
                   <th className="px-2 py-2 text-right font-medium">Unit price</th>
                   <th className="px-2 py-2 font-medium">Recurrence</th>
@@ -1443,9 +1493,10 @@ function BlockCard({
                       <EditableLineRow
                         key={l.id}
                         line={l}
+                        quoteId={quoteId}
                         currency={currency}
                         taxRate={taxRate}
-                        busy={isPending(`line:${l.id}`)}
+                        isPending={isPending}
                         isFirst={idx === 0}
                         isLast={idx === lines.length - 1}
                         showInternal={showInternal}
@@ -1455,7 +1506,7 @@ function BlockCard({
                         onDraft={onLineDraft}
                       />
                     ) : (
-                      <ReadonlyLineRow key={l.id} line={l} currency={currency} taxRate={taxRate} isFirst={idx === 0} showInternal={showInternal} />
+                      <ReadonlyLineRow key={l.id} line={l} quoteId={quoteId} currency={currency} taxRate={taxRate} isFirst={idx === 0} showInternal={showInternal} />
                     ),
                   )
                 )}
@@ -1516,11 +1567,34 @@ function BlockCard({
                   <div className="flex flex-wrap items-center gap-2">
                     <CatalogEnrichButton
                       idSuffix={`quote-${block.id}`}
+                      helpText={
+                        defaultMarkupPct != null
+                          ? `Searches the web, fills name, description and tax, estimates your cost, and prices the line at your default ${String(Number(defaultMarkupPct))}% markup.`
+                          : 'Searches the web and fills name, description, tax, and an estimated cost. You set the price.'
+                      }
+                      guidanceSuffix={null}
                       onApply={(result) => {
                         const d = result.draft;
                         setName(d.name);
                         setDesc(d.description ?? '');
                         setTaxable(d.taxable);
+                        const filled = ['name', 'description', d.taxable ? 'taxable: on' : 'taxable: off'];
+                        // Pre-fill cost/price only into untouched fields — auto-fill
+                        // must never overwrite a number the user already typed (read
+                        // the refs: the lookup takes seconds and state may have moved).
+                        if (result.estimatedCost != null && costRef.current.trim() === '') {
+                          const c = result.estimatedCost.toFixed(2);
+                          setCost(c);
+                          filled.push(`estimated cost ${formatMoney(Number(c), currency)}`);
+                          if (defaultMarkupPct != null && (priceRef.current.trim() === '' || Number(priceRef.current) === 0)) {
+                            const p = priceFromMarkup(c, defaultMarkupPct);
+                            setPrice(p);
+                            setMarkup(String(Number(defaultMarkupPct)));
+                            priceAuthority.current = 'markup';
+                            filled.push(`price ${formatMoney(Number(p), currency)} (default ${String(Number(defaultMarkupPct))}% markup)`);
+                          }
+                        }
+                        setAutoFilled(filled);
                       }}
                     />
                     {(name.trim() || desc.trim()) && (
@@ -1534,6 +1608,13 @@ function BlockCard({
                       />
                     )}
                   </div>
+                  {/* What the last auto-fill actually touched — the AI applies
+                      directly to the form, so the user must be told what changed. */}
+                  {autoFilled && (
+                    <p role="status" data-testid={`quote-manual-autofilled-${block.id}`} className="text-xs text-muted-foreground">
+                      <span className="font-medium text-foreground">Auto-filled:</span> {autoFilled.join(' · ')}. Review and adjust before adding.
+                    </p>
+                  )}
                   <input
                     type="text" placeholder="Name" aria-label="Line name" value={name}
                     onChange={(e) => setName(e.target.value)}
@@ -1541,58 +1622,93 @@ function BlockCard({
                     className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                   <div className="grid grid-cols-1 items-start gap-2 sm:grid-cols-[1fr_70px_90px_110px]">
-                    <textarea
-                      placeholder="Description (optional)" aria-label="Line description" value={desc}
-                      onChange={(e) => setDesc(e.target.value)}
-                      rows={2}
-                      data-testid={`quote-manual-desc-${block.id}`}
-                      className="min-h-9 resize-y rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                    />
-                    <input
-                      type="number" min="0" step="0.01" placeholder="Qty" aria-label="Quantity" value={qty}
-                      onChange={(e) => setQty(e.target.value)}
-                      data-testid={`quote-manual-qty-${block.id}`}
-                      className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                    />
-                    <input
-                      type="number" min="0" step="0.01" placeholder="Unit price" aria-label="Unit price" value={price}
-                      onChange={(e) => setPrice(e.target.value)}
-                      data-testid={`quote-manual-price-${block.id}`}
-                      className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                    />
-                    <select
-                      value={recurrence}
-                      aria-label="Billing frequency"
-                      onChange={(e) => setRecurrence(e.target.value as QuoteLineRecurrence)}
-                      data-testid={`quote-manual-recurrence-${block.id}`}
-                      className="h-9 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                    >
-                      <option value="one_time">One-time</option>
-                      <option value="monthly">Monthly</option>
-                      <option value="annual">Annual</option>
-                    </select>
+                    <label className="block">
+                      <span className="mb-1 block text-xs text-muted-foreground">Description (optional)</span>
+                      <textarea
+                        value={desc}
+                        onChange={(e) => setDesc(e.target.value)}
+                        rows={2}
+                        data-testid={`quote-manual-desc-${block.id}`}
+                        className="min-h-9 w-full resize-y rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-1 block text-xs text-muted-foreground">Qty</span>
+                      <input
+                        type="number" min="1" step="1" value={qty}
+                        onChange={(e) => setQty(e.target.value)}
+                        data-testid={`quote-manual-qty-${block.id}`}
+                        className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-1 block text-xs text-muted-foreground">Unit price</span>
+                      <input
+                        type="number" min="0" step="0.01" value={price}
+                        onChange={(e) => onPriceChange(e.target.value)}
+                        data-testid={`quote-manual-price-${block.id}`}
+                        className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-1 block text-xs text-muted-foreground">Billing</span>
+                      <select
+                        value={recurrence}
+                        onChange={(e) => setRecurrence(e.target.value as QuoteLineRecurrence)}
+                        data-testid={`quote-manual-recurrence-${block.id}`}
+                        className="h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                      >
+                        <option value="one_time">One-time</option>
+                        <option value="monthly">Monthly</option>
+                        <option value="annual">Annual</option>
+                      </select>
+                    </label>
                   </div>
                   {/* Internal-only cost & identity fields (never shown to the customer). */}
                   <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Internal · not shown to customer</p>
-                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                    <input
-                      type="text" placeholder="SKU (optional)" aria-label="SKU" value={sku}
-                      onChange={(e) => setSku(e.target.value)}
-                      data-testid={`quote-manual-sku-${block.id}`}
-                      className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                    />
-                    <input
-                      type="text" placeholder="Part # (optional)" aria-label="Part number" value={partNumber}
-                      onChange={(e) => setPartNumber(e.target.value)}
-                      data-testid={`quote-manual-partnumber-${block.id}`}
-                      className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                    />
-                    <input
-                      type="number" min="0" step="0.01" placeholder="Internal cost (optional)" aria-label="Internal cost" value={cost}
-                      onChange={(e) => setCost(e.target.value)}
-                      data-testid={`quote-manual-cost-${block.id}`}
-                      className="h-9 rounded-md border bg-background px-3 text-right text-sm tabular-nums focus:outline-hidden focus:ring-2 focus:ring-ring"
-                    />
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_1fr_110px_100px]">
+                    <label className="block">
+                      <span className="mb-1 block text-xs text-muted-foreground">SKU (optional)</span>
+                      <input
+                        type="text" value={sku}
+                        onChange={(e) => setSku(e.target.value)}
+                        data-testid={`quote-manual-sku-${block.id}`}
+                        className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-1 block text-xs text-muted-foreground">Part # (optional)</span>
+                      <input
+                        type="text" value={partNumber}
+                        onChange={(e) => setPartNumber(e.target.value)}
+                        data-testid={`quote-manual-partnumber-${block.id}`}
+                        className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-1 block text-xs text-muted-foreground">Unit cost</span>
+                      <input
+                        type="number" min="0" step="0.01" value={cost}
+                        onChange={(e) => onCostChange(e.target.value)}
+                        data-testid={`quote-manual-cost-${block.id}`}
+                        className="h-9 w-full rounded-md border bg-background px-3 text-right text-sm tabular-nums focus:outline-hidden focus:ring-2 focus:ring-ring"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-1 block text-xs text-muted-foreground">Markup %</span>
+                      <input
+                        type="number" step="0.1" value={markup}
+                        onChange={(e) => onMarkupChange(e.target.value)}
+                        disabled={cost.trim() === ''}
+                        // Sighted users can see the empty cost field; AT users can't —
+                        // mirror the edit-row band's disabled-reason wiring.
+                        title={cost.trim() === '' ? 'Enter a cost first to set markup %' : undefined}
+                        aria-describedby={cost.trim() === '' ? `quote-manual-markup-hint-${block.id}` : undefined}
+                        data-testid={`quote-manual-markup-${block.id}`}
+                        className="h-9 w-full rounded-md border bg-background px-3 text-right text-sm tabular-nums focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
+                      />
+                      {cost.trim() === '' && <span id={`quote-manual-markup-hint-${block.id}`} className="sr-only">Enter a cost first to set markup %.</span>}
+                    </label>
                   </div>
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex flex-wrap items-center gap-3 text-xs">
@@ -1612,10 +1728,12 @@ function BlockCard({
                       // refine). Gating on description alone silently blocked valid
                       // name-only lines like a titled SKU with no prose.
                       disabled={addLineBusy || (!name.trim() && !desc.trim())}
+                      aria-busy={addLineBusy}
                       data-testid={`quote-manual-add-${block.id}`}
-                      className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                      className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
                     >
-                      Add line
+                      {addLineBusy && <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />}
+                      {addLineBusy ? 'Adding…' : 'Add line'}
                     </button>
                   </div>
                 </div>
@@ -1632,7 +1750,7 @@ function BlockCard({
 // ── A single read-only pricing-table line (no write permission) ───────────
 // Mirrors EditableLineRow's two-row shape — the customer-facing cells plus the
 // internal cost/markup/net band — but renders everything as plain text.
-function ReadonlyLineRow({ line: l, currency, taxRate, isFirst, showInternal }: { line: QuoteLine; currency: string; taxRate: string | null; isFirst: boolean; showInternal: boolean }) {
+function ReadonlyLineRow({ line: l, quoteId, currency, taxRate, isFirst, showInternal }: { line: QuoteLine; quoteId: string; currency: string; taxRate: string | null; isFirst: boolean; showInternal: boolean }) {
   const mk = markupPct(l.unitPrice, l.unitCost);
   const markupStr = mk === null ? '—' : `${String(Number(mk.toFixed(2)))}%`;
   const netCents = l.unitCost === null
@@ -1641,10 +1759,12 @@ function ReadonlyLineRow({ line: l, currency, taxRate, isFirst, showInternal }: 
   const tax = lineTaxAmount(l.lineTotal, l.taxable, taxRate);
   return (
     <>
-      <tr className="border-t" data-testid={`quote-line-${l.id}`}>
+      <tr className="border-t [&>td]:pt-4" data-testid={`quote-line-${l.id}`}>
         <td className="px-2 py-2">
           <div className="flex items-start gap-2">
-            {l.catalogItemId && <CatalogLineThumb catalogItemId={l.catalogItemId} />}
+            {l.imageId
+              ? <LineImageThumb quoteId={quoteId} imageId={l.imageId} />
+              : l.catalogItemId && <CatalogLineThumb catalogItemId={l.catalogItemId} />}
             <div>
               <div className="font-medium">{lineTitle(l)}</div>
               {lineBlurb(l) && <div className="text-xs text-muted-foreground">{lineBlurb(l)}</div>}
@@ -1700,20 +1820,27 @@ function ReadonlyLineRow({ line: l, currency, taxRate, isFirst, showInternal }: 
 // state to the incoming prop so server-side normalization (e.g. recomputed
 // totals, clamped quantity) wins.
 function EditableLineRow({
-  line, currency, taxRate, busy, isFirst, isLast, showInternal, onEdit, onMove, onRemove, onDraft,
+  line, quoteId, currency, taxRate, isPending, isFirst, isLast, showInternal, onEdit, onMove, onRemove, onDraft,
 }: {
   line: QuoteLine;
+  quoteId: string;
   currency: string;
   taxRate: string | null;
-  busy: boolean;
+  isPending: (key: string) => boolean;
   isFirst: boolean;
   isLast: boolean;
   showInternal: boolean;
-  onEdit: (lineId: string, body: LineUpdate) => Promise<boolean>;
+  onEdit: (lineId: string, body: LineUpdate, scopeKey?: string) => Promise<boolean>;
   onMove: (line: QuoteLine, direction: 'up' | 'down') => void;
   onRemove: (line: QuoteLine) => void;
   onDraft: (lineId: string, draft: QuoteLineForMath | null) => void;
 }) {
+  // Per-field pending: only the in-flight control disables, so a slow qty save
+  // never freezes price/name/desc (the scoped-pending backport — InvoiceEditor's
+  // LineRow got this first). Remove keeps the whole-row key: the confirm-dialog
+  // removal flow runs under `line:<id>` and should hold the row's actions.
+  const fieldBusy = (field: string) => isPending(`line:${line.id}:${field}`);
+  const removeBusy = isPending(`line:${line.id}`);
   const [name, setName] = useState(line.name ?? '');
   const [desc, setDesc] = useState(line.description ?? '');
   const [qty, setQty] = useState(line.quantity);
@@ -1781,11 +1908,41 @@ function EditableLineRow({
     if (savedTimer.current) clearTimeout(savedTimer.current);
     savedTimer.current = setTimeout(() => setSaved(false), 1500);
   }, []);
-  const edit = useCallback(async (body: LineUpdate): Promise<boolean> => {
-    const ok = await onEdit(line.id, body);
+  // `field` scopes the pending key to the one control being committed; commits
+  // without a field (none today) would fall back to freezing the whole row.
+  const edit = useCallback(async (body: LineUpdate, field?: string): Promise<boolean> => {
+    const ok = await onEdit(line.id, body, field ? `line:${line.id}:${field}` : undefined);
     if (ok) flashSaved();
     return ok;
   }, [onEdit, line.id, flashSaved]);
+
+  // Per-line product image: upload to quote_images, then PATCH the line's
+  // imageId. Local busy (not the pending map) because the upload itself runs
+  // before any line mutation exists to scope.
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const [imageBusy, setImageBusy] = useState(false);
+  const attachImage = useCallback((file: File) => {
+    if (file.size > 5 * 1024 * 1024) {
+      handleActionError(new Error('image too large'), 'Image must be 5MB or smaller.');
+      return;
+    }
+    void (async () => {
+      setImageBusy(true);
+      try {
+        const uploaded = await runAction<{ imageId: string }>({
+          request: () => uploadQuoteImage(quoteId, file),
+          errorFallback: 'Could not upload the image.',
+          onUnauthorized: UNAUTHORIZED,
+          parseSuccess: (d) => (d as { data: { imageId: string } }).data,
+        });
+        await edit({ imageId: uploaded.imageId }, 'image');
+      } catch {
+        // runAction already surfaced the failure (toast/redirect).
+      } finally {
+        setImageBusy(false);
+      }
+    })();
+  }, [quoteId, edit]);
   // Per-field dirty cue (mirrors the terms/tax ring) so every editable surface
   // signals unsaved state the same way.
   const nameDirty = name.trim() !== (line.name ?? '');
@@ -1854,7 +2011,7 @@ function EditableLineRow({
       setName(line.name ?? '');
       return;
     }
-    void edit({ name: next || null });
+    void edit({ name: next || null }, 'name');
   };
   const commitDesc = () => {
     const next = desc.trim();
@@ -1865,7 +2022,7 @@ function EditableLineRow({
       setDesc(line.description ?? '');
       return;
     }
-    void edit({ description: next || null });
+    void edit({ description: next || null }, 'desc');
   };
   const commitQty = () => {
     const n = Number(qty);
@@ -1873,12 +2030,12 @@ function EditableLineRow({
     if (n === Number(line.quantity)) { setQty(line.quantity); return; } // unchanged — silent
     // A rejected entry no longer snaps back silently: tell the user why (parity
     // with the tax field and the manual-add path) before reverting.
-    if (!Number.isFinite(n) || n <= 0) {
-      handleActionError(new Error('invalid quantity'), 'Enter a quantity greater than 0.');
+    if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) {
+      handleActionError(new Error('invalid quantity'), 'Enter a whole-number quantity greater than 0.');
       setQty(line.quantity);
       return;
     }
-    void edit({ quantity: n });
+    void edit({ quantity: n }, 'qty');
   };
   const commitPrice = () => {
     const n = Number(price);
@@ -1889,28 +2046,28 @@ function EditableLineRow({
       setPrice(line.unitPrice);
       return;
     }
-    void edit({ unitPrice: n });
+    void edit({ unitPrice: n }, 'price');
   };
   const commitCost = () => {
     costEdited.current = false;
-    if (cost.trim() === '') { if (line.unitCost !== null) void edit({ unitCost: null }); return; }
+    if (cost.trim() === '') { if (line.unitCost !== null) void edit({ unitCost: null }, 'cost'); return; }
     const n = Number(cost);
     if (!Number.isFinite(n) || n < 0) {
       handleActionError(new Error('invalid cost'), 'Enter a cost of 0 or more.');
       setCost(line.unitCost ?? '');
       return;
     }
-    if (n !== Number(line.unitCost)) void edit({ unitCost: n });
+    if (n !== Number(line.unitCost)) void edit({ unitCost: n }, 'cost');
   };
   const commitSku = () => {
     skuEdited.current = false;
     const next = sku.trim();
-    if (next !== (line.sku ?? '')) void edit({ sku: next || null });
+    if (next !== (line.sku ?? '')) void edit({ sku: next || null }, 'sku');
   };
   const commitPartNumber = () => {
     partEdited.current = false;
     const next = partNumber.trim();
-    if (next !== (line.partNumber ?? '')) void edit({ partNumber: next || null });
+    if (next !== (line.partNumber ?? '')) void edit({ partNumber: next || null }, 'pn');
   };
   // Editing markup% commits a new unit price derived from cost: price = cost·(1+m).
   const onMarkupCommit = (raw: string) => {
@@ -1922,17 +2079,19 @@ function EditableLineRow({
     const nextPrice = priceFromMarkup(cost, m);
     setPrice(nextPrice);
     priceEdited.current = false;
-    if (Number(nextPrice) !== Number(line.unitPrice)) void edit({ unitPrice: Number(nextPrice) });
+    if (Number(nextPrice) !== Number(line.unitPrice)) void edit({ unitPrice: Number(nextPrice) }, 'price');
   };
 
   return (
     <>
-    <tr className="border-t align-top" data-testid={`quote-line-${line.id}`}>
+    <tr className="border-t align-top [&>td]:pt-4" data-testid={`quote-line-${line.id}`}>
       <td className="px-2 py-2">
         {/* min-w-0 lets the name input honour its own min-w-[12rem] floor rather
             than the flex row's min-content, so a catalog thumbnail can't crush it. */}
         <div className="flex min-w-0 items-start gap-2">
-          {line.catalogItemId && <CatalogLineThumb catalogItemId={line.catalogItemId} />}
+          {line.imageId
+            ? <LineImageThumb quoteId={quoteId} imageId={line.imageId} />
+            : line.catalogItemId && <CatalogLineThumb catalogItemId={line.catalogItemId} />}
           <div className="w-full min-w-0 space-y-1">
             <input
               type="text"
@@ -1941,7 +2100,7 @@ function EditableLineRow({
               placeholder="Name"
               onChange={(e) => { setName(e.target.value); nameEdited.current = true; }}
               onBlur={commitName}
-              disabled={busy}
+              disabled={fieldBusy('name')}
               data-testid={`quote-line-name-${line.id}`}
               className={`h-9 w-full min-w-[12rem] rounded-md border bg-background px-2 py-1 text-sm font-medium transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(nameDirty, saved)}`}
             />
@@ -1950,12 +2109,12 @@ function EditableLineRow({
       </td>
       <td className="px-2 py-2 text-right">
         <input
-          type="number" min="0" step="0.01"
+          type="number" min="1" step="1"
           value={qty}
           aria-label="Quantity"
           onChange={(e) => { setQty(e.target.value); qtyEdited.current = true; }}
           onBlur={commitQty}
-          disabled={busy}
+          disabled={fieldBusy('qty')}
           data-testid={`quote-line-qty-${line.id}`}
           className={`h-9 w-16 rounded-md border bg-background px-2 text-right text-sm tabular-nums transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(qtyDirty, saved)}`}
         />
@@ -1967,7 +2126,7 @@ function EditableLineRow({
           aria-label="Unit price"
           onChange={(e) => { setPrice(e.target.value); priceEdited.current = true; }}
           onBlur={commitPrice}
-          disabled={busy}
+          disabled={fieldBusy('price')}
           data-testid={`quote-line-price-${line.id}`}
           className={`h-9 w-24 rounded-md border bg-background px-2 text-right text-sm tabular-nums transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(priceDirty, saved)}`}
         />
@@ -1979,9 +2138,9 @@ function EditableLineRow({
           onChange={(e) => {
             const next = e.target.value as QuoteLineRecurrence;
             setRec(next); // optimistic — revert if the save fails
-            void edit({ recurrence: next }).then((ok) => { if (!ok) setRec(line.recurrence); });
+            void edit({ recurrence: next }, 'rec').then((ok) => { if (!ok) setRec(line.recurrence); });
           }}
-          disabled={busy}
+          disabled={fieldBusy('rec')}
           data-testid={`quote-line-recurrence-${line.id}`}
           className="h-9 w-full min-w-0 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
         >
@@ -1998,9 +2157,9 @@ function EditableLineRow({
           onChange={(e) => {
             const next = e.target.checked;
             setTaxable(next); // optimistic — revert if the save fails
-            void edit({ taxable: next }).then((ok) => { if (!ok) setTaxable(line.taxable); });
+            void edit({ taxable: next }, 'taxable').then((ok) => { if (!ok) setTaxable(line.taxable); });
           }}
-          disabled={busy}
+          disabled={fieldBusy('taxable')}
           data-testid={`quote-line-taxable-${line.id}`}
         />
       </td>
@@ -2026,7 +2185,7 @@ function EditableLineRow({
           <button
             type="button"
             onClick={() => onRemove(line)}
-            disabled={busy}
+            disabled={removeBusy}
             data-testid={`quote-line-remove-${line.id}`}
             className="rounded-md border border-destructive/40 px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
           >
@@ -2047,23 +2206,62 @@ function EditableLineRow({
           onChange={(e) => { setDesc(e.target.value); descEdited.current = true; autoGrowDesc(); }}
           onBlur={commitDesc}
           rows={2}
-          disabled={busy}
+          disabled={fieldBusy('desc')}
           data-testid={`quote-line-desc-${line.id}`}
           className={`min-h-9 w-full resize-y overflow-hidden rounded-md border bg-background px-2 py-1 text-sm text-muted-foreground transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(descDirty, saved)}`}
         />
-        {(name.trim() || desc.trim()) && !busy && (
-          <PolishButton
-            idSuffix={`quote-line-${line.id}`}
-            compact
-            getText={() => ({ name, description: desc })}
-            onApply={(r) => {
-              const patch: { name?: string | null; description?: string | null } = {};
-              if (r.name !== null) { setName(r.name); nameEdited.current = false; patch.name = r.name || null; }
-              if (r.description !== null) { setDesc(r.description); descEdited.current = false; patch.description = r.description || null; }
-              if (Object.keys(patch).length) void edit(patch);
+        <div className="mt-1 flex flex-wrap items-center gap-2">
+          {(name.trim() || desc.trim()) && (
+            <PolishButton
+              disabled={fieldBusy('polish')}
+              idSuffix={`quote-line-${line.id}`}
+              compact
+              getText={() => ({ name, description: desc })}
+              onApply={(r) => {
+                const patch: { name?: string | null; description?: string | null } = {};
+                if (r.name !== null) { setName(r.name); nameEdited.current = false; patch.name = r.name || null; }
+                if (r.description !== null) { setDesc(r.description); descEdited.current = false; patch.description = r.description || null; }
+                if (Object.keys(patch).length) void edit(patch, 'polish');
+              }}
+            />
+          )}
+          {/* Per-line product image controls. The thumbnail itself renders next
+              to the name; these manage it. Same 5MB/type limits as image blocks. */}
+          <input
+            ref={imageInputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            className="hidden"
+            data-testid={`quote-line-image-input-${line.id}`}
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              e.target.value = ''; // allow re-picking the same file
+              if (f) attachImage(f);
             }}
           />
-        )}
+          <button
+            type="button"
+            onClick={() => imageInputRef.current?.click()}
+            disabled={imageBusy || fieldBusy('image')}
+            aria-busy={imageBusy}
+            data-testid={`quote-line-image-attach-${line.id}`}
+            className="inline-flex h-8 items-center gap-1 rounded-md border px-2 text-xs font-medium hover:bg-muted disabled:opacity-50"
+          >
+            {imageBusy && <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />}
+            {imageBusy ? 'Uploading…' : line.imageId ? 'Replace image' : 'Add image'}
+          </button>
+          {line.imageId && !imageBusy && (
+            <button
+              type="button"
+              onClick={() => void edit({ imageId: null }, 'image')}
+              disabled={fieldBusy('image')}
+              data-testid={`quote-line-image-remove-${line.id}`}
+              className="inline-flex h-8 items-center rounded-md border px-2 text-xs font-medium text-muted-foreground hover:bg-muted disabled:opacity-50"
+            >
+              Remove image
+            </button>
+          )}
+        </div>
       </td>
     </tr>
     {/* Internal-only cost/markup/profit band — never shown to the customer.
@@ -2082,7 +2280,7 @@ function EditableLineRow({
               value={sku}
               onChange={(e) => { setSku(e.target.value); skuEdited.current = true; }}
               onBlur={commitSku}
-              disabled={busy}
+              disabled={fieldBusy('sku')}
               data-testid={`quote-line-sku-${line.id}`}
               className={`h-6 w-28 rounded border bg-background px-1 text-foreground transition-shadow ${fieldRing(skuDirty, saved)}`}
             />
@@ -2093,7 +2291,7 @@ function EditableLineRow({
               value={partNumber}
               onChange={(e) => { setPartNumber(e.target.value); partEdited.current = true; }}
               onBlur={commitPartNumber}
-              disabled={busy}
+              disabled={fieldBusy('pn')}
               data-testid={`quote-line-partnumber-${line.id}`}
               className={`h-6 w-28 rounded border bg-background px-1 text-foreground transition-shadow ${fieldRing(partDirty, saved)}`}
             />
@@ -2104,7 +2302,7 @@ function EditableLineRow({
               value={cost}
               onChange={(e) => { setCost(e.target.value); costEdited.current = true; }}
               onBlur={commitCost}
-              disabled={busy}
+              disabled={fieldBusy('cost')}
               data-testid={`quote-line-cost-${line.id}`}
               className={`h-6 w-20 rounded border bg-background px-1 text-right tabular-nums text-foreground transition-shadow ${fieldRing(costDirty, saved)}`}
             />
@@ -2116,7 +2314,7 @@ function EditableLineRow({
               onFocus={() => { markupFocused.current = true; }}
               onChange={(e) => setMarkupInput(e.target.value)}
               onBlur={(e) => { markupFocused.current = false; onMarkupCommit(e.target.value); }}
-              disabled={busy || cost.trim() === ''}
+              disabled={fieldBusy('price') || cost.trim() === ''}
               // Tell keyboard/SR users WHY the field is disabled — sighted users can
               // see the empty cost field, AT users can't.
               title={cost.trim() === '' ? 'Enter a cost first to set markup %' : undefined}
@@ -2163,6 +2361,14 @@ function CatalogLineThumb({ catalogItemId }: { catalogItemId: string }) {
 
   if (!url) return null;
   return <img src={url} alt="" className="h-10 w-10 shrink-0 rounded border object-contain" data-testid="quote-line-thumb" />;
+}
+
+// Per-line uploaded image thumbnail (GET /quotes/:id/images/:imageId needs the
+// Bearer header — same contract as CatalogLineThumb: render nothing on miss).
+function LineImageThumb({ quoteId, imageId }: { quoteId: string; imageId: string }) {
+  const { url } = useAuthedImage(quoteImageUrl(quoteId, imageId));
+  if (!url) return null;
+  return <img src={url} alt="" className="h-10 w-10 shrink-0 rounded border object-contain" data-testid="quote-line-image-thumb" />;
 }
 
 // Editor image preview. GET /quotes/:id/images/:imageId requires the Bearer auth

@@ -333,7 +333,7 @@ function LineTable({ lines, currency, label, testId, taxRate, showTax }: { lines
       <table className="w-full min-w-[30rem] text-sm" data-testid={testId}>
         <thead>
           <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
-            <th className="px-3 py-2 font-medium">Description</th>
+            <th className="px-3 py-2 font-medium">Item</th>
             <th className="px-3 py-2 text-right font-medium">Qty</th>
             <th className="px-3 py-2 text-right font-medium">Unit price</th>
             <th className="px-3 py-2 font-medium">Recurrence</th>

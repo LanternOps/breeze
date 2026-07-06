@@ -61,6 +61,8 @@ export interface EnrichmentProvenance {
 export interface EnrichResult {
   draft: EnrichDraft;
   priceGuidance: string | null;
+  /** Best-effort single-unit acquisition-cost estimate (what the MSP would pay); null when unknown. */
+  estimatedCost: number | null;
   provenance: EnrichmentProvenance;
 }
 

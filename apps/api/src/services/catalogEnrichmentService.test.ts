@@ -45,8 +45,30 @@ describe('enrichCatalogItem', () => {
     expect((res.draft as Record<string, unknown>).unitPrice).toBeUndefined();
     expect(res.priceGuidance).toMatch(/80/);
     expect(res.priceGuidance).toMatch(/120/);
+    // No explicit costEstimate in the AI output → falls back to priceLow.
+    expect(res.estimatedCost).toBe(80);
     expect(res.provenance.source).toBe('ai_enrich');
     expect(recordUsage).toHaveBeenCalledTimes(1);
+  });
+
+  it('prefers an explicit costEstimate over the priceLow fallback', async () => {
+    create.mockResolvedValueOnce(aiMessage({
+      name: 'APC Back-UPS 600VA', description: 'Battery backup',
+      itemType: 'hardware', unitOfMeasure: 'each', taxable: true, taxCategory: null,
+      priceLow: 80, priceHigh: 120, costEstimate: 68.5, currency: 'USD', confidence: 0.8, notes: '',
+    }));
+    const res = await enrichCatalogItem('APC Back-UPS 600VA', 'hardware', actor);
+    expect(res.estimatedCost).toBe(68.5);
+  });
+
+  it('ignores a negative/garbage costEstimate and falls back to priceLow', async () => {
+    create.mockResolvedValueOnce(aiMessage({
+      name: 'APC Back-UPS 600VA', description: null, itemType: 'hardware',
+      unitOfMeasure: 'each', taxable: true, taxCategory: null,
+      priceLow: 80, priceHigh: 120, costEstimate: -5, currency: 'USD', confidence: 0.8, notes: '',
+    }));
+    const res = await enrichCatalogItem('APC Back-UPS 600VA', 'hardware', actor);
+    expect(res.estimatedCost).toBe(80);
   });
 
   it('returns null priceGuidance when no usable range', async () => {
@@ -57,6 +79,7 @@ describe('enrichCatalogItem', () => {
     }));
     const res = await enrichCatalogItem('Mystery', undefined, actor);
     expect(res.priceGuidance).toBeNull();
+    expect(res.estimatedCost).toBeNull();
   });
 
   it('throws AI_LIMIT when budget is exhausted', async () => {

@@ -63,4 +63,27 @@ describe('QuoteActions — header variant', () => {
     expect(send).not.toHaveAttribute('aria-describedby');
     expect(screen.queryByTestId('quote-send-empty-hint')).not.toBeInTheDocument();
   });
+
+  it('savePending holds Send with a visible "Saving changes" hint until quiescent', async () => {
+    const withLine: QuoteDetailData = {
+      ...draft(),
+      blocks: [{ id: 'b-1', quoteId: 'q-1', orgId: 'org-1', blockType: 'line_items', content: {}, sortOrder: 0, createdAt: '2026-06-01T00:00:00Z' }],
+    };
+    const { rerender } = render(<QuoteActions detail={withLine} onChanged={vi.fn()} variant="header" savePending />);
+    await waitFor(() => expect(screen.getByTestId('quote-actions-header')).toBeInTheDocument());
+
+    const send = screen.getByTestId('quote-send');
+    expect(send).toBeDisabled();
+    expect(send).toHaveTextContent('Saving…');
+    expect(send).toHaveAttribute('aria-describedby', 'quote-send-saving-hint-header');
+    const hint = screen.getByTestId('quote-send-saving-hint');
+    expect(hint).not.toHaveClass('sr-only');
+    expect(hint).toHaveTextContent('Saving changes… Send unlocks when everything is saved.');
+
+    // Saves settle → the money-button unlocks and the hint drops.
+    rerender(<QuoteActions detail={withLine} onChanged={vi.fn()} variant="header" savePending={false} />);
+    expect(screen.getByTestId('quote-send')).not.toBeDisabled();
+    expect(screen.getByTestId('quote-send')).toHaveTextContent('Send proposal');
+    expect(screen.queryByTestId('quote-send-saving-hint')).not.toBeInTheDocument();
+  });
 });

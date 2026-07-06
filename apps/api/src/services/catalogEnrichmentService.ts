@@ -48,13 +48,15 @@ const SYSTEM_PROMPT =
   'JSON object (no prose, no code fences) of the exact shape:\n' +
   '{"name":string,"description":string|null,"itemType":"hardware"|"software"|"service",' +
   '"unitOfMeasure":string,"taxable":boolean,"taxCategory":string|null,' +
-  '"priceLow":number|null,"priceHigh":number|null,"currency":string|null,' +
-  '"confidence":number,"notes":string}\n' +
+  '"priceLow":number|null,"priceHigh":number|null,"costEstimate":number|null,' +
+  '"currency":string|null,"confidence":number,"notes":string}\n' +
   'itemType MUST be exactly one of "hardware", "software", or "service" — map any ' +
   'subscription, SaaS, app, or license to "software". Keep description under 1000 ' +
   'characters and name under 250 characters.\n' +
   'priceLow/priceHigh are a TYPICAL street-price RANGE in the item currency; never a ' +
-  'single committed price. If unknown, use null. Do not invent a price you are unsure of.';
+  'single committed price. costEstimate is your best single-number estimate of what an ' +
+  'IT reseller would PAY to acquire one unit today (distributor/street cost, not MSRP ' +
+  'and not a resale price). If unknown, use null. Do not invent a price you are unsure of.';
 
 function clampMoney(n: unknown): number | null {
   if (typeof n !== 'number' || !Number.isFinite(n) || n < 0) return null;
@@ -262,9 +264,15 @@ export const aiEnrichmentProvider: EnrichmentProvider = {
       enrichedBy: actor.userId,
     };
 
+    // Acquisition-cost estimate for pre-filling internal cost fields. Prefer the
+    // model's explicit costEstimate; fall back to the low end of the street-price
+    // range (closest observable proxy for what a reseller would pay).
+    const estimatedCost = clampMoney(raw.costEstimate) ?? low;
+
     return {
       draft: draftParse.data,
       priceGuidance: priceGuidanceFrom(low, high, currency),
+      estimatedCost,
       provenance,
     };
   },

@@ -89,6 +89,7 @@ export interface QuotePdfBranding {
 interface QuoteHeader {
   id: string;
   quoteNumber?: string | null;
+  title?: string | null;
   status?: string | null;
   currencyCode?: string | null;
   issueDate?: string | Date | null;
@@ -123,6 +124,8 @@ interface QuoteLine {
   id: string;
   blockId?: string | null;
   catalogItemId?: string | null;
+  /** Per-line uploaded image (quote_images id); wins over the catalog image. */
+  imageId?: string | null;
   name?: string | null;
   description?: string | null;
   quantity: string | number;
@@ -202,23 +205,31 @@ async function renderLineTable(
   currency: string,
   startY: number,
   loadCatalogImage: LoadCatalogImage,
+  loadQuoteImage: (imageId: string) => Promise<{ data: Buffer } | null>,
   taxRate = 0,
   showTax = false,
 ): Promise<number> {
   const c = columnsFor(doc, showTax);
   let y = ensureSpace(doc, startY, 60);
 
-  // Pre-load product images (DB I/O) for catalog-sourced lines. A failed load
-  // degrades to "no thumbnail" — never aborts the document.
-  const THUMB = 30;
+  // Pre-load product images (DB I/O): a per-line uploaded image wins, else the
+  // catalog item's image. A failed load degrades to "no thumbnail" — never
+  // aborts the document. 44pt: large enough to recognize the product, small
+  // enough that rows stay table-like.
+  const THUMB = 44;
   const imageByLine = new Map<string, Buffer>();
   for (const l of lines) {
-    if (!l.catalogItemId) continue;
     try {
-      const img = await loadCatalogImage(l.catalogItemId);
-      if (img?.data) imageByLine.set(l.id, img.data);
+      if (l.imageId) {
+        const img = await loadQuoteImage(l.imageId);
+        if (img?.data) { imageByLine.set(l.id, img.data); continue; }
+      }
+      if (l.catalogItemId) {
+        const img = await loadCatalogImage(l.catalogItemId);
+        if (img?.data) imageByLine.set(l.id, img.data);
+      }
     } catch (e) {
-      console.error('[quotePdf] loadCatalogImage failed', l.catalogItemId, e instanceof Error ? e.message : e);
+      console.error('[quotePdf] line image load failed', l.imageId ?? l.catalogItemId, e instanceof Error ? e.message : e);
     }
   }
   // Reserve a thumbnail gutter only when at least one line has an image, so the
@@ -226,22 +237,36 @@ async function renderLineTable(
   const gutter = imageByLine.size > 0 ? THUMB + 8 : 0;
   const descW = c.colDescW - gutter;
 
-  // Header row with a light fill bar.
-  doc.save();
-  doc.rect(c.left - 6, y - 5, c.contentWidth + 12, 22).fill('#f8fafc');
-  doc.restore();
-  doc.fillColor('#6b7280').fontSize(8.5).font('Helvetica-Bold');
-  doc.text('QTY', c.colQtyX, y, { width: c.contentWidth * 0.10, align: 'left' });
-  doc.text('DESCRIPTION', c.colDescX, y, { width: c.colDescW, align: 'left' });
-  doc.text('UNIT', c.colUnitX, y, { width: c.colNumW, align: 'right' });
-  if (showTax) doc.text('TAX', c.colTaxX, y, { width: c.colNumW, align: 'right' });
-  doc.text('TOTAL', c.colAmtX, y, { width: c.colNumW, align: 'right' });
-  y += 18;
-  y += 6;
+  // Header row with a light fill bar. Extracted so it re-draws at the top of
+  // every page the table spills onto — a continuation page without column
+  // headers forces the reader to flip back to relearn the columns.
+  const drawTableHeader = (headerY: number): number => {
+    doc.save();
+    doc.rect(c.left - 6, headerY - 5, c.contentWidth + 12, 22).fill('#f8fafc');
+    doc.restore();
+    doc.fillColor('#6b7280').fontSize(8.5).font('Helvetica-Bold');
+    doc.text('QTY', c.colQtyX, headerY, { width: c.contentWidth * 0.10, align: 'left' });
+    doc.text('DESCRIPTION', c.colDescX, headerY, { width: c.colDescW, align: 'left' });
+    doc.text('UNIT', c.colUnitX, headerY, { width: c.colNumW, align: 'right' });
+    if (showTax) doc.text('TAX', c.colTaxX, headerY, { width: c.colNumW, align: 'right' });
+    doc.text('TOTAL', c.colAmtX, headerY, { width: c.colNumW, align: 'right' });
+    return headerY + 24;
+  };
+  // Page-break helper that re-draws the column header on the fresh page (unlike
+  // the generic ensureSpace, which just resets y).
+  const ensureRowSpace = (rowY: number, needed: number): number => {
+    if (rowY > doc.page.height - doc.page.margins.bottom - needed) {
+      doc.addPage();
+      return drawTableHeader(doc.page.margins.top);
+    }
+    return rowY;
+  };
+
+  y = drawTableHeader(y);
 
   const descX = c.colDescX;
   for (const l of lines) {
-    y = ensureSpace(doc, y, Math.max(30, gutter));
+    y = ensureRowSpace(y, Math.max(30, gutter));
     // Title falls back to description for legacy lines that predate the name/description split.
     const title = (l.name ?? l.description ?? '').trim() || '—';
     const blurb = l.name ? (l.description ?? '').trim() : '';
@@ -347,7 +372,9 @@ export async function renderQuotePdf(
   const taxRate = quote.taxRate ? Number(quote.taxRate) : 0;
   const showTax = Number(quote.taxTotal ?? 0) > 0;
 
-  const doc = new PDFDocument({ size: 'A4', margin: 50 });
+  // bufferPages keeps every page addressable until the end so the footer pass
+  // can stamp "Page X of Y" — the total isn't known while content is drawn.
+  const doc = new PDFDocument({ size: 'A4', margin: 50, bufferPages: true });
   const chunks: Buffer[] = [];
   const done = new Promise<Buffer>((resolve, reject) => {
     doc.on('data', (d: Buffer) => chunks.push(d));
@@ -363,8 +390,14 @@ export async function renderQuotePdf(
   doc.fillColor('#111827').fontSize(20).font('Helvetica-Bold').text(quote.quoteNumber ?? 'Draft', c.left, 66, { width: c.contentWidth, align: 'right' });
   doc.moveTo(c.left, 100).lineTo(c.right, 100).lineWidth(2).strokeColor(primary).stroke();
 
-  // ---- From (seller) left column; Prepared For + dates right column ---------
+  // ---- Quote title (tech-authored, e.g. "Office Network Refresh") -----------
   let y = 120;
+  if (quote.title?.trim()) {
+    doc.fillColor('#111827').fontSize(15).font('Helvetica-Bold').text(quote.title.trim(), c.left, y - 6, { width: c.contentWidth });
+    y = doc.y + 16;
+  }
+
+  // ---- From (seller) left column; Prepared For + dates right column ---------
   const seller = (quote.sellerSnapshot as SellerSnapshot | null) ?? null;
   const rightX = c.left + c.contentWidth * 0.55;
   const rightW = c.contentWidth * 0.45;
@@ -458,14 +491,14 @@ export async function renderQuotePdf(
           doc.fillColor('#111827').fontSize(11).font('Helvetica-Bold').text(label, c.left, y, { width: c.contentWidth });
           y = doc.y + 6;
         }
-        y = await renderLineTable(doc, blockLines, currency, y, loadCatalogImage, taxRate, showTax);
+        y = await renderLineTable(doc, blockLines, currency, y, loadCatalogImage, loadImage, taxRate, showTax);
       }
     }
   }
 
   // ---- Trailing default table for lines with no block ----------------------
   const orphanLines = lines.filter((l) => !l.blockId);
-  if (orphanLines.length) y = await renderLineTable(doc, orphanLines, currency, y, loadCatalogImage, taxRate, showTax);
+  if (orphanLines.length) y = await renderLineTable(doc, orphanLines, currency, y, loadCatalogImage, loadImage, taxRate, showTax);
 
   // ---- Recurring summary footer -------------------------------------------
   y = renderRecurringSummary(doc, quote, currency, primary, y, showTax);
@@ -478,14 +511,38 @@ export async function renderQuotePdf(
     y = doc.y;
   }
 
-  // ---- Terms + branding footer --------------------------------------------
-  const footer = quote.terms ?? branding.footer ?? null;
-  if (footer) {
+  // ---- Inline terms (content, not chrome) -----------------------------------
+  // The branding footer is no longer drawn inline — it now lives in the per-page
+  // footer band below, on EVERY page.
+  if (quote.terms) {
     y = ensureSpace(doc, y + 14, 60);
-    doc.fillColor('#9ca3af').fontSize(9).font('Helvetica').text(footer, c.left, y, { width: c.contentWidth });
+    doc.fillColor('#9ca3af').fontSize(9).font('Helvetica').text(quote.terms, c.left, y, { width: c.contentWidth });
   }
-  if (branding.footer && branding.footer !== footer) {
-    doc.fillColor('#888888').fontSize(8).font('Helvetica').text(branding.footer, c.left, doc.page.height - 60, { width: c.contentWidth });
+
+  // ---- Per-page footer band: branding footer + quote number + page X of Y ---
+  // Runs after all content so the page count is final. Bottom margin is zeroed
+  // while stamping: pdfkit auto-adds a page when text lands inside the margin
+  // band, which would otherwise spawn a blank trailing page per footer.
+  const range = doc.bufferedPageRange();
+  for (let i = range.start; i < range.start + range.count; i++) {
+    doc.switchToPage(i);
+    const savedBottom = doc.page.margins.bottom;
+    doc.page.margins.bottom = 0;
+    const fLeft = doc.page.margins.left;
+    const fRight = doc.page.width - doc.page.margins.right;
+    const fWidth = fRight - fLeft;
+    const ruleY = doc.page.height - 38;
+    doc.moveTo(fLeft, ruleY).lineTo(fRight, ruleY).lineWidth(0.5).strokeColor('#e5e7eb').stroke();
+    doc.fillColor('#9ca3af').fontSize(7.5).font('Helvetica');
+    // Left: branding footer (single line, ellipsized) or the partner wordmark.
+    doc.text(branding.footer?.trim() || partnerName, fLeft, ruleY + 7, {
+      width: fWidth * 0.68, height: 10, lineBreak: false, ellipsis: true,
+    });
+    // Right: quote number + page counter.
+    doc.text(`${quote.quoteNumber ?? 'Draft'} · Page ${i + 1} of ${range.count}`, fLeft, ruleY + 7, {
+      width: fWidth, align: 'right', lineBreak: false,
+    });
+    doc.page.margins.bottom = savedBottom;
   }
 
   doc.end();

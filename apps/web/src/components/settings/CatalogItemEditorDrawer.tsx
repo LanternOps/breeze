@@ -426,11 +426,16 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
 
   // Auto-fill a NEW item from the web: fill the fields this form actually edits
   // (name + type) and stash provenance. Price is never auto-set — the button shows
-  // a guidance hint and the user enters the real price.
+  // a guidance hint and the user enters the real price. The AI's acquisition-cost
+  // estimate pre-fills an EMPTY cost basis (internal field, feeds the margin
+  // preview) but never overwrites one the user already typed.
   const applyEnrichment = useCallback((result: EnrichResult) => {
     setName(result.draft.name);
     if (result.draft.description) setDescription(result.draft.description);
     setItemType(result.draft.itemType);
+    if (result.estimatedCost != null) {
+      setCostBasis((cur) => (cur.trim() === '' ? result.estimatedCost!.toFixed(2) : cur));
+    }
     setEnrichment(result.provenance);
   }, []);
 

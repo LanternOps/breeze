@@ -180,6 +180,7 @@ describe('enrich validators', () => {
     const resp = {
       draft,
       priceGuidance: 'typically $80–120',
+      estimatedCost: 80,
       provenance: {
         source: 'ai_enrich' as const,
         model: 'claude-sonnet-4-6',

@@ -1,6 +1,7 @@
 import { useCallback, useMemo, type CSSProperties } from 'react';
 import { useOrgStore } from '../../../stores/orgStore';
 import { quoteImageUrl } from '../../../lib/api/quotes';
+import { catalogItemImagePath } from '../../../lib/api/catalog';
 import { useAuthedImage, useQuotePdfDownload } from './useQuoteImage';
 import {
   type QuoteDetail as QuoteDetailData,
@@ -18,6 +19,15 @@ import {
   sellerLines,
 } from './quoteTypes';
 import { StatusPill } from '../shared/StatusPill';
+
+/** Uniform product thumbnail (per-line uploaded image or the catalog item's).
+ *  Authed fetch (a bare `img src` would 401 — same pattern as DocImage); renders
+ *  nothing on miss so image-less lines don't get an empty placeholder box. */
+function DocLineThumb({ path }: { path: string }) {
+  const { url } = useAuthedImage(path);
+  if (!url) return null;
+  return <img src={url} alt="" className="h-10 w-10 shrink-0 rounded border bg-card object-contain" />;
+}
 
 const RECURRENCE_LABEL: Record<QuoteLine['recurrence'], string> = {
   one_time: '',
@@ -54,7 +64,7 @@ function DocImage({ quoteId, imageId, caption }: { quoteId: string; imageId: str
   );
 }
 
-function PricingTable({ lines, currency, label, taxRate, showTax }: { lines: QuoteLine[]; currency: string; label?: string; taxRate: string | null; showTax: boolean }) {
+function PricingTable({ lines, quoteId, currency, label, taxRate, showTax }: { lines: QuoteLine[]; quoteId: string; currency: string; label?: string; taxRate: string | null; showTax: boolean }) {
   if (lines.length === 0) return null;
   const sorted = [...lines].sort((a, b) => a.sortOrder - b.sortOrder);
   return (
@@ -81,15 +91,22 @@ function PricingTable({ lines, currency, label, taxRate, showTax }: { lines: Quo
               return (
                 <tr key={l.id} className="border-b align-top last:border-0">
                   <td className="px-4 py-3 text-foreground sm:px-5">
-                    <span className="font-medium">{lineTitle(l)}</span>
-                    {tag && (
-                      <span className="ml-2 inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[hsl(220_12%_40%)] dark:text-muted-foreground">
-                        {tag}
-                      </span>
-                    )}
-                    {lineBlurb(l) && (
-                      <p className="mt-0.5 text-xs text-muted-foreground">{lineBlurb(l)}</p>
-                    )}
+                    <div className="flex items-start gap-2.5">
+                      {(l.imageId || l.catalogItemId) && (
+                        <DocLineThumb path={l.imageId ? quoteImageUrl(quoteId, l.imageId) : catalogItemImagePath(l.catalogItemId!)} />
+                      )}
+                      <div className="min-w-0">
+                        <span className="font-medium">{lineTitle(l)}</span>
+                        {tag && (
+                          <span className="ml-2 inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[hsl(220_12%_40%)] dark:text-muted-foreground">
+                            {tag}
+                          </span>
+                        )}
+                        {lineBlurb(l) && (
+                          <p className="mt-0.5 text-xs text-muted-foreground">{lineBlurb(l)}</p>
+                        )}
+                      </div>
+                    </div>
                   </td>
                   <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{l.quantity}</td>
                   <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">
@@ -113,7 +130,7 @@ function PricingTable({ lines, currency, label, taxRate, showTax }: { lines: Quo
   );
 }
 
-function DocBlock({ block, lines, currency, taxRate, showTax }: { block: QuoteBlock; lines: QuoteLine[]; currency: string; taxRate: string | null; showTax: boolean }) {
+function DocBlock({ block, lines, quoteId, currency, taxRate, showTax }: { block: QuoteBlock; lines: QuoteLine[]; quoteId: string; currency: string; taxRate: string | null; showTax: boolean }) {
   if (block.blockType === 'heading') {
     const text = (block.content?.text as string | undefined)?.trim();
     if (!text) return null;
@@ -132,7 +149,7 @@ function DocBlock({ block, lines, currency, taxRate, showTax }: { block: QuoteBl
   }
   // line_items
   const label = (block.content?.label as string | undefined)?.trim() || 'Pricing';
-  return <PricingTable lines={lines} currency={currency} label={label} taxRate={taxRate} showTax={showTax} />;
+  return <PricingTable lines={lines} quoteId={quoteId} currency={currency} label={label} taxRate={taxRate} showTax={showTax} />;
 }
 
 interface DocumentProps {
@@ -217,6 +234,11 @@ export function QuoteDocument({ detail, customerName }: DocumentProps) {
 
         {/* ── Prepared for + intro ───────────────────────────────── */}
         <section className="space-y-4">
+          {quote.title?.trim() && (
+            <h1 className="text-xl font-semibold tracking-tight text-foreground" data-testid="quote-document-title">
+              {quote.title}
+            </h1>
+          )}
           <div>
             <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Prepared for</p>
             <p className="mt-1 text-base font-medium text-foreground" data-testid="quote-document-customer">{customerName}</p>
@@ -236,9 +258,9 @@ export function QuoteDocument({ detail, customerName }: DocumentProps) {
         ) : (
           <div className="space-y-6">
             {sortedBlocks.map((block) => (
-              <DocBlock key={block.id} block={block} lines={linesForBlock(block.id)} currency={currency} taxRate={quote.taxRate} showTax={showTax} />
+              <DocBlock key={block.id} block={block} lines={linesForBlock(block.id)} quoteId={quote.id} currency={currency} taxRate={quote.taxRate} showTax={showTax} />
             ))}
-            {looseLines.length > 0 && <PricingTable lines={looseLines} currency={currency} label="Additional items" taxRate={quote.taxRate} showTax={showTax} />}
+            {looseLines.length > 0 && <PricingTable lines={looseLines} quoteId={quote.id} currency={currency} label="Additional items" taxRate={quote.taxRate} showTax={showTax} />}
           </div>
         )}
 

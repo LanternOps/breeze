@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Loader2 } from 'lucide-react';
 import { runAction, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
@@ -16,9 +17,18 @@ interface CatalogEnrichButtonProps {
   /** Called with the enrichment result. The host maps draft fields into its form;
    *  it may stash provenance for persistence (drawer) or discard it (quote line). */
   onApply: (result: EnrichResult) => void;
+  /** One-line explanation of what auto-fill will touch in THIS host's form.
+   *  Shown until the first result arrives (the result summary then takes over). */
+  helpText?: string;
+  /** Trailing hint after "AI estimate: …". Hosts that pre-fill price themselves
+   *  pass their own wording (or null to omit). Default matches the drawer flow. */
+  guidanceSuffix?: string | null;
 }
 
-export default function CatalogEnrichButton({ hint, disabled, idSuffix, onApply }: CatalogEnrichButtonProps) {
+export default function CatalogEnrichButton({
+  hint, disabled, idSuffix, onApply, helpText,
+  guidanceSuffix = '— enter your price below.',
+}: CatalogEnrichButtonProps) {
   const [query, setQuery] = useState('');
   const [busy, setBusy] = useState(false);
   const [guidance, setGuidance] = useState<string | null>(null);
@@ -65,15 +75,27 @@ export default function CatalogEnrichButton({ hint, disabled, idSuffix, onApply 
           type="button"
           onClick={() => void run()}
           disabled={disabled || busy || !query.trim()}
+          aria-busy={busy}
           data-testid={`catalog-enrich-btn-${idSuffix}`}
-          className="inline-flex h-9 items-center rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
+          className="inline-flex h-9 items-center gap-1.5 rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
         >
-          {busy ? 'Filling…' : '✨ Auto-fill from web'}
+          {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />}
+          {busy ? 'Searching the web…' : '✨ Auto-fill from web'}
         </button>
       </div>
-      {guidance && (
+      {busy && (
+        <p role="status" data-testid={`catalog-enrich-busy-${idSuffix}`} className="text-xs text-muted-foreground">
+          Looking up product details — usually 5–15 seconds.
+        </p>
+      )}
+      {!busy && guidance && (
         <p data-testid={`catalog-enrich-guidance-${idSuffix}`} className="text-xs text-muted-foreground">
-          AI estimate: {guidance} — enter your price below.
+          AI estimate: {guidance}{guidanceSuffix ? ` ${guidanceSuffix}` : ''}
+        </p>
+      )}
+      {!busy && !guidance && helpText && (
+        <p data-testid={`catalog-enrich-help-${idSuffix}`} className="text-xs text-muted-foreground">
+          {helpText}
         </p>
       )}
     </div>

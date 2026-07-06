@@ -140,6 +140,10 @@ export type EnrichDraft = z.infer<typeof enrichDraftSchema>;
 export const enrichResponseSchema = z.object({
   draft: enrichDraftSchema,
   priceGuidance: z.string().max(120).nullable(),
+  // Best-effort single-unit acquisition-cost estimate (what the MSP would pay,
+  // not MSRP). Advisory: hosts may pre-fill an internal cost field with it, but
+  // it must never be committed anywhere without the user able to review it.
+  estimatedCost: z.number().min(0).nullable(),
   provenance: enrichmentProvenanceSchema,
 });
 export type EnrichResponse = z.infer<typeof enrichResponseSchema>;

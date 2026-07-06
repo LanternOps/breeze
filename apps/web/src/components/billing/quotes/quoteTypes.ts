@@ -18,6 +18,9 @@ export type QuoteBlockType = 'heading' | 'rich_text' | 'image' | 'line_items';
 export interface Quote {
   id: string;
   quoteNumber: string | null;
+  /** Tech-authored display title; optional so long-standing test fixtures and
+   *  older cached payloads without the column stay assignable. */
+  title?: string | null;
   partnerId: string;
   orgId: string;
   siteId: string | null;
@@ -73,6 +76,9 @@ export interface QuoteLine {
   orgId: string;
   sourceType: QuoteLineSourceType;
   catalogItemId: string | null;
+  /** Per-line uploaded image (quote_images id); wins over the catalog image.
+   *  Optional so pre-column fixtures/payloads stay assignable. */
+  imageId?: string | null;
   parentLineId: string | null;
   /** Internal-only economics/identifiers (builder view); never on the customer doc. */
   unitCost: string | null;

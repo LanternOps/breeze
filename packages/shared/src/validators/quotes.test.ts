@@ -29,6 +29,20 @@ describe('quote validators', () => {
     expect(line.description ?? null).toBeNull();
   });
 
+  it('line update accepts an imageId guid, an explicit null, and rejects a non-guid', () => {
+    expect(updateQuoteLineSchema.parse({ imageId: '33333333-3333-3333-3333-333333333333' }).imageId)
+      .toBe('33333333-3333-3333-3333-333333333333');
+    expect(updateQuoteLineSchema.parse({ imageId: null }).imageId).toBeNull();
+    expect(updateQuoteLineSchema.safeParse({ imageId: 'not-a-guid' }).success).toBe(false);
+  });
+
+  it('create/update accept a bounded title and reject an oversized one', () => {
+    expect(createQuoteSchema.parse({ orgId: '11111111-1111-1111-1111-111111111111', title: 'Office refresh' }).title)
+      .toBe('Office refresh');
+    expect(updateQuoteSchema.parse({ title: null }).title).toBeNull();
+    expect(createQuoteSchema.safeParse({ orgId: '11111111-1111-1111-1111-111111111111', title: 'x'.repeat(201) }).success).toBe(false);
+  });
+
   it('rejects a line with neither a name nor a description', () => {
     expect(quoteLineInputSchema.safeParse({
       sourceType: 'manual', quantity: 1, unitPrice: 10, taxable: false,

@@ -24,6 +24,7 @@ export const quotes = pgTable('quotes', {
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   siteId: uuid('site_id'),
   quoteNumber: varchar('quote_number', { length: 40 }),
+  title: varchar('title', { length: 200 }),
   status: quoteStatusEnum('status').notNull().default('draft'),
   currencyCode: char('currency_code', { length: 3 }).notNull().default('USD'),
   issueDate: date('issue_date'),
@@ -102,12 +103,16 @@ export const quoteLines = pgTable('quote_lines', {
   unitCost: numeric('unit_cost', { precision: 12, scale: 2 }),
   sku: varchar('sku', { length: 100 }),
   partNumber: varchar('part_number', { length: 100 }),
+  // Optional per-line product image (quote_images row on the SAME quote; the
+  // service enforces that). Wins over the catalog item's image when both exist.
+  imageId: uuid('image_id').references((): AnyPgColumn => quoteImages.id, { onDelete: 'set null' }),
   sortOrder: integer('sort_order').notNull().default(0),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (t) => [
   index('quote_lines_quote_sort_idx').on(t.quoteId, t.sortOrder),
   index('quote_lines_block_idx').on(t.blockId),
-  index('quote_lines_org_idx').on(t.orgId)
+  index('quote_lines_org_idx').on(t.orgId),
+  index('quote_lines_image_idx').on(t.imageId)
 ]);
 
 export const quoteImages = pgTable('quote_images', {

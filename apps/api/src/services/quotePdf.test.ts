@@ -108,6 +108,55 @@ describe('renderQuotePdf', () => {
     expect(buf.length).toBeGreaterThan(800);
   });
 
+  it('prefers a per-line uploaded image over the catalog image', async () => {
+    const loadCatalog = { called: false };
+    let requestedImage: string | null = null;
+    const buf = await renderQuotePdf(
+      { id: 'q1', quoteNumber: 'Q-7', oneTimeTotal: '100.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00', total: '100.00', currencyCode: 'USD' },
+      [{ id: 'b1', blockType: 'line_items', sortOrder: 0, content: {} }],
+      [{ id: 'l1', blockId: 'b1', catalogItemId: 'cat-1', imageId: 'li-img-1', name: 'AP', description: null, quantity: '1', unitPrice: '100', lineTotal: '100.00', recurrence: 'one_time' }],
+      async (imageId) => { requestedImage = imageId; return { data: ONE_BY_ONE_PNG }; },
+      {},
+      async () => { loadCatalog.called = true; return null; },
+    );
+    expect(buf.subarray(0, 4).toString()).toBe('%PDF');
+    expect(requestedImage).toBe('li-img-1');
+    // The uploaded image satisfied the thumbnail — the catalog loader never ran.
+    expect(loadCatalog.called).toBe(false);
+  });
+
+  it('spills a long table across pages with per-page footers (page count grows)', async () => {
+    const manyLines = Array.from({ length: 60 }, (_, i) => ({
+      id: `l${i}`, blockId: 'b1', name: `Item ${i + 1}`,
+      description: 'A reasonably descriptive line so rows take realistic height.',
+      quantity: '1', unitPrice: '10', lineTotal: '10.00', recurrence: 'one_time' as const,
+    }));
+    const buf = await renderQuotePdf(
+      { id: 'q1', quoteNumber: 'Q-5', oneTimeTotal: '600.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00', total: '600.00', currencyCode: 'USD' },
+      [{ id: 'b1', blockType: 'line_items', sortOrder: 0, content: { label: 'Hardware' } }],
+      manyLines,
+      async () => null,
+      { partnerName: 'Acme MSP', footer: 'Acme MSP LLC · acme.example.com · (512) 555-0100' },
+    );
+    expect(buf.subarray(0, 4).toString()).toBe('%PDF');
+    // Each page is a `/Type /Page` object in the (uncompressed) object dictionaries;
+    // 60 rows cannot fit one A4 page, so the table must have spilled.
+    const pageCount = (buf.toString('latin1').match(/\/Type \/Page[^s]/g) ?? []).length;
+    expect(pageCount).toBeGreaterThan(1);
+  });
+
+  it('a single-page quote stays single-page after the footer pass (no blank trailing page)', async () => {
+    const buf = await renderQuotePdf(
+      { id: 'q1', quoteNumber: 'Q-6', oneTimeTotal: '100.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00', total: '100.00', currencyCode: 'USD' },
+      [{ id: 'b1', blockType: 'line_items', sortOrder: 0, content: {} }],
+      [{ id: 'l1', blockId: 'b1', description: 'Setup', quantity: '1', unitPrice: '100', lineTotal: '100.00', recurrence: 'one_time' }],
+      async () => null,
+      { footer: 'Acme MSP LLC' },
+    );
+    const pageCount = (buf.toString('latin1').match(/\/Type \/Page[^s]/g) ?? []).length;
+    expect(pageCount).toBe(1);
+  });
+
   it('renderQuotePdf includes the From block and T&C', async () => {
     const buf = await renderQuotePdf(
       { id: 'q1', quoteNumber: 'Q-1', currencyCode: 'USD', billToName: 'Cust',

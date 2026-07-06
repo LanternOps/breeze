@@ -93,10 +93,32 @@ describe('QuoteEditor', () => {
     expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ message: 'Terms saved' }));
   });
 
+  it('editing the title and blurring issues PATCH /quotes/:id with { title }', async () => {
+    render(<QuoteEditor detail={draftDetail()} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+
+    const input = screen.getByTestId('quote-title');
+    fireEvent.change(input, { target: { value: 'Office network refresh' } });
+    fireEvent.blur(input);
+
+    await waitFor(() => {
+      const patchCall = fetchMock.mock.calls.find(
+        (c) => c[0] === '/quotes/q-1' && (c[1] as RequestInit)?.method === 'PATCH',
+      );
+      expect(patchCall).toBeTruthy();
+      expect(JSON.parse((patchCall![1] as RequestInit).body as string)).toMatchObject({
+        title: 'Office network refresh',
+      });
+    });
+    await waitFor(() => expect(screen.getByTestId('quote-title-saved')).toHaveTextContent('Saved'));
+  });
+
   it('debounces the screen-reader totals announcement to settle-time while visible figures stay live', async () => {
     vi.useFakeTimers();
     try {
-      const detail = draftDetail();
+      // Committed 10% rate: the rate itself is read-only in the editor, so the
+      // optimism trigger below is a line-qty edit computed against it.
+      const detail = draftDetail({ taxRate: '0.1' });
       detail.blocks = [
         { id: 'b-1', quoteId: 'q-1', orgId: 'org-1', blockType: 'line_items', content: {}, sortOrder: 0, createdAt: '2026-06-01T00:00:00Z' },
       ];
@@ -123,9 +145,10 @@ describe('QuoteEditor', () => {
       expect(sr).toHaveTextContent('due on acceptance $0.00');
       expect(sr).not.toHaveTextContent('tax');
 
-      // Editing the tax rate recomputes the VISIBLE figures immediately…
-      fireEvent.change(screen.getByTestId('quote-tax-rate'), { target: { value: '10' } });
-      expect(screen.getByTestId('quote-total-due-on-acceptance')).toHaveTextContent('$110.00');
+      // Editing a line qty recomputes the VISIBLE figures immediately (2 × $100
+      // taxable at the committed 10% rate → $220 due)…
+      fireEvent.change(screen.getByTestId('quote-line-qty-l-1'), { target: { value: '2' } });
+      expect(screen.getByTestId('quote-total-due-on-acceptance')).toHaveTextContent('$220.00');
       // …but the SR announcement still shows the previous settled sentence.
       expect(sr).toHaveTextContent('due on acceptance $0.00');
       expect(sr).not.toHaveTextContent('tax');
@@ -136,8 +159,8 @@ describe('QuoteEditor', () => {
 
       // Once the window closes, the announcement catches up to the settled totals.
       act(() => { vi.advanceTimersByTime(100); });
-      expect(sr).toHaveTextContent('tax $10.00');
-      expect(sr).toHaveTextContent('due on acceptance $110.00');
+      expect(sr).toHaveTextContent('tax $20.00');
+      expect(sr).toHaveTextContent('due on acceptance $220.00');
     } finally {
       vi.useRealTimers();
     }

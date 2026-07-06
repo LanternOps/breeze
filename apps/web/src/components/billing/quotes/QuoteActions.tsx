@@ -21,6 +21,10 @@ interface Props {
    * QuoteDetail, which suppresses its rail copy when the header owns the actions.
    */
   variant: 'rail' | 'header';
+  /** True while the editor still has an in-flight save or a dirty field. Send is
+   *  held (with a "Saving changes…" hint) until the quote is quiescent, so the
+   *  confirm dialog can't quote a stale total or race a blur-save server-side. */
+  savePending?: boolean;
 }
 
 /**
@@ -29,7 +33,7 @@ interface Props {
  * Detail rail and the workspace header can't drift in behavior or copy; the
  * data-testids are stable across both variants.
  */
-export default function QuoteActions({ detail, onChanged, variant }: Props) {
+export default function QuoteActions({ detail, onChanged, variant, savePending = false }: Props) {
   const { can } = usePermissions();
   const organizations = useOrgStore((s) => s.organizations);
   const { quote, blocks, lines } = detail;
@@ -117,15 +121,23 @@ export default function QuoteActions({ detail, onChanged, variant }: Props) {
           <button
             type="button"
             onClick={() => setSendOpen(true)}
-            disabled={sending || isEmpty}
+            disabled={sending || isEmpty || savePending}
             // Tie the disabled button to the visible hint below (rendered in both
             // variants) so AT announces the reason when the button takes focus.
-            aria-describedby={isEmpty ? `quote-send-empty-hint-${variant}` : undefined}
-            title={isEmpty ? 'Add at least one item before sending.' : undefined}
+            aria-describedby={
+              isEmpty ? `quote-send-empty-hint-${variant}`
+                : savePending ? `quote-send-saving-hint-${variant}`
+                : undefined
+            }
+            title={
+              isEmpty ? 'Add at least one item before sending.'
+                : savePending ? 'Saving your changes — Send unlocks when everything is saved.'
+                : undefined
+            }
             data-testid="quote-send"
             className={`${btnBase} bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50`}
           >
-            {sending ? 'Sending…' : 'Send proposal'}
+            {sending ? 'Sending…' : savePending ? 'Saving…' : 'Send proposal'}
           </button>
         )}
         {/* PDF download is a read affordance (quotes has no dedicated export
@@ -164,6 +176,17 @@ export default function QuoteActions({ detail, onChanged, variant }: Props) {
             className={header ? 'basis-full text-xs text-muted-foreground text-right' : 'text-center text-xs text-muted-foreground'}
           >
             Add at least one item before sending.
+          </p>
+        )}
+        {canSend && !isEmpty && savePending && (
+          // Same placement rules as the empty-quote hint above: the user must be
+          // able to SEE why the money-button is held, not just hover for it.
+          <p
+            id={`quote-send-saving-hint-${variant}`}
+            data-testid="quote-send-saving-hint"
+            className={header ? 'basis-full text-xs text-muted-foreground text-right' : 'text-center text-xs text-muted-foreground'}
+          >
+            Saving changes… Send unlocks when everything is saved.
           </p>
         )}
       </div>

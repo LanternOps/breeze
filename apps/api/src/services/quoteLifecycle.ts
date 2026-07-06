@@ -88,10 +88,14 @@ export async function sendQuote(id: string, actor: QuoteActor): Promise<{ quote:
     throw new QuoteServiceError(`Cannot send a quote in status ${quote.status}`, 409, 'INVALID_STATE');
   }
 
-  // Assign a number on first issue. (A draft never has a number yet.)
-  const year = new Date(quote.issueDate ?? Date.now()).getUTCFullYear();
-  const counter = await allocateQuoteCounter(quote.partnerId, year);
-  const quoteNumber = formatQuoteNumber('Q', year, counter);
+  // Quotes are numbered at creation now; keep that number on issue. Only legacy
+  // drafts created before number-at-creation still allocate here.
+  let quoteNumber = quote.quoteNumber;
+  if (!quoteNumber) {
+    const year = new Date(quote.issueDate ?? Date.now()).getUTCFullYear();
+    const counter = await allocateQuoteCounter(quote.partnerId, year);
+    quoteNumber = formatQuoteNumber('Q', year, counter);
+  }
 
   const now = new Date();
   const issueDate = quote.issueDate ?? now.toISOString().slice(0, 10);
