@@ -88,7 +88,9 @@ describe('createInvoicePayLink (breeze_app, real DB)', () => {
     // currency-aware minor units: $100.00 → 10000
     const call = sessionsCreateMock.mock.calls[0]!;
     expect(call[0].line_items[0].price_data.unit_amount).toBe(10000);
-    expect(call[1].idempotencyKey).toBe(`inv_${inv.id}_10000`);
+    // #2245 deposit invoicing: the idempotency key now carries a _dep/_bal
+    // suffix. A plain payable (non-deposit) invoice charges the balance → `_bal`.
+    expect(call[1].idempotencyKey).toBe(`inv_${inv.id}_10000_bal`);
 
     const mappings = await withSystemDbAccessContext(() =>
       db.select().from(invoiceStripePayments).where(eq(invoiceStripePayments.invoiceId, inv.id)));
