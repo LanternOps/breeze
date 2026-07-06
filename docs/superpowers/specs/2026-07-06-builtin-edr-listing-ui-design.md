@@ -33,7 +33,10 @@ looking uniformly unfinished.
 
 Four confirmed intents (all in scope):
 1. **Show it's ready-to-deploy** — a readiness panel, not silence.
-2. **Make it look branded/intentional** — provider brand mark + product framing.
+2. **Make it look intentional** — product framing (name, blurb, "Managed built-in"
+   chip) and a tinted security icon per provider. **No official brand marks/logos**
+   (avoids trademark/asset concerns) — a `ShieldCheck` tinted with the provider
+   accent replaces the generic grey box.
 3. **Guide the deploy flow** — Deploy preselects this package; clarify it targets mapped orgs.
 4. **Hide the prereq-looking cues** — when ready, no warnings/tooltips; for Huntress nothing is ever uploaded.
 
@@ -86,17 +89,18 @@ All new files under `apps/web/src/components/software/`.
 A static, declarative map keyed by `IntegrationProvider`:
 ```
 provider → {
-  label:        string        // "Huntress"
-  brandMark:    ReactNode      // inline SVG (CSP blocks external logos)
-  blurb:        string         // "Managed endpoint detection & response — installs the latest agent automatically."
-  accent:       string         // tailwind class group for the accent
-  readiness:    ReadinessSpec  // ordered checks + how to read them (see below)
+  label:        string          // "Huntress"
+  icon:         LucideIcon        // ShieldCheck (NOT an official logo)
+  accent:       string           // tailwind class group for the tinted icon + chip
+  blurb:        string           // "Managed endpoint detection & response — installs the latest agent automatically."
+  readiness:    ReadinessSpec    // ordered checks + how to read them (see below)
 }
 ```
-- Brand marks are **bundled inline SVGs** (no external URLs — the app CSP blocks
-  remote hosts, and `ensureBuiltinPackage` currently stores `iconUrl: null`). If
-  a real logo asset isn't available, fall back to a tasteful `ShieldCheck`-style
-  mark tinted with the provider accent rather than the generic grey `Package` box.
+- **No official brand marks/logos** (per decision — avoids trademark/asset
+  concerns, and `ensureBuiltinPackage` stores `iconUrl: null` anyway). Each
+  provider gets a `ShieldCheck` lucide icon tinted with its accent class,
+  replacing the generic grey `Package` box. "Intentional" comes from the accent +
+  product framing (name, blurb, chip), not a logo.
 
 ### `useEdrReadiness.ts`
 A hook that fetches the provider status **once** per mount and returns a
@@ -121,8 +125,8 @@ normalized, provider-agnostic readiness object:
 ### `BuiltinPackageDetail.tsx`
 Rendered as the detail-modal body when `selectedSoftware.integrationProvider` is
 set (replacing the current generic Details tab body for built-ins). Composition:
-- **Branded header:** provider brand mark + name + `blurb`; a "Managed built-in"
-  chip. Website link if present.
+- **Header:** provider tinted `ShieldCheck` icon + name + `blurb`; a "Managed
+  built-in" chip. Website link if present. (No official logo.)
 - **Readiness panel:** the ordered checks from `useEdrReadiness`, each a
   row with a check/alert icon.
   - **All green:** a single confident line ("Ready to deploy to N mapped orgs")
@@ -137,8 +141,8 @@ set (replacing the current generic Details tab body for built-ins). Composition:
 
 ## `SoftwareCatalog.tsx` changes
 
-- **Card (grid):** for built-in EDR items, render the provider brand mark instead
-  of the grey `Package` box, and a subtle readiness **pill** (green "Ready" /
+- **Card (grid):** for built-in EDR items, render the provider tinted `ShieldCheck`
+  icon instead of the grey `Package` box, and a subtle readiness **pill** (green "Ready" /
   amber "Setup needed" / neutral "Checking…") driven by the shared readiness
   fetch. Because there is one integration per partner, fetch readiness **once** at
   the catalog level and pass it down — do not issue one request per card.
@@ -191,7 +195,7 @@ set (replacing the current generic Details tab body for built-ins). Composition:
 
 ## Build order
 
-1. `providerBranding.ts` + bundled brand marks (+ fallback).
+1. `providerBranding.ts` (tinted `ShieldCheck` per provider — no logo assets).
 2. `useEdrReadiness.ts` with Huntress wired; unit tests.
 3. `BuiltinPackageDetail.tsx` (readiness panel + guided CTA); tests.
 4. `SoftwareCatalog.tsx` — brand mark + pill on cards, delegate built-in detail
