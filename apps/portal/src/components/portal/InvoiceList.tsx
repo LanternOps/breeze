@@ -2,6 +2,7 @@ import { withBase } from '@/lib/basePath';
 import { Receipt, AlertCircle } from 'lucide-react';
 import { type InvoiceSummary } from '@/lib/api';
 import { STATUS_LABELS, statusColor } from '@/lib/invoiceStatus';
+import { depositBadgeState } from '@/lib/invoiceDeposit';
 import { cn } from '@/lib/utils';
 
 interface InvoiceListProps {
@@ -76,9 +77,24 @@ export function InvoiceList({ invoices, error }: InvoiceListProps) {
                   <td className="px-4 py-3 text-right text-sm">{money(inv.total, inv.currencyCode)}</td>
                   <td className="px-4 py-3 text-right text-sm">{money(inv.balance, inv.currencyCode)}</td>
                   <td className="px-4 py-3">
-                    <span className={cn('inline-flex rounded-full px-2 py-1 text-xs font-medium', statusColor(inv.status))}>
-                      {STATUS_LABELS[inv.status]}
-                    </span>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className={cn('inline-flex rounded-full px-2 py-1 text-xs font-medium', statusColor(inv.status))}>
+                        {STATUS_LABELS[inv.status]}
+                      </span>
+                      {(() => {
+                        const deposit = depositBadgeState(inv);
+                        if (!deposit) return null;
+                        return deposit === 'unpaid' ? (
+                          <span className="inline-flex rounded-full px-2 py-1 text-xs font-medium bg-warning/10 text-warning" data-testid="deposit-unpaid-badge">
+                            Deposit unpaid
+                          </span>
+                        ) : (
+                          <span className="inline-flex rounded-full px-2 py-1 text-xs font-medium bg-success/10 text-success" data-testid="deposit-paid-badge">
+                            Deposit paid
+                          </span>
+                        );
+                      })()}
+                    </div>
                   </td>
                 </tr>
               ))}

@@ -51,6 +51,7 @@ invoiceRoutes.get('/invoices', zValidator('query', listSchema), async (c) => {
       total: invoices.total,
       amountPaid: invoices.amountPaid,
       balance: invoices.balance,
+      depositDue: invoices.depositDue,
     })
     .from(invoices)
     .where(conditions)

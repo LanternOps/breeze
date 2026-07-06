@@ -315,6 +315,9 @@ export interface InvoiceSummary {
   total: string;
   amountPaid: string;
   balance: string;
+  // Snapshotted deposit due at quote acceptance; null when the invoice has no
+  // deposit. Present on both the list select and the detail payload.
+  depositDue: string | null;
 }
 
 // Intentional duplicate of SellerSnapshot in apps/api/src/services/sellerSnapshot.ts

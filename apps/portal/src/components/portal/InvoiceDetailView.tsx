@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { ArrowLeft, AlertCircle, Download, CreditCard } from 'lucide-react';
 import { type InvoiceDetail, type InvoiceStatus, buildPortalApiUrl, portalApi } from '@/lib/api';
 import { STATUS_LABELS, statusColor } from '@/lib/invoiceStatus';
+import { computeChargeNow } from '@/lib/invoiceDeposit';
 import { cn } from '@/lib/utils';
 import { DocumentPaper, DocumentHeader, DocumentTerms, type DocSeller } from './documentShell';
 
@@ -99,6 +100,17 @@ export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
   const { invoice, lines } = detail;
   const currency = invoice.currencyCode;
   const canPay = PAYABLE_STATUSES.has(invoice.status) && Number(invoice.balance) > 0;
+  // Deposit-aware charge amount — matches what the server's pay route charges (Task 8),
+  // so the button label and the deposit strip never diverge from the actual charge.
+  const hasDeposit = invoice.depositDue != null;
+  const chargeNow = computeChargeNow({
+    depositDue: invoice.depositDue ?? null,
+    amountPaid: invoice.amountPaid,
+    balance: invoice.balance,
+  });
+  const payLabel = chargeNow.isDeposit
+    ? `Pay deposit ${money(chargeNow.amount, currency)}`
+    : `Pay ${money(chargeNow.amount, currency)}`;
   // Per-line Tax column only when this invoice carries tax (mirrors the Tax row).
   const taxRate = invoice.taxRate ? Number(invoice.taxRate) : 0;
   const showTax = Number(invoice.taxTotal) > 0;
@@ -175,7 +187,7 @@ export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
               className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
             >
               <CreditCard className="h-4 w-4" />
-              {paying ? 'Redirecting…' : 'Pay now'}
+              {paying ? 'Redirecting…' : payLabel}
             </button>
           )}
           <button
@@ -266,6 +278,15 @@ export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
               <span className="text-sm font-semibold text-foreground">Balance due</span>
               <span className="text-2xl font-semibold tabular-nums" style={{ color: 'var(--doc-accent)' }} data-testid="invoice-balance-due">{money(invoice.balance, currency)}</span>
             </div>
+            {hasDeposit && (
+              <div className="rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground" data-testid="invoice-deposit-strip">
+                {chargeNow.isDeposit ? (
+                  <>Deposit of <strong className="text-foreground">{money(invoice.depositDue!, currency)}</strong> due — {money(invoice.amountPaid, currency)} of {money(invoice.total, currency)} paid.</>
+                ) : (
+                  <>Deposit paid — remaining balance {money(invoice.balance, currency)}.</>
+                )}
+              </div>
+            )}
           </div>
         </section>
 
