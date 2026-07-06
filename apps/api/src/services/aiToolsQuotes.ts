@@ -23,6 +23,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool, AiToolTier } from './aiTools';
 import {
   createQuote,
+  getQuote,
   updateQuote,
   deleteDraftQuote,
   addBlock,
@@ -96,7 +97,19 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
           partNumber: { type: 'string' },
           reason: { type: 'string', description: 'Decline reason' },
           input: { type: 'object', description: 'Full create-quote payload including orgId and siteId' },
-          patch: { type: 'object', description: 'Quote header or line patch fields' },
+          patch: {
+            type: 'object',
+            description:
+              'Quote header or line patch fields. Header (update): depositType (\'none\'|\'percent\'|\'selected_lines\', ' +
+              'omit to leave unchanged), depositPercent (0-100 exclusive, 2dp; null clears — only used when depositType ' +
+              'is \'percent\'). Line (update_line): depositEligible (boolean; whether this line counts toward the ' +
+              'deposit-due calculation when depositType is \'selected_lines\').',
+            properties: {
+              depositType: { type: 'string', enum: ['none', 'percent', 'selected_lines'] },
+              depositPercent: { type: ['number', 'null'] },
+              depositEligible: { type: 'boolean' },
+            },
+          },
           block: { type: 'object', description: 'Quote block input fields' },
           line: { type: 'object', description: 'Manual quote line fields' },
           blockIds: { type: 'array', items: { type: 'string' }, description: 'Ordered block UUIDs' },
@@ -113,12 +126,17 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
         switch (input.action) {
           case 'create_draft':
             return JSON.stringify(await createQuote(input.input as CreateQuoteInput, actor));
-          case 'update':
-            return JSON.stringify(await updateQuote(
-              String(input.quoteId),
-              input.patch as UpdateQuoteInput,
-              actor
-            ));
+          case 'update': {
+            const quoteId = String(input.quoteId);
+            await updateQuote(quoteId, input.patch as UpdateQuoteInput, actor);
+            // Re-read rather than return updateQuote's raw row: the raw row carries
+            // depositType/depositPercent/depositAmount but not the derived
+            // depositDueTotal/categoryBreakdown (computed from current lines in
+            // getQuote) — there's no separate read tool for the AI to fetch those,
+            // so the update response has to surface them itself.
+            const { quote } = await getQuote(quoteId, actor);
+            return JSON.stringify(quote);
+          }
           case 'delete_draft':
             await deleteDraftQuote(String(input.quoteId), actor);
             return JSON.stringify({ ok: true });

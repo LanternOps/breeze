@@ -44,6 +44,7 @@ import {
 import { createInvoicePayLink } from './invoiceCheckout';
 import { InvoiceServiceError, type InvoiceActor } from './invoiceTypes';
 import { computeContractEstimate, getContract } from './contractService';
+import { toCents } from './invoiceMath';
 
 type UpdateInvoiceLinePatch = Parameters<typeof updateLine>[2];
 type UpdateInvoiceHeaderPatch = Parameters<typeof updateInvoice>[1];
@@ -63,6 +64,20 @@ function serviceErrorToJson(err: unknown): string | null {
   return null;
 }
 
+/**
+ * Adds a derived `depositPaid` boolean (amountPaid >= depositDue, compared in
+ * integer cents to avoid float/string drift) to a read-only invoice payload.
+ * When no deposit is configured (`depositDue` null/undefined), `depositPaid`
+ * is omitted entirely rather than emitted as `false` — there's no deposit
+ * state to report, and `false` would misleadingly read as "deposit unpaid".
+ */
+function withDepositPaid<T extends { depositDue?: string | null; amountPaid: string }>(
+  inv: T
+): T & { depositPaid?: boolean } {
+  if (inv.depositDue == null) return inv;
+  return { ...inv, depositPaid: toCents(inv.amountPaid) >= toCents(inv.depositDue) };
+}
+
 export function registerBillingTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('list_invoices', {
     tier: 2 as AiToolTier,
@@ -70,7 +85,8 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'list_invoices',
       description:
-        'List invoices for the orgs the caller can access, newest first. Optionally filter by org or status. Read-only.',
+        'List invoices for the orgs the caller can access, newest first. Optionally filter by org or status. ' +
+        'Each invoice includes depositDue and, when a deposit is configured, a derived depositPaid boolean. Read-only.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -96,7 +112,7 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
           },
           actorFromAuth(auth)
         );
-        return JSON.stringify({ invoices: rows, showing: rows.length });
+        return JSON.stringify({ invoices: rows.map(withDepositPaid), showing: rows.length });
       } catch (err) {
         const json = serviceErrorToJson(err);
         if (json) return json;
@@ -111,7 +127,8 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'get_invoice',
       description:
-        'Get the full accounting view of one invoice (header plus all lines) by id. Read-only.',
+        'Get the full accounting view of one invoice (header plus all lines) by id. Includes depositDue and, ' +
+        'when a deposit is configured, a derived depositPaid boolean. Read-only.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -123,7 +140,7 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
     handler: async (input, auth) => {
       try {
         const result = await getInvoice(String(input.invoiceId), actorFromAuth(auth));
-        return JSON.stringify(result);
+        return JSON.stringify({ ...result, invoice: withDepositPaid(result.invoice) });
       } catch (err) {
         const json = serviceErrorToJson(err);
         if (json) return json;

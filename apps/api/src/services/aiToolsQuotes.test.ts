@@ -3,6 +3,19 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('./quoteService', () => ({
   createQuote: vi.fn().mockResolvedValue({ id: 'quote-1', status: 'draft' }),
   updateQuote: vi.fn().mockResolvedValue({ id: 'quote-1', introNotes: 'Updated' }),
+  getQuote: vi.fn().mockResolvedValue({
+    quote: {
+      id: 'quote-1',
+      introNotes: 'Updated',
+      depositType: 'percent',
+      depositPercent: '30.00',
+      depositAmount: '150.00',
+      depositDueTotal: '150.00',
+      categoryBreakdown: { hardware: '150.00' },
+    },
+    blocks: [],
+    lines: [],
+  }),
   deleteDraftQuote: vi.fn().mockResolvedValue(undefined),
   addBlock: vi.fn().mockResolvedValue({ id: 'block-1', quoteId: 'quote-1' }),
   updateBlock: vi.fn().mockResolvedValue({ id: 'block-1', content: { text: 'Updated' } }),
@@ -80,6 +93,39 @@ describe('manage_quotes', () => {
 
     expect(quoteService.createQuote).toHaveBeenCalledWith(input, actor);
     expect(JSON.parse(out)).toEqual({ id: 'quote-1', status: 'draft' });
+  });
+
+  it('update passes depositType/depositPercent through to updateQuote and re-reads the quote', async () => {
+    const patch = { depositType: 'percent', depositPercent: 30 };
+
+    const out = await getTool().handler(
+      { action: 'update', quoteId: 'quote-1', patch },
+      auth,
+    );
+
+    expect(quoteService.updateQuote).toHaveBeenCalledWith('quote-1', patch, actor);
+    expect(quoteService.getQuote).toHaveBeenCalledWith('quote-1', actor);
+    expect(JSON.parse(out)).toEqual({
+      id: 'quote-1',
+      introNotes: 'Updated',
+      depositType: 'percent',
+      depositPercent: '30.00',
+      depositAmount: '150.00',
+      depositDueTotal: '150.00',
+      categoryBreakdown: { hardware: '150.00' },
+    });
+  });
+
+  it('update_line passes depositEligible through to updateLine', async () => {
+    const patch = { depositEligible: true };
+
+    const out = await getTool().handler(
+      { action: 'update_line', quoteId: 'quote-1', lineId: 'line-1', patch },
+      auth,
+    );
+
+    expect(quoteService.updateLine).toHaveBeenCalledWith('quote-1', 'line-1', patch, actor);
+    expect(JSON.parse(out)).toEqual({ id: 'line-1', quantity: '2' });
   });
 
   it('send calls sendQuote with quoteId and actor', async () => {

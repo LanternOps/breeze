@@ -97,6 +97,14 @@ function getTool(): AiTool {
   return t;
 }
 
+function getReadTool(name: 'get_invoice' | 'list_invoices'): AiTool {
+  const map = new Map<string, AiTool>();
+  registerBillingTools(map);
+  const t = map.get(name);
+  if (!t) throw new Error(`${name} not registered`);
+  return t;
+}
+
 describe('manage_invoices', () => {
   beforeEach(() => vi.clearAllMocks());
 
@@ -267,5 +275,61 @@ describe('manage_invoices', () => {
     const out = await getTool().handler({ action: 'nope' }, auth);
 
     expect(JSON.parse(out)).toHaveProperty('error');
+  });
+});
+
+describe('get_invoice / list_invoices deposit fields', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('get_invoice adds depositPaid=true when amountPaid covers depositDue', async () => {
+    vi.mocked(invoiceService.getInvoice).mockResolvedValueOnce({
+      invoice: { id: 'inv-1', depositDue: '100.00', amountPaid: '100.00' },
+      lines: [],
+      stripeConnected: false,
+    } as any);
+
+    const out = await getReadTool('get_invoice').handler({ invoiceId: 'inv-1' }, auth);
+
+    expect(JSON.parse(out).invoice).toMatchObject({ depositDue: '100.00', depositPaid: true });
+  });
+
+  it('get_invoice adds depositPaid=false when amountPaid is short of depositDue', async () => {
+    vi.mocked(invoiceService.getInvoice).mockResolvedValueOnce({
+      invoice: { id: 'inv-1', depositDue: '100.00', amountPaid: '40.00' },
+      lines: [],
+      stripeConnected: false,
+    } as any);
+
+    const out = await getReadTool('get_invoice').handler({ invoiceId: 'inv-1' }, auth);
+
+    expect(JSON.parse(out).invoice).toMatchObject({ depositDue: '100.00', depositPaid: false });
+  });
+
+  it('get_invoice omits depositPaid when no deposit is configured', async () => {
+    vi.mocked(invoiceService.getInvoice).mockResolvedValueOnce({
+      invoice: { id: 'inv-1', depositDue: null, amountPaid: '0.00' },
+      lines: [],
+      stripeConnected: false,
+    } as any);
+
+    const out = await getReadTool('get_invoice').handler({ invoiceId: 'inv-1' }, auth);
+
+    expect(JSON.parse(out).invoice).toEqual({ id: 'inv-1', depositDue: null, amountPaid: '0.00' });
+    expect(JSON.parse(out).invoice).not.toHaveProperty('depositPaid');
+  });
+
+  it('list_invoices adds depositPaid per row using integer-cents comparison', async () => {
+    vi.mocked(invoiceService.listInvoices).mockResolvedValueOnce([
+      { id: 'inv-1', depositDue: '68.20', amountPaid: '68.20' },
+      { id: 'inv-2', depositDue: '100.00', amountPaid: '99.99' },
+      { id: 'inv-3', depositDue: null, amountPaid: '0.00' },
+    ] as any);
+
+    const out = await getReadTool('list_invoices').handler({}, auth);
+    const { invoices } = JSON.parse(out);
+
+    expect(invoices[0]).toMatchObject({ depositPaid: true });
+    expect(invoices[1]).toMatchObject({ depositPaid: false });
+    expect(invoices[2]).not.toHaveProperty('depositPaid');
   });
 });
