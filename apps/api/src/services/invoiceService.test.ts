@@ -202,6 +202,56 @@ describe('invoiceService guards', () => {
   });
 });
 
+describe('updateIssuedDueDate', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+
+  it('updates dueDate on a sent invoice and returns old/new in the audit payload', async () => {
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', dueDate: '2026-06-01' }]); // getOwnedInvoiceOr404
+    queueResult([]); // db.update dueDate
+    // recomputeInvoiceStatus internals:
+    queueResult([{ id: 'i1', orgId: 'org1', invoiceNumber: 'INV-0001', total: '100.00', dueDate: '2026-09-01', voidedAt: null, paidAt: null, markedOverdueAt: null }]); // getOwnedInvoiceOr404
+    queueResult([{ amount: '0.00' }]); // paidRows
+    queueResult([]); // db.update status patch
+    // final getOwnedInvoiceOr404
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', dueDate: '2026-09-01' }]);
+
+    const result = await svc.updateIssuedDueDate('i1', '2026-09-01', actor);
+    expect(result.audit).toEqual({ orgId: 'org1', invoiceId: 'i1', oldDueDate: '2026-06-01', newDueDate: '2026-09-01' });
+    expect(result.invoice.dueDate).toBe('2026-09-01');
+  });
+
+  it('re-derives status: an overdue invoice moved to a future due date flips back to partially_paid', async () => {
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+    queueResult([{ id: 'i1', status: 'overdue', orgId: 'org1', partnerId: 'p1', dueDate: '2026-01-01' }]); // getOwnedInvoiceOr404
+    queueResult([]); // db.update dueDate
+    // recomputeInvoiceStatus internals: total 100, paid 40 -> balance 60 > 0, dueDate now future -> partially_paid
+    queueResult([{ id: 'i1', orgId: 'org1', invoiceNumber: 'INV-0002', total: '100.00', dueDate: '2026-12-01', voidedAt: null, paidAt: null, markedOverdueAt: '2026-02-01' }]);
+    queueResult([{ amount: '40.00' }]); // paidRows
+    queueResult([]); // db.update status patch
+    queueResult([{ id: 'i1', status: 'partially_paid', orgId: 'org1', partnerId: 'p1', dueDate: '2026-12-01' }]); // final getOwnedInvoiceOr404
+
+    const result = await svc.updateIssuedDueDate('i1', '2026-12-01', actor);
+    expect(result.invoice.status).toBe('partially_paid');
+  });
+
+  it.each(['draft', 'paid', 'void'])('409s (INVALID_STATE) when invoice status is %s', async (status) => {
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+    queueResult([{ id: 'i1', status, orgId: 'org1', partnerId: 'p1', dueDate: '2026-06-01' }]);
+    await expect(
+      svc.updateIssuedDueDate('i1', '2026-09-01', actor)
+    ).rejects.toMatchObject({ code: 'INVALID_STATE', status: 409 });
+  });
+
+  it('denies an actor without access to the invoice org (ORG_DENIED 403)', async () => {
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', dueDate: '2026-06-01' }]);
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['other-org'] };
+    await expect(
+      svc.updateIssuedDueDate('i1', '2026-09-01', actor)
+    ).rejects.toMatchObject({ code: 'ORG_DENIED', status: 403 });
+  });
+});
+
 describe('addContractLine', () => {
   beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
 

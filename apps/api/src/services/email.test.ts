@@ -275,3 +275,39 @@ describe('email service', () => {
     expect(createTransportMock).not.toHaveBeenCalled();
   });
 });
+
+describe('buildInvoiceTemplate', () => {
+  const base = {
+    invoiceNumber: 'INV-0001',
+    partnerName: 'Acme MSP',
+    total: '$10,000.00',
+    dueDate: '2026-09-01',
+    portalUrl: 'https://portal.example.com/invoices/i1',
+  };
+
+  it('renders "Amount due now" equal to the total when there is no deposit', async () => {
+    const { buildInvoiceTemplate } = await import('./email');
+    const t = buildInvoiceTemplate(base);
+    expect(t.html).toContain('Amount due now');
+    expect(t.html).toContain('$10,000.00');
+    expect(t.text).toContain('Amount due now: $10,000.00 by 2026-09-01.');
+  });
+
+  it('renders "Amount due now" + "Paid to date" when deposit params are present', async () => {
+    const { buildInvoiceTemplate } = await import('./email');
+    const t = buildInvoiceTemplate({ ...base, amountDueNow: '$7,000.00', amountPaid: '$3,000.00' });
+    expect(t.html).toContain('Amount due now');
+    expect(t.html).toContain('$7,000.00');
+    expect(t.html).toContain('Paid to date');
+    expect(t.html).toContain('$3,000.00');
+    expect(t.text).toContain('Amount due now: $7,000.00 by 2026-09-01.');
+    expect(t.text).toContain('Paid to date: $3,000.00 of $10,000.00.');
+  });
+
+  it('omits the "Paid to date" line when amountPaid is not supplied', async () => {
+    const { buildInvoiceTemplate } = await import('./email');
+    const t = buildInvoiceTemplate({ ...base, amountDueNow: '$10,000.00' });
+    expect(t.html).not.toContain('Paid to date');
+    expect(t.text).not.toContain('Paid to date');
+  });
+});

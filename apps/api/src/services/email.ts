@@ -34,6 +34,11 @@ export interface InvoiceEmailParams {
   dueDate: string;
   portalUrl: string;
   supportEmail?: string;
+  // Deposit-aware payment-request fields (optional — omitted for pre-deposit
+  // callers, in which case "Amount due now" just equals the total). Wording is
+  // intentionally the same for ALL invoices; there's no behavioral copy fork.
+  amountDueNow?: string;
+  amountPaid?: string;
 }
 
 export interface PasswordResetEmailParams {
@@ -731,13 +736,18 @@ export function buildInvoiceTemplate(params: InvoiceEmailParams): EmailTemplate 
   const number = params.invoiceNumber.trim();
   const subject = `Invoice ${number} from ${params.partnerName}`;
   const preheader = `Invoice ${number} — ${params.total}${params.dueDate ? `, due ${params.dueDate}` : ''}.`;
+  const dueNow = params.amountDueNow ?? params.total;
   const dueLine = params.dueDate
-    ? `<p style="${BODY_PARA}">Amount due: <strong>${escapeHtml(params.total)}</strong> by <strong>${escapeHtml(params.dueDate)}</strong>.</p>`
-    : `<p style="${BODY_PARA}">Amount due: <strong>${escapeHtml(params.total)}</strong>.</p>`;
+    ? `<p style="${BODY_PARA}">Amount due now: <strong>${escapeHtml(dueNow)}</strong> by <strong>${escapeHtml(params.dueDate)}</strong>.</p>`
+    : `<p style="${BODY_PARA}">Amount due now: <strong>${escapeHtml(dueNow)}</strong>.</p>`;
+  const paidLine = params.amountPaid
+    ? `<p style="${MUTED_PARA}">Paid to date: ${escapeHtml(params.amountPaid)} of ${escapeHtml(params.total)}.</p>`
+    : '';
   const body = `
       <p style="${BODY_PARA}">Hi there,</p>
       <p style="${BODY_PARA}">${escapeHtml(params.partnerName)} has sent you invoice <strong>${escapeHtml(number)}</strong>. A PDF copy is attached to this email.</p>
       ${dueLine}
+      ${paidLine}
       ${renderButton('View invoice', params.portalUrl)}
       <p style="${MUTED_PARA}">You can view this invoice and download a copy any time from your customer portal.</p>
   `;
@@ -753,7 +763,8 @@ export function buildInvoiceTemplate(params: InvoiceEmailParams): EmailTemplate 
   const text = [
     'Hi there,',
     `${params.partnerName} has sent you invoice ${number}. A PDF copy is attached.`,
-    params.dueDate ? `Amount due: ${params.total} by ${params.dueDate}.` : `Amount due: ${params.total}.`,
+    params.dueDate ? `Amount due now: ${dueNow} by ${params.dueDate}.` : `Amount due now: ${dueNow}.`,
+    params.amountPaid ? `Paid to date: ${params.amountPaid} of ${params.total}.` : null,
     `View invoice: ${params.portalUrl}`,
     support ? `Questions about this invoice? Contact ${support}.` : null,
   ]

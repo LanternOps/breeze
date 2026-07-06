@@ -12,6 +12,7 @@ vi.mock('../../services/invoiceService', () => ({
   removeLine: vi.fn(),
   deleteDraftInvoice: vi.fn(),
   updateInvoice: vi.fn(),
+  updateIssuedDueDate: vi.fn(),
   issueInvoice: vi.fn(),
   voidInvoice: vi.fn(),
   recordPayment: vi.fn(),
@@ -62,6 +63,7 @@ import { invoiceAssemblyRoutes } from './assembly';
 import * as svc from '../../services/invoiceService';
 import * as pdfSvc from '../../services/invoicePdf';
 import * as brandingSvc from '../../services/quoteBranding';
+import { writeRouteAudit } from '../../services/auditEvents';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
 
 function app() {
@@ -191,6 +193,59 @@ describe('invoice crud + lines routes', () => {
     expect(res.status).toBe(409);
     const body = await res.json();
     expect(body.code).toBe('NOTHING_TO_INVOICE');
+  });
+});
+
+describe('invoice due-date route', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('PATCH /:id/due-date rejects a malformed date (400, no service call)', async () => {
+    const res = await app().request(`/${INV_ID}/due-date`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ dueDate: '09/01/2026' })
+    });
+    expect(res.status).toBe(400);
+    expect(svc.updateIssuedDueDate).not.toHaveBeenCalled();
+  });
+
+  it('PATCH /:id/due-date updates the due date and writes invoice.due_date.updated to the audit chain', async () => {
+    (svc.updateIssuedDueDate as any).mockResolvedValue({
+      invoice: { id: INV_ID, dueDate: '2026-09-01', status: 'sent' },
+      audit: { orgId: ORG_ID, invoiceId: INV_ID, oldDueDate: '2026-06-01', newDueDate: '2026-09-01' }
+    });
+    const res = await app().request(`/${INV_ID}/due-date`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ dueDate: '2026-09-01' })
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.dueDate).toBe('2026-09-01');
+    expect(svc.updateIssuedDueDate).toHaveBeenCalledWith(INV_ID, '2026-09-01', expect.anything());
+    expect(writeRouteAudit).toHaveBeenCalledTimes(1);
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), {
+      orgId: ORG_ID,
+      action: 'invoice.due_date.updated',
+      resourceType: 'invoice',
+      resourceId: INV_ID,
+      details: { oldDueDate: '2026-06-01', newDueDate: '2026-09-01' }
+    });
+  });
+
+  it('maps an INVALID_STATE InvoiceServiceError from updateIssuedDueDate to 409', async () => {
+    (svc.updateIssuedDueDate as any).mockRejectedValue(
+      new InvoiceServiceError('Due date can only be changed on an open issued invoice', 409, 'INVALID_STATE')
+    );
+    const res = await app().request(`/${INV_ID}/due-date`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ dueDate: '2026-09-01' })
+    });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe('INVALID_STATE');
+    expect(writeRouteAudit).not.toHaveBeenCalled();
   });
 });
 

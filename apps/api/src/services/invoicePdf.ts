@@ -25,6 +25,7 @@ import { emitInvoiceEvent } from './invoiceEvents';
 import { InvoiceServiceError } from './invoiceTypes';
 import type { InvoiceActor } from './invoiceTypes';
 import { buildSellerSnapshot, sellerAddressLines, type SellerSnapshot } from './sellerSnapshot';
+import { computeChargeNow } from '@breeze/shared';
 
 type InvoiceRow = typeof invoices.$inferSelect;
 type InvoiceLineRow = typeof invoiceLines.$inferSelect;
@@ -511,12 +512,18 @@ export async function sendInvoiceEmail(invoiceId: string, actor: InvoiceActor): 
       'http://localhost:4321'
     ).replace(/\/$/, '');
     const portalLink = `${portalBase}/invoices/${invoiceId}`;
+    // This IS the "Request balance payment" action for deposit invoices: chargeNow
+    // reflects the deposit-vs-balance split so the email states what's owed NOW,
+    // not just the invoice total (which may already be partially covered).
+    const chargeNow = computeChargeNow({ depositDue: invoice.depositDue, amountPaid: invoice.amountPaid, balance: invoice.balance });
     const template = buildInvoiceTemplate({
       invoiceNumber: invoice.invoiceNumber ?? '',
       partnerName: partner?.name ?? 'your provider',
       total: formatMoney(invoice.total, invoice.currencyCode ?? 'USD'),
       dueDate: formatDate(invoice.dueDate),
       portalUrl: portalLink,
+      amountDueNow: formatMoney(chargeNow.amount, invoice.currencyCode ?? 'USD'),
+      amountPaid: Number(invoice.amountPaid) > 0 ? formatMoney(invoice.amountPaid, invoice.currencyCode ?? 'USD') : undefined,
     });
     await emailService.sendEmail({
       to: recipient,

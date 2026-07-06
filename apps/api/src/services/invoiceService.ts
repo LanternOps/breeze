@@ -259,6 +259,25 @@ export async function updateInvoice(
   return getOwnedInvoiceOr404(invoiceId);
 }
 
+/**
+ * Due-date carve-out (deposit spec): the ONE field editable on an ISSUED invoice.
+ * Due date is scheduling metadata, not signed financial content — the immutability
+ * rule (billing-v1.1 roadmap) covers money/lines, which stay locked. Status is
+ * re-derived so pushing the date out un-flags a premature 'overdue'.
+ */
+export async function updateIssuedDueDate(invoiceId: string, dueDate: string, actor: InvoiceActor) {
+  const inv = await getOwnedInvoiceOr404(invoiceId);
+  requireOrgAccess(actor, inv.orgId);
+  if (!['sent', 'partially_paid', 'overdue'].includes(inv.status)) {
+    throw new InvoiceServiceError('Due date can only be changed on an open issued invoice', 409, 'INVALID_STATE');
+  }
+  const oldDueDate = inv.dueDate;
+  await db.update(invoices).set({ dueDate, updatedAt: new Date() }).where(eq(invoices.id, invoiceId));
+  await recomputeInvoiceStatus(invoiceId); // overdue ↔ partially_paid/sent keys off due date
+  const updated = await getOwnedInvoiceOr404(invoiceId);
+  return { invoice: updated, audit: { orgId: inv.orgId, invoiceId, oldDueDate, newDueDate: dueDate } };
+}
+
 export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
   const inv = await getOwnedInvoiceOr404(invoiceId); requireOrgAccess(actor, inv.orgId);
   const lines = await db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId)).orderBy(invoiceLines.sortOrder);
