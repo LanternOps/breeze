@@ -177,6 +177,8 @@ curl -X POST https://breeze.yourdomain.com/api/v1/auth/refresh \
 | `POST` | `/alerts/:id/acknowledge` | Acknowledge alert |
 | `POST` | `/alerts/:id/resolve` | Resolve alert |
 | `POST` | `/alerts/:id/suppress` | Suppress alert |
+| `POST` | `/alerts/:id/dismiss` | Permanently dismiss an alert. Terminal and valid from any status (including `resolved`); dismissed alerts are hidden from `GET /alerts` unless you filter to `status=dismissed` |
+| `POST` | `/alerts/bulk` | Bulk state change for up to 100 alerts — `action` is one of `acknowledge`, `resolve`, `suppress`, or `dismiss` |
 
 ### Alert Rules
 
@@ -343,6 +345,25 @@ Platform-admin scope. Backs the third-party application patching catalog and AI 
 | `GET` | `/security/recommendations` | Security recommendations |
 | `POST` | `/security/recommendations/:id/complete` | Mark recommendation complete |
 | `POST` | `/security/recommendations/:id/dismiss` | Dismiss recommendation |
+
+### Vulnerabilities
+
+The vulnerabilities dashboard is a fleet-wide, fix-first queue. The `/software` endpoints power the default **By software** view (findings grouped by the update that clears them); `/` powers the **By CVE** view. Bulk and `/remediate` endpoints let you triage across every affected device at once.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/vulnerabilities` | List open findings, one row per CVE (By CVE view) |
+| `GET` | `/vulnerabilities/software` | List findings grouped by remediation unit (By software view) |
+| `GET` | `/vulnerabilities/software/:groupKey` | Devices and findings within one software group |
+| `GET` | `/vulnerabilities/stats` | Priority stat-card counts (Critical open, KEV exposure, Patch ready, Accepted expiring soon) |
+| `GET` | `/vulnerabilities/:cveId/devices` | Devices affected by a specific CVE |
+| `POST` | `/vulnerabilities/remediate` | Schedule the fixing patch across affected devices (requires `devices:execute` + MFA) |
+| `POST` | `/vulnerabilities/bulk/accept-risk` | Accept risk across a group of findings |
+| `POST` | `/vulnerabilities/bulk/mitigate` | Record a mitigation across a group of findings |
+| `POST` | `/vulnerabilities/tickets` | Open a ticket for a finding and link it; a multi-org selection yields one ticket per organization |
+| `POST` | `/vulnerabilities/:id/accept-risk` | Accept risk on a single finding (requires `vulnerabilities:accept_risk`) |
+| `POST` | `/vulnerabilities/:id/mitigate` | Mitigate a single finding (requires `devices:write`) |
+| `POST` | `/vulnerabilities/:id/reopen` | Return an accepted or mitigated finding to open |
 
 ### Incident Response
 
@@ -876,6 +897,8 @@ Canned reply templates are partner-scoped. Management operations require `partne
 |---|---|---|---|
 | `GET` | `/mcp/sse` | API key | SSE transport for MCP |
 | `POST` | `/mcp/message` | API key | Send MCP message |
+
+Over the transport, the server speaks JSON-RPC 2.0. Alongside `tools/*` and `resources/*`, it advertises an `instructions` string on `initialize` and a **prompts** capability with five guided MSP workflows, exposed via the `prompts/list` and `prompts/get` methods. See [MCP Server → Guided prompts](/features/mcp-server/#guided-prompts).
 
 ## Mobile API
 
