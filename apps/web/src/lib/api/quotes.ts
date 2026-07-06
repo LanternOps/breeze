@@ -163,6 +163,17 @@ export function reorderLines(id: string, blockId: string, body: { lineIds: strin
   });
 }
 
+/** Move a line to a different pricing-table block
+ *  (PATCH /quotes/:id/lines/:lineId/move). The server appends it to the end of
+ *  the target block's sort order; bundle children follow their parent. */
+export function moveLine(id: string, lineId: string, body: { blockId: string }): Promise<Response> {
+  return fetchWithAuth(`/quotes/${id}/lines/${lineId}/move`, {
+    method: 'PATCH',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(body),
+  });
+}
+
 /** Absolute API path for the quote PDF (`GET /api/v1/quotes/:id/pdf`). The route
  *  streams `application/pdf` inline; callers fetch it via `fetchWithAuth` (to
  *  attach the auth header) the same way InvoiceDetail downloads its PDF. */
