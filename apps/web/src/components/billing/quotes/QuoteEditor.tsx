@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronUp, ChevronDown, Eye, EyeOff, Loader2 } from 'lucide-react';
+import { ChevronUp, ChevronDown, Eye, EyeOff, Loader2, FolderInput } from 'lucide-react';
 import { navigateTo } from '@/lib/navigation';
 import { fetchWithAuth } from '../../../stores/auth';
 import { runAction, handleActionError } from '../../../lib/runAction';
@@ -12,6 +12,7 @@ import {
   addCatalogLine,
   updateLine,
   removeLine,
+  moveLine as moveLineApi,
   reorderBlocks as reorderBlocksApi,
   reorderLines as reorderLinesApi,
   uploadQuoteImage,
@@ -378,6 +379,11 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
   // server order always wins once it lands; a failed reorder reverts immediately.
   const [blockOrder, setBlockOrder] = useState<string[] | null>(null);
   const [lineOrder, setLineOrder] = useState<Record<string, string[]>>({});
+  // Cross-panel move override: lineId → target blockId. Layered UNDER lineOrder
+  // (the override changes which panel a line filters into; lineOrder then fixes
+  // its position within that panel). Cleared when fresh server data lands, same
+  // as lineOrder.
+  const [lineBlockOverride, setLineBlockOverride] = useState<Record<string, string>>({});
   // Debounced reorder commit: repeat chevron clicks accumulate into the optimistic
   // order instantly (no click is dropped while a PATCH is "in flight"); a single
   // trailing PATCH per axis sends the final full id list. The server renumbers
@@ -389,7 +395,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
   const lineReorderTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const lineReorderBase = useRef<Record<string, string[]>>({});
   useEffect(() => { setBlockOrder(null); blockReorderBase.current = null; }, [blocks]);
-  useEffect(() => { setLineOrder({}); lineReorderBase.current = {}; }, [lines]);
+  useEffect(() => { setLineOrder({}); lineReorderBase.current = {}; setLineBlockOverride({}); }, [lines]);
   useEffect(() => () => {
     if (blockReorderTimer.current) clearTimeout(blockReorderTimer.current);
     Object.values(lineReorderTimers.current).forEach(clearTimeout);
@@ -513,13 +519,28 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
     [blocks, blockOrder],
   );
 
+  // The quote's pricing panels, in document order — the "Move to…" menu offers
+  // every panel except the line's own. Label precedence mirrors the BlockCard
+  // header: the author's table label, else "Pricing table N" by position.
+  const pricingBlocks = useMemo(
+    () => sortedBlocks.filter((b) => b.blockType === 'line_items'),
+    [sortedBlocks],
+  );
+  const pricingBlockLabel = useCallback((b: QuoteBlock) => {
+    const label = ((b.content?.label as string | undefined) ?? '').trim();
+    if (label) return label;
+    return `Pricing table ${pricingBlocks.findIndex((x) => x.id === b.id) + 1}`;
+  }, [pricingBlocks]);
+
   const linesForBlock = useCallback(
     (blockId: string) =>
       applyOrder(
-        lines.filter((l) => l.blockId === blockId).sort((a, b) => a.sortOrder - b.sortOrder),
+        lines
+          .filter((l) => (lineBlockOverride[l.id] ?? l.blockId) === blockId)
+          .sort((a, b) => a.sortOrder - b.sortOrder),
         lineOrder[blockId],
       ),
-    [lines, lineOrder],
+    [lines, lineOrder, lineBlockOverride],
   );
 
   // ---- add block -----------------------------------------------------------
@@ -894,6 +915,53 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
     }, 250);
   }, [linesForBlock, quote.id, refresh]);
 
+  // Cross-panel move: optimistic on both panels at once (the line leaves its
+  // source table and appends to the target, bundle children in tow), committed
+  // via the dedicated move endpoint. No debounce — unlike the chevrons, a move
+  // is one discrete action. Failure reverts both panels and re-pulls the
+  // authoritative server order (same recovery shape as moveBlock/moveLine).
+  const moveLineTo = useCallback((line: QuoteLine, targetBlockId: string) => {
+    const sourceBlockId = line.blockId;
+    if (!sourceBlockId || sourceBlockId === targetBlockId) return;
+    const movedIds = [line.id, ...lines.filter((l) => l.parentLineId === line.id).map((l) => l.id)];
+    const sourceIds = (lineReorderBase.current[sourceBlockId] ?? linesForBlock(sourceBlockId).map((l) => l.id))
+      .filter((id) => !movedIds.includes(id));
+    const targetIds = [
+      ...(lineReorderBase.current[targetBlockId] ?? linesForBlock(targetBlockId).map((l) => l.id))
+        .filter((id) => !movedIds.includes(id)),
+      ...movedIds,
+    ];
+    lineReorderBase.current = { ...lineReorderBase.current, [sourceBlockId]: sourceIds, [targetBlockId]: targetIds };
+    setLineBlockOverride((m) => {
+      const n = { ...m };
+      for (const id of movedIds) n[id] = targetBlockId;
+      return n;
+    });
+    setLineOrder((m) => ({ ...m, [sourceBlockId]: sourceIds, [targetBlockId]: targetIds }));
+    void (async () => {
+      try {
+        await runAction({
+          request: () => moveLineApi(quote.id, line.id, { blockId: targetBlockId }),
+          errorFallback: 'Could not move the line.',
+          successMessage: 'Line moved',
+          onUnauthorized: UNAUTHORIZED,
+        });
+        refresh();
+      } catch (err) {
+        handleActionError(err, 'Could not move the line.');
+        setLineBlockOverride((m) => {
+          const n = { ...m };
+          for (const id of movedIds) delete n[id];
+          return n;
+        });
+        setLineOrder((m) => { const n = { ...m }; delete n[sourceBlockId]; delete n[targetBlockId]; return n; });
+        delete lineReorderBase.current[sourceBlockId];
+        delete lineReorderBase.current[targetBlockId];
+        refresh();
+      }
+    })();
+  }, [lines, linesForBlock, quote.id, refresh]);
+
   const hasRecurring = Number(railMonthly) > 0 || Number(railAnnual) > 0;
 
   return (
@@ -978,6 +1046,12 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                 onEditBlock={editBlock}
                 onMoveBlock={moveBlock}
                 onMoveLine={(line, dir) => moveLine(block.id, line, dir)}
+                onMoveLineToBlock={moveLineTo}
+                moveTargets={
+                  block.blockType === 'line_items'
+                    ? pricingBlocks.filter((b) => b.id !== block.id).map((b) => ({ id: b.id, label: pricingBlockLabel(b) }))
+                    : []
+                }
                 onRemoveLine={setPendingLineRemove}
                 onRemoveBlock={setPendingRemove}
                 onLineDraft={setLineDraft}
@@ -1230,6 +1304,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
 // ── A single block, with an inline line builder when it is a pricing table ──
 function BlockCard({
   block, quoteId, lines, currency, taxRate, catalog, isPending, canWrite, showInternal, ecActive, pax8Active, defaultMarkupPct, isFirst, isLast, onAddCatalog, onImportAddDistributor, onImportAddPax8, onAddManual, onEditLine, onEditBlock, onMoveBlock, onMoveLine, onRemoveLine, onRemoveBlock, onLineDraft,
+  moveTargets, onMoveLineToBlock,
 }: {
   block: QuoteBlock;
   quoteId: string;
@@ -1260,6 +1335,9 @@ function BlockCard({
   onRemoveLine: (line: QuoteLine) => void;
   onRemoveBlock: (block: QuoteBlock) => void;
   onLineDraft: (lineId: string, draft: QuoteLineForMath | null) => void;
+  /** Other pricing panels this block's lines can move to (empty → control hidden). */
+  moveTargets: { id: string; label: string }[];
+  onMoveLineToBlock: (line: QuoteLine, targetBlockId: string) => void;
 }) {
   // Pending state scoped to this block: editing/removing this block, or adding a
   // line to it, never disables anything in a sibling block.
@@ -1504,6 +1582,8 @@ function BlockCard({
                         onMove={onMoveLine}
                         onRemove={onRemoveLine}
                         onDraft={onLineDraft}
+                        moveTargets={moveTargets}
+                        onMoveTo={onMoveLineToBlock}
                       />
                     ) : (
                       <ReadonlyLineRow key={l.id} line={l} quoteId={quoteId} currency={currency} taxRate={taxRate} isFirst={idx === 0} showInternal={showInternal} />
@@ -1821,6 +1901,7 @@ function ReadonlyLineRow({ line: l, quoteId, currency, taxRate, isFirst, showInt
 // totals, clamped quantity) wins.
 function EditableLineRow({
   line, quoteId, currency, taxRate, isPending, isFirst, isLast, showInternal, onEdit, onMove, onRemove, onDraft,
+  moveTargets, onMoveTo,
 }: {
   line: QuoteLine;
   quoteId: string;
@@ -1834,6 +1915,9 @@ function EditableLineRow({
   onMove: (line: QuoteLine, direction: 'up' | 'down') => void;
   onRemove: (line: QuoteLine) => void;
   onDraft: (lineId: string, draft: QuoteLineForMath | null) => void;
+  /** Other pricing panels (empty → the Move-to control is hidden). */
+  moveTargets: { id: string; label: string }[];
+  onMoveTo: (line: QuoteLine, targetBlockId: string) => void;
 }) {
   // Per-field pending: only the in-flight control disables, so a slow qty save
   // never freezes price/name/desc (the scoped-pending backport — InvoiceEditor's
@@ -1854,6 +1938,21 @@ function EditableLineRow({
   const [cost, setCost] = useState(line.unitCost ?? '');
   const [sku, setSku] = useState(line.sku ?? '');
   const [partNumber, setPartNumber] = useState(line.partNumber ?? '');
+
+  // "Move to…" menu. Fixed-position so the overflow-x-auto table wrapper can't
+  // clip it; closes on outside click or Escape.
+  const [movePos, setMovePos] = useState<{ top: number; left: number } | null>(null);
+  const moveMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!movePos) return;
+    const onDown = (e: MouseEvent) => {
+      if (moveMenuRef.current && !moveMenuRef.current.contains(e.target as Node)) setMovePos(null);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMovePos(null); };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey); };
+  }, [movePos]);
 
   // Resync the typed fields from the server, but never over an edit in progress.
   // We track "has the user typed since the last commit?" rather than comparing
@@ -2182,6 +2281,49 @@ function EditableLineRow({
             testIdUp={`quote-line-move-up-${line.id}`}
             testIdDown={`quote-line-move-down-${line.id}`}
           />
+          {moveTargets.length > 0 && !line.parentLineId && (
+            <div ref={moveMenuRef}>
+              <button
+                type="button"
+                onClick={(e) => {
+                  if (movePos) { setMovePos(null); return; }
+                  const r = e.currentTarget.getBoundingClientRect();
+                  setMovePos({ top: r.bottom + 4, left: r.right });
+                }}
+                disabled={removeBusy}
+                aria-label="Move line to another pricing table"
+                aria-haspopup="menu"
+                aria-expanded={movePos !== null}
+                data-testid={`quote-line-move-to-${line.id}`}
+                className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-muted disabled:opacity-30"
+              >
+                <FolderInput className="h-4 w-4" aria-hidden />
+              </button>
+              {movePos && (
+                <div
+                  role="menu"
+                  aria-label="Move line to"
+                  style={{ position: 'fixed', top: movePos.top, left: movePos.left, transform: 'translateX(-100%)' }}
+                  className="z-50 min-w-40 rounded-md border bg-card py-1 shadow-md"
+                  data-testid={`quote-line-move-to-menu-${line.id}`}
+                >
+                  <p className="px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Move to</p>
+                  {moveTargets.map((t) => (
+                    <button
+                      key={t.id}
+                      type="button"
+                      role="menuitem"
+                      onClick={() => { setMovePos(null); onMoveTo(line, t.id); }}
+                      data-testid={`quote-line-move-to-${line.id}-${t.id}`}
+                      className="block w-full px-3 py-1.5 text-left text-sm hover:bg-muted"
+                    >
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           <button
             type="button"
             onClick={() => onRemove(line)}

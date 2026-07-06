@@ -38,6 +38,7 @@ vi.mock('../../../lib/api/quotes', () => ({
   addCatalogLine: vi.fn(),
   updateLine: vi.fn(),
   removeLine: vi.fn(),
+  moveLine: vi.fn(),
   reorderBlocks: vi.fn(),
   reorderLines: vi.fn(),
   uploadQuoteImage: vi.fn(),

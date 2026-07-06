@@ -30,6 +30,7 @@ vi.mock('../../../lib/api/quotes', () => ({
   addManualLine: vi.fn(),
   addCatalogLine: vi.fn(),
   removeLine: vi.fn(),
+  moveLine: vi.fn(),
   uploadQuoteImage: vi.fn(),
   quoteImageUrl: vi.fn().mockReturnValue('/quotes/q-1/images/img-1'),
 }));

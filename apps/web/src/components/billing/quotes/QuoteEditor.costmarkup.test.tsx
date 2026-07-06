@@ -39,6 +39,7 @@ vi.mock('../../../lib/api/quotes', () => ({
     { ok: true, status: 200, statusText: 'OK', json: vi.fn().mockResolvedValue({ data: {} }) } as unknown as Response,
   ),
   removeLine: vi.fn(),
+  moveLine: vi.fn(),
   uploadQuoteImage: vi.fn(),
   quoteImageUrl: vi.fn().mockReturnValue('/quotes/q-1/images/img-1'),
 }));
