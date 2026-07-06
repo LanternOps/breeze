@@ -75,3 +75,57 @@ func TestFingerprintRecoveryKeys(t *testing.T) {
 		t.Error("fingerprint must not embed key material")
 	}
 }
+
+func TestParseFileVaultNewKey(t *testing.T) {
+	tests := []struct {
+		name    string
+		output  string
+		want    string
+		wantErr bool
+	}{
+		{
+			name:   "typical fdesetup output",
+			output: "New personal recovery key = 'DWXL-9K2M-4NPQ-R7ST-UV3W-XY8Z'",
+			want:   "DWXL-9K2M-4NPQ-R7ST-UV3W-XY8Z",
+		},
+		{name: "no key in output", output: "Error: unable to change recovery key.", wantErr: true},
+		{name: "empty", output: "", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseFileVaultNewKey(tt.output)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Errorf("key = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildFileVaultAuthPlist(t *testing.T) {
+	withCreds := buildFileVaultAuthPlist("jane", `pa<ss&"word`, "")
+	if !strings.Contains(withCreds, "<key>Username</key>") || !strings.Contains(withCreds, "<string>jane</string>") {
+		t.Error("username missing from plist")
+	}
+	if !strings.Contains(withCreds, "pa&lt;ss&amp;&#34;word") && !strings.Contains(withCreds, "pa&lt;ss&amp;&quot;word") {
+		t.Errorf("password not XML-escaped: %s", withCreds)
+	}
+	withKey := buildFileVaultAuthPlist("", "", "AAAA-BBBB-CCCC-DDDD-EEEE-FFFF")
+	if strings.Contains(withKey, "<key>Username</key>") {
+		t.Error("recovery-key auth must not include Username")
+	}
+	if !strings.Contains(withKey, "AAAA-BBBB-CCCC-DDDD-EEEE-FFFF") {
+		t.Error("recovery key missing from plist")
+	}
+}
+
+func TestMountAndProtectorValidation(t *testing.T) {
+	if !validBitLockerMount("C:") || validBitLockerMount("C:\\") || validBitLockerMount("'; rm") {
+		t.Error("mount validation wrong")
+	}
+	if !validProtectorID("11111111-1111-1111-1111-111111111111") || validProtectorID("x'; $(evil)") {
+		t.Error("protector id validation wrong")
+	}
+}
