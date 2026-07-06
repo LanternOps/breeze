@@ -6,11 +6,14 @@ import type { SellerSnapshot } from '../invoiceTypes';
 export type { SellerSnapshot } from '../invoiceTypes';
 export { sellerLines } from '../invoiceTypes';
 import { STATUS_PILL, type StatusPillRole } from '../invoiceTypes';
+import type { QuoteDepositType, QuoteCategorySubtotal } from '@breeze/shared';
+export type { QuoteDepositType, QuoteCategorySubtotal } from '@breeze/shared';
 
 export type QuoteStatus =
   | 'draft' | 'sent' | 'viewed' | 'accepted' | 'declined' | 'expired' | 'converted';
 
 export type QuoteLineRecurrence = 'one_time' | 'monthly' | 'annual';
+export type QuoteItemType = 'hardware' | 'software' | 'service';
 export type QuoteLineSourceType = 'catalog' | 'bundle' | 'manual';
 export type QuoteBlockType = 'heading' | 'rich_text' | 'image' | 'line_items';
 
@@ -42,6 +45,20 @@ export interface Quote {
    * from the list endpoint. The UI shows this as "Due on acceptance"; `total`
    * is the recurring-inclusive first-period figure shown separately. */
   dueOnAcceptanceTotal?: string;
+  /** Deposit config. Persisted on every quote (DB defaults `depositType='none'`),
+   *  but optional here so long-standing test fixtures without the columns stay
+   *  assignable — read with a `?? 'none'` fallback. */
+  depositType?: QuoteDepositType;
+  depositPercent?: string | null;
+  depositAmount?: string | null;
+  /** Deposit due at acceptance + per-category subtotals — derived server-side in
+   *  `getQuote`, so present on `GET /quotes/:id` but absent from the list endpoint. */
+  depositDueTotal?: string | null;
+  categoryBreakdown?: QuoteCategorySubtotal[];
+  /** Money state of the converted invoice, joined onto the LIST endpoint only so
+   *  the quotes table can show a Deposit paid/unpaid badge for converted quotes. */
+  invoiceDepositDue?: string | null;
+  invoiceAmountPaid?: string | null;
   billToName: string | null;
   introNotes: string | null;
   terms: string | null;
@@ -92,6 +109,11 @@ export interface QuoteLine {
   customerVisible: boolean;
   lineTotal: string;
   recurrence: QuoteLineRecurrence;
+  /** Counts toward a `selected_lines` deposit (one-time lines only). Optional so
+   *  pre-column fixtures stay assignable; the API always sends it (default false). */
+  depositEligible?: boolean;
+  /** Catalog item type snapshotted at add-time; null = manual → 'other' category. */
+  itemType?: QuoteItemType | null;
   termMonths: number | null;
   billingFrequency: string | null;
   sortOrder: number;

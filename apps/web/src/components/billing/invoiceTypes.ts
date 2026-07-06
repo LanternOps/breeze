@@ -54,6 +54,9 @@ export interface InvoiceSummary {
   total: string;
   amountPaid: string;
   balance: string;
+  /** Deposit due at issue (null = no deposit). Drives the deposit strip + the
+   *  deposit paid/unpaid list badge; compared against `amountPaid` in cents. */
+  depositDue?: string | null;
   billToName: string | null;
   notes: string | null;
   termsAndConditions: string | null;

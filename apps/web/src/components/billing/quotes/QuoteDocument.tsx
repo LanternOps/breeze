@@ -182,6 +182,14 @@ export function QuoteDocument({ detail, customerName }: DocumentProps) {
   // Only surface the per-line Tax column when this quote actually carries tax —
   // otherwise it's a column of dashes. Mirrors the header Tax row's visibility.
   const showTax = Number(quote.taxTotal) > 0;
+  // Deposit summary — mirrors the customer portal (Task 10) so the in-app Preview
+  // matches the proposal link and PDF. `depositDueTotal` null = no deposit.
+  const categoryBreakdown = quote.categoryBreakdown ?? [];
+  const depositDue = quote.depositDueTotal ?? null;
+  // Remaining balance in integer cents so the subtraction never drifts on floats.
+  const remainderCents = depositDue != null
+    ? Math.round(Number(dueOnAcceptance) * 100) - Math.round(Number(depositDue) * 100)
+    : 0;
 
   return (
     <div
@@ -280,19 +288,54 @@ export function QuoteDocument({ detail, customerName }: DocumentProps) {
                   <span className="tabular-nums text-foreground">{formatMoney(quote.taxTotal, currency)}</span>
                 </div>
               )}
-              <div
-                className="flex items-baseline justify-between border-t pt-3"
-                style={{ borderColor: 'var(--doc-accent)' }}
-              >
-                <span className="text-sm font-semibold text-foreground">Due on acceptance</span>
-                <span
-                  className="text-2xl font-semibold tabular-nums"
-                  style={{ color: 'var(--doc-accent)' }}
-                  data-testid="quote-document-due"
+              {categoryBreakdown.length > 1 && (
+                <div className="space-y-0.5 text-sm text-muted-foreground" data-testid="quote-document-category-breakdown">
+                  {categoryBreakdown.map((b) => (
+                    <div key={b.category} className="flex justify-between">
+                      <span className="capitalize">{b.category}</span>
+                      <span className="tabular-nums">
+                        {[
+                          Number(b.oneTimeTotal) > 0 ? formatMoney(b.oneTimeTotal, currency) : null,
+                          Number(b.monthlyTotal) > 0 ? `${formatMoney(b.monthlyTotal, currency)}/mo` : null,
+                          Number(b.annualTotal) > 0 ? `${formatMoney(b.annualTotal, currency)}/yr` : null,
+                        ].filter(Boolean).join(' + ')}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {depositDue != null ? (
+                <>
+                  <div
+                    className="flex items-baseline justify-between border-t pt-3"
+                    style={{ borderColor: 'var(--doc-accent)' }}
+                    data-testid="quote-document-deposit-due"
+                  >
+                    <span className="text-sm font-semibold text-foreground">Deposit due on acceptance</span>
+                    <span className="text-2xl font-semibold tabular-nums" style={{ color: 'var(--doc-accent)' }}>
+                      {formatMoney(depositDue, currency)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-sm" data-testid="quote-document-deposit-remainder">
+                    <span className="text-muted-foreground">Remaining balance (due per terms)</span>
+                    <span className="tabular-nums text-foreground">{formatMoney(remainderCents / 100, currency)}</span>
+                  </div>
+                </>
+              ) : (
+                <div
+                  className="flex items-baseline justify-between border-t pt-3"
+                  style={{ borderColor: 'var(--doc-accent)' }}
                 >
-                  {formatMoney(dueOnAcceptance, currency)}
-                </span>
-              </div>
+                  <span className="text-sm font-semibold text-foreground">Due on acceptance</span>
+                  <span
+                    className="text-2xl font-semibold tabular-nums"
+                    style={{ color: 'var(--doc-accent)' }}
+                    data-testid="quote-document-due"
+                  >
+                    {formatMoney(dueOnAcceptance, currency)}
+                  </span>
+                </div>
+              )}
 
               {hasRecurring && (
                 <div className="space-y-1.5 rounded-lg bg-muted/40 p-3 text-sm">

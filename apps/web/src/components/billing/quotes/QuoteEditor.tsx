@@ -19,7 +19,7 @@ import {
   quoteImageUrl,
 } from '../../../lib/api/quotes';
 import type { QuoteBlockInput } from '@breeze/shared';
-import { computeQuoteTotals, computeQuoteProfit, computeLineTotal, markupPct, priceFromMarkup, toCents, fromCents, type QuoteLineForMath, type QuoteProfit, type QuoteTotals } from '@breeze/shared';
+import { computeQuoteTotals, computeQuoteProfit, computeLineTotal, markupPct, priceFromMarkup, toCents, fromCents, type QuoteLineForMath, type QuoteProfit, type QuoteTotals, type QuoteDepositType, type QuoteDepositConfig } from '@breeze/shared';
 import { listCatalog, createCatalogItem, catalogItemImagePath, type CatalogItem } from '../../../lib/api/catalog';
 import { ecExpressStatus, ecExpressImport, type EcProduct, type EcStatus, pax8Status, pax8Import, type Pax8Product, type Pax8PriceOption } from '../../../lib/api/distributors';
 import CatalogItemPicker from '../../catalog/CatalogItemPicker';
@@ -79,6 +79,7 @@ type LineUpdate = Partial<{
   sku: string | null;
   partNumber: string | null;
   imageId: string | null;
+  depositEligible: boolean;
 }>;
 
 interface Props {
@@ -261,6 +262,15 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
   useEffect(() => { setTerms(quote.termsAndConditions ?? ''); setTermsDirty(false); }, [quote.termsAndConditions]);
   useEffect(() => { setTitle(quote.title ?? ''); setTitleDirty(false); }, [quote.title]);
 
+  // ---- deposit controls ----------------------------------------------------
+  // Local mirrors of the persisted deposit config so the type select + percent
+  // input update instantly and the rail's live deposit figure recomputes
+  // mid-edit; both resync from the server after each blur-save's refresh().
+  const [depositType, setDepositType] = useState<QuoteDepositType>(quote.depositType ?? 'none');
+  const [depositPercentDraft, setDepositPercentDraft] = useState<string>(quote.depositPercent ?? '');
+  useEffect(() => { setDepositType(quote.depositType ?? 'none'); }, [quote.depositType]);
+  useEffect(() => { setDepositPercentDraft(quote.depositPercent ?? ''); }, [quote.depositPercent]);
+
   // Coalesce re-pulls: each mutation calls refresh(), but tab-through editing
   // would otherwise fire one full GET /quotes/:id per field. This is a LEADING +
   // trailing throttle, not a pure trailing debounce: the first edit of a burst
@@ -323,6 +333,47 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
     }, 'Could not save the title.');
     if (ok) flashTitleSaved();
   }, [titleDirty, title, quote.id, refresh, runScoped, flashTitleSaved]);
+
+  // Persist a deposit-config change via the quote-header PATCH. runAction surfaces
+  // the API's 400 DEPOSIT_* validation message (e.g. "Deposit must be less than the
+  // amount due on acceptance") as the standard failure toast; runScoped clears the
+  // pending key. refresh() re-pulls so the server-recomputed deposit_amount and the
+  // authoritative depositDueTotal land in the rail.
+  const saveDeposit = useCallback((patch: { depositType?: QuoteDepositType; depositPercent?: number | null }) =>
+    runScoped('deposit', async () => {
+      await runAction({
+        request: () => fetchWithAuth(`/quotes/${quote.id}`, {
+          method: 'PATCH', body: JSON.stringify(patch),
+        }),
+        errorFallback: 'Could not update the deposit.',
+        onUnauthorized: UNAUTHORIZED,
+      });
+      refresh();
+    }, 'Could not update the deposit.'),
+  [quote.id, refresh, runScoped]);
+
+  const onDepositTypeChange = useCallback((next: QuoteDepositType) => {
+    setDepositType(next);
+    if (next === 'percent') {
+      // Saving type='percent' with a null percent would 400 DEPOSIT_PERCENT_INVALID,
+      // so defer the PATCH until a percent exists — persist immediately only when one
+      // is already entered (the percent input's onBlur handles the first entry).
+      const pct = depositPercentDraft.trim() === '' ? null : Number(depositPercentDraft);
+      if (pct != null && Number.isFinite(pct)) void saveDeposit({ depositType: 'percent', depositPercent: pct });
+    } else {
+      void saveDeposit({ depositType: next });
+    }
+  }, [depositPercentDraft, saveDeposit]);
+
+  const onDepositPercentBlur = useCallback(() => {
+    if (depositType !== 'percent') return;
+    const pct = depositPercentDraft.trim() === '' ? null : Number(depositPercentDraft);
+    if (pct == null || !Number.isFinite(pct)) return;
+    // Only fire when it actually differs from the persisted value (avoids a
+    // redundant PATCH on a focus-through).
+    if (quote.depositType === 'percent' && quote.depositPercent != null && Number(quote.depositPercent) === pct) return;
+    void saveDeposit({ depositType: 'percent', depositPercent: pct });
+  }, [depositType, depositPercentDraft, quote.depositType, quote.depositPercent, saveDeposit]);
 
   const loadCatalog = useCallback(async () => {
     const res = await listCatalog({ isActive: true, limit: 200 });
@@ -421,7 +472,8 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
       const prev = m[id];
       if (prev && prev.quantity === draft.quantity && prev.unitPrice === draft.unitPrice
         && (prev.unitCost ?? null) === (draft.unitCost ?? null)
-        && prev.taxable === draft.taxable && prev.recurrence === draft.recurrence) return m;
+        && prev.taxable === draft.taxable && prev.recurrence === draft.recurrence
+        && (prev.depositEligible ?? false) === (draft.depositEligible ?? false)) return m;
       return { ...m, [id]: draft };
     });
   }, []);
@@ -460,6 +512,45 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
   const railTax = optimisticTotals?.taxTotal ?? quote.taxTotal;
   const railTotal = optimisticTotals?.total ?? quote.total;
   const railDue = optimisticTotals?.dueOnAcceptanceTotal ?? quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal;
+
+  // Live deposit + category breakdown. Unlike the figures above (which fall back
+  // to the server values at rest), these ALWAYS recompute from the current lines
+  // (persisted + in-progress drafts) and the current deposit-control state, so the
+  // "Deposit due" figure tracks a percent edit or a deposit-eligible toggle before
+  // the blur-save round-trips. It uses the SAME shared computeQuoteTotals the server
+  // recomputes with, so it can never settle to a different figure than the next GET
+  // returns. Deposit-eligibility/itemType come from the persisted line unless a row
+  // reported them in its draft (a deposit-eligibility toggle).
+  const mergedLines = useMemo<QuoteLineForMath[]>(
+    () => lines.map((l) => {
+      const d = lineDrafts[l.id];
+      return {
+        quantity: d?.quantity ?? l.quantity,
+        unitPrice: d?.unitPrice ?? l.unitPrice,
+        unitCost: d?.unitCost ?? l.unitCost,
+        taxable: d?.taxable ?? l.taxable,
+        customerVisible: l.customerVisible,
+        recurrence: d?.recurrence ?? l.recurrence,
+        depositEligible: d?.depositEligible ?? l.depositEligible ?? false,
+        itemType: d?.itemType ?? l.itemType ?? null,
+      };
+    }),
+    [lines, lineDrafts],
+  );
+  const depositConfig = useMemo<QuoteDepositConfig>(
+    () => ({
+      type: depositType,
+      percent: depositType === 'percent' && depositPercentDraft.trim() !== '' ? Number(depositPercentDraft) : null,
+    }),
+    [depositType, depositPercentDraft],
+  );
+  const liveDepositTotals = useMemo(
+    () => computeQuoteTotals(mergedLines, effectiveRate, depositConfig),
+    [mergedLines, effectiveRate, depositConfig],
+  );
+  const railDeposit = liveDepositTotals.depositDueTotal;
+  const railBreakdown = liveDepositTotals.categoryBreakdown;
+  const depositSelectMode = depositType === 'selected_lines';
 
   // The full "Live totals" sentence a screen reader would announce. The visible
   // figures above update live (per keystroke), but re-announcing this whole
@@ -1047,6 +1138,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                 isPending={isPending}
                 canWrite={canWrite}
                 showInternal={showInternal}
+                depositSelectMode={depositSelectMode}
                 ecActive={ecActive}
                 pax8Active={pax8Active}
                 defaultMarkupPct={defaultMarkupPct}
@@ -1199,6 +1291,25 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                 </div>
               )}
             </dl>
+            {/* Per-category subtotals (hardware / software / service / other) — only
+                worth showing once the quote spans more than one category. Mirrors the
+                customer document + PDF breakdown so the builder sees what the customer will. */}
+            {railBreakdown.length > 1 && (
+              <div className="mt-2 space-y-0.5 border-t pt-2 text-sm text-muted-foreground" data-testid="quote-category-breakdown">
+                {railBreakdown.map((b) => (
+                  <div key={b.category} className="flex justify-between gap-2">
+                    <span className="capitalize">{b.category}</span>
+                    <span className="tabular-nums">
+                      {[
+                        Number(b.oneTimeTotal) > 0 ? formatMoney(b.oneTimeTotal, currency) : null,
+                        Number(b.monthlyTotal) > 0 ? `${formatMoney(b.monthlyTotal, currency)}/mo` : null,
+                        Number(b.annualTotal) > 0 ? `${formatMoney(b.annualTotal, currency)}/yr` : null,
+                      ].filter(Boolean).join(' + ')}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
             {canSeeMargin && <MarginPanel profit={profit} currency={currency} />}
             {/* Read-only: the rate is resolved at quote creation (org tax settings,
                 falling back to the partner default) and isn't editable per-quote. */}
@@ -1213,6 +1324,57 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                 Applies to lines marked taxable. Set in the organization&rsquo;s tax settings.
               </p>
             </div>
+            {/* Deposit controls — writer-only. Selecting a type saves it (the server
+                surfaces DEPOSIT_* validation as a toast); the percent input blur-saves.
+                The live "Deposit due" figure recomputes from the same shared math. */}
+            {canWrite && (
+              <div className="mt-2 space-y-2 border-t pt-2" data-testid="quote-deposit-controls">
+                <div className="flex items-center justify-between gap-2">
+                  <label htmlFor="quote-deposit-type" className="text-sm text-muted-foreground">Deposit</label>
+                  <select
+                    id="quote-deposit-type"
+                    value={depositType}
+                    onChange={(e) => onDepositTypeChange(e.target.value as QuoteDepositType)}
+                    disabled={isPending('deposit')}
+                    data-testid="quote-deposit-type"
+                    className="h-9 min-w-0 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
+                  >
+                    <option value="none">No deposit</option>
+                    <option value="percent">Percent of due-on-acceptance</option>
+                    <option value="selected_lines">Selected lines</option>
+                  </select>
+                </div>
+                {depositType === 'percent' && (
+                  <div className="flex items-center justify-between gap-2">
+                    <label htmlFor="quote-deposit-percent" className="text-sm text-muted-foreground">Percent</label>
+                    <div className="flex items-center gap-1">
+                      <input
+                        id="quote-deposit-percent"
+                        type="number" min={0.01} max={99.99} step={0.01}
+                        value={depositPercentDraft}
+                        onChange={(e) => setDepositPercentDraft(e.target.value)}
+                        onBlur={onDepositPercentBlur}
+                        disabled={isPending('deposit')}
+                        data-testid="deposit-percent-input"
+                        className="h-9 w-24 rounded-md border bg-background px-2 text-right text-sm tabular-nums focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
+                      />
+                      <span className="text-sm text-muted-foreground">%</span>
+                    </div>
+                  </div>
+                )}
+                {depositType === 'selected_lines' && (
+                  <p className="text-xs text-muted-foreground">
+                    Check the deposit-eligible one-time lines in each pricing table.
+                  </p>
+                )}
+                {railDeposit != null && Number(railDeposit) > 0 && (
+                  <div className="flex items-baseline justify-between gap-2 text-sm font-medium" data-testid="deposit-due-figure">
+                    <span>Deposit due</span>
+                    <span className="tabular-nums">{formatMoney(railDeposit, currency)}</span>
+                  </div>
+                )}
+              </div>
+            )}
             <div className="mt-3 flex items-end justify-between gap-2 border-t pt-3">
               <span className="shrink-0 text-xs font-medium uppercase tracking-wide text-muted-foreground">Due on acceptance</span>
               {/* Visual figure only; the SR-only summary node above announces the
@@ -1317,7 +1479,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
 
 // ── A single block, with an inline line builder when it is a pricing table ──
 function BlockCard({
-  block, quoteId, lines, currency, taxRate, catalog, catalogLoadFailed, isPending, canWrite, showInternal, ecActive, pax8Active, defaultMarkupPct, isFirst, isLast, onAddCatalog, onImportAddDistributor, onImportAddPax8, onAddManual, onEditLine, onEditBlock, onMoveBlock, onMoveLine, onRemoveLine, onRemoveBlock, onLineDraft,
+  block, quoteId, lines, currency, taxRate, catalog, catalogLoadFailed, isPending, canWrite, showInternal, depositSelectMode, ecActive, pax8Active, defaultMarkupPct, isFirst, isLast, onAddCatalog, onImportAddDistributor, onImportAddPax8, onAddManual, onEditLine, onEditBlock, onMoveBlock, onMoveLine, onRemoveLine, onRemoveBlock, onLineDraft,
   moveTargets, onMoveLineToBlock,
 }: {
   block: QuoteBlock;
@@ -1330,6 +1492,9 @@ function BlockCard({
   isPending: (key: string) => boolean;
   canWrite: boolean;
   showInternal: boolean;
+  /** When true (quote deposit = 'selected_lines'), each editable line row shows a
+   *  deposit-eligible checkbox. */
+  depositSelectMode: boolean;
   ecActive: boolean;
   pax8Active: boolean;
   /** Partner default markup % for pre-pricing AI auto-filled lines; null = unknown. */
@@ -1593,6 +1758,7 @@ function BlockCard({
                         isFirst={idx === 0}
                         isLast={idx === lines.length - 1}
                         showInternal={showInternal}
+                        depositSelectMode={depositSelectMode}
                         onEdit={onEditLine}
                         onMove={onMoveLine}
                         onRemove={onRemoveLine}
@@ -1921,7 +2087,7 @@ function ReadonlyLineRow({ line: l, quoteId, currency, taxRate, isFirst, showInt
 // state to the incoming prop so server-side normalization (e.g. recomputed
 // totals, clamped quantity) wins.
 function EditableLineRow({
-  line, quoteId, currency, taxRate, isPending, isFirst, isLast, showInternal, onEdit, onMove, onRemove, onDraft,
+  line, quoteId, currency, taxRate, isPending, isFirst, isLast, showInternal, depositSelectMode, onEdit, onMove, onRemove, onDraft,
   moveTargets, onMoveTo,
 }: {
   line: QuoteLine;
@@ -1932,6 +2098,8 @@ function EditableLineRow({
   isFirst: boolean;
   isLast: boolean;
   showInternal: boolean;
+  /** Show the deposit-eligible checkbox (quote deposit = 'selected_lines'). */
+  depositSelectMode: boolean;
   onEdit: (lineId: string, body: LineUpdate, scopeKey?: string) => Promise<boolean>;
   onMove: (line: QuoteLine, direction: 'up' | 'down') => void;
   onRemove: (line: QuoteLine) => void;
@@ -1955,6 +2123,9 @@ function EditableLineRow({
   // refresh() round-trip lands, and revert if the save fails.
   const [rec, setRec] = useState(line.recurrence);
   const [taxable, setTaxable] = useState(line.taxable);
+  // Deposit-eligibility is committed on change (like taxable) and reverts on a
+  // failed save; resynced from the server prop after each refresh().
+  const [depositEligible, setDepositEligible] = useState(line.depositEligible ?? false);
   // Internal cost/identity fields (cost drives the markup/net strip below the row).
   const [cost, setCost] = useState(line.unitCost ?? '');
   const [sku, setSku] = useState(line.sku ?? '');
@@ -2015,6 +2186,7 @@ function EditableLineRow({
   // refresh GET fires), so a stale resync can't race them — a plain resync wins.
   useEffect(() => { setRec(line.recurrence); }, [line.recurrence]);
   useEffect(() => { setTaxable(line.taxable); }, [line.taxable]);
+  useEffect(() => { setDepositEligible(line.depositEligible ?? false); }, [line.depositEligible]);
 
   // Quiet "Saved" flash in place of the old per-field success toast. This is a
   // single row-level flag on purpose: committing any one field briefly pulses the
@@ -2111,12 +2283,13 @@ function EditableLineRow({
   // recompute uses the same inputs. Emit null once nothing diverges, so the rail
   // reverts to the authoritative server figures; cleanup on unmount avoids a
   // phantom draft skewing the rail after a delete.
-  const diverged = totalDiverged || taxable !== line.taxable || rec !== line.recurrence || costDirty;
+  const depositEligibleDirty = depositEligible !== (line.depositEligible ?? false);
+  const diverged = totalDiverged || taxable !== line.taxable || rec !== line.recurrence || costDirty || depositEligibleDirty;
   useEffect(() => {
     onDraft(line.id, diverged
-      ? { quantity: String(effQty), unitPrice: String(effPrice), unitCost: cost || null, taxable, customerVisible: line.customerVisible, recurrence: rec }
+      ? { quantity: String(effQty), unitPrice: String(effPrice), unitCost: cost || null, taxable, customerVisible: line.customerVisible, recurrence: rec, depositEligible, itemType: line.itemType ?? null }
       : null);
-  }, [onDraft, line.id, line.customerVisible, diverged, effQty, effPrice, cost, taxable, rec]);
+  }, [onDraft, line.id, line.customerVisible, line.itemType, diverged, effQty, effPrice, cost, taxable, rec, depositEligible]);
   // Clear this row's draft when it unmounts (e.g. removed) so the rail doesn't
   // keep a phantom override.
   useEffect(() => () => onDraft(line.id, null), [onDraft, line.id]);
@@ -2282,6 +2455,26 @@ function EditableLineRow({
           disabled={fieldBusy('taxable')}
           data-testid={`quote-line-taxable-${line.id}`}
         />
+        {/* Deposit-eligible toggle appears only when the quote's deposit is
+            'selected_lines'. It's meaningful for one-time lines only (recurring
+            lines never count toward a deposit), so it's hidden for recurring rows. */}
+        {depositSelectMode && rec === 'one_time' && (
+          <label className="mt-1 flex items-center justify-center gap-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+            <input
+              type="checkbox"
+              checked={depositEligible}
+              aria-label="Deposit eligible"
+              onChange={(e) => {
+                const next = e.target.checked;
+                setDepositEligible(next); // optimistic — revert if the save fails
+                void edit({ depositEligible: next }, 'deposit').then((ok) => { if (!ok) setDepositEligible(line.depositEligible ?? false); });
+              }}
+              disabled={fieldBusy('deposit')}
+              data-testid={`line-deposit-eligible-${line.id}`}
+            />
+            Deposit
+          </label>
+        )}
       </td>
       <td className="px-2 py-2 text-right tabular-nums text-muted-foreground" data-testid={`quote-line-tax-${line.id}`}>
         {displayTax === null ? '—' : formatMoney(displayTax, currency)}

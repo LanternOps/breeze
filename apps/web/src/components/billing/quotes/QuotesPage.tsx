@@ -74,7 +74,25 @@ function writeFilters(f: Filters): void {
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 const num = (s: string | null | undefined) => { const n = Number(s); return Number.isFinite(n) ? n : 0; };
+const cents = (s: string | null | undefined) => Math.round(num(s) * 100);
 const ts = (d: string | null) => (d ? new Date(d.length === 10 ? `${d}T00:00:00` : d).getTime() : null);
+
+// Deposit chip for a quote row. `null` = no chip (no deposit configured). A
+// converted quote whose invoice carries a deposit shows the money state
+// (paid/unpaid, compared in cents); an unconverted quote with a deposit shows a
+// neutral "Deposit" marker.
+function quoteDepositBadge(q: Quote): { label: string; className: string } | null {
+  if (q.status === 'converted' && q.invoiceDepositDue != null) {
+    const paid = cents(q.invoiceAmountPaid) >= cents(q.invoiceDepositDue);
+    return paid
+      ? { label: 'Deposit paid', className: 'bg-success/10 text-success' }
+      : { label: 'Deposit unpaid', className: 'bg-warning/10 text-warning' };
+  }
+  if ((q.depositType ?? 'none') !== 'none') {
+    return { label: 'Deposit', className: 'bg-muted text-muted-foreground' };
+  }
+  return null;
+}
 
 export function QuotesPage() {
   const { can } = usePermissions();
@@ -496,12 +514,26 @@ export function QuotesPage() {
                       </td>
                       <td className="px-3 py-3">{orgName(qt.orgId)}</td>
                       <td className="px-3 py-3">
-                        <StatusPill
-                          role={STATUS_ROLES[qt.status].role}
-                          label={statusLabel(qt)}
-                          className={STATUS_ROLES[qt.status].className}
-                          testId={`quotes-status-${qt.id}`}
-                        />
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <StatusPill
+                            role={STATUS_ROLES[qt.status].role}
+                            label={statusLabel(qt)}
+                            className={STATUS_ROLES[qt.status].className}
+                            testId={`quotes-status-${qt.id}`}
+                          />
+                          {(() => {
+                            const badge = quoteDepositBadge(qt);
+                            if (!badge) return null;
+                            return (
+                              <span
+                                className={`inline-flex rounded-full px-2 py-1 text-xs font-medium ${badge.className}`}
+                                data-testid={`quotes-deposit-badge-${qt.id}`}
+                              >
+                                {badge.label}
+                              </span>
+                            );
+                          })()}
+                        </div>
                       </td>
                       <td className="px-3 py-3 text-right tabular-nums">{formatMoney(qt.total, qt.currencyCode)}</td>
                       <td className="px-3 py-3 text-muted-foreground">{formatDate(qt.createdAt)}</td>

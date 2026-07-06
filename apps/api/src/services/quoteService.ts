@@ -1,6 +1,7 @@
 import { and, desc, eq, lt, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { quotes, quoteLines, quoteBlocks, quoteImages } from '../db/schema/quotes';
+import { invoices } from '../db/schema/invoices';
 import { organizations, partners } from '../db/schema/orgs';
 import { catalogItems } from '../db/schema/catalog';
 import { computeLineTotal, resolveEffectiveTaxRate } from './invoiceMath';
@@ -203,11 +204,19 @@ export async function listQuotes(query: ListQuotesQuery, actor: QuoteActor) {
       ) as ReturnType<typeof eq>);
     }
   }
-  const rows = await db.select().from(quotes)
+  // Left-join the converted invoice so the list badge can reflect the invoice's
+  // money state (deposit paid/unpaid). The join is null for unconverted quotes;
+  // the mapped fields then stay null and the UI shows the plain "Deposit" chip.
+  const rows = await db.select({
+    quote: quotes,
+    invoiceDepositDue: invoices.depositDue,
+    invoiceAmountPaid: invoices.amountPaid,
+  }).from(quotes)
+    .leftJoin(invoices, eq(invoices.id, quotes.convertedInvoiceId))
     .where(conds.length ? and(...conds) : undefined)
     .orderBy(desc(quotes.createdAt), desc(quotes.id))
     .limit(query.limit);
-  return rows;
+  return rows.map((r) => ({ ...r.quote, invoiceDepositDue: r.invoiceDepositDue, invoiceAmountPaid: r.invoiceAmountPaid }));
 }
 
 /** Draft-only header edit. Only provided fields are written; nullable fields can be

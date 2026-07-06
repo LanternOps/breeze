@@ -75,7 +75,16 @@ function writeFilters(f: Filters): void {
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 const num = (s: string | null | undefined) => { const n = Number(s); return Number.isFinite(n) ? n : 0; };
+const cents = (s: string | null | undefined) => Math.round(num(s) * 100);
 const ts = (d: string | null) => (d ? new Date(d.length === 10 ? `${d}T00:00:00` : d).getTime() : null);
+
+// Deposit list-badge state (mirrors the portal invoice list): 'unpaid' while
+// amountPaid < depositDue, 'paid' once met, null when the invoice carries no
+// deposit (no badge, zero visual change). Compared in cents.
+function invoiceDepositBadge(inv: InvoiceSummary): 'unpaid' | 'paid' | null {
+  if (inv.depositDue == null) return null;
+  return cents(inv.amountPaid) < cents(inv.depositDue) ? 'unpaid' : 'paid';
+}
 
 export function InvoicesPage() {
   const { can } = usePermissions();
@@ -569,12 +578,27 @@ export function InvoicesPage() {
                           {formatMoney(inv.balance, inv.currencyCode)}
                         </td>
                         <td className="px-3 py-3">
-                          <StatusPill
-                            role={STATUS_ROLES[inv.status].role}
-                            label={statusLabel(inv)}
-                            className={STATUS_ROLES[inv.status].className}
-                            testId={`invoices-status-${inv.id}`}
-                          />
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <StatusPill
+                              role={STATUS_ROLES[inv.status].role}
+                              label={statusLabel(inv)}
+                              className={STATUS_ROLES[inv.status].className}
+                              testId={`invoices-status-${inv.id}`}
+                            />
+                            {(() => {
+                              const deposit = invoiceDepositBadge(inv);
+                              if (!deposit) return null;
+                              return deposit === 'unpaid' ? (
+                                <span className="inline-flex rounded-full px-2 py-1 text-xs font-medium bg-warning/10 text-warning" data-testid={`invoices-deposit-unpaid-${inv.id}`}>
+                                  Deposit unpaid
+                                </span>
+                              ) : (
+                                <span className="inline-flex rounded-full px-2 py-1 text-xs font-medium bg-success/10 text-success" data-testid={`invoices-deposit-paid-${inv.id}`}>
+                                  Deposit paid
+                                </span>
+                              );
+                            })()}
+                          </div>
                         </td>
                       </tr>
                     );
@@ -615,12 +639,26 @@ export function InvoicesPage() {
                           {inv.invoiceNumber ?? <span aria-hidden="true" className="text-muted-foreground">—</span>}
                         </a>
                       </div>
-                      <StatusPill
-                        role={STATUS_ROLES[inv.status].role}
-                        label={statusLabel(inv)}
-                        className={['shrink-0', STATUS_ROLES[inv.status].className].filter(Boolean).join(' ')}
-                        testId={`invoices-card-status-${inv.id}`}
-                      />
+                      <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+                        <StatusPill
+                          role={STATUS_ROLES[inv.status].role}
+                          label={statusLabel(inv)}
+                          className={['shrink-0', STATUS_ROLES[inv.status].className].filter(Boolean).join(' ')}
+                          testId={`invoices-card-status-${inv.id}`}
+                        />
+                        {(() => {
+                          const deposit = invoiceDepositBadge(inv);
+                          if (!deposit) return null;
+                          return (
+                            <span
+                              className={`inline-flex rounded-full px-2 py-1 text-xs font-medium ${deposit === 'unpaid' ? 'bg-warning/10 text-warning' : 'bg-success/10 text-success'}`}
+                              data-testid={`invoices-card-deposit-${inv.id}`}
+                            >
+                              {deposit === 'unpaid' ? 'Deposit unpaid' : 'Deposit paid'}
+                            </span>
+                          );
+                        })()}
+                      </div>
                     </div>
                     <div className="mt-3 space-y-1.5">
                       <CardField label="Organization">{orgName(inv.orgId)}</CardField>

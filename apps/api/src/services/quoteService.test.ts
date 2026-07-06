@@ -10,7 +10,7 @@ function queueResult(rows: unknown[]) { results.push(rows); }
 vi.mock('../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
-    const methods = ['select', 'from', 'where', 'limit', 'orderBy', 'insert', 'values', 'returning', 'update', 'set', 'delete', 'for', 'innerJoin', 'execute', 'transaction'];
+    const methods = ['select', 'from', 'where', 'limit', 'orderBy', 'insert', 'values', 'returning', 'update', 'set', 'delete', 'for', 'innerJoin', 'leftJoin', 'execute', 'transaction'];
     for (const m of methods) chain[m] = vi.fn(() => chain);
     (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) => {
       const rows = results.shift() ?? [];
@@ -121,6 +121,22 @@ describe('quoteService deposits', () => {
     expect(quote.depositDueTotal).toBe('330.00');
     expect(quote.categoryBreakdown).toEqual([
       { category: 'hardware', oneTimeTotal: '1000.00', monthlyTotal: '0.00', annualTotal: '0.00' },
+    ]);
+  });
+
+  it('listQuotes left-joins the converted invoice and flattens invoiceDepositDue/invoiceAmountPaid onto each row', async () => {
+    // The chain mock yields queued rows regardless of shape; queue the joined
+    // projection shape the real select({ quote, invoiceDepositDue, invoiceAmountPaid }) returns.
+    queueResult([
+      { quote: { id: 'q1', orgId: 'org1', status: 'converted', depositType: 'percent' }, invoiceDepositDue: '300.00', invoiceAmountPaid: '300.00' },
+      { quote: { id: 'q2', orgId: 'org1', status: 'draft', depositType: 'none' }, invoiceDepositDue: null, invoiceAmountPaid: null },
+    ]);
+
+    const rows = await svc.listQuotes({ limit: 50 }, actor);
+
+    expect(rows).toEqual([
+      { id: 'q1', orgId: 'org1', status: 'converted', depositType: 'percent', invoiceDepositDue: '300.00', invoiceAmountPaid: '300.00' },
+      { id: 'q2', orgId: 'org1', status: 'draft', depositType: 'none', invoiceDepositDue: null, invoiceAmountPaid: null },
     ]);
   });
 });

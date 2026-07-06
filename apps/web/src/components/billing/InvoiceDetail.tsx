@@ -26,6 +26,7 @@ import {
 import { StatusPill } from './shared/StatusPill';
 import InvoiceActions from './InvoiceActions';
 import { MarginPanel } from './billingUi';
+import { computeChargeNow } from '@breeze/shared';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -64,6 +65,12 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
   const [voidOpen, setVoidOpen] = useState(false);
   const [voidReason, setVoidReason] = useState('');
   const [voidReissue, setVoidReissue] = useState(false);
+
+  // Inline due-date editor (issued invoices only). Opens with the current due date;
+  // Save PATCHes /invoices/:id/due-date.
+  const [dueDateEditing, setDueDateEditing] = useState(false);
+  const [dueDateDraft, setDueDateDraft] = useState(invoice.dueDate ?? '');
+  useEffect(() => { setDueDateDraft(invoice.dueDate ?? ''); }, [invoice.dueDate]);
 
   const loadPayments = useCallback(async () => {
     const res = await fetchWithAuth(`/invoices/${invoice.id}/payments`);
@@ -115,6 +122,74 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
   const canRecordPayment =
     invoice.status !== 'draft' && invoice.status !== 'void' && invoice.status !== 'paid' && Number(invoice.balance) > 0;
   const canVoid = invoice.status !== 'void' && invoice.status !== 'draft';
+
+  // Deposit-aware charge amount — matches what the server's pay route charges
+  // (computeChargeNow, the single source of truth), so the deposit strip never
+  // advertises a figure different from the actual charge. `depositDue` null = no deposit.
+  const hasDeposit = invoice.depositDue != null;
+  const chargeNow = computeChargeNow({
+    depositDue: invoice.depositDue ?? null,
+    amountPaid: invoice.amountPaid,
+    balance: invoice.balance,
+  });
+
+  // The due date is editable once the invoice is live (issued/partially paid/overdue);
+  // the /due-date route is gated on invoices:write.
+  const canEditDueDate =
+    can('invoices', 'write') && ['sent', 'partially_paid', 'overdue'].includes(invoice.status);
+
+  // Re-sending an issued, part-paid invoice reads as "request payment" rather than
+  // "send" — same POST /send call. Gate on a live, still-owing invoice + invoices:send.
+  const partiallyPaid = Number(invoice.amountPaid) > 0 && Number(invoice.balance) > 0;
+  const canRequestPayment =
+    can('invoices', 'send') &&
+    invoice.status !== 'draft' && invoice.status !== 'void' && invoice.status !== 'paid' &&
+    Number(invoice.balance) > 0;
+
+  const saveDueDate = useCallback(async () => {
+    if (busy || !dueDateDraft) return;
+    setBusy(true);
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`/invoices/${invoice.id}/due-date`, {
+          method: 'PATCH', body: JSON.stringify({ dueDate: dueDateDraft }),
+        }),
+        errorFallback: 'Could not update the due date.',
+        successMessage: 'Due date updated',
+        onUnauthorized: UNAUTHORIZED,
+      });
+      setDueDateEditing(false);
+      refresh();
+    } catch (err) {
+      handleActionError(err, 'Could not update the due date.');
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, dueDateDraft, invoice.id, refresh]);
+
+  const requestPayment = useCallback(async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      // /send is honest about whether an email actually went out — only claim it
+      // was sent when the API confirms an email was dispatched.
+      const result = await runAction<{ data: { emailed: boolean } }>({
+        request: () => fetchWithAuth(`/invoices/${invoice.id}/send`, { method: 'POST' }),
+        errorFallback: 'Could not send the invoice.',
+        onUnauthorized: UNAUTHORIZED,
+      });
+      if (result?.data?.emailed) {
+        showToast({ type: 'success', message: partiallyPaid ? 'Payment request sent' : 'Invoice sent' });
+      } else {
+        showToast({ type: 'warning', message: 'No email was sent (no billing contact / email not configured)' });
+      }
+      refresh();
+    } catch (err) {
+      handleActionError(err, 'Could not send the invoice.');
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, invoice.id, partiallyPaid, refresh]);
 
   const recordPayment = useCallback(async () => {
     if (busy || !payAmount) return;
@@ -288,7 +363,46 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
                 className={STATUS_ROLES[invoice.status].className}
                 testId="invoice-detail-status"
               />
-              <span className="text-xs text-muted-foreground">Due {formatDate(invoice.dueDate)}</span>
+              {canEditDueDate ? (
+                dueDateEditing ? (
+                  <span className="flex items-center gap-1">
+                    <input
+                      type="date"
+                      value={dueDateDraft}
+                      onChange={(e) => setDueDateDraft(e.target.value)}
+                      disabled={busy}
+                      aria-label="Due date"
+                      data-testid="invoice-due-date-input"
+                      className="h-7 rounded-md border bg-background px-1.5 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
+                    />
+                    <button
+                      type="button" onClick={() => void saveDueDate()} disabled={busy || !dueDateDraft}
+                      data-testid="invoice-due-date-save"
+                      className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
+                    >
+                      Save
+                    </button>
+                    <button
+                      type="button" onClick={() => { setDueDateDraft(invoice.dueDate ?? ''); setDueDateEditing(false); }} disabled={busy}
+                      data-testid="invoice-due-date-cancel"
+                      className="rounded-md px-1.5 py-1 text-xs text-muted-foreground hover:text-foreground"
+                    >
+                      Cancel
+                    </button>
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setDueDateEditing(true)}
+                    data-testid="invoice-due-date-edit"
+                    className="text-xs text-muted-foreground underline decoration-dotted underline-offset-2 hover:text-foreground"
+                  >
+                    Due {formatDate(invoice.dueDate)}
+                  </button>
+                )
+              ) : (
+                <span className="text-xs text-muted-foreground">Due {formatDate(invoice.dueDate)}</span>
+              )}
             </div>
             <dl className="space-y-1 text-sm tabular-nums">
               <div className="flex justify-between"><dt className="text-muted-foreground">Subtotal</dt><dd>{formatMoney(invoice.subtotal, currency)}</dd></div>
@@ -308,6 +422,17 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
                 {formatMoney(invoice.balance, currency)}
               </span>
             </div>
+            {/* Deposit strip — mirrors the customer portal so the operator sees the
+                same deposit-first framing the customer's Pay button uses. */}
+            {hasDeposit && (
+              <div className="mt-3 rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground" data-testid="invoice-deposit-strip">
+                {chargeNow.isDeposit ? (
+                  <>Deposit of <strong className="text-foreground">{formatMoney(invoice.depositDue!, currency)}</strong> due — {formatMoney(invoice.amountPaid, currency)} of {formatMoney(invoice.total, currency)} paid.</>
+                ) : (
+                  <>Deposit paid — remaining balance {formatMoney(invoice.balance, currency)}.</>
+                )}
+              </div>
+            )}
             {/* Internal margin summary — profitability stays visible after the
                 invoice is issued and the Editor tab disappears (same reason
                 QuoteDetail renders it). Never reaches the customer document. */}
@@ -352,6 +477,17 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
               the issued-lifecycle rail, not the header. */}
           <div className="space-y-2">
             {!actionsInHeader && <InvoiceActions detail={detail} onChanged={onChanged} variant="rail" />}
+            {/* Re-send the issued invoice. Reads as "Request payment" once the
+                customer has partially paid (same POST /send call). */}
+            {canRequestPayment && (
+              <button
+                type="button" onClick={() => void requestPayment()} disabled={busy}
+                data-testid="invoice-request-payment"
+                className="inline-flex w-full items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
+              >
+                {partiallyPaid ? 'Request payment' : 'Send invoice'}
+              </button>
+            )}
             {canVoid && can('invoices', 'send') && (
               <button
                 type="button" onClick={() => { setVoidReason(''); setVoidReissue(false); setVoidOpen(true); }}
