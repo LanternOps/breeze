@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createHash } from 'node:crypto';
-import { renderInvoiceHtml, renderInvoicePdfBuffer, type InvoiceBranding } from './invoicePdf';
+import { renderInvoiceHtml, renderInvoicePdfBuffer, buildInvoiceEmailAmounts, type InvoiceBranding } from './invoicePdf';
 import { invoices, invoiceLines } from '../db/schema';
 
 type InvoiceRow = typeof invoices.$inferSelect;
@@ -169,3 +169,34 @@ it('renderInvoicePdfBuffer emits a %PDF with a seller snapshot present', async (
   );
   expect(buf.subarray(0, 4).toString()).toBe('%PDF');
 });
+
+describe('buildInvoiceEmailAmounts (deposit-vs-balance split for the email)', () => {
+  const base = { total: '1000.00', currencyCode: 'USD' as string | null };
+
+  it('a deposit invoice with nothing paid asks for the DEPOSIT, not the total', () => {
+    const a = buildInvoiceEmailAmounts({ ...base, depositDue: '300.00', amountPaid: '0.00', balance: '1000.00' });
+    expect(a.amountDueNow).toBe('$300.00');
+    // The regression this test exists for: amountDueNow must NOT be the total, or a
+    // customer would be emailed to pay the full amount before any deposit is applied.
+    expect(a.amountDueNow).not.toBe(a.total);
+    expect(a.total).toBe('$1,000.00');
+    expect(a.amountPaid).toBeUndefined();
+  });
+
+  it('once the deposit is paid, it asks for the remaining balance and shows amountPaid', () => {
+    const a = buildInvoiceEmailAmounts({ ...base, depositDue: '300.00', amountPaid: '300.00', balance: '700.00' });
+    expect(a.amountDueNow).toBe('$700.00');
+    expect(a.amountPaid).toBe('$300.00');
+  });
+
+  it('a non-deposit invoice asks for the full balance', () => {
+    const a = buildInvoiceEmailAmounts({ ...base, depositDue: null, amountPaid: '0.00', balance: '1000.00' });
+    expect(a.amountDueNow).toBe('$1,000.00');
+    expect(a.amountPaid).toBeUndefined();
+  });
+
+  it('clamps the charge to the balance when a manual payment shrank it below the deposit', () => {
+    const a = buildInvoiceEmailAmounts({ ...base, depositDue: '300.00', amountPaid: '900.00', balance: '100.00' });
+    expect(a.amountDueNow).toBe('$100.00'); // never advertises more than is owed
+  });
+})

@@ -457,6 +457,30 @@ export interface SendInvoiceResult {
 }
 
 /**
+ * The money fields of the invoice email, isolated so the deposit-vs-balance split
+ * is unit-testable without standing up the whole send path. `amountDueNow` is what
+ * is owed NOW — the remaining deposit (via computeChargeNow) or the full balance —
+ * NOT the invoice total, so a customer who has already paid the deposit is never
+ * asked to pay the total again. `amountPaid` is omitted (undefined) when nothing
+ * has been paid, so the template can suppress the "already paid" line.
+ */
+export function buildInvoiceEmailAmounts(inv: {
+  total: string;
+  depositDue: string | null;
+  amountPaid: string;
+  balance: string;
+  currencyCode: string | null;
+}): { total: string; amountDueNow: string; amountPaid: string | undefined } {
+  const currency = inv.currencyCode ?? 'USD';
+  const chargeNow = computeChargeNow({ depositDue: inv.depositDue, amountPaid: inv.amountPaid, balance: inv.balance });
+  return {
+    total: formatMoney(inv.total, currency),
+    amountDueNow: formatMoney(chargeNow.amount, currency),
+    amountPaid: Number(inv.amountPaid) > 0 ? formatMoney(inv.amountPaid, currency) : undefined,
+  };
+}
+
+/**
  * Issue the invoice if it is still a draft, ensure a PDF artifact exists
  * (rendered synchronously — the email path must NOT depend on the async worker),
  * email it to the org billing contact with the PDF attached, and stamp sent_at.
@@ -512,18 +536,18 @@ export async function sendInvoiceEmail(invoiceId: string, actor: InvoiceActor): 
       'http://localhost:4321'
     ).replace(/\/$/, '');
     const portalLink = `${portalBase}/invoices/${invoiceId}`;
-    // This IS the "Request balance payment" action for deposit invoices: chargeNow
-    // reflects the deposit-vs-balance split so the email states what's owed NOW,
-    // not just the invoice total (which may already be partially covered).
-    const chargeNow = computeChargeNow({ depositDue: invoice.depositDue, amountPaid: invoice.amountPaid, balance: invoice.balance });
+    // This IS the "Request balance payment" action for deposit invoices: the money
+    // fields reflect the deposit-vs-balance split so the email states what's owed
+    // NOW, not just the invoice total (which may already be partially covered).
+    const amounts = buildInvoiceEmailAmounts(invoice);
     const template = buildInvoiceTemplate({
       invoiceNumber: invoice.invoiceNumber ?? '',
       partnerName: partner?.name ?? 'your provider',
-      total: formatMoney(invoice.total, invoice.currencyCode ?? 'USD'),
+      total: amounts.total,
       dueDate: formatDate(invoice.dueDate),
       portalUrl: portalLink,
-      amountDueNow: formatMoney(chargeNow.amount, invoice.currencyCode ?? 'USD'),
-      amountPaid: Number(invoice.amountPaid) > 0 ? formatMoney(invoice.amountPaid, invoice.currencyCode ?? 'USD') : undefined,
+      amountDueNow: amounts.amountDueNow,
+      amountPaid: amounts.amountPaid,
     });
     await emailService.sendEmail({
       to: recipient,
