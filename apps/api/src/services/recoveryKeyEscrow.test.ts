@@ -77,7 +77,7 @@ describe('escrowRecoveryKeys', () => {
     ]);
 
     expect(stats).toEqual({ inserted: 1, superseded: 0, unchanged: 0 });
-    const row = values.mock.calls[0][0];
+    const row = values.mock.calls[0]![0] as Record<string, unknown>;
     expect(row.encryptedKey).toBe(`enc:${KEY}`);
     expect(row.keyFingerprint).toBe(fingerprintRecoveryKey(KEY));
     expect(JSON.stringify(row)).not.toContain(`"${KEY}"`);

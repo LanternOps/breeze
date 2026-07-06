@@ -64,7 +64,7 @@ describe('PUT /:id/security/recovery-keys', () => {
     });
     expect(res.status).toBe(200);
     expect(escrowMock).toHaveBeenCalledWith(DEVICE_ID, ORG_ID, 'snapshot', validBody.keys);
-    const auditArg = auditMock.mock.calls[0][1];
+    const auditArg = auditMock.mock.calls[0]![1] as { action: string };
     expect(JSON.stringify(auditArg)).not.toContain(KEY);
     expect(auditArg.action).toBe('agent.recovery_keys.submit');
   });
