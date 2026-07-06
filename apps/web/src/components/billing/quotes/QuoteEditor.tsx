@@ -352,6 +352,16 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
     }, 'Could not update the deposit.'),
   [quote.id, refresh, runScoped]);
 
+  // Snap the local mirrors back to the server-persisted deposit config. Used when
+  // a deposit PATCH is rejected (e.g. 400 DEPOSIT_NOT_BELOW_TOTAL or
+  // DEPOSIT_NO_ELIGIBLE_LINES): runAction already toasts the API's reason, but the
+  // optimistic type select / percent draft would otherwise keep showing a mode that
+  // never saved — a dropdown that lies about persisted state until the next reload.
+  const revertDepositMirrors = useCallback(() => {
+    setDepositType(quote.depositType ?? 'none');
+    setDepositPercentDraft(quote.depositPercent ?? '');
+  }, [quote.depositType, quote.depositPercent]);
+
   const onDepositTypeChange = useCallback((next: QuoteDepositType) => {
     setDepositType(next);
     if (next === 'percent') {
@@ -359,11 +369,13 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
       // so defer the PATCH until a percent exists — persist immediately only when one
       // is already entered (the percent input's onBlur handles the first entry).
       const pct = depositPercentDraft.trim() === '' ? null : Number(depositPercentDraft);
-      if (pct != null && Number.isFinite(pct)) void saveDeposit({ depositType: 'percent', depositPercent: pct });
+      if (pct != null && Number.isFinite(pct)) {
+        void saveDeposit({ depositType: 'percent', depositPercent: pct }).then((ok) => { if (!ok) revertDepositMirrors(); });
+      }
     } else {
-      void saveDeposit({ depositType: next });
+      void saveDeposit({ depositType: next }).then((ok) => { if (!ok) revertDepositMirrors(); });
     }
-  }, [depositPercentDraft, saveDeposit]);
+  }, [depositPercentDraft, saveDeposit, revertDepositMirrors]);
 
   const onDepositPercentBlur = useCallback(() => {
     if (depositType !== 'percent') return;
@@ -372,8 +384,8 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
     // Only fire when it actually differs from the persisted value (avoids a
     // redundant PATCH on a focus-through).
     if (quote.depositType === 'percent' && quote.depositPercent != null && Number(quote.depositPercent) === pct) return;
-    void saveDeposit({ depositType: 'percent', depositPercent: pct });
-  }, [depositType, depositPercentDraft, quote.depositType, quote.depositPercent, saveDeposit]);
+    void saveDeposit({ depositType: 'percent', depositPercent: pct }).then((ok) => { if (!ok) revertDepositMirrors(); });
+  }, [depositType, depositPercentDraft, quote.depositType, quote.depositPercent, saveDeposit, revertDepositMirrors]);
 
   const loadCatalog = useCallback(async () => {
     const res = await listCatalog({ isActive: true, limit: 200 });
