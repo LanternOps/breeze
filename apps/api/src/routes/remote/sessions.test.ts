@@ -894,5 +894,62 @@ describe('remote sessions — site-scope enforcement', () => {
         'Olive Technology',       // partner name — NOT the org name
       );
     });
+
+    it('falls back to a null partner name and still ships the offer when the partner lookup throws', async () => {
+      getSessionWithOrgCheck.mockResolvedValue({
+        session: { id: SESSION_ID, userId: 'user-1', type: 'desktop', status: 'pending', deviceId: DEVICE_IN_ALLOWED },
+        device: { id: DEVICE_IN_ALLOWED, orgId: ORG_ID, siteId: ALLOWED_SITE, agentId: 'agent-1' },
+      });
+      rigOfferUpdate();
+
+      // Override the file-wide 'off' default so the offer handler actually
+      // builds and ships the technicianDisplay block.
+      vi.mocked(resolveRemoteSessionPromptConfig).mockResolvedValueOnce({
+        mode: 'notify',
+        consentUnavailableBehavior: 'proceed',
+        notifyOnEnd: true,
+        showIndicator: true,
+        identityLevel: 'name_email',
+      });
+
+      // technician lookup — select({name,email}).from(users).where().limit()
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ name: 'Billy Tech', email: 'billy@example.com' }]),
+          }),
+        }),
+      } as never);
+
+      // org -> partner join — select({name}).from(organizations).innerJoin(partners).where().limit()
+      // the terminal .limit() rejects to simulate the partner lookup failing.
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockRejectedValue(new Error('connection reset')),
+            }),
+          }),
+        }),
+      } as never);
+
+      const res = await app.request(`/remote/sessions/${SESSION_ID}/offer`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json', 'x-restrict-site': ALLOWED_SITE },
+        body: offerBody,
+      });
+
+      // The session still starts — a partner-name resolution failure must not
+      // strand the session mid-start (status is already 'connecting' and the
+      // audit log already written by this point).
+      expect(res.status).toBe(200);
+      expect(sendCommandToAgent).toHaveBeenCalled();
+      expect(vi.mocked(buildTechnicianDisplay)).toHaveBeenCalledWith(
+        expect.anything(),        // identityLevel
+        expect.anything(),        // tech name
+        expect.anything(),        // tech email
+        null,                     // partner name falls back to null on error
+      );
+    });
   });
 });

@@ -41,6 +41,7 @@ import {
   MAX_ACTIVE_REMOTE_SESSIONS_PER_USER
 } from './helpers';
 import { revokeViewerSession } from '../../services/viewerTokenRevocation';
+import { captureException } from '../../services/sentry';
 import { teardownDisconnectedSessions } from '../../services/remoteSessionTeardown';
 import { normalizeRecordingUrl } from './recordingUrl';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
@@ -935,21 +936,35 @@ sessionRoutes.post(
       // (computeAccessiblePartnerIds in middleware/auth.ts) — org tokens
       // never pass breeze_has_partner_access, so a plain `db.select` here
       // would silently return 0 rows under FORCE RLS on `partners`.
-      const [partnerRow] = await runOutsideDbContext(() =>
-        withSystemDbAccessContext(() =>
-          db
-            .select({ name: partners.name })
-            .from(organizations)
-            .innerJoin(partners, eq(organizations.partnerId, partners.id))
-            .where(eq(organizations.id, device.orgId))
-            .limit(1)
-        )
-      );
+      let partnerName: string | null = null;
+      try {
+        const [partnerRow] = await runOutsideDbContext(() =>
+          withSystemDbAccessContext(() =>
+            db
+              .select({ name: partners.name })
+              .from(organizations)
+              .innerJoin(partners, eq(organizations.partnerId, partners.id))
+              .where(eq(organizations.id, device.orgId))
+              .limit(1)
+          )
+        );
+        partnerName = partnerRow?.name ?? null;
+      } catch (error) {
+        // Fail-safe: the prompt still ships without the partner name rather than
+        // 500-ing the offer handler — by this point remoteSessions.status is
+        // already 'connecting' and the audit log is already written, so a throw
+        // here would strand the session mid-start with the agent never commanded.
+        console.error(
+          `[Remote] Failed to resolve partner name for device ${device.id}; proceeding without it:`,
+          error instanceof Error ? error.message : error
+        );
+        captureException(error);
+      }
       const technicianDisplay = buildTechnicianDisplay(
         promptCfg.identityLevel,
         tech?.name ?? null,
         tech?.email ?? null,
-        partnerRow?.name ?? null,
+        partnerName,
       );
       prompt = {
         mode: promptCfg.mode,
