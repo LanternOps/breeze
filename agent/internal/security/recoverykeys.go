@@ -173,7 +173,11 @@ func xmlEscape(s string) string {
 // username the auth is user credentials; without, Password carries the
 // current personal recovery key.
 func buildFileVaultAuthPlist(username, password, currentRecoveryKey string) string {
-	if username != "" {
+	// Only use user-credential auth when we actually have both a username and a
+	// password. A username with an empty password but a present recovery key
+	// (a valid combination per the API route) must fall through to the
+	// recovery-key branch so the key isn't dropped.
+	if username != "" && password != "" {
 		return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict><key>Username</key><string>%s</string><key>Password</key><string>%s</string></dict></plist>`,

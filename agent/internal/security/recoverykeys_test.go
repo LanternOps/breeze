@@ -97,6 +97,11 @@ func TestParseFileVaultNewKey(t *testing.T) {
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
 			}
+			// Safety-critical: a failure error must NEVER echo the raw fdesetup
+			// output, since on the success path that output contains the key.
+			if err != nil && tt.output != "" && strings.Contains(err.Error(), tt.output) {
+				t.Fatalf("error leaks raw output: %v", err)
+			}
 			if got != tt.want {
 				t.Errorf("key = %q, want %q", got, tt.want)
 			}
@@ -118,6 +123,17 @@ func TestBuildFileVaultAuthPlist(t *testing.T) {
 	}
 	if !strings.Contains(withKey, "AAAA-BBBB-CCCC-DDDD-EEEE-FFFF") {
 		t.Error("recovery key missing from plist")
+	}
+
+	// username + recovery key but NO password (a valid combination per the API
+	// route) must use the recovery-key plist branch, not drop the key into a
+	// doomed Username+empty-password auth.
+	userWithKey := buildFileVaultAuthPlist("jane", "", "AAAA-BBBB-CCCC-DDDD-EEEE-FFFF")
+	if strings.Contains(userWithKey, "<key>Username</key>") {
+		t.Error("username+recovery-key (no password) must not use credential auth")
+	}
+	if !strings.Contains(userWithKey, "AAAA-BBBB-CCCC-DDDD-EEEE-FFFF") {
+		t.Error("recovery key dropped when username present but password empty")
 	}
 }
 
