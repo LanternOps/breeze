@@ -84,7 +84,12 @@ reliabilityRoutes.post('/:id/reliability', zValidator('json', reliabilityMetrics
   } catch (error) {
     console.error('[agents] failed to enqueue reliability computation, using inline fallback:', error);
     captureException(error);
-    await computeAndPersistDeviceReliability(lookup.deviceId);
+    // Redis-outage fallback: computeAndPersistDeviceReliability does bare org-scoped
+    // db reads/writes and relies on an ambient RLS context (the worker supplies a
+    // system context). This route no longer has the request-long wrap (#1105), so we
+    // must give the fallback its own short org-scoped context or the deviceReliability
+    // write hits RLS deny. Still outside the lookup/insert transaction — opened fresh here.
+    await withDbAccessContext(dbContext, () => computeAndPersistDeviceReliability(lookup.deviceId));
   }
 
   // Outside the transaction: audit write (fire-and-forget, as before).

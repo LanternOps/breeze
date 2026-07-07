@@ -104,7 +104,11 @@ describe('agent reliability ingestion route', () => {
 
   it('falls back to inline compute when queue enqueue fails', async () => {
     vi.mocked(enqueueDeviceReliabilityComputation).mockRejectedValue(new Error('queue unavailable'));
-    vi.mocked(computeAndPersistDeviceReliability).mockResolvedValue(true);
+    let fallbackDepth = -1;
+    vi.mocked(computeAndPersistDeviceReliability).mockImplementation(async () => {
+      fallbackDepth = contextDepth;
+      return true;
+    });
 
     const app = buildApp();
     const response = await app.request('/agents/agent-123/reliability', {
@@ -117,6 +121,11 @@ describe('agent reliability ingestion route', () => {
     expect(vi.mocked(enqueueDeviceReliabilityComputation)).toHaveBeenCalledWith('device-1');
     expect(vi.mocked(captureException)).toHaveBeenCalledWith(expect.any(Error));
     expect(vi.mocked(computeAndPersistDeviceReliability)).toHaveBeenCalledWith('device-1');
+    // #1105 Critical fix: the inline fallback does bare org-scoped db reads/writes
+    // and must NOT run at depth 0 (bare pool, no RLS context) — it needs its own
+    // short-lived org-scoped context since this route no longer holds the
+    // request-long wrap.
+    expect(fallbackDepth).toBe(1);
   });
 
   it('does not use inline fallback when queue enqueue succeeds', async () => {
