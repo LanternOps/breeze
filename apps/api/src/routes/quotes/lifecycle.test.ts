@@ -118,4 +118,10 @@ describe('POST /:id/images — from URL (JSON body)', () => {
     const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/images`, jsonReq('https://internal/a.png'));
     expect(res.status).toBe(502);
   });
+
+  it('504s when the remote image download times out', async () => {
+    vi.mocked(fetchRemoteImage).mockRejectedValue(new RemoteImageError('timeout', 'The image took too long to download'));
+    const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/images`, jsonReq('https://slow/a.png'));
+    expect(res.status).toBe(504);
+  });
 });

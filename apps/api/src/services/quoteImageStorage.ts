@@ -33,8 +33,8 @@ export type RemoteImageFailureReason = 'unreachable' | 'not_image' | 'too_large'
 
 /** Typed failure from `fetchRemoteImage`; the images route maps `reason` → HTTP. */
 export class RemoteImageError extends Error {
-  constructor(public readonly reason: RemoteImageFailureReason, message: string) {
-    super(message);
+  constructor(public readonly reason: RemoteImageFailureReason, message: string, options?: { cause?: unknown }) {
+    super(message, options);
     this.name = 'RemoteImageError';
   }
 }
@@ -60,12 +60,14 @@ export async function fetchRemoteImage(url: string): Promise<{ mime: string; buf
     if (err instanceof Error && /timed out/i.test(err.message)) {
       throw new RemoteImageError('timeout', 'The image took too long to download');
     }
-    throw new RemoteImageError('unreachable', "Couldn't reach that URL");
+    throw new RemoteImageError('unreachable', "Couldn't reach that URL", { cause: err });
   }
 
   if (!res.ok) throw new RemoteImageError('unreachable', "Couldn't reach that URL");
 
-  // Fast-reject on a truthful Content-Length before buffering the whole body.
+  // Fast-reject on a truthful Content-Length. Note `safeFetch` already buffers the
+  // entire response body before returning, so this doesn't bound peak memory — it
+  // just skips the extra `Buffer.from(arrayBuffer())` copy for honest servers.
   const declared = Number(res.headers.get('content-length'));
   if (Number.isFinite(declared) && declared > MAX_QUOTE_IMAGE_SIZE_BYTES) {
     throw new RemoteImageError('too_large', 'Image is larger than 5 MB');
