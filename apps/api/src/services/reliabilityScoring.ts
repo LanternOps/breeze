@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { and, asc, desc, eq, gte, inArray, lte, sql, type SQL } from 'drizzle-orm';
+import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 
 import { db } from '../db';
 import {
@@ -98,12 +99,28 @@ type ReliabilityRow = typeof deviceReliability.$inferSelect;
 
 // Event-loop hardening: the scorer reads only these seven columns. Projecting to
 // them (see getHistoryForDevice) drops the ~2KB/row `rawMetrics` JSONB — the bulk
-// of the per-row payload — from every 90-day read. Using this narrower type on the
-// consumers is the compile-time proof that no scorer path reads rawMetrics/id/etc.
+// of the per-row payload — from every 90-day read. Typing the existing scorer
+// consumers with this narrower type makes reading rawMetrics/id/etc a compile
+// error on those paths (it does NOT constrain a future free-standing db.select).
 type ScoringHistoryRow = Pick<
   HistoryRow,
   'collectedAt' | 'uptimeSeconds' | 'bootTime' | 'crashEvents' | 'appHangs' | 'serviceFailures' | 'hardwareErrors'
 >;
+
+// Single source of truth for the projected read. `satisfies Record<keyof
+// ScoringHistoryRow, AnyPgColumn>` makes the compiler enforce both drift
+// directions: dropping a column the type requires is a missing-key error, and
+// re-adding `rawMetrics` (the whole point of the projection) is an excess-property
+// error — so the SQL can never silently diverge from ScoringHistoryRow.
+const SCORING_HISTORY_COLUMNS = {
+  collectedAt: deviceReliabilityHistory.collectedAt,
+  uptimeSeconds: deviceReliabilityHistory.uptimeSeconds,
+  bootTime: deviceReliabilityHistory.bootTime,
+  crashEvents: deviceReliabilityHistory.crashEvents,
+  appHangs: deviceReliabilityHistory.appHangs,
+  serviceFailures: deviceReliabilityHistory.serviceFailures,
+  hardwareErrors: deviceReliabilityHistory.hardwareErrors,
+} satisfies Record<keyof ScoringHistoryRow, AnyPgColumn>;
 
 type DailyAggregateBucket = {
   date: string;
@@ -1298,16 +1315,17 @@ async function getHistoryForDevice(deviceId: string, days: number): Promise<Scor
   // #event-loop-hardening: explicit column list (NOT SELECT *) — drops raw_metrics
   // JSONB (~2KB/row) which the scorer never reads. Uses
   // reliability_history_device_collected_idx (device_id, collected_at).
+  //
+  // NOTE: this still returns one row PER history record (JS bucketing downstream is
+  // O(rows)), not the O(days) SQL daily-aggregate the design floated. That reduction
+  // was intentionally deferred: the #1904 global event-dedup needs per-event keys
+  // across the WHOLE window (mergeRowsIntoDailyBuckets), which a plain GROUP BY can't
+  // express without changing the persisted counts. A runaway high-frequency device is
+  // instead bounded by the on-demand recompute throttle (ON_DEMAND_RELIABILITY_DEDUPE_
+  // WINDOW_MS, 10 min) + worker concurrency cap (2), which is what actually caps the
+  // event-loop load; the column projection here just removes the JSONB bulk per row.
   return db
-    .select({
-      collectedAt: deviceReliabilityHistory.collectedAt,
-      uptimeSeconds: deviceReliabilityHistory.uptimeSeconds,
-      bootTime: deviceReliabilityHistory.bootTime,
-      crashEvents: deviceReliabilityHistory.crashEvents,
-      appHangs: deviceReliabilityHistory.appHangs,
-      serviceFailures: deviceReliabilityHistory.serviceFailures,
-      hardwareErrors: deviceReliabilityHistory.hardwareErrors,
-    })
+    .select(SCORING_HISTORY_COLUMNS)
     .from(deviceReliabilityHistory)
     .where(and(eq(deviceReliabilityHistory.deviceId, deviceId), gte(deviceReliabilityHistory.collectedAt, since)))
     .orderBy(asc(deviceReliabilityHistory.collectedAt));

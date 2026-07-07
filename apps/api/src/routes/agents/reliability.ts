@@ -3,7 +3,7 @@ import { zValidator } from '@hono/zod-validator';
 import { eq } from 'drizzle-orm';
 import { reliabilityMetricsSchema } from '@breeze/shared/validators';
 
-import { db, withDbAccessContext } from '../../db';
+import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../../db';
 import { deviceReliabilityHistory, devices } from '../../db/schema';
 import { enqueueDeviceReliabilityComputation } from '../../jobs/reliabilityWorker';
 import { writeAuditEvent } from '../../services/auditEvents';
@@ -19,13 +19,22 @@ reliabilityRoutes.use('*', requireAgentRole);
 
 type LookupResult =
   | { ok: true; deviceId: string; orgId: string }
-  | { ok: false; reason: 'not_found' }
-  | { ok: false; reason: 'insert_failed' };
+  | { ok: false; reason: 'not_found' | 'insert_failed' };
 
 reliabilityRoutes.post('/:id/reliability', zValidator('json', reliabilityMetricsSchema), async (c) => {
   const agentId = c.req.param('id');
   const metrics = c.req.valid('json');
   const agent = c.get('agent') as { orgId?: string; agentId?: string } | undefined;
+
+  // Fail fast on a token that authenticated but carries no org. Building a vacuous
+  // org-scoped RLS context (orgId '', accessibleOrgIds []) would make the device
+  // lookup RLS-deny and masquerade as a 404 with no signal — surface it instead.
+  if (!agent?.orgId) {
+    console.error(`[agents] reliability post with no org context agent=${agentId}`);
+    captureException(new Error('reliability ingest missing agent orgId'));
+    return c.json({ error: 'Agent context missing organization' }, 401);
+  }
+  const orgId = agent.orgId;
 
   // #1105 — this route is in SELF_MANAGED_DB_CONTEXT_ACTIONS (agentAuth.ts), so
   // the request-long org wrap is skipped. Hold an org-scoped context ONLY across
@@ -33,8 +42,8 @@ reliabilityRoutes.post('/:id/reliability', zValidator('json', reliabilityMetrics
   // pooled connection is pinned idle-in-transaction across Redis/non-DB work.
   const dbContext = {
     scope: 'organization' as const,
-    orgId: agent?.orgId ?? '',
-    accessibleOrgIds: agent?.orgId ? [agent.orgId] : [],
+    orgId,
+    accessibleOrgIds: [orgId],
     accessiblePartnerIds: [],
     currentPartnerId: null,
   };
@@ -65,6 +74,9 @@ reliabilityRoutes.post('/:id/reliability', zValidator('json', reliabilityMetrics
       });
     } catch (error) {
       console.error(`[agents] failed to insert reliability history device=${device.id} org=${device.orgId}:`, error);
+      // Parity with the enqueue catch below: a persistent insert failure (e.g. an
+      // RLS misconfiguration) must reach Sentry, not just stdout.
+      captureException(error);
       return { ok: false, reason: 'insert_failed' };
     }
 
@@ -75,7 +87,12 @@ reliabilityRoutes.post('/:id/reliability', zValidator('json', reliabilityMetrics
     if (lookup.reason === 'not_found') {
       return c.json({ error: 'Device not found' }, 404);
     }
-    return c.json({ error: 'Failed to record reliability metrics' }, 500);
+    if (lookup.reason === 'insert_failed') {
+      return c.json({ error: 'Failed to record reliability metrics' }, 500);
+    }
+    // Exhaustiveness: a new LookupResult failure reason must be handled above.
+    const unhandled: never = lookup.reason;
+    throw new Error(`unhandled reliability lookup reason: ${String(unhandled)}`);
   }
 
   // Outside the transaction: Redis enqueue (with inline compute fallback).
@@ -84,17 +101,30 @@ reliabilityRoutes.post('/:id/reliability', zValidator('json', reliabilityMetrics
   } catch (error) {
     console.error('[agents] failed to enqueue reliability computation, using inline fallback:', error);
     captureException(error);
-    // Redis-outage fallback: computeAndPersistDeviceReliability does bare org-scoped
-    // db reads/writes and relies on an ambient RLS context (the worker supplies a
-    // system context). This route no longer has the request-long wrap (#1105), so we
-    // must give the fallback its own short org-scoped context or the deviceReliability
-    // write hits RLS deny. Still outside the lookup/insert transaction — opened fresh here.
-    await withDbAccessContext(dbContext, () => computeAndPersistDeviceReliability(lookup.deviceId));
+    // Redis-outage fallback. computeAndPersistDeviceReliability relies on an ambient
+    // RLS context: it reads the ml-feature-flag gate (an `organizations INNER JOIN
+    // partners` — needs partner-axis visibility) AND writes deviceReliability. An
+    // org context can't see the partners row, so the flag gate silently resolves
+    // `org_not_found` and the whole compute no-ops. Mirror the worker exactly: run
+    // OUTSIDE any context, then open a fresh SYSTEM context (system sees the partner
+    // row and every org). runOutsideDbContext is required because
+    // withSystemDbAccessContext short-circuits to a no-op if a context is already
+    // active (db/index.ts). The metrics row is already committed and the recompute
+    // is best-effort (same as the enqueue path), so a fallback failure must NOT flip
+    // this request to 500 — that would trigger agent retries and duplicate inserts.
+    try {
+      await runOutsideDbContext(() =>
+        withSystemDbAccessContext(() => computeAndPersistDeviceReliability(lookup.deviceId))
+      );
+    } catch (fallbackError) {
+      console.error(`[agents] inline reliability fallback failed device=${lookup.deviceId}:`, fallbackError);
+      captureException(fallbackError);
+    }
   }
 
   // Outside the transaction: audit write (fire-and-forget, as before).
   writeAuditEvent(c, {
-    orgId: agent?.orgId ?? lookup.orgId,
+    orgId,
     actorType: 'agent',
     actorId: agent?.agentId ?? agentId,
     action: 'agent.reliability.submit',

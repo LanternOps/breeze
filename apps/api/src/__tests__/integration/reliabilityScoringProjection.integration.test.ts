@@ -3,13 +3,13 @@ import './setup';
 import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { withSystemDbAccessContext } from '../../db';
+import { withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { deviceReliability, deviceReliabilityHistory, devices, organizations } from '../../db/schema';
 import { computeAndPersistDeviceReliability } from '../../services/reliabilityScoring';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestDb } from './setup';
 
-// #event-loop-hardening (Task 1, reliabilityScoring.ts:getHistoryForDevice): the
+// #event-loop-hardening (reliabilityScoring.ts:getHistoryForDevice): the
 // 90-day scoring read now projects 7 columns and drops the ~2KB/row rawMetrics
 // JSONB, which the scorer never consumes. This test proves that projection is
 // lossless end-to-end against REAL Postgres: a high-frequency device (50+ posts
@@ -168,7 +168,7 @@ describe('reliability scoring — projected read golden value (integration)', ()
     expect(row!.reliabilityScore).toBeGreaterThanOrEqual(0);
     expect(row!.reliabilityScore).toBeLessThanOrEqual(100);
 
-    // GOLDEN (pinned from the first real-Postgres green run — see task-2-report.md):
+    // GOLDEN (pinned from the first real-Postgres green run of this fixture):
     // no hang/hardware events were seeded, so those counts are exactly 0; the
     // device is only "up" (observed) on the single anchor day within the 30/90-day
     // windows, so uptime is low and the score/trend below reflect that shape.
@@ -177,5 +177,31 @@ describe('reliability scoring — projected read golden value (integration)', ()
     expect(row!.uptime30d).toBeCloseTo(19.35, 2);
     expect(row!.reliabilityScore).toBe(64);
     expect(row!.trendDirection).toBe('stable');
+  });
+
+  // #1105 regression lock: computeAndPersistDeviceReliability MUST run under a
+  // system context. Its ml-feature-flag gate reads `organizations INNER JOIN
+  // partners`, and under an ORG-scoped RLS context the partners row is invisible
+  // (breeze_has_partner_access is false for org tokens) → the join yields nothing
+  // → the flag resolves `org_not_found` → the compute silently no-ops and persists
+  // NOTHING. This is exactly why the ingest route's Redis-outage fallback opens a
+  // fresh system context instead of reusing its org context. If a future change
+  // "simplifies" that back to org scope, this test fails.
+  it('silently no-ops (persists nothing) when run under an org-scoped context', async () => {
+    const orgContext = {
+      scope: 'organization' as const,
+      orgId,
+      accessibleOrgIds: [orgId],
+      accessiblePartnerIds: [],
+      currentPartnerId: null,
+    };
+
+    const ok = await withDbAccessContext(orgContext, () => computeAndPersistDeviceReliability(deviceId));
+    expect(ok).toBe(false);
+
+    const rows = await withSystemDbAccessContext(() =>
+      getTestDb().select().from(deviceReliability).where(eq(deviceReliability.deviceId, deviceId)).limit(1),
+    );
+    expect(rows).toHaveLength(0);
   });
 });
