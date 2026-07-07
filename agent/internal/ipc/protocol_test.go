@@ -4,8 +4,10 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -396,6 +398,123 @@ func TestConnSendPoisonedAfterWriteError(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed >= writeTimeout {
 		t.Fatalf("second send took %v — did not use the poison fast-path", elapsed)
+	}
+	// Pin the reason to the poison fast-path (not some other incidental error)
+	// and confirm the original write cause is surfaced through it.
+	if !strings.Contains(err.Error(), "poisoned") {
+		t.Fatalf("expected a poison error, got: %v", err)
+	}
+	if !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("expected poison error to wrap the original deadline cause, got: %v", err)
+	}
+}
+
+// TestConnSendOversizedDoesNotPoison proves that a Send rejected *before* any
+// bytes reach the wire (oversized payload — and by the same early-return path, a
+// marshal failure) does NOT poison the Conn: a transient bad message must not
+// permanently kill an otherwise healthy connection (issue #2273 review).
+func TestConnSendOversizedDoesNotPoison(t *testing.T) {
+	serverConn, clientConn := createSocketPair(t)
+	defer serverConn.Close()
+	defer clientConn.Close()
+
+	server := NewConn(serverConn)
+	client := NewConn(clientConn)
+
+	// Oversized payload is rejected by the size check, before c.mu / any Write.
+	big := make(json.RawMessage, MaxMessageSize+1)
+	for i := range big {
+		big[i] = 'A'
+	}
+	if err := client.Send(&Envelope{ID: "big", Type: TypePing, Payload: big}); err == nil {
+		t.Fatal("expected oversized send to error")
+	}
+
+	// The Conn must still be usable end-to-end: a normal send now succeeds.
+	done := make(chan error, 1)
+	go func() { done <- client.SendTyped("ok", TypePing, map[string]string{"a": "b"}) }()
+
+	server.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := server.Recv(); err != nil {
+		t.Fatalf("healthy send after oversized reject failed — Conn was wrongly poisoned: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("send after oversized reject: %v", err)
+	}
+}
+
+// TestConnSendPoisonsOnPayloadWriteError exercises the payload-write branch
+// specifically: the reader consumes the 4-byte length header (so that Write
+// succeeds and the frame is already partly on the wire) then stops, stalling the
+// payload Write to its deadline. That is exactly the desync scenario the poison
+// latch exists for, and the branch it protects (issue #2273).
+func TestConnSendPoisonsOnPayloadWriteError(t *testing.T) {
+	orig := writeTimeout
+	writeTimeout = 150 * time.Millisecond
+	defer func() { writeTimeout = orig }()
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	// Reader drains exactly the length header, then reads no further — so the
+	// header Write completes but the payload Write stalls out at the deadline.
+	go func() {
+		hdr := make([]byte, 4)
+		_, _ = io.ReadFull(serverConn, hdr)
+	}()
+
+	client := NewConn(clientConn)
+	payload, _ := json.Marshal("x")
+	if err := client.Send(&Envelope{ID: "1", Type: TypePing, Payload: payload}); err == nil {
+		t.Fatal("expected payload write to fail at the deadline")
+	}
+
+	// The payload branch must have latched poison: the next send fails fast.
+	start := time.Now()
+	err := client.Send(&Envelope{ID: "2", Type: TypePing, Payload: payload})
+	if err == nil {
+		t.Fatal("expected poisoned Conn to reject the next send")
+	}
+	if elapsed := time.Since(start); elapsed >= writeTimeout {
+		t.Fatalf("second send took %v — payload branch did not poison", elapsed)
+	}
+	if !strings.Contains(err.Error(), "poisoned") {
+		t.Fatalf("expected a poison error, got: %v", err)
+	}
+}
+
+// TestConnSetWriteTimeout proves the per-Conn override tightens Send's write
+// bound below the package default — the mechanism the broker's pre-auth reject
+// path relies on to keep its ~2s hostile-peer cap after ipc.Conn.Send took
+// ownership of the underlying write deadline (issue #2273 review).
+func TestConnSetWriteTimeout(t *testing.T) {
+	orig := writeTimeout
+	writeTimeout = 10 * time.Second // default long enough that it can't be why we return fast
+	defer func() { writeTimeout = orig }()
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	// No reader: the write stalls until the (short) per-Conn deadline fires.
+
+	client := NewConn(clientConn)
+	client.SetWriteTimeout(100 * time.Millisecond)
+
+	payload, _ := json.Marshal("x")
+	done := make(chan error, 1)
+	go func() { done <- client.Send(&Envelope{ID: "1", Type: TypePing, Payload: payload}) }()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected the per-Conn write timeout to error the stalled send")
+		}
+		if !errors.Is(err, os.ErrDeadlineExceeded) {
+			t.Fatalf("expected a deadline-exceeded error, got: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Send ignored the per-Conn write timeout and used the long default")
 	}
 }
 

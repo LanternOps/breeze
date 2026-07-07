@@ -1165,14 +1165,18 @@ func (b *Broker) RequestPamApproval(session *Session, id string, req ipc.PamRequ
 }
 
 // sendPreAuthRejectAndClose wraps rawConn, sends a PreAuthReject envelope
-// with a short write deadline so the broker isn't held up by a stuck client,
+// with a short write timeout so the broker isn't held up by a stuck client,
 // then closes the connection. All errors are ignored — this is best-effort.
 // The helper uses the envelope to distinguish fatal ("don't retry") from
 // transient ("retry later") rejections.
 func sendPreAuthRejectAndClose(rawConn net.Conn, code, reason string, permanent bool) {
 	defer rawConn.Close()
 	conn := ipc.NewConn(rawConn)
-	_ = rawConn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	// Cap this write via the Conn's own write timeout. ipc.Conn.Send now owns
+	// the underlying write deadline (issue #2273), so a bare
+	// rawConn.SetWriteDeadline here would be overwritten by Send's default —
+	// SetWriteTimeout is the supported way to keep the 2s hostile-peer bound.
+	conn.SetWriteTimeout(2 * time.Second)
 	if err := conn.SendTyped("pre-auth-reject", ipc.TypePreAuthReject, ipc.PreAuthReject{
 		Code:      code,
 		Reason:    reason,
