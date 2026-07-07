@@ -13,6 +13,7 @@ import {
   type PolishTextRequest,
   type PolishTextResponse,
   type PolishFactChanges,
+  FACT_CHANGE_MAX,
 } from '@breeze/shared';
 
 // NB: no AI_FACT_DRIFT — a numeric drift is no longer a hard error; polish
@@ -502,10 +503,10 @@ function multisetsEqual(a: Map<string, number>, b: Map<string, number>): boolean
 // that the output dropped (usually stripped distributor noise: order codes, pack
 // counts). Multiset counts are respected (a duplicate dropped once shows once),
 // and both lists are capped so a pathological reply can't bloat the payload/UI.
-// Keep in sync with polishFactChangesSchema's `.max(50)` in shared/validators/
-// catalog.ts. This is the load-bearing cap (the route returns the object without
-// re-validating it against the schema), so the schema bound is defense-in-depth.
-const FACT_CHANGE_MAX = 50;
+// FACT_CHANGE_MAX is imported from @breeze/shared and shared with
+// polishFactChangesSchema's `.max()`. This enforcement point is load-bearing (the
+// route returns the object without re-validating it against the schema), so the
+// schema bound is defense-in-depth against the same single-sourced number.
 // Tokens present in `from` beyond what `to` has (multiset subtraction), capped.
 function multisetDiff(from: Map<string, number>, to: Map<string, number>): string[] {
   const out: string[] = [];
@@ -675,15 +676,25 @@ export async function polishCatalogText(
       throw new EnrichmentError('Could not parse the AI response — try again', 'AI_PARSE', 502);
     }
     const factChanges = diffFactTokens(input, driftCandidate);
-    // `removed`-only drift is the intended safe case (stripped distributor noise)
-    // and stays a plain debug log. `added` means the model OVER-CLAIMED — invented
-    // a numeric spec the input never had, the direction that can mislead a
-    // customer on a quote. Downgrading from a 502 to advisory removed the signal
-    // that used to surface this in error dashboards, so emit a queryable Sentry
-    // event for the over-claim direction specifically (the route runs inside a
-    // withSentryRequestScope, so this is tenant-attributed) — restoring operator
-    // visibility if the model regresses to inventing specs on live quotes.
-    if (factChanges.added.length > 0) {
+    // Downgrading a drift from a 502 to an advisory removed the signal that used to
+    // surface it in error dashboards, so log every resolved drift unconditionally
+    // with its direction + tokens. This is the durable record: it survives Sentry
+    // being off (local dev, self-hosted without a DSN), where captureMessage is a
+    // no-op. `added` means the model OVER-CLAIMED — invented a numeric spec the
+    // input never had, the direction that can mislead a customer on a quote;
+    // `removed`-only is the intended safe case (stripped distributor noise).
+    const overClaimed = factChanges.added.length > 0;
+    console.warn('[catalog-polish] fact guard: advisory drift', {
+      orgId: actor.orgId,
+      direction: overClaimed ? 'over-claim' : 'removed-only',
+      added: factChanges.added,
+      removed: factChanges.removed,
+    });
+    // Additionally emit a queryable Sentry event for the over-claim direction
+    // specifically (the route runs inside a withSentryRequestScope, so this is
+    // tenant-attributed) — a dashboard layer on top of the log above, restoring
+    // operator visibility if the model regresses to inventing specs on live quotes.
+    if (overClaimed) {
       captureMessage('[catalog-polish] fact guard: AI over-claimed a numeric spec not in the input', 'warning', {
         orgId: actor.orgId,
         added: factChanges.added,
