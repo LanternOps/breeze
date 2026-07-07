@@ -96,6 +96,15 @@ export type ReliabilityScoreRange = 'critical' | 'poor' | 'fair' | 'good';
 type HistoryRow = typeof deviceReliabilityHistory.$inferSelect;
 type ReliabilityRow = typeof deviceReliability.$inferSelect;
 
+// Event-loop hardening: the scorer reads only these seven columns. Projecting to
+// them (see getHistoryForDevice) drops the ~2KB/row `rawMetrics` JSONB — the bulk
+// of the per-row payload — from every 90-day read. Using this narrower type on the
+// consumers is the compile-time proof that no scorer path reads rawMetrics/id/etc.
+type ScoringHistoryRow = Pick<
+  HistoryRow,
+  'collectedAt' | 'uptimeSeconds' | 'bootTime' | 'crashEvents' | 'appHangs' | 'serviceFailures' | 'hardwareErrors'
+>;
+
 type DailyAggregateBucket = {
   date: string;
   sampleCount: number;
@@ -880,7 +889,7 @@ function eventDayKey(eventTimestamp: string | undefined, fallback: Date): string
 // are derived from the deduped set and bucketed by the event's own timestamp.
 function mergeRowsIntoDailyBuckets(
   map: Map<string, DailyAggregateBucket>,
-  rows: HistoryRow[],
+  rows: ScoringHistoryRow[],
   seenKeys: Set<string> = new Set<string>()
 ): void {
   for (const row of rows) {
@@ -1284,10 +1293,21 @@ export function computeReliabilityEvaluationSummary(
   };
 }
 
-async function getHistoryForDevice(deviceId: string, days: number): Promise<HistoryRow[]> {
+async function getHistoryForDevice(deviceId: string, days: number): Promise<ScoringHistoryRow[]> {
   const since = getSince(days);
+  // #event-loop-hardening: explicit column list (NOT SELECT *) — drops raw_metrics
+  // JSONB (~2KB/row) which the scorer never reads. Uses
+  // reliability_history_device_collected_idx (device_id, collected_at).
   return db
-    .select()
+    .select({
+      collectedAt: deviceReliabilityHistory.collectedAt,
+      uptimeSeconds: deviceReliabilityHistory.uptimeSeconds,
+      bootTime: deviceReliabilityHistory.bootTime,
+      crashEvents: deviceReliabilityHistory.crashEvents,
+      appHangs: deviceReliabilityHistory.appHangs,
+      serviceFailures: deviceReliabilityHistory.serviceFailures,
+      hardwareErrors: deviceReliabilityHistory.hardwareErrors,
+    })
     .from(deviceReliabilityHistory)
     .where(and(eq(deviceReliabilityHistory.deviceId, deviceId), gte(deviceReliabilityHistory.collectedAt, since)))
     .orderBy(asc(deviceReliabilityHistory.collectedAt));
@@ -1310,7 +1330,7 @@ async function getLatestHistoryForDevice(deviceId: string): Promise<LatestHistor
 }
 
 
-function getLatestCollectedAt(rows: HistoryRow[]): Date | null {
+function getLatestCollectedAt(rows: ScoringHistoryRow[]): Date | null {
   if (rows.length === 0) return null;
   let latest = rows[0]!.collectedAt;
   for (const row of rows) {
@@ -1966,7 +1986,7 @@ interface OffenderWindow {
 // the same keys the score aggregation uses (#1905), so an event re-reported in
 // overlapping windows is attributed to its offender exactly once.
 function aggregateReliabilityOffenders(
-  rows: HistoryRow[],
+  rows: ScoringHistoryRow[],
   limit = DEFAULT_OFFENDER_LIMIT,
   window?: OffenderWindow
 ): DeviceReliabilityOffenders {
