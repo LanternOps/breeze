@@ -1,9 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
+// #1105 depth-tracking: withDbAccessContext increments/decrements a shared
+// counter around its callback so tests can assert which calls (insert vs.
+// enqueue/audit) run inside vs. outside the org-scoped context.
+let contextDepth = 0;
 vi.mock('../../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
-  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
+  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => {
+    contextDepth += 1;
+    try {
+      return await fn();
+    } finally {
+      contextDepth -= 1;
+    }
+  }),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   db: {
     select: vi.fn(),
@@ -44,10 +55,11 @@ vi.mock('../../services/auditEvents', () => ({
 
 vi.mock('../../services/sentry', () => ({ captureException: vi.fn() }));
 
-import { db } from '../../db';
+import { db, withDbAccessContext } from '../../db';
 import { reliabilityRoutes } from './reliability';
 import { enqueueDeviceReliabilityComputation } from '../../jobs/reliabilityWorker';
 import { computeAndPersistDeviceReliability } from '../../services/reliabilityScoring';
+import { writeAuditEvent } from '../../services/auditEvents';
 import { captureException } from '../../services/sentry';
 
 const payload = {
@@ -176,6 +188,33 @@ describe('agent reliability ingestion route', () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body).toEqual({ success: true, status: 'received' });
+  });
+
+  // #1105 — the route self-manages a SHORT withDbAccessContext around only the
+  // lookup + insert; the BullMQ enqueue and audit write must run OUTSIDE it so
+  // no pooled connection is pinned idle-in-transaction across Redis/non-DB work.
+  it('runs BullMQ enqueue and audit write at DB-context depth 0 (#1105)', async () => {
+    let enqueueDepth = -1;
+    let auditDepth = -1;
+    vi.mocked(enqueueDeviceReliabilityComputation).mockImplementation(async () => {
+      enqueueDepth = contextDepth;
+      return 'job-1';
+    });
+    vi.mocked(writeAuditEvent).mockImplementation(() => {
+      auditDepth = contextDepth;
+    });
+
+    const app = buildApp();
+    const res = await app.request('/agents/agent-123/reliability', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    expect(res.status).toBe(200);
+    expect(enqueueDepth).toBe(0); // enqueue is OUTSIDE the org transaction
+    expect(auditDepth).toBe(0); // audit is OUTSIDE the org transaction
+    expect(vi.mocked(withDbAccessContext)).toHaveBeenCalled(); // insert WAS wrapped
   });
 });
 

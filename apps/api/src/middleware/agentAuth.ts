@@ -194,7 +194,7 @@ export async function suspendAgentToken(deviceId: string, reason: AgentTokenSusp
  * agentAuthMiddleware. See the #1105 note at the wrap site. Auth still runs in
  * full for these routes — only the org-context transaction wrap is skipped.
  */
-const SELF_MANAGED_DB_CONTEXT_ACTIONS = new Set(['heartbeat']);
+const SELF_MANAGED_DB_CONTEXT_ACTIONS = new Set(['heartbeat', 'reliability']);
 
 /**
  * Middleware to authenticate agent requests via Bearer token.
