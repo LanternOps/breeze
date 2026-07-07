@@ -28,7 +28,10 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 };
 
 const RELIABILITY_QUEUE = 'reliability-scoring';
-const ON_DEMAND_RELIABILITY_DEDUPE_WINDOW_MS = 30 * 1000;
+// Event-loop hardening: a device recomputes at most once per 10 min on-demand
+// regardless of post rate. The jobId slot below keys on this window, so widening
+// the constant is the whole throttle. Trade-off: score staleness ≤10 min.
+const ON_DEMAND_RELIABILITY_DEDUPE_WINDOW_MS = 10 * 60 * 1000;
 
 type ScanOrgsJobData = {
   type: 'scan-orgs';
@@ -120,7 +123,9 @@ export function createReliabilityWorker(): Worker<ReliabilityJobData> {
     },
     {
       connection: getBullMQConnection(),
-      concurrency: 5,
+      // Event-loop hardening: cap simultaneous heavy computes. With the projected
+      // read (Task 1) each compute is cheap, so 2 is ample headroom.
+      concurrency: 2,
       lockDuration: 300_000,
       stalledInterval: 60_000,
       maxStalledCount: 2,
