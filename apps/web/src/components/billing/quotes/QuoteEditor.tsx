@@ -1604,12 +1604,14 @@ function BlockCard({
   // changes (e.g. after a refresh) so server normalization wins.
   const [headingDraft, setHeadingDraft] = useState(heading);
   const [richDraft, setRichDraft] = useState(html);
+  const [labelDraft, setLabelDraft] = useState(tableLabel);
   // Resync drafts from the server only when the user hasn't diverged from what we
   // last showed. A quiet reload (fired by an unrelated inline edit elsewhere) must
   // not clobber heading/rich text this user is mid-edit in: if the local draft no
   // longer matches the prop we last synced, the user has typed — keep their text.
   const lastHeading = useRef(heading);
   const lastHtml = useRef(html);
+  const lastLabel = useRef(tableLabel);
   useEffect(() => {
     setHeadingDraft((cur) => (cur === lastHeading.current ? heading : cur));
     lastHeading.current = heading;
@@ -1618,6 +1620,10 @@ function BlockCard({
     setRichDraft((cur) => (cur === lastHtml.current ? html : cur));
     lastHtml.current = html;
   }, [html]);
+  useEffect(() => {
+    setLabelDraft((cur) => (cur === lastLabel.current ? tableLabel : cur));
+    lastLabel.current = tableLabel;
+  }, [tableLabel]);
 
   // Quiet "Saved" flash for inline content edits (replaces the old per-edit
   // success toast). Cleared on unmount so a late timer can't setState a gone row.
@@ -1638,6 +1644,14 @@ function BlockCard({
   const commitRich = async () => {
     if (richDraft === html) return;
     if (await onEditBlock(block, { html: richDraft })) flashSaved();
+  };
+  // Rename a pricing table. An empty label is a valid clear (the document falls
+  // back to its "Pricing" default), so — unlike heading — we commit the trimmed
+  // value even when blank, only skipping when nothing actually changed.
+  const commitLabel = async () => {
+    const label = labelDraft.trim();
+    if (label === tableLabel.trim()) { setLabelDraft(tableLabel); return; }
+    if (await onEditBlock(block, label ? { label } : {})) flashSaved();
   };
 
   const submitManual = async () => {
@@ -1729,6 +1743,19 @@ function BlockCard({
 
         {isTable && (
           <div className="space-y-3">
+            {canWrite && (
+              <input
+                type="text"
+                value={labelDraft}
+                aria-label="Pricing table label"
+                onChange={(e) => setLabelDraft(e.target.value)}
+                onBlur={() => void commitLabel()}
+                disabled={blockBusy}
+                placeholder="Table label (optional, e.g. Monthly services)"
+                data-testid={`quote-block-table-label-input-${block.id}`}
+                className={`h-9 w-full rounded-md border bg-background px-3 text-sm font-semibold transition-shadow disabled:opacity-60 ${fieldRing(labelDraft.trim() !== tableLabel.trim(), blockSaved)}`}
+              />
+            )}
             {/* The 7-column row (description + 4 inline controls + total + actions)
                 can't compress gracefully on a tablet, so the table keeps a sensible
                 min width and the wrapper scrolls horizontally below that. */}
