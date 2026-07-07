@@ -18,17 +18,21 @@ type CollectorConfig struct {
 }
 
 type CollectorDeps struct {
-	APIBaseURL string
-	AgentID    string       // this agent's id; agent telemetry endpoints live under /agents/<AgentID>/
+	APIBaseURL string       // the Breeze server root (cfg.ServerURL), e.g. https://breeze.example.com — NOT including /api/v1
+	AgentID    string       // this agent's id; agent telemetry endpoints live under /api/v1/agents/<AgentID>/
 	HTTP       *http.Client // authed transport to the Breeze API (agent token attached)
 	Logf       func(format string, args ...any)
 }
 
 // agentBase builds the per-agent endpoint prefix the API mounts under
-// (agentAuthMiddleware runs on /agents/:id/*). The device is resolved from the
-// agent token server-side; the :id in the path matches the existing agent routes.
+// (agentAuthMiddleware runs on /api/v1/agents/:id/*). The /api/v1 prefix is
+// mandatory — every other agent call (heartbeat, monitoring, commands, logs)
+// builds ServerURL + "/api/v1/agents/...", and the collector must match or the
+// API 404s the request and the collector never leaves status=pending (#2263).
+// The device is resolved from the agent token server-side; the :id in the path
+// matches the existing agent routes.
 func (d CollectorDeps) agentBase() string {
-	return d.APIBaseURL + "/agents/" + d.AgentID
+	return d.APIBaseURL + "/api/v1/agents/" + d.AgentID
 }
 
 func (d CollectorDeps) logf(format string, args ...any) {
@@ -156,7 +160,7 @@ func RunOnce(ctx context.Context, deps CollectorDeps, cfg CollectorConfig, contr
 }
 
 // StartCollectorLoop periodically fetches this agent's collector configs from
-// GET /agents/:id/unifi-collectors and runs each due collector. It spawns its
+// GET /api/v1/agents/:id/unifi-collectors and runs each due collector. It spawns its
 // own goroutine and returns a channel that closes once the loop has exited
 // (after ctx is cancelled), so shutdownAgent can wait for a clean teardown
 // instead of leaking the loop across in-process restarts.
