@@ -183,12 +183,13 @@ export const polishTextResponseSchema = z.object({
   // True when the polished text differs from the input (lets the UI skip a
   // no-op "nothing changed" preview).
   changed: z.boolean(),
-  // True when the fact guard detected a possible numeric/unit change the AI
-  // could not avoid (e.g. it stripped a digit-bearing distributor code, or it
-  // may have altered a spec). The polished text is still returned — the guard is
-  // ADVISORY, not blocking — but the UI must warn the user to review the
-  // before/after carefully before applying. `factChanges` lists what differs.
-  factWarning: z.boolean(),
+  // Non-null exactly when the fact guard tripped: the polish may have altered a
+  // numeric/unit spec, or stripped a digit-bearing distributor code the AI could
+  // not avoid. Its PRESENCE is the advisory warning — the polished text is still
+  // returned (the guard is ADVISORY, not blocking), but the UI must surface the
+  // before/after when this is set. null = facts verified clean, no warning. One
+  // nullable field (not a separate boolean flag) so "warning" and "what changed"
+  // can't disagree.
   factChanges: polishFactChangesSchema.nullable(),
 });
 export type PolishTextResponse = z.infer<typeof polishTextResponseSchema>;

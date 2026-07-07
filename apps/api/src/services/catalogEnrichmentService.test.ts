@@ -289,13 +289,12 @@ describe('polishCatalogText', () => {
     expect(res.name).toBe('APC Back-UPS 600VA UPS');
     expect(res.description).toMatch(/7 outlets/);
     expect(res.changed).toBe(true);
-    expect(res.factWarning).toBe(false);
     expect(res.factChanges).toBeNull();
   });
 
   it('warns (does not block) when a number CHANGES, after retrying for a clean version', async () => {
     // Both attempts drift 600VA -> 650VA. The guard is advisory: it returns the
-    // polished text with factWarning=true so the human preview can flag it, and
+    // polished text with a non-null factChanges so the human preview can flag it, and
     // reports the added/removed numeric tokens.
     create
       .mockResolvedValueOnce(aiMessage({ name: 'APC Back-UPS 650VA', description: null }))
@@ -303,7 +302,7 @@ describe('polishCatalogText', () => {
     const res = await polishCatalogText({ name: 'apc back-ups 600va' }, actor);
     expect(create).toHaveBeenCalledTimes(2); // one clean turn + one stricter retry
     expect(res.name).toBe('APC Back-UPS 650VA');
-    expect(res.factWarning).toBe(true);
+    expect(res.factChanges).not.toBeNull();
     expect(res.factChanges?.added).toContain('650va');
     expect(res.factChanges?.removed).toContain('600va');
   });
@@ -314,7 +313,7 @@ describe('polishCatalogText', () => {
       .mockResolvedValueOnce(aiMessage({ name: 'Dell Monitor 27" 144Hz', description: null }));
     // input has 27 but NOT 144 — inventing 144Hz is surfaced as an added token.
     const res = await polishCatalogText({ name: 'dell monitor 27 inch' }, actor);
-    expect(res.factWarning).toBe(true);
+    expect(res.factChanges).not.toBeNull();
     expect(res.factChanges?.added).toContain('144hz');
     // An over-claim (added token) must emit a queryable Sentry signal so an
     // operator can catch the model inventing specs on live quotes.
@@ -332,7 +331,6 @@ describe('polishCatalogText', () => {
     const res = await polishCatalogText({ name: 'spl apc back-ups 600va disti' }, actor);
     expect(res.name).toBe('APC Back-UPS 600VA');
     // A first-attempt drift must NOT leak a stale warning onto the clean retry.
-    expect(res.factWarning).toBe(false);
     expect(res.factChanges).toBeNull();
   });
 
@@ -402,7 +400,7 @@ describe('polishCatalogText', () => {
       .mockResolvedValueOnce(aiMessage({ name: '16TB DDR4 module', description: null }))
       .mockResolvedValueOnce(aiMessage({ name: '16TB DDR4 module', description: null }));
     const res = await polishCatalogText({ name: '16gb ddr4 module' }, actor);
-    expect(res.factWarning).toBe(true);
+    expect(res.factChanges).not.toBeNull();
     expect(res.factChanges?.added).toContain('16tb');
     expect(res.factChanges?.removed).toContain('16gb');
   });
@@ -412,7 +410,7 @@ describe('polishCatalogText', () => {
       .mockResolvedValueOnce(aiMessage({ name: null, description: 'Monitor, $559.99 street price.' }))
       .mockResolvedValueOnce(aiMessage({ name: null, description: 'Monitor, $559.99 street price.' }));
     const res = await polishCatalogText({ description: 'monitor $549.99 street price' }, actor);
-    expect(res.factWarning).toBe(true);
+    expect(res.factChanges).not.toBeNull();
     expect(res.factChanges?.added).toContain('559.99');
     expect(res.factChanges?.removed).toContain('549.99');
   });
@@ -426,7 +424,7 @@ describe('polishCatalogText', () => {
     // direction, so it's surfaced as a removed-only warning (nothing added)
     // rather than blocking.
     const res = await polishCatalogText({ name: '2 x 2tb nas' }, actor);
-    expect(res.factWarning).toBe(true);
+    expect(res.factChanges).not.toBeNull();
     expect(res.factChanges?.removed).toContain('2');
     expect(res.factChanges?.added).toEqual([]);
   });
@@ -451,7 +449,7 @@ describe('polishCatalogText', () => {
       actor,
     );
     expect(res.name).toBe('Battery Backup (UPS)');
-    expect(res.factWarning).toBe(true);
+    expect(res.factChanges).not.toBeNull();
     expect(res.factChanges?.removed).toContain('44718');
     expect(res.factChanges?.added).toEqual([]);
     // Removed-only (stripped noise) is the safe direction — it must NOT raise a
@@ -471,7 +469,7 @@ describe('polishCatalogText', () => {
       { name: '2 x Dell Laptop', description: '500GB SSD, 16GB RAM' },
       actor,
     );
-    expect(res.factWarning).toBe(true);
+    expect(res.factChanges).not.toBeNull();
     expect(res.factChanges?.added).toContain('512gb');   // from the description
     expect(res.factChanges?.removed).toEqual(expect.arrayContaining(['2', '500gb'])); // name + description
   });
@@ -515,7 +513,7 @@ describe('polishCatalogText', () => {
       .mockResolvedValueOnce(aiMessage({ name: '650VA UPS', description: null }))   // drift, 100/50
       .mockResolvedValueOnce(aiMessage({ name: '650VA UPS', description: null }));  // drift, 100/50
     const res = await polishCatalogText({ name: 'apc 600va ups' }, actor);
-    expect(res.factWarning).toBe(true);
+    expect(res.factChanges).not.toBeNull();
     // Tokens were really spent on both turns — they must still be billed.
     expect(recordUsage).toHaveBeenCalledWith(null, 'o1', expect.any(String), 200, 100, true);
   });

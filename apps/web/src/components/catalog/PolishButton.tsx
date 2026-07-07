@@ -37,8 +37,8 @@ interface Preview {
   afterDescription: string | null;
   // Advisory fact-guard warning: the polish may have changed/dropped a number,
   // unit, or code. The result is still shown (the guard is a reviewer aid, not a
-  // gate) — this drives a "double-check the details" banner in the preview.
-  factWarning: boolean;
+  // gate). Non-null drives a "double-check the details" banner in the preview;
+  // its presence IS the warning (no separate flag to keep in sync).
   factChanges: PolishResult['factChanges'];
 }
 
@@ -99,7 +99,7 @@ export default function PolishButton({
       const result = await runAction<PolishResult>({
         request: () => polishTextRequest({ name, description }),
         // A fact drift is no longer an error — it comes back as a normal result
-        // with factWarning=true and a warning banner. Genuine failures still
+        // with a non-null factChanges and a warning banner. Genuine failures still
         // error: AI_PARSE 502 / rate-limit carry a server message runAction
         // surfaces verbatim; this fallback string shows only on a transport
         // failure or an unparseable success body.
@@ -117,7 +117,7 @@ export default function PolishButton({
         (a ?? '').trim() === (b ?? '').trim();
       const nameVisiblySame = result.name === null || trimEq(result.name, name);
       const descVisiblySame = result.description === null || trimEq(result.description, description);
-      if (!result.factWarning && (!result.changed || (nameVisiblySame && descVisiblySame))) {
+      if (!result.factChanges && (!result.changed || (nameVisiblySame && descVisiblySame))) {
         showToast({ message: 'Already looks good — no changes suggested.', type: 'success' });
         return;
       }
@@ -126,7 +126,6 @@ export default function PolishButton({
         afterName: result.name,
         beforeDescription: description ?? null,
         afterDescription: result.description,
-        factWarning: result.factWarning,
         factChanges: result.factChanges,
       });
     } catch (err) {
@@ -183,7 +182,7 @@ export default function PolishButton({
               </p>
             </div>
             <div className="flex-1 space-y-4 overflow-y-auto px-5 py-5">
-              {preview.factWarning && (
+              {preview.factChanges && (
                 <div
                   role="alert"
                   data-testid={`polish-fact-warning-${idSuffix}`}
@@ -195,7 +194,7 @@ export default function PolishButton({
                     changed. Compare the before/after carefully — the AI can reword copy,
                     but it must not alter a spec, price, or model.
                   </p>
-                  {preview.factChanges && (preview.factChanges.added.length > 0 || preview.factChanges.removed.length > 0) && (
+                  {(preview.factChanges.added.length > 0 || preview.factChanges.removed.length > 0) && (
                     <div className="mt-2 flex flex-col gap-1.5 text-xs">
                       {([
                         { tokens: preview.factChanges.added, label: 'Added (verify these are real):', k: 'a', chip: 'bg-amber-500/20' },

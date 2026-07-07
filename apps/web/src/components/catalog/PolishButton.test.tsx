@@ -118,14 +118,13 @@ describe('PolishButton', () => {
   });
 
   it('shows the polished result WITH a warning banner when the fact guard flags a change', async () => {
-    // A fact drift is no longer a hard error — the result comes back with
-    // factWarning=true and the preview opens with a "double-check" banner listing
-    // the added/removed numeric tokens, so the human decides.
+    // A fact drift is no longer a hard error — the result comes back with a
+    // non-null factChanges and the preview opens with a "double-check" banner
+    // listing the added/removed numeric tokens, so the human decides.
     polishTextRequest.mockResolvedValue(ok({
       name: 'Battery Backup (UPS)',
       description: 'APC Back-UPS Pro BR1500MS2\n• 1500VA\n• 10 outlets',
       changed: true,
-      factWarning: true,
       factChanges: { added: [], removed: ['44718'] },
     }));
     const onApply = vi.fn();
@@ -149,15 +148,14 @@ describe('PolishButton', () => {
   });
 
   it('opens the preview for a warning even when the visible text is unchanged', async () => {
-    // The whole point of the `!factWarning &&` guard: a fact warning must force
+    // The whole point of the `!factChanges &&` guard: a fact warning must force
     // the preview open even when what the user would SEE is identical — otherwise
     // a warned change gets swallowed by the "Already looks good" toast.
     polishTextRequest.mockResolvedValue(ok({
       name: 'APC 600VA',
       description: null,
       changed: false, // server says nothing visibly changed…
-      factWarning: true, // …but the guard flagged a numeric change
-      factChanges: { added: ['650va'], removed: ['600va'] },
+      factChanges: { added: ['650va'], removed: ['600va'] }, // …but the guard flagged a numeric change
     }));
     const onApply = vi.fn();
     render(<PolishButton idSuffix="t" getText={() => ({ name: 'APC 600VA' })} onApply={onApply} />);
@@ -176,7 +174,6 @@ describe('PolishButton', () => {
       name: 'Dell Monitor 27" 144Hz',
       description: null,
       changed: true,
-      factWarning: true,
       factChanges: { added: ['144hz'], removed: [] },
     }));
     const onApply = vi.fn();

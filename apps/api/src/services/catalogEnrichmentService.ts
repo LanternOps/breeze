@@ -17,7 +17,8 @@ import {
 } from '@breeze/shared';
 
 // NB: no AI_FACT_DRIFT — a numeric drift is no longer a hard error; polish
-// returns the text with an advisory factWarning instead (see polishCatalogText).
+// returns the text with an advisory (non-null factChanges) instead (see
+// polishCatalogText).
 export type EnrichmentErrorCode = 'AI_LIMIT' | 'AI_PARSE' | 'AI_TRUNCATED';
 
 export class EnrichmentError extends Error {
@@ -570,9 +571,9 @@ async function runPolishTurn(
  * strips digit-bearing distributor noise (order codes, pack counts) — which the
  * multiset guard can't tell apart from a real spec change — hard-failing here
  * rejected legitimate clean-ups of distributor-sourced lines. So when no attempt
- * returns clean facts, the polished text is returned with `factWarning: true`
- * plus a `factChanges` diff, and the human before/after preview flags exactly
- * what to double-check. Non-numeric edits (brand, the letters in a model/SKU,
+ * returns clean facts, the polished text is returned with a non-null
+ * `factChanges` diff (its presence is the advisory warning), and the human
+ * before/after preview flags exactly what to double-check. Non-numeric edits (brand, the letters in a model/SKU,
  * textual specs) were never covered by this guard — only by the prompt and the
  * preview. Fields not supplied are returned as null and are never invented.
  */
@@ -642,7 +643,7 @@ export async function polishCatalogText(
       const changed = outName !== normName || outDescription !== normDescription;
 
       if (factsPreserved(input, { name: outName, description: outDescription })) {
-        result = { name: outName, description: outDescription, changed, factWarning: false, factChanges: null };
+        result = { name: outName, description: outDescription, changed, factChanges: null };
         break;
       }
 
@@ -668,8 +669,8 @@ export async function polishCatalogText(
 
   if (!result) {
     // Only a genuinely unparseable reply is a hard error now. A fact drift is
-    // downgraded to an advisory warning: return the polished text with
-    // factWarning + the numeric-token diff so the human preview can flag exactly
+    // downgraded to an advisory warning: return the polished text with a
+    // non-null factChanges diff so the human preview can flag exactly
     // what to double-check before applying (rather than blocking a legitimate
     // clean-up that merely stripped a digit-bearing distributor code).
     if (!driftCandidate) {
@@ -705,7 +706,6 @@ export async function polishCatalogText(
       name: driftCandidate.name,
       description: driftCandidate.description,
       changed: driftCandidate.changed,
-      factWarning: true,
       factChanges,
     };
   }
