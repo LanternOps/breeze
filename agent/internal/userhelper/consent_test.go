@@ -18,8 +18,8 @@ func TestBuildConsentDialogText(t *testing.T) {
 	}{
 		{
 			"full identity",
-			ipc.ConsentRequest{TechnicianName: "Billy", TechnicianEmail: "billy@olive.co", OrgName: "Olive Technology"},
-			[]string{"Billy (billy@olive.co) from Olive Technology", "requesting remote access"},
+			ipc.ConsentRequest{TechnicianName: "Billy", TechnicianEmail: "billy@example.com", OrgName: "Olive Technology"},
+			[]string{"Billy (billy@example.com) from Olive Technology", "requesting remote access"},
 			nil,
 		},
 		{
@@ -86,10 +86,10 @@ func TestSanitizeConsentRequest(t *testing.T) {
 	}
 
 	controlChars := sanitizeConsentRequest(ipc.ConsentRequest{
-		TechnicianEmail: "billy\x00@olive.co",
+		TechnicianEmail: "billy\x00@example.com",
 		OrgName:         "Olive\x7f Technology",
 	})
-	if strings.ContainsAny(controlChars.TechnicianEmail, "\x00") || controlChars.TechnicianEmail != "billy@olive.co" {
+	if strings.ContainsAny(controlChars.TechnicianEmail, "\x00") || controlChars.TechnicianEmail != "billy@example.com" {
 		t.Errorf("email control chars not stripped: %q", controlChars.TechnicianEmail)
 	}
 	if strings.ContainsAny(controlChars.OrgName, "\x7f") || controlChars.OrgName != "Olive Technology" {

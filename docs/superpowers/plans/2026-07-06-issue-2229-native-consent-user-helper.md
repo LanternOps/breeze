@@ -622,8 +622,8 @@ func TestBuildConsentDialogText(t *testing.T) {
 	}{
 		{
 			"full identity",
-			ipc.ConsentRequest{TechnicianName: "Billy", TechnicianEmail: "billy@olive.co", OrgName: "Olive Technology"},
-			[]string{"Billy (billy@olive.co) from Olive Technology", "requesting remote access"},
+			ipc.ConsentRequest{TechnicianName: "Billy", TechnicianEmail: "billy@example.com", OrgName: "Olive Technology"},
+			[]string{"Billy (billy@example.com) from Olive Technology", "requesting remote access"},
 			nil,
 		},
 		{
@@ -800,7 +800,7 @@ func stripControl(s string) string {
 }
 
 // buildConsentDialogText renders the platform-neutral dialog copy.
-// Examples: "Billy (billy@olive.co) from Olive Technology is requesting
+// Examples: "Billy (billy@example.com) from Olive Technology is requesting
 // remote access to view and control this computer."
 func buildConsentDialogText(req ipc.ConsentRequest) (title, body string) {
 	who := "A technician"
