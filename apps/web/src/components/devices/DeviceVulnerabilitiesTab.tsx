@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
-import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
 import { handleActionError } from '../../lib/runAction';
 import { usePermissions } from '../../lib/permissions';
 import {
-  fetchDeviceVulnerabilities,
+  fetchDeviceSoftwareGroups,
   remediateVuln,
   acceptVulnRisk,
   mitigateVuln,
   reopenVuln,
-  type DeviceVulnerabilityItem,
+  type DeviceVulnFinding,
+  type DeviceVulnStats,
+  type SoftwareGroup,
 } from '../../lib/api/vulnerabilities';
 
 const SEVERITY_BADGES: Record<string, { label: string; className: string }> = {
@@ -62,14 +63,42 @@ type DeviceVulnerabilitiesTabProps = {
   timezone?: string;
 };
 
+const EMPTY_STATS: DeviceVulnStats = {
+  openTotal: 0,
+  critical: 0,
+  high: 0,
+  medium: 0,
+  low: 0,
+  unscored: 0,
+  kevFindingCount: 0,
+  patchReadyFindingCount: 0,
+};
+
+/** Group a flat array by a derived key, preserving insertion order within each group. */
+function groupBy<T>(items: T[], keyFn: (item: T) => string): Map<string, T[]> {
+  const map = new Map<string, T[]>();
+  for (const item of items) {
+    const key = keyFn(item);
+    const list = map.get(key);
+    if (list) {
+      list.push(item);
+    } else {
+      map.set(key, [item]);
+    }
+  }
+  return map;
+}
+
 export function DeviceVulnerabilitiesTab({ deviceId }: DeviceVulnerabilitiesTabProps) {
-  const [items, setItems] = useState<DeviceVulnerabilityItem[]>([]);
+  const [groups, setGroups] = useState<SoftwareGroup[]>([]);
+  const [findings, setFindings] = useState<DeviceVulnFinding[]>([]);
+  const [stats, setStats] = useState<DeviceVulnStats>(EMPTY_STATS);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [modal, setModal] = useState<ModalState>(null);
   const [statusFilter, setStatusFilter] = useState<string>('open');
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
 
   const { can } = usePermissions();
@@ -79,9 +108,10 @@ export function DeviceVulnerabilitiesTab({ deviceId }: DeviceVulnerabilitiesTabP
     setLoading(true);
     setError(null);
     try {
-      const res = await fetchDeviceVulnerabilities(deviceId, { status: statusFilter });
-      setItems(res.items);
-      setSelectedIds(new Set());
+      const res = await fetchDeviceSoftwareGroups(deviceId, { status: statusFilter });
+      setGroups(res.groups);
+      setFindings(res.findings);
+      setStats(res.stats);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load vulnerabilities');
     } finally {
@@ -92,6 +122,20 @@ export function DeviceVulnerabilitiesTab({ deviceId }: DeviceVulnerabilitiesTabP
   useEffect(() => {
     void load();
   }, [load]);
+
+  const findingsByGroup = useMemo(() => groupBy(findings, (f) => f.groupKey), [findings]);
+
+  const toggleExpanded = useCallback((groupKey: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(groupKey)) {
+        next.delete(groupKey);
+      } else {
+        next.add(groupKey);
+      }
+      return next;
+    });
+  }, []);
 
   const onRemediate = useCallback(async (id: string) => {
     if (busyId) return;
@@ -106,19 +150,27 @@ export function DeviceVulnerabilitiesTab({ deviceId }: DeviceVulnerabilitiesTabP
     }
   }, [busyId, load]);
 
-  const onBulkRemediate = useCallback(async () => {
-    if (bulkBusy || selectedIds.size === 0) return;
+  const groupPatchReadyIds = useCallback(
+    (groupKey: string) =>
+      (findingsByGroup.get(groupKey) ?? [])
+        .filter((f) => f.status === 'open' && f.patchAvailable)
+        .map((f) => f.id),
+    [findingsByGroup],
+  );
+
+  const onRemediateGroup = useCallback(async (groupKey: string) => {
+    const ids = groupPatchReadyIds(groupKey);
+    if (ids.length === 0 || bulkBusy) return;
     setBulkBusy(true);
     try {
-      await remediateVuln([...selectedIds]);
-      setSelectedIds(new Set());
+      await remediateVuln(ids);
       await load();
     } catch (err) {
       handleActionError(err, 'Failed to schedule remediation');
     } finally {
       setBulkBusy(false);
     }
-  }, [bulkBusy, selectedIds, load]);
+  }, [groupPatchReadyIds, bulkBusy, load]);
 
   const onReopen = useCallback(async (id: string) => {
     if (busyId) return;
@@ -151,21 +203,8 @@ export function DeviceVulnerabilitiesTab({ deviceId }: DeviceVulnerabilitiesTabP
     }
   }, [modal, load]);
 
-  const toggleSelect = useCallback((id: string, canSelect: boolean) => {
-    if (!canSelect) return;
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-      return next;
-    });
-  }, []);
-
   const rowActions = useCallback(
-    (v: DeviceVulnerabilityItem) => {
+    (v: DeviceVulnFinding) => {
       const status = v.status?.toLowerCase();
       if (status === 'accepted' || status === 'mitigated') {
         return (
@@ -227,87 +266,6 @@ export function DeviceVulnerabilitiesTab({ deviceId }: DeviceVulnerabilitiesTabP
 
   const isOpenFilter = statusFilter === 'open';
 
-  const table = useMemo(
-    () => (
-      <table className="min-w-full divide-y">
-        <thead className="bg-muted/40">
-          <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            {isOpenFilter && <th className="px-4 py-3" />}
-            <th className="px-4 py-3">CVE</th>
-            <th className="px-4 py-3">Severity</th>
-            <th className="px-4 py-3">Status</th>
-            <th className="px-4 py-3">CVSS</th>
-            <th className="px-4 py-3">Risk</th>
-            <th className="px-4 py-3">KEV</th>
-            <th className="px-4 py-3 text-right">Actions</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y">
-          {items.map((v) => {
-            const canSelect = isOpenFilter && v.patchAvailable;
-            return (
-              <tr key={v.id} data-testid={`vulnerability-row-${v.id}`} className="transition hover:bg-muted/40">
-                {isOpenFilter && (
-                  <td className="px-4 py-3">
-                    <input
-                      type="checkbox"
-                      data-testid={`vuln-select-${v.id}`}
-                      checked={selectedIds.has(v.id)}
-                      disabled={!canSelect}
-                      onChange={() => toggleSelect(v.id, canSelect)}
-                      aria-label={`Select ${v.cveId}`}
-                    />
-                  </td>
-                )}
-                <td className="px-4 py-3 text-sm font-medium">
-                  {v.cveId}
-                  {isOpenFilter && v.patchAvailable && (
-                    <span
-                      data-testid={`patch-available-${v.id}`}
-                      className="ml-2 inline-flex items-center rounded-full bg-green-100 px-1.5 py-0.5 text-xs font-medium text-green-700 dark:bg-green-900/30 dark:text-green-300"
-                    >
-                      Patch available
-                    </span>
-                  )}
-                </td>
-                <td className="px-4 py-3 text-sm"><SeverityBadge severity={v.severity} /></td>
-                <td className="px-4 py-3 text-sm"><StatusBadge status={v.status} /></td>
-                <td className="px-4 py-3 text-sm tabular-nums">{v.cvssScore === null ? '—' : v.cvssScore.toFixed(1)}</td>
-                <td className="px-4 py-3 text-sm tabular-nums">{v.riskScore === null ? '—' : Math.round(v.riskScore)}</td>
-                <td className="px-4 py-3 text-sm">{v.knownExploited ? 'Yes' : '—'}</td>
-                <td className="px-4 py-3 text-right">{rowActions(v)}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    ),
-    [items, rowActions, selectedIds, toggleSelect, isOpenFilter],
-  );
-
-  const cards = useMemo(
-    () =>
-      items.map((v) => (
-        <DataCard key={v.id}>
-          <div className="flex items-center justify-between">
-            <span className="text-sm font-semibold">{v.cveId}</span>
-            <SeverityBadge severity={v.severity} />
-          </div>
-          <div className="mt-3 space-y-2 border-t pt-3">
-            <CardField label="Status"><StatusBadge status={v.status} /></CardField>
-            <CardField label="CVSS"><span className="text-sm tabular-nums">{v.cvssScore === null ? '—' : v.cvssScore.toFixed(1)}</span></CardField>
-            <CardField label="Risk"><span className="text-sm tabular-nums">{v.riskScore === null ? '—' : Math.round(v.riskScore)}</span></CardField>
-            <CardField label="Known exploited"><span className="text-sm">{v.knownExploited ? 'Yes' : 'No'}</span></CardField>
-            {isOpenFilter && v.patchAvailable && (
-              <CardField label="Patch"><span className="text-sm text-green-700 dark:text-green-300">Available</span></CardField>
-            )}
-          </div>
-          <CardActions className="flex flex-wrap justify-end gap-2">{rowActions(v)}</CardActions>
-        </DataCard>
-      )),
-    [items, rowActions, isOpenFilter],
-  );
-
   if (error) {
     return (
       <div data-testid="device-vulnerabilities-error" className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300">
@@ -316,8 +274,28 @@ export function DeviceVulnerabilitiesTab({ deviceId }: DeviceVulnerabilitiesTabP
     );
   }
 
+  const statTiles: Array<{ key: keyof DeviceVulnStats; label: string }> = [
+    { key: 'openTotal', label: 'Open' },
+    { key: 'critical', label: 'Critical' },
+    { key: 'high', label: 'High' },
+    { key: 'medium', label: 'Medium' },
+    { key: 'low', label: 'Low' },
+    { key: 'unscored', label: 'Unscored' },
+    { key: 'kevFindingCount', label: 'KEV' },
+    { key: 'patchReadyFindingCount', label: 'Patch-ready' },
+  ];
+
   return (
     <div className="space-y-4">
+      <div data-testid="device-vuln-stats" className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-8">
+        {statTiles.map((tile) => (
+          <div key={tile.key} className="rounded-md border bg-card px-3 py-2 text-center">
+            <div className="text-lg font-semibold tabular-nums">{stats[tile.key]}</div>
+            <div className="text-xs text-muted-foreground">{tile.label}</div>
+          </div>
+        ))}
+      </div>
+
       <div className="flex items-center gap-2">
         <label htmlFor="vulnerability-device-status-filter" className="text-sm text-muted-foreground">
           Status
@@ -337,21 +315,7 @@ export function DeviceVulnerabilitiesTab({ deviceId }: DeviceVulnerabilitiesTabP
         </select>
       </div>
 
-      {isOpenFilter && (
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            data-testid="vuln-bulk-remediate"
-            className={`${ACTION_BTN} bg-primary text-primary-foreground hover:bg-primary/90`}
-            disabled={selectedIds.size === 0 || bulkBusy}
-            onClick={() => void onBulkRemediate()}
-          >
-            Remediate selected ({selectedIds.size})
-          </button>
-        </div>
-      )}
-
-      {!loading && items.length === 0 ? (
+      {!loading && groups.length === 0 ? (
         <div data-testid="device-vulnerabilities-empty" className="rounded-md border border-dashed px-4 py-12 text-center text-sm text-muted-foreground">
           {statusFilter === 'open'
             ? 'No open vulnerabilities detected on this device.'
@@ -360,7 +324,93 @@ export function DeviceVulnerabilitiesTab({ deviceId }: DeviceVulnerabilitiesTabP
               : `No ${statusFilter} vulnerabilities on this device.`}
         </div>
       ) : (
-        <ResponsiveTable table={table} cards={cards} />
+        <div className="space-y-2">
+          {groups.map((g) => {
+            const groupFindings = findingsByGroup.get(g.groupKey) ?? [];
+            const isExpanded = expanded.has(g.groupKey);
+            const patchReadyIds = groupPatchReadyIds(g.groupKey);
+            return (
+              <div key={g.groupKey} data-testid={`vuln-group-${g.groupKey}`} className="rounded-md border bg-card">
+                <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <button
+                      type="button"
+                      data-testid={`vuln-group-toggle-${g.groupKey}`}
+                      aria-expanded={isExpanded}
+                      className="rounded-md border px-2 py-1 text-xs font-medium transition hover:bg-muted/60"
+                      onClick={() => toggleExpanded(g.groupKey)}
+                    >
+                      {isExpanded ? 'Hide findings' : 'Show findings'}
+                    </button>
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-medium">{g.name}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {g.cveCount} CVEs · {groupFindings.length} findings · {g.patchReadyFindingCount} patch-ready
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <SeverityBadge severity={g.worstSeverity} />
+                    <button
+                      type="button"
+                      data-testid={`vuln-group-remediate-${g.groupKey}`}
+                      className={`${ACTION_BTN} bg-primary text-primary-foreground hover:bg-primary/90`}
+                      disabled={patchReadyIds.length === 0 || bulkBusy}
+                      title={patchReadyIds.length === 0 ? 'No patch available' : undefined}
+                      onClick={() => void onRemediateGroup(g.groupKey)}
+                    >
+                      Remediate all
+                    </button>
+                  </div>
+                </div>
+
+                {isExpanded && (
+                  <div className="border-t">
+                    <table className="min-w-full divide-y">
+                      <thead className="bg-muted/40">
+                        <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                          <th className="px-4 py-3">CVE</th>
+                          <th className="px-4 py-3">Severity</th>
+                          <th className="px-4 py-3">Status</th>
+                          <th className="px-4 py-3">CVSS</th>
+                          <th className="px-4 py-3">Risk</th>
+                          <th className="px-4 py-3">KEV</th>
+                          <th className="px-4 py-3 text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y">
+                        {groupFindings.map((v) => {
+                          const openFilterAndPatchable = isOpenFilter && v.patchAvailable;
+                          return (
+                            <tr key={v.id} data-testid={`vulnerability-row-${v.id}`} className="transition hover:bg-muted/40">
+                              <td className="px-4 py-3 text-sm font-medium">
+                                {v.cveId}
+                                {openFilterAndPatchable && (
+                                  <span
+                                    data-testid={`patch-available-${v.id}`}
+                                    className="ml-2 inline-flex items-center rounded-full bg-green-100 px-1.5 py-0.5 text-xs font-medium text-green-700 dark:bg-green-900/30 dark:text-green-300"
+                                  >
+                                    Patch available
+                                  </span>
+                                )}
+                              </td>
+                              <td className="px-4 py-3 text-sm"><SeverityBadge severity={v.severity} /></td>
+                              <td className="px-4 py-3 text-sm"><StatusBadge status={v.status} /></td>
+                              <td className="px-4 py-3 text-sm tabular-nums">{v.cvssScore === null ? '—' : v.cvssScore.toFixed(1)}</td>
+                              <td className="px-4 py-3 text-sm tabular-nums">{v.riskScore === null ? '—' : Math.round(v.riskScore)}</td>
+                              <td className="px-4 py-3 text-sm">{v.knownExploited ? 'Yes' : '—'}</td>
+                              <td className="px-4 py-3 text-right">{rowActions(v)}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
       )}
 
       {modal && (
