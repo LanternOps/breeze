@@ -30,30 +30,34 @@ const TOKEN = /\{\{\s*([^{}]+?)\s*\}\}/g;
 const CUSTOM_FIELD_KEY = /^device\.customField\.([a-z][a-z0-9_]*)$/;
 
 function resolveKey(key: string, ctx: InstallerVariableContext): string | null {
+  let raw: unknown;
   switch (key) {
     case 'org.name':
-      return ctx.org.name;
-    case 'org.id':
-      return ctx.org.id;
-    case 'site.name':
-      return ctx.site.name;
-    case 'site.id':
-      return ctx.site.id;
-    case 'device.hostname':
-      return ctx.device.hostname;
-    default:
+      raw = ctx.org.name;
       break;
+    case 'org.id':
+      raw = ctx.org.id;
+      break;
+    case 'site.name':
+      raw = ctx.site.name;
+      break;
+    case 'site.id':
+      raw = ctx.site.id;
+      break;
+    case 'device.hostname':
+      raw = ctx.device.hostname;
+      break;
+    default: {
+      const fieldKey = CUSTOM_FIELD_KEY.exec(key)?.[1];
+      if (!fieldKey) return null; // unknown token — not in the vocabulary
+      raw = ctx.device.customFields?.[fieldKey];
+    }
   }
-  const custom = CUSTOM_FIELD_KEY.exec(key);
-  const fieldKey = custom?.[1];
-  if (fieldKey) {
-    const raw = ctx.device.customFields?.[fieldKey];
-    // A missing/empty custom field is unresolved on purpose — fail the device
-    // loudly rather than ship an installer URL with a blank segment.
-    if (raw == null || raw === '') return null;
-    return String(raw);
-  }
-  return null;
+  // Uniform fail-loudly: a missing OR blank resolution — built-in (e.g. a device
+  // with an empty hostname) or custom field — is treated as unresolved so a
+  // device never ships an installer URL/args with a blank segment.
+  if (raw == null || raw === '') return null;
+  return String(raw);
 }
 
 export interface SubstitutionResult {

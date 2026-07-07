@@ -216,9 +216,9 @@ export async function createSoftwareDeployment(
         ),
       );
 
-    // Load org + site names once so per-device `{{org.name}}` / `{{site.name}}`
-    // resolve without an N+1. Only needed when a template actually references
-    // variables, but the two lookups are cheap and keep the loop simple.
+    // When a template references variables, load the org name + ALL of the org's
+    // site names once here (gated below) rather than per-device inside the loop —
+    // avoids an N+1 across the dispatch fan-out.
     const templatesUseVariables =
       (finalDownloadUrl?.includes('{{') ?? false) ||
       (finalSilentInstallArgs?.includes('{{') ?? false);
@@ -252,9 +252,9 @@ export async function createSoftwareDeployment(
     let variableFailureCount = 0;
     for (const device of targetDevices) {
       // Resolve `{{...}}` variables against this device's org/site/device context.
-      // A no-op when the templates contain no variables (fast path inside the
-      // resolver). An unresolvable token fails THIS device rather than shipping a
-      // literal `{{...}}` to the agent.
+      // Skipped entirely unless `templatesUseVariables` (computed once above); the
+      // resolver also fast-paths internally. An unresolvable token fails THIS
+      // device rather than shipping a literal `{{...}}` to the agent.
       let deviceDownloadUrl = finalDownloadUrl;
       let deviceSilentInstallArgs = finalSilentInstallArgs;
       if (templatesUseVariables) {

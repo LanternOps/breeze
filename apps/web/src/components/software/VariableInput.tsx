@@ -21,7 +21,7 @@ interface VariableInputProps {
   placeholder?: string;
   /** Device custom-field definitions, offered under "Custom fields" in the menu. */
   customFields?: DeviceCustomField[];
-  /** Rendered as the input's accessible name via aria-labelledby on the wrapper's label. */
+  /** Applied as the input's `id` so a parent `<label htmlFor>` can associate a visible label. */
   id?: string;
   'aria-describedby'?: string;
   className?: string;

@@ -89,7 +89,8 @@ export default function BuiltinPackageDetail({ name, provider, readiness, onDepl
             {gap.detail && <p className="mt-0.5 text-muted-foreground">{gap.detail}</p>}
             {gap.fixHref && (
               <a href={gap.fixHref} className="mt-1 inline-flex items-center gap-1 text-xs font-medium underline">
-                Open Integrations <ExternalLink className="h-3 w-3" />
+                {gap.fixHref === '/integrations' ? 'Open Integrations' : 'Go to setup'}
+                <ExternalLink className="h-3 w-3" />
               </a>
             )}
           </div>

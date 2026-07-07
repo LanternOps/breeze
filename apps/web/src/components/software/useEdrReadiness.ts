@@ -63,15 +63,11 @@ async function fetchHuntress(): Promise<EdrReadiness> {
 }
 
 async function fetchSentinelOne(s1VersionCount: number): Promise<EdrReadiness> {
-  // S1 exposes an integration status endpoint mirroring Huntress. hasSiteToken is
-  // derived server-side (the site token is a per-org secret). When the endpoint or
-  // field is unavailable we degrade to the two checks we can prove client-side
-  // (connected + installer uploaded) rather than inventing a signal.
-  // Route mounts at /s1 (apps/api/src/index.ts). The status endpoint exposes
-  // `isActive` (connected) but NO site-token boolean — the S1 site token is a
-  // per-org secret in s1_org_mappings, not surfaced here. So `hasSiteToken`
-  // stays undefined and the site-token check is omitted (2-check readiness),
-  // per the plan's "don't invent a backend field" fallback.
+  // GET /s1/integration (mounts at /s1) currently returns `isActive` but NOT a
+  // site-token boolean — the S1 site token is a per-org secret in
+  // s1_org_mappings, not surfaced here today. We consume `hasSiteToken` if the
+  // endpoint ever adds it (third check below); while it's absent we degrade to
+  // connected + installer-uploaded rather than inventing a signal.
   let connected: boolean | undefined;
   let hasSiteToken: boolean | undefined;
   try {

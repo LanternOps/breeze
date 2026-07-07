@@ -70,6 +70,19 @@ describe('substituteInstallerVariables', () => {
     expect(blank.unresolved).toEqual(['{{device.customField.blank}}']);
   });
 
+  it('treats an empty built-in value (e.g. blank hostname) as unresolved', () => {
+    const blankHost = substituteInstallerVariables('https://dl/{{device.hostname}}/app.msi', {
+      ...ctx,
+      device: { hostname: '', customFields: {} },
+    });
+    expect(blankHost.unresolved).toEqual(['{{device.hostname}}']);
+    const blankSite = substituteInstallerVariables('https://dl/{{site.name}}/app.msi', {
+      ...ctx,
+      site: { id: 'site-9', name: '' },
+    });
+    expect(blankSite.unresolved).toEqual(['{{site.name}}']);
+  });
+
   it('handles a null customFields bag', () => {
     const r = substituteInstallerVariables('{{device.customField.license_key}}', {
       ...ctx,

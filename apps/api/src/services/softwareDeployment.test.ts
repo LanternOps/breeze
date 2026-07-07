@@ -60,6 +60,9 @@ vi.mock('../db/schema', () => ({
 }));
 
 import { createSoftwareDeployment } from './softwareDeployment';
+import { resolveEdrInstaller } from './edrInstallerResolver';
+
+const resolveEdrMock = vi.mocked(resolveEdrInstaller);
 
 // ---------------------------------------------------------------------------
 // Mock builder helpers
@@ -206,6 +209,131 @@ describe('createSoftwareDeployment', () => {
     expect(sendCommandMock.mock.calls[0]![1].payload.downloadUrl).toBe(
       'https://dl/org-1/KEY-1/app.msi',
     );
+  });
+
+  it('dispatches a built-in EDR install using the resolver-provided URL/args', async () => {
+    resolveEdrMock.mockResolvedValueOnce({
+      downloadUrl: 'https://edr.example/agent.exe',
+      silentInstallArgs: '/SILENT /TOKEN=abc',
+    });
+    const versionRecord = {
+      id: 'ver-edr',
+      catalogId: 'cat-1',
+      s3Key: null,
+      downloadUrl: '{huntress_org_key}', // template; resolver replaces it
+      checksum: null,
+      originalFileName: 'agent.exe',
+      fileType: 'exe',
+      silentInstallArgs: '/TOKEN={huntress_org_key}',
+      version: '3.0.0',
+    };
+    const catalogItem = { id: 'cat-1', orgId: null, name: 'Huntress', integrationProvider: 'huntress' };
+    const deployment = { id: 'dep-edr', orgId: 'org-1' };
+    const targetDevices = [{ id: 'dev-1', agentId: 'agent-1' }];
+
+    selectMock
+      .mockReturnValueOnce(sel([versionRecord]))
+      .mockReturnValueOnce(sel([catalogItem]))
+      .mockReturnValueOnce(sel(targetDevices));
+    insertMock.mockReturnValueOnce(insWithReturning([deployment])).mockReturnValueOnce(ins());
+
+    const result = await createSoftwareDeployment({
+      orgId: 'org-1',
+      softwareVersionId: 'ver-edr',
+      deploymentType: 'install',
+      deviceIds: ['dev-1'],
+      scheduleType: 'immediate',
+      createdBy: null,
+    });
+
+    expect(result.status).toBe('pending');
+    const payload = sendCommandMock.mock.calls[0]![1].payload;
+    expect(payload.downloadUrl).toBe('https://edr.example/agent.exe');
+    expect(payload.silentInstallArgs).toBe('/SILENT /TOKEN=abc');
+  });
+
+  it('fails the whole EDR deployment (no dispatch) when the resolver returns an error', async () => {
+    resolveEdrMock.mockResolvedValueOnce({ error: 'Organization not mapped to Huntress' });
+    const versionRecord = {
+      id: 'ver-edr2',
+      catalogId: 'cat-1',
+      s3Key: null,
+      downloadUrl: '{huntress_org_key}',
+      checksum: null,
+      originalFileName: 'agent.exe',
+      fileType: 'exe',
+      silentInstallArgs: null,
+      version: '3.0.0',
+    };
+    const catalogItem = { id: 'cat-1', orgId: null, name: 'Huntress', integrationProvider: 'huntress' };
+    const deployment = { id: 'dep-edr2', orgId: 'org-1' };
+
+    selectMock.mockReturnValueOnce(sel([versionRecord])).mockReturnValueOnce(sel([catalogItem]));
+    insertMock.mockReturnValueOnce(insWithReturning([deployment])).mockReturnValueOnce(ins());
+    const failWhere = vi.fn().mockResolvedValue(undefined);
+    updateMock.mockReturnValue({ set: vi.fn().mockReturnValue({ where: failWhere }) });
+
+    const result = await createSoftwareDeployment({
+      orgId: 'org-1',
+      softwareVersionId: 'ver-edr2',
+      deploymentType: 'install',
+      deviceIds: ['dev-1'],
+      scheduleType: 'immediate',
+      createdBy: null,
+    });
+
+    expect(result.status).toBe('failed');
+    expect(result.message).toMatch(/not mapped to Huntress/);
+    expect(result.dispatchedDeviceIds).toEqual([]);
+    expect(sendCommandMock).not.toHaveBeenCalled();
+    expect(failWhere).toHaveBeenCalledTimes(1); // all result rows marked failed
+  });
+
+  it('dispatches resolved devices and fails only the unresolvable ones on a mixed batch', async () => {
+    const versionRecord = {
+      id: 'ver-mix',
+      catalogId: 'cat-1',
+      s3Key: null,
+      downloadUrl: 'https://dl/{{device.customField.license_key}}/app.msi',
+      checksum: null,
+      originalFileName: 'app.msi',
+      fileType: 'msi',
+      silentInstallArgs: null,
+      version: '2.0.0',
+    };
+    const catalogItem = { id: 'cat-1', orgId: null, name: 'TestApp', integrationProvider: null };
+    const deployment = { id: 'dep-mix', orgId: 'org-1' };
+    const targetDevices = [
+      { id: 'dev-1', agentId: 'agent-1', siteId: 'site-1', hostname: 'WKS-1', customFields: { license_key: 'KEY-1' } },
+      { id: 'dev-2', agentId: 'agent-2', siteId: 'site-1', hostname: 'WKS-2', customFields: {} },
+    ];
+
+    selectMock
+      .mockReturnValueOnce(sel([versionRecord]))
+      .mockReturnValueOnce(sel([catalogItem]))
+      .mockReturnValueOnce(sel(targetDevices))
+      .mockReturnValueOnce(selLimit([{ name: 'Acme' }]))
+      .mockReturnValueOnce(sel([{ id: 'site-1', name: 'HQ' }]));
+    insertMock.mockReturnValueOnce(insWithReturning([deployment])).mockReturnValueOnce(ins());
+    const failWhere = vi.fn().mockResolvedValue(undefined);
+    updateMock.mockReturnValue({ set: vi.fn().mockReturnValue({ where: failWhere }) });
+
+    const result = await createSoftwareDeployment({
+      orgId: 'org-1',
+      softwareVersionId: 'ver-mix',
+      deploymentType: 'install',
+      deviceIds: ['dev-1', 'dev-2'],
+      scheduleType: 'immediate',
+      createdBy: null,
+    });
+
+    // Partial failure: overall pending, only the resolvable device dispatched,
+    // the unresolvable one marked failed — never shipped a literal {{...}}.
+    expect(result.status).toBe('pending');
+    expect(result.dispatchedDeviceIds).toEqual(['dev-1']);
+    expect(sendCommandMock).toHaveBeenCalledTimes(1);
+    expect(sendCommandMock.mock.calls[0]![1].payload.downloadUrl).toBe('https://dl/KEY-1/app.msi');
+    expect(failWhere).toHaveBeenCalledTimes(1); // dev-2 only
   });
 
   it('fails a device (and never dispatches) when an installer variable cannot be resolved', async () => {
