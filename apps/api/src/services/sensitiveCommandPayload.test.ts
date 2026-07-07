@@ -80,7 +80,7 @@ describe('decryptCommandsForDelivery', () => {
     ];
     const out = decryptCommandsForDelivery(batch);
     expect(out.map((cmd) => cmd.id)).toEqual(['a', 'b']);
-    expect((out[1].payload as Record<string, unknown>).password).toBe('pw');
+    expect((out[1]?.payload as Record<string, unknown> | undefined)?.password).toBe('pw');
   });
 
   it('returns an empty array for an empty batch', () => {

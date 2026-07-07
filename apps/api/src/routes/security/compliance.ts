@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 
 import { db } from '../../db';
 import { deviceRecoveryKeys } from '../../db/schema';
@@ -132,11 +132,21 @@ complianceRoutes.get(
     const statuses = rows.map(toStatusResponse);
 
     // Real escrow status: devices with at least one active escrowed key.
-    // RLS + listStatusRows both scope to accessible orgs.
-    const escrowRows = await db
-      .selectDistinct({ deviceId: deviceRecoveryKeys.deviceId })
-      .from(deviceRecoveryKeys)
-      .where(eq(deviceRecoveryKeys.status, 'active'));
+    // Constrained to the org-scoped device set already resolved by
+    // listStatusRows so the enrichment never touches a device outside the
+    // caller's accessible orgs (and avoids an unbounded cross-tenant scan).
+    const deviceIds = rows.map((row) => row.deviceId);
+    const escrowRows = deviceIds.length
+      ? await db
+          .selectDistinct({ deviceId: deviceRecoveryKeys.deviceId })
+          .from(deviceRecoveryKeys)
+          .where(
+            and(
+              eq(deviceRecoveryKeys.status, 'active'),
+              inArray(deviceRecoveryKeys.deviceId, deviceIds)
+            )
+          )
+      : [];
     const escrowedDeviceIds = new Set(escrowRows.map((r) => r.deviceId));
 
     const methodByOs: Record<'windows' | 'macos' | 'linux', string> = {
