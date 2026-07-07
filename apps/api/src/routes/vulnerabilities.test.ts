@@ -448,6 +448,13 @@ describe('GET /vulnerabilities/devices/:deviceId/software', () => {
     expect(body.stats.critical).toBe(1);
     expect(body.stats.patchReadyFindingCount).toBe(2);
     expect(body.findings.every((f: any) => typeof f.groupKey === 'string')).toBe(true);
+    // Documented invariant of this layer: cvssVector is never surfaced here (it's
+    // catalog-only detail, not part of the device drill-down shape). Also pin the
+    // finding's groupKey to buildGroupKey's Chrome key so a regression in the
+    // grouping logic shows up as a targeted assertion, not just a count check.
+    const findingA = body.findings.find((f: any) => f.id === 'a');
+    expect(findingA.cvssVector).toBeNull();
+    expect(findingA.groupKey).toBe('sw:google chrome|');
     // fetchFleetFindingRows was called with the deviceId narrow.
     expect(vi.mocked(fetchFleetFindingRows)).toHaveBeenCalledWith(expect.objectContaining({ deviceId: ID, status: 'open' }));
   });

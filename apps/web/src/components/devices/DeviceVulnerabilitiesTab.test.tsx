@@ -76,6 +76,27 @@ describe('DeviceVulnerabilitiesTab', () => {
     expect(header).toHaveTextContent(/Critical/i);
   });
 
+  it('labels the first stat tile "Open" for the default open status filter', async () => {
+    render(<DeviceVulnerabilitiesTab deviceId="d1" />);
+    const header = within(await screen.findByTestId('device-vuln-stats'));
+    expect(header.getByText('Open')).toBeInTheDocument();
+  });
+
+  it('relabels the first stat tile when the status filter changes to a non-open value', async () => {
+    vi.mocked(api.fetchDeviceSoftwareGroups).mockResolvedValue(EMPTY_RESPONSE);
+    render(<DeviceVulnerabilitiesTab deviceId="d1" />);
+    const header = within(await screen.findByTestId('device-vuln-stats'));
+    await screen.findByTestId('device-vulnerabilities-empty');
+    expect(header.getByText('Open')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId('vulnerability-device-status-filter'), {
+      target: { value: 'accepted' },
+    });
+
+    await waitFor(() => expect(header.getByText('Accepted')).toBeInTheDocument());
+    expect(header.queryByText('Open')).not.toBeInTheDocument();
+  });
+
   it('renders one row per software group, not per CVE', async () => {
     render(<DeviceVulnerabilitiesTab deviceId="d1" />);
     expect(await screen.findByTestId('vuln-group-sw:google chrome|')).toBeInTheDocument();

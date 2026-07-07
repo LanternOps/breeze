@@ -21,6 +21,20 @@ const SEVERITY_BADGES: Record<string, { label: string; className: string }> = {
   low: { label: 'Low', className: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' },
 };
 
+/**
+ * `stats.openTotal` is really "count of findings in the CURRENT status
+ * filter" — the API computes it from the already-status-filtered rows, not
+ * strictly open findings. Label the total tile to match the active filter
+ * instead of hardcoding "Open" so switching filters doesn't mislabel it.
+ */
+const STATUS_TOTAL_LABELS: Record<string, string> = {
+  open: 'Open',
+  all: 'Total',
+  accepted: 'Accepted',
+  mitigated: 'Mitigated',
+  patched: 'Patched',
+};
+
 const STATUS_BADGES: Record<string, { label: string; className: string }> = {
   open: { label: 'Open', className: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300' },
   accepted: { label: 'Accepted', className: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300' },
@@ -356,7 +370,7 @@ export function DeviceVulnerabilitiesTab({ deviceId }: DeviceVulnerabilitiesTabP
   }
 
   const statTiles: Array<{ key: keyof DeviceVulnStats; label: string }> = [
-    { key: 'openTotal', label: 'Open' },
+    { key: 'openTotal', label: STATUS_TOTAL_LABELS[statusFilter] ?? 'Total' },
     { key: 'critical', label: 'Critical' },
     { key: 'high', label: 'High' },
     { key: 'medium', label: 'Medium' },
