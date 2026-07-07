@@ -15,7 +15,9 @@ import {
   type PolishFactChanges,
 } from '@breeze/shared';
 
-export type EnrichmentErrorCode = 'AI_LIMIT' | 'AI_PARSE' | 'AI_TRUNCATED' | 'AI_FACT_DRIFT';
+// NB: no AI_FACT_DRIFT — a numeric drift is no longer a hard error; polish
+// returns the text with an advisory factWarning instead (see polishCatalogText).
+export type EnrichmentErrorCode = 'AI_LIMIT' | 'AI_PARSE' | 'AI_TRUNCATED';
 
 export class EnrichmentError extends Error {
   code: EnrichmentErrorCode;
@@ -501,21 +503,22 @@ function multisetsEqual(a: Map<string, number>, b: Map<string, number>): boolean
 // counts). Multiset counts are respected (a duplicate dropped once shows once),
 // and both lists are capped so a pathological reply can't bloat the payload/UI.
 const FACT_CHANGE_MAX = 50;
+// Tokens present in `from` beyond what `to` has (multiset subtraction), capped.
+function multisetDiff(from: Map<string, number>, to: Map<string, number>): string[] {
+  const out: string[] = [];
+  for (const [tok, n] of from) {
+    const extra = n - (to.get(tok) ?? 0);
+    for (let i = 0; i < extra && out.length < FACT_CHANGE_MAX; i++) out.push(tok);
+  }
+  return out;
+}
 function diffFactTokens(
   input: { name?: string | null; description?: string | null },
   output: { name: string | null; description: string | null },
 ): PolishFactChanges {
   const before = extractFactTokens(`${input.name ?? ''} ${input.description ?? ''}`);
   const after = extractFactTokens(`${output.name ?? ''} ${output.description ?? ''}`);
-  const added: string[] = [];
-  const removed: string[] = [];
-  for (const [tok, n] of after) {
-    for (let i = 0, extra = n - (before.get(tok) ?? 0); i < extra && added.length < FACT_CHANGE_MAX; i++) added.push(tok);
-  }
-  for (const [tok, n] of before) {
-    for (let i = 0, gone = n - (after.get(tok) ?? 0); i < gone && removed.length < FACT_CHANGE_MAX; i++) removed.push(tok);
-  }
-  return { added, removed };
+  return { added: multisetDiff(after, before), removed: multisetDiff(before, after) };
 }
 
 // The fact guard: the combined `<number><unit>` multiset of the polished text must

@@ -195,22 +195,17 @@ export default function PolishButton({
                   </p>
                   {preview.factChanges && (preview.factChanges.added.length > 0 || preview.factChanges.removed.length > 0) && (
                     <div className="mt-2 flex flex-col gap-1.5 text-xs">
-                      {preview.factChanges.added.length > 0 && (
-                        <div className="flex flex-wrap items-center gap-1">
-                          <span className="font-medium">Added (verify these are real):</span>
-                          {preview.factChanges.added.map((t, i) => (
-                            <code key={`a-${i}`} className="rounded bg-amber-500/20 px-1 py-0.5">{t}</code>
+                      {([
+                        { tokens: preview.factChanges.added, label: 'Added (verify these are real):', k: 'a', chip: 'bg-amber-500/20' },
+                        { tokens: preview.factChanges.removed, label: 'Removed:', k: 'r', chip: 'bg-amber-500/10 line-through opacity-80' },
+                      ] as const).map(({ tokens, label, k, chip }) => tokens.length > 0 && (
+                        <div key={k} className="flex flex-wrap items-center gap-1">
+                          <span className="font-medium">{label}</span>
+                          {tokens.map((t, i) => (
+                            <code key={`${k}-${i}`} className={`rounded px-1 py-0.5 ${chip}`}>{t}</code>
                           ))}
                         </div>
-                      )}
-                      {preview.factChanges.removed.length > 0 && (
-                        <div className="flex flex-wrap items-center gap-1">
-                          <span className="font-medium">Removed:</span>
-                          {preview.factChanges.removed.map((t, i) => (
-                            <code key={`r-${i}`} className="rounded bg-amber-500/10 px-1 py-0.5 line-through opacity-80">{t}</code>
-                          ))}
-                        </div>
-                      )}
+                      ))}
                     </div>
                   )}
                 </div>
