@@ -14,7 +14,12 @@ export interface EdrReadiness {
   status: 'loading' | 'ready' | 'incomplete' | 'unknown';
   checks: ReadinessCheck[];
   mappedOrgCount?: number;
-  firstGap?: ReadinessCheck;
+}
+
+/** The first failing check, if any. Derived from `checks` rather than stored so
+ *  a 'ready' readiness can never carry a gap (single source of truth). */
+export function firstGap(readiness: EdrReadiness): ReadinessCheck | undefined {
+  return readiness.checks.find((c) => !c.ok);
 }
 
 const LOADING: EdrReadiness = { status: 'loading', checks: [] };
@@ -23,18 +28,21 @@ const INTEGRATIONS_FIX = '/integrations';
 const SOFTWARE_FIX = '/software';
 
 function finalize(checks: ReadinessCheck[], mappedOrgCount?: number): EdrReadiness {
-  const firstGap = checks.find((c) => !c.ok);
   return {
-    status: firstGap ? 'incomplete' : 'ready',
+    status: checks.some((c) => !c.ok) ? 'incomplete' : 'ready',
     checks,
     mappedOrgCount,
-    firstGap,
   };
 }
 
 async function fetchHuntress(): Promise<EdrReadiness> {
   const res = await fetchWithAuth('/huntress/integration');
-  if (!res.ok) return UNKNOWN;
+  if (!res.ok) {
+    // Advisory badge only — degrade to 'unknown', but leave a breadcrumb so a
+    // persistent readiness outage isn't completely silent for maintainers.
+    console.warn(`[edr-readiness] huntress status fetch failed: ${res.status}`);
+    return UNKNOWN;
+  }
   const json = (await res.json()) as {
     data?: { isActive?: boolean; hasAccountKey?: boolean; lastSyncOrgs?: number | null } | null;
   };
@@ -80,7 +88,8 @@ async function fetchSentinelOne(s1VersionCount: number): Promise<EdrReadiness> {
       connected = !!data && data.isActive === true;
       hasSiteToken = typeof data?.hasSiteToken === 'boolean' ? data.hasSiteToken : undefined;
     }
-  } catch {
+  } catch (err) {
+    console.warn('[edr-readiness] sentinelone status fetch failed:', err);
     /* fall through to the version-only readiness below */
   }
 

@@ -136,4 +136,25 @@ describe('AddPackageModal', () => {
     expect(catalogPosts).toHaveLength(1);
     expect(versionAttempts).toBe(2);
   });
+
+  it('surfaces the created package (0 versions) if the user cancels after a version-write failure', async () => {
+    const onCreated = vi.fn();
+    routeMock({ createVersion: () => jsonResponse({ error: 'boom' }, false, 500) });
+    render(<AddPackageModal open onClose={() => {}} onCreated={onCreated} />);
+
+    fillMinimum();
+    fireEvent.click(await screen.findByRole('button', { name: 'Create package' }));
+
+    // Version write failed → button flips to retry, catalog id retained.
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Retry adding version' })).toBeInTheDocument(),
+    );
+
+    // Cancelling now must NOT leave an invisible orphan — the created package is
+    // surfaced with versionCount 0 so it appears in the catalog.
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(onCreated).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'cat-1', name: 'Google Chrome', versionCount: 0 }),
+    );
+  });
 });

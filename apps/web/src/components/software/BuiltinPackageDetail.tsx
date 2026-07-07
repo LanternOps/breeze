@@ -1,7 +1,7 @@
 import { CheckCircle2, AlertTriangle, ExternalLink, Loader2, HelpCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { getProviderBranding, type IntegrationProvider } from './providerBranding';
-import type { EdrReadiness } from './useEdrReadiness';
+import { firstGap, type EdrReadiness } from './useEdrReadiness';
 
 export interface BuiltinPackageDetailProps {
   name: string;
@@ -14,7 +14,7 @@ export default function BuiltinPackageDetail({ name, provider, readiness, onDepl
   const branding = getProviderBranding(provider);
   const Icon = branding.icon;
   const ready = readiness.status === 'ready';
-  const gap = readiness.firstGap;
+  const gap = firstGap(readiness);
   const disabled = readiness.status === 'incomplete';
   const deployTitle = disabled && gap ? `Resolve: ${gap.label}` : 'Deploys to mapped organizations only';
 

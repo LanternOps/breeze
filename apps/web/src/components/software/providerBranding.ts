@@ -1,6 +1,10 @@
 import { ShieldCheck, type LucideIcon } from 'lucide-react';
 
-export type IntegrationProvider = 'huntress' | 'sentinelone';
+/** Single source of truth for the provider set — the union and the type guard
+ *  both derive from this, so adding a provider can't leave one of them stale. */
+export const INTEGRATION_PROVIDERS = ['huntress', 'sentinelone'] as const;
+
+export type IntegrationProvider = (typeof INTEGRATION_PROVIDERS)[number];
 
 export interface ProviderBranding {
   label: string;
@@ -33,5 +37,5 @@ export function getProviderBranding(p: IntegrationProvider): ProviderBranding {
 }
 
 export function isIntegrationProvider(v: unknown): v is IntegrationProvider {
-  return v === 'huntress' || v === 'sentinelone';
+  return (INTEGRATION_PROVIDERS as readonly unknown[]).includes(v);
 }

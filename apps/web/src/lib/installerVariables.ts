@@ -31,8 +31,15 @@ export interface InstallerVariable {
   example: string;
 }
 
-/** Built-in variables, always resolvable for any target device. */
-export const BUILTIN_INSTALLER_VARIABLES: InstallerVariable[] = [
+/**
+ * Built-in variables, always resolvable for any target device.
+ *
+ * IMPORTANT: every token here MUST have a matching arm in the API resolver's
+ * `resolveKey` switch (`apps/api/src/services/installerVariables.ts`). The two
+ * key sets are kept in sync by convention; the `BUILTIN_TOKENS` tripwire test in
+ * `installerVariables.test.ts` catches an accidental addition on this side.
+ */
+export const BUILTIN_INSTALLER_VARIABLES: readonly InstallerVariable[] = [
   { token: '{{org.name}}', label: 'Organization name', group: 'Organization', example: 'Acme Corp' },
   { token: '{{org.id}}', label: 'Organization ID', group: 'Organization', example: 'a1b2c3d4' },
   { token: '{{site.name}}', label: 'Site name', group: 'Site', example: 'Headquarters' },

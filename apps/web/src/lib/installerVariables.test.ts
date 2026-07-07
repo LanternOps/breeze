@@ -1,5 +1,22 @@
 import { describe, it, expect } from 'vitest';
-import { findTokens, findUnknownTokens, customFieldToken } from './installerVariables';
+import {
+  findTokens,
+  findUnknownTokens,
+  customFieldToken,
+  BUILTIN_INSTALLER_VARIABLES,
+} from './installerVariables';
+
+describe('BUILTIN_INSTALLER_VARIABLES vocabulary', () => {
+  // Tripwire: this exact set must have a matching arm in the API resolver's
+  // resolveKey switch (apps/api/src/services/installerVariables.ts). Adding a
+  // token here without wiring the API side would ship a UI-offered variable the
+  // resolver fails on at deploy time — update BOTH when this test trips.
+  it('offers exactly the tokens the API resolver supports', () => {
+    expect(BUILTIN_INSTALLER_VARIABLES.map((v) => v.token).sort()).toEqual(
+      ['{{device.hostname}}', '{{org.id}}', '{{org.name}}', '{{site.id}}', '{{site.name}}'].sort(),
+    );
+  });
+});
 
 describe('findTokens', () => {
   it('extracts every {{...}} token', () => {

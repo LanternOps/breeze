@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { useEdrReadiness } from './useEdrReadiness';
+import { useEdrReadiness, firstGap } from './useEdrReadiness';
 import { fetchWithAuth } from '../../stores/auth';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
@@ -15,7 +15,7 @@ function HuntressProbe() {
     <div>
       <span data-testid="status">{r.status}</span>
       <span data-testid="orgs">{r.mappedOrgCount ?? -1}</span>
-      <span data-testid="gap">{r.firstGap?.key ?? 'none'}</span>
+      <span data-testid="gap">{firstGap(r)?.key ?? 'none'}</span>
     </div>
   );
 }
@@ -25,7 +25,7 @@ function S1Probe({ versions }: { versions: number }) {
   return (
     <div>
       <span data-testid="status">{r.status}</span>
-      <span data-testid="gap">{r.firstGap?.key ?? 'none'}</span>
+      <span data-testid="gap">{firstGap(r)?.key ?? 'none'}</span>
       <span data-testid="checks">{r.checks.map((c) => c.key).join(',')}</span>
     </div>
   );
@@ -92,5 +92,32 @@ describe('useEdrReadiness (sentinelone)', () => {
     render(<S1Probe versions={0} />);
     await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('incomplete'));
     expect(screen.getByTestId('gap')).toHaveTextContent('installerUploaded');
+  });
+
+  it('adds a third site-token check when the endpoint surfaces hasSiteToken', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ data: { isActive: true, hasSiteToken: true } }));
+    render(<S1Probe versions={1} />);
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('ready'));
+    expect(screen.getByTestId('checks')).toHaveTextContent('connected,installerUploaded,siteToken');
+  });
+
+  it('flags the site-token gap when hasSiteToken is false', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ data: { isActive: true, hasSiteToken: false } }));
+    render(<S1Probe versions={1} />);
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('incomplete'));
+    expect(screen.getByTestId('gap')).toHaveTextContent('siteToken');
+  });
+
+  it('flags the connected gap when the S1 integration is inactive', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ data: { isActive: false } }));
+    render(<S1Probe versions={1} />);
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('incomplete'));
+    expect(screen.getByTestId('gap')).toHaveTextContent('connected');
+  });
+
+  it('degrades to unknown when the status fetch fails but an installer exists', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({}, false));
+    render(<S1Probe versions={1} />);
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('unknown'));
   });
 });

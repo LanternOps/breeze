@@ -157,7 +157,8 @@ export default function SoftwareVersionManager({ timezone, catalogId: propCatalo
                 fieldKey: String(r.fieldKey ?? ''),
                 name: String(r.name ?? r.fieldKey ?? ''),
               }))
-              .filter((f: DeviceCustomField) => f.fieldKey),
+              // Only offer keys matching the resolver's token grammar (see AddPackageModal).
+              .filter((f: DeviceCustomField) => /^[a-z][a-z0-9_]*$/.test(f.fieldKey)),
           );
         }
       } catch {

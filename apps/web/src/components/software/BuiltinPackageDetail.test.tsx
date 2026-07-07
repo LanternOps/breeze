@@ -26,13 +26,6 @@ const missingKey: EdrReadiness = {
     },
     { key: 'orgsMapped', label: 'Organizations mapped', ok: true, detail: '2 orgs mapped' },
   ],
-  firstGap: {
-    key: 'accountKey',
-    label: 'Account key configured',
-    ok: false,
-    detail: 'Add your Huntress account key in Integrations',
-    fixHref: '/integrations',
-  },
 };
 
 describe('BuiltinPackageDetail', () => {

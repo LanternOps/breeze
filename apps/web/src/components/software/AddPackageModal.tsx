@@ -86,7 +86,9 @@ export default function AddPackageModal({ open, onClose, onCreated }: AddPackage
                 fieldKey: String(r.fieldKey ?? ''),
                 name: String(r.name ?? r.fieldKey ?? ''),
               }))
-              .filter((f: DeviceCustomField) => f.fieldKey),
+              // Only offer keys that match the token grammar the resolver accepts,
+              // so the picker never presents a token it would then flag as unknown.
+              .filter((f: DeviceCustomField) => /^[a-z][a-z0-9_]*$/.test(f.fieldKey)),
           );
         }
       } catch {
@@ -234,6 +236,24 @@ export default function AddPackageModal({ open, onClose, onCreated }: AddPackage
     }
   };
 
+  const handleClose = () => {
+    // If step 1 (catalog) succeeded but the version write never did, surface the
+    // created package (0 versions) so it isn't an invisible orphan the user would
+    // re-create by adding the same name — they can then add a version or delete it.
+    if (createdCatalogId.current) {
+      onCreated({
+        id: createdCatalogId.current,
+        name: form.name.trim(),
+        vendor: form.vendor.trim(),
+        category: form.category,
+        description: form.description.trim(),
+        createdAt: new Date().toISOString(),
+        versionCount: 0,
+      });
+    }
+    onClose();
+  };
+
   const labelCls = 'text-xs font-semibold uppercase text-muted-foreground';
   const inputCls =
     'mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring';
@@ -241,7 +261,7 @@ export default function AddPackageModal({ open, onClose, onCreated }: AddPackage
   return (
     <Dialog
       open={open}
-      onClose={saving ? () => {} : onClose}
+      onClose={saving ? () => {} : handleClose}
       title="Add software package"
       labelledBy={titleId}
       maxWidth="2xl"
@@ -498,7 +518,7 @@ export default function AddPackageModal({ open, onClose, onCreated }: AddPackage
         <div className="flex items-center justify-end gap-2 border-t px-6 py-4">
           <button
             type="button"
-            onClick={onClose}
+            onClick={handleClose}
             disabled={saving}
             className="inline-flex h-9 items-center justify-center rounded-md border bg-background px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
           >
