@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, within, waitFor, fireEvent } from '@testing-library/react';
 
 import { DeviceVulnerabilitiesTab } from './DeviceVulnerabilitiesTab';
 import * as api from '../../lib/api/vulnerabilities';
@@ -86,8 +86,11 @@ describe('DeviceVulnerabilitiesTab', () => {
     render(<DeviceVulnerabilitiesTab deviceId="d1" />);
     const toggle = await screen.findByTestId('vuln-group-toggle-sw:google chrome|');
     fireEvent.click(toggle);
-    expect(await screen.findByText('CVE-1')).toBeInTheDocument();
-    expect(screen.getByText('CVE-2')).toBeInTheDocument();
+    // ResponsiveTable renders both the desktop table and the mobile card list
+    // simultaneously in jsdom, so unscoped queries would double-match.
+    const desktop = within(await screen.findByTestId('responsive-table-desktop'));
+    expect(await desktop.findByText('CVE-1')).toBeInTheDocument();
+    expect(desktop.getByText('CVE-2')).toBeInTheDocument();
   });
 
   it('Remediate all posts the group patch-ready open finding ids', async () => {
@@ -107,7 +110,8 @@ describe('DeviceVulnerabilitiesTab', () => {
     vi.mocked(api.remediateVuln).mockResolvedValue({ scheduled: 1, skipped: [] });
     render(<DeviceVulnerabilitiesTab deviceId="d1" />);
     fireEvent.click(await screen.findByTestId('vuln-group-toggle-sw:google chrome|'));
-    fireEvent.click(await screen.findByTestId('remediate-a'));
+    const desktop = within(await screen.findByTestId('responsive-table-desktop'));
+    fireEvent.click(await desktop.findByTestId('remediate-a'));
     await waitFor(() => expect(api.remediateVuln).toHaveBeenCalledWith(['a']));
   });
 
@@ -160,7 +164,8 @@ describe('DeviceVulnerabilitiesTab', () => {
     render(<DeviceVulnerabilitiesTab deviceId="d1" />);
 
     fireEvent.click(await screen.findByTestId('vuln-group-toggle-sw:acme app|'));
-    const reopenBtn = await screen.findByTestId('reopen-acc1');
+    const desktop = within(await screen.findByTestId('responsive-table-desktop'));
+    const reopenBtn = await desktop.findByTestId('reopen-acc1');
     expect(reopenBtn).toBeInTheDocument();
 
     fireEvent.click(reopenBtn);
@@ -172,10 +177,11 @@ describe('DeviceVulnerabilitiesTab', () => {
     render(<DeviceVulnerabilitiesTab deviceId="d1" />);
 
     fireEvent.click(await screen.findByTestId('vuln-group-toggle-sw:acme app|'));
-    await screen.findByTestId('reopen-acc1');
-    expect(screen.queryByTestId('remediate-acc1')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('accept-acc1')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('mitigate-acc1')).not.toBeInTheDocument();
+    const desktop = within(await screen.findByTestId('responsive-table-desktop'));
+    await desktop.findByTestId('reopen-acc1');
+    expect(desktop.queryByTestId('remediate-acc1')).not.toBeInTheDocument();
+    expect(desktop.queryByTestId('accept-acc1')).not.toBeInTheDocument();
+    expect(desktop.queryByTestId('mitigate-acc1')).not.toBeInTheDocument();
   });
 
   it('renders a Status badge for each finding row', async () => {
@@ -188,7 +194,8 @@ describe('DeviceVulnerabilitiesTab', () => {
   it('disables Remediate button when patchAvailable is false', async () => {
     render(<DeviceVulnerabilitiesTab deviceId="d1" />);
     fireEvent.click(await screen.findByTestId('vuln-group-toggle-os:windows'));
-    const remediateBtn = await screen.findByTestId('remediate-c');
+    const desktop = within(await screen.findByTestId('responsive-table-desktop'));
+    const remediateBtn = await desktop.findByTestId('remediate-c');
     expect(remediateBtn).toBeDisabled();
     expect(remediateBtn).toHaveAttribute('title', 'No patch available');
   });
@@ -197,7 +204,8 @@ describe('DeviceVulnerabilitiesTab', () => {
     vi.mocked(api.remediateVuln).mockResolvedValue({ scheduled: 1, skipped: [] });
     render(<DeviceVulnerabilitiesTab deviceId="d1" />);
     fireEvent.click(await screen.findByTestId('vuln-group-toggle-sw:google chrome|'));
-    const remediateBtn = await screen.findByTestId('remediate-a');
+    const desktop = within(await screen.findByTestId('responsive-table-desktop'));
+    const remediateBtn = await desktop.findByTestId('remediate-a');
     expect(remediateBtn).not.toBeDisabled();
     expect(remediateBtn).not.toHaveAttribute('title', 'No patch available');
   });
@@ -244,10 +252,11 @@ describe('DeviceVulnerabilitiesTab', () => {
     ];
     render(<DeviceVulnerabilitiesTab deviceId="d1" />);
     fireEvent.click(await screen.findByTestId('vuln-group-toggle-sw:google chrome|'));
-    await screen.findByTestId('vulnerability-row-a');
-    expect(screen.queryByTestId('accept-a')).not.toBeInTheDocument();
+    const desktop = within(await screen.findByTestId('responsive-table-desktop'));
+    await desktop.findByTestId('vulnerability-row-a');
+    expect(desktop.queryByTestId('accept-a')).not.toBeInTheDocument();
     // mitigate stays available on devices:write
-    expect(screen.getByTestId('mitigate-a')).toBeInTheDocument();
+    expect(desktop.getByTestId('mitigate-a')).toBeInTheDocument();
   });
 
   it('hides Reopen for accepted findings when the user lacks vulnerabilities:accept_risk', async () => {
@@ -266,6 +275,7 @@ describe('DeviceVulnerabilitiesTab', () => {
     ];
     render(<DeviceVulnerabilitiesTab deviceId="d1" />);
     fireEvent.click(await screen.findByTestId('vuln-group-toggle-sw:google chrome|'));
-    expect(await screen.findByTestId('accept-a')).toBeInTheDocument();
+    const desktop = within(await screen.findByTestId('responsive-table-desktop'));
+    expect(await desktop.findByTestId('accept-a')).toBeInTheDocument();
   });
 });

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
+import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
 import { handleActionError } from '../../lib/runAction';
 import { usePermissions } from '../../lib/permissions';
 import {
@@ -266,6 +267,86 @@ export function DeviceVulnerabilitiesTab({ deviceId }: DeviceVulnerabilitiesTabP
 
   const isOpenFilter = statusFilter === 'open';
 
+  /**
+   * Desktop table for a single group's drill-down findings. Rendered inside
+   * `ResponsiveTable` alongside `renderGroupCards` so the 7-column layout
+   * (CVE / Severity / Status / CVSS / Risk / KEV / Actions) never silently
+   * clips on a phone the way a bare `<table>` does — see the fleet-wide
+   * `ResponsiveTable` doc comment. Defined as a plain function (not memoized)
+   * since it's invoked once per expanded group during render, not stored.
+   */
+  const renderGroupTable = useCallback(
+    (list: DeviceVulnFinding[]) => (
+      <table className="min-w-full divide-y">
+        <thead className="bg-muted/40">
+          <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            <th className="px-4 py-3">CVE</th>
+            <th className="px-4 py-3">Severity</th>
+            <th className="px-4 py-3">Status</th>
+            <th className="px-4 py-3">CVSS</th>
+            <th className="px-4 py-3">Risk</th>
+            <th className="px-4 py-3">KEV</th>
+            <th className="px-4 py-3 text-right">Actions</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y">
+          {list.map((v) => {
+            const openFilterAndPatchable = isOpenFilter && v.patchAvailable;
+            return (
+              <tr key={v.id} data-testid={`vulnerability-row-${v.id}`} className="transition hover:bg-muted/40">
+                <td className="px-4 py-3 text-sm font-medium">
+                  {v.cveId}
+                  {openFilterAndPatchable && (
+                    <span
+                      data-testid={`patch-available-${v.id}`}
+                      className="ml-2 inline-flex items-center rounded-full bg-green-100 px-1.5 py-0.5 text-xs font-medium text-green-700 dark:bg-green-900/30 dark:text-green-300"
+                    >
+                      Patch available
+                    </span>
+                  )}
+                </td>
+                <td className="px-4 py-3 text-sm"><SeverityBadge severity={v.severity} /></td>
+                <td className="px-4 py-3 text-sm"><StatusBadge status={v.status} /></td>
+                <td className="px-4 py-3 text-sm tabular-nums">{v.cvssScore === null ? '—' : v.cvssScore.toFixed(1)}</td>
+                <td className="px-4 py-3 text-sm tabular-nums">{v.riskScore === null ? '—' : Math.round(v.riskScore)}</td>
+                <td className="px-4 py-3 text-sm">{v.knownExploited ? 'Yes' : '—'}</td>
+                <td className="px-4 py-3 text-right">{rowActions(v)}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    ),
+    [isOpenFilter, rowActions],
+  );
+
+  /** Mobile card fallback for a single group's drill-down findings — mirrors `renderGroupTable`. */
+  const renderGroupCards = useCallback(
+    (list: DeviceVulnFinding[]) =>
+      list.map((v) => {
+        const openFilterAndPatchable = isOpenFilter && v.patchAvailable;
+        return (
+          <DataCard key={v.id}>
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-semibold">{v.cveId}</span>
+              <SeverityBadge severity={v.severity} />
+            </div>
+            <div className="mt-3 space-y-2 border-t pt-3">
+              <CardField label="Status"><StatusBadge status={v.status} /></CardField>
+              <CardField label="CVSS"><span className="text-sm tabular-nums">{v.cvssScore === null ? '—' : v.cvssScore.toFixed(1)}</span></CardField>
+              <CardField label="Risk"><span className="text-sm tabular-nums">{v.riskScore === null ? '—' : Math.round(v.riskScore)}</span></CardField>
+              <CardField label="Known exploited"><span className="text-sm">{v.knownExploited ? 'Yes' : 'No'}</span></CardField>
+              {openFilterAndPatchable && (
+                <CardField label="Patch"><span className="text-sm text-green-700 dark:text-green-300">Available</span></CardField>
+              )}
+            </div>
+            <CardActions className="flex flex-wrap justify-end gap-2">{rowActions(v)}</CardActions>
+          </DataCard>
+        );
+      }),
+    [isOpenFilter, rowActions],
+  );
+
   if (error) {
     return (
       <div data-testid="device-vulnerabilities-error" className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300">
@@ -365,46 +446,11 @@ export function DeviceVulnerabilitiesTab({ deviceId }: DeviceVulnerabilitiesTabP
                 </div>
 
                 {isExpanded && (
-                  <div className="border-t">
-                    <table className="min-w-full divide-y">
-                      <thead className="bg-muted/40">
-                        <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                          <th className="px-4 py-3">CVE</th>
-                          <th className="px-4 py-3">Severity</th>
-                          <th className="px-4 py-3">Status</th>
-                          <th className="px-4 py-3">CVSS</th>
-                          <th className="px-4 py-3">Risk</th>
-                          <th className="px-4 py-3">KEV</th>
-                          <th className="px-4 py-3 text-right">Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y">
-                        {groupFindings.map((v) => {
-                          const openFilterAndPatchable = isOpenFilter && v.patchAvailable;
-                          return (
-                            <tr key={v.id} data-testid={`vulnerability-row-${v.id}`} className="transition hover:bg-muted/40">
-                              <td className="px-4 py-3 text-sm font-medium">
-                                {v.cveId}
-                                {openFilterAndPatchable && (
-                                  <span
-                                    data-testid={`patch-available-${v.id}`}
-                                    className="ml-2 inline-flex items-center rounded-full bg-green-100 px-1.5 py-0.5 text-xs font-medium text-green-700 dark:bg-green-900/30 dark:text-green-300"
-                                  >
-                                    Patch available
-                                  </span>
-                                )}
-                              </td>
-                              <td className="px-4 py-3 text-sm"><SeverityBadge severity={v.severity} /></td>
-                              <td className="px-4 py-3 text-sm"><StatusBadge status={v.status} /></td>
-                              <td className="px-4 py-3 text-sm tabular-nums">{v.cvssScore === null ? '—' : v.cvssScore.toFixed(1)}</td>
-                              <td className="px-4 py-3 text-sm tabular-nums">{v.riskScore === null ? '—' : Math.round(v.riskScore)}</td>
-                              <td className="px-4 py-3 text-sm">{v.knownExploited ? 'Yes' : '—'}</td>
-                              <td className="px-4 py-3 text-right">{rowActions(v)}</td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
+                  <div className="border-t p-3">
+                    <ResponsiveTable
+                      table={renderGroupTable(groupFindings)}
+                      cards={renderGroupCards(groupFindings)}
+                    />
                   </div>
                 )}
               </div>
