@@ -16,6 +16,7 @@ import {
   reorderBlocks as reorderBlocksApi,
   reorderLines as reorderLinesApi,
   uploadQuoteImage,
+  addQuoteImageFromUrl,
   quoteImageUrl,
 } from '../../../lib/api/quotes';
 import type { QuoteBlockInput } from '@breeze/shared';
@@ -258,6 +259,8 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
   const [tableLabel, setTableLabel] = useState('');
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imageCaption, setImageCaption] = useState('');
+  const [imageSource, setImageSource] = useState<'file' | 'url'>('file');
+  const [imageUrl, setImageUrl] = useState('');
 
   useEffect(() => { setTerms(quote.termsAndConditions ?? ''); setTermsDirty(false); }, [quote.termsAndConditions]);
   useEffect(() => { setTitle(quote.title ?? ''); setTitleDirty(false); }, [quote.title]);
@@ -657,18 +660,25 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
     // an image block with that imageId already in its content. Both steps go
     // through runAction so success/failure is always surfaced.
     if (addType === 'image') {
-      const file = imageFile;
-      if (!file) return;
-      // Honor the "up to 5 MB" promise client-side so the user gets an immediate,
-      // specific message instead of a generic server-side upload failure.
-      if (file.size > 5 * 1024 * 1024) {
+      // Resolve an imageId from EITHER an uploaded file or a pasted URL (the
+      // server copies the bytes in — not a hotlink), then attach an image block.
+      const source = imageSource;
+      if (source === 'file' && !imageFile) return;
+      if (source === 'url' && !imageUrl.trim()) return;
+      // File path keeps the immediate client-side 5 MB check; for URLs the server
+      // is the size authority (the fetched bytes aren't known here).
+      if (source === 'file' && imageFile && imageFile.size > 5 * 1024 * 1024) {
         handleActionError(new Error('image too large'), 'Image must be 5 MB or smaller.');
         return;
       }
       await runScoped('add-block', async () => {
         const uploaded = await runAction<{ imageId: string }>({
-          request: () => uploadQuoteImage(quote.id, file),
-          errorFallback: 'Could not upload the image.',
+          request: () => source === 'file'
+            ? uploadQuoteImage(quote.id, imageFile!)
+            : addQuoteImageFromUrl(quote.id, imageUrl.trim()),
+          errorFallback: source === 'file'
+            ? 'Could not upload the image.'
+            : 'Could not fetch the image from that URL.',
           // No success toast: the upload is an internal step of "add image block";
           // only the final "Image block added" toast below is meaningful (web-2).
           onUnauthorized: UNAUTHORIZED,
@@ -681,11 +691,11 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
               ? { imageId: uploaded.imageId, caption: imageCaption.trim() }
               : { imageId: uploaded.imageId },
           }),
-          errorFallback: 'Image uploaded, but adding the section failed.',
+          errorFallback: 'Image added, but adding the section failed.',
           successMessage: 'Image section added',
           onUnauthorized: UNAUTHORIZED,
         });
-        setImageFile(null); setImageCaption('');
+        setImageFile(null); setImageCaption(''); setImageUrl('');
         refresh();
       }, 'Could not add the image section.');
       return;
@@ -714,7 +724,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
       setHeadingText(''); setRichText(''); setTableLabel('');
       refresh();
     }, 'Could not add the section.');
-  }, [addType, headingText, richText, tableLabel, imageFile, imageCaption, quote.id, refresh, runScoped]);
+  }, [addType, headingText, richText, tableLabel, imageFile, imageCaption, imageSource, imageUrl, quote.id, refresh, runScoped]);
 
   // Removing a line_items block cascades to every line under it (server-side), so
   // the card's Remove button opens a confirm step instead of deleting outright.
@@ -1223,13 +1233,46 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
             )}
             {addType === 'image' && (
               <div className="mb-3 space-y-2">
-                <input
-                  type="file"
-                  accept="image/png,image/jpeg,image/webp"
-                  onChange={(e) => setImageFile(e.target.files?.[0] ?? null)}
-                  data-testid="quote-block-image-file"
-                  className="block w-full text-sm text-muted-foreground file:mr-3 file:rounded-md file:border file:bg-muted file:px-3 file:py-1.5 file:text-xs file:font-medium"
-                />
+                <div className="inline-flex rounded-md border p-0.5 text-xs" role="tablist">
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={imageSource === 'file'}
+                    onClick={() => setImageSource('file')}
+                    data-testid="quote-block-image-source-file"
+                    className={`rounded px-3 py-1 font-medium ${imageSource === 'file' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground'}`}
+                  >
+                    Upload file
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={imageSource === 'url'}
+                    onClick={() => setImageSource('url')}
+                    data-testid="quote-block-image-source-url"
+                    className={`rounded px-3 py-1 font-medium ${imageSource === 'url' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground'}`}
+                  >
+                    From URL
+                  </button>
+                </div>
+                {imageSource === 'file' ? (
+                  <input
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    onChange={(e) => setImageFile(e.target.files?.[0] ?? null)}
+                    data-testid="quote-block-image-file"
+                    className="block w-full text-sm text-muted-foreground file:mr-3 file:rounded-md file:border file:bg-muted file:px-3 file:py-1.5 file:text-xs file:font-medium"
+                  />
+                ) : (
+                  <input
+                    type="url"
+                    value={imageUrl}
+                    onChange={(e) => setImageUrl(e.target.value)}
+                    placeholder="https://example.com/photo.png"
+                    data-testid="quote-block-image-url"
+                    className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                  />
+                )}
                 <input
                   type="text"
                   value={imageCaption}
@@ -1260,12 +1303,15 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                   isPending('add-block') ||
                   (addType === 'heading' && !headingText.trim()) ||
                   (addType === 'rich_text' && !richText.trim()) ||
-                  (addType === 'image' && !imageFile)
+                  (addType === 'image' && imageSource === 'file' && !imageFile) ||
+                  (addType === 'image' && imageSource === 'url' && !imageUrl.trim())
                 }
                 data-testid="quote-add-block-submit"
                 className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
               >
-                {addType === 'image' ? 'Upload & add image' : 'Add section'}
+                {addType === 'image'
+                  ? (imageSource === 'url' ? 'Fetch & add image' : 'Upload & add image')
+                  : 'Add section'}
               </button>
             </div>
           </div>
