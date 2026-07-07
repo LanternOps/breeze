@@ -1,6 +1,9 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
+import { and, eq, inArray } from 'drizzle-orm';
 
+import { db } from '../../db';
+import { deviceRecoveryKeys } from '../../db/schema';
 import { requireScope } from '../../middleware/auth';
 import { getSecurityPostureTrend } from '../../services/securityPosture';
 import {
@@ -17,7 +20,8 @@ import {
   toStatusResponse,
   normalizeEncryption,
   parsePasswordPolicySummary,
-  parseLocalAdminSummary
+  parseLocalAdminSummary,
+  parseEncryptionVolumes
 } from './helpers';
 
 export const complianceRoutes = new Hono();
@@ -124,7 +128,26 @@ complianceRoutes.get(
     const query = c.req.valid('query');
     const { page, limit } = getPagination(query);
 
-    const statuses = (await listStatusRows(auth, query.orgId)).map(toStatusResponse);
+    const rows = await listStatusRows(auth, query.orgId);
+    const statuses = rows.map(toStatusResponse);
+
+    // Real escrow status: devices with at least one active escrowed key.
+    // Constrained to the org-scoped device set already resolved by
+    // listStatusRows so the enrichment never touches a device outside the
+    // caller's accessible orgs (and avoids an unbounded cross-tenant scan).
+    const deviceIds = rows.map((row) => row.deviceId);
+    const escrowRows = deviceIds.length
+      ? await db
+          .selectDistinct({ deviceId: deviceRecoveryKeys.deviceId })
+          .from(deviceRecoveryKeys)
+          .where(
+            and(
+              eq(deviceRecoveryKeys.status, 'active'),
+              inArray(deviceRecoveryKeys.deviceId, deviceIds)
+            )
+          )
+      : [];
+    const escrowedDeviceIds = new Set(escrowRows.map((r) => r.deviceId));
 
     const methodByOs: Record<'windows' | 'macos' | 'linux', string> = {
       windows: 'bitlocker',
@@ -132,9 +155,17 @@ complianceRoutes.get(
       linux: 'luks'
     };
 
-    let devicesData = statuses.map((status) => {
-      const encStatus = normalizeEncryption(status.encryptionStatus);
+    let devicesData = rows.map((row) => {
+      const status = toStatusResponse(row);
+      const encStatus = status.encryptionStatus;
       const method = encStatus === 'unencrypted' ? 'none' : methodByOs[status.os];
+      const fallbackVolume = {
+        drive: status.os === 'windows' ? 'C:' : status.os === 'macos' ? 'Macintosh HD' : '/dev/sda1',
+        encrypted: encStatus !== 'unencrypted',
+        method: method === 'bitlocker' ? 'BitLocker' : method === 'filevault' ? 'FileVault' : method === 'luks' ? 'LUKS2' : 'None',
+        status: null as string | null,
+        percentEncrypted: null as number | null
+      };
 
       return {
         deviceId: status.deviceId,
@@ -142,16 +173,9 @@ complianceRoutes.get(
         os: status.os,
         encryptionMethod: method,
         encryptionStatus: encStatus,
-        volumes: [
-          {
-            drive: status.os === 'windows' ? 'C:' : status.os === 'macos' ? 'Macintosh HD' : '/dev/sda1',
-            encrypted: encStatus !== 'unencrypted',
-            method: method === 'bitlocker' ? 'BitLocker' : method === 'filevault' ? 'FileVault' : method === 'luks' ? 'LUKS2' : 'None',
-            size: status.os === 'linux' ? '1 TB' : '512 GB'
-          }
-        ],
+        volumes: parseEncryptionVolumes(row.encryptionDetails) ?? [fallbackVolume],
         tpmPresent: status.os === 'windows',
-        recoveryKeyEscrowed: encStatus !== 'unencrypted' && status.os !== 'linux'
+        recoveryKeyEscrowed: escrowedDeviceIds.has(status.deviceId)
       };
     });
 
@@ -161,6 +185,11 @@ complianceRoutes.get(
 
     if (query.os) {
       devicesData = devicesData.filter((device) => device.os === query.os);
+    }
+
+    if (query.escrow) {
+      const wantEscrowed = query.escrow === 'escrowed';
+      devicesData = devicesData.filter((device) => device.recoveryKeyEscrowed === wantEscrowed);
     }
 
     if (query.search) {
@@ -179,6 +208,7 @@ complianceRoutes.get(
         fullyEncrypted,
         partial,
         unencrypted,
+        recoveryKeysEscrowed: rows.filter((row) => escrowedDeviceIds.has(row.deviceId)).length,
         methodCounts: {
           bitlocker: devicesData.filter((device) => device.encryptionMethod === 'bitlocker').length,
           filevault: devicesData.filter((device) => device.encryptionMethod === 'filevault').length,

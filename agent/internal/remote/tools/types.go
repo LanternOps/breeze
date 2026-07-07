@@ -111,6 +111,8 @@ const (
 	CmdSecurityThreatRemove     = "security_threat_remove"
 	CmdSecurityThreatRestore    = "security_threat_restore"
 	CmdSensitiveDataScan        = "sensitive_data_scan"
+	CmdEncryptionCollectKeys    = "encryption_collect_keys"
+	CmdEncryptionRotateKey      = "encryption_rotate_key"
 	CmdEncryptFile              = "encrypt_file"
 	CmdSecureDeleteFile         = "secure_delete_file"
 	CmdQuarantineFile           = "quarantine_file"

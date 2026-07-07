@@ -615,6 +615,48 @@ describe('mergeRowsIntoDailyBuckets event dedup (#1904)', () => {
   });
 });
 
+describe('getHistoryForDevice projection is behavior-neutral (event-loop hardening)', () => {
+  const internals = reliabilityScoringInternals;
+
+  // A high-frequency device: 4 posts in one UTC day, each re-reporting the SAME
+  // crash event, plus one distinct crash. Global dedup (#1904) must collapse the
+  // repeat to 1 and keep the distinct one → crashCount === 2 for the day.
+  function projectedRow(overrides: Record<string, unknown>) {
+    // Deliberately OMIT rawMetrics (and id/deviceId/orgId) to mirror the new
+    // projected SELECT. If any scorer path reads them this test throws/NaNs.
+    return {
+      collectedAt: new Date('2026-02-20T10:00:00.000Z'),
+      uptimeSeconds: 600,
+      bootTime: new Date('2026-02-20T09:50:00.000Z'),
+      crashEvents: [],
+      appHangs: [],
+      serviceFailures: [],
+      hardwareErrors: [],
+      ...overrides,
+    };
+  }
+
+  it('collapses re-reported events and counts distinct ones across many same-day posts', () => {
+    const repeated = { type: 'os_crash', timestamp: '2026-02-20T10:05:00.000Z', bugCheckCode: '0x1a' };
+    const distinct = { type: 'os_crash', timestamp: '2026-02-20T11:30:00.000Z', bugCheckCode: '0x50' };
+    const rows = [
+      projectedRow({ collectedAt: new Date('2026-02-20T10:06:00.000Z'), crashEvents: [repeated] }),
+      projectedRow({ collectedAt: new Date('2026-02-20T10:24:00.000Z'), crashEvents: [repeated] }),
+      projectedRow({ collectedAt: new Date('2026-02-20T10:42:00.000Z'), crashEvents: [repeated] }),
+      projectedRow({ collectedAt: new Date('2026-02-20T11:31:00.000Z'), crashEvents: [repeated, distinct] }),
+    ];
+
+    const map = new Map();
+    internals.mergeRowsIntoDailyBuckets(map, rows as any);
+    const buckets = internals.sortDailyBuckets(map);
+    const day = buckets.find((b) => b.date === '2026-02-20');
+
+    expect(day).toBeDefined();
+    expect(day!.sampleCount).toBe(4);        // every post counted for uptime observation
+    expect(day!.crashCount).toBe(2);         // 3× repeat collapsed to 1, + 1 distinct
+  });
+});
+
 describe('scoreUptime', () => {
   const { scoreUptime } = reliabilityScoringInternals;
 

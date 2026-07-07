@@ -164,6 +164,8 @@ type Heartbeat struct {
 	lastInventoryUpdate   time.Time
 	lastEventLogUpdate    time.Time
 	lastSecurityUpdate    time.Time
+	lastRecoveryKeysFP    string
+	pendingRecoveryKeys   []security.RecoveryKey
 	lastSessionUpdate     time.Time
 	lastPostureUpdate     time.Time
 	lastReliabilityUpdate time.Time
@@ -996,6 +998,7 @@ func (h *Heartbeat) Start() {
 			// Send security status every 5 minutes
 			if shouldSendSecurity {
 				go h.sendSecurityStatus()
+				go h.sendRecoveryKeys()
 			}
 			if shouldSendSessions {
 				go h.sendSessionInventory()
@@ -2293,6 +2296,58 @@ func (h *Heartbeat) sendSecurityStatus() {
 	}
 
 	h.sendInventoryData("security/status", status, "security status")
+}
+
+// sendRecoveryKeys escrows the device's BitLocker recovery keys. Runs on the
+// security tick but only transmits when the key set changed (fingerprint
+// gate) — recovery keys should not transit the wire every 5 minutes. Also
+// drains rotation results whose upload previously failed.
+func (h *Heartbeat) sendRecoveryKeys() {
+	h.mu.Lock()
+	pending := h.pendingRecoveryKeys
+	h.pendingRecoveryKeys = nil
+	h.mu.Unlock()
+	if len(pending) > 0 {
+		if err := h.pushRecoveryKeys("rotation", pending); err != nil {
+			h.mu.Lock()
+			h.pendingRecoveryKeys = append(pending, h.pendingRecoveryKeys...)
+			h.mu.Unlock()
+			// Re-park failed: these rotated keys are still unescrowed and remain
+			// in memory only (lost on restart). Escalate above the generic
+			// inventory WARN so the risk is greppable; no key material logged.
+			log.Error("parked recovery key escrow retry failed — keys remain in memory only and will be LOST on agent restart",
+				"count", len(pending), "error", err.Error())
+		}
+	}
+
+	keys, err := security.CollectRecoveryKeys()
+	if err != nil {
+		log.Warn("recovery key collection failed", "error", err.Error())
+		return
+	}
+	fp := security.FingerprintRecoveryKeys(keys)
+	h.mu.Lock()
+	last := h.lastRecoveryKeysFP
+	h.mu.Unlock()
+	if fp == last {
+		return
+	}
+	if err := h.pushRecoveryKeys("snapshot", keys); err != nil {
+		return
+	}
+	h.mu.Lock()
+	h.lastRecoveryKeysFP = fp
+	h.mu.Unlock()
+}
+
+// pushRecoveryKeys uploads keys for escrow. Key material is never logged —
+// sendInventoryData logs only the label.
+func (h *Heartbeat) pushRecoveryKeys(source string, keys []security.RecoveryKey) error {
+	if keys == nil {
+		keys = []security.RecoveryKey{} // marshal as [], not null (zod rejects null)
+	}
+	payload := map[string]any{"source": source, "keys": keys}
+	return h.sendInventoryData("security/recovery-keys", payload, fmt.Sprintf("recovery keys (%s, %d)", source, len(keys)))
 }
 
 func (h *Heartbeat) sendManagementPosture() {

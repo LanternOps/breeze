@@ -526,3 +526,106 @@ func TestConsentGate_WithConsentGranted_NotifyModeNoMarker(t *testing.T) {
 		t.Fatalf("consentReason should not appear in notify-mode result")
 	}
 }
+
+// TestConsentGate_FallbackScope_EndToEnd: a user-helper holding ONLY the
+// consent_ui_fallback scope answers the consent prompt when no assist helper
+// is connected. Clone TestConsentGate_UserDenies_EndToEnd wholesale, with two
+// changes: the session's scopes are []string{"consent_ui_fallback"}, and the
+// helper goroutine replies {"decision":"allow"} — then assert the session
+// STARTS (assertNotConsentDenied) instead of denying.
+func TestConsentGate_FallbackScope_EndToEnd(t *testing.T) {
+	serverConn, clientConn := createTestSocketPair(t)
+	serverIPC := ipc.NewConn(serverConn)
+	clientIPC := ipc.NewConn(clientConn)
+
+	session := sessionbroker.NewSession(serverIPC, 1000, "1000", "alice", "quartz", "helper-fallback", []string{ipc.ScopeConsentUIFallback})
+	go session.RecvLoop(func(*sessionbroker.Session, *ipc.Envelope) {})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		clientIPC.SetReadDeadline(time.Now().Add(5 * time.Second))
+		env, err := clientIPC.Recv()
+		if err != nil {
+			t.Errorf("helper recv: %v", err)
+			return
+		}
+		if env.Type != ipc.TypeConsentRequest {
+			t.Errorf("expected %q envelope, got %q", ipc.TypeConsentRequest, env.Type)
+		}
+		payload, _ := json.Marshal(ipc.ConsentResult{Decision: "allow"})
+		if err := clientIPC.Send(&ipc.Envelope{ID: env.ID, Type: ipc.TypeConsentResult, Payload: payload}); err != nil {
+			t.Errorf("helper send: %v", err)
+		}
+	}()
+
+	broker := newTestBrokerWithSessions(t, session)
+	h := &Heartbeat{sessionBroker: broker, desktopMgr: desktop.NewSessionManager()}
+
+	result := handleStartDesktop(h, startDesktopCmd("sess-fallback", consentModePrompt("block", 5000)))
+
+	<-done
+	_ = session.Close()
+	_ = clientIPC.Close()
+
+	assertNotConsentDenied(t, result)
+}
+
+// TestConsentGate_AssistHelperPreferredOverFallback: when BOTH an assist
+// helper (consent_ui) and a fallback user-helper (consent_ui_fallback) are
+// connected, the consent request goes to the assist helper. The fallback
+// client never receives an envelope (its Recv sees only the socket closing).
+func TestConsentGate_AssistHelperPreferredOverFallback(t *testing.T) {
+	assistServer, assistClient := createTestSocketPair(t)
+	fallbackServer, fallbackClient := createTestSocketPair(t)
+	assistIPC, fallbackIPC := ipc.NewConn(assistServer), ipc.NewConn(fallbackServer)
+	assistClientIPC, fallbackClientIPC := ipc.NewConn(assistClient), ipc.NewConn(fallbackClient)
+
+	assistSession := sessionbroker.NewSession(assistIPC, 1000, "1000", "alice", "quartz", "helper-assist", []string{"consent_ui"})
+	fallbackSession := sessionbroker.NewSession(fallbackIPC, 1000, "1000", "alice", "quartz", "helper-native", []string{ipc.ScopeConsentUIFallback})
+	go assistSession.RecvLoop(func(*sessionbroker.Session, *ipc.Envelope) {})
+	go fallbackSession.RecvLoop(func(*sessionbroker.Session, *ipc.Envelope) {})
+
+	fallbackGotEnvelope := make(chan string, 1)
+	go func() {
+		fallbackClientIPC.SetReadDeadline(time.Now().Add(3 * time.Second))
+		if env, err := fallbackClientIPC.Recv(); err == nil {
+			fallbackGotEnvelope <- env.Type
+		}
+		close(fallbackGotEnvelope)
+	}()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		assistClientIPC.SetReadDeadline(time.Now().Add(5 * time.Second))
+		env, err := assistClientIPC.Recv()
+		if err != nil {
+			t.Errorf("assist helper recv: %v", err)
+			return
+		}
+		if env.Type != ipc.TypeConsentRequest {
+			t.Errorf("expected %q envelope, got %q", ipc.TypeConsentRequest, env.Type)
+		}
+		payload, _ := json.Marshal(ipc.ConsentResult{Decision: "deny"})
+		if err := assistClientIPC.Send(&ipc.Envelope{ID: env.ID, Type: ipc.TypeConsentResult, Payload: payload}); err != nil {
+			t.Errorf("assist helper send: %v", err)
+		}
+	}()
+
+	broker := newTestBrokerWithSessions(t, assistSession, fallbackSession)
+	h := &Heartbeat{sessionBroker: broker, desktopMgr: desktop.NewSessionManager()}
+
+	result := handleStartDesktop(h, startDesktopCmd("sess-prefer-assist", consentModePrompt("block", 5000)))
+
+	<-done
+	_ = assistSession.Close()
+	_ = fallbackSession.Close()
+	_ = assistClientIPC.Close()
+	_ = fallbackClientIPC.Close()
+
+	assertConsentDenied(t, result, "user")
+	if typ, ok := <-fallbackGotEnvelope; ok {
+		t.Errorf("fallback helper must not receive envelopes when assist helper is connected, got %q", typ)
+	}
+}

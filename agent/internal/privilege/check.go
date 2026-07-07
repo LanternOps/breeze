@@ -26,6 +26,8 @@ var elevatedCommandTypes = map[string]bool{
 	tools.CmdEncryptFile:              true,
 	tools.CmdSecureDeleteFile:         true,
 	tools.CmdQuarantineFile:           true,
+	tools.CmdEncryptionCollectKeys:    true,
+	tools.CmdEncryptionRotateKey:      true,
 	tools.CmdSelfUninstall:            true,
 }
 

@@ -205,6 +205,10 @@ Category rules let you set per-category auto-approval behavior within a ring. Th
 | `autoApproveSeverities` | string[] | If set, only auto-approve patches with these severities |
 | `deferralDaysOverride` | integer or null | Override the ring's default deferral for this category |
 
+<Aside type="note">
+  **Third-party patches now auto-approve.** Third-party application updates (winget) usually report an `unknown` severity, which previously meant an `autoApproveSeverities` filter never matched them and they sat pending indefinitely. A ring that includes `third_party` in its **Patch sources** now auto-approves its third-party patches regardless of severity, so browser and runtime updates flow through the ring the same way OS patches do. OS patches keep full severity gating.
+</Aside>
+
 ---
 
 ## Ring Compliance
@@ -291,7 +295,7 @@ curl "/api/v1/update-rings/:id/patches?source=microsoft&severity=critical&page=1
 
 Filters: `source`, `severity`, `page`, `limit`.
 
-Each patch in the response includes an `approvalStatus` field showing its status within this specific ring (defaulting to `pending` if no explicit approval record exists).
+Each patch in the response includes an `approvalStatus` field showing its status within this specific ring (defaulting to `pending` if no explicit approval record exists), and a derived `os` value so third-party and custom patches show an operating system instead of a blank. The response also carries **per-source counts** (Microsoft, Apple, Linux, third-party, custom) computed independent of the active `source` filter, so the source filter chips always show the true total for each source rather than counts of the filtered subset.
 
 ---
 

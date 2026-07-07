@@ -25,6 +25,7 @@ import {
 import { claimConsumeOnce, consumeDispatchedExpectation, recordDispatchedExpectation } from '../services/agentWorkExpectation';
 import { backupCommandResultSchema } from './backup/resultSchemas';
 import { claimPendingCommandsForDevice } from '../services/commandDispatch';
+import { decryptCommandsForDelivery } from '../services/sensitiveCommandPayload';
 import { matchRoleScopedAgentTokenHash, suspendAgentToken, type AgentCredentialRole } from '../middleware/agentAuth';
 import { AGENT_TOKEN_SUSPEND_REASON } from '../services/agentTokenSuspension';
 import { isAgentTenantActive } from '../services/tenantStatus';
@@ -1533,10 +1534,22 @@ async function getPendingCommands(agentId: string): Promise<AgentCommand[]> {
 
     const commands = await claimPendingCommandsForDevice(device.id, 10);
 
-    return commands.map(cmd => ({
+    // Decrypt sensitive command payloads (e.g. FileVault rotation credentials)
+    // just-in-time. WS-connected agents receive pending commands through this
+    // path, so without the decrypt an encryption_rotate_key command would reach
+    // the agent as ciphertext and fail. A command whose payload can't be
+    // decrypted is dropped (not delivered as ciphertext) rather than failing
+    // the whole batch.
+    return decryptCommandsForDelivery(
+      commands.map(cmd => ({
+        id: cmd.id,
+        type: cmd.type,
+        payload: (cmd.payload as Record<string, unknown>) || {}
+      }))
+    ).map(cmd => ({
       id: cmd.id,
       type: cmd.type,
-      payload: (cmd.payload as Record<string, unknown>) || {}
+      payload: (cmd.payload as Record<string, unknown>) ?? {}
     }));
   } catch (error) {
     console.error(`Failed to get pending commands for ${agentId}:`, error);

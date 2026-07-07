@@ -3,7 +3,9 @@ import { ChevronDown, ChevronUp, Download, Loader2, Plus, Sparkles, CheckCircle,
 import type { DetectionRule } from '@breeze/shared';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import { findUnknownTokens } from '@/lib/installerVariables';
 import DetectionRulesEditor from './DetectionRulesEditor';
+import VariableInput, { type DeviceCustomField } from './VariableInput';
 
 type Architecture = 'x64' | 'arm64' | 'x86';
 
@@ -56,9 +58,12 @@ function normalizeVersion(raw: Record<string, unknown>, index: number): VersionE
 interface SoftwareVersionManagerProps {
   timezone?: string;
   catalogId?: string;
+  /** When rendered inside the package detail modal, drop the page heading and
+   *  the full-page comparison cards — the modal supplies its own chrome. */
+  embedded?: boolean;
 }
 
-export default function SoftwareVersionManager({ timezone, catalogId: propCatalogId }: SoftwareVersionManagerProps) {
+export default function SoftwareVersionManager({ timezone, catalogId: propCatalogId, embedded = false }: SoftwareVersionManagerProps) {
   const [versions, setVersions] = useState<VersionEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -69,6 +74,7 @@ export default function SoftwareVersionManager({ timezone, catalogId: propCatalo
   const [promotingVersionId, setPromotingVersionId] = useState<string>('');
   const [uploadProgress, setUploadProgress] = useState(0);
   const [catalogId, setCatalogId] = useState(propCatalogId ?? '');
+  const [customFields, setCustomFields] = useState<DeviceCustomField[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [formState, setFormState] = useState({
@@ -135,6 +141,42 @@ export default function SoftwareVersionManager({ timezone, catalogId: propCatalo
   useEffect(() => {
     fetchVersions();
   }, [fetchVersions]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetchWithAuth('/custom-fields?limit=200');
+        if (!res.ok || cancelled) return;
+        const payload = await res.json();
+        const rows = payload.data ?? payload ?? [];
+        if (Array.isArray(rows)) {
+          setCustomFields(
+            rows
+              .map((r: Record<string, unknown>) => ({
+                fieldKey: String(r.fieldKey ?? ''),
+                name: String(r.name ?? r.fieldKey ?? ''),
+              }))
+              // Only offer keys matching the resolver's token grammar (see AddPackageModal).
+              .filter((f: DeviceCustomField) => /^[a-z][a-z0-9_]*$/.test(f.fieldKey)),
+          );
+        }
+      } catch {
+        /* custom fields are optional for the variable picker */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const knownCustomKeys = useMemo(() => new Set(customFields.map((f) => f.fieldKey)), [customFields]);
+  const tokenErrors = useMemo(() => {
+    const opts = { requireKnownCustomKeys: knownCustomKeys.size > 0 };
+    return [formState.downloadUrl, formState.silentInstallArgs, formState.silentUninstallArgs].flatMap((s) =>
+      findUnknownTokens(s, knownCustomKeys, opts),
+    );
+  }, [formState.downloadUrl, formState.silentInstallArgs, formState.silentUninstallArgs, knownCustomKeys]);
 
   const latestVersion = useMemo(
     () => versions.find(item => item.id === latestId) ?? versions[0],
@@ -300,11 +342,13 @@ export default function SoftwareVersionManager({ timezone, catalogId: propCatalo
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">Software Version Manager</h1>
-          <p className="text-sm text-muted-foreground">Manage version history, latest builds, and release notes.</p>
-        </div>
+      <div className={cn('flex flex-col gap-4 sm:flex-row sm:items-center', embedded ? 'sm:justify-end' : 'sm:justify-between')}>
+        {!embedded && (
+          <div>
+            <h1 className="text-xl font-semibold tracking-tight">Software Version Manager</h1>
+            <p className="text-sm text-muted-foreground">Manage version history, latest builds, and release notes.</p>
+          </div>
+        )}
         <button
           type="button"
           onClick={() => setIsFormOpen(open => !open)}
@@ -351,14 +395,18 @@ export default function SoftwareVersionManager({ timezone, catalogId: propCatalo
 
           <div className="mt-4">
             <label className="text-xs font-semibold uppercase text-muted-foreground">Download URL</label>
-            <input
-              type="url"
-              value={formState.downloadUrl}
-              onChange={event => setFormState(prev => ({ ...prev, downloadUrl: event.target.value }))}
-              placeholder="https://example.com/package-v1.0.0.msi"
-              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-            />
-            <p className="mt-1 text-xs text-muted-foreground">Provide a direct download URL or upload a file below</p>
+            <div className="mt-2">
+              <VariableInput
+                value={formState.downloadUrl}
+                onChange={value => setFormState(prev => ({ ...prev, downloadUrl: value }))}
+                placeholder="https://example.com/package-v1.0.0.msi"
+                customFields={customFields}
+              />
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Provide a direct download URL or upload a file below. Variables like{' '}
+              <code className="font-mono">{'{{org.name}}'}</code> resolve per organization at deploy time.
+            </p>
           </div>
 
           <div className="mt-4">
@@ -413,23 +461,25 @@ export default function SoftwareVersionManager({ timezone, catalogId: propCatalo
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
             <div>
               <label className="text-xs font-semibold uppercase text-muted-foreground">Silent Install Args</label>
-              <input
-                type="text"
-                value={formState.silentInstallArgs}
-                onChange={event => setFormState(prev => ({ ...prev, silentInstallArgs: event.target.value }))}
-                placeholder='e.g. msiexec /i "{file}" /qn /norestart'
-                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-              />
+              <div className="mt-2">
+                <VariableInput
+                  value={formState.silentInstallArgs}
+                  onChange={value => setFormState(prev => ({ ...prev, silentInstallArgs: value }))}
+                  placeholder='e.g. msiexec /i "{file}" /qn /norestart'
+                  customFields={customFields}
+                />
+              </div>
             </div>
             <div>
               <label className="text-xs font-semibold uppercase text-muted-foreground">Silent Uninstall Args</label>
-              <input
-                type="text"
-                value={formState.silentUninstallArgs}
-                onChange={event => setFormState(prev => ({ ...prev, silentUninstallArgs: event.target.value }))}
-                placeholder='e.g. msiexec /x "{file}" /qn /norestart'
-                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-              />
+              <div className="mt-2">
+                <VariableInput
+                  value={formState.silentUninstallArgs}
+                  onChange={value => setFormState(prev => ({ ...prev, silentUninstallArgs: value }))}
+                  placeholder='e.g. msiexec /x "{file}" /qn /norestart'
+                  customFields={customFields}
+                />
+              </div>
             </div>
           </div>
 
@@ -470,8 +520,8 @@ export default function SoftwareVersionManager({ timezone, catalogId: propCatalo
             </button>
             <button
               type="submit"
-              disabled={saving}
-              className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              disabled={saving || tokenErrors.length > 0}
+              className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {saving ? (formState.file ? 'Uploading...' : 'Saving...') : (formState.file ? 'Upload & Save' : 'Save Version')}
             </button>
@@ -554,7 +604,7 @@ export default function SoftwareVersionManager({ timezone, catalogId: propCatalo
         </div>
       </div>
 
-      {selectedVersion && latestVersion && (
+      {!embedded && selectedVersion && latestVersion && (
         <div className="grid gap-4 lg:grid-cols-2">
           <div className="rounded-lg border bg-card p-6 shadow-xs">
             <div className="flex items-center gap-2">
