@@ -65,11 +65,11 @@
     "@types/d3": "^7.4.3",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
-    "@vitest/coverage-v8": "^4.1.9",
+    "@vitest/coverage-v8": "^4.1.10",
     "jsdom": "^29.1.1",
     "playwright": "^1.58.2",
     "tailwindcss": "^4.3.1",
     "typescript": "^5.7.2",
-    "vitest": "^4.1.9"
+    "vitest": "^4.1.10"
   }
 }
