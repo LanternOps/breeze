@@ -2560,7 +2560,7 @@ function EditableLineRow({
                   role="menu"
                   aria-label="Move line to"
                   style={{ position: 'fixed', top: movePos.top, left: movePos.left, transform: 'translateX(-100%)' }}
-                  className="z-50 min-w-40 rounded-md border bg-card py-1 shadow-md"
+                  className="z-50 w-max min-w-40 max-w-[min(20rem,calc(100vw-1rem))] rounded-md border bg-card py-1 shadow-md"
                   data-testid={`quote-line-move-to-menu-${line.id}`}
                 >
                   <p className="px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Move to</p>
@@ -2569,9 +2569,10 @@ function EditableLineRow({
                       key={t.id}
                       type="button"
                       role="menuitem"
+                      title={t.label}
                       onClick={() => { setMovePos(null); onMoveTo(line, t.id); }}
                       data-testid={`quote-line-move-to-${line.id}-${t.id}`}
-                      className="block w-full px-3 py-1.5 text-left text-sm hover:bg-muted"
+                      className="block w-full truncate px-3 py-1.5 text-left text-sm hover:bg-muted"
                     >
                       {t.label}
                     </button>
