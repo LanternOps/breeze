@@ -2,6 +2,9 @@ import {
   VULN_SKIP_REASON_LABELS,
   type BulkActionResult,
   type CveCatalogRecord,
+  type DeviceVulnFinding,
+  type DeviceVulnSoftwareResponse,
+  type DeviceVulnStats,
   type FleetVulnStats,
   type GroupFinding,
   type RemediateResult,
@@ -24,6 +27,9 @@ import { runAction } from '../runAction';
 export type {
   BulkActionResult,
   CveCatalogRecord,
+  DeviceVulnFinding,
+  DeviceVulnSoftwareResponse,
+  DeviceVulnStats,
   FleetVulnStats,
   GroupCve,
   GroupFinding,
@@ -116,6 +122,28 @@ export async function fetchDeviceVulnerabilities(
   }
   const body = (await res.json()) as { items?: DeviceVulnerabilityItem[] };
   return { items: body.items ?? [] };
+}
+
+/** Device tab: software-grouped findings + posture stats for one device. */
+export async function fetchDeviceSoftwareGroups(
+  deviceId: string,
+  filters: { status?: string } = {},
+): Promise<DeviceVulnSoftwareResponse> {
+  const res = await fetchWithAuth(
+    `/vulnerabilities/devices/${deviceId}/software${buildVulnQuery({ status: filters.status })}`,
+  );
+  if (!res.ok) {
+    throw new Error(`Failed to load device vulnerabilities (${res.status})`);
+  }
+  const body = (await res.json()) as Partial<DeviceVulnSoftwareResponse>;
+  return {
+    groups: body.groups ?? [],
+    findings: body.findings ?? [],
+    stats: body.stats ?? {
+      openTotal: 0, critical: 0, high: 0, medium: 0, low: 0, unscored: 0,
+      kevFindingCount: 0, patchReadyFindingCount: 0,
+    },
+  };
 }
 
 // ---- Fleet triage: software groups, stats, CVE detail ----
