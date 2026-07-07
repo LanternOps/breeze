@@ -146,7 +146,7 @@ export default function SoftwareVersionManager({ timezone, catalogId: propCatalo
     let cancelled = false;
     void (async () => {
       try {
-        const res = await fetchWithAuth('/custom-fields?limit=200');
+        const res = await fetchWithAuth('/custom-fields?limit=100');
         if (!res.ok || cancelled) return;
         const payload = await res.json();
         const rows = payload.data ?? payload ?? [];
