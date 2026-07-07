@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { resolveDefaultModel } from './aiAgent';
 import { checkBudget, checkAiRateLimit, checkUserAiRateLimit, recordUsage } from './aiCostTracker';
-import { captureException } from './sentry';
+import { captureException, captureMessage } from './sentry';
 import { assertOutsideHeldDbContext } from '../db';
 import {
   enrichDraftSchema,
@@ -502,6 +502,9 @@ function multisetsEqual(a: Map<string, number>, b: Map<string, number>): boolean
 // that the output dropped (usually stripped distributor noise: order codes, pack
 // counts). Multiset counts are respected (a duplicate dropped once shows once),
 // and both lists are capped so a pathological reply can't bloat the payload/UI.
+// Keep in sync with polishFactChangesSchema's `.max(50)` in shared/validators/
+// catalog.ts. This is the load-bearing cap (the route returns the object without
+// re-validating it against the schema), so the schema bound is defense-in-depth.
 const FACT_CHANGE_MAX = 50;
 // Tokens present in `from` beyond what `to` has (multiset subtraction), capped.
 function multisetDiff(from: Map<string, number>, to: Map<string, number>): string[] {
@@ -565,8 +568,8 @@ async function runPolishTurn(
  * version. The guard is ADVISORY, not blocking: because the prompt deliberately
  * strips digit-bearing distributor noise (order codes, pack counts) — which the
  * multiset guard can't tell apart from a real spec change — hard-failing here
- * rejected legitimate clean-ups of distributor-sourced lines. So when both
- * attempts still drift, the polished text is returned with `factWarning: true`
+ * rejected legitimate clean-ups of distributor-sourced lines. So when no attempt
+ * returns clean facts, the polished text is returned with `factWarning: true`
  * plus a `factChanges` diff, and the human before/after preview flags exactly
  * what to double-check. Non-numeric edits (brand, the letters in a model/SKU,
  * textual specs) were never covered by this guard — only by the prompt and the
@@ -671,12 +674,28 @@ export async function polishCatalogText(
     if (!driftCandidate) {
       throw new EnrichmentError('Could not parse the AI response — try again', 'AI_PARSE', 502);
     }
+    const factChanges = diffFactTokens(input, driftCandidate);
+    // `removed`-only drift is the intended safe case (stripped distributor noise)
+    // and stays a plain debug log. `added` means the model OVER-CLAIMED — invented
+    // a numeric spec the input never had, the direction that can mislead a
+    // customer on a quote. Downgrading from a 502 to advisory removed the signal
+    // that used to surface this in error dashboards, so emit a queryable Sentry
+    // event for the over-claim direction specifically (the route runs inside a
+    // withSentryRequestScope, so this is tenant-attributed) — restoring operator
+    // visibility if the model regresses to inventing specs on live quotes.
+    if (factChanges.added.length > 0) {
+      captureMessage('[catalog-polish] fact guard: AI over-claimed a numeric spec not in the input', 'warning', {
+        orgId: actor.orgId,
+        added: factChanges.added,
+        removed: factChanges.removed,
+      });
+    }
     result = {
       name: driftCandidate.name,
       description: driftCandidate.description,
       changed: driftCandidate.changed,
       factWarning: true,
-      factChanges: diffFactTokens(input, driftCandidate),
+      factChanges,
     };
   }
   return result;

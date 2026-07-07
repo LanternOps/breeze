@@ -147,4 +147,45 @@ describe('PolishButton', () => {
     fireEvent.click(screen.getByTestId('polish-apply-t'));
     expect(onApply).toHaveBeenCalledWith(expect.objectContaining({ name: 'Battery Backup (UPS)' }));
   });
+
+  it('opens the preview for a warning even when the visible text is unchanged', async () => {
+    // The whole point of the `!factWarning &&` guard: a fact warning must force
+    // the preview open even when what the user would SEE is identical — otherwise
+    // a warned change gets swallowed by the "Already looks good" toast.
+    polishTextRequest.mockResolvedValue(ok({
+      name: 'APC 600VA',
+      description: null,
+      changed: false, // server says nothing visibly changed…
+      factWarning: true, // …but the guard flagged a numeric change
+      factChanges: { added: ['650va'], removed: ['600va'] },
+    }));
+    const onApply = vi.fn();
+    render(<PolishButton idSuffix="t" getText={() => ({ name: 'APC 600VA' })} onApply={onApply} />);
+
+    fireEvent.click(screen.getByTestId('polish-btn-t'));
+    await waitFor(() => expect(screen.getByTestId('polish-fact-warning-t')).toBeInTheDocument());
+    // Must NOT have toasted the no-op "already looks good" success.
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    expect(screen.getByTestId('polish-apply-t')).toBeInTheDocument();
+  });
+
+  it('renders the Added (over-claim) direction in the warning banner', async () => {
+    // The "added" direction is the dangerous one (AI invented a spec) and gets
+    // distinct styling — cover that it actually renders, not just "removed".
+    polishTextRequest.mockResolvedValue(ok({
+      name: 'Dell Monitor 27" 144Hz',
+      description: null,
+      changed: true,
+      factWarning: true,
+      factChanges: { added: ['144hz'], removed: [] },
+    }));
+    const onApply = vi.fn();
+    render(<PolishButton idSuffix="t" getText={() => ({ name: 'dell monitor 27 inch' })} onApply={onApply} />);
+
+    fireEvent.click(screen.getByTestId('polish-btn-t'));
+    await waitFor(() => expect(screen.getByTestId('polish-fact-warning-t')).toBeInTheDocument());
+    const warning = screen.getByTestId('polish-fact-warning-t');
+    expect(warning.textContent).toContain('Added');
+    expect(warning.textContent).toContain('144hz');
+  });
 });

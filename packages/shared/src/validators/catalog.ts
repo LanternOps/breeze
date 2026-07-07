@@ -168,6 +168,8 @@ export type PolishTextRequest = z.infer<typeof polishTextRequestSchema>;
 // direction. `removed` are tokens the input had that the polished text dropped —
 // usually stripped distributor noise (order codes, pack counts). Canonicalized
 // (lowercased, unit-normalized) so they read as hints, not exact source spans.
+// The `.max(50)` mirrors FACT_CHANGE_MAX in catalogEnrichmentService.ts (which
+// is the load-bearing cap); keep the two in sync.
 export const polishFactChangesSchema = z.object({
   added: z.array(z.string()).max(50),
   removed: z.array(z.string()).max(50),

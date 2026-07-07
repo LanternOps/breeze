@@ -1,18 +1,19 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { create, checkBudget, checkAiRateLimit, checkUserAiRateLimit, recordUsage } = vi.hoisted(() => ({
+const { create, checkBudget, checkAiRateLimit, checkUserAiRateLimit, recordUsage, captureMessage } = vi.hoisted(() => ({
   create: vi.fn(),
   checkBudget: vi.fn(async (): Promise<string | null> => null),
   checkAiRateLimit: vi.fn(async (): Promise<string | null> => null),
   checkUserAiRateLimit: vi.fn(async (): Promise<string | null> => null),
   recordUsage: vi.fn(async () => {}),
+  captureMessage: vi.fn(),
 }));
 vi.mock('@anthropic-ai/sdk', () => ({
   default: class { messages = { create }; },
 }));
 vi.mock('./aiAgent', () => ({ resolveDefaultModel: () => 'claude-sonnet-4-6' }));
 vi.mock('./aiCostTracker', () => ({ checkBudget, checkAiRateLimit, checkUserAiRateLimit, recordUsage }));
-vi.mock('./sentry', () => ({ captureException: vi.fn() }));
+vi.mock('./sentry', () => ({ captureException: vi.fn(), captureMessage }));
 
 import { enrichCatalogItem, enrichDistributorListing, polishCatalogText, EnrichmentError } from './catalogEnrichmentService';
 
@@ -28,6 +29,7 @@ function aiMessage(json: object) {
 
 beforeEach(() => {
   create.mockReset();
+  captureMessage.mockClear();
   checkBudget.mockClear(); checkAiRateLimit.mockClear(); checkUserAiRateLimit.mockClear(); recordUsage.mockClear();
   checkBudget.mockResolvedValue(null); checkAiRateLimit.mockResolvedValue(null); checkUserAiRateLimit.mockResolvedValue(null);
 });
@@ -314,6 +316,13 @@ describe('polishCatalogText', () => {
     const res = await polishCatalogText({ name: 'dell monitor 27 inch' }, actor);
     expect(res.factWarning).toBe(true);
     expect(res.factChanges?.added).toContain('144hz');
+    // An over-claim (added token) must emit a queryable Sentry signal so an
+    // operator can catch the model inventing specs on live quotes.
+    expect(captureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('over-claimed'),
+      'warning',
+      expect.objectContaining({ added: expect.arrayContaining(['144hz']) }),
+    );
   });
 
   it('accepts the stricter retry when the first attempt drifts but the second is clean', async () => {
@@ -322,6 +331,9 @@ describe('polishCatalogText', () => {
       .mockResolvedValueOnce(aiMessage({ name: 'APC Back-UPS 600VA', description: null })); // clean
     const res = await polishCatalogText({ name: 'spl apc back-ups 600va disti' }, actor);
     expect(res.name).toBe('APC Back-UPS 600VA');
+    // A first-attempt drift must NOT leak a stale warning onto the clean retry.
+    expect(res.factWarning).toBe(false);
+    expect(res.factChanges).toBeNull();
   });
 
   it('allows pure presentation changes: thousands separators and unit spacing are not drift', async () => {
@@ -442,6 +454,26 @@ describe('polishCatalogText', () => {
     expect(res.factWarning).toBe(true);
     expect(res.factChanges?.removed).toContain('44718');
     expect(res.factChanges?.added).toEqual([]);
+    // Removed-only (stripped noise) is the safe direction — it must NOT raise a
+    // Sentry over-claim signal, or the alert would be pure noise on every
+    // distributor line.
+    expect(captureMessage).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a combined warning when BOTH name and description drift together', async () => {
+    // name drops the bare "2" multiplier; description swaps 500GB → 512GB. The
+    // guard combines both fields into one multiset, so factChanges must aggregate
+    // across name AND description, not just one field.
+    create
+      .mockResolvedValueOnce(aiMessage({ name: 'Dell Laptop', description: '512GB SSD, 16GB RAM' }))
+      .mockResolvedValueOnce(aiMessage({ name: 'Dell Laptop', description: '512GB SSD, 16GB RAM' }));
+    const res = await polishCatalogText(
+      { name: '2 x Dell Laptop', description: '500GB SSD, 16GB RAM' },
+      actor,
+    );
+    expect(res.factWarning).toBe(true);
+    expect(res.factChanges?.added).toContain('512gb');   // from the description
+    expect(res.factChanges?.removed).toEqual(expect.arrayContaining(['2', '500gb'])); // name + description
   });
 
   it('allows decimal/trailing-zero reformatting (1.50 ↔ 1.5) — not drift', async () => {

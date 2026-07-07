@@ -98,9 +98,11 @@ export default function PolishButton({
     try {
       const result = await runAction<PolishResult>({
         request: () => polishTextRequest({ name, description }),
-        // Only genuine failures (AI_PARSE 502, transport, rate limit) reach this
-        // fallback now — a fact drift is no longer an error; it comes back as a
-        // normal result with factWarning=true and is shown with a warning banner.
+        // A fact drift is no longer an error — it comes back as a normal result
+        // with factWarning=true and a warning banner. Genuine failures still
+        // error: AI_PARSE 502 / rate-limit carry a server message runAction
+        // surfaces verbatim; this fallback string shows only on a transport
+        // failure or an unparseable success body.
         errorFallback: "Couldn't polish that — try editing it manually.",
         parseSuccess: (data) => (data as { data: PolishResult }).data,
         onUnauthorized: UNAUTHORIZED,
