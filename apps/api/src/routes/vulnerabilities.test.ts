@@ -415,6 +415,50 @@ describe('GET /vulnerabilities/software/:groupKey (drawer payload)', () => {
   });
 });
 
+describe('GET /vulnerabilities/devices/:deviceId/software', () => {
+  beforeEach(() => {
+    granted.clear();
+    granted.add('devices:read');
+    delete permissionsState.allowedSiteIds;
+    vi.mocked(db.select).mockReset();
+    vi.mocked(fetchFleetFindingRows).mockReset().mockResolvedValue([]);
+  });
+
+  it('groups a device’s findings by software and returns stats + tagged findings', async () => {
+    // assertDeviceSiteAccess: device lookup returns a row (site accessible).
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ siteId: 'site-1' }]) }),
+      }),
+    } as never);
+    vi.mocked(fetchFleetFindingRows).mockResolvedValue([
+      fleetRow({ deviceVulnerabilityId: 'a', deviceId: ID, cveId: 'CVE-1', softwareInventoryId: 'sw1', softwareName: 'Google Chrome', softwareVendor: '', severity: 'critical', patchAvailable: true, status: 'open' }),
+      fleetRow({ deviceVulnerabilityId: 'b', deviceId: ID, cveId: 'CVE-2', softwareInventoryId: 'sw1', softwareName: 'Google Chrome', softwareVendor: '', severity: 'medium', patchAvailable: true, knownExploited: false, status: 'open' }),
+      fleetRow({ deviceVulnerabilityId: 'c', deviceId: ID, cveId: 'CVE-3', softwareInventoryId: null, deviceOsType: 'windows', severity: 'high', patchAvailable: false, knownExploited: false, status: 'open' }),
+    ]);
+
+    const res = await app().request(`/vulnerabilities/devices/${ID}/software?status=open`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.groups).toHaveLength(2); // Chrome + Windows OS
+    const chrome = body.groups.find((g: any) => g.name === 'Google Chrome');
+    expect(chrome.cveCount).toBe(2);
+    expect(chrome.patchReadyFindingCount).toBe(2);
+    expect(body.stats.openTotal).toBe(3);
+    expect(body.stats.critical).toBe(1);
+    expect(body.stats.patchReadyFindingCount).toBe(2);
+    expect(body.findings.every((f: any) => typeof f.groupKey === 'string')).toBe(true);
+    // fetchFleetFindingRows was called with the deviceId narrow.
+    expect(vi.mocked(fetchFleetFindingRows)).toHaveBeenCalledWith(expect.objectContaining({ deviceId: ID, status: 'open' }));
+  });
+
+  it('404s when the device is not in the caller’s tenant/site scope', async () => {
+    // Default db.select mock: .limit() resolves [] → device not found.
+    const res = await app().request(`/vulnerabilities/devices/${ID}/software`);
+    expect(res.status).toBe(404);
+  });
+});
+
 describe('GET /vulnerabilities/:cveId/devices (CVE drawer payload)', () => {
   beforeEach(() => {
     vi.mocked(fetchFleetFindingRows).mockReset().mockResolvedValue([]);

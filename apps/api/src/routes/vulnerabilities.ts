@@ -10,6 +10,7 @@ import {
   VULN_SKIP_REASON_LABELS,
   type SkippedItem,
   type VulnSkipReason,
+  type DeviceVulnFinding,
 } from '@breeze/shared';
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
@@ -17,7 +18,16 @@ import { deviceVulnerabilities, devices, vulnerabilities } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { remediateVulnerabilities } from '../services/vulnerabilityRemediation';
-import { buildGroupDetail, computeStats, filterFindings, groupFindings, toGroupFinding } from '../services/vulnerabilityFleetAggregation';
+import {
+  buildGroupDetail,
+  buildGroupKey,
+  computeDeviceStats,
+  computeStats,
+  filterFindings,
+  groupFindings,
+  toGroupFinding,
+  type FleetFindingRow,
+} from '../services/vulnerabilityFleetAggregation';
 import { fetchCveCatalogRecord, fetchFleetFindingRows } from '../services/vulnerabilityFleetQueries';
 import { writeRouteAudit } from '../services/auditEvents';
 import { createTicket } from '../services/ticketService';
@@ -541,6 +551,27 @@ function aggregateFleet(items: MergedItem[]): FleetRow[] {
   });
 }
 
+/** Map a fleet finding row to the per-device wire DTO, tagged with its
+ *  software groupKey so the client can cross-link a finding to its group. */
+function toDeviceFindingItem(r: FleetFindingRow): DeviceVulnFinding {
+  return {
+    id: r.deviceVulnerabilityId,
+    deviceId: r.deviceId,
+    vulnerabilityId: r.vulnerabilityId,
+    cveId: r.cveId,
+    cvssScore: r.cvssScore,
+    cvssVector: null, // fleet query layer does not carry the vector
+    severity: r.severity,
+    knownExploited: r.knownExploited,
+    epssScore: r.epssScore,
+    riskScore: r.riskScore,
+    status: r.status,
+    detectedAt: r.detectedAt,
+    patchAvailable: r.patchAvailable,
+    groupKey: buildGroupKey(r),
+  };
+}
+
 vulnerabilityRoutes.use('*', authMiddleware);
 vulnerabilityRoutes.use('*', requireScope('organization', 'partner', 'system'));
 vulnerabilityRoutes.use('*', requireVulnerabilityRead);
@@ -631,10 +662,43 @@ vulnerabilityRoutes.get(
   },
 );
 
+// Device Vulnerabilities tab payload: software-group rollup + tagged raw
+// findings + header stats, all narrowed to one device. Registered directly
+// after /devices/:deviceId (both static-first-segment) and BEFORE the
+// /:cveId/devices catch-all below, whose leading param would otherwise
+// shadow this path.
+vulnerabilityRoutes.get(
+  '/devices/:deviceId/software',
+  zValidator('param', deviceParamSchema),
+  zValidator('query', listQuerySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    const { deviceId } = c.req.valid('param');
+    const { status } = c.req.valid('query');
+    // Intra-org site gate (RLS isolates orgs, not sites).
+    const access = await assertDeviceSiteAccess(deviceId, auth);
+    if (!access.ok) {
+      return c.json({ error: access.error }, access.status);
+    }
+    const rows = await fetchFleetFindingRows({
+      status,
+      deviceId,
+      allowedSiteIds: perms?.allowedSiteIds,
+    });
+    return c.json({
+      groups: groupFindings(rows),
+      findings: rows.map(toDeviceFindingItem),
+      stats: computeDeviceStats(rows),
+    });
+  },
+);
+
 // CVE drawer payload: catalog record + fleet findings for that CVE. Registered
 // LAST among the GET routes — a param in the first path segment would
 // otherwise shadow every static-first-segment GET route above it
-// (/software, /software/:groupKey, /stats, /devices/:deviceId).
+// (/software, /software/:groupKey, /stats, /devices/:deviceId,
+// /devices/:deviceId/software).
 vulnerabilityRoutes.get('/:cveId/devices', zValidator('param', cveIdParamSchema), async (c) => {
   const { cveId } = c.req.valid('param');
   const cve = await fetchCveCatalogRecord(cveId);
