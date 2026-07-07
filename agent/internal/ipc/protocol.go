@@ -31,9 +31,9 @@ var zeroKey = make([]byte, 32)
 // by the session broker (issue #2273). It is deliberately generous — a
 // legitimate MaxMessageSize (16 MiB) payload over a local socket completes in
 // well under a second, so 30s never trips a healthy transfer — yet bounded so
-// a genuinely wedged socket surfaces as a recoverable error (the caller tears
-// down and reconnects) instead of an indefinite mutex wedge. Overridable in
-// tests.
+// a genuinely wedged socket surfaces as an error instead of an indefinite mutex
+// wedge. On such an error the Conn is poisoned (see writePoisoned) so the next
+// Send fails fast and the caller reconnects. Overridable in tests.
 var writeTimeout = 30 * time.Second
 
 // Conn wraps a net.Conn with length-prefixed JSON framing, HMAC signing,
@@ -45,6 +45,14 @@ type Conn struct {
 	sendSeq    atomic.Uint64
 	recvSeq    atomic.Uint64
 	mu         sync.Mutex // serializes writes
+	// writePoisoned is set once a Send() write fails partway. Framing is
+	// length-prefixed, so a Write that reports an error (timeout or reset)
+	// may have already put a partial [len][JSON] frame on the wire, leaving
+	// the peer's stream desynced. Rather than let subsequent Sends write more
+	// frames into a corrupted stream, we poison the Conn so every later Send
+	// fails fast — forcing the caller onto its reconnect path deterministically
+	// instead of relying on the read side to eventually notice (issue #2273).
+	writePoisoned atomic.Bool
 }
 
 // NewConn wraps a raw connection. sessionKey should be nil for pre-auth;
@@ -103,6 +111,10 @@ func (c *Conn) SetWriteDeadline(t time.Time) error {
 // Send marshals an Envelope and writes it as [4-byte BE length][JSON].
 // It computes the HMAC and sets the sequence number automatically.
 func (c *Conn) Send(env *Envelope) error {
+	if c.writePoisoned.Load() {
+		return fmt.Errorf("ipc: connection poisoned by prior write error")
+	}
+
 	env.Seq = c.sendSeq.Add(1)
 	env.HMAC = c.computeHMAC(env)
 
@@ -130,10 +142,15 @@ func (c *Conn) Send(env *Envelope) error {
 	header := make([]byte, 4)
 	binary.BigEndian.PutUint32(header, uint32(len(data)))
 
+	// A Write that errors (deadline exceeded, reset) may have already put a
+	// partial frame on the wire, so poison the Conn — subsequent Sends fail
+	// fast rather than piling more frames onto a desynced stream.
 	if _, err := c.conn.Write(header); err != nil {
+		c.writePoisoned.Store(true)
 		return fmt.Errorf("ipc: write header: %w", err)
 	}
 	if _, err := c.conn.Write(data); err != nil {
+		c.writePoisoned.Store(true)
 		return fmt.Errorf("ipc: write payload: %w", err)
 	}
 	return nil

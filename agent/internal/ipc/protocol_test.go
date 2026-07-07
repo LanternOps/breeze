@@ -3,7 +3,9 @@ package ipc
 import (
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"net"
+	"os"
 	"testing"
 	"time"
 )
@@ -325,10 +327,11 @@ func TestGenerateSessionKey(t *testing.T) {
 }
 
 // TestConnSendWriteDeadline proves that a Send() whose underlying socket write
-// stalls returns an error within the write deadline instead of blocking
-// forever holding the write mutex (issue #2273). net.Pipe is fully synchronous
-// and has no internal buffer, so a Write blocks until the peer Reads — here the
-// peer never reads, so without the deadline Send would block indefinitely.
+// stalls returns a *timeout* error within the write deadline instead of
+// blocking forever holding the write mutex (issue #2273). net.Pipe is fully
+// synchronous and has no internal buffer, so a Write blocks until the peer
+// Reads — here the peer never reads, so without the deadline Send would block
+// indefinitely.
 func TestConnSendWriteDeadline(t *testing.T) {
 	// Shorten the deadline so the test is fast; restore afterwards.
 	orig := writeTimeout
@@ -353,48 +356,89 @@ func TestConnSendWriteDeadline(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected write-deadline error from stalled Send, got nil")
 		}
+		// Pin the failure to the deadline path, not some unrelated error.
+		if !errors.Is(err, os.ErrDeadlineExceeded) {
+			t.Fatalf("expected a deadline-exceeded error, got: %v", err)
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Send blocked past the write deadline — mutex wedge not prevented")
 	}
 }
 
-// TestConnSendClearsWriteDeadline verifies that after one Send the write
-// deadline is cleared, so a subsequent Send on the same Conn isn't killed by
-// the previous call's (now-elapsed) deadline.
-func TestConnSendClearsWriteDeadline(t *testing.T) {
+// TestConnSendPoisonedAfterWriteError proves that once a Send() write fails
+// (here via the deadline), the Conn is poisoned so the *next* Send returns
+// immediately rather than piling another frame onto a stream whose framing may
+// already be desynced by a partial write (issue #2273).
+func TestConnSendPoisonedAfterWriteError(t *testing.T) {
 	orig := writeTimeout
-	writeTimeout = 50 * time.Millisecond
+	writeTimeout = 100 * time.Millisecond
 	defer func() { writeTimeout = orig }()
 
-	serverConn, clientConn := createSocketPair(t)
-	defer serverConn.Close()
+	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
+	defer serverConn.Close()
+	// Never read from serverConn so the first write stalls out.
 
-	server := NewConn(serverConn)
 	client := NewConn(clientConn)
+	payload, _ := json.Marshal("x")
 
-	// First send succeeds.
-	payload, _ := json.Marshal("first")
-	if err := client.Send(&Envelope{ID: "1", Type: TypePing, Payload: payload}); err != nil {
-		t.Fatalf("first send: %v", err)
-	}
-	server.SetReadDeadline(time.Now().Add(2 * time.Second))
-	if _, err := server.Recv(); err != nil {
-		t.Fatalf("first recv: %v", err)
+	// First send stalls and errors at the deadline, poisoning the Conn.
+	if err := client.Send(&Envelope{ID: "1", Type: TypePing, Payload: payload}); err == nil {
+		t.Fatal("expected first send to fail at the write deadline")
 	}
 
-	// Wait past the (short) write timeout, then send again. If the deadline
-	// leaked, this write would fail with a stale-deadline timeout.
-	time.Sleep(2 * writeTimeout)
-
-	done := make(chan error, 1)
-	go func() { done <- client.Send(&Envelope{ID: "2", Type: TypePing, Payload: payload}) }()
-	server.SetReadDeadline(time.Now().Add(2 * time.Second))
-	if _, err := server.Recv(); err != nil {
-		t.Fatalf("second recv: %v", err)
+	// Second send must fail fast (poison fast-path), well under a fresh
+	// writeTimeout — i.e. it does not stall on the socket again.
+	start := time.Now()
+	err := client.Send(&Envelope{ID: "2", Type: TypePing, Payload: payload})
+	if err == nil {
+		t.Fatal("expected second send to fail fast on a poisoned Conn, got nil")
 	}
-	if err := <-done; err != nil {
-		t.Fatalf("second send failed — write deadline leaked across sends: %v", err)
+	if elapsed := time.Since(start); elapsed >= writeTimeout {
+		t.Fatalf("second send took %v — did not use the poison fast-path", elapsed)
+	}
+}
+
+// TestConnSendStalledDoesNotStarveOtherWriter models the exact #2273 failure:
+// a stalled writer must not hold the write mutex forever and starve a second
+// writer on the same Conn (the keepalive TypePong path). Run under -race, it
+// also validates that the deadline set/clear stays inside c.mu.
+func TestConnSendStalledDoesNotStarveOtherWriter(t *testing.T) {
+	orig := writeTimeout
+	writeTimeout = 100 * time.Millisecond
+	defer func() { writeTimeout = orig }()
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	// No reader on serverConn: every write stalls until its deadline.
+
+	client := NewConn(clientConn)
+	payload, _ := json.Marshal("x")
+
+	// Writer 1 grabs the mutex and stalls.
+	w1 := make(chan error, 1)
+	go func() { w1 <- client.Send(&Envelope{ID: "1", Type: TypePing, Payload: payload}) }()
+
+	// Give writer 1 time to acquire c.mu and begin its stalled write.
+	time.Sleep(20 * time.Millisecond)
+
+	// Writer 2 (the "keepalive pong") must not block forever: once writer 1's
+	// deadline fires and releases c.mu, writer 2 proceeds and returns an error
+	// (either its own deadline or the poison fast-path). Before the fix it
+	// would block on Lock() indefinitely.
+	w2 := make(chan error, 1)
+	go func() { w2 <- client.Send(&Envelope{ID: "2", Type: TypePing, Payload: payload}) }()
+
+	for i, ch := range []chan error{w1, w2} {
+		select {
+		case err := <-ch:
+			if err == nil {
+				t.Fatalf("writer %d unexpectedly succeeded against a dead peer", i+1)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("writer %d blocked — stalled writer starved the mutex", i+1)
+		}
 	}
 }
 
