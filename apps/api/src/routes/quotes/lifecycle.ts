@@ -40,7 +40,8 @@ quoteLifecycleRoutes.post('/:id/send', scopes, sendPerm, zValidator('param', idP
   catch (err) { return handleServiceError(c, err); }
 });
 
-// POST /:id/images — multipart upload (magic-byte sniff + 5 MB cap). quotes:write.
+// POST /:id/images — multipart file upload OR JSON {url} to copy a remote image
+// (magic-byte sniff + 5 MB cap either way). quotes:write.
 quoteLifecycleRoutes.post('/:id/images',
   scopes, writePerm, zValidator('param', idParam),
   bodyLimit({ maxSize: MAX_QUOTE_IMAGE_SIZE_BYTES + 64 * 1024, onError: (c) => c.json({ error: 'Image too large (max 5 MB)' }, 413) }),

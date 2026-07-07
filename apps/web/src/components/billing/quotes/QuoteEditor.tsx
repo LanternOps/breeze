@@ -1238,7 +1238,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                     type="button"
                     role="tab"
                     aria-selected={imageSource === 'file'}
-                    onClick={() => setImageSource('file')}
+                    onClick={() => { setImageSource('file'); setImageUrl(''); }}
                     data-testid="quote-block-image-source-file"
                     className={`rounded px-3 py-1 font-medium ${imageSource === 'file' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground'}`}
                   >
@@ -1248,7 +1248,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                     type="button"
                     role="tab"
                     aria-selected={imageSource === 'url'}
-                    onClick={() => setImageSource('url')}
+                    onClick={() => { setImageSource('url'); setImageFile(null); }}
                     data-testid="quote-block-image-source-url"
                     className={`rounded px-3 py-1 font-medium ${imageSource === 'url' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground'}`}
                   >

@@ -105,6 +105,7 @@ describe('POST /:id/images — from URL (JSON body)', () => {
     vi.mocked(fetchRemoteImage).mockRejectedValue(new RemoteImageError('too_large', 'Image is larger than 5 MB'));
     const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/images`, jsonReq('https://cdn/big.png'));
     expect(res.status).toBe(413);
+    expect(writeQuoteImage).not.toHaveBeenCalled();
   });
 
   it('415s a URL whose bytes are not a supported image', async () => {
@@ -117,11 +118,29 @@ describe('POST /:id/images — from URL (JSON body)', () => {
     vi.mocked(fetchRemoteImage).mockRejectedValue(new RemoteImageError('unreachable', "Couldn't reach that URL"));
     const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/images`, jsonReq('https://internal/a.png'));
     expect(res.status).toBe(502);
+    expect(writeQuoteImage).not.toHaveBeenCalled();
   });
 
   it('504s when the remote image download times out', async () => {
     vi.mocked(fetchRemoteImage).mockRejectedValue(new RemoteImageError('timeout', 'The image took too long to download'));
     const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/images`, jsonReq('https://slow/a.png'));
     expect(res.status).toBe(504);
+  });
+
+  it('400s malformed JSON without fetching', async () => {
+    const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/images`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{ not valid json',
+    });
+    expect(res.status).toBe(400);
+    expect(fetchRemoteImage).not.toHaveBeenCalled();
+  });
+
+  it('rethrows an unexpected (non-RemoteImageError) error to handleServiceError', async () => {
+    vi.mocked(fetchRemoteImage).mockRejectedValue(new Error('boom'));
+    const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/images`, jsonReq('https://cdn/a.png'));
+    expect(res.status).toBe(500);
+    expect(writeQuoteImage).not.toHaveBeenCalled();
   });
 });

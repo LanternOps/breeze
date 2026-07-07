@@ -100,12 +100,22 @@ describe('QuoteEditor — add image from URL', () => {
     fireEvent.change(screen.getByTestId('quote-block-image-url'), { target: { value: 'https://internal/a.png' } });
     fireEvent.click(screen.getByTestId('quote-add-block-submit'));
 
-    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ message: 'x', type: 'error' })));
     expect(addBlockMock).not.toHaveBeenCalled();
   });
 
   it('disables submit while the URL is empty', async () => {
     await openImageUrlPanel();
     expect(screen.getByTestId('quote-add-block-submit')).toBeDisabled();
+  });
+
+  it('switching back to "Upload file" hides the URL input and shows the file input again', async () => {
+    await openImageUrlPanel();
+    expect(screen.getByTestId('quote-block-image-url')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('quote-block-image-source-file'));
+
+    expect(screen.queryByTestId('quote-block-image-url')).not.toBeInTheDocument();
+    expect(screen.getByTestId('quote-block-image-file')).toBeInTheDocument();
   });
 });

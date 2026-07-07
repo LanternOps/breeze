@@ -45,8 +45,8 @@ const REMOTE_IMAGE_TIMEOUT_MS = 8000;
  * Fetch an image from a user-supplied URL and return its bytes for storage — a
  * server-side copy, never a hotlink. SSRF is fully delegated to `safeFetch`
  * (strict mode: private/loopback/link-local/metadata ranges blocked, IP pinned
- * against rebinding, TLS enforced, no redirect following). The source's
- * Content-Type is untrusted — only magic-byte sniffing decides the mime.
+ * against rebinding, cert validation never disabled, no redirect following). The
+ * source's Content-Type is untrusted — only magic-byte sniffing decides the mime.
  *
  * `safeFetch` does network I/O and asserts it runs OUTSIDE a held RLS
  * transaction (#1105), so the fetch is wrapped in `runOutsideDbContext`.
@@ -56,14 +56,18 @@ export async function fetchRemoteImage(url: string): Promise<{ mime: string; buf
   try {
     res = await runOutsideDbContext(() => safeFetch(url, { timeoutMs: REMOTE_IMAGE_TIMEOUT_MS }));
   } catch (err) {
-    if (err instanceof SsrfBlockedError) throw new RemoteImageError('unreachable', "Couldn't reach that URL");
+    // These failures (blocked SSRF target, DNS/host failure, timeout) are almost
+    // always caused by the user-supplied URL, so we surface a deliberately generic
+    // message (no SSRF-probe fingerprinting) and do NOT alert to Sentry — `cause`
+    // still carries the original error for local debugging.
+    if (err instanceof SsrfBlockedError) throw new RemoteImageError('unreachable', "Couldn't reach that URL", { cause: err });
     if (err instanceof Error && /timed out/i.test(err.message)) {
-      throw new RemoteImageError('timeout', 'The image took too long to download');
+      throw new RemoteImageError('timeout', 'The image took too long to download', { cause: err });
     }
     throw new RemoteImageError('unreachable', "Couldn't reach that URL", { cause: err });
   }
 
-  if (!res.ok) throw new RemoteImageError('unreachable', "Couldn't reach that URL");
+  if (!res.ok) throw new RemoteImageError('unreachable', "Couldn't reach that URL", { cause: new Error(`upstream responded ${res.status}`) });
 
   // Fast-reject on a truthful Content-Length. Note `safeFetch` already buffers the
   // entire response body before returning, so this doesn't bound peak memory — it

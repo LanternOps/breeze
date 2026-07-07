@@ -12,7 +12,7 @@ vi.mock('./urlSafety', async (importActual) => {
   return { ...actual, safeFetch: vi.fn() };
 });
 
-import { fetchRemoteImage, RemoteImageError } from './quoteImageStorage';
+import { fetchRemoteImage, RemoteImageError, MAX_QUOTE_IMAGE_SIZE_BYTES } from './quoteImageStorage';
 import { safeFetch, SsrfBlockedError } from './urlSafety';
 
 const safeFetchMock = vi.mocked(safeFetch);
@@ -75,5 +75,28 @@ describe('fetchRemoteImage', () => {
   it('fast-rejects on an oversized Content-Length header', async () => {
     safeFetchMock.mockResolvedValue(res(PNG, { contentLength: 6 * 1024 * 1024 }));
     await expect(fetchRemoteImage('https://cdn/liar.png')).rejects.toMatchObject({ reason: 'too_large' });
+  });
+
+  it('maps a generic transport error to "unreachable" and keeps the original error as cause', async () => {
+    const original = new Error('ECONNRESET');
+    safeFetchMock.mockRejectedValue(original);
+    await expect(fetchRemoteImage('https://cdn/x.png')).rejects.toMatchObject({ reason: 'unreachable' });
+    let caught: unknown;
+    try {
+      await fetchRemoteImage('https://cdn/x.png');
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(RemoteImageError);
+    expect((caught as RemoteImageError).cause).toBeInstanceOf(Error);
+    expect(((caught as RemoteImageError).cause as Error).message).toBe('ECONNRESET');
+  });
+
+  it('allows a buffer exactly at the 5 MB cap', async () => {
+    const exact = Buffer.concat([PNG, Buffer.alloc(MAX_QUOTE_IMAGE_SIZE_BYTES - PNG.length)]);
+    expect(exact.length).toBe(MAX_QUOTE_IMAGE_SIZE_BYTES);
+    safeFetchMock.mockResolvedValue(res(exact));
+    const out = await fetchRemoteImage('https://cdn/exact-cap.png');
+    expect(out.mime).toBe('image/png');
   });
 });
