@@ -35,6 +35,11 @@ interface Preview {
   afterName: string | null;
   beforeDescription: string | null;
   afterDescription: string | null;
+  // Advisory fact-guard warning: the polish may have changed/dropped a number,
+  // unit, or code. The result is still shown (the guard is a reviewer aid, not a
+  // gate) — this drives a "double-check the details" banner in the preview.
+  factWarning: boolean;
+  factChanges: PolishResult['factChanges'];
 }
 
 function FieldDiff({
@@ -93,8 +98,9 @@ export default function PolishButton({
     try {
       const result = await runAction<PolishResult>({
         request: () => polishTextRequest({ name, description }),
-        // The fact-guard 502 (AI_FACT_DRIFT) carries a user-friendly message that
-        // runAction surfaces verbatim, so the user learns nothing changed.
+        // Only genuine failures (AI_PARSE 502, transport, rate limit) reach this
+        // fallback now — a fact drift is no longer an error; it comes back as a
+        // normal result with factWarning=true and is shown with a warning banner.
         errorFallback: "Couldn't polish that — try editing it manually.",
         parseSuccess: (data) => (data as { data: PolishResult }).data,
         onUnauthorized: UNAUTHORIZED,
@@ -102,12 +108,14 @@ export default function PolishButton({
       // Server-side `changed` plus a client-side visual check: if what the user
       // would SEE in the preview is identical after whitespace normalization
       // (e.g. the only difference is a trailing newline), a before/after dialog
-      // of two identical blocks is worse than useless — toast instead.
+      // of two identical blocks is worse than useless — toast instead. A fact
+      // warning always opens the preview, though: the user must be told to review
+      // even if the visible diff looks small.
       const trimEq = (a: string | null | undefined, b: string | null | undefined) =>
         (a ?? '').trim() === (b ?? '').trim();
       const nameVisiblySame = result.name === null || trimEq(result.name, name);
       const descVisiblySame = result.description === null || trimEq(result.description, description);
-      if (!result.changed || (nameVisiblySame && descVisiblySame)) {
+      if (!result.factWarning && (!result.changed || (nameVisiblySame && descVisiblySame))) {
         showToast({ message: 'Already looks good — no changes suggested.', type: 'success' });
         return;
       }
@@ -116,6 +124,8 @@ export default function PolishButton({
         afterName: result.name,
         beforeDescription: description ?? null,
         afterDescription: result.description,
+        factWarning: result.factWarning,
+        factChanges: result.factChanges,
       });
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
@@ -171,6 +181,40 @@ export default function PolishButton({
               </p>
             </div>
             <div className="flex-1 space-y-4 overflow-y-auto px-5 py-5">
+              {preview.factWarning && (
+                <div
+                  role="alert"
+                  data-testid={`polish-fact-warning-${idSuffix}`}
+                  className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-sm text-amber-900 dark:text-amber-200"
+                >
+                  <p className="font-medium">⚠️ Double-check the details before applying.</p>
+                  <p className="mt-0.5 text-xs">
+                    Our automatic check thinks a number, measurement, or code may have
+                    changed. Compare the before/after carefully — the AI can reword copy,
+                    but it must not alter a spec, price, or model.
+                  </p>
+                  {preview.factChanges && (preview.factChanges.added.length > 0 || preview.factChanges.removed.length > 0) && (
+                    <div className="mt-2 flex flex-col gap-1.5 text-xs">
+                      {preview.factChanges.added.length > 0 && (
+                        <div className="flex flex-wrap items-center gap-1">
+                          <span className="font-medium">Added (verify these are real):</span>
+                          {preview.factChanges.added.map((t, i) => (
+                            <code key={`a-${i}`} className="rounded bg-amber-500/20 px-1 py-0.5">{t}</code>
+                          ))}
+                        </div>
+                      )}
+                      {preview.factChanges.removed.length > 0 && (
+                        <div className="flex flex-wrap items-center gap-1">
+                          <span className="font-medium">Removed:</span>
+                          {preview.factChanges.removed.map((t, i) => (
+                            <code key={`r-${i}`} className="rounded bg-amber-500/10 px-1 py-0.5 line-through opacity-80">{t}</code>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
               {preview.beforeName !== null && (
                 <FieldDiff
                   label="Name" field="name" idSuffix={idSuffix}

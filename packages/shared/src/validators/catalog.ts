@@ -162,11 +162,30 @@ export const polishTextRequestSchema = z.object({
 );
 export type PolishTextRequest = z.infer<typeof polishTextRequestSchema>;
 
+// A before/after diff of the numeric "fact" tokens (numbers, measurements,
+// prices, and the digit runs inside model/part numbers). `added` are tokens the
+// polished text has that the input did not — the genuinely risky, over-claiming
+// direction. `removed` are tokens the input had that the polished text dropped —
+// usually stripped distributor noise (order codes, pack counts). Canonicalized
+// (lowercased, unit-normalized) so they read as hints, not exact source spans.
+export const polishFactChangesSchema = z.object({
+  added: z.array(z.string()).max(50),
+  removed: z.array(z.string()).max(50),
+});
+export type PolishFactChanges = z.infer<typeof polishFactChangesSchema>;
+
 export const polishTextResponseSchema = z.object({
   name: z.string().max(255).nullable(),
   description: z.string().max(10_000).nullable(),
   // True when the polished text differs from the input (lets the UI skip a
   // no-op "nothing changed" preview).
   changed: z.boolean(),
+  // True when the fact guard detected a possible numeric/unit change the AI
+  // could not avoid (e.g. it stripped a digit-bearing distributor code, or it
+  // may have altered a spec). The polished text is still returned — the guard is
+  // ADVISORY, not blocking — but the UI must warn the user to review the
+  // before/after carefully before applying. `factChanges` lists what differs.
+  factWarning: z.boolean(),
+  factChanges: polishFactChangesSchema.nullable(),
 });
 export type PolishTextResponse = z.infer<typeof polishTextResponseSchema>;

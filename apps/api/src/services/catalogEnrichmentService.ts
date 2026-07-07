@@ -12,6 +12,7 @@ import {
   type EnrichmentProvenance,
   type PolishTextRequest,
   type PolishTextResponse,
+  type PolishFactChanges,
 } from '@breeze/shared';
 
 export type EnrichmentErrorCode = 'AI_LIMIT' | 'AI_PARSE' | 'AI_TRUNCATED' | 'AI_FACT_DRIFT';
@@ -493,6 +494,30 @@ function multisetsEqual(a: Map<string, number>, b: Map<string, number>): boolean
   return true;
 }
 
+// A canonical-token diff powering the advisory fact warning. `added` = tokens the
+// polished text has beyond the input (the over-claiming direction — a customer
+// could be promised a spec that isn't real); `removed` = tokens the input had
+// that the output dropped (usually stripped distributor noise: order codes, pack
+// counts). Multiset counts are respected (a duplicate dropped once shows once),
+// and both lists are capped so a pathological reply can't bloat the payload/UI.
+const FACT_CHANGE_MAX = 50;
+function diffFactTokens(
+  input: { name?: string | null; description?: string | null },
+  output: { name: string | null; description: string | null },
+): PolishFactChanges {
+  const before = extractFactTokens(`${input.name ?? ''} ${input.description ?? ''}`);
+  const after = extractFactTokens(`${output.name ?? ''} ${output.description ?? ''}`);
+  const added: string[] = [];
+  const removed: string[] = [];
+  for (const [tok, n] of after) {
+    for (let i = 0, extra = n - (before.get(tok) ?? 0); i < extra && added.length < FACT_CHANGE_MAX; i++) added.push(tok);
+  }
+  for (const [tok, n] of before) {
+    for (let i = 0, gone = n - (after.get(tok) ?? 0); i < gone && removed.length < FACT_CHANGE_MAX; i++) removed.push(tok);
+  }
+  return { added, removed };
+}
+
 // The fact guard: the combined `<number><unit>` multiset of the polished text must
 // EXACTLY match the input's — no numeric/unit fact changed, dropped, or invented.
 // Combine name + description so moving a spec between the two fields is allowed.
@@ -531,13 +556,18 @@ async function runPolishTurn(
 /**
  * Presentation-only "Polish with AI" for a catalog/quote/invoice name +
  * description. NO web search. Cleans up grammar/casing/structure and strips
- * distributor noise. A programmatic fact guard verifies that every NUMERIC fact
+ * distributor noise. A programmatic fact guard checks that every NUMERIC fact
  * (numbers, measurements, prices, and the digit runs inside model/part numbers)
- * and its unit is unchanged, dropped, or invented; if it drifts the call retries
- * once, then throws AI_FACT_DRIFT rather than return drifted text. Non-numeric
- * edits (brand, the letters in a model/SKU, textual specs) are constrained only
- * by the system prompt and the human before/after preview, NOT by this guard.
- * Fields not supplied are returned as null and are never invented.
+ * and its unit is unchanged; if it drifts the call retries once for a clean
+ * version. The guard is ADVISORY, not blocking: because the prompt deliberately
+ * strips digit-bearing distributor noise (order codes, pack counts) — which the
+ * multiset guard can't tell apart from a real spec change — hard-failing here
+ * rejected legitimate clean-ups of distributor-sourced lines. So when both
+ * attempts still drift, the polished text is returned with `factWarning: true`
+ * plus a `factChanges` diff, and the human before/after preview flags exactly
+ * what to double-check. Non-numeric edits (brand, the letters in a model/SKU,
+ * textual specs) were never covered by this guard — only by the prompt and the
+ * preview. Fields not supplied are returned as null and are never invented.
  */
 export async function polishCatalogText(
   input: PolishTextRequest,
@@ -572,8 +602,12 @@ export async function polishCatalogText(
 
   let totalIn = 0;
   let totalOut = 0;
-  let sawParse = false; // did any attempt return parseable JSON? (parse vs drift)
   let result: PolishTextResponse | null = null;
+  // The most recent parseable attempt whose numeric facts DIDN'T verify. If
+  // neither the clean turn nor the stricter retry preserves them, this text is
+  // surfaced anyway with an advisory warning (the guard is a reviewer aid, not a
+  // hard gate). Null means no attempt ever returned parseable JSON → AI_PARSE.
+  let driftCandidate: { name: string | null; description: string | null; changed: boolean } | null = null;
 
   try {
     // Two attempts: a clean turn, then a stricter retry if the fact guard trips.
@@ -585,7 +619,6 @@ export async function polishCatalogText(
       totalIn += inTok;
       totalOut += outTok;
       if (!raw) continue;
-      sawParse = true;
 
       // Only accept fields that were actually requested — never let the model
       // invent a name when the caller only sent a description, or vice versa.
@@ -599,15 +632,20 @@ export async function polishCatalogText(
       const outDescription = wantDescription
         ? (coerceString(raw.description)?.trim().slice(0, DESCRIPTION_MAX) || normDescription)
         : null;
+      const changed = outName !== normName || outDescription !== normDescription;
 
-      if (!factsPreserved(input, { name: outName, description: outDescription })) {
-        console.warn('[catalog-polish] fact guard tripped', { attempt });
-        continue;
+      if (factsPreserved(input, { name: outName, description: outDescription })) {
+        result = { name: outName, description: outDescription, changed, factWarning: false, factChanges: null };
+        break;
       }
 
-      const changed = outName !== normName || outDescription !== normDescription;
-      result = { name: outName, description: outDescription, changed };
-      break;
+      // Facts drifted. Don't hard-fail: the prompt deliberately strips
+      // digit-bearing distributor noise, which the multiset guard can't
+      // distinguish from a real spec change. Keep the stricter retry (it may
+      // return a clean version), but remember this attempt so we can surface it
+      // with a warning if the retry also drifts.
+      console.warn('[catalog-polish] fact guard tripped', { attempt });
+      driftCandidate = { name: outName, description: outDescription, changed };
     }
   } finally {
     // Record whatever tokens were actually spent on EVERY exit path — including a
@@ -622,16 +660,21 @@ export async function polishCatalogText(
   }
 
   if (!result) {
-    // Distinguish "couldn't parse the model's reply at all" from "the model kept
-    // drifting the facts" so the user gets an accurate message.
-    if (!sawParse) {
+    // Only a genuinely unparseable reply is a hard error now. A fact drift is
+    // downgraded to an advisory warning: return the polished text with
+    // factWarning + the numeric-token diff so the human preview can flag exactly
+    // what to double-check before applying (rather than blocking a legitimate
+    // clean-up that merely stripped a digit-bearing distributor code).
+    if (!driftCandidate) {
       throw new EnrichmentError('Could not parse the AI response — try again', 'AI_PARSE', 502);
     }
-    throw new EnrichmentError(
-      'AI could not polish this without changing the product details — left unchanged',
-      'AI_FACT_DRIFT',
-      502,
-    );
+    result = {
+      name: driftCandidate.name,
+      description: driftCandidate.description,
+      changed: driftCandidate.changed,
+      factWarning: true,
+      factChanges: diffFactTokens(input, driftCandidate),
+    };
   }
   return result;
 }
