@@ -324,6 +324,80 @@ func TestGenerateSessionKey(t *testing.T) {
 	}
 }
 
+// TestConnSendWriteDeadline proves that a Send() whose underlying socket write
+// stalls returns an error within the write deadline instead of blocking
+// forever holding the write mutex (issue #2273). net.Pipe is fully synchronous
+// and has no internal buffer, so a Write blocks until the peer Reads — here the
+// peer never reads, so without the deadline Send would block indefinitely.
+func TestConnSendWriteDeadline(t *testing.T) {
+	// Shorten the deadline so the test is fast; restore afterwards.
+	orig := writeTimeout
+	writeTimeout = 100 * time.Millisecond
+	defer func() { writeTimeout = orig }()
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	// Deliberately never read from serverConn so the write stalls.
+
+	client := NewConn(clientConn)
+
+	payload, _ := json.Marshal(map[string]string{"hello": "world"})
+	env := &Envelope{ID: "stalled", Type: TypePing, Payload: payload}
+
+	done := make(chan error, 1)
+	go func() { done <- client.Send(env) }()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected write-deadline error from stalled Send, got nil")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Send blocked past the write deadline — mutex wedge not prevented")
+	}
+}
+
+// TestConnSendClearsWriteDeadline verifies that after one Send the write
+// deadline is cleared, so a subsequent Send on the same Conn isn't killed by
+// the previous call's (now-elapsed) deadline.
+func TestConnSendClearsWriteDeadline(t *testing.T) {
+	orig := writeTimeout
+	writeTimeout = 50 * time.Millisecond
+	defer func() { writeTimeout = orig }()
+
+	serverConn, clientConn := createSocketPair(t)
+	defer serverConn.Close()
+	defer clientConn.Close()
+
+	server := NewConn(serverConn)
+	client := NewConn(clientConn)
+
+	// First send succeeds.
+	payload, _ := json.Marshal("first")
+	if err := client.Send(&Envelope{ID: "1", Type: TypePing, Payload: payload}); err != nil {
+		t.Fatalf("first send: %v", err)
+	}
+	server.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := server.Recv(); err != nil {
+		t.Fatalf("first recv: %v", err)
+	}
+
+	// Wait past the (short) write timeout, then send again. If the deadline
+	// leaked, this write would fail with a stale-deadline timeout.
+	time.Sleep(2 * writeTimeout)
+
+	done := make(chan error, 1)
+	go func() { done <- client.Send(&Envelope{ID: "2", Type: TypePing, Payload: payload}) }()
+	server.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := server.Recv(); err != nil {
+		t.Fatalf("second recv: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("second send failed — write deadline leaked across sends: %v", err)
+	}
+}
+
 func createSocketPair(t *testing.T) (net.Conn, net.Conn) {
 	t.Helper()
 

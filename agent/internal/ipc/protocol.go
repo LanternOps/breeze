@@ -23,6 +23,19 @@ var log = logging.L("ipc")
 // zeroKey is used for pre-auth messages (auth_request).
 var zeroKey = make([]byte, 32)
 
+// writeTimeout bounds how long a single Send() may block on the underlying
+// socket writes. Without a deadline, a stalled peer (kernel send buffer full
+// because the reader isn't draining, or a wedged socket) blocks the write
+// mutex forever, starving every other writer on the same Conn — notably the
+// keepalive TypePong reply, whose absence gets the macOS user helper evicted
+// by the session broker (issue #2273). It is deliberately generous — a
+// legitimate MaxMessageSize (16 MiB) payload over a local socket completes in
+// well under a second, so 30s never trips a healthy transfer — yet bounded so
+// a genuinely wedged socket surfaces as a recoverable error (the caller tears
+// down and reconnects) instead of an indefinite mutex wedge. Overridable in
+// tests.
+var writeTimeout = 30 * time.Second
+
 // Conn wraps a net.Conn with length-prefixed JSON framing, HMAC signing,
 // and sequence number validation.
 type Conn struct {
@@ -104,6 +117,15 @@ func (c *Conn) Send(env *Envelope) error {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	// Bound the blocking writes so a stalled socket can never wedge c.mu
+	// forever (issue #2273). Writes are serialized by c.mu, so clearing the
+	// deadline afterwards can't race another writer; clearing prevents this
+	// call's deadline from leaking onto the next Send on the same Conn.
+	if err := c.conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
+		return fmt.Errorf("ipc: set write deadline: %w", err)
+	}
+	defer func() { _ = c.conn.SetWriteDeadline(time.Time{}) }()
 
 	header := make([]byte, 4)
 	binary.BigEndian.PutUint32(header, uint32(len(data)))

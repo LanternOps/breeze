@@ -106,6 +106,11 @@ func NewWithOptions(socketPath, role, binaryKind, context string) *Client {
 // Run connects to the root daemon, authenticates, and enters the command loop.
 // Blocks until stopChan is closed or the connection drops.
 func (c *Client) Run() error {
+	// Exempt the helper from macOS App Nap before doing anything else, so the
+	// OS can't suspend/throttle the IPC read loop and starve the keepalive
+	// TypePong reply (issue #2273). No-op on non-macOS / nocgo builds.
+	guardAgainstAppNap()
+
 	if err := c.connect(); err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
