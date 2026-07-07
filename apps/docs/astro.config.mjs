@@ -87,6 +87,7 @@ export default defineConfig({
               items: [
                 { slug: 'features/product-catalog' },
                 { slug: 'features/invoices' },
+                { slug: 'features/quotes' },
                 { slug: 'features/contracts' },
                 { slug: 'features/online-payments' },
               ],

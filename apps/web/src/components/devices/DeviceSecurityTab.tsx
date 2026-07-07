@@ -15,6 +15,7 @@ import { friendlyFetchError } from '../../lib/utils';
 import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import DeviceSecurityStatus from '../security/DeviceSecurityStatus';
+import RecoveryKeysPanel from '../security/RecoveryKeysPanel';
 import DeviceEdrPanel from './DeviceEdrPanel';
 
 type ThreatSeverity = 'low' | 'medium' | 'high' | 'critical';
@@ -176,6 +177,9 @@ export default function DeviceSecurityTab({ deviceId, orgId, timezone }: DeviceS
     return (
       <div className="space-y-6">
         <DeviceSecurityStatus deviceId={deviceId} showAvActions={false} />
+        <div className="rounded-lg border bg-card p-4 shadow-xs">
+          <RecoveryKeysPanel deviceId={deviceId} timezone={timezone} />
+        </div>
         {ENABLE_EDR_INTEGRATIONS && <DeviceEdrPanel deviceId={deviceId} orgId={orgId} timezone={timezone} />}
       </div>
     );
@@ -184,6 +188,9 @@ export default function DeviceSecurityTab({ deviceId, orgId, timezone }: DeviceS
   return (
     <div className="space-y-6">
       <DeviceSecurityStatus deviceId={deviceId} showAvActions />
+      <div className="rounded-lg border bg-card p-4 shadow-xs">
+        <RecoveryKeysPanel deviceId={deviceId} timezone={timezone} />
+      </div>
       {ENABLE_EDR_INTEGRATIONS && <DeviceEdrPanel deviceId={deviceId} orgId={orgId} timezone={timezone} />}
 
       {error && (

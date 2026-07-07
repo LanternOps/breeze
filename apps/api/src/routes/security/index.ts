@@ -8,6 +8,7 @@ import { dashboardRoutes } from './dashboard';
 import { postureRoutes } from './posture';
 import { complianceRoutes } from './compliance';
 import { recommendationsRoutes } from './recommendations';
+import { recoveryKeysRoutes } from './recoveryKeys';
 
 export const securityRoutes = new Hono();
 
@@ -20,5 +21,6 @@ securityRoutes.route('/', policiesRoutes);
 securityRoutes.route('/', dashboardRoutes);
 securityRoutes.route('/', postureRoutes);
 securityRoutes.route('/', complianceRoutes);
+securityRoutes.route('/', recoveryKeysRoutes);
 securityRoutes.route('/', recommendationsRoutes);
 

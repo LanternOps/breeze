@@ -44,6 +44,8 @@ The list view shows each item's **margin** at a glance, with a negative margin c
 
 When creating or editing a catalog item, type a product name or SKU into the **Auto-fill from web** field and click **Auto-fill**. Breeze AI drafts the item's name, description, type, unit of measure, and taxability. A market-estimate price **range** is shown as guidance only -- you always enter your own sell price before saving.
 
+Set an **AI product copy style** in **Settings → Billing** to shape the tone Breeze AI uses when it drafts names and descriptions -- for catalog auto-fill and for quotes. Leave it blank to use the default voice.
+
 <Aside type="note">
   AI auto-fill requires catalog write access. No MFA step is needed.
 </Aside>
@@ -133,23 +135,7 @@ Importing requires MFA confirmation. This is distinct from Pax8 **subscription l
 
 ### Searching distributor products from a quote
 
-While editing a quote, the line-item picker includes a **Search distributor** tab (visible only when TD SYNNEX EC Express credentials are configured). Enter a TD SYNNEX SKU or manufacturer part number, see live cost, MSRP, and availability, enter your sell price, and click **Import & add**. The product is imported to your catalog and added to the quote as a line item in one step.
-
-This is distinct from the catalog-level import workflow documented above. The catalog workflow builds your standing price list; the quote-level search lets you pull a product directly into an open quote without navigating away from the quote editor.
-
-### Inline editing of quote line items
-
-Quote line items can now be edited in place directly in the quote editor — you no longer need to delete a line and re-add it to correct a detail. Click any field on an existing line item to edit it inline:
-
-| Field | Editable inline |
-|-------|----------------|
-| Description | Yes |
-| Quantity | Yes |
-| Unit price | Yes |
-| Taxable | Yes |
-| Recurrence | Yes |
-
-Changes take effect immediately on the quote and are reflected in the live totals without saving and re-opening.
+You can also pull a distributor product directly into an open quote -- the quote editor's line-item picker has its own **Search distributor** tab. See [Quotes → Searching distributor products from a quote](/features/quotes/#searching-distributor-products-from-a-quote). The catalog-level workflow above builds your standing price list; the quote-level search brings a product straight into a proposal without navigating away.
 
 ## Permissions
 

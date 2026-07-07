@@ -104,9 +104,9 @@ describe('PolishButton', () => {
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
   });
 
-  it('surfaces the fact-drift error and does not open the preview', async () => {
+  it('surfaces a hard error (AI_PARSE) and does not open the preview', async () => {
     polishTextRequest.mockResolvedValue(
-      fail('AI_FACT_DRIFT', 'AI could not polish this without changing the product details — left unchanged', 502),
+      fail('AI_PARSE', 'Could not parse the AI response — try again', 502),
     );
     const onApply = vi.fn();
     render(<PolishButton idSuffix="t" getText={() => ({ name: 'apc 600va' })} onApply={onApply} />);
@@ -115,5 +115,74 @@ describe('PolishButton', () => {
     await waitFor(() => expect(showToast).toHaveBeenCalled());
     expect(screen.queryByTestId('polish-apply-t')).not.toBeInTheDocument();
     expect(onApply).not.toHaveBeenCalled();
+  });
+
+  it('shows the polished result WITH a warning banner when the fact guard flags a change', async () => {
+    // A fact drift is no longer a hard error — the result comes back with a
+    // non-null factChanges and the preview opens with a "double-check" banner
+    // listing the added/removed numeric tokens, so the human decides.
+    polishTextRequest.mockResolvedValue(ok({
+      name: 'Battery Backup (UPS)',
+      description: 'APC Back-UPS Pro BR1500MS2\n• 1500VA\n• 10 outlets',
+      changed: true,
+      factChanges: { added: [], removed: ['44718'] },
+    }));
+    const onApply = vi.fn();
+    render(
+      <PolishButton
+        idSuffix="t"
+        getText={() => ({ name: 'SPL APC-BR1500MS2 DISTI', description: 'APC Back-UPS Pro 1500VA, 10 outlets, ORD-44718' })}
+        onApply={onApply}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('polish-btn-t'));
+    await waitFor(() => expect(screen.getByTestId('polish-apply-t')).toBeInTheDocument());
+    // The warning banner is shown, and it names the removed distributor code.
+    const warning = screen.getByTestId('polish-fact-warning-t');
+    expect(warning).toBeInTheDocument();
+    expect(warning.textContent).toContain('44718');
+    // The user can still apply the polished text.
+    fireEvent.click(screen.getByTestId('polish-apply-t'));
+    expect(onApply).toHaveBeenCalledWith(expect.objectContaining({ name: 'Battery Backup (UPS)' }));
+  });
+
+  it('opens the preview for a warning even when the visible text is unchanged', async () => {
+    // The whole point of the `!factChanges &&` guard: a fact warning must force
+    // the preview open even when what the user would SEE is identical — otherwise
+    // a warned change gets swallowed by the "Already looks good" toast.
+    polishTextRequest.mockResolvedValue(ok({
+      name: 'APC 600VA',
+      description: null,
+      changed: false, // server says nothing visibly changed…
+      factChanges: { added: ['650va'], removed: ['600va'] }, // …but the guard flagged a numeric change
+    }));
+    const onApply = vi.fn();
+    render(<PolishButton idSuffix="t" getText={() => ({ name: 'APC 600VA' })} onApply={onApply} />);
+
+    fireEvent.click(screen.getByTestId('polish-btn-t'));
+    await waitFor(() => expect(screen.getByTestId('polish-fact-warning-t')).toBeInTheDocument());
+    // Must NOT have toasted the no-op "already looks good" success.
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    expect(screen.getByTestId('polish-apply-t')).toBeInTheDocument();
+  });
+
+  it('renders the Added (over-claim) direction in the warning banner', async () => {
+    // The "added" direction is the dangerous one (AI invented a spec) and gets
+    // distinct styling — cover that it actually renders, not just "removed".
+    polishTextRequest.mockResolvedValue(ok({
+      name: 'Dell Monitor 27" 144Hz',
+      description: null,
+      changed: true,
+      factChanges: { added: ['144hz'], removed: [] },
+    }));
+    const onApply = vi.fn();
+    render(<PolishButton idSuffix="t" getText={() => ({ name: 'dell monitor 27 inch' })} onApply={onApply} />);
+
+    fireEvent.click(screen.getByTestId('polish-btn-t'));
+    await waitFor(() => expect(screen.getByTestId('polish-fact-warning-t')).toBeInTheDocument());
+    const warning = screen.getByTestId('polish-fact-warning-t');
+    expect(warning.textContent).toContain('Added');
+    expect(warning.textContent).toContain('144hz');
   });
 });

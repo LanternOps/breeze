@@ -162,11 +162,34 @@ export const polishTextRequestSchema = z.object({
 );
 export type PolishTextRequest = z.infer<typeof polishTextRequestSchema>;
 
+// A before/after diff of the numeric "fact" tokens (numbers, measurements,
+// prices, and the digit runs inside model/part numbers). `added` are tokens the
+// polished text has that the input did not — the genuinely risky, over-claiming
+// direction. `removed` are tokens the input had that the polished text dropped —
+// usually stripped distributor noise (order codes, pack counts). Canonicalized
+// (lowercased, unit-normalized) so they read as hints, not exact source spans.
+// FACT_CHANGE_MAX is the single source of truth for the cap; the service imports
+// it so the enforcement point (multisetDiff) and this schema bound can't drift.
+export const FACT_CHANGE_MAX = 50;
+export const polishFactChangesSchema = z.object({
+  added: z.array(z.string()).max(FACT_CHANGE_MAX),
+  removed: z.array(z.string()).max(FACT_CHANGE_MAX),
+});
+export type PolishFactChanges = z.infer<typeof polishFactChangesSchema>;
+
 export const polishTextResponseSchema = z.object({
   name: z.string().max(255).nullable(),
   description: z.string().max(10_000).nullable(),
   // True when the polished text differs from the input (lets the UI skip a
   // no-op "nothing changed" preview).
   changed: z.boolean(),
+  // Non-null exactly when the fact guard tripped: the polish may have altered a
+  // numeric/unit spec, or stripped a digit-bearing distributor code the AI could
+  // not avoid. Its PRESENCE is the advisory warning — the polished text is still
+  // returned (the guard is ADVISORY, not blocking), but the UI must surface the
+  // before/after when this is set. null = facts verified clean, no warning. One
+  // nullable field (not a separate boolean flag) so "warning" and "what changed"
+  // can't disagree.
+  factChanges: polishFactChangesSchema.nullable(),
 });
 export type PolishTextResponse = z.infer<typeof polishTextResponseSchema>;

@@ -79,6 +79,18 @@ describe('getDocsForPath', () => {
       expect(result.label).toBe('Invoices');
       expect(result.url).toContain('/features/invoices/');
     });
+
+    it('/billing/quotes maps to quotes docs, not generic billing', () => {
+      const result = getDocsForPath('/billing/quotes');
+      expect(result.label).toBe('Quotes');
+      expect(result.url).toContain('/features/quotes/');
+    });
+
+    it('/billing/quotes/:id maps to quotes docs', () => {
+      const result = getDocsForPath('/billing/quotes/q-123');
+      expect(result.label).toBe('Quotes');
+      expect(result.url).toContain('/features/quotes/');
+    });
   });
 
   describe('prefix matches', () => {

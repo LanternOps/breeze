@@ -4,7 +4,7 @@ import { redactLogFields, redactLogMessage } from './logRedaction';
 const REDACTED = '[REDACTED]';
 const DEFAULT_MAX_STRING_LENGTH = 2048;
 const DEFAULT_MAX_DEPTH = 8;
-const SECRET_FIELD_PATTERN = /^(password|passwd|pwd|token|secret|authorization|cookie|credential|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|community|authpassphrase|privacypassphrase)$/i;
+const SECRET_FIELD_PATTERN = /^(password|passwd|pwd|token|secret|authorization|cookie|credential|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|community|authpassphrase|privacypassphrase|(current[_-]?)?recovery[_-]?key)$/i;
 const RAW_CONTENT_FIELD_PATTERN = /^(content|body|stdin|scriptContent|fileContent)$/i;
 
 export interface SanitizePayloadOptions {

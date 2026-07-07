@@ -433,6 +433,35 @@ export function toStringValue(value: unknown): string | null {
   return null;
 }
 
+export type EncryptionVolume = {
+  drive: string;
+  encrypted: boolean;
+  method: string;
+  status: string | null;
+  percentEncrypted: number | null;
+};
+
+// Agent-reported per-volume encryption detail (security_status.encryption_details,
+// shape {source, volumes:[{mount, method, protected, status, percentEncrypted}]}).
+// Returns null when absent/malformed so callers can fall back to a synthesized row.
+export function parseEncryptionVolumes(details: unknown): EncryptionVolume[] | null {
+  const obj = toObject(details);
+  if (!obj || !Array.isArray(obj.volumes)) return null;
+  const volumes: EncryptionVolume[] = [];
+  for (const raw of obj.volumes) {
+    const vol = toObject(raw);
+    if (!vol) continue;
+    volumes.push({
+      drive: toStringValue(vol.mount) ?? '-',
+      encrypted: toBoolean(vol.protected) ?? false,
+      method: toStringValue(vol.method) ?? 'unknown',
+      status: toStringValue(vol.status),
+      percentEncrypted: toNumber(vol.percentEncrypted)
+    });
+  }
+  return volumes.length > 0 ? volumes : null;
+}
+
 // ── Analysis utilities ──────────────────────────────────────────────────────
 
 export function isOlderThanDays(value: string, days: number): boolean {

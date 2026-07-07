@@ -314,6 +314,18 @@ export const securityStatusIngestSchema = z.object({
 
 export type SecurityStatusPayload = z.infer<typeof securityStatusIngestSchema>;
 
+export const recoveryKeysIngestSchema = z.object({
+  source: z.enum(['snapshot', 'rotation']),
+  keys: z.array(z.object({
+    keyType: z.enum(['bitlocker_recovery_password', 'filevault_personal_recovery_key']),
+    volumeMount: z.string().max(100).optional(),
+    protectorId: z.string().max(100).optional(),
+    recoveryKey: z.string().min(8).max(512)
+  })).max(50)
+});
+
+export type RecoveryKeysIngestPayload = z.infer<typeof recoveryKeysIngestSchema>;
+
 export const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export const securityCommandTypes = {

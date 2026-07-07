@@ -1,18 +1,19 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { create, checkBudget, checkAiRateLimit, checkUserAiRateLimit, recordUsage } = vi.hoisted(() => ({
+const { create, checkBudget, checkAiRateLimit, checkUserAiRateLimit, recordUsage, captureMessage } = vi.hoisted(() => ({
   create: vi.fn(),
   checkBudget: vi.fn(async (): Promise<string | null> => null),
   checkAiRateLimit: vi.fn(async (): Promise<string | null> => null),
   checkUserAiRateLimit: vi.fn(async (): Promise<string | null> => null),
   recordUsage: vi.fn(async () => {}),
+  captureMessage: vi.fn(),
 }));
 vi.mock('@anthropic-ai/sdk', () => ({
   default: class { messages = { create }; },
 }));
 vi.mock('./aiAgent', () => ({ resolveDefaultModel: () => 'claude-sonnet-4-6' }));
 vi.mock('./aiCostTracker', () => ({ checkBudget, checkAiRateLimit, checkUserAiRateLimit, recordUsage }));
-vi.mock('./sentry', () => ({ captureException: vi.fn() }));
+vi.mock('./sentry', () => ({ captureException: vi.fn(), captureMessage }));
 
 import { enrichCatalogItem, enrichDistributorListing, polishCatalogText, EnrichmentError } from './catalogEnrichmentService';
 
@@ -28,6 +29,7 @@ function aiMessage(json: object) {
 
 beforeEach(() => {
   create.mockReset();
+  captureMessage.mockClear();
   checkBudget.mockClear(); checkAiRateLimit.mockClear(); checkUserAiRateLimit.mockClear(); recordUsage.mockClear();
   checkBudget.mockResolvedValue(null); checkAiRateLimit.mockResolvedValue(null); checkUserAiRateLimit.mockResolvedValue(null);
 });
@@ -287,25 +289,39 @@ describe('polishCatalogText', () => {
     expect(res.name).toBe('APC Back-UPS 600VA UPS');
     expect(res.description).toMatch(/7 outlets/);
     expect(res.changed).toBe(true);
+    expect(res.factChanges).toBeNull();
   });
 
-  it('blocks a polish that CHANGES a number (fact guard), retrying then throwing AI_FACT_DRIFT', async () => {
-    // Both attempts drift 600VA -> 650VA. Guard must reject both and never return.
+  it('warns (does not block) when a number CHANGES, after retrying for a clean version', async () => {
+    // Both attempts drift 600VA -> 650VA. The guard is advisory: it returns the
+    // polished text with a non-null factChanges so the human preview can flag it, and
+    // reports the added/removed numeric tokens.
     create
       .mockResolvedValueOnce(aiMessage({ name: 'APC Back-UPS 650VA', description: null }))
       .mockResolvedValueOnce(aiMessage({ name: 'APC Back-UPS 650VA', description: null }));
-    await expect(polishCatalogText({ name: 'apc back-ups 600va' }, actor))
-      .rejects.toMatchObject({ code: 'AI_FACT_DRIFT', status: 502 });
+    const res = await polishCatalogText({ name: 'apc back-ups 600va' }, actor);
     expect(create).toHaveBeenCalledTimes(2); // one clean turn + one stricter retry
+    expect(res.name).toBe('APC Back-UPS 650VA');
+    expect(res.factChanges).not.toBeNull();
+    expect(res.factChanges?.added).toContain('650va');
+    expect(res.factChanges?.removed).toContain('600va');
   });
 
-  it('blocks a polish that INVENTS a new spec not present in the input', async () => {
+  it('warns when the model INVENTS a new spec not present in the input', async () => {
     create
       .mockResolvedValueOnce(aiMessage({ name: 'Dell Monitor 27" 144Hz', description: null }))
       .mockResolvedValueOnce(aiMessage({ name: 'Dell Monitor 27" 144Hz', description: null }));
-    // input has 27 but NOT 144 — inventing 144Hz must be rejected.
-    await expect(polishCatalogText({ name: 'dell monitor 27 inch' }, actor))
-      .rejects.toMatchObject({ code: 'AI_FACT_DRIFT' });
+    // input has 27 but NOT 144 — inventing 144Hz is surfaced as an added token.
+    const res = await polishCatalogText({ name: 'dell monitor 27 inch' }, actor);
+    expect(res.factChanges).not.toBeNull();
+    expect(res.factChanges?.added).toContain('144hz');
+    // An over-claim (added token) must emit a queryable Sentry signal so an
+    // operator can catch the model inventing specs on live quotes.
+    expect(captureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('over-claimed'),
+      'warning',
+      expect.objectContaining({ added: expect.arrayContaining(['144hz']) }),
+    );
   });
 
   it('accepts the stricter retry when the first attempt drifts but the second is clean', async () => {
@@ -314,6 +330,8 @@ describe('polishCatalogText', () => {
       .mockResolvedValueOnce(aiMessage({ name: 'APC Back-UPS 600VA', description: null })); // clean
     const res = await polishCatalogText({ name: 'spl apc back-ups 600va disti' }, actor);
     expect(res.name).toBe('APC Back-UPS 600VA');
+    // A first-attempt drift must NOT leak a stale warning onto the clean retry.
+    expect(res.factChanges).toBeNull();
   });
 
   it('allows pure presentation changes: thousands separators and unit spacing are not drift', async () => {
@@ -377,29 +395,83 @@ describe('polishCatalogText', () => {
     expect(create).not.toHaveBeenCalled();
   });
 
-  it('catches a UNIT swap that keeps the digit (16GB → 16TB) as drift', async () => {
+  it('warns on a UNIT swap that keeps the digit (16GB → 16TB)', async () => {
     create
       .mockResolvedValueOnce(aiMessage({ name: '16TB DDR4 module', description: null }))
       .mockResolvedValueOnce(aiMessage({ name: '16TB DDR4 module', description: null }));
-    await expect(polishCatalogText({ name: '16gb ddr4 module' }, actor))
-      .rejects.toMatchObject({ code: 'AI_FACT_DRIFT' });
+    const res = await polishCatalogText({ name: '16gb ddr4 module' }, actor);
+    expect(res.factChanges).not.toBeNull();
+    expect(res.factChanges?.added).toContain('16tb');
+    expect(res.factChanges?.removed).toContain('16gb');
   });
 
-  it('catches a PRICE change ($549.99 → $559.99) as drift', async () => {
+  it('warns on a PRICE change ($549.99 → $559.99)', async () => {
     create
       .mockResolvedValueOnce(aiMessage({ name: null, description: 'Monitor, $559.99 street price.' }))
       .mockResolvedValueOnce(aiMessage({ name: null, description: 'Monitor, $559.99 street price.' }));
-    await expect(polishCatalogText({ description: 'monitor $549.99 street price' }, actor))
-      .rejects.toMatchObject({ code: 'AI_FACT_DRIFT' });
+    const res = await polishCatalogText({ description: 'monitor $549.99 street price' }, actor);
+    expect(res.factChanges).not.toBeNull();
+    expect(res.factChanges?.added).toContain('559.99');
+    expect(res.factChanges?.removed).toContain('549.99');
   });
 
-  it('catches a dropped duplicate quantity (2 × 2TB → 2TB) via multiset counts', async () => {
+  it('warns (removed-only) when the bare quantity multiplier is dropped (2 × 2TB → 2TB)', async () => {
     create
-      .mockResolvedValueOnce(aiMessage({ name: 'Dual 2TB NAS (2TB usable)', description: null }))
-      .mockResolvedValueOnce(aiMessage({ name: 'Dual 2TB NAS (2TB usable)', description: null }));
-    // input has bare "2" and "2tb"; output collapses to a single "2tb" — counts differ.
-    await expect(polishCatalogText({ name: '2 x 2tb nas' }, actor))
-      .rejects.toMatchObject({ code: 'AI_FACT_DRIFT' });
+      .mockResolvedValueOnce(aiMessage({ name: 'Dual 2TB NAS', description: null }))
+      .mockResolvedValueOnce(aiMessage({ name: 'Dual 2TB NAS', description: null }));
+    // input has bare "2" (the ×2 multiplier) and "2tb"; output keeps a single
+    // "2tb" and drops the bare "2". Dropping a token is the non-misleading
+    // direction, so it's surfaced as a removed-only warning (nothing added)
+    // rather than blocking.
+    const res = await polishCatalogText({ name: '2 x 2tb nas' }, actor);
+    expect(res.factChanges).not.toBeNull();
+    expect(res.factChanges?.removed).toContain('2');
+    expect(res.factChanges?.added).toEqual([]);
+  });
+
+  it('does NOT block a legitimate clean-up that strips a digit-bearing distributor code (the #2270 bug)', async () => {
+    // Regression: the prompt tells the model to strip "internal order codes", but
+    // an order code (ORD-44718) contributes a "44718" fact token. Before this
+    // fix, dropping it tripped the guard on both attempts → hard 502 on exactly
+    // the distributor-sourced lines. Now the clean-up succeeds with a
+    // removed-only advisory warning.
+    const polished = {
+      name: 'Battery Backup (UPS)',
+      description: 'APC Back-UPS Pro BR1500MS2\n• 1500VA\n• 10 outlets',
+    };
+    // Both turns correctly strip the order code, so the guard trips both times —
+    // it must still return the clean-up (with a warning), never a hard failure.
+    create
+      .mockResolvedValueOnce(aiMessage(polished))
+      .mockResolvedValueOnce(aiMessage(polished));
+    const res = await polishCatalogText(
+      { name: 'SPL APC-BR1500MS2 DISTI', description: 'APC Back-UPS Pro 1500VA, 10 outlets, ORD-44718' },
+      actor,
+    );
+    expect(res.name).toBe('Battery Backup (UPS)');
+    expect(res.factChanges).not.toBeNull();
+    expect(res.factChanges?.removed).toContain('44718');
+    expect(res.factChanges?.added).toEqual([]);
+    // Removed-only (stripped noise) is the safe direction — it must NOT raise a
+    // Sentry over-claim signal, or the alert would be pure noise on every
+    // distributor line.
+    expect(captureMessage).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a combined warning when BOTH name and description drift together', async () => {
+    // name drops the bare "2" multiplier; description swaps 500GB → 512GB. The
+    // guard combines both fields into one multiset, so factChanges must aggregate
+    // across name AND description, not just one field.
+    create
+      .mockResolvedValueOnce(aiMessage({ name: 'Dell Laptop', description: '512GB SSD, 16GB RAM' }))
+      .mockResolvedValueOnce(aiMessage({ name: 'Dell Laptop', description: '512GB SSD, 16GB RAM' }));
+    const res = await polishCatalogText(
+      { name: '2 x Dell Laptop', description: '500GB SSD, 16GB RAM' },
+      actor,
+    );
+    expect(res.factChanges).not.toBeNull();
+    expect(res.factChanges?.added).toContain('512gb');   // from the description
+    expect(res.factChanges?.removed).toEqual(expect.arrayContaining(['2', '500gb'])); // name + description
   });
 
   it('allows decimal/trailing-zero reformatting (1.50 ↔ 1.5) — not drift', async () => {
@@ -436,11 +508,12 @@ describe('polishCatalogText', () => {
       .rejects.toMatchObject({ code: 'AI_PARSE', status: 502 });
   });
 
-  it('records the SUMMED tokens across both attempts even when it throws AI_FACT_DRIFT', async () => {
+  it('records the SUMMED tokens across both attempts even when it returns a fact warning', async () => {
     create
       .mockResolvedValueOnce(aiMessage({ name: '650VA UPS', description: null }))   // drift, 100/50
       .mockResolvedValueOnce(aiMessage({ name: '650VA UPS', description: null }));  // drift, 100/50
-    await expect(polishCatalogText({ name: 'apc 600va ups' }, actor)).rejects.toMatchObject({ code: 'AI_FACT_DRIFT' });
+    const res = await polishCatalogText({ name: 'apc 600va ups' }, actor);
+    expect(res.factChanges).not.toBeNull();
     // Tokens were really spent on both turns — they must still be billed.
     expect(recordUsage).toHaveBeenCalledWith(null, 'o1', expect.any(String), 200, 100, true);
   });

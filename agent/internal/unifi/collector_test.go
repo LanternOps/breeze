@@ -28,8 +28,10 @@ func TestRunOnceUploadsTelemetry(t *testing.T) {
 	var got map[string]any
 	var gotPath string
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Agent telemetry endpoints are mounted under /agents/<agentId>/.
-		if r.URL.Path == "/agents/agent-1/unifi-telemetry" {
+		// Agent telemetry endpoints are mounted under /api/v1/agents/<agentId>/ —
+		// the /api/v1 prefix is mandatory (matches heartbeat & every other agent
+		// call); dropping it 404s and pins the collector at status=pending.
+		if r.URL.Path == "/api/v1/agents/agent-1/unifi-telemetry" {
 			mu.Lock()
 			defer mu.Unlock()
 			gotPath = r.URL.Path
@@ -48,7 +50,7 @@ func TestRunOnceUploadsTelemetry(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if gotPath != "/agents/agent-1/unifi-telemetry" {
+	if gotPath != "/api/v1/agents/agent-1/unifi-telemetry" {
 		t.Fatalf("telemetry posted to unexpected path: %q", gotPath)
 	}
 	if got["collectorId"] != "c1" || got["firmwareOk"] != true {
@@ -79,7 +81,7 @@ func TestRunOnceUploadsSites(t *testing.T) {
 	var mu sync.Mutex
 	var got map[string]any
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/agents/agent-1/unifi-telemetry" {
+		if r.URL.Path == "/api/v1/agents/agent-1/unifi-telemetry" {
 			mu.Lock()
 			defer mu.Unlock()
 			_ = json.NewDecoder(r.Body).Decode(&got)
@@ -107,13 +109,14 @@ func TestRunOnceUploadsSites(t *testing.T) {
 	}
 }
 
-// fetchConfigs must GET the agent-scoped path /agents/<id>/unifi-collectors, not
-// the bare /agent/unifi-collectors (which 404s and never returns configs — C3).
+// fetchConfigs must GET the agent-scoped path /api/v1/agents/<id>/unifi-collectors.
+// Dropping the /api/v1 prefix (as the loop did before the fix) 404s and never
+// returns configs, so the collector stays status=pending forever — C3.
 func TestFetchConfigsHitsAgentScopedPath(t *testing.T) {
 	var gotPath string
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
-		if r.URL.Path == "/agents/agent-1/unifi-collectors" {
+		if r.URL.Path == "/api/v1/agents/agent-1/unifi-collectors" {
 			w.Write([]byte(`{"collectors":[{"collectorId":"c1","controllerUrl":"https://10.0.0.1","apiKey":"k","pollIntervalSeconds":60}]}`))
 			return
 		}
@@ -125,7 +128,7 @@ func TestFetchConfigsHitsAgentScopedPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fetchConfigs: %v", err)
 	}
-	if gotPath != "/agents/agent-1/unifi-collectors" {
+	if gotPath != "/api/v1/agents/agent-1/unifi-collectors" {
 		t.Fatalf("fetchConfigs hit unexpected path: %q", gotPath)
 	}
 	if len(configs) != 1 || configs[0].CollectorID != "c1" {
