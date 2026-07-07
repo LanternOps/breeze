@@ -59,7 +59,7 @@
     "firebase-admin": "^13.7.0",
     "google-auth-library": "^10.6.2",
     "hono": "^4.12.28",
-    "ioredis": "^5.10.1",
+    "ioredis": "^5.11.1",
     "jose": "^6.2.3",
     "jspdf": "^4.2.1",
     "jspdf-autotable": "^5.0.8",
