@@ -6,7 +6,7 @@ import { requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { sendQuote } from '../../services/quoteLifecycle';
 import { getQuote } from '../../services/quoteService';
-import { writeQuoteImage, readQuoteImage, sniffImageMime, MAX_QUOTE_IMAGE_SIZE_BYTES } from '../../services/quoteImageStorage';
+import { writeQuoteImage, readQuoteImage, sniffImageMime, MAX_QUOTE_IMAGE_SIZE_BYTES, fetchRemoteImage, RemoteImageError, type RemoteImageFailureReason } from '../../services/quoteImageStorage';
 import { quoteActorFrom, handleServiceError } from './quotes';
 
 export const quoteLifecycleRoutes = new Hono();
@@ -16,6 +16,23 @@ const writePerm = requirePermission(PERMISSIONS.QUOTES_WRITE.resource, PERMISSIO
 const sendPerm = requirePermission(PERMISSIONS.QUOTES_SEND.resource, PERMISSIONS.QUOTES_SEND.action);
 const idParam = z.object({ id: z.string().guid() });
 const imageParam = z.object({ id: z.string().guid(), imageId: z.string().guid() });
+
+// Accepts only http(s) URLs; the fetch layer enforces size/mime.
+const imageFromUrlSchema = z.object({
+  url: z.string().refine((s) => {
+    try { const u = new URL(s); return u.protocol === 'http:' || u.protocol === 'https:'; }
+    catch { return false; }
+  }, 'url must be an http(s) URL'),
+});
+
+function remoteImageStatus(reason: RemoteImageFailureReason): 413 | 415 | 502 | 504 {
+  switch (reason) {
+    case 'too_large': return 413;
+    case 'not_image': return 415;
+    case 'timeout': return 504;
+    case 'unreachable': return 502;
+  }
+}
 
 // POST /:id/send — issue + email. Gated on the (previously dead) quotes:send permission.
 quoteLifecycleRoutes.post('/:id/send', scopes, sendPerm, zValidator('param', idParam), async (c) => {
@@ -31,6 +48,25 @@ quoteLifecycleRoutes.post('/:id/images',
     const id = c.req.valid('param').id;
     try {
       const { quote } = await getQuote(id, quoteActorFrom(c)); // org-access 404
+
+      // JSON body → copy the image from a URL (server-side, not a hotlink).
+      // Multipart (below) is unchanged.
+      if ((c.req.header('content-type') ?? '').includes('application/json')) {
+        let json: unknown;
+        try { json = await c.req.json(); } catch { return c.json({ error: 'Invalid JSON body' }, 400); }
+        const parsed = imageFromUrlSchema.safeParse(json);
+        if (!parsed.success) return c.json({ error: 'url must be an http(s) URL' }, 400);
+        let fetched: { mime: string; buffer: Buffer };
+        try {
+          fetched = await fetchRemoteImage(parsed.data.url);
+        } catch (err) {
+          if (err instanceof RemoteImageError) return c.json({ error: err.message }, remoteImageStatus(err.reason));
+          throw err;
+        }
+        const written = await writeQuoteImage(id, quote.orgId, fetched.mime, fetched.buffer);
+        return c.json({ data: { imageId: written.id, mime: fetched.mime, byteSize: written.byteSize } });
+      }
+
       let body: Record<string, unknown>;
       try { body = await c.req.parseBody({ all: true }); } catch { return c.json({ error: 'Invalid multipart body' }, 400); }
       const file = body.file;
