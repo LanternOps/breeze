@@ -15,12 +15,15 @@ The MCP server reuses the same tools, guardrails, and audit infrastructure as th
 
 The [Model Context Protocol](https://modelcontextprotocol.io/) is an open standard that defines how AI applications discover and invoke tools and resources hosted by external servers. A single MCP connection gives the AI client a live catalogue of everything it can do inside Breeze -- no custom plugin code required.
 
-Breeze implements the **2024-11-05** protocol version with two capabilities:
+Breeze implements the **2024-11-05** protocol version with three capabilities:
 
 | Capability | Description |
 |---|---|
 | **Tools** | 100+ callable operations across device management, monitoring, alerting, compliance, backups, configuration policies, ticketing, billing, analytics, and more |
 | **Resources** | Read-only data endpoints (`breeze://devices`, `breeze://alerts`, etc.) |
+| **Prompts** | Guided MSP workflow prompts (fleet triage, device investigation, patch remediation, and more) the client can offer to the user |
+
+On connect Breeze also returns a set of **server instructions** that orient the AI client automatically -- see [Server instructions and guided prompts](#server-instructions-and-guided-prompts).
 
 ---
 
@@ -268,6 +271,10 @@ Tools are the primary way AI clients interact with Breeze. Each tool maps to one
 | `apply_configuration_policy` | 2 | Assign a configuration policy to a target in the hierarchy. |
 | `remove_configuration_policy_assignment` | 2 | Remove a configuration policy assignment. |
 
+<Aside type="note">
+  Partner-owned ("all organizations") configuration policies are visible to the AI/MCP tools, matching what the dashboard and web UI show. Earlier releases listed only organization-scoped policies to AI clients, so a partner-wide policy could be missed; a partner-scoped connection now sees both. Organization-scoped keys still never see partner-wide policies.
+</Aside>
+
 ### Ticketing tools
 
 | Tool | Tier | Description |
@@ -312,6 +319,34 @@ Resources provide read-only access to fleet data via the `resources/read` JSON-R
 | `breeze://devices/{id}` | Device Detail | Full detail for a specific device by UUID. | 1 |
 
 All resource reads are org-scoped -- the API key's organization determines which records are visible.
+
+---
+
+## Server instructions and guided prompts
+
+To orient a connecting client without any manual setup, the Breeze MCP server advertises two things beyond its tools and resources.
+
+### Server instructions
+
+When a client connects, Breeze returns a block of **server instructions** in the `initialize` response. These tell the AI assistant how Breeze is organized and how to behave:
+
+- The **tenant hierarchy** (Partner → Organization → Site → Device Group → Device) and that the client can only act within the organizations its key or token grants.
+- **How to choose among the tools** -- resolve the exact device/org first, read state before writing, and act on one target at a time unless a fleet-wide operation is explicitly requested.
+- The core **safety guardrails** shared with the built-in Breeze AI assistant.
+
+Clients such as Claude.ai and ChatGPT surface these instructions automatically, so the assistant starts already knowing the ground rules.
+
+### Guided workflow prompts
+
+Breeze also exposes a small set of **prompts** -- ready-made, parameterized workflows for common MSP tasks. A client lists them with `prompts/list` and expands one with `prompts/get`; the user picks a workflow and the assistant follows the built-in steps.
+
+| Prompt | What it does |
+|---|---|
+| `breeze-fleet-triage` | Read-only health sweep of the fleet -- posture, active alerts, offline devices, failed/pending patches, and SLA breaches -- into one prioritized "what needs attention now" summary. Optional org/site scope. |
+| `breeze-device-investigate` | Deep-dives one device (details, metrics, logs, vulnerabilities) and summarizes the likely root cause. Read-only. |
+| `breeze-patch-remediate` | Safely patches a target -- scan, confirm with the user, then apply -- with an explicit stop for confirmation because installing patches is a destructive, approval-gated action. |
+| `breeze-incident-kickoff` | Opens and structures an incident: creates it, builds a timeline, collects evidence, and generates an incident report. |
+| `breeze-turnkey-setup` | Opinionated baseline configuration wizard -- patch rings, backup SLA, DNS security, peripheral policy, CIS baseline, and core alert rules -- partner-wide by default. |
 
 ---
 
@@ -529,12 +564,14 @@ Returns server capabilities and metadata.
     "protocolVersion": "2024-11-05",
     "capabilities": {
       "tools": { "listChanged": false },
-      "resources": { "subscribe": false, "listChanged": false }
+      "resources": { "subscribe": false, "listChanged": false },
+      "prompts": { "listChanged": false }
     },
     "serverInfo": {
       "name": "breeze-rmm",
       "version": "1.0.0"
-    }
+    },
+    "instructions": "You are connected to Breeze RMM — ... (tenant hierarchy, tool-selection guidance, and safety guardrails)"
   }
 }
 ```
@@ -632,6 +669,29 @@ Reads a specific resource by URI.
       "text": "[{\"id\":\"...\",\"hostname\":\"...\",\"status\":\"online\",...}]"
     }]
   }
+}
+```
+
+### `prompts/list`
+
+Returns the catalogue of [guided workflow prompts](#guided-workflow-prompts), each with its name, description, and arguments.
+
+```json
+// Request
+{ "jsonrpc": "2.0", "id": 6, "method": "prompts/list" }
+```
+
+### `prompts/get`
+
+Expands one prompt into ready-to-run messages, substituting any arguments you pass.
+
+```json
+// Request
+{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "method": "prompts/get",
+  "params": { "name": "breeze-fleet-triage", "arguments": { "scope": "Contoso" } }
 }
 ```
 

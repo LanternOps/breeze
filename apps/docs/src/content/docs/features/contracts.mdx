@@ -56,6 +56,40 @@ Per-device and per-seat lines can be scoped to a specific **site** so you bill o
 
 The contract list shows an **estimated monthly recurring** strip across active contracts (normalized for cadence) and a per-contract **estimate** column, so you can see recurring value at a glance.
 
+## Quotes & Proposals
+
+Before an agreement bills, you send the customer a **quote** (proposal). Open **Quotes** from the sidebar, build the document in the quote editor, and send it for online acceptance. An accepted quote turns into invoices and — for recurring lines — a draft contract (see [From an Accepted Quote](#from-an-accepted-quote)).
+
+### Building a quote
+
+Give the quote a **title** (for example, "Office network refresh") — it heads the customer-facing proposal and PDF. Add line items to a **pricing table**; each line is billed **one-time**, **monthly**, or **annually** (set per line in the **Billing** field), and the customer document automatically splits the totals into one-time, monthly recurring, and annual recurring. A quote can hold several pricing tables, and you can **move a line to another pricing table** from the line's menu to reorganize a large proposal. You can also add section blocks — text and images — to shape how the proposal reads.
+
+Line items can pull from your [Product Catalog](/features/product-catalog/) (the catalog item's image carries through automatically) or be entered manually, and you can [edit line items inline](/features/product-catalog/#inline-editing-of-quote-line-items) or [pull products live from a distributor](/features/product-catalog/#searching-distributor-products-from-a-quote) without leaving the editor.
+
+### Pricing a line
+
+The add-line form couples three fields so you can price a line however you think about it:
+
+- Enter a **Unit cost** and a **Markup %** and Breeze derives the **Unit price**.
+- Enter a **Unit price** and a **Unit cost** and Breeze shows the resulting margin as the **Markup %**.
+
+Whichever of price or markup you typed last stays authoritative — change the cost afterward and Breeze recomputes the other one. Markup % only becomes editable once a cost is entered. Customer-facing fields (name, description, quantity, price, billing) are separated from internal fields (SKU, part number, cost, markup) by an **Internal · not shown to customer** divider so you can see at a glance what the customer will and won't read.
+
+**Auto-fill from web** drafts a line from a product name or SKU: it fills the name, description, and taxability, estimates a cost, and — when you've set a default markup — prices the line at that markup so it's ready to review. **Polish** cleans up the wording of a name or description you already have without changing any numbers or specs. Both follow your partner's [AI product copy style](/features/product-catalog/#ai-product-copy-style).
+
+You can attach a **product image** to any quote line (upload a file, or let the linked catalog item's image carry through); it appears on the proposal preview and PDF.
+
+### Collecting a deposit
+
+You can require a **deposit** up front, collected when the customer accepts the quote. Set it in the quote editor's **Deposit** control in one of two ways:
+
+- **Percentage** — a percentage of the amount due on acceptance.
+- **Selected lines** — the full value of specific one-time lines you flag as **deposit-eligible** (tick the deposit checkbox on each line).
+
+A deposit must be more than $0.00 and less than the full amount due on acceptance. A percentage so small it rounds to $0.00, or a selected-lines deposit with nothing flagged, is rejected — remove the deposit instead. On the customer's quote (in the portal and on the PDF) the deposit shows as **Deposit due on acceptance** alongside the **Remaining balance**, so the customer sees exactly what they pay now versus later.
+
+When the quote is accepted, the deposit carries onto the issued invoice and is collected first — see [Deposit-first invoicing](/features/invoices/#deposits-and-deposit-first-invoicing).
+
 ## From an Accepted Quote
 
 When a customer accepts a quote or proposal that includes recurring (monthly or annual) line items, Breeze automatically creates a **draft contract** from those recurring lines — so an accepted proposal turns straight into the agreement that bills it, with no re-keying.

@@ -70,6 +70,20 @@ When a customer pays offline, record it against the invoice so the balance and s
 
 You can void a manually recorded payment if it was entered in error. Payments collected online through Stripe are reconciled from Stripe and can't be voided by hand.
 
+## Deposits and Deposit-First Invoicing
+
+When a customer accepts a [quote](/features/contracts/#quotes--proposals) that requires a **deposit**, the invoice Breeze issues carries that deposit amount, and the balance is collected afterward — deposit-first invoicing.
+
+- The issued invoice shows a **deposit strip** — for example, *"Deposit of $500.00 due — $0.00 of $2,000.00 paid"* — so a technician sees the same deposit-first framing the customer does.
+- Online payment charges the **deposit first**: while the deposit is unmet, the customer's **Pay** button in the [portal](/features/portal/#invoices--payments) charges the remaining deposit; once the deposit is paid, the button charges the remaining balance. The amount the button advertises always matches what is actually charged.
+- In the invoice list, a deposit invoice carries a badge showing whether its deposit is still **unpaid** or has been **paid**.
+
+Recording an offline payment against a deposit invoice works exactly as above — the balance and status update as the deposit and then the remainder come in.
+
+<Aside>
+  A deposit is configured on the quote, not the invoice. See [Quotes &amp; Proposals → Collecting a deposit](/features/contracts/#collecting-a-deposit) for how the two deposit modes (percentage or selected lines) are set.
+</Aside>
+
 ## Voiding and Reissuing
 
 If an issued invoice needs to be cancelled, **void** it with a reason. You can optionally **reissue** at the same time, which creates a fresh draft you can correct and issue anew -- keeping the original on record for audit purposes.

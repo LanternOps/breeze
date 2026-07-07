@@ -51,6 +51,7 @@ Alerts move through a lifecycle:
 | **Acknowledged** | A technician has seen the alert and is investigating |
 | **Resolved** | The issue is fixed (manually or auto-resolved by the rule) |
 | **Suppressed** | Silenced until a specified time, or indefinitely if suppressed **Forever** |
+| **Dismissed** | Permanently closed and hidden from lists -- the terminal "make it go away for good" action |
 
 ## Responding to Alerts
 
@@ -78,9 +79,15 @@ The alert moves to "suppressed" status and stops sending notifications. Timed su
   Resolved alerts can't be suppressed. Once an alert is marked **Resolved**, the **Suppress** control is no longer shown for it -- suppression only makes sense for alerts that are still open.
 </Aside>
 
+### Dismiss an Alert
+
+When you want an alert gone for good -- not merely resolved -- click **Dismiss**. Dismiss is a **terminal** action available from *any* status, including alerts you have already resolved. A dismissed alert moves to the **Dismissed** status and is **hidden from the alert list by default**; it reappears only when you explicitly choose the **Dismissed** status filter (the "All" status filter still hides dismissed alerts).
+
+Dismissal is durable in a way resolving is not. A resolved alert can fire again the next time its condition recurs, but dismissing a **warranty-expiry** alert tells Breeze not to re-create that alert for the same warranty end date -- so "make it go away for good" actually sticks. (If the device's warranty is later renewed to a new expiry date, a fresh alert can still be raised for that new date; and other conditions can still open new alerts if they recur.) A dismissed alert cannot be resolved or suppressed afterward.
+
 ### Bulk Actions
 
-Select multiple alerts using the checkboxes, then choose **Acknowledge Selected**, **Resolve Selected**, or **Suppress Selected** from the bulk action menu. Bulk suppressing prompts for the same duration options as a single alert, including **Forever**. You can act on up to 100 alerts at once.
+Select multiple alerts using the checkboxes, then choose **Acknowledge Selected**, **Resolve Selected**, **Suppress Selected**, or **Dismiss permanently** from the bulk action menu. Bulk suppressing prompts for the same duration options as a single alert, including **Forever**. You can act on up to 100 alerts at once.
 
 ## Alert Correlation
 

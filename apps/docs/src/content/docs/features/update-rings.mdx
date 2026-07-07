@@ -205,6 +205,10 @@ Category rules let you set per-category auto-approval behavior within a ring. Th
 | `autoApproveSeverities` | string[] | If set, only auto-approve patches with these severities |
 | `deferralDaysOverride` | integer or null | Override the ring's default deferral for this category |
 
+<Aside type="note">
+  **Third-party (winget) patches and auto-approval.** Third-party application updates arrive without a vendor-assigned severity, so a ring only auto-approves them when its **Patch sources** explicitly include `third_party` (the default is OS-only). Once opted in, ring auto-approval applies to third-party patches just as it does to OS patches. On **Patch Management → Patches**, selecting a specific ring now shows the correct per-source patch counts and operating system for each patch.
+</Aside>
+
 ---
 
 ## Ring Compliance
