@@ -498,3 +498,6 @@ Check for devices with `failed` or `missing` patch status — these reduce the c
 
 **Compliance report stuck in `running`.**
 Check the background queue worker status in your infrastructure. The compliance report worker is a separate worker process from the main API worker. If that worker is down or backlogged, reports will remain in `running` or `pending` indefinitely. Restarting the compliance worker will resume processing.
+
+**Third-party patches disappeared after an OS-only scan.**
+A full scan only clears out (marks `missing`) patches from the sources it **actually scanned**. If a scan ran without a particular provider — for example, a Windows device where winget was unavailable, so no third-party source was scanned — that source's previously detected patches are preserved rather than being wrongly removed. Re-run a scan that includes the missing source to refresh those patches.

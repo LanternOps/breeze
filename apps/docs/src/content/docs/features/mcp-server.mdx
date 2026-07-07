@@ -15,12 +15,15 @@ The MCP server reuses the same tools, guardrails, and audit infrastructure as th
 
 The [Model Context Protocol](https://modelcontextprotocol.io/) is an open standard that defines how AI applications discover and invoke tools and resources hosted by external servers. A single MCP connection gives the AI client a live catalogue of everything it can do inside Breeze -- no custom plugin code required.
 
-Breeze implements the **2024-11-05** protocol version with two capabilities:
+Breeze implements the **2024-11-05** protocol version with three capabilities:
 
 | Capability | Description |
 |---|---|
 | **Tools** | 100+ callable operations across device management, monitoring, alerting, compliance, backups, configuration policies, ticketing, billing, analytics, and more |
 | **Resources** | Read-only data endpoints (`breeze://devices`, `breeze://alerts`, etc.) |
+| **Prompts** | Five guided MSP workflows the AI client can launch as ready-made starting points (see [Guided prompts](#guided-prompts)) |
+
+On connection the server also returns an **`instructions`** string describing the Partner → Organization → Site → Device Group → Device hierarchy and a read-before-write approach, so the AI client orients itself to your tenant before it acts.
 
 ---
 
@@ -315,6 +318,22 @@ All resource reads are org-scoped -- the API key's organization determines which
 
 ---
 
+## Guided prompts
+
+Beyond individual tools, the server advertises five **guided prompts** -- ready-made workflows for the tasks MSPs run most often. An AI client lists them with `prompts/list` and expands one with `prompts/get`; the prompt returns a structured starting message (with any argument you supply filled in) that steers the assistant through the right sequence of tools. They're a fast on-ramp: rather than describing a whole procedure, you pick the workflow and let it drive.
+
+| Prompt | What it does | Arguments |
+|---|---|---|
+| **`breeze-fleet-triage`** | A read-only health sweep of the fleet -- surfaces what needs attention right now. | `scope` (optional org or site) |
+| **`breeze-device-investigate`** | Deep-dives a single device and summarizes the likely root cause (read-only). | `device` (name, hostname, or ID) |
+| **`breeze-patch-remediate`** | Safely patches a target -- scan, confirm, then apply. Touches higher-risk execute tools, so it stays approval-gated. | `target` (device, site, or org) |
+| **`breeze-incident-kickoff`** | Opens and structures an incident with a timeline, evidence collection, and a report. | `summary` (required), `scope` (optional) |
+| **`breeze-turnkey-setup`** | An opinionated baseline-configuration wizard -- partner-wide by default so a policy applies across every organization. | `scope` (optional; defaults to partner-wide) |
+
+Prompts don't bypass permissions or approvals: every tool a prompt drives is still subject to your API key's [scopes](#scope-based-access-control), the [step-up approval](#step-up-approval-out-of-band) flow, and the [production allowlist](#production-allowlist-for-destructive-tools).
+
+---
+
 ## Scope-based access control
 
 The tools visible and callable through MCP are determined by the scopes on your API key. Breeze uses a four-scope model for AI operations:
@@ -529,12 +548,40 @@ Returns server capabilities and metadata.
     "protocolVersion": "2024-11-05",
     "capabilities": {
       "tools": { "listChanged": false },
-      "resources": { "subscribe": false, "listChanged": false }
+      "resources": { "subscribe": false, "listChanged": false },
+      "prompts": { "listChanged": false }
     },
     "serverInfo": {
       "name": "breeze-rmm",
       "version": "1.0.0"
-    }
+    },
+    "instructions": "You are connected to Breeze RMM — a multi-tenant RMM platform for MSPs. ..."
+  }
+}
+```
+
+### `prompts/list`
+
+Returns the catalogue of guided workflow prompts (see [Guided prompts](#guided-prompts)).
+
+```json
+// Request
+{ "jsonrpc": "2.0", "id": 6, "method": "prompts/list" }
+```
+
+### `prompts/get`
+
+Returns a prompt's rendered messages, ready to seed a conversation. Pass the prompt `name` and any arguments.
+
+```json
+// Request
+{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "method": "prompts/get",
+  "params": {
+    "name": "breeze-device-investigate",
+    "arguments": { "device": "ACME-LT-014" }
   }
 }
 ```

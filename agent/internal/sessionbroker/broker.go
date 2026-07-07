@@ -1531,7 +1531,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		return
 	}
 
-	scopes := b.scopesForRole(helperRole, authReq.BinaryKind, runtime.GOOS, creds.BinaryPath)
+	scopes := b.grantScopes(helperRole, authReq, runtime.GOOS, creds.BinaryPath)
 
 	// Send auth response
 	authResp := ipc.AuthResponse{
@@ -1876,6 +1876,20 @@ func (b *Broker) scopesForRole(role, binaryKind, goos, peerPath string) []string
 		return systemHelperScopes
 	}
 	return nil
+}
+
+// grantScopes computes the final AllowedScopes for an authenticated helper:
+// the role's base scopes plus consent_ui_fallback when a user-role helper
+// advertised native consent support. Always returns a fresh slice — the
+// role-scope vars are shared package state and must not be appended to.
+func (b *Broker) grantScopes(role string, authReq ipc.AuthRequest, goos, peerPath string) []string {
+	base := b.scopesForRole(role, authReq.BinaryKind, goos, peerPath)
+	scopes := make([]string, len(base), len(base)+1)
+	copy(scopes, base)
+	if role == ipc.HelperRoleUser && authReq.SupportsConsentUI {
+		scopes = append(scopes, ipc.ScopeConsentUIFallback)
+	}
+	return scopes
 }
 
 func (b *Broker) isDesktopHelperPeerPath(peerPath string) bool {

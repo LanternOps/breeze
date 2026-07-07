@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { getJobMock, addMock, addBulkMock, closeMock, selectMock, fromMock, whereMock, groupByMock, workerProcessors } = vi.hoisted(() => ({
+const { getJobMock, addMock, addBulkMock, closeMock, selectMock, fromMock, whereMock, groupByMock, workerProcessors, workerOptionsCalls } = vi.hoisted(() => ({
   getJobMock: vi.fn(),
   addMock: vi.fn(),
   addBulkMock: vi.fn(),
@@ -10,6 +10,7 @@ const { getJobMock, addMock, addBulkMock, closeMock, selectMock, fromMock, where
   whereMock: vi.fn(),
   groupByMock: vi.fn(),
   workerProcessors: [] as Array<(job: { data: unknown }) => Promise<unknown>>,
+  workerOptionsCalls: [] as Array<{ concurrency?: number }>,
 }));
 
 vi.mock('bullmq', () => ({
@@ -20,8 +21,9 @@ vi.mock('bullmq', () => ({
     close = closeMock;
   },
   Worker: class {
-    constructor(_name: string, processor: (job: { data: unknown }) => Promise<unknown>) {
+    constructor(_name: string, processor: (job: { data: unknown }) => Promise<unknown>, opts: { concurrency?: number }) {
       workerProcessors.push(processor);
+      workerOptionsCalls.push(opts);
     }
 
     close = closeMock;
@@ -86,6 +88,7 @@ describe('enqueueDeviceReliabilityComputation', () => {
     whereMock.mockReturnValue({ groupBy: groupByMock });
     groupByMock.mockResolvedValue([{ orgId: 'org-1' }]);
     workerProcessors.length = 0;
+    workerOptionsCalls.length = 0;
     await shutdownReliabilityWorker();
   });
 
@@ -115,6 +118,25 @@ describe('enqueueDeviceReliabilityComputation', () => {
 
     expect(jobId).toBe('existing-job');
     expect(addMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps two recompute requests 9 minutes apart in the same dedupe slot (10-min window)', async () => {
+    const base = new Date('2026-03-31T12:00:00.000Z');
+    vi.setSystemTime(base);
+    await enqueueDeviceReliabilityComputation('device-1');
+    const firstJobId = (addMock.mock.calls[0]![2] as { jobId: string }).jobId;
+
+    vi.setSystemTime(new Date(base.getTime() + 9 * 60 * 1000));
+    await enqueueDeviceReliabilityComputation('device-1');
+    const secondJobId = (addMock.mock.calls[1]![2] as { jobId: string }).jobId;
+
+    expect(secondJobId).toBe(firstJobId);
+  });
+
+  it('creates the reliability worker with concurrency 2 (event-loop hardening)', () => {
+    createReliabilityWorker();
+
+    expect(workerOptionsCalls.at(-1)?.concurrency).toBe(2);
   });
 
   it('uses worker execution time when scheduled scans fan out org recompute jobs', async () => {
