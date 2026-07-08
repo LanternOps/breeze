@@ -1,6 +1,6 @@
 import type { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { and, eq, isNull, desc } from 'drizzle-orm';
+import { and, eq, isNull, desc, ne } from 'drizzle-orm';
 import { db } from '../db';
 import { organizations, portalUsers, tickets, ticketComments, assetCheckouts } from '../db/schema';
 import { requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
@@ -175,7 +175,7 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
     const auth = c.get('auth') as AuthContext;
     const { userIds } = c.req.valid('json');
     // "Pending setup" = no password. Invite selected, or all pending in the org.
-    const baseWhere = and(eq(portalUsers.orgId, org.id), isNull(portalUsers.passwordHash));
+    const baseWhere = and(eq(portalUsers.orgId, org.id), isNull(portalUsers.passwordHash), ne(portalUsers.status, 'disabled'));
     const candidates = await db.select({ id: portalUsers.id, email: portalUsers.email }).from(portalUsers).where(baseWhere);
     const targets = userIds && userIds.length > 0 ? candidates.filter((u) => userIds.includes(u.id)) : candidates;
     const [orgRow] = await db.select({ name: organizations.name }).from(organizations).where(eq(organizations.id, org.id)).limit(1);
