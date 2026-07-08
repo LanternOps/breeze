@@ -250,7 +250,7 @@ export default function ConfigPolicyCreatePage() {
                     onChange={() => setOwnerScope('partner')}
                     data-testid="policy-owner-partner"
                   />
-                  All organizations <span className="text-muted-foreground">(partner-wide)</span>
+                  Partner library <span className="text-muted-foreground">(assign to organizations after creating)</span>
                 </label>
                 <label className="flex items-center gap-2 text-sm">
                   <input
@@ -283,10 +283,9 @@ export default function ConfigPolicyCreatePage() {
                   </div>
                 )}
                 {ownerScope === 'partner' && (
-                  <p className="pl-6 text-xs text-muted-foreground">
-                    Applies to every organization under your partner — it&apos;s assigned partner-wide
-                    automatically, so you don&apos;t need to add an assignment (you can still add role or OS
-                    filters on the Assignments tab). Backup settings aren&apos;t available on partner-wide policies.
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    Create a reusable policy owned by your partner. It applies to no
+                    organizations until you assign it on the policy&apos;s Organizations tab.
                   </p>
                 )}
               </fieldset>
