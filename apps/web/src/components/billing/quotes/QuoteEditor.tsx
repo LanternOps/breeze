@@ -2296,11 +2296,24 @@ function EditableLineRow({
     return ok;
   }, [onEdit, line.id, flashSaved]);
 
-  // Per-line product image: upload to quote_images, then PATCH the line's
+  // Per-line product image: resolve an imageId from an uploaded file OR a pasted
+  // URL (the server copies the bytes in — not a hotlink), then PATCH the line's
   // imageId. Local busy (not the pending map) because the upload itself runs
-  // before any line mutation exists to scope.
+  // before any line mutation exists to scope. The URL path is a disclosure — a
+  // "From URL" button reveals `imageUrlOpen`'s inline field — rather than a
+  // per-row tab toggle, which would bloat every line; the add-block form (which
+  // has room) uses tabs instead.
   const imageInputRef = useRef<HTMLInputElement>(null);
   const [imageBusy, setImageBusy] = useState(false);
+  const [imageUrlOpen, setImageUrlOpen] = useState(false);
+  const [imageUrlDraft, setImageUrlDraft] = useState('');
+  // Attach `uploaded.imageId` to the line and reset the URL disclosure. Shared by
+  // both the file and URL paths so success behaves identically.
+  const applyImageId = useCallback(async (imageId: string) => {
+    await edit({ imageId }, 'image');
+    setImageUrlDraft('');
+    setImageUrlOpen(false);
+  }, [edit]);
   const attachImage = useCallback((file: File) => {
     if (file.size > 5 * 1024 * 1024) {
       handleActionError(new Error('image too large'), 'Image must be 5MB or smaller.');
@@ -2315,14 +2328,37 @@ function EditableLineRow({
           onUnauthorized: UNAUTHORIZED,
           parseSuccess: (d) => (d as { data: { imageId: string } }).data,
         });
-        await edit({ imageId: uploaded.imageId }, 'image');
+        await applyImageId(uploaded.imageId);
       } catch {
         // runAction already surfaced the failure (toast/redirect).
       } finally {
         setImageBusy(false);
       }
     })();
-  }, [quoteId, edit]);
+  }, [quoteId, applyImageId]);
+  // URL path: the server fetches + copies the remote bytes (SSRF-guarded, 5 MB
+  // cap enforced server-side — unlike the file path there's no local size check
+  // because the bytes aren't in hand here). Mirrors the image block's URL flow.
+  const attachImageFromUrl = useCallback(() => {
+    const url = imageUrlDraft.trim();
+    if (!url) return;
+    void (async () => {
+      setImageBusy(true);
+      try {
+        const uploaded = await runAction<{ imageId: string }>({
+          request: () => addQuoteImageFromUrl(quoteId, url),
+          errorFallback: 'Could not fetch the image from that URL.',
+          onUnauthorized: UNAUTHORIZED,
+          parseSuccess: (d) => (d as { data: { imageId: string } }).data,
+        });
+        await applyImageId(uploaded.imageId);
+      } catch {
+        // runAction already surfaced the failure (toast/redirect).
+      } finally {
+        setImageBusy(false);
+      }
+    })();
+  }, [quoteId, imageUrlDraft, applyImageId]);
   // Per-field dirty cue (mirrors the terms/tax ring) so every editable surface
   // signals unsaved state the same way.
   const nameDirty = name.trim() !== (line.name ?? '');
@@ -2695,6 +2731,16 @@ function EditableLineRow({
             {imageBusy && <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />}
             {imageBusy ? 'Uploading…' : line.imageId ? 'Replace image' : 'Add image'}
           </button>
+          <button
+            type="button"
+            onClick={() => setImageUrlOpen((v) => !v)}
+            disabled={imageBusy || fieldBusy('image')}
+            aria-expanded={imageUrlOpen}
+            data-testid={`quote-line-image-url-toggle-${line.id}`}
+            className="inline-flex h-8 items-center rounded-md border px-2 text-xs font-medium hover:bg-muted disabled:opacity-50"
+          >
+            From URL
+          </button>
           {line.imageId && !imageBusy && (
             <button
               type="button"
@@ -2705,6 +2751,41 @@ function EditableLineRow({
             >
               Remove image
             </button>
+          )}
+          {/* URL disclosure: wraps to its own row (basis-full) so the input has
+              room. Server copies the bytes in (SSRF-guarded); Fetch is disabled
+              until a URL is entered, matching the image block's submit gate. */}
+          {imageUrlOpen && (
+            <div className="flex w-full items-center gap-2">
+              <input
+                type="url"
+                value={imageUrlDraft}
+                onChange={(e) => setImageUrlDraft(e.target.value)}
+                placeholder="https://example.com/photo.png"
+                disabled={imageBusy}
+                aria-label="Image URL"
+                data-testid={`quote-line-image-url-input-${line.id}`}
+                className="h-8 min-w-0 flex-1 rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
+              />
+              <button
+                type="button"
+                onClick={attachImageFromUrl}
+                disabled={imageBusy || fieldBusy('image') || !imageUrlDraft.trim()}
+                data-testid={`quote-line-image-url-fetch-${line.id}`}
+                className="inline-flex h-8 items-center rounded-md bg-primary px-2 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+              >
+                Fetch
+              </button>
+              <button
+                type="button"
+                onClick={() => { setImageUrlOpen(false); setImageUrlDraft(''); }}
+                disabled={imageBusy}
+                data-testid={`quote-line-image-url-cancel-${line.id}`}
+                className="inline-flex h-8 items-center rounded-md border px-2 text-xs font-medium text-muted-foreground hover:bg-muted disabled:opacity-50"
+              >
+                Cancel
+              </button>
+            </div>
           )}
         </div>
       </td>
