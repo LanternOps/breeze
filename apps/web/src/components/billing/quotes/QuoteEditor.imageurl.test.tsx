@@ -2,8 +2,8 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import QuoteEditor from './QuoteEditor';
-import type { QuoteDetail as QuoteDetailData } from './quoteTypes';
-import { addBlock, addQuoteImageFromUrl } from '../../../lib/api/quotes';
+import type { QuoteDetail as QuoteDetailData, QuoteBlock, QuoteLine } from './quoteTypes';
+import { addBlock, addQuoteImageFromUrl, updateLine } from '../../../lib/api/quotes';
 
 vi.mock('../../../stores/auth', () => ({
   fetchWithAuth: vi.fn().mockResolvedValue(
@@ -62,6 +62,21 @@ const detail: QuoteDetailData = {
 
 const addBlockMock = vi.mocked(addBlock);
 const fromUrlMock = vi.mocked(addQuoteImageFromUrl);
+const updateLineMock = vi.mocked(updateLine);
+
+// A pricing table + one manual line, so the per-line image controls render.
+const lineBlock: QuoteBlock = {
+  id: 'blk-1', quoteId: 'q-1', orgId: 'org-1', blockType: 'line_items',
+  content: {}, sortOrder: 0, createdAt: '2026-06-01T00:00:00Z',
+};
+const manualLine: QuoteLine = {
+  id: 'line-1', quoteId: 'q-1', blockId: 'blk-1', orgId: 'org-1', sourceType: 'manual',
+  catalogItemId: null, imageId: null, parentLineId: null, unitCost: null, sku: null,
+  partNumber: null, name: 'Widget', description: null, quantity: '1', unitPrice: '10.00',
+  taxable: true, customerVisible: true, lineTotal: '10.00', recurrence: 'one_time',
+  termMonths: null, billingFrequency: null, sortOrder: 0, createdAt: '2026-06-01T00:00:00Z',
+};
+const detailWithLine: QuoteDetailData = { ...detail, blocks: [lineBlock], lines: [manualLine] };
 
 async function openImageUrlPanel() {
   render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
@@ -117,5 +132,67 @@ describe('QuoteEditor — add image from URL', () => {
 
     expect(screen.queryByTestId('quote-block-image-url')).not.toBeInTheDocument();
     expect(screen.getByTestId('quote-block-image-file')).toBeInTheDocument();
+  });
+});
+
+describe('QuoteEditor — add line image from URL', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  async function renderWithLine() {
+    render(<QuoteEditor detail={detailWithLine} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-line-line-1')).toBeInTheDocument());
+  }
+
+  it('the URL field is hidden until "From URL" is clicked', async () => {
+    await renderWithLine();
+    expect(screen.queryByTestId('quote-line-image-url-input-line-1')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('quote-line-image-url-toggle-line-1'));
+    expect(screen.getByTestId('quote-line-image-url-input-line-1')).toBeInTheDocument();
+  });
+
+  it('fetching a URL copies the image then PATCHes the line with the returned id', async () => {
+    fromUrlMock.mockResolvedValue(okRes({ imageId: 'img-9' }));
+    updateLineMock.mockResolvedValue(okRes({}));
+    await renderWithLine();
+
+    fireEvent.click(screen.getByTestId('quote-line-image-url-toggle-line-1'));
+    fireEvent.change(screen.getByTestId('quote-line-image-url-input-line-1'), { target: { value: 'https://cdn.example.com/w.png' } });
+    fireEvent.click(screen.getByTestId('quote-line-image-url-fetch-line-1'));
+
+    await waitFor(() => expect(fromUrlMock).toHaveBeenCalledWith('q-1', 'https://cdn.example.com/w.png'));
+    await waitFor(() => expect(updateLineMock).toHaveBeenCalledWith('q-1', 'line-1', { imageId: 'img-9' }));
+    // Success collapses the disclosure back to hidden.
+    await waitFor(() => expect(screen.queryByTestId('quote-line-image-url-input-line-1')).not.toBeInTheDocument());
+  });
+
+  it('Fetch is disabled until a URL is entered', async () => {
+    await renderWithLine();
+    fireEvent.click(screen.getByTestId('quote-line-image-url-toggle-line-1'));
+    expect(screen.getByTestId('quote-line-image-url-fetch-line-1')).toBeDisabled();
+    fireEvent.change(screen.getByTestId('quote-line-image-url-input-line-1'), { target: { value: 'https://x/y.png' } });
+    expect(screen.getByTestId('quote-line-image-url-fetch-line-1')).toBeEnabled();
+  });
+
+  it('a failed fetch shows an error toast and does not PATCH the line', async () => {
+    fromUrlMock.mockResolvedValue(errRes());
+    await renderWithLine();
+
+    fireEvent.click(screen.getByTestId('quote-line-image-url-toggle-line-1'));
+    fireEvent.change(screen.getByTestId('quote-line-image-url-input-line-1'), { target: { value: 'https://internal/w.png' } });
+    fireEvent.click(screen.getByTestId('quote-line-image-url-fetch-line-1'));
+
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ message: 'x', type: 'error' })));
+    expect(updateLineMock).not.toHaveBeenCalled();
+  });
+
+  it('Cancel closes the disclosure and clears the draft', async () => {
+    await renderWithLine();
+    fireEvent.click(screen.getByTestId('quote-line-image-url-toggle-line-1'));
+    fireEvent.change(screen.getByTestId('quote-line-image-url-input-line-1'), { target: { value: 'https://x/y.png' } });
+    fireEvent.click(screen.getByTestId('quote-line-image-url-cancel-line-1'));
+    expect(screen.queryByTestId('quote-line-image-url-input-line-1')).not.toBeInTheDocument();
+    // Reopening shows an empty field, not the abandoned draft.
+    fireEvent.click(screen.getByTestId('quote-line-image-url-toggle-line-1'));
+    expect(screen.getByTestId('quote-line-image-url-input-line-1')).toHaveValue('');
   });
 });
