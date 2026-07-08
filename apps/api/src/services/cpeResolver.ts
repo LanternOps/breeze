@@ -4,6 +4,9 @@
  * https://github.com/vulnerability-lookup/cpe-guesser
  */
 
+import curatedJson from './__fixtures__/cpe-translations.json';
+import cpedictJson from './__fixtures__/cpe-dictionary.json';
+
 export const RESOLVER_VERSION = 1;
 
 // Tokens stripped from a raw registry DisplayName. Architecture, then version-ish
@@ -30,4 +33,33 @@ export function tokenize(s: string): string[] {
     .toLowerCase()
     .split(/[^a-z0-9]+/)
     .filter((w) => w.length > 0);
+}
+
+export interface CuratedEntry { vendor: string; product: string; }
+
+export function parseCpe(cpe: string): { vendor: string; product: string } | null {
+  const parts = cpe.split(':');
+  // cpe:2.3:part:vendor:product:...  → parts[3]=vendor parts[4]=product
+  if (parts.length < 5 || parts[0] !== 'cpe' || parts[1] !== '2.3') return null;
+  const vendor = parts[3];
+  const product = parts[4];
+  if (!vendor || !product) return null;
+  return { vendor, product };
+}
+
+export function isWellFormedCpe(cpe: string): boolean {
+  return parseCpe(cpe) !== null;
+}
+
+export function loadCuratedDictionary(): Map<string, CuratedEntry> {
+  const rows = curatedJson as Array<{ name: string; vendor: string; product: string }>;
+  const map = new Map<string, CuratedEntry>();
+  for (const r of rows) {
+    map.set(normalizeDisplayName(r.name), { vendor: r.vendor, product: r.product });
+  }
+  return map;
+}
+
+export function loadCpeDictionary(): Set<string> {
+  return new Set(cpedictJson as string[]);
 }

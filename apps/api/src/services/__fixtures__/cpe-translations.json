@@ -1,0 +1,17 @@
+[
+  { "name": "Google Chrome", "vendor": "google", "product": "chrome" },
+  { "name": "Mozilla Firefox", "vendor": "mozilla", "product": "firefox" },
+  { "name": "Mozilla Firefox ESR", "vendor": "mozilla", "product": "firefox_esr" },
+  { "name": "Adobe Acrobat Reader", "vendor": "adobe", "product": "acrobat_reader" },
+  { "name": "Adobe Acrobat Reader DC", "vendor": "adobe", "product": "acrobat_reader" },
+  { "name": "Adobe Acrobat", "vendor": "adobe", "product": "acrobat" },
+  { "name": "7-Zip", "vendor": "7-zip", "product": "7-zip" },
+  { "name": "Notepad++", "vendor": "notepad-plus-plus", "product": "notepad-plus-plus" },
+  { "name": "Zoom", "vendor": "zoom", "product": "zoom" },
+  { "name": "VLC media player", "vendor": "videolan", "product": "vlc_media_player" },
+  { "name": "Microsoft Edge", "vendor": "microsoft", "product": "edge" },
+  { "name": "Microsoft OneDrive", "vendor": "microsoft", "product": "onedrive" },
+  { "name": "Microsoft Teams", "vendor": "microsoft", "product": "teams" },
+  { "name": "Git", "vendor": "git-scm", "product": "git" },
+  { "name": "Node.js", "vendor": "nodejs", "product": "node.js" }
+]

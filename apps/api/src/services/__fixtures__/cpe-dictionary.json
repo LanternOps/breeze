@@ -1,0 +1,7 @@
+[
+  "google:chrome", "mozilla:firefox", "mozilla:firefox_esr",
+  "adobe:acrobat_reader", "adobe:acrobat", "7-zip:7-zip",
+  "notepad-plus-plus:notepad-plus-plus", "zoom:zoom",
+  "videolan:vlc_media_player", "microsoft:edge", "microsoft:onedrive",
+  "microsoft:teams", "git-scm:git", "nodejs:node.js", "microsoft:365_apps"
+]

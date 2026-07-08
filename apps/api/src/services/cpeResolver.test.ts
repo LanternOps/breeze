@@ -25,3 +25,29 @@ describe('tokenize', () => {
     expect(tokenize('notepad++')).toEqual(['notepad']);
   });
 });
+
+import { loadCuratedDictionary, loadCpeDictionary, parseCpe, isWellFormedCpe } from './cpeResolver';
+
+describe('parseCpe', () => {
+  it('extracts vendor/product from cpe:2.3', () => {
+    expect(parseCpe('cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*')).toEqual({ vendor: 'google', product: 'chrome' });
+  });
+  it('returns null for garbage', () => {
+    expect(parseCpe('not-a-cpe')).toBeNull();
+  });
+});
+
+describe('curated dictionary', () => {
+  it('is keyed by normalized display name and maps to CPE tokens', () => {
+    const dict = loadCuratedDictionary();
+    expect(dict.get('google chrome')).toEqual({ vendor: 'google', product: 'chrome' });
+    expect(dict.get('adobe acrobat')).toEqual({ vendor: 'adobe', product: 'acrobat' });
+  });
+  it('INVARIANT: every curated CPE token pair exists in the cpedict validation set', () => {
+    const dict = loadCuratedDictionary();
+    const cpedict = loadCpeDictionary();
+    for (const [, { vendor, product }] of dict) {
+      expect(cpedict.has(`${vendor}:${product}`), `${vendor}:${product} missing from cpedict`).toBe(true);
+    }
+  });
+});
