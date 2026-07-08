@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Search } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { extractApiError } from '@/lib/apiError';
@@ -66,7 +66,14 @@ export default function OrganizationScopePanel({ policyId, partnerId }: Props) {
     return () => clearTimeout(t);
   }, [search]);
 
+  // Guards against out-of-order responses: a "Load more" (page N, append)
+  // fetch that resolves AFTER a later search-triggered page-1 fetch must not
+  // clobber/append onto the fresher list (#2280 re-review). Each call claims
+  // the next id; a response only commits state if it's still the latest.
+  const reqIdRef = useRef(0);
+
   const fetchOrgs = useCallback(async (pageToFetch: number, searchTerm: string, append: boolean) => {
+    const myReq = ++reqIdRef.current;
     setOrgsLoading(true);
     try {
       const params = new URLSearchParams({
@@ -78,13 +85,15 @@ export default function OrganizationScopePanel({ policyId, partnerId }: Props) {
       const res = await fetchWithAuth(`/orgs/organizations?${params.toString()}`);
       if (!res.ok) throw new Error(extractApiError(await res.json().catch(() => null), 'Failed to load organizations'));
       const data = await res.json();
+      if (myReq !== reqIdRef.current) return;
       const rows: OrgSummary[] = Array.isArray(data.data) ? data.data : [];
       setOrgs((prev) => (append ? [...prev, ...rows] : rows));
       setTotal(Number(data.pagination?.total ?? rows.length));
     } catch (err) {
+      if (myReq !== reqIdRef.current) return;
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
-      setOrgsLoading(false);
+      if (myReq === reqIdRef.current) setOrgsLoading(false);
     }
   }, [partnerId]);
 
@@ -120,6 +129,7 @@ export default function OrganizationScopePanel({ policyId, partnerId }: Props) {
     let cancelled = false;
     (async () => {
       for (const id of missingIds) {
+        if (cancelled) break;
         try {
           const res = await fetchWithAuth(`/orgs/organizations/${id}`);
           if (!res.ok) continue;

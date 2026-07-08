@@ -1049,6 +1049,11 @@ describe('org routes', () => {
       expect(countWhereArg).toBeDefined();
       expect(JSON.stringify(countWhereArg)).toContain('org-1');
       expect(JSON.stringify(countWhereArg)).toContain('org-2');
+
+      // The search term itself must also be ANDed into the WHERE — the
+      // assertions above only prove scope survives, not that the ilike
+      // condition was actually applied.
+      expect(JSON.stringify(countWhereArg)).toContain('contoso');
     });
 
     it('returns 200 without error when a search param is supplied for an org-scope caller (moot but must not error)', async () => {

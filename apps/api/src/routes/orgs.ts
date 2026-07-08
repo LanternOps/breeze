@@ -20,6 +20,7 @@ import {
 import { applyOrganizationOrder, sanitizeOrganizationOrder } from '../services/orgOrdering';
 import { captureException } from '../services/sentry';
 import { encryptColumnValueForWrite } from '../services/encryptedColumnRegistry';
+import { escapeLike } from '../utils/sql';
 import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema } from '@breeze/shared';
 import type { IpAllowlistStatus } from '@breeze/shared';
 import { isValidIpOrCidr } from '../services/ipMatch';
@@ -918,11 +919,6 @@ const listOrganizationsSchema = z.object({
   search: z.string().optional()
 });
 
-// Escape ILIKE wildcards so a search term is matched literally, not as a pattern.
-function escapeIlike(value: string): string {
-  return value.replace(/[%_\\]/g, '\\$&');
-}
-
 // Org-scope callers may read their OWN org's name-level row without the
 // organizations:read permission (UI shell / tickets cold load, #1245 residual)
 // — every org user implicitly needs their org's name to render the app shell.
@@ -942,7 +938,7 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
   const { page, limit, offset } = getPagination(pagination);
   const trimmedSearch = search?.trim();
   const searchCondition = trimmedSearch
-    ? ilike(organizations.name, `%${escapeIlike(trimmedSearch)}%`)
+    ? ilike(organizations.name, `%${escapeLike(trimmedSearch)}%`)
     : undefined;
 
   if (auth.scope === 'organization') {
