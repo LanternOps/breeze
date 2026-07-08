@@ -16,9 +16,9 @@ There is no way to define one reusable policy and apply it to a **chosen subset 
 
 ## Goals
 
-- A partner-owned config policy acts as a **library definition**: it reaches **zero** devices until explicitly assigned.
+- A partner-owned config policy acts as a **library definition**: it is **created empty** (reaches **zero** devices) and reaches nothing until explicitly assigned.
 - It can be assigned to a selectable subset of orgs (and to lower levels — site / group / device — within those orgs), one at a time.
-- A single "All orgs" toggle preserves the existing partner-wide behavior.
+- A single "All orgs" toggle applies it partner-wide when wanted.
 - Cross-partner assignment remains impossible (tenant isolation).
 
 ## Non-goals
@@ -27,11 +27,25 @@ There is no way to define one reusable policy and apply it to a **chosen subset 
 - Any change to the `backup` feature type, which is still org-locked pending #2168.
 - Changing org-owned policy behavior in any way.
 
-## Why this is low-risk
+## Behavior change (scoped and intentional)
 
-Today a partner-owned policy already reaches **0 orgs** until it receives a `partner`-level assignment (creation does not auto-assign). Allowing `organization`-level (and lower) assignments is therefore **purely additive** — no existing partner-owned policy changes behavior. The resolver already resolves the new shape; only a single write-side guard blocks it.
+One deliberate behavior change, plus otherwise-additive work:
+
+- **New partner-owned policies are created empty.** Today `crud.ts:95` auto-seeds a `partner`-level assignment on create, so "All organizations" ownership applies everywhere immediately. The library model removes that seed: a newly-created partner-owned policy reaches **0 devices** until assigned via the Organizations panel. The create-form option is relabeled accordingly.
+- **Existing partner-owned policies are untouched** — they keep their already-seeded `partner`-level assignment and continue to apply to all orgs. No migration, no backfill.
+- **Everything else is additive.** Allowing `organization`/`site`/`device_group`/`device` assignments for partner-owned policies changes no existing data; the resolver already resolves the new shape (only a write-side guard blocks it).
 
 ## Design
+
+### Layer 0 — Create path: stop auto-seeding the partner assignment
+
+**File:** `apps/api/src/routes/configurationPolicies/crud.ts` — POST `/` handler, partner-owned branch (`:82-104`).
+
+Remove the `assignPolicy(policy.id, 'partner', auth.partnerId, ...)` seed at `:95` and its lockstep comment (`:83-94`). The policy is created with **no** assignment. Update the audit `details` to drop `autoAssignedPartnerWide: true`. The transaction reasoning about "committed-but-unassigned" no longer applies — empty is now the intended state.
+
+**File:** `apps/web/src/components/configurationPolicies/ConfigPolicyCreatePage.tsx` — the ownerScope radio (`:247-266`).
+
+Relabel the partner option from **"All organizations (partner-wide)"** to **"Partner library — assign to organizations after creating"** with helper copy: *"Create a reusable policy owned by your partner. It applies to no organizations until you assign it on the policy's Organizations tab."* No behavioral field change — still sends `ownerScope: 'partner'`.
 
 ### Layer 1 — Backend validator (the load-bearing change)
 
@@ -61,7 +75,7 @@ Any target whose owning org belongs to a different partner → `{ valid: false, 
   - admits partner-owned policies in its ownership filter (`:1389-1391`: `orgId IS NULL AND partnerId = org.partnerId`).
   A partner-owned policy carrying an org-level assignment for the device's org already flows through untouched. **No resolver edit, no schema change, no migration.**
 
-**Authorization:** the assignment write route stays gated on `canManagePartnerWidePolicies(auth)` for partner-owned policies (assigning a partner-wide policy is partner-wide management — single source of truth in `services/partnerWideAccess.ts`).
+**Authorization (route change required):** today the POST `/:id/assignments` route (`assignments.ts:70-88`) only gates `canManagePartnerWidePolicies(auth)` when `level === 'partner'`. Once partner-owned policies accept lower levels, that gate would be bypassed for an org-level assignment on a partner-owned policy. Extend it: for **any** partner-owned policy (`policy.orgId === null`), require `canManagePartnerWidePolicies(auth)` regardless of level — managing the partner library is a full-partner-access capability in v1. The DELETE route already applies this gate for `policy.orgId === null` (`:152`), so it needs no change. Single source of truth: `services/partnerWideAccess.ts`.
 
 **AI tools:** `assign_policy_to_target` and `apply_configuration_policy` (`aiToolsConfigPolicy.ts`) call the same `validateAssignmentTarget`, so they are unblocked by this one change — no separate edit, but they must be covered by the sweep (see Layer 5).
 
@@ -120,7 +134,7 @@ Framework: Vitest (API unit + RLS/integration).
 
 ## Rollout
 
-Additive; no migration, no data backfill, no feature flag required. Existing partner-owned policies keep their partner-level assignments and behave identically. Ship backend validator + tests first (unblocks AI tools immediately), then the Organizations panel.
+No migration, no data backfill, no feature flag. Existing partner-owned policies keep their seeded `partner`-level assignment and behave identically. The one behavior change — new partner-owned policies created empty — affects only policies created after ship. Ship order: backend validator + route auth + create-path change (with tests) first (this alone unblocks the AI tools and the empty-create model), then the Organizations panel.
 
 ## Open questions
 
