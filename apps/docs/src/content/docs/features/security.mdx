@@ -389,6 +389,44 @@ Returns each posture component with its score, weight, status (`good`/`warning`/
 
 ---
 
+## Disk Encryption & Recovery Keys
+
+Breeze tracks disk-encryption status across your fleet and can **escrow** each device's recovery key — so when a user is locked out of a BitLocker (Windows) or FileVault (macOS) volume, you retrieve the key from Breeze instead of hunting through spreadsheets or Active Directory.
+
+### Encryption overview
+
+The **Encryption** page (under **Security**) lists every device with its encryption method (BitLocker, FileVault, LUKS, or None), status (Encrypted, Partial, Unencrypted), TPM presence, and whether a recovery key has been escrowed. Filter by status, operating system, or **escrow state** (**Key escrowed** / **Key missing**) to find machines that are protected but whose recovery key isn't yet on file.
+
+### Recovery keys on a device
+
+Open a device's **Security** tab to see its **Recovery Keys** panel:
+
+- **Collect now** — asks the agent to report the device's current recovery key. The request is queued and runs the next time the device is online.
+- **Rotate key** — requests a new recovery key be generated and escrowed (where the platform supports rotation).
+- **Reveal** — shows an escrowed key's value. Every reveal is recorded in an audit trail.
+
+Recovery keys are stored **encrypted at rest**. Access is org-scoped, and each time a key is collected, revealed, or rotated the action is written to a recovery-key access log so you retain a full history of who saw which key and when.
+
+<Aside type="note">
+  Recovery-key escrow surfaces automatically once agents begin reporting keys — there is no configuration to enable. A device that is unencrypted or hasn't reported a key yet shows "No recovery keys escrowed."
+</Aside>
+
+### Recovery-key API
+
+```bash
+# List escrowed recovery keys for a device
+GET  /security/encryption/devices/:deviceId/recovery-keys
+
+# Reveal a specific key (audited)
+POST /security/encryption/devices/:deviceId/recovery-keys/:keyId/reveal
+
+# Ask the agent to collect/report the device's key
+POST /security/encryption/devices/:deviceId/recovery-keys/collect
+
+# Request key rotation
+POST /security/encryption/devices/:deviceId/recovery-keys/rotate
+```
+
 ## Security Policies
 
 Security policies define the expected AV/EDR configuration (scan schedule, real-time protection, auto-quarantine, exclusions) for devices.
