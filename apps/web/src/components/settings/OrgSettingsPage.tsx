@@ -22,6 +22,7 @@ import OrgBillingSettings from '../billing/OrgBillingSettings';
 import SettingsSectionNav, { type SettingsNavGroup } from './SettingsSectionNav';
 import OrgBrandingEditor from './OrgBrandingEditor';
 import OrgPortalSettingsEditor from './OrgPortalSettingsEditor';
+import OrgPortalUsersEditor from './OrgPortalUsersEditor';
 import OrgTicketSettingsEditor from './OrgTicketSettingsEditor';
 import OrgDefaultsEditor from './OrgDefaultsEditor';
 import type { PinnableVersions, AgentVersionPinsValue } from './AgentVersionPinSelectors';
@@ -486,11 +487,14 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
         );
       case 'portal':
         return effectiveOrgId ? (
-          <OrgPortalSettingsEditor
-            orgId={effectiveOrgId}
-            onDirty={handleDirty}
-            onSave={() => handleSave()}
-          />
+          <>
+            <OrgPortalSettingsEditor
+              orgId={effectiveOrgId}
+              onDirty={handleDirty}
+              onSave={() => handleSave()}
+            />
+            <OrgPortalUsersEditor orgId={effectiveOrgId} />
+          </>
         ) : null;
       case 'notifications':
         return (
