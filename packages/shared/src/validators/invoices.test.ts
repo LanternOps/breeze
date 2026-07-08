@@ -84,6 +84,29 @@ describe('partnerBillingSettingsSchema — contact fields', () => {
   });
 });
 
+describe('orgBillingSettingsSchema — billing contact', () => {
+  it('accepts a billing contact email + name', () => {
+    const parsed = orgBillingSettingsSchema.parse({
+      billingContactEmail: 'billing@customer.example', billingContactName: 'AP Dept',
+    });
+    expect(parsed.billingContactEmail).toBe('billing@customer.example');
+    expect(parsed.billingContactName).toBe('AP Dept');
+  });
+
+  it('accepts null to clear the recipient', () => {
+    const parsed = orgBillingSettingsSchema.parse({ billingContactEmail: null, billingContactName: null });
+    expect(parsed.billingContactEmail).toBeNull();
+  });
+
+  it('rejects a malformed email', () => {
+    expect(() => orgBillingSettingsSchema.parse({ billingContactEmail: 'not-an-email' })).toThrow();
+  });
+
+  it('rejects an empty-string email (UI must send null, not "")', () => {
+    expect(() => orgBillingSettingsSchema.parse({ billingContactEmail: '' })).toThrow();
+  });
+});
+
 describe('invoice T&C field', () => {
   it('create accepts termsAndConditions', () => {
     const p = createManualInvoiceSchema.parse({ orgId: '00000000-0000-0000-0000-000000000000', termsAndConditions: 'Net 30' });

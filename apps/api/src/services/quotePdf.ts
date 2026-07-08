@@ -15,7 +15,7 @@
 
 import PDFDocument from 'pdfkit';
 import { toCents, fromCents } from '@breeze/shared';
-import { sellerAddressLines, type SellerSnapshot } from './sellerSnapshot';
+import { sellerAddressLines, type SellerSnapshot, type BillToAddress } from './sellerSnapshot';
 import { captureException } from './sentry';
 
 // ---------------------------------------------------------------------------
@@ -62,11 +62,6 @@ function hexToColor(value: string | null | undefined, fallback: string): string 
 
 function stripHtml(html: string): string {
   return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-}
-
-interface BillToAddress {
-  line1?: string | null; line2?: string | null; city?: string | null;
-  region?: string | null; postalCode?: string | null; country?: string | null;
 }
 
 function addressLines(addr: BillToAddress | null | undefined): string[] {

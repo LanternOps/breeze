@@ -31,6 +31,7 @@ vi.mock('../db', () => {
 vi.mock('./catalogService', () => ({ resolvePrice: vi.fn(), computeBundleEconomics: vi.fn() }));
 vi.mock('./invoiceEvents', () => ({ emitInvoiceEvent: vi.fn().mockResolvedValue(undefined) }));
 
+import { SQL } from 'drizzle-orm';
 import * as svc from './invoiceService';
 import { db } from '../db';
 import { InvoiceServiceError } from './invoiceTypes';
@@ -199,6 +200,38 @@ describe('invoiceService guards', () => {
     const row = await svc.updateOrgBillingSettings('org1', { taxId: 'GB123', taxExempt: true, billingAddressCountry: 'GB' }, actor);
     expect(row.taxExempt).toBe(true);
     expect(row.billingAddressCountry).toBe('GB');
+  });
+
+  it('updateOrgBillingSettings merges billingContact via an atomic jsonb `||` expression, with no pre-read', async () => {
+    // The merge now happens in one UPDATE (COALESCE(billing_contact,'{}') || patch)
+    // — race-free and no read-modify-write round-trip. The unit layer asserts the
+    // SHAPE of the write (a SQL expression, no pre-read select); the actual
+    // key-preservation + null-clear semantics are proven against real Postgres in
+    // orgBillingSettings.integration.test.ts.
+    queueResult([{ id: 'org1', billingContact: { email: 'new@x.example', name: 'AP Dept' } }]); // returning row only
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+
+    await svc.updateOrgBillingSettings('org1', { billingContactEmail: 'new@x.example', billingContactName: 'AP Dept' }, actor);
+
+    const setMock = (db as unknown as { set: { mock: { calls: unknown[][] } } }).set;
+    const setArg = setMock.mock.calls.at(-1)![0] as Record<string, unknown>;
+    expect(setArg.billingContact).toBeInstanceOf(SQL); // a merge expression, not a plain object
+    // No pre-read: the merge is done entirely in the UPDATE.
+    expect((db.select as unknown as { mock: { calls: unknown[][] } }).mock.calls).toHaveLength(0);
+  });
+
+  it('updateOrgBillingSettings does NOT touch billingContact (nor select) when no contact field is in the patch', async () => {
+    queueResult([{ id: 'org1', taxExempt: true }]); // returning row only
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+
+    await svc.updateOrgBillingSettings('org1', { taxExempt: true }, actor);
+
+    const setMock = (db as unknown as { set: { mock: { calls: unknown[][] } } }).set;
+    const setArg = setMock.mock.calls.at(-1)![0] as Record<string, unknown>;
+    expect(setArg).not.toHaveProperty('billingContact');
+    // Assert the pre-read select genuinely never fired — the `not.toHaveProperty`
+    // above would pass even if a stray select ran, so prove the branch directly.
+    expect((db.select as unknown as { mock: { calls: unknown[][] } }).mock.calls).toHaveLength(0);
   });
 });
 
