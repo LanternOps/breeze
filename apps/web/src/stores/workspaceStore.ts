@@ -1,8 +1,9 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { AiPageContext, AiStreamEvent, AiApprovalMode } from '@breeze/shared';
+import type { AiPageContext, AiStreamEvent, AiApprovalMode, AiTicketDraft, CreateTicketFromChatInput } from '@breeze/shared';
 import { fetchWithAuth } from './auth';
 import { extractApiError } from '@/lib/apiError';
+import { runAction } from '@/lib/runAction';
 import {
   processStreamEvent,
   mapMessagesFromApi,
@@ -77,6 +78,8 @@ interface WorkspaceState {
   pauseAi: (tabId: string, paused: boolean) => Promise<void>;
   interruptResponse: (tabId: string) => Promise<void>;
   flagSession: (tabId: string, reason?: string) => Promise<void>;
+  draftTicketFromChat: (tabId: string) => Promise<AiTicketDraft>;
+  saveTicketFromChat: (tabId: string, payload: CreateTicketFromChatInput) => Promise<{ ticketNumber: string; resolved: boolean; timeLogged: boolean }>;
   unflagSession: (tabId: string) => Promise<void>;
   clearError: (tabId: string) => void;
 
@@ -464,6 +467,37 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             console.error('[Workspace] Flag failed:', err);
             updateTab(tabId, { error: 'Failed to flag session' });
           }
+        },
+
+        draftTicketFromChat: async (tabId) => {
+          const tab = getTab(tabId);
+          if (!tab?.sessionId) throw new Error('No active session');
+          const res = await fetchWithAuth(`/ai/sessions/${tab.sessionId}/ticket-draft`, { method: 'POST' });
+          if (!res.ok) {
+            const data = await res.json().catch(() => null);
+            throw new Error(extractApiError(data, 'Could not draft a ticket from this conversation'));
+          }
+          const body = await res.json();
+          return body.data as AiTicketDraft;
+        },
+
+        saveTicketFromChat: async (tabId, payload) => {
+          const tab = getTab(tabId);
+          if (!tab?.sessionId) throw new Error('No active session');
+          const sessionId = tab.sessionId;
+          return runAction<{ ticketNumber: string; resolved: boolean; timeLogged: boolean }>({
+            request: () => fetchWithAuth(`/ai/sessions/${sessionId}/ticket`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(payload),
+            }),
+            errorFallback: 'Could not create the ticket.',
+            parseSuccess: (data) => {
+              const d = data as { data?: { ticketNumber?: string }; resolved?: boolean; timeLogged?: boolean };
+              return { ticketNumber: d.data?.ticketNumber ?? '', resolved: !!d.resolved, timeLogged: !!d.timeLogged };
+            },
+            successMessage: (r) => `Ticket ${r.ticketNumber} created${r.resolved ? ' and resolved' : ''}${r.timeLogged ? '' : ' (time not logged)'}`,
+          });
         },
 
         unflagSession: async (tabId: string) => {
