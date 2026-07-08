@@ -173,7 +173,7 @@ describe('QuoteEditor — add line image from URL', () => {
     expect(screen.getByTestId('quote-line-image-url-fetch-line-1')).toBeEnabled();
   });
 
-  it('a failed fetch shows an error toast and does not PATCH the line', async () => {
+  it('a failed fetch toasts, does not PATCH, and keeps the URL open for retry', async () => {
     fromUrlMock.mockResolvedValue(errRes());
     await renderWithLine();
 
@@ -183,6 +183,25 @@ describe('QuoteEditor — add line image from URL', () => {
 
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ message: 'x', type: 'error' })));
     expect(updateLineMock).not.toHaveBeenCalled();
+    // Retry affordance: the disclosure stays open with the URL intact.
+    expect(screen.getByTestId('quote-line-image-url-input-line-1')).toHaveValue('https://internal/w.png');
+  });
+
+  it('a fetch that succeeds but a failed line PATCH keeps the URL open for retry', async () => {
+    // The remote copy lands an imageId, but the follow-up line PATCH fails: the
+    // error toast must NOT be contradicted by the panel collapsing as if saved.
+    fromUrlMock.mockResolvedValue(okRes({ imageId: 'img-9' }));
+    updateLineMock.mockResolvedValue(errRes());
+    await renderWithLine();
+
+    fireEvent.click(screen.getByTestId('quote-line-image-url-toggle-line-1'));
+    fireEvent.change(screen.getByTestId('quote-line-image-url-input-line-1'), { target: { value: 'https://cdn.example.com/w.png' } });
+    fireEvent.click(screen.getByTestId('quote-line-image-url-fetch-line-1'));
+
+    await waitFor(() => expect(updateLineMock).toHaveBeenCalledWith('q-1', 'line-1', { imageId: 'img-9' }));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    // Disclosure stays open with the URL intact so the user can retry the save.
+    expect(screen.getByTestId('quote-line-image-url-input-line-1')).toHaveValue('https://cdn.example.com/w.png');
   });
 
   it('Cancel closes the disclosure and clears the draft', async () => {
