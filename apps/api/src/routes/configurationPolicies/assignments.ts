@@ -145,9 +145,10 @@ assignmentRoutes.delete(
     const policy = await getConfigPolicy(id, auth);
     if (!policy) return c.json({ error: 'Configuration policy not found' }, 404);
 
-    // Unassigning a partner-wide policy strips config from ALL orgs under the
-    // partner (its only assignment is the partner-level one) — the same blast
-    // radius as assigning, so the same capability gate applies.
+    // Any assignment on a partner-owned library policy (#2280) — partner-level
+    // (all orgs) or a narrower org/site/group/device row — is a partner-wide-
+    // access capability: the delete may strip config from one org or every org
+    // under the partner. Same blast radius as assigning, so the same gate applies.
     if (policy.orgId === null && !canManagePartnerWidePolicies(auth)) {
       return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }

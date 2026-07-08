@@ -409,17 +409,6 @@ describe('configurationPolicies CRUD routes', () => {
       expect(createConfigPolicyMock).toHaveBeenCalledWith({ orgId: ORG_ID }, expect.objectContaining({ name: 'Policy' }), 'user-1');
     });
 
-    function partnerCreateApp() {
-      const appPartner = new Hono();
-      appPartner.use('*', async (c, next) => {
-        c.set('auth', makeAuth({ scope: 'partner', orgId: null, partnerId: PARTNER_ID, partnerOrgAccess: 'all' }));
-        c.set('permissions', makePermissions({ scope: 'partner', partnerId: PARTNER_ID, orgId: null, orgAccess: 'all' }));
-        await next();
-      });
-      appPartner.route('/', crudRoutes);
-      return appPartner;
-    }
-
     it('rejects ownerScope:partner for an org-scope caller (no partner) (#1724)', async () => {
       const appOrg = new Hono();
       appOrg.use('*', async (c, next) => {

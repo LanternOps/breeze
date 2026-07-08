@@ -27,7 +27,7 @@ describe('OrganizationScopePanel', () => {
     fetchWithAuthMock.mockReturnValueOnce(
       jsonRes({ data: [{ id: 'a1', level: 'organization', targetId: 'org-acme', priority: 0 }] })
     );
-    render(<OrganizationScopePanel policyId="p1" partnerId={PARTNER_ID} />);
+    render(<OrganizationScopePanel policyId="p1" />);
     const acme = await screen.findByRole('checkbox', { name: /Acme Corp/i });
     expect(acme).toBeChecked();
     expect(screen.getByRole('checkbox', { name: /Contoso Ltd/i })).not.toBeChecked();
@@ -38,7 +38,7 @@ describe('OrganizationScopePanel', () => {
       .mockReturnValueOnce(jsonRes({ data: [] }))                       // initial list
       .mockReturnValueOnce(jsonRes({ id: 'a2', level: 'organization', targetId: 'org-contoso' }, true, 201)) // POST
       .mockReturnValueOnce(jsonRes({ data: [{ id: 'a2', level: 'organization', targetId: 'org-contoso', priority: 0 }] })); // refetch
-    render(<OrganizationScopePanel policyId="p1" partnerId={PARTNER_ID} />);
+    render(<OrganizationScopePanel policyId="p1" />);
     const contoso = await screen.findByRole('checkbox', { name: /Contoso Ltd/i });
     fireEvent.click(contoso);
     await waitFor(() =>
@@ -56,7 +56,7 @@ describe('OrganizationScopePanel', () => {
       .mockReturnValueOnce(jsonRes({ data: [] }))
       .mockReturnValueOnce(jsonRes({ id: 'ap', level: 'partner', targetId: PARTNER_ID }, true, 201))
       .mockReturnValueOnce(jsonRes({ data: [{ id: 'ap', level: 'partner', targetId: PARTNER_ID, priority: 0 }] }));
-    render(<OrganizationScopePanel policyId="p1" partnerId={PARTNER_ID} />);
+    render(<OrganizationScopePanel policyId="p1" />);
     const allOrgs = await screen.findByRole('checkbox', { name: /All organizations/i });
     fireEvent.click(allOrgs);
     await waitFor(() => {
@@ -77,7 +77,7 @@ describe('OrganizationScopePanel', () => {
       .mockReturnValueOnce(jsonRes({ id: 'ap', level: 'partner', targetId: PARTNER_ID }, true, 201)) // POST partner
       .mockReturnValueOnce(jsonRes({ data: [{ id: 'ap', level: 'partner', targetId: PARTNER_ID, priority: 0 }] })); // refetch
 
-    render(<OrganizationScopePanel policyId="p1" partnerId={PARTNER_ID} />);
+    render(<OrganizationScopePanel policyId="p1" />);
     const acme = await screen.findByRole('checkbox', { name: /Acme Corp/i });
     expect(acme).toBeChecked();
 

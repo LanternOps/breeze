@@ -6,14 +6,14 @@ import { extractApiError } from '@/lib/apiError';
 
 type Assignment = { id: string; level: string; targetId: string; priority: number };
 
-type Props = { policyId: string; partnerId: string };
+type Props = { policyId: string };
 
 // Partner-owned policies (#2280) are a reusable library. "All organizations"
 // (a single partner-level assignment) and a subset (N organization-level
 // assignments) are mutually exclusive: turning on All orgs removes per-org
 // rows; checking any org removes the partner row. Site/group/device precision
 // lives in the advanced Assignments tab.
-export default function OrganizationScopePanel({ policyId, partnerId }: Props) {
+export default function OrganizationScopePanel({ policyId }: Props) {
   const organizations = useOrgStore((s) => s.organizations);
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [loading, setLoading] = useState(false);
@@ -143,7 +143,7 @@ export default function OrganizationScopePanel({ policyId, partnerId }: Props) {
                   type="checkbox"
                   aria-label={org.name}
                   checked={allOrgs || orgAssignmentByOrgId.has(org.id)}
-                  disabled={allOrgs || busyId !== null}
+                  disabled={allOrgs || loading || busyId !== null}
                   onChange={() => toggleOrg(org.id)}
                 />
                 <span>{org.name}</span>

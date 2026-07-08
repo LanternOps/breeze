@@ -476,7 +476,7 @@ export default function AssignmentsTab({ policyId, orgId, orgName, partnerId }: 
   // advanced site/group/device flow below remains reachable only for
   // org-owned policies.
   if (isPartnerOwned && partnerId) {
-    return <OrganizationScopePanel policyId={policyId} partnerId={partnerId} />;
+    return <OrganizationScopePanel policyId={policyId} />;
   }
 
   return (
