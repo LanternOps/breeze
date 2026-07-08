@@ -24,6 +24,8 @@ import {
 import { runPreFlightChecks, abortActivePlan } from '../services/aiAgentSdk';
 import { streamingSessionManager } from '../services/streamingSessionManager';
 import { getUsageSummary, updateBudget, getSessionHistory, recordUsage } from '../services/aiCostTracker';
+import { createTicket, changeTicketStatus, TicketServiceError } from '../services/ticketService';
+import { createTimeEntry } from '../services/timeEntryService';
 import { writeRouteAudit } from '../services/auditEvents';
 import { assertNotLocked } from '../services/effectiveSettings';
 import { db } from '../db';
@@ -44,7 +46,9 @@ import { getConfig } from '../config/validate';
 import { OpenAICompatibleProvider } from '../services/llm/openaiCompatibleProvider';
 import { OpenAISessionManager } from '../services/llm/openaiSessionManager';
 import { draftTicketFromTranscript, ThinTranscriptError } from '../services/aiTicketDraft';
-import type { AiTicketDraft } from '@breeze/shared';
+import { createTicketFromChatSchema, type AiTicketDraft } from '@breeze/shared';
+import { deviceInSiteScope } from './tickets/siteScope';
+import { timeActorFrom } from './timeEntries/timeEntries';
 
 // Provider check that tolerates an unvalidated config: route unit tests never
 // call validateConfig(), and getConfig() throws in that state. Without a
@@ -424,6 +428,62 @@ aiRoutes.post(
       deviceHostname,
     };
     return c.json({ data: payload });
+  }
+);
+
+aiRoutes.post(
+  '/sessions/:id/ticket',
+  requireScope('organization', 'partner', 'system'),
+  requireTicketsWrite,
+  zValidator('json', createTicketFromChatSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const sessionId = c.req.param('id')!;
+    const body = c.req.valid('json');
+
+    const session = await getSession(sessionId, auth);
+    if (!session) return c.json({ error: 'Session not found' }, 404);
+
+    // deviceId comes from the session; drop it if a site-restricted caller can't reach the device.
+    let deviceId: string | undefined = session.deviceId ?? undefined;
+    if (deviceId && !(await deviceInSiteScope(auth, deviceId))) deviceId = undefined;
+
+    const actor = { userId: auth.user.id, name: auth.user.name, email: auth.user.email };
+
+    let ticket;
+    try {
+      ticket = await createTicket(
+        { source: 'ai', orgId: session.orgId, subject: body.subject, description: body.description, deviceId, priority: body.priority },
+        actor,
+      );
+    } catch (err) {
+      if (err instanceof TicketServiceError) return c.json({ error: err.message }, err.status ?? 400);
+      throw err;
+    }
+
+    let resolved = false;
+    if (body.status === 'resolved') {
+      try {
+        await changeTicketStatus(ticket.id, { status: 'resolved' }, { resolutionNote: body.resolutionNote }, actor);
+        resolved = true;
+      } catch { /* ticket persists; resolved:false reported */ }
+    }
+
+    let timeLogged = false;
+    if (body.timeMinutes > 0 && (auth.scope === 'partner' || auth.scope === 'system')) {
+      try {
+        const endedAt = new Date();
+        const startedAt = new Date(endedAt.getTime() - body.timeMinutes * 60_000);
+        await createTimeEntry(
+          { ticketId: ticket.id, startedAt, endedAt, description: 'Logged from AI conversation', isBillable: body.billable },
+          timeActorFrom(c),
+        );
+        timeLogged = true;
+      } catch { /* non-fatal */ }
+    }
+
+    writeRouteAudit(c, { orgId: session.orgId, action: 'ai.session.create_ticket', resourceType: 'ticket', resourceId: ticket.id });
+    return c.json({ data: ticket, resolved, timeLogged }, 201);
   }
 );
 

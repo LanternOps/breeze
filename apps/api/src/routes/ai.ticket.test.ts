@@ -11,8 +11,23 @@ const authHarness = vi.hoisted(() => {
     orgCondition: () => undefined,
     canAccessOrg: (id: string) => id === 'org1',
   };
-  return { currentAuth: { value: partnerAuth }, partnerAuth };
+  const orgAuth = {
+    ...partnerAuth,
+    scope: 'organization' as const,
+    partnerId: null,
+    orgId: 'org1',
+  };
+  return { currentAuth: { value: partnerAuth as typeof partnerAuth | typeof orgAuth }, partnerAuth, orgAuth };
 });
+
+const routeMocks = vi.hoisted(() => ({
+  getSessionMock: vi.fn(),
+  createTicketMock: vi.fn(),
+  changeStatusMock: vi.fn(),
+  createTimeEntryMock: vi.fn(),
+  deviceInSiteScopeMock: vi.fn(),
+  writeRouteAuditMock: vi.fn(),
+}));
 
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
@@ -87,11 +102,12 @@ vi.mock('../middleware/auth', () => ({
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
   requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
+  hasPermission: vi.fn(() => false),
 }));
 
 vi.mock('../services/aiAgent', () => ({
   createSession: vi.fn(),
-  getSession: vi.fn(),
+  getSession: routeMocks.getSessionMock,
   listSessions: vi.fn(),
   closeSession: vi.fn(),
   getSessionMessages: vi.fn(),
@@ -118,6 +134,28 @@ vi.mock('../services/aiTicketDraft', () => ({
   },
 }));
 
+vi.mock('../services/ticketService', () => ({
+  createTicket: routeMocks.createTicketMock,
+  changeTicketStatus: routeMocks.changeStatusMock,
+  TicketServiceError: class TicketServiceError extends Error {
+    status: number;
+
+    constructor(message: string, status = 400) {
+      super(message);
+      this.name = 'TicketServiceError';
+      this.status = status;
+    }
+  },
+}));
+
+vi.mock('../services/timeEntryService', () => ({
+  createTimeEntry: routeMocks.createTimeEntryMock,
+}));
+
+vi.mock('./tickets/siteScope', () => ({
+  deviceInSiteScope: routeMocks.deviceInSiteScopeMock,
+}));
+
 vi.mock('../services/streamingSessionManager', () => ({
   streamingSessionManager: {
     getOrCreate: vi.fn(),
@@ -135,7 +173,7 @@ vi.mock('../services/aiAgentSdk', () => ({
 }));
 
 vi.mock('../services/auditEvents', () => ({
-  writeRouteAudit: vi.fn(),
+  writeRouteAudit: routeMocks.writeRouteAuditMock,
 }));
 
 vi.mock('../services/sentry', () => ({
@@ -153,6 +191,14 @@ import { recordUsage } from '../services/aiCostTracker';
 import { draftTicketFromTranscript, ThinTranscriptError } from '../services/aiTicketDraft';
 
 const partnerAuth = authHarness.partnerAuth;
+const orgAuth = authHarness.orgAuth;
+const {
+  getSessionMock,
+  createTicketMock,
+  changeStatusMock,
+  createTimeEntryMock,
+  deviceInSiteScopeMock,
+} = routeMocks;
 
 function selectRows(rows: unknown[]) {
   return {
@@ -251,5 +297,71 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
     const res = await postDraft('s1', partnerAuth);
 
     expect(res.status).toBe(422);
+  });
+});
+
+describe('POST /ai/sessions/:id/ticket', () => {
+  let app: Hono;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    authHarness.currentAuth.value = partnerAuth;
+    app = new Hono();
+    app.route('/ai', aiRoutes);
+
+    getSessionMock.mockResolvedValue({ id: 's1', orgId: 'org1', deviceId: 'dev1', model: null });
+    createTicketMock.mockResolvedValue({ id: 't1', ticketNumber: 'ORG-1', orgId: 'org1', status: 'new' });
+    deviceInSiteScopeMock.mockResolvedValue(true);
+    changeStatusMock.mockResolvedValue({ id: 't1', status: 'resolved' });
+    createTimeEntryMock.mockResolvedValue({ id: 'te1' });
+  });
+
+  const body = { subject: 'S', description: 'P', status: 'open' as const, timeMinutes: 15, billable: true };
+
+  function postTicket(sessionId: string, auth: typeof partnerAuth | typeof orgAuth = partnerAuth, payload: unknown = body) {
+    authHarness.currentAuth.value = auth;
+    return app.request(`/ai/sessions/${sessionId}/ticket`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  it('creates a ticket with source ai and logs time for a partner-scope caller', async () => {
+    const res = await postTicket('s1', partnerAuth, body);
+    expect(res.status).toBe(201);
+    expect(createTicketMock).toHaveBeenCalledWith(expect.objectContaining({ source: 'ai', orgId: 'org1', deviceId: 'dev1' }), expect.any(Object));
+    expect(createTimeEntryMock).toHaveBeenCalledTimes(1);
+    const json = await res.json();
+    expect(json).toMatchObject({ resolved: false, timeLogged: true });
+  });
+
+  it('resolves the ticket and sets the resolution note', async () => {
+    const res = await postTicket('s1', partnerAuth, { ...body, status: 'resolved', resolutionNote: 'Fixed it.' });
+    expect(res.status).toBe(201);
+    expect(changeStatusMock).toHaveBeenCalledWith('t1', { status: 'resolved' }, { resolutionNote: 'Fixed it.' }, expect.any(Object));
+    expect((await res.json()).resolved).toBe(true);
+  });
+
+  it('does not log time for an org-scope caller', async () => {
+    const res = await postTicket('s1', orgAuth, body);
+    expect(res.status).toBe(201);
+    expect(createTimeEntryMock).not.toHaveBeenCalled();
+    expect((await res.json()).timeLogged).toBe(false);
+  });
+
+  it('drops deviceId when the caller fails site scope', async () => {
+    deviceInSiteScopeMock.mockResolvedValue(false);
+    await postTicket('s1', partnerAuth, body);
+    expect(createTicketMock).toHaveBeenCalledWith(expect.objectContaining({ deviceId: undefined }), expect.any(Object));
+  });
+
+  it('404 when the session is unreachable', async () => {
+    getSessionMock.mockResolvedValue(null);
+    expect((await postTicket('sX', partnerAuth, body)).status).toBe(404);
+  });
+
+  it('400 when resolving without a note (schema)', async () => {
+    expect((await postTicket('s1', partnerAuth, { ...body, status: 'resolved' })).status).toBe(400);
   });
 });
