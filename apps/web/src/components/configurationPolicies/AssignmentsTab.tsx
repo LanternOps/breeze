@@ -5,6 +5,7 @@ import { extractApiError } from '@/lib/apiError';
 import { fetchWithAuth } from '../../stores/auth';
 import { DEVICE_ROLES, getDeviceRoleLabel } from '@/lib/deviceRoles';
 import HelpTooltip from '../shared/HelpTooltip';
+import OrganizationScopePanel from './OrganizationScopePanel';
 
 type Assignment = {
   id: string;
@@ -469,57 +470,13 @@ export default function AssignmentsTab({ policyId, orgId, orgName, partnerId }: 
     </div>
   );
 
-  // Partner-OWNED policies ("all organizations"): no level/target picker — the
-  // policy is intrinsically partner-wide. We surface the auto-created partner
-  // assignment in the list below and only show the add card when none exists
-  // (e.g. it was deleted, or the policy predates auto-seeding). Only one partner
-  // row is ever reachable: the server pins the target to the policy's own
-  // partner, and UNIQUE(policy, level, target) then forbids a duplicate.
-  if (isPartnerOwned) {
-    return (
-      <div className="space-y-6">
-        {error && (
-          <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
-            {error}
-          </div>
-        )}
-
-        <div className="rounded-md border border-primary/30 bg-primary/5 p-4 text-sm">
-          <p className="font-medium">This policy applies to all organizations in your partner.</p>
-          <p className="mt-1 text-muted-foreground">
-            Scope was set to <span className="font-medium">All organizations</span> when the policy was created,
-            so it&apos;s assigned partner-wide automatically — there&apos;s nothing to assign here. To limit it to
-            certain device roles or operating systems, remove the assignment below and re-add it with filters.
-          </p>
-        </div>
-
-        {assignments.length === 0 && !assignmentsLoading && (
-          <div className="rounded-lg border bg-card p-6 shadow-xs">
-            <h2 className="text-lg font-semibold">Assign to all organizations</h2>
-            <p className="mt-1 text-sm text-muted-foreground">
-              This policy isn&apos;t currently assigned. Re-assign it partner-wide below.
-            </p>
-            <div className="mt-4 grid gap-4 sm:grid-cols-3">
-              {priorityField}
-            </div>
-            <div className="mt-4">{filterFields}</div>
-            <div className="mt-4 flex justify-end">
-              <button
-                type="button"
-                onClick={handleAddAssignment}
-                disabled={addingAssignment}
-                className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
-              >
-                <Plus className="h-4 w-4" />
-                {addingAssignment ? 'Assigning...' : 'Assign to all organizations'}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {renderAssignmentsList()}
-      </div>
-    );
+  // Partner-OWNED policies ("all organizations" library, #2280): scoping is a
+  // subset of the partner's organizations, not a fixed all-orgs assignment —
+  // delegate to the dedicated master-toggle + org-checklist panel. The
+  // advanced site/group/device flow below remains reachable only for
+  // org-owned policies.
+  if (isPartnerOwned && partnerId) {
+    return <OrganizationScopePanel policyId={policyId} partnerId={partnerId} />;
   }
 
   return (
