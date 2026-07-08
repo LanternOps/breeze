@@ -5,7 +5,8 @@ import AiChatInput from '../ai/AiChatInput';
 import AiContextBadge from '../ai/AiContextBadge';
 import AiCostIndicator from '../ai/AiCostIndicator';
 import CreateTicketFromChatModal, { type CreateTicketFromChatModalProps } from '../ai/CreateTicketFromChatModal';
-import { ActionError } from '@/lib/runAction';
+import { showToast } from '../shared/Toast';
+import { ActionError, handleActionError } from '@/lib/runAction';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import type { AiTicketDraft } from '@breeze/shared';
 import type { TabState } from '@/stores/workspaceStore';
@@ -39,8 +40,10 @@ export default function WorkspaceChatPanel({ tab }: WorkspaceChatPanelProps) {
     setModalOpen(true);
     try {
       setDraft(await draftTicketFromChat(tab.id));
-    } catch {
+    } catch (err) {
+      console.error('[Workspace] Ticket draft failed; falling back to manual entry:', err);
       setDraft(null);
+      showToast({ type: 'warning', message: "Couldn't auto-draft from this conversation — you can fill in the ticket manually." });
     } finally {
       setBusy(false);
     }
@@ -53,10 +56,8 @@ export default function WorkspaceChatPanel({ tab }: WorkspaceChatPanelProps) {
       setModalOpen(false);
       setDraft(null);
     } catch (err) {
-      if (err instanceof ActionError && err.status === 401) return;
-      if (!(err instanceof ActionError)) {
-        console.error('[Workspace] Create ticket failed:', err);
-      }
+      if (err instanceof ActionError) return; // already toasted by runAction
+      handleActionError(err, 'Could not create the ticket.');
     } finally {
       setBusy(false);
     }

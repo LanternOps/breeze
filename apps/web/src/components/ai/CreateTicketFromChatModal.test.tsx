@@ -9,7 +9,6 @@ const draft: AiTicketDraft = {
   subject: 'Outlook would not open',
   problemSummary: 'Sarah could not open Outlook.',
   resolutionSummary: 'Rebuilt the mail profile.',
-  wasFixed: true,
   suggestedStatus: 'resolved',
   suggestedTimeMinutes: 15,
   elapsedMinutes: 25,

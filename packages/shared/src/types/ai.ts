@@ -100,7 +100,6 @@ export interface AiTicketDraft {
   subject: string;
   problemSummary: string;
   resolutionSummary: string;
-  wasFixed: boolean;
   suggestedStatus: 'open' | 'resolved';
   suggestedTimeMinutes: number;
   elapsedMinutes: number;

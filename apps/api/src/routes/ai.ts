@@ -389,7 +389,9 @@ aiRoutes.post(
       });
     } catch (err) {
       if (err instanceof ThinTranscriptError) return c.json({ error: err.message }, 422);
-      return c.json({ error: 'Could not draft a ticket from this conversation' }, 422);
+      console.error('[AI] Ticket draft failed:', err);
+      captureException(err);
+      return c.json({ error: 'Could not draft a ticket from this conversation' }, 502);
     }
 
     // Best-effort cost accounting; never fails the request.
@@ -418,7 +420,6 @@ aiRoutes.post(
       subject: draft.subject,
       problemSummary: draft.problemSummary,
       resolutionSummary: draft.resolutionSummary,
-      wasFixed: draft.wasFixed,
       suggestedStatus: draft.wasFixed ? 'resolved' : 'open',
       suggestedTimeMinutes: draft.suggestedTimeMinutes,
       elapsedMinutes,
@@ -466,7 +467,10 @@ aiRoutes.post(
       try {
         await changeTicketStatus(ticket.id, { status: 'resolved' }, { resolutionNote: body.resolutionNote }, actor);
         resolved = true;
-      } catch { /* ticket persists; resolved:false reported */ }
+      } catch (err) {
+        console.error(`[AI] Ticket ${ticket.id} created but resolve failed:`, err);
+        captureException(err);
+      }
     }
 
     let timeLogged = false;
@@ -479,7 +483,9 @@ aiRoutes.post(
           timeActorFrom(c),
         );
         timeLogged = true;
-      } catch { /* non-fatal */ }
+      } catch (err) {
+        console.error(`[AI] Ticket ${ticket.id} created but time entry failed:`, err);
+      }
     }
 
     writeRouteAudit(c, { orgId: session.orgId, action: 'ai.session.create_ticket', resourceType: 'ticket', resourceId: ticket.id });

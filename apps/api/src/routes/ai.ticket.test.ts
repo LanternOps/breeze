@@ -264,6 +264,7 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
       deviceId: null,
       deviceHostname: null,
     });
+    expect(body.data).not.toHaveProperty('wasFixed');
     expect(getSessionMessages).toHaveBeenCalledWith('s1', partnerAuth);
     expect(draftTicketFromTranscript).toHaveBeenCalledWith(
       expect.objectContaining({

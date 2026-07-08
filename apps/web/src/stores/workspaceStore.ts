@@ -4,6 +4,7 @@ import type { AiPageContext, AiStreamEvent, AiApprovalMode, AiTicketDraft, Creat
 import { fetchWithAuth } from './auth';
 import { extractApiError } from '@/lib/apiError';
 import { runAction } from '@/lib/runAction';
+import { showToast } from '../components/shared/Toast';
 import {
   processStreamEvent,
   mapMessagesFromApi,
@@ -485,7 +486,9 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           const tab = getTab(tabId);
           if (!tab?.sessionId) throw new Error('No active session');
           const sessionId = tab.sessionId;
-          return runAction<{ ticketNumber: string; resolved: boolean; timeLogged: boolean }>({
+          const requestedResolve = payload.status === 'resolved';
+          const requestedTime = payload.timeMinutes > 0;
+          const result = await runAction<{ ticketNumber: string; resolved: boolean; timeLogged: boolean }>({
             request: () => fetchWithAuth(`/ai/sessions/${sessionId}/ticket`, {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
@@ -493,11 +496,23 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             }),
             errorFallback: 'Could not create the ticket.',
             parseSuccess: (data) => {
-              const d = data as { data?: { ticketNumber?: string }; resolved?: boolean; timeLogged?: boolean };
-              return { ticketNumber: d.data?.ticketNumber ?? '', resolved: !!d.resolved, timeLogged: !!d.timeLogged };
+              const d = data as { data?: { internalNumber?: string | null; ticketNumber?: string }; resolved?: boolean; timeLogged?: boolean };
+              return {
+                ticketNumber: d.data?.internalNumber ?? d.data?.ticketNumber ?? '',
+                resolved: !!d.resolved,
+                timeLogged: !!d.timeLogged,
+              };
             },
-            successMessage: (r) => `Ticket ${r.ticketNumber} created${r.resolved ? ' and resolved' : ''}${r.timeLogged ? '' : ' (time not logged)'}`,
+            successMessage: (r) => `Ticket ${r.ticketNumber} created${r.resolved ? ' and resolved' : ''}`,
           });
+          // Partial-success warnings: only when the user asked for something that didn't happen.
+          if (requestedResolve && !result.resolved) {
+            showToast({ type: 'warning', message: 'Ticket created, but it could not be resolved automatically — please resolve it manually.' });
+          }
+          if (requestedTime && !result.timeLogged) {
+            showToast({ type: 'warning', message: 'Ticket created, but the time entry could not be logged.' });
+          }
+          return result;
         },
 
         unflagSession: async (tabId: string) => {
