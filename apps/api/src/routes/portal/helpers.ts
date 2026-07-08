@@ -493,14 +493,13 @@ export function buildPortalUrl(path: string): string {
   return `${base}${suffix}`;
 }
 
-export async function storePortalInviteToken(portalUserId: string): Promise<string> {
+export async function storePortalInviteToken(portalUserId: string): Promise<string | null> {
   const rawToken = nanoid(48);
   const tokenHash = createHash('sha256').update(rawToken).digest('hex');
   if (PORTAL_USE_REDIS) {
     const redis = getRedis();
-    if (redis) {
-      await redis.setex(PORTAL_REDIS_KEYS.inviteToken(tokenHash), INVITE_TTL_SECONDS, JSON.stringify({ portalUserId }));
-    }
+    if (!redis) return null; // redis required but unavailable — don't mint an unredeemable token
+    await redis.setex(PORTAL_REDIS_KEYS.inviteToken(tokenHash), INVITE_TTL_SECONDS, JSON.stringify({ portalUserId }));
   } else {
     portalInviteTokens.set(tokenHash, { portalUserId, expiresAt: new Date(Date.now() + INVITE_TTL_MS), createdAt: new Date() });
     capMapByOldest(portalInviteTokens, PORTAL_INVITE_TOKEN_CAP, (t) => t.createdAt.getTime());
