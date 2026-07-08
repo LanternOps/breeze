@@ -24,6 +24,7 @@ import { getEmailService, buildInvoiceTemplate } from './email';
 import { emitInvoiceEvent } from './invoiceEvents';
 import { InvoiceServiceError } from './invoiceTypes';
 import type { InvoiceActor } from './invoiceTypes';
+import type { BillToAddress } from './sellerSnapshot';
 import { buildSellerSnapshot, sellerAddressLines, type SellerSnapshot } from './sellerSnapshot';
 import { computeChargeNow } from '@breeze/shared';
 
@@ -74,11 +75,6 @@ function lineTitle(l: { name: string | null; description: string | null }): stri
 }
 function lineBlurb(l: { name: string | null; description: string | null }): string {
   return l.name ? (l.description ?? '').trim() : '';
-}
-
-interface BillToAddress {
-  line1?: string | null; line2?: string | null; city?: string | null;
-  region?: string | null; postalCode?: string | null; country?: string | null;
 }
 
 function addressLines(addr: BillToAddress | null | undefined): string[] {
