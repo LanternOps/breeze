@@ -873,6 +873,7 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
 
     const [orgRow] = await db.select({ name: organizations.name }).from(organizations).where(eq(organizations.id, org.id)).limit(1);
     const rawToken = await storePortalInviteToken(userId);
+    if (!rawToken) return c.json({ error: 'Service temporarily unavailable' }, 503);
     const inviteUrl = buildPortalUrl(`/accept-invite?token=${encodeURIComponent(rawToken)}`);
 
     let emailSent = false;
@@ -1015,6 +1016,7 @@ async function hasPortalUserReferences(userId: string): Promise<boolean> {
 
 async function issueAndSendInvite(c: any, orgId: string, user: { id: string; email: string }, orgName: string | null, inviterName: string | null | undefined, message?: string): Promise<boolean> {
   const rawToken = await storePortalInviteToken(user.id);
+  if (!rawToken) return false; // redis unavailable — do not email a dead invite link
   const inviteUrl = buildPortalUrl(`/accept-invite?token=${encodeURIComponent(rawToken)}`);
   const emailService = getEmailService();
   if (!emailService) return false;
