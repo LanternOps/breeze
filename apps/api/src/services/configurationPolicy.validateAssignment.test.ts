@@ -76,6 +76,59 @@ describe('validateAssignmentTarget — ownership gating', () => {
     expect(result.valid).toBe(true);
   });
 
+  it('rejects a partner-owned policy assigned to an out-of-partner device', async () => {
+    mockSelectResolving([]); // device exists but its org isn't under this partner → no row
+    const result = await validateAssignmentTarget(
+      { orgId: null, partnerId: PARTNER_ID },
+      'device',
+      '33333333-3333-3333-3333-333333333333'
+    );
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.error).toMatch(/not in this partner/i);
+  });
+
+  it('accepts a partner-owned policy assigned to an in-partner site', async () => {
+    mockSelectResolving([{ id: '44444444-4444-4444-4444-444444444444' }]);
+    const result = await validateAssignmentTarget(
+      { orgId: null, partnerId: PARTNER_ID },
+      'site',
+      '44444444-4444-4444-4444-444444444444'
+    );
+    expect(result.valid).toBe(true);
+  });
+
+  it('rejects a partner-owned policy assigned to an out-of-partner site', async () => {
+    mockSelectResolving([]); // site exists but its org isn't under this partner → no row
+    const result = await validateAssignmentTarget(
+      { orgId: null, partnerId: PARTNER_ID },
+      'site',
+      '44444444-4444-4444-4444-444444444444'
+    );
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.error).toMatch(/not in this partner/i);
+  });
+
+  it('accepts a partner-owned policy assigned to an in-partner device group', async () => {
+    mockSelectResolving([{ id: '55555555-5555-5555-5555-555555555555' }]);
+    const result = await validateAssignmentTarget(
+      { orgId: null, partnerId: PARTNER_ID },
+      'device_group',
+      '55555555-5555-5555-5555-555555555555'
+    );
+    expect(result.valid).toBe(true);
+  });
+
+  it('rejects a partner-owned policy assigned to an out-of-partner device group', async () => {
+    mockSelectResolving([]); // group exists but its org isn't under this partner → no row
+    const result = await validateAssignmentTarget(
+      { orgId: null, partnerId: PARTNER_ID },
+      'device_group',
+      '55555555-5555-5555-5555-555555555555'
+    );
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.error).toMatch(/not in this partner/i);
+  });
+
   it('accepts a partner-owned policy targeting its own partner', async () => {
     const result = await validateAssignmentTarget(
       { orgId: null, partnerId: PARTNER_ID },

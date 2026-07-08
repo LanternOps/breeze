@@ -39,7 +39,11 @@ vi.mock('../db/schema', () => ({
   configPolicyAssignments: {},
   patchJobs: {},
   devices: { id: 'devices.id', orgId: 'devices.orgId', siteId: 'devices.siteId' },
-  deviceGroupMemberships: {},
+  deviceGroupMemberships: {
+    deviceId: 'deviceGroupMemberships.deviceId',
+    groupId: 'deviceGroupMemberships.groupId',
+    orgId: 'deviceGroupMemberships.orgId',
+  },
   organizations: { id: 'organizations.id', partnerId: 'organizations.partnerId', settings: 'organizations.settings' },
   partners: { id: 'partners.id', timezone: 'partners.timezone', settings: 'partners.settings' },
   sites: { id: 'sites.id', timezone: 'sites.timezone' },
@@ -165,6 +169,72 @@ describe('resolveDeviceIdsForAssignment (partner-wide patch, #1724)', () => {
     // partner clamp — not just one or the other, and not a fixed mock return.
     const whereArgs = collectSqlLeafStrings(chain.where.mock.calls[0][0]);
     expect(whereArgs).toContain('org-x');
+    expect(whereArgs).toContain('partner-123');
+  });
+
+  it('re-clamps a SITE-level SUBSET assignment on a partner-owned library policy to the policy partner (#2280 review)', async () => {
+    // Structurally parallel to the organization-level re-clamp above: the site
+    // branch also joins organizations and must carry BOTH the site filter and
+    // the partner clamp in its WHERE predicate.
+    const { db } = await import('../db');
+    const { organizations } = await import('../db/schema');
+    const chain: any = {
+      from: vi.fn(() => chain),
+      innerJoin: vi.fn(() => chain),
+      where: vi.fn(() => Promise.resolve([{ id: 'dev-a' }])),
+    };
+    vi.mocked(db.select).mockReturnValueOnce(chain);
+
+    const ids = await resolveDeviceIdsForAssignment('site', 'site-x', null, 'partner-123');
+
+    expect(ids).toEqual(['dev-a']);
+    expect(chain.innerJoin).toHaveBeenCalledTimes(1);
+    expect(chain.innerJoin.mock.calls[0][0]).toBe(organizations);
+    const whereArgs = collectSqlLeafStrings(chain.where.mock.calls[0][0]);
+    expect(whereArgs).toContain('site-x');
+    expect(whereArgs).toContain('partner-123');
+  });
+
+  it('re-clamps a DEVICE_GROUP-level SUBSET assignment on a partner-owned library policy to the policy partner (#2280 review)', async () => {
+    const { db } = await import('../db');
+    const { organizations } = await import('../db/schema');
+    const chain: any = {
+      from: vi.fn(() => chain),
+      innerJoin: vi.fn(() => chain),
+      where: vi.fn(() => Promise.resolve([{ deviceId: 'dev-a' }])),
+    };
+    vi.mocked(db.select).mockReturnValueOnce(chain);
+
+    const ids = await resolveDeviceIdsForAssignment('device_group', 'group-x', null, 'partner-123');
+
+    expect(ids).toEqual(['dev-a']);
+    expect(chain.innerJoin).toHaveBeenCalledTimes(1);
+    expect(chain.innerJoin.mock.calls[0][0]).toBe(organizations);
+    const whereArgs = collectSqlLeafStrings(chain.where.mock.calls[0][0]);
+    expect(whereArgs).toContain('group-x');
+    expect(whereArgs).toContain('partner-123');
+  });
+
+  it('re-clamps a DEVICE-level SUBSET assignment on a partner-owned library policy to the policy partner (#2280 review)', async () => {
+    // The device branch additionally chains .limit(1) after .where(), unlike
+    // the site/device_group/organization branches above.
+    const { db } = await import('../db');
+    const { organizations } = await import('../db/schema');
+    const chain: any = {
+      from: vi.fn(() => chain),
+      innerJoin: vi.fn(() => chain),
+      where: vi.fn(() => chain),
+      limit: vi.fn(() => Promise.resolve([{ id: 'dev-a' }])),
+    };
+    vi.mocked(db.select).mockReturnValueOnce(chain);
+
+    const ids = await resolveDeviceIdsForAssignment('device', 'dev-x', null, 'partner-123');
+
+    expect(ids).toEqual(['dev-a']);
+    expect(chain.innerJoin).toHaveBeenCalledTimes(1);
+    expect(chain.innerJoin.mock.calls[0][0]).toBe(organizations);
+    const whereArgs = collectSqlLeafStrings(chain.where.mock.calls[0][0]);
+    expect(whereArgs).toContain('dev-x');
     expect(whereArgs).toContain('partner-123');
   });
 });
