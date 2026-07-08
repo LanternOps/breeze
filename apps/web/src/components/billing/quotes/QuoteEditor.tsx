@@ -2280,16 +2280,21 @@ function EditableLineRow({
   const [imageBusy, setImageBusy] = useState(false);
   const [imageUrlOpen, setImageUrlOpen] = useState(false);
   const [imageUrlDraft, setImageUrlDraft] = useState('');
-  // Attach `uploaded.imageId` to the line and reset the URL disclosure. Shared by
-  // both the file and URL paths so success behaves identically.
+  // Attach `uploaded.imageId` to the line, and only on a successful PATCH reset the
+  // URL disclosure. Shared by both the file and URL paths so success behaves
+  // identically. `edit` swallows a failed PATCH inside runScoped (toasts, returns
+  // false, never throws), so gating the reset on its result keeps the disclosure
+  // open with the URL intact on failure — otherwise the panel would collapse and
+  // wipe the URL exactly as if it had saved, contradicting the error toast.
   const applyImageId = useCallback(async (imageId: string) => {
-    await edit({ imageId }, 'image');
-    setImageUrlDraft('');
-    setImageUrlOpen(false);
+    if (await edit({ imageId }, 'image')) {
+      setImageUrlDraft('');
+      setImageUrlOpen(false);
+    }
   }, [edit]);
   const attachImage = useCallback((file: File) => {
     if (file.size > 5 * 1024 * 1024) {
-      handleActionError(new Error('image too large'), 'Image must be 5MB or smaller.');
+      handleActionError(new Error('image too large'), 'Image must be 5 MB or smaller.');
       return;
     }
     void (async () => {
@@ -2724,9 +2729,10 @@ function EditableLineRow({
               Remove image
             </button>
           )}
-          {/* URL disclosure: wraps to its own row (basis-full) so the input has
-              room. Server copies the bytes in (SSRF-guarded); Fetch is disabled
-              until a URL is entered, matching the image block's submit gate. */}
+          {/* URL disclosure: w-full forces it onto its own row under the parent's
+              flex-wrap so the input has room. Server copies the bytes in
+              (SSRF-guarded); Fetch is disabled until a URL is entered, matching
+              the image block's submit gate. */}
           {imageUrlOpen && (
             <div className="flex w-full items-center gap-2">
               <input
