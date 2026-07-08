@@ -21,8 +21,9 @@ type TargetOption = { id: string; name: string; extra?: string };
 // Org-owned policies can only narrow within their owning org. The Partner-Wide
 // level is intentionally absent here — assigning an org-owned policy partner-wide
 // is a footgun (resolution still clamps it to the one owning org), so the API
-// rejects it and the picker must not offer it. Partner-OWNED policies use a
-// dedicated, separate flow below (no level picker — they're always all-orgs).
+// rejects it and the picker must not offer it. Partner-OWNED policies are a
+// reusable library (#2280) — assignment scope (all orgs or a subset) is handled
+// by the dedicated OrganizationScopePanel below, not this level picker.
 const orgOwnedAssignmentLevels = [
   { value: 'organization', label: 'Organization' },
   { value: 'site', label: 'Site' },
@@ -47,7 +48,8 @@ type Props = {
   // Owning org's name (org-owned policies only) — shown in the locked
   // organization-level target field.
   orgName?: string | null;
-  // Set when the policy is partner-OWNED (all-orgs). Drives the partner-wide UI.
+  // Set when the policy is partner-OWNED (a reusable library, #2280). Drives
+  // delegation to OrganizationScopePanel.
   partnerId?: string | null;
 };
 
@@ -56,8 +58,8 @@ export default function AssignmentsTab({ policyId, orgId, orgName, partnerId }: 
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [assignmentsLoading, setAssignmentsLoading] = useState(false);
   const [error, setError] = useState<string>();
-  // Partner-owned policies are always assigned at the partner level (all orgs);
-  // org-owned policies default to the organization level.
+  // Only used by the org-owned assignment form below; partner-owned policies
+  // delegate to OrganizationScopePanel before this state is ever rendered.
   const [newLevel, setNewLevel] = useState(isPartnerOwned ? 'partner' : 'organization');
   const [newTargetId, setNewTargetId] = useState('');
   const [newPriority, setNewPriority] = useState('0');
@@ -476,7 +478,7 @@ export default function AssignmentsTab({ policyId, orgId, orgName, partnerId }: 
   // advanced site/group/device flow below remains reachable only for
   // org-owned policies.
   if (isPartnerOwned && partnerId) {
-    return <OrganizationScopePanel policyId={policyId} />;
+    return <OrganizationScopePanel policyId={policyId} partnerId={partnerId} />;
   }
 
   return (

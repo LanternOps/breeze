@@ -3,7 +3,7 @@ import { HTTPException } from 'hono/http-exception';
 import type { Context, Next } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm';
+import { and, eq, ilike, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { partners, organizations, sites, devices, agentVersions } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, requirePartner, type AuthContext } from '../middleware/auth';
@@ -914,8 +914,14 @@ orgRoutes.delete('/partners/:id', requireScope('system'), requireOrgWrite, requi
 const listOrganizationsSchema = z.object({
   partnerId: z.string().guid().optional(),
   page: z.string().optional(),
-  limit: z.string().optional()
+  limit: z.string().optional(),
+  search: z.string().optional()
 });
+
+// Escape ILIKE wildcards so a search term is matched literally, not as a pattern.
+function escapeIlike(value: string): string {
+  return value.replace(/[%_\\]/g, '\\$&');
+}
 
 // Org-scope callers may read their OWN org's name-level row without the
 // organizations:read permission (UI shell / tickets cold load, #1245 residual)
@@ -932,8 +938,12 @@ const requireOrgReadUnlessOwnOrg = async (c: Context, next: Next) => {
 
 orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'), requireOrgReadUnlessOwnOrg, zValidator('query', listOrganizationsSchema), async (c) => {
   const auth = c.get('auth') as AuthContext;
-  const { partnerId: queryPartnerId, ...pagination } = c.req.valid('query');
+  const { partnerId: queryPartnerId, search, ...pagination } = c.req.valid('query');
   const { page, limit, offset } = getPagination(pagination);
+  const trimmedSearch = search?.trim();
+  const searchCondition = trimmedSearch
+    ? ilike(organizations.name, `%${escapeIlike(trimmedSearch)}%`)
+    : undefined;
 
   if (auth.scope === 'organization') {
     // Organization-scoped users can only see their own organization, and —
@@ -976,11 +986,11 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
         pagination: { page, limit, total: 0 }
       });
     }
-    conditions = and(inArray(organizations.id, orgIds), isNull(organizations.deletedAt));
+    conditions = and(inArray(organizations.id, orgIds), isNull(organizations.deletedAt), searchCondition);
   } else {
     conditions = queryPartnerId
-      ? and(eq(organizations.partnerId, queryPartnerId), isNull(organizations.deletedAt))
-      : isNull(organizations.deletedAt);
+      ? and(eq(organizations.partnerId, queryPartnerId), isNull(organizations.deletedAt), searchCondition)
+      : and(isNull(organizations.deletedAt), searchCondition);
   }
 
   const countResult = await db

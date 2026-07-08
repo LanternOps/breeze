@@ -4,13 +4,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const fetchWithAuth = vi.fn();
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...args: unknown[]) => fetchWithAuth(...args) }));
-// AssignmentsTab renders OrganizationScopePanel for partner-owned policies,
-// which pulls organizations from useOrgStore — mock it so the real store
-// module (and its registerOrgIdProvider side effect) never loads here.
-vi.mock('../../stores/orgStore', () => ({
-  useOrgStore: (sel: (s: { organizations: { id: string; name: string }[] }) => unknown) =>
-    sel({ organizations: [{ id: 'org-acme', name: 'Acme Corp' }, { id: 'org-contoso', name: 'Contoso Ltd' }] }),
-}));
 
 import AssignmentsTab from './AssignmentsTab';
 
@@ -56,6 +49,12 @@ describe('AssignmentsTab — partner-OWNED policy (all organizations library, #2
   });
 
   it('lists the partner organizations as a checklist', async () => {
+    fetchWithAuth
+      .mockResolvedValueOnce(jsonResponse({ data: [] })) // assignments
+      .mockResolvedValueOnce(jsonResponse({
+        data: [{ id: 'org-acme', name: 'Acme Corp' }, { id: 'org-contoso', name: 'Contoso Ltd' }],
+        pagination: { page: 1, limit: 100, total: 2 },
+      })); // org list
     render(<AssignmentsTab policyId={POLICY_ID} orgId={null} partnerId={PARTNER_ID} />);
 
     expect(await screen.findByRole('checkbox', { name: 'Acme Corp' })).toBeInTheDocument();
