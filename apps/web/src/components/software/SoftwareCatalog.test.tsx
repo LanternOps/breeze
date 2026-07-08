@@ -33,6 +33,7 @@ const jsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Res
 
 const ITEM = {
   id: 'cat-1',
+  orgId: 'org-1',
   name: 'TestApp',
   vendor: 'Acme',
   category: 'utility',
@@ -66,13 +67,43 @@ describe('SoftwareCatalog delete', () => {
     const confirmButtons = screen.getAllByRole('button', { name: /^Delete$/ });
     fireEvent.click(confirmButtons[confirmButtons.length - 1]);
 
+    // The item's own orgId must ride on the DELETE so a partner/system user in
+    // "All organizations" mode (no ambient orgId injected by fetchWithAuth) can
+    // still resolve which org's package to remove — otherwise the API answers
+    // "orgId is required for this scope" (resolveScopedOrgId).
     await waitFor(() =>
-      expect(fetchMock).toHaveBeenLastCalledWith('/software/catalog/cat-1', { method: 'DELETE' })
+      expect(fetchMock).toHaveBeenLastCalledWith('/software/catalog/cat-1?orgId=org-1', { method: 'DELETE' })
     );
 
     // Success toast + item removed from the grid.
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' })));
     await waitFor(() => expect(screen.queryByText('TestApp')).not.toBeInTheDocument());
+  });
+
+  it('deletes an org-less (partner-scoped) package with no orgId query param', async () => {
+    // A package the loader mapped with no orgId (DB org_id NULL) must DELETE to
+    // the bare URL — appending ?orgId=undefined would break the request. Guards
+    // against collapsing the conditional into an unconditional template.
+    const { orgId, ...orgLessItem } = ITEM;
+    void orgId;
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ data: [orgLessItem] })) // GET /software/catalog
+      .mockResolvedValueOnce(jsonResponse({ success: true, id: ITEM.id })); // DELETE
+
+    render(<SoftwareCatalog />);
+    await waitFor(() => expect(screen.getByText('TestApp')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('TestApp'));
+    const deleteButtons = await screen.findAllByRole('button', { name: /Delete/ });
+    fireEvent.click(deleteButtons[0]);
+    expect(await screen.findByText('Delete package?')).toBeInTheDocument();
+
+    const confirmButtons = screen.getAllByRole('button', { name: /^Delete$/ });
+    fireEvent.click(confirmButtons[confirmButtons.length - 1]);
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenLastCalledWith('/software/catalog/cat-1', { method: 'DELETE' })
+    );
   });
 
   it('does not call the API when the delete is cancelled', async () => {

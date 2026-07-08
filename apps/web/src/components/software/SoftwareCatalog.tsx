@@ -21,6 +21,8 @@ import BuiltinPackageDetail from './BuiltinPackageDetail';
 
 type SoftwareItem = {
   id: string;
+  /** Owning org for an org-scoped (non-built-in) package; unset for partner-scoped built-ins. */
+  orgId?: string;
   name: string;
   vendor: string;
   category: string;
@@ -100,6 +102,7 @@ export default function SoftwareCatalog() {
       if (Array.isArray(data)) {
         setCatalogItems(data.map((item: Record<string, unknown>) => ({
           id: String(item.id),
+          orgId: item.orgId ? String(item.orgId) : undefined,
           name: String(item.name ?? ''),
           vendor: String(item.vendor ?? ''),
           category: String(item.category ?? 'utility'),
@@ -171,8 +174,15 @@ export default function SoftwareCatalog() {
   const handleDeletePackage = async (item: SoftwareItem) => {
     try {
       setDeleting(true);
+      // Scope the DELETE to the package's own org. fetchWithAuth only auto-injects
+      // an orgId when one is actively selected in the org switcher, so a
+      // partner/system user in "All organizations" mode would otherwise send no
+      // orgId and hit "orgId is required for this scope" (resolveScopedOrgId).
+      const deleteUrl = item.orgId
+        ? `/software/catalog/${item.id}?orgId=${item.orgId}`
+        : `/software/catalog/${item.id}`;
       await runAction({
-        request: () => fetchWithAuth(`/software/catalog/${item.id}`, { method: 'DELETE' }),
+        request: () => fetchWithAuth(deleteUrl, { method: 'DELETE' }),
         errorFallback: 'Failed to delete package',
         successMessage: `Deleted "${item.name}"`,
       });
