@@ -189,7 +189,12 @@ async function resolveDeviceIdsForAssignment(
   // single owning org and may carry a partner-level assignment (resolved
   // across all the partner's orgs) AND/OR org/site/group/device-level SUBSET
   // assignments into individual orgs under the partner.
-  policyOrgId: string | null
+  policyOrgId: string | null,
+  // The policy's own partnerId (set for partner-owned policies, null for
+  // org-owned ones). Used ONLY to re-clamp subset (org/site/group/device)
+  // resolution below when policyOrgId is null — see the comment above the
+  // switch for why this exists (#2280 review finding).
+  policyPartnerId: string | null
 ): Promise<string[]> {
   if (assignmentLevel === 'partner') {
     // A partner-wide policy (policyOrgId null, #1724) resolves EVERY device
@@ -219,14 +224,26 @@ async function resolveDeviceIdsForAssignment(
   // SUBSET assignment — org/site/group/device, not the partner-wide 'partner'
   // level above — policyOrgId is null: there is no single owning org to clamp
   // to, since the same policy can carry subset assignments into several of the
-  // partner's orgs. The target itself is already partner-scoped
-  // (validateAssignmentTarget confirmed it belongs to this partner at assign
-  // time), so it's trusted here without an extra clamp — the same trust model
-  // the 'partner' branch above already uses for assignmentTargetId. Silently
-  // no-op'ing on a null policyOrgId (the old behavior, pre-#2280) would create
-  // a patch-compliance hole for every partner-owned subset assignment.
+  // partner's orgs. The target itself was partner-scoped at ASSIGN time
+  // (validateAssignmentTarget), but that check is a point-in-time snapshot —
+  // if the target org is later reparented to a different partner, the stale
+  // assignment row would otherwise still resolve those devices (TOCTOU). So
+  // every subset branch below re-clamps to the policy's partner on every run
+  // via an inner join on organizations, the same re-verification the
+  // 'partner' branch above already does for assignmentTargetId.
+  const needsPartnerClamp = !policyOrgId && Boolean(policyPartnerId);
+
   switch (assignmentLevel) {
     case 'device': {
+      if (needsPartnerClamp) {
+        const [device] = await db
+          .select({ id: devices.id })
+          .from(devices)
+          .innerJoin(organizations, eq(devices.orgId, organizations.id))
+          .where(and(eq(devices.id, assignmentTargetId), eq(organizations.partnerId, policyPartnerId!)))
+          .limit(1);
+        return device ? [device.id] : [];
+      }
       const conditions = [eq(devices.id, assignmentTargetId)];
       if (policyOrgId) conditions.push(eq(devices.orgId, policyOrgId));
       const [device] = await db
@@ -238,6 +255,19 @@ async function resolveDeviceIdsForAssignment(
     }
 
     case 'device_group': {
+      if (needsPartnerClamp) {
+        const members = await db
+          .select({ deviceId: deviceGroupMemberships.deviceId })
+          .from(deviceGroupMemberships)
+          .innerJoin(organizations, eq(deviceGroupMemberships.orgId, organizations.id))
+          .where(
+            and(
+              eq(deviceGroupMemberships.groupId, assignmentTargetId),
+              eq(organizations.partnerId, policyPartnerId!)
+            )
+          );
+        return members.map((m) => m.deviceId);
+      }
       const conditions = [eq(deviceGroupMemberships.groupId, assignmentTargetId)];
       if (policyOrgId) conditions.push(eq(deviceGroupMemberships.orgId, policyOrgId));
       const members = await db
@@ -248,6 +278,14 @@ async function resolveDeviceIdsForAssignment(
     }
 
     case 'site': {
+      if (needsPartnerClamp) {
+        const siteDevices = await db
+          .select({ id: devices.id })
+          .from(devices)
+          .innerJoin(organizations, eq(devices.orgId, organizations.id))
+          .where(and(eq(devices.siteId, assignmentTargetId), eq(organizations.partnerId, policyPartnerId!)));
+        return siteDevices.map((d) => d.id);
+      }
       const conditions = [eq(devices.siteId, assignmentTargetId)];
       if (policyOrgId) conditions.push(eq(devices.orgId, policyOrgId));
       const siteDevices = await db
@@ -258,6 +296,14 @@ async function resolveDeviceIdsForAssignment(
     }
 
     case 'organization': {
+      if (needsPartnerClamp) {
+        const orgDevices = await db
+          .select({ id: devices.id })
+          .from(devices)
+          .innerJoin(organizations, eq(devices.orgId, organizations.id))
+          .where(and(eq(devices.orgId, assignmentTargetId), eq(organizations.partnerId, policyPartnerId!)));
+        return orgDevices.map((d) => d.id);
+      }
       const conditions = [eq(devices.orgId, assignmentTargetId)];
       if (policyOrgId) conditions.push(eq(devices.orgId, policyOrgId));
       const orgDevices = await db
@@ -372,6 +418,7 @@ async function scanAndCreateJobs(): Promise<{
       configPolicyId: configurationPolicies.id,
       policyName: configurationPolicies.name,
       policyOrgId: configurationPolicies.orgId,
+      policyPartnerId: configurationPolicies.partnerId,
       featureLinkId: configPolicyFeatureLinks.id,
     })
     .from(configPolicyFeatureLinks)
@@ -393,6 +440,7 @@ async function scanAndCreateJobs(): Promise<{
       // policyOrgId is null for those; resolveDeviceIdsForAssignment resolves the
       // partner-level assignment across all the partner's devices.
       const policyOrgId = row.policyOrgId;
+      const policyPartnerId = row.policyPartnerId;
 
       const policyLocal = await runWithSystemDbAccess(() => loadPolicyLocalPatchConfig(row.configPolicyId));
       if (!policyLocal) continue;
@@ -419,7 +467,7 @@ async function scanAndCreateJobs(): Promise<{
       const allDeviceIds = new Set<string>();
       for (const assignment of assignments) {
         const ids = await runWithSystemDbAccess(() =>
-          resolveDeviceIdsForAssignment(assignment.level, assignment.targetId, policyOrgId)
+          resolveDeviceIdsForAssignment(assignment.level, assignment.targetId, policyOrgId, policyPartnerId)
         );
         for (const id of ids) allDeviceIds.add(id);
       }

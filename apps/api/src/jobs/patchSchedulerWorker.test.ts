@@ -70,6 +70,33 @@ import { captureException } from '../services/sentry';
 
 const { loadDeviceSchedulingContexts, enqueueScanResults, resolveDeviceIdsForAssignment } = __testOnly;
 
+// Drizzle's `eq`/`and` build a real SQL AST (queryChunks tree), even though our
+// mocked schema columns are plain strings rather than real Column objects —
+// `sql\`${left} = ${right}\`` inserts both raw operands directly into
+// queryChunks (they don't satisfy isDriverValueEncoder, so neither side gets
+// wrapped in a Param). That means the exact identifiers passed to eq()/and()
+// are recoverable by walking the tree, which lets a test assert on the ACTUAL
+// filter values a `.where(...)` call was built with, instead of trusting a
+// mock that returns a fixed row regardless of what was asked for (the gap
+// this suite is closing, #2280 review).
+function collectSqlLeafStrings(node: unknown, seen = new Set<unknown>(), acc: string[] = []): string[] {
+  if (typeof node === 'string') {
+    acc.push(node);
+    return acc;
+  }
+  if (node === null || typeof node !== 'object' || seen.has(node)) return acc;
+  seen.add(node);
+  if (Array.isArray(node)) {
+    for (const item of node) collectSqlLeafStrings(item, seen, acc);
+    return acc;
+  }
+  const queryChunks = (node as { queryChunks?: unknown[] }).queryChunks;
+  if (Array.isArray(queryChunks)) {
+    for (const item of queryChunks) collectSqlLeafStrings(item, seen, acc);
+  }
+  return acc;
+}
+
 describe('resolveDeviceIdsForAssignment (partner-wide patch, #1724)', () => {
   beforeEach(() => {
     mockRows = [];
@@ -86,20 +113,16 @@ describe('resolveDeviceIdsForAssignment (partner-wide patch, #1724)', () => {
     const ids = await resolveDeviceIdsForAssignment(
       'partner',
       '88888888-8888-4888-8888-888888888888',
+      null,
       null
     );
     expect(ids).toEqual(['dev-a', 'dev-b']);
   });
 
-  it('resolves an ORGANIZATION-level SUBSET assignment on a partner-owned library policy (policyOrgId null, #2280)', async () => {
-    // Partner-owned policies can now carry org/site/group/device SUBSET
-    // assignments (#2280 library model), not just the partner-wide 'partner'
-    // level. A null policyOrgId here is the NORMAL case for those — resolution
-    // must NOT no-op; it queries devices by the target org alone (no extra
-    // clamp, since there's no single owning org for a library policy). This
-    // branch's query shape is `.from(devices).where(...)` directly (no
-    // innerJoin), which the shared module-level mock doesn't model, so this
-    // test overrides db.select for its one call.
+  it('does NOT partner-clamp an org-owned policy (policyOrgId set) — existing org clamp only, no join', async () => {
+    // Baseline/regression guard for the pre-#2280 org-owned path: no partner is
+    // threaded through, and the resolver must not attempt an organizations join
+    // (the mock chain below has no `.innerJoin`, so calling it would throw).
     const { db } = await import('../db');
     const chain: any = {
       from: vi.fn(() => chain),
@@ -107,8 +130,42 @@ describe('resolveDeviceIdsForAssignment (partner-wide patch, #1724)', () => {
     };
     vi.mocked(db.select).mockReturnValueOnce(chain);
 
-    const ids = await resolveDeviceIdsForAssignment('organization', 'org-x', null);
+    const ids = await resolveDeviceIdsForAssignment('organization', 'org-x', 'org-x', null);
+
     expect(ids).toEqual(['dev-a']);
+    const whereArgs = collectSqlLeafStrings(chain.where.mock.calls[0][0]);
+    expect(whereArgs).toContain('org-x');
+  });
+
+  it('re-clamps an ORGANIZATION-level SUBSET assignment on a partner-owned library policy to the policy partner (TOCTOU re-clamp, #2280 review)', async () => {
+    // Partner-owned policies can now carry org/site/group/device SUBSET
+    // assignments (#2280 library model), not just the partner-wide 'partner'
+    // level. A null policyOrgId here is the NORMAL case for those. The target
+    // org was partner-scoped at ASSIGN time only — if it's later reparented to
+    // a different partner, a stale assignment row must not keep resolving those
+    // devices. So resolution now re-verifies via an inner join on organizations
+    // and clamps to the policy's partnerId on every run, mirroring the
+    // 'partner' branch's re-verification of assignmentTargetId.
+    const { db } = await import('../db');
+    const { organizations } = await import('../db/schema');
+    const chain: any = {
+      from: vi.fn(() => chain),
+      innerJoin: vi.fn(() => chain),
+      where: vi.fn(() => Promise.resolve([{ id: 'dev-a' }])),
+    };
+    vi.mocked(db.select).mockReturnValueOnce(chain);
+
+    const ids = await resolveDeviceIdsForAssignment('organization', 'org-x', null, 'partner-123');
+
+    expect(ids).toEqual(['dev-a']);
+    // Joined against organizations specifically (not some other table).
+    expect(chain.innerJoin).toHaveBeenCalledTimes(1);
+    expect(chain.innerJoin.mock.calls[0][0]).toBe(organizations);
+    // The where() predicate actually carries BOTH the target-org filter and the
+    // partner clamp — not just one or the other, and not a fixed mock return.
+    const whereArgs = collectSqlLeafStrings(chain.where.mock.calls[0][0]);
+    expect(whereArgs).toContain('org-x');
+    expect(whereArgs).toContain('partner-123');
   });
 });
 
