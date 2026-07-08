@@ -17,6 +17,61 @@ const PAREN_GROUP = /\([^)]*\)/g;
 const TRAILING_VERSION = /\s+\d[\d.]*\s*$/g;
 const MULTISPACE = /\s+/g;
 
+const VENDOR_ALIASES: Record<string, string> = {
+  'adobe inc.': 'adobe',
+  'adobe systems': 'adobe',
+  adobe: 'adobe',
+  mozilla: 'mozilla',
+  'mozilla corporation': 'mozilla',
+  'mozilla foundation': 'mozilla',
+  google: 'google',
+  'google llc': 'google',
+  'google inc.': 'google',
+  microsoft: 'microsoft',
+  'microsoft corporation': 'microsoft',
+  videolan: 'videolan',
+  'the videolan project': 'videolan',
+  'igor pavlov': '7-zip',
+  '7-zip': '7-zip',
+  wireshark: 'wireshark',
+  'wireshark foundation': 'wireshark',
+  'the wireshark developers': 'wireshark',
+};
+const VENDOR_SUFFIX =
+  /\b(inc|inc\.|llc|ltd|corp|corporation|gmbh|co|company|foundation|project|team|the)\b/gi;
+const STOPWORDS = new Set([
+  'the',
+  'inc',
+  'llc',
+  'ltd',
+  'corp',
+  'corporation',
+  'gmbh',
+  'co',
+  'company',
+  'software',
+  'app',
+  'application',
+  'tool',
+  'client',
+  'edition',
+]);
+const MIN_DISTINCTIVE_TOKENS = 1;
+
+function canonicalVendor(vendor: string): string {
+  const v = vendor.toLowerCase().trim();
+  if (VENDOR_ALIASES[v]) return VENDOR_ALIASES[v];
+  const stripped = v.replace(VENDOR_SUFFIX, '').replace(/\s+/g, ' ').trim();
+  return VENDOR_ALIASES[stripped] ?? stripped;
+}
+
+function vendorAgrees(invVendor: string | null, cpeVendor: string | null): boolean {
+  if (!invVendor || !cpeVendor) return false;
+  const a = canonicalVendor(invVendor);
+  const b = cpeVendor.toLowerCase();
+  return a === b || a.includes(b) || b.includes(a);
+}
+
 export function normalizeDisplayName(name: string): string {
   let s = name.toLowerCase();
   s = s.replace(PAREN_GROUP, ' ');
@@ -151,7 +206,7 @@ export const NONE: Resolution = {
 
 export function resolve(
   displayName: string,
-  _vendor: string | null,
+  vendor: string | null,
   index: CatalogIndex,
   curated: Map<string, CuratedEntry>,
 ): Resolution {
@@ -186,6 +241,49 @@ export function resolve(
     };
   }
 
-  // Layer B added in Task 5.
-  return NONE;
+  // Layer B - token inverted-index over catalog + hard guardrails.
+  const queryWords = new Set(tokenize(normName));
+  if (queryWords.size === 0) return NONE;
+
+  const candidates = new Set<string>();
+  for (const word of queryWords) {
+    for (const id of index.wordIndex.get(word) ?? []) {
+      candidates.add(id);
+    }
+  }
+
+  let best: { id: string; score: number } | null = null;
+  let runnerUp = 0;
+  for (const id of candidates) {
+    const m = index.meta.get(id);
+    if (!m || !vendorAgrees(vendor, m.cpeVendor)) continue;
+
+    let score = 0;
+    for (const word of queryWords) {
+      if (STOPWORDS.has(word)) continue;
+      if (m.productTokens.has(word)) score += 1;
+    }
+
+    if (score < MIN_DISTINCTIVE_TOKENS) continue;
+    if (!best || score > best.score) {
+      runnerUp = best ? best.score : 0;
+      best = { id, score };
+    } else if (score > runnerUp) {
+      runnerUp = score;
+    }
+  }
+
+  if (!best) return NONE;
+  if (best.score <= runnerUp) return NONE;
+
+  const m = index.meta.get(best.id);
+  if (!m) return NONE;
+  if (m.cpe && !isWellFormedCpe(m.cpe)) return NONE;
+  return {
+    productId: best.id,
+    cpe: m.cpe,
+    confidence: 'fuzzy',
+    matchedVia: 'token',
+    tokensMatched: best.score,
+  };
 }

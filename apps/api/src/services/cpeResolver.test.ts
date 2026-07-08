@@ -154,3 +154,113 @@ describe('resolve - Layer A', () => {
     expect(r).toMatchObject({ productId: null, matchedVia: 'dictionary' });
   });
 });
+
+describe('resolve - Layer B (token) + guardrails', () => {
+  const catalog: CatalogProduct[] = [
+    ...CATALOG,
+    {
+      id: 'p-7zip',
+      normalizedName: '7-zip_file_archiver',
+      normalizedVendor: '7-zip',
+      cpe: 'cpe:2.3:a:7-zip:7-zip:*:*:*:*:*:*:*:*',
+    },
+    {
+      id: 'p-wireshark',
+      normalizedName: 'wireshark_network_protocol_analyzer',
+      normalizedVendor: 'wireshark',
+      cpe: 'cpe:2.3:a:wireshark:wireshark:*:*:*:*:*:*:*:*',
+    },
+  ];
+  const idx = buildCatalogIndex(catalog);
+  const curated = loadCuratedDictionary();
+
+  it('token match on long-tail name with vendor agreement -> fuzzy', () => {
+    const r = resolve('Wireshark 4.2.0 (64-bit)', 'Wireshark Foundation', idx, curated);
+    expect(r).toMatchObject({
+      productId: 'p-wireshark',
+      confidence: 'fuzzy',
+      matchedVia: 'token',
+    });
+    expect(r.tokensMatched).toBeGreaterThanOrEqual(1);
+  });
+
+  it('GUARDRAIL: Microsoft Edge against a Chrome-only catalog -> withheld (no Edge->Chrome)', () => {
+    const chromeOnly = buildCatalogIndex([CATALOG[0]!]);
+    const r = resolve('Microsoft Edge', 'Microsoft Corporation', chromeOnly, new Map());
+    expect(r.confidence).toBe('none');
+    expect(r.productId).toBeNull();
+  });
+
+  it('GUARDRAIL: vendor disagreement withholds even if product word overlaps', () => {
+    const r = resolve('Chrome Remover', 'Acme Software', buildCatalogIndex([CATALOG[0]!]), new Map());
+    expect(r.confidence).toBe('none');
+  });
+
+  it('GUARDRAIL: missing vendor -> Layer B withholds', () => {
+    const noExactIdx = buildCatalogIndex([
+      {
+        id: 'p-wireshark',
+        normalizedName: 'wireshark_network_protocol_analyzer',
+        normalizedVendor: 'wireshark',
+        cpe: 'cpe:2.3:a:wireshark:wireshark:*:*:*:*:*:*:*:*',
+      },
+    ]);
+    const r = resolve('Wireshark', null, noExactIdx, new Map());
+    expect(r.confidence).toBe('none');
+  });
+
+  it('GUARDRAIL: vendor-only word match (no distinctive product token) withholds', () => {
+    const withMs: CatalogProduct[] = [
+      {
+        id: 'p-ms365',
+        normalizedName: '365_apps',
+        normalizedVendor: 'microsoft',
+        cpe: 'cpe:2.3:a:microsoft:365_apps:*:*:*:*:*:*:*:*',
+      },
+    ];
+    const r = resolve('Microsoft Random Tool', 'Microsoft', buildCatalogIndex(withMs), new Map());
+    expect(r.confidence).toBe('none');
+  });
+
+  it('vendor alias equivalence (Adobe Inc. == adobe) - via token when not curated', () => {
+    const adobeCat = buildCatalogIndex([CATALOG[2]!]);
+    const r = resolve('Adobe Acrobat Reader', 'Adobe Inc.', adobeCat, new Map());
+    expect(r).toMatchObject({ productId: 'p-acrobat', confidence: 'fuzzy', matchedVia: 'token' });
+  });
+
+  it('GUARDRAIL: tied token winners withhold', () => {
+    const idxWithTie = buildCatalogIndex([
+      {
+        id: 'p-acme-admin',
+        normalizedName: 'admin_console',
+        normalizedVendor: 'acme',
+        cpe: 'cpe:2.3:a:acme:console:*:*:*:*:*:*:*:*',
+      },
+      {
+        id: 'p-acme-user',
+        normalizedName: 'user_console',
+        normalizedVendor: 'acme',
+        cpe: 'cpe:2.3:a:acme:console:*:*:*:*:*:*:*:*',
+      },
+    ]);
+    const r = resolve('Console Tool', 'Acme', idxWithTie, new Map());
+    expect(r.confidence).toBe('none');
+  });
+
+  it('GUARDRAIL: malformed winning CPE withholds', () => {
+    const malformed = buildCatalogIndex([
+      {
+        id: 'p-acme-console',
+        normalizedName: 'acme_console_manager',
+        normalizedVendor: 'acme',
+        cpe: 'cpe:2.3:a:acme:console:*:*:*:*:*:*:*:*',
+      },
+    ]);
+    malformed.meta.set('p-acme-console', {
+      ...malformed.meta.get('p-acme-console')!,
+      cpe: 'not-a-cpe',
+    });
+    const r = resolve('Acme Console', 'Acme', malformed, new Map());
+    expect(r.confidence).toBe('none');
+  });
+});
