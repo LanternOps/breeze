@@ -99,6 +99,15 @@ describe('POST /organizations/:id/portal-users/invite', () => {
     expect(res.status).toBe(409);
     expect(sendInvite).not.toHaveBeenCalled();
   });
+
+  it('409s when the existing row is disabled — disable is terminal, must not resurrect via invite', async () => {
+    selectResult
+      .mockResolvedValueOnce([{ id: ORG_ID }])
+      .mockResolvedValueOnce([{ id: 'pu-1', email: 'disabled@acme.example', passwordHash: 'h', status: 'disabled' }]);
+    const res = await invite({ email: 'disabled@acme.example' });
+    expect(res.status).toBe(409);
+    expect(sendInvite).not.toHaveBeenCalled();
+  });
 });
 
 describe('PATCH /organizations/:id/portal-users/:userId', () => {
@@ -131,6 +140,15 @@ describe('POST /organizations/:id/portal-users/:userId/resend-invite', () => {
     selectResult
       .mockResolvedValueOnce([{ id: ORG_ID }]) // org
       .mockResolvedValueOnce([{ id: 'pu-1', orgId: ORG_ID, email: 'live@acme.example', name: null, passwordHash: 'h', status: 'active' }]); // target
+    const res = await resend('pu-1');
+    expect(res.status).toBe(409);
+    expect(sendInvite).not.toHaveBeenCalled();
+  });
+
+  it('409s when the target is disabled — disable is terminal, must not resurrect via resend', async () => {
+    selectResult
+      .mockResolvedValueOnce([{ id: ORG_ID }]) // org
+      .mockResolvedValueOnce([{ id: 'pu-1', orgId: ORG_ID, email: 'disabled@acme.example', name: null, passwordHash: 'h', status: 'disabled' }]); // target
     const res = await resend('pu-1');
     expect(res.status).toBe(409);
     expect(sendInvite).not.toHaveBeenCalled();

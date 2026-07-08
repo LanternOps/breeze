@@ -24,6 +24,19 @@ describe('OrgPortalUsersEditor', () => {
     expect(screen.getByText(/pending setup/i)).toBeInTheDocument();
   });
 
+  it('shows Reactivate (not Resend) for a disabled row, and Resend only for pending_setup', async () => {
+    fetchWithAuth.mockResolvedValueOnce(ok({ data: [
+      { id: 'pu-1', email: 'disabled@acme.example', name: 'D', status: 'disabled', effectiveStatus: 'disabled', lastLoginAt: null, invitedAt: null },
+      { id: 'pu-2', email: 'pending@acme.example', name: null, status: 'invited', effectiveStatus: 'pending_setup', lastLoginAt: null, invitedAt: null }
+    ] }));
+    render(<OrgPortalUsersEditor orgId={ORG_ID} />);
+    await waitFor(() => expect(screen.getByText('disabled@acme.example')).toBeInTheDocument());
+
+    expect(screen.getByTestId('portal-user-enable-pu-1')).toBeInTheDocument();
+    expect(screen.queryByTestId('portal-user-resend-pu-1')).not.toBeInTheDocument();
+    expect(screen.getByTestId('portal-user-resend-pu-2')).toBeInTheDocument();
+  });
+
   it('invites a user through the API', async () => {
     fetchWithAuth
       .mockResolvedValueOnce(ok({ data: [] }))                                  // initial list

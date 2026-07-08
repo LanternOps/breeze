@@ -552,6 +552,12 @@ authRoutes.post('/auth/accept-invite', zValidator('json', acceptInviteSchema), a
   if (!user) {
     return c.json({ error: 'Invalid or expired invite' }, 400);
   }
+  // Disable is terminal — a disabled account may not be resurrected via an
+  // accept-invite flow. The invite token is already consumed at this point;
+  // that's fine, it just burns the token.
+  if (user.status === 'disabled') {
+    return c.json({ error: 'This account has been disabled.' }, 403);
+  }
   // An invite must never hijack a live account.
   if (user.passwordHash && user.status === 'active') {
     return c.json({ error: 'This account is already set up. Use the login page.' }, 400);

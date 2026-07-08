@@ -123,6 +123,10 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
     const [existing] = await db.select({ id: portalUsers.id, email: portalUsers.email, passwordHash: portalUsers.passwordHash, status: portalUsers.status })
       .from(portalUsers).where(and(eq(portalUsers.orgId, org.id), eq(portalUsers.email, normalizedEmail))).limit(1);
 
+    if (existing && existing.status === 'disabled') {
+      return c.json({ error: 'This user is disabled. Reactivate them before inviting.' }, 409);
+    }
+
     if (existing && existing.passwordHash && existing.status === 'active') {
       return c.json({ error: 'This email already has an active portal account.' }, 409);
     }
@@ -162,6 +166,7 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
     const auth = c.get('auth') as AuthContext;
     const target = await getOrgScopedPortalUser(org.id, c.req.param('userId')!);
     if (!target) return c.json({ error: 'Portal user not found' }, 404);
+    if (target.status === 'disabled') return c.json({ error: 'This user is disabled. Reactivate them first.' }, 409);
     if (target.passwordHash && target.status === 'active') return c.json({ error: 'This account is already set up.' }, 409);
     const [orgRow] = await db.select({ name: organizations.name }).from(organizations).where(eq(organizations.id, org.id)).limit(1);
     const emailSent = await issueAndSendInvite(c, org.id, { id: target.id, email: target.email }, orgRow?.name ?? null, auth.user.name);

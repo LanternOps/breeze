@@ -163,7 +163,7 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
                 <td className="py-2">{u.lastLoginAt ? new Date(u.lastLoginAt).toLocaleDateString() : '—'}</td>
                 <td className="py-2">
                   <div className="flex justify-end gap-2">
-                    {u.effectiveStatus !== 'active' && (
+                    {u.effectiveStatus === 'pending_setup' && (
                       <button
                         type="button"
                         data-testid={`portal-user-resend-${u.id}`}

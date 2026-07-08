@@ -44,6 +44,14 @@ describe('POST /auth/accept-invite', () => {
     expect(res.status).toBe(400);
   });
 
+  it('rejects a disabled account, even with a valid consumed invite token', async () => {
+    userRow.current = { id: USER_ID, orgId: ORG_ID, email: 'cust@acme.example', name: null, passwordHash: null, receiveNotifications: true, status: 'disabled' };
+    const token = await storePortalInviteToken(USER_ID);
+    const res = await post({ token, password: 'Str0ngPass!' });
+    expect(res.status).toBe(403);
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+
   it('rejects when the account is already active with a password', async () => {
     userRow.current = { id: USER_ID, orgId: ORG_ID, email: 'cust@acme.example', name: 'X', passwordHash: 'existing-hash', receiveNotifications: true, status: 'active' };
     const token = await storePortalInviteToken(USER_ID);
