@@ -269,7 +269,7 @@ describe('configurationPolicies CRUD routes', () => {
       expect(res.status).toBe(400);
     });
 
-    it('creates a partner-wide policy with server-derived partner for partner scope (#1724)', async () => {
+    it('creates a partner-owned policy WITHOUT auto-assigning it to all orgs (#2280 library model)', async () => {
       const policy = { id: POLICY_ID, name: 'Partner-wide', orgId: null, partnerId: PARTNER_ID, status: 'active' };
       createConfigPolicyMock.mockResolvedValue(policy);
 
@@ -295,9 +295,10 @@ describe('configurationPolicies CRUD routes', () => {
         expect.objectContaining({ name: 'Partner-wide' }),
         'user-1'
       );
-      // The matching partner-level assignment is seeded automatically so the
-      // policy actually applies to all orgs immediately (no orphaned ownership).
-      expect(assignPolicyMock).toHaveBeenCalledWith(POLICY_ID, 'partner', PARTNER_ID, 0, 'user-1');
+      // Library policies start empty — no partner-level (or any) assignment is
+      // seeded. The policy is applied later via explicit assignments on the
+      // Organizations panel (#2280 library model).
+      expect(assignPolicyMock).not.toHaveBeenCalled();
     });
 
     it('does not auto-assign for an org-owned policy (assignment stays manual)', async () => {
@@ -418,25 +419,6 @@ describe('configurationPolicies CRUD routes', () => {
       appPartner.route('/', crudRoutes);
       return appPartner;
     }
-
-    it('surfaces a 500 when the auto-assign fails, WITHOUT a compensating delete (request transaction rolls back)', async () => {
-      const policy = { id: POLICY_ID, name: 'Partner-wide', orgId: null, partnerId: PARTNER_ID, status: 'active' };
-      createConfigPolicyMock.mockResolvedValue(policy);
-      assignPolicyMock.mockRejectedValue(new Error('RLS 0-row write'));
-
-      const res = await partnerCreateApp().request('/', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: 'Partner-wide', ownerScope: 'partner' }),
-      });
-
-      // Both inserts share the request-level withDbAccessContext transaction, so
-      // the failed seed rolls the policy insert back automatically — the handler
-      // must NOT issue an explicit compensating delete (which would double-handle
-      // rollback and, on a UNIQUE violation, run against an already-aborted txn).
-      expect(res.status).toBe(500);
-      expect(deleteConfigPolicyMock).not.toHaveBeenCalled();
-    });
 
     it('rejects ownerScope:partner for an org-scope caller (no partner) (#1724)', async () => {
       const appOrg = new Hono();
