@@ -18,12 +18,16 @@ vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(() => selectResult()), orderBy: vi.fn(() => selectResult()) })) })) })),
     insert: vi.fn(() => ({ values: vi.fn(() => ({ returning: vi.fn(() => insertReturning()) })) })),
-    update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn(() => insertReturning()) })) })) }))
+    update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn(() => insertReturning()) })) })) })),
+    delete: vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) }))
   }
 }));
 vi.mock('../db/schema', () => ({
   portalUsers: { id: 'id', orgId: 'orgId', email: 'email', name: 'name', passwordHash: 'passwordHash', receiveNotifications: 'receiveNotifications', status: 'status', invitedBy: 'invitedBy', invitedAt: 'invitedAt', lastLoginAt: 'lastLoginAt', createdAt: 'createdAt' },
-  organizations: { id: 'id', name: 'name', deletedAt: 'deletedAt' }
+  organizations: { id: 'id', name: 'name', deletedAt: 'deletedAt' },
+  tickets: { id: 'id', submittedBy: 'submittedBy' },
+  ticketComments: { id: 'id', portalUserId: 'portalUserId' },
+  assetCheckouts: { id: 'id', checkedOutTo: 'checkedOutTo' }
 }));
 vi.mock('../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 vi.mock('../routes/portal/helpers', () => ({ storePortalInviteToken: vi.fn(async () => 'raw-token'), buildPortalUrl: (p: string) => `https://x/portal${p}` }));
@@ -73,5 +77,40 @@ describe('POST /organizations/:id/portal-users/invite', () => {
     const res = await invite({ email: 'live@acme.example' });
     expect(res.status).toBe(409);
     expect(sendInvite).not.toHaveBeenCalled();
+  });
+});
+
+describe('PATCH /organizations/:id/portal-users/:userId', () => {
+  const patch = (uid: string, body: unknown) => makeApp().request(`/organizations/${ORG_ID}/portal-users/${uid}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  it('disables a user', async () => {
+    selectResult
+      .mockResolvedValueOnce([{ id: ORG_ID }])                         // org
+      .mockResolvedValueOnce([{ id: 'pu-1', orgId: ORG_ID }]);          // target exists in org
+    insertReturning.mockResolvedValueOnce([{ id: 'pu-1', status: 'disabled' }]); // update .returning
+    const res = await patch('pu-1', { status: 'disabled' });
+    expect(res.status).toBe(200);
+  });
+});
+
+describe('DELETE /organizations/:id/portal-users/:userId', () => {
+  const del = (uid: string) => makeApp().request(`/organizations/${ORG_ID}/portal-users/${uid}`, { method: 'DELETE' });
+  it('409s when the user has ticket references', async () => {
+    selectResult
+      .mockResolvedValueOnce([{ id: ORG_ID }])            // org
+      .mockResolvedValueOnce([{ id: 'pu-1', orgId: ORG_ID }]) // target
+      .mockResolvedValueOnce([{ id: 't-1' }]);            // reference exists (tickets)
+    const res = await del('pu-1');
+    expect(res.status).toBe(409);
+  });
+  it('hard-deletes an unreferenced user', async () => {
+    selectResult
+      .mockResolvedValueOnce([{ id: ORG_ID }])
+      .mockResolvedValueOnce([{ id: 'pu-1', orgId: ORG_ID }])
+      .mockResolvedValueOnce([]) // tickets ref
+      .mockResolvedValueOnce([]) // comments ref
+      .mockResolvedValueOnce([]); // checkouts ref
+    // delete().where() resolves (mock deleteChain below)
+    const res = await del('pu-1');
+    expect(res.status).toBe(200);
   });
 });
