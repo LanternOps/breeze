@@ -55,6 +55,23 @@ const STOPWORDS = new Set([
   'tool',
   'client',
   'edition',
+  'for',
+  'and',
+  'of',
+  'update',
+  'service',
+  'helper',
+  'runtime',
+  'agent',
+  'console',
+  'manager',
+  'suite',
+  'desktop',
+  'professional',
+  'standard',
+  'home',
+  'pro',
+  'plus',
 ]);
 const MIN_DISTINCTIVE_TOKENS = 1;
 
@@ -69,7 +86,11 @@ function vendorAgrees(invVendor: string | null, cpeVendor: string | null): boole
   if (!invVendor || !cpeVendor) return false;
   const a = canonicalVendor(invVendor);
   const b = cpeVendor.toLowerCase();
-  return a === b || a.includes(b) || b.includes(a);
+  if (a === b) return true;
+  const aTokens = new Set(tokenize(a));
+  const bTokens = new Set(tokenize(b));
+  for (const t of aTokens) if (t.length >= 3 && bTokens.has(t)) return true;
+  return false;
 }
 
 export function normalizeDisplayName(name: string): string {
@@ -136,6 +157,7 @@ export interface CatalogIndex {
       cpe: string | null;
       cpeVendor: string | null;
       cpeProduct: string | null;
+      catalogVendor: string | null;
       productTokens: Set<string>;
     }
   >;
@@ -178,6 +200,7 @@ export function buildCatalogIndex(products: CatalogProduct[]): CatalogIndex {
       cpe: product.cpe,
       cpeVendor: cpeParts?.vendor ?? null,
       cpeProduct: cpeParts?.product ?? null,
+      catalogVendor: product.normalizedVendor,
       productTokens,
     });
   }
@@ -214,9 +237,18 @@ export function resolve(
 
   // Layer A.1 - curated translation dictionary.
   const curatedHit = curated.get(normName);
-  if (curatedHit) {
+  if (curatedHit && (!vendor || vendorAgrees(vendor, curatedHit.vendor))) {
     const key = `${curatedHit.vendor}:${curatedHit.product}`;
     const productId = index.byVendorProduct.get(key) ?? null;
+    if (!productId) {
+      return {
+        productId: null,
+        cpe: null,
+        confidence: 'none',
+        matchedVia: 'dictionary',
+        tokensMatched: 0,
+      };
+    }
     const cpe = productId
       ? index.meta.get(productId)?.cpe ?? null
       : `cpe:2.3:a:${curatedHit.vendor}:${curatedHit.product}`;
@@ -256,7 +288,8 @@ export function resolve(
   let runnerUp = 0;
   for (const id of candidates) {
     const m = index.meta.get(id);
-    if (!m || !vendorAgrees(vendor, m.cpeVendor)) continue;
+    const candVendor = m?.cpeVendor ?? m?.catalogVendor ?? null;
+    if (!m || !vendorAgrees(vendor, candVendor)) continue;
 
     let score = 0;
     for (const word of queryWords) {

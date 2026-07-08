@@ -21,7 +21,7 @@ describe('tokenize', () => {
   it('splits on non-alphanumeric, lowercases, drops empties', () => {
     expect(tokenize('Adobe Acrobat_Reader-DC')).toEqual(['adobe', 'acrobat', 'reader', 'dc']);
   });
-  it('keeps ++ / - inside known product words via alnum-run split', () => {
+  it('drops ++ / - punctuation via alnum-run split', () => {
     expect(tokenize('notepad++')).toEqual(['notepad']);
   });
 });
@@ -121,6 +121,7 @@ describe('buildCatalogIndex', () => {
       cpe: null,
       cpeVendor: null,
       cpeProduct: null,
+      catalogVendor: 'acme software',
       productTokens: new Set(['internal', 'tool']),
     });
     expect(idx.wordIndex.get('acme')).toEqual(new Set(['p-internal']));
@@ -151,7 +152,34 @@ describe('resolve - Layer A', () => {
 
   it('curated hit whose CPE is absent from catalog -> productId null, matchedVia dictionary', () => {
     const r = resolve('Microsoft Teams', 'Microsoft', idx, curated);
-    expect(r).toMatchObject({ productId: null, matchedVia: 'dictionary' });
+    expect(r).toMatchObject({
+      productId: null,
+      cpe: null,
+      confidence: 'none',
+      matchedVia: 'dictionary',
+    });
+  });
+
+  it('does not trust curated entries when the supplied vendor disagrees', () => {
+    const zoomCatalog: CatalogProduct[] = [
+      {
+        id: 'p-zoom',
+        normalizedName: 'zoom_workplace',
+        normalizedVendor: 'zoom',
+        cpe: 'cpe:2.3:a:zoom:zoom:*:*:*:*:*:*:*:*',
+      },
+    ];
+    const zoomCurated = new Map([['zoom', { vendor: 'zoom', product: 'zoom' }]]);
+
+    const disagreement = resolve('Zoom', 'Acme Corp', buildCatalogIndex(zoomCatalog), zoomCurated);
+    expect(disagreement.confidence).not.toBe('curated');
+
+    const absentVendor = resolve('Zoom', null, buildCatalogIndex(zoomCatalog), zoomCurated);
+    expect(absentVendor).toMatchObject({
+      productId: 'p-zoom',
+      confidence: 'curated',
+      matchedVia: 'dictionary',
+    });
   });
 });
 
@@ -182,6 +210,30 @@ describe('resolve - Layer B (token) + guardrails', () => {
       matchedVia: 'token',
     });
     expect(r.tokensMatched).toBeGreaterThanOrEqual(1);
+  });
+
+  it('GUARDRAIL: short vendor substring does not create agreement', () => {
+    const caCatalog = buildCatalogIndex([
+      {
+        id: 'p-ca',
+        normalizedName: 'agent',
+        normalizedVendor: 'ca',
+        cpe: 'cpe:2.3:a:ca:agent:*:*:*:*:*:*:*:*',
+      },
+    ]);
+
+    const r = resolve('Canon Print Agent', 'Canon', caCatalog, new Map());
+    expect(r.confidence).toBe('none');
+    expect(r.productId).toBeNull();
+  });
+
+  it('still allows legitimate vendor token agreement', () => {
+    const r = resolve('Wireshark Protocol Analyzer', 'Wireshark Foundation', idx, new Map());
+    expect(r).toMatchObject({
+      productId: 'p-wireshark',
+      confidence: 'fuzzy',
+      matchedVia: 'token',
+    });
   });
 
   it('GUARDRAIL: Microsoft Edge against a Chrome-only catalog -> withheld (no Edge->Chrome)', () => {
@@ -220,6 +272,38 @@ describe('resolve - Layer B (token) + guardrails', () => {
     ];
     const r = resolve('Microsoft Random Tool', 'Microsoft', buildCatalogIndex(withMs), new Map());
     expect(r.confidence).toBe('none');
+  });
+
+  it('GUARDRAIL: generic stopwords do not create token confidence', () => {
+    const acmeAgent = buildCatalogIndex([
+      {
+        id: 'p-acme-agent',
+        normalizedName: 'remote_agent',
+        normalizedVendor: 'acme',
+        cpe: 'cpe:2.3:a:acme:agent:*:*:*:*:*:*:*:*',
+      },
+    ]);
+
+    const r = resolve('Acme Agent', 'Acme', acmeAgent, new Map());
+    expect(r.confidence).toBe('none');
+  });
+
+  it('uses catalog vendor for token guardrails when a catalog product has no CPE', () => {
+    const internalTool = buildCatalogIndex([
+      {
+        id: 'p-int',
+        normalizedName: 'internal_tool',
+        normalizedVendor: 'acme',
+        cpe: null,
+      },
+    ]);
+
+    const r = resolve('Acme Internal Tool', 'Acme', internalTool, new Map());
+    expect(r).toMatchObject({
+      productId: 'p-int',
+      confidence: 'fuzzy',
+      matchedVia: 'token',
+    });
   });
 
   it('vendor alias equivalence (Adobe Inc. == adobe) - via token when not curated', () => {
