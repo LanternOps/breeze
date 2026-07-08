@@ -286,6 +286,7 @@ export default function ConfigPolicyCreatePage() {
                   <p className="mt-2 text-sm text-muted-foreground">
                     Create a reusable policy owned by your partner. It applies to no
                     organizations until you assign it on the policy&apos;s Organizations tab.
+                    Backup settings aren&apos;t available on partner-owned policies.
                   </p>
                 )}
               </fieldset>

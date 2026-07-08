@@ -145,6 +145,62 @@ describe('OrganizationScopePanel', () => {
   // "Assigned" section must always render it, resolving its name by id even
   // when it's absent from the currently loaded/searched page — and unchecking
   // it must still fire the DELETE.
+  it('DELETEs the org assignment when an assigned org (in the current page) is unchecked', async () => {
+    fetchWithAuthMock
+      .mockImplementationOnce(() => assignmentsRes([{ id: 'a1', level: 'organization', targetId: 'org-acme', priority: 0 }]))
+      .mockImplementationOnce(() => orgsPageRes([{ id: 'org-acme', name: 'Acme Corp' }, { id: 'org-contoso', name: 'Contoso Ltd' }]));
+
+    render(<OrganizationScopePanel policyId="p1" partnerId={PARTNER_ID} />);
+    const acme = await screen.findByRole('checkbox', { name: /Acme Corp/i });
+    expect(acme).toBeChecked();
+
+    fireEvent.click(acme);
+
+    await waitFor(() => expect(findCall('/configuration-policies/p1/assignments/a1', 'DELETE')).toBeTruthy());
+  });
+
+  it('DELETEs the partner assignment when "All organizations" is turned off', async () => {
+    fetchWithAuthMock
+      .mockImplementationOnce(() => assignmentsRes([{ id: 'ap1', level: 'partner', targetId: PARTNER_ID, priority: 0 }]))
+      .mockImplementationOnce(() => orgsPageRes([{ id: 'org-acme', name: 'Acme Corp' }]));
+
+    render(<OrganizationScopePanel policyId="p1" partnerId={PARTNER_ID} />);
+    const allOrgs = await screen.findByRole('checkbox', { name: /All organizations/i });
+    expect(allOrgs).toBeChecked();
+
+    fireEvent.click(allOrgs);
+
+    await waitFor(() => expect(findCall('/configuration-policies/p1/assignments/ap1', 'DELETE')).toBeTruthy());
+  });
+
+  it('surfaces an error and still refetches assignments when a mutation fails mid-sequence', async () => {
+    fetchWithAuthMock
+      .mockImplementationOnce(() => assignmentsRes([]))
+      .mockImplementationOnce(() => orgsPageRes([{ id: 'org-contoso', name: 'Contoso Ltd' }]));
+
+    render(<OrganizationScopePanel policyId="p1" partnerId={PARTNER_ID} />);
+    const contoso = await screen.findByRole('checkbox', { name: /Contoso Ltd/i });
+
+    fetchWithAuthMock.mockImplementationOnce(() => jsonRes({ error: 'Simulated failure' }, false, 500));
+
+    fireEvent.click(contoso);
+
+    await waitFor(() => expect(screen.getByText(/Simulated failure/i)).toBeInTheDocument());
+
+    // The `run()` finally-block refetch (#2280 hardening) must still fire a
+    // fresh GET for assignments after the failed mutation, not just the one
+    // at mount — this is what keeps the checklist state truthful after a
+    // failed toggle instead of leaving optimistic/stale UI in place.
+    await waitFor(() => {
+      const getCalls = fetchWithAuthMock.mock.calls.filter(
+        (c) =>
+          String(c[0]).includes('/configuration-policies/p1/assignments') &&
+          !(c[1] as RequestInit | undefined)?.method
+      );
+      expect(getCalls.length).toBeGreaterThanOrEqual(2);
+    });
+  });
+
   it('always renders an assigned org that is not in the current page, and can unassign it', async () => {
     fetchWithAuthMock
       .mockImplementationOnce(() => assignmentsRes([{ id: 'a-51', level: 'organization', targetId: 'org-51', priority: 0 }]))
@@ -182,5 +238,34 @@ describe('OrganizationScopePanel', () => {
       },
       { timeout: 2000 }
     );
+  });
+
+  it('shows a searching indicator while a search refetch is in flight and orgs are already loaded', async () => {
+    fetchWithAuthMock
+      .mockImplementationOnce(() => assignmentsRes([]))
+      .mockImplementationOnce(() => orgsPageRes([{ id: 'org-1', name: 'Org One' }]));
+
+    render(<OrganizationScopePanel policyId="p1" partnerId={PARTNER_ID} />);
+    await screen.findByRole('checkbox', { name: 'Org One' });
+    expect(screen.queryByText(/Searching…/i)).not.toBeInTheDocument();
+
+    let resolveSearch: (value: unknown) => void = () => {};
+    fetchWithAuthMock.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveSearch = resolve; })
+    );
+
+    const searchBox = screen.getByPlaceholderText('Search organizations...');
+    fireEvent.change(searchBox, { target: { value: 'acme' } });
+
+    await screen.findByText(/Searching…/i, undefined, { timeout: 2000 });
+
+    resolveSearch({
+      ok: true,
+      status: 200,
+      json: () =>
+        Promise.resolve({ data: [{ id: 'org-acme', name: 'Acme Corp' }], pagination: { page: 1, limit: 100, total: 1 } }),
+    });
+
+    await waitFor(() => expect(screen.queryByText(/Searching…/i)).not.toBeInTheDocument());
   });
 });

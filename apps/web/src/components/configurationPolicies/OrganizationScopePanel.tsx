@@ -99,10 +99,16 @@ export default function OrganizationScopePanel({ policyId, partnerId }: Props) {
 
   useEffect(() => { fetchOrgs(1, debouncedSearch, false); }, [fetchOrgs, debouncedSearch]);
 
+  // Tracks whether the in-flight fetch is a "Load more" append vs. a
+  // search/page-1 reset, so the two loading cues below never both fire for
+  // the same request.
+  const [appending, setAppending] = useState(false);
+
   const loadMore = () => {
     const nextPage = page + 1;
     setPage(nextPage);
-    fetchOrgs(nextPage, debouncedSearch, true);
+    setAppending(true);
+    fetchOrgs(nextPage, debouncedSearch, true).finally(() => setAppending(false));
   };
 
   const partnerAssignment = assignments.find((a) => a.level === 'partner');
@@ -213,6 +219,12 @@ export default function OrganizationScopePanel({ policyId, partnerId }: Props) {
 
   const rowsDisabled = assignmentsLoading || busyId !== null;
   const initialLoading = assignmentsLoading || (orgs.length === 0 && orgsLoading);
+  // A search-triggered refetch while the (stale) list from a prior fetch is
+  // still showing: `initialLoading` stays false (orgs.length > 0), so without
+  // this the checklist looks idle while it's actually about to change out
+  // from under the user (#2285 review). Excludes "Load more" appends, which
+  // have their own inline spinner on the button.
+  const searchRefetching = orgsLoading && orgs.length > 0 && !appending;
 
   return (
     <div className="space-y-4">
@@ -264,6 +276,16 @@ export default function OrganizationScopePanel({ policyId, partnerId }: Props) {
             placeholder="Search organizations..."
             className="w-full bg-transparent text-sm outline-hidden placeholder:text-muted-foreground"
           />
+          {searchRefetching && (
+            <span
+              role="status"
+              aria-live="polite"
+              className="ml-2 flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground"
+            >
+              <span className="h-3 w-3 animate-spin rounded-full border-2 border-muted-foreground border-t-transparent" />
+              Searching…
+            </span>
+          )}
         </div>
 
         {initialLoading ? (
