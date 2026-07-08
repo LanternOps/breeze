@@ -48,6 +48,15 @@ export interface PasswordResetEmailParams {
   supportEmail?: string;
 }
 
+export interface PortalInviteEmailParams {
+  to: string | string[];
+  inviteUrl: string;
+  orgName?: string;
+  inviterName?: string;
+  message?: string;
+  supportEmail?: string;
+}
+
 export interface VerificationEmailParams {
   to: string | string[];
   name?: string;
@@ -299,6 +308,16 @@ export class EmailService {
 
   async sendEmailChanged(params: EmailChangedEmailParams): Promise<void> {
     const template = buildEmailChangedTemplate(params);
+    await this.sendEmail({
+      to: params.to,
+      subject: template.subject,
+      html: template.html,
+      text: template.text
+    });
+  }
+
+  async sendPortalInvite(params: PortalInviteEmailParams): Promise<void> {
+    const template = buildPortalInviteTemplate(params);
     await this.sendEmail({
       to: params.to,
       subject: template.subject,
@@ -656,6 +675,32 @@ function buildPasswordResetTemplate(params: PasswordResetEmailParams): EmailTemp
     .filter(Boolean)
     .join('\n');
 
+  return { subject, html, text };
+}
+
+export function buildPortalInviteTemplate(params: PortalInviteEmailParams): EmailTemplate {
+  const orgName = params.orgName?.trim();
+  const inviter = params.inviterName?.trim();
+  const customMessage = params.message?.trim();
+  const subject = orgName ? `You're invited to the ${orgName} support portal` : `You're invited to your support portal`;
+  const preheader = 'Set your password to access your support portal.';
+  const heading = orgName ? `Join the ${orgName} portal` : 'Join your support portal';
+  const invitedBy = inviter ? `${escapeHtml(inviter)} invited you` : 'You have been invited';
+  const body = `
+      <p style="${BODY_PARA}">${invitedBy} to the${orgName ? ` ${escapeHtml(orgName)}` : ''} support portal, where you can open tickets, view invoices, and track your devices.</p>
+      ${customMessage ? `<p style="${BODY_PARA}">${escapeHtml(customMessage)}</p>` : ''}
+      ${renderButton('Set your password', params.inviteUrl)}
+      <p style="${MUTED_PARA}">This invite link expires in 7 days. If you didn't expect this, you can ignore this email.</p>
+  `;
+  const html = renderLayout({ title: subject, preheader, heading, body, footer: supportFooter(params.supportEmail, 'Need help? Contact') });
+  const support = getSupportEmail(params.supportEmail);
+  const text = [
+    orgName ? `You're invited to the ${orgName} support portal.` : `You're invited to your support portal.`,
+    customMessage || null,
+    `Set your password: ${params.inviteUrl}`,
+    'This invite link expires in 7 days.',
+    support ? `Need help? Contact ${support}.` : null
+  ].filter(Boolean).join('\n');
   return { subject, html, text };
 }
 
