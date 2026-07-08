@@ -1,5 +1,5 @@
-import { render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../ai/AiChatMessages', () => ({ default: () => <div /> }));
 vi.mock('../ai/AiChatInput', () => ({ default: () => <div /> }));
@@ -40,6 +40,10 @@ const baseTab = (over = {}) => ({
 });
 
 describe('WorkspaceChatPanel - Create Ticket button', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it('disables the button until there is an assistant message', () => {
     render(<WorkspaceChatPanel tab={baseTab({ messages: [{ role: 'user', content: 'hi' }] }) as any} />);
 
@@ -59,5 +63,36 @@ describe('WorkspaceChatPanel - Create Ticket button', () => {
     );
 
     expect(screen.getByRole('button', { name: /create ticket/i })).toBeEnabled();
+  });
+
+  it('opens the modal and drafts a ticket when the enabled button is clicked', async () => {
+    store.draftTicketFromChat.mockResolvedValueOnce({
+      subject: 'Outlook would not open',
+      problemSummary: 'Outlook would not start.',
+      resolutionSummary: '',
+      suggestedStatus: 'open',
+      suggestedTimeMinutes: 10,
+      elapsedMinutes: 12,
+      orgId: 'o1',
+      orgName: 'Acme',
+      deviceId: null,
+      deviceHostname: null,
+    });
+
+    render(
+      <WorkspaceChatPanel
+        tab={baseTab({
+          messages: [
+            { role: 'user', content: 'hi' },
+            { role: 'assistant', content: 'done' },
+          ],
+        }) as any}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /create ticket/i }));
+
+    await waitFor(() => expect(store.draftTicketFromChat).toHaveBeenCalledWith('t'));
+    expect(screen.getByTestId('create-ticket-from-chat-modal')).toBeInTheDocument();
   });
 });

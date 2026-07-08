@@ -33,6 +33,24 @@ describe('draftTicketFromTranscript', () => {
     expect(r.suggestedTimeMinutes).toBeLessThanOrEqual(25);
   });
 
+  it('blanks resolutionSummary when the issue was not fixed', async () => {
+    createMock.mockResolvedValueOnce(reply({ subject: 's', problemSummary: 'p', resolutionSummary: 'leaked resolution text', wasFixed: false, suggestedTimeMinutes: 5 }));
+    const r = await draftTicketFromTranscript({ messages: transcript, contextSnapshot: null, elapsedMinutes: 25, model: 'claude-x' });
+    expect(r.resolutionSummary).toBe('');
+  });
+
+  it('recovers when retry returns valid JSON', async () => {
+    createMock
+      .mockResolvedValueOnce({ content: [{ type: 'text', text: 'not json' }], usage: {} })
+      .mockResolvedValueOnce(reply({ subject: 'Recovered', problemSummary: 'p', resolutionSummary: 'r', wasFixed: true, suggestedTimeMinutes: 5 }));
+
+    const r = await draftTicketFromTranscript({ messages: transcript, contextSnapshot: null, elapsedMinutes: 25, model: 'claude-x' });
+
+    expect(r.subject).toBe('Recovered');
+    expect(r.resolutionSummary).toBe('r');
+    expect(createMock).toHaveBeenCalledTimes(2);
+  });
+
   it('retries once on invalid JSON then throws', async () => {
     createMock.mockResolvedValue({ content: [{ type: 'text', text: 'not json' }], usage: {} });
     await expect(draftTicketFromTranscript({ messages: transcript, contextSnapshot: null, elapsedMinutes: 25, model: 'claude-x' })).rejects.toThrow();

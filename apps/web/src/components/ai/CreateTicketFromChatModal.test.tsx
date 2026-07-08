@@ -58,4 +58,24 @@ describe('CreateTicketFromChatModal', () => {
 
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ subject: 'New subject', status: 'open' }));
   });
+
+  it('supports manual entry when there is no draft', () => {
+    const { onSubmit } = setup({ draft: null, orgName: null, deviceHostname: null });
+
+    expect((screen.getByLabelText(/subject/i) as HTMLInputElement).value).toBe('');
+    expect((screen.getByLabelText(/problem/i) as HTMLTextAreaElement).value).toBe('');
+    expect(screen.getByRole('button', { name: /create ticket|save/i })).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText(/subject/i), { target: { value: 'Manual subject' } });
+    fireEvent.click(screen.getByRole('button', { name: /create ticket|save/i }));
+
+    expect(onSubmit).toHaveBeenCalledWith({
+      subject: 'Manual subject',
+      description: '',
+      status: 'open',
+      resolutionNote: undefined,
+      timeMinutes: 0,
+      billable: true,
+    });
+  });
 });

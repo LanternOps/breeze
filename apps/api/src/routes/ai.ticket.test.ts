@@ -189,6 +189,7 @@ import { db } from '../db';
 import { getSessionMessages } from '../services/aiAgent';
 import { recordUsage } from '../services/aiCostTracker';
 import { draftTicketFromTranscript, ThinTranscriptError } from '../services/aiTicketDraft';
+import { TicketServiceError } from '../services/ticketService';
 
 const partnerAuth = authHarness.partnerAuth;
 const orgAuth = authHarness.orgAuth;
@@ -222,7 +223,7 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
     vi.mocked(db.select).mockReturnValue(selectRows([{ name: 'Acme Co' }]) as any);
   });
 
-  function postDraft(sessionId: string, auth = partnerAuth) {
+  function postDraft(sessionId: string, auth: any = partnerAuth) {
     authHarness.currentAuth.value = auth;
     return app.request(`/ai/sessions/${sessionId}/ticket-draft`, {
       method: 'POST',
@@ -280,6 +281,38 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
     expect(recordUsage).toHaveBeenCalledWith('s1', 'org1', 'claude-test', 10, 5, false);
   });
 
+  it('enriches a draft with the session device hostname', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectRows([{ name: 'Acme Co' }]) as any)
+      .mockReturnValueOnce(selectRows([{ hostname: 'WKS-04' }]) as any);
+    vi.mocked(getSessionMessages).mockResolvedValueOnce({
+      session: { id: 's1', orgId: 'org1', deviceId: 'dev1', model: null, createdAt: new Date(), contextSnapshot: null },
+      messages: [
+        { role: 'user', content: 'hi' },
+        { role: 'assistant', content: 'fixed' },
+      ],
+    } as any);
+    vi.mocked(draftTicketFromTranscript).mockResolvedValueOnce({
+      subject: 'S',
+      problemSummary: 'P',
+      resolutionSummary: 'R',
+      wasFixed: true,
+      suggestedTimeMinutes: 15,
+      inputTokens: 10,
+      outputTokens: 5,
+    });
+
+    const res = await postDraft('s1', partnerAuth);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      data: {
+        deviceId: 'dev1',
+        deviceHostname: 'WKS-04',
+      },
+    });
+  });
+
   it('404 when the session is not reachable', async () => {
     vi.mocked(getSessionMessages).mockResolvedValueOnce(null);
 
@@ -298,6 +331,21 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
     const res = await postDraft('s1', partnerAuth);
 
     expect(res.status).toBe(422);
+  });
+
+  it('502 on a generic summarizer failure', async () => {
+    vi.mocked(getSessionMessages).mockResolvedValueOnce({
+      session: { id: 's1', orgId: 'org1', deviceId: null, model: null, createdAt: new Date(), contextSnapshot: null },
+      messages: [
+        { role: 'user', content: 'hi' },
+        { role: 'assistant', content: 'working' },
+      ],
+    } as any);
+    vi.mocked(draftTicketFromTranscript).mockRejectedValueOnce(new Error('anthropic down'));
+
+    const res = await postDraft('s1', partnerAuth);
+
+    expect(res.status).toBe(502);
   });
 });
 
@@ -319,7 +367,7 @@ describe('POST /ai/sessions/:id/ticket', () => {
 
   const body = { subject: 'S', description: 'P', status: 'open' as const, timeMinutes: 15, billable: true };
 
-  function postTicket(sessionId: string, auth: typeof partnerAuth | typeof orgAuth = partnerAuth, payload: unknown = body) {
+  function postTicket(sessionId: string, auth: any = partnerAuth, payload: unknown = body) {
     authHarness.currentAuth.value = auth;
     return app.request(`/ai/sessions/${sessionId}/ticket`, {
       method: 'POST',
@@ -337,6 +385,14 @@ describe('POST /ai/sessions/:id/ticket', () => {
     expect(json).toMatchObject({ resolved: false, timeLogged: true });
   });
 
+  it('does not log a time entry when timeMinutes is zero', async () => {
+    const res = await postTicket('s1', partnerAuth, { ...body, timeMinutes: 0 });
+
+    expect(res.status).toBe(201);
+    expect(createTimeEntryMock).not.toHaveBeenCalled();
+    expect(await res.json()).toMatchObject({ timeLogged: false });
+  });
+
   it('resolves the ticket and sets the resolution note', async () => {
     const res = await postTicket('s1', partnerAuth, { ...body, status: 'resolved', resolutionNote: 'Fixed it.' });
     expect(res.status).toBe(201);
@@ -344,11 +400,52 @@ describe('POST /ai/sessions/:id/ticket', () => {
     expect((await res.json()).resolved).toBe(true);
   });
 
+  it('keeps the ticket when resolving fails', async () => {
+    changeStatusMock.mockRejectedValueOnce(new Error('transition failed'));
+
+    const res = await postTicket('s1', partnerAuth, { ...body, status: 'resolved', resolutionNote: 'Fixed it.' });
+
+    expect(res.status).toBe(201);
+    expect(changeStatusMock).toHaveBeenCalledWith('t1', { status: 'resolved' }, { resolutionNote: 'Fixed it.' }, expect.any(Object));
+    expect(await res.json()).toMatchObject({
+      data: { id: 't1', ticketNumber: 'ORG-1' },
+      resolved: false,
+    });
+  });
+
+  it('keeps the ticket when time entry logging fails', async () => {
+    createTimeEntryMock.mockRejectedValueOnce(new Error('rls'));
+
+    const res = await postTicket('s1', partnerAuth, body);
+
+    expect(res.status).toBe(201);
+    expect(createTimeEntryMock).toHaveBeenCalledTimes(1);
+    expect(await res.json()).toMatchObject({
+      data: { id: 't1', ticketNumber: 'ORG-1' },
+      timeLogged: false,
+    });
+  });
+
   it('does not log time for an org-scope caller', async () => {
     const res = await postTicket('s1', orgAuth, body);
     expect(res.status).toBe(201);
     expect(createTimeEntryMock).not.toHaveBeenCalled();
     expect((await res.json()).timeLogged).toBe(false);
+  });
+
+  it('logs time for a system-scope caller', async () => {
+    const systemAuth = {
+      ...partnerAuth,
+      scope: 'system' as const,
+      partnerId: null,
+      orgId: null,
+    };
+
+    const res = await postTicket('s1', systemAuth, body);
+
+    expect(res.status).toBe(201);
+    expect(createTimeEntryMock).toHaveBeenCalledTimes(1);
+    expect(await res.json()).toMatchObject({ timeLogged: true });
   });
 
   it('drops deviceId when the caller fails site scope', async () => {
@@ -364,5 +461,14 @@ describe('POST /ai/sessions/:id/ticket', () => {
 
   it('400 when resolving without a note (schema)', async () => {
     expect((await postTicket('s1', partnerAuth, { ...body, status: 'resolved' })).status).toBe(400);
+  });
+
+  it('maps TicketServiceError status codes', async () => {
+    createTicketMock.mockRejectedValueOnce(new TicketServiceError('nope', 409));
+
+    const res = await postTicket('s1', partnerAuth, body);
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: 'nope' });
   });
 });
