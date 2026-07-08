@@ -1171,17 +1171,69 @@ export async function validateAssignmentTarget(
 ): Promise<{ valid: boolean; error?: string }> {
   const policyOrgId = policyOwner.orgId;
 
-  // Partner-owned policies (#1724) span all of the partner's orgs and may only
-  // carry a partner-level assignment targeting their own partner. Org/site/
-  // group/device assignments are nonsensical for a policy with no owning org.
+  // Partner-owned policies (#1724, #2280) are reusable libraries: a partner-level
+  // assignment applies them to ALL orgs, and org/site/group/device assignments
+  // apply them to a chosen subset. Every non-partner target must resolve to an org
+  // owned by THIS partner (organizations.partner_id) — cross-partner targets are
+  // rejected here (defense-in-depth; RLS is the real backstop).
   if (policyOwner.partnerId) {
-    if (level !== 'partner') {
-      return { valid: false, error: 'Partner-wide policies can only be assigned at the Partner level' };
+    const partnerId = policyOwner.partnerId;
+    switch (level) {
+      case 'partner':
+        return targetId === partnerId
+          ? { valid: true }
+          : { valid: false, error: 'A partner-wide policy can only target its own partner' };
+
+      case 'organization': {
+        const [org] = await db
+          .select({ id: organizations.id })
+          .from(organizations)
+          .where(and(eq(organizations.id, targetId), eq(organizations.partnerId, partnerId)))
+          .limit(1);
+        return org
+          ? { valid: true }
+          : { valid: false, error: 'Target organization is not in this partner' };
+      }
+
+      case 'site': {
+        const [site] = await db
+          .select({ id: sites.id })
+          .from(sites)
+          .innerJoin(organizations, eq(sites.orgId, organizations.id))
+          .where(and(eq(sites.id, targetId), eq(organizations.partnerId, partnerId)))
+          .limit(1);
+        return site
+          ? { valid: true }
+          : { valid: false, error: 'Target site is not in this partner' };
+      }
+
+      case 'device_group': {
+        const [group] = await db
+          .select({ id: deviceGroups.id })
+          .from(deviceGroups)
+          .innerJoin(organizations, eq(deviceGroups.orgId, organizations.id))
+          .where(and(eq(deviceGroups.id, targetId), eq(organizations.partnerId, partnerId)))
+          .limit(1);
+        return group
+          ? { valid: true }
+          : { valid: false, error: 'Target device group is not in this partner' };
+      }
+
+      case 'device': {
+        const [device] = await db
+          .select({ id: devices.id })
+          .from(devices)
+          .innerJoin(organizations, eq(devices.orgId, organizations.id))
+          .where(and(eq(devices.id, targetId), eq(organizations.partnerId, partnerId)))
+          .limit(1);
+        return device
+          ? { valid: true }
+          : { valid: false, error: 'Target device is not in this partner' };
+      }
+
+      default:
+        return { valid: false, error: 'Unsupported assignment target level' };
     }
-    if (targetId !== policyOwner.partnerId) {
-      return { valid: false, error: 'A partner-wide policy can only target its own partner' };
-    }
-    return { valid: true };
   }
 
   // Org-owned policies: org_id is guaranteed non-null by the ownership CHECK.
