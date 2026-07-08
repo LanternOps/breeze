@@ -67,12 +67,13 @@ API: load ai_messages → LLM summarization → return DRAFT (nothing written)
         │   { subject, description, resolutionNote?, status,
         │     timeMinutes, billable, priority? }
         ▼
-API (one transaction):
+API (sequential service calls):
    createTicket({ orgId, deviceId, subject, description, priority,
-                  source: 'ai' }, actor)
-   → if status === 'resolved': apply resolve transition + resolutionNote
-   → insert timeEntry(ticketId, orgId, userId, durationMinutes, isBillable)
-   → return { data: ticket }
+                  source: 'ai' }, actor)              ← critical, atomic
+   → if status === 'resolved': changeTicketStatus(id, {status:'resolved'},
+                                {resolutionNote}, actor)
+   → if timeMinutes > 0 AND scope∈{partner,system}: createTimeEntry(...)   ← best-effort
+   → return { data: ticket, resolved, timeLogged }
         ▼
 Toast "Ticket #NNNN created" + link; modal closes
 ```
@@ -97,12 +98,12 @@ client payload — a client cannot smuggle a cross-tenant device/org into the ti
   `{ subject (1–255), description (problem summary), resolutionNote? (required when status==='resolved'),
      status: 'open' | 'resolved', timeMinutes (int ≥ 0), billable (bool), priority? }`.
   Cross-field rule mirrors `changeTicketStatusSchema`: `resolutionNote` required when `status === 'resolved'`.
-- **Behavior (single transaction):**
-  1. `createTicket({ orgId: session.orgId, deviceId: session.deviceId, subject, description, priority, source: 'ai' }, actorFrom(c))`.
-  2. If `status === 'resolved'`: apply the resolve transition (sets `resolvedAt`, `resolutionNote`) — reuse the same path `changeTicketStatus`/`updateTicket` uses so SLA/comment side effects stay consistent.
-  3. Insert a `timeEntry`: `{ ticketId, orgId: session.orgId, userId: auth.user.id, durationMinutes: timeMinutes, isBillable: billable, description: 'Logged from AI conversation' }`. Skip if `timeMinutes === 0`.
-  4. Return `{ data: ticket }`.
-- **Atomicity:** all in one DB transaction so a failure never leaves a half-created ticket.
+- **Behavior (sequential service calls — the three services each own their own DB writes and do not accept a shared transaction handle):**
+  1. `createTicket({ orgId: session.orgId, deviceId, subject, description, priority, source: 'ai' }, actor)`. This is the **critical, atomic** step (a single insert internally). `deviceId` comes from `session.deviceId`, dropped if the caller fails the site-scope check.
+  2. If `status === 'resolved'`: `changeTicketStatus(ticket.id, { status: 'resolved' }, { resolutionNote }, actor)` — reuses the FSM path so `resolvedAt` and SLA/comment side effects stay consistent. `new → resolved` is a valid transition, so a freshly created ticket resolves directly.
+  3. If `timeMinutes > 0` **and** the caller's `auth.scope ∈ {partner, system}`: `createTimeEntry({ ticketId: ticket.id, startedAt: now − timeMinutes·60s, endedAt: now, description: 'Logged from AI conversation', isBillable: billable }, timeActorFrom(c))`. The time-entries surface has no org-axis RLS policy, so this is intentionally **partner/system-scope only**; wrap it in try/catch.
+  4. Return `{ data: ticket, resolved: boolean, timeLogged: boolean }`.
+- **Failure model:** ticket creation is atomic (single service call), so the ticket is never half-created. Resolve and time-entry are follow-up enrichments — if either fails (or time can't be logged for scope reasons), the ticket persists and the response's `resolved` / `timeLogged` flags report what actually happened, which the UI surfaces. A ticket without a logged time entry is a valid ticket.
 
 ## Summarization contract — `apps/api/src/services/aiTicketDraft.ts`
 
@@ -157,9 +158,10 @@ failure to a friendly modal state (see Error Handling).
 
 ## Tenancy / security
 
-- `orgId` and `deviceId` come from the session row server-side; the client cannot override them.
-- The save route re-checks `auth.canAccessOrg(session.orgId)` and `requirePermission(TICKETS_WRITE)`.
-- No new table; `tickets` and `timeEntries` RLS already covers these writes.
+- `orgId` and `deviceId` come from the session row server-side; the client cannot override them. Tenant scoping is enforced by `getSession(id, auth)` / `getSessionMessages(id, auth)`, which bake `auth.orgCondition(aiSessions.orgId)` into the load — an unreachable session returns `null` → 404 (no separate `canAccessOrg` call needed).
+- Both routes require `requirePermission(TICKETS_WRITE)`.
+- `deviceId` is additionally passed through `deviceInSiteScope(auth, session.deviceId)`; if a site-restricted caller can't reach the device, `deviceId` is dropped and the ticket is created org-only (never blocks creation).
+- Time-entry logging is gated on `auth.scope ∈ {partner, system}` (the `time_entries` table has no org-axis RLS policy). No new table; `tickets` and `time_entries` RLS already covers these writes.
 
 ## Testing
 
