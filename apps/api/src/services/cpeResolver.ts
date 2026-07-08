@@ -2,6 +2,9 @@
  * DisplayName -> CPE resolver (#2290).
  * Layer B token index/lookup ported from CIRCL cpe-guesser (BSD-2-Clause):
  * https://github.com/vulnerability-lookup/cpe-guesser
+ * Copyright 2021-2024 Alexandre Dulaunoy
+ * Copyright 2021-2024 Esa Jokinen
+ * BSD-2-Clause redistribution retains the copyright notice and disclaimer.
  */
 
 import curatedJson from './__fixtures__/cpe-translations.json';
@@ -136,6 +139,7 @@ export function loadCuratedDictionary(): Map<string, CuratedEntry> {
   return map;
 }
 
+// Test-time validation set only: asserts curated CPEs are well-formed/real; resolve() does not consult it at runtime.
 export function loadCpeDictionary(): Set<string> {
   return new Set(cpedictJson as string[]);
 }
@@ -219,13 +223,13 @@ export interface Resolution {
   tokensMatched: number;
 }
 
-export const NONE: Resolution = {
+export const NONE: Resolution = Object.freeze({
   productId: null,
   cpe: null,
   confidence: 'none',
   matchedVia: 'unmatched',
   tokensMatched: 0,
-};
+});
 
 export function resolve(
   displayName: string,

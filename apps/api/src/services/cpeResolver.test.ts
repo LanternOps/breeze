@@ -227,6 +227,20 @@ describe('resolve - Layer B (token) + guardrails', () => {
     expect(r.productId).toBeNull();
   });
 
+  it('GUARDRAIL: a shared 2-char vendor token does not create agreement (length>=3 floor)', () => {
+    // cpe vendor "bq" (2 chars). Query vendor "Anon BQ Systems" tokenizes to {anon,bq,systems};
+    // the ONLY overlap with "bq" is the 2-char token, and the query name matches the product
+    // token "reader" (score 1). Only the length>=3 floor withholds this — remove it and the
+    // 2-char "bq" collision would agree and return 'fuzzy'. This isolates that guard (the
+    // Canon case above passes regardless of the floor, since 'canon' is never in {ca}).
+    const bqCatalog = buildCatalogIndex([
+      { id: 'p-bq', normalizedName: 'reader', normalizedVendor: 'bq', cpe: 'cpe:2.3:a:bq:reader:*:*:*:*:*:*:*:*' },
+    ]);
+    const r = resolve('Anon BQ Reader', 'Anon BQ Systems', bqCatalog, new Map());
+    expect(r.confidence).toBe('none');
+    expect(r.productId).toBeNull();
+  });
+
   it('still allows legitimate vendor token agreement', () => {
     const r = resolve('Wireshark Protocol Analyzer', 'Wireshark Foundation', idx, new Map());
     expect(r).toMatchObject({

@@ -3,7 +3,7 @@ import { sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { softwareInventory, softwareProducts, softwareProductResolutions } from '../db/schema';
 import {
-  RESOLVER_VERSION, buildCatalogIndex, loadCuratedDictionary, resolve,
+  RESOLVER_VERSION, buildCatalogIndex, loadCuratedDictionary, normalizeDisplayName, resolve,
   type CatalogProduct, type ResolutionConfidence,
 } from './cpeResolver';
 
@@ -27,6 +27,17 @@ export async function refreshResolutionCache(): Promise<Record<ResolutionConfide
     const products = await db
       .select({ id: softwareProducts.id, normalizedName: softwareProducts.normalizedName, normalizedVendor: softwareProducts.normalizedVendor, cpe: softwareProducts.cpe })
       .from(softwareProducts);
+
+    // Catalog-health floor: with an empty catalog every resolve() returns 'none' and we
+    // would overwrite every key to unmatched — a fleet-wide false "all clear" for a vuln
+    // scanner, indistinguishable from a healthy no-vuln run. Refuse to touch the cache and
+    // throw so the caller attributes it (Sentry) and correlation degrades against the prior
+    // cache instead of silently downgrading everyone. A genuinely empty catalog (feed/ingest
+    // failure, accidental wipe) is a real incident, not a quiet zero.
+    if (products.length === 0) {
+      throw new Error('refreshResolutionCache aborted: software_products catalog is empty — refusing to downgrade all inventory to unmatched');
+    }
+
     const index = buildCatalogIndex(products as CatalogProduct[]);
     const curated = loadCuratedDictionary();
 
@@ -70,7 +81,9 @@ export async function refreshResolutionCache(): Promise<Record<ResolutionConfide
         .values({
           lookupName: k.lookupName,
           lookupVendor: k.lookupVendor,
-          normalizedName: r.matchedVia === 'unmatched' ? k.lookupName : k.sampleName,
+          // The post-token-strip form the resolver actually keyed on (observability): what
+          // "Google Chrome 120 (x64)" reduced to. This is what the column comment promises.
+          normalizedName: normalizeDisplayName(k.sampleName),
           softwareProductId: r.productId,
           confidence: r.confidence,
           matchedVia: r.matchedVia,

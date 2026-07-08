@@ -48,6 +48,11 @@ describe('refreshResolutionCache', () => {
   });
 
   runDb('logs an unmatched DisplayName with NULL product', async () => {
+    // A populated catalog that simply doesn't contain this app (the real unmatched case;
+    // an empty catalog is a different, alerted failure — see the catalog-health guard).
+    await withSystemDbAccessContext(async () => {
+      await db.insert(softwareProducts).values({ normalizedName: 'chrome', normalizedVendor: 'google', cpe: 'cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*', cpeConfidence: 'authoritative' });
+    });
     await seedDeviceAndInventory('Totally Bespoke Internal Tool XYZ', 'Some Vendor');
     await refreshResolutionCache();
     const unmatched = await withSystemDbAccessContext(() =>
@@ -57,6 +62,9 @@ describe('refreshResolutionCache', () => {
   });
 
   runDb('is idempotent — re-run does not duplicate rows', async () => {
+    await withSystemDbAccessContext(async () => {
+      await db.insert(softwareProducts).values({ normalizedName: 'chrome', normalizedVendor: 'google', cpe: 'cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*', cpeConfidence: 'authoritative' });
+    });
     await seedDeviceAndInventory('Google Chrome', 'Google LLC');
     await refreshResolutionCache();
     await refreshResolutionCache();
@@ -66,9 +74,13 @@ describe('refreshResolutionCache', () => {
   });
 
   runDb('re-resolves a previously-unmatched name once the catalog grows (same resolver version)', async () => {
+    // Catalog is populated (unrelated product) but does not yet contain "Bespoke Cache Tool".
+    await withSystemDbAccessContext(async () => {
+      await db.insert(softwareProducts).values({ normalizedName: 'chrome', normalizedVendor: 'google', cpe: 'cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*', cpeConfidence: 'authoritative' });
+    });
     await seedDeviceAndInventory('Bespoke Cache Tool', 'Bespoke');
 
-    // First pass: no catalog product yet → unmatched (product NULL, confidence none).
+    // First pass: catalog lacks this product → unmatched (product NULL, confidence none).
     await refreshResolutionCache();
     const before = await withSystemDbAccessContext(() =>
       db.select().from(softwareProductResolutions).where(eq(softwareProductResolutions.lookupName, 'bespoke cache tool')));
@@ -92,5 +104,16 @@ describe('refreshResolutionCache', () => {
     expect(after[0]?.softwareProductId).not.toBeNull();
     expect(after[0]?.confidence).toBe('exact');
     expect(after[0]?.resolverVersion).toBe(RESOLVER_VERSION);
+  });
+
+  runDb('throws on an empty catalog rather than downgrading every key to unmatched', async () => {
+    // Inventory present but software_products empty (feed/ingest failure). Refusing to run
+    // prevents a fleet-wide false "all clear"; the caller (correlateEnabledOrgs) turns this
+    // into a Sentry alert and correlates against the prior cache.
+    await seedDeviceAndInventory('Google Chrome', 'Google LLC');
+    await withSystemDbAccessContext(async () => {
+      await db.delete(softwareProducts);
+    });
+    await expect(refreshResolutionCache()).rejects.toThrow(/catalog is empty/);
   });
 });

@@ -1,2 +1,2 @@
-Bounded slice derived from tiiuae/cpedict (official CPE dictionary mirror).
-Source: https://github.com/tiiuae/cpedict — used as a validation set only.
+Bounded slice derived from tiiuae/cpedict, a curated CPE name set built from NVD data (not an official NIST mirror).
+Source: https://github.com/tiiuae/cpedict — Apache-2.0; used as a validation set only.
