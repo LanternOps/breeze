@@ -56,9 +56,9 @@ export default function OrganizationScopePanel({ policyId, partnerId }: Props) {
   const run = async (id: string, fn: () => Promise<void>) => {
     setBusyId(id);
     setError(undefined);
-    try { await fn(); await fetchAssignments(); }
+    try { await fn(); }
     catch (err) { setError(err instanceof Error ? err.message : 'An error occurred'); }
-    finally { setBusyId(null); }
+    finally { await fetchAssignments(); setBusyId(null); }
   };
 
   const toggleAllOrgs = () =>
@@ -115,7 +115,7 @@ export default function OrganizationScopePanel({ policyId, partnerId }: Props) {
             type="checkbox"
             aria-label="All organizations (partner-wide)"
             checked={allOrgs}
-            disabled={busyId !== null}
+            disabled={loading || busyId !== null}
             onChange={toggleAllOrgs}
           />
           <span className="text-sm font-medium">All organizations (partner-wide)</span>

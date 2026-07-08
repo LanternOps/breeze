@@ -65,4 +65,42 @@ describe('OrganizationScopePanel', () => {
       expect(body).not.toHaveProperty('targetId');
     });
   });
+
+  it('deletes every existing org assignment before POSTing the partner row when multiple orgs are assigned and All orgs is toggled on', async () => {
+    fetchWithAuthMock
+      .mockReturnValueOnce(jsonRes({ data: [
+        { id: 'a1', level: 'organization', targetId: 'org-acme', priority: 0 },
+        { id: 'a2', level: 'organization', targetId: 'org-contoso', priority: 0 },
+      ] })) // initial list
+      .mockReturnValueOnce(jsonRes({ success: true })) // DELETE a1
+      .mockReturnValueOnce(jsonRes({ success: true })) // DELETE a2
+      .mockReturnValueOnce(jsonRes({ id: 'ap', level: 'partner', targetId: PARTNER_ID }, true, 201)) // POST partner
+      .mockReturnValueOnce(jsonRes({ data: [{ id: 'ap', level: 'partner', targetId: PARTNER_ID, priority: 0 }] })); // refetch
+
+    render(<OrganizationScopePanel policyId="p1" partnerId={PARTNER_ID} />);
+    const acme = await screen.findByRole('checkbox', { name: /Acme Corp/i });
+    expect(acme).toBeChecked();
+
+    const allOrgs = screen.getByRole('checkbox', { name: /All organizations/i });
+    fireEvent.click(allOrgs);
+
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(5));
+
+    const calls = fetchWithAuthMock.mock.calls;
+    // Index 0 is the initial GET; the two DELETEs must both land before the partner POST.
+    expect(calls[1][0]).toBe('/configuration-policies/p1/assignments/a1');
+    expect((calls[1][1] as RequestInit).method).toBe('DELETE');
+    expect(calls[2][0]).toBe('/configuration-policies/p1/assignments/a2');
+    expect((calls[2][1] as RequestInit).method).toBe('DELETE');
+
+    const deleteCallIndices = [1, 2];
+    const postCallIndex = calls.findIndex(
+      (c) => (c[1] as RequestInit | undefined)?.method === 'POST'
+    );
+    expect(postCallIndex).toBeGreaterThan(Math.max(...deleteCallIndices));
+
+    const postBody = JSON.parse((calls[postCallIndex][1] as RequestInit).body as string);
+    expect(postBody).toMatchObject({ level: 'partner', priority: 0 });
+    expect(postBody).not.toHaveProperty('targetId');
+  });
 });
