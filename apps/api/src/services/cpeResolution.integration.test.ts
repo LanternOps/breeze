@@ -64,4 +64,33 @@ describe('refreshResolutionCache', () => {
       db.select({ n: sql<number>`count(*)::int` }).from(softwareProductResolutions).where(eq(softwareProductResolutions.lookupName, 'google chrome')));
     expect(rows[0]?.n).toBe(1);
   });
+
+  runDb('re-resolves a previously-unmatched name once the catalog grows (same resolver version)', async () => {
+    await seedDeviceAndInventory('Bespoke Cache Tool', 'Bespoke');
+
+    // First pass: no catalog product yet → unmatched (product NULL, confidence none).
+    await refreshResolutionCache();
+    const before = await withSystemDbAccessContext(() =>
+      db.select().from(softwareProductResolutions).where(eq(softwareProductResolutions.lookupName, 'bespoke cache tool')));
+    expect(before[0]?.softwareProductId).toBeNull();
+    expect(before[0]?.confidence).toBe('none');
+
+    // Catalog grows at runtime (NVD/MSRC ingest) — no RESOLVER_VERSION bump.
+    await withSystemDbAccessContext(async () => {
+      await db.insert(softwareProducts).values({
+        normalizedName: 'bespoke cache tool',
+        normalizedVendor: 'bespoke',
+        cpe: 'cpe:2.3:a:bespoke:cache_tool:*:*:*:*:*:*:*:*',
+        cpeConfidence: 'authoritative',
+      });
+    });
+
+    // Second pass must re-resolve the unmatched row and now match it.
+    await refreshResolutionCache();
+    const after = await withSystemDbAccessContext(() =>
+      db.select().from(softwareProductResolutions).where(eq(softwareProductResolutions.lookupName, 'bespoke cache tool')));
+    expect(after[0]?.softwareProductId).not.toBeNull();
+    expect(after[0]?.confidence).toBe('exact');
+    expect(after[0]?.resolverVersion).toBe(RESOLVER_VERSION);
+  });
 });

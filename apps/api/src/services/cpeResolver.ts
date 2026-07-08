@@ -249,13 +249,11 @@ export function resolve(
         tokensMatched: 0,
       };
     }
-    const cpe = productId
-      ? index.meta.get(productId)?.cpe ?? null
-      : `cpe:2.3:a:${curatedHit.vendor}:${curatedHit.product}`;
+    // productId is guaranteed non-null here (the !productId case returned above).
     return {
       productId,
-      cpe,
-      confidence: productId ? 'curated' : 'none',
+      cpe: index.meta.get(productId)?.cpe ?? null,
+      confidence: 'curated',
       matchedVia: 'dictionary',
       tokensMatched: 0,
     };
