@@ -39,7 +39,7 @@ describe('validateAssignmentTarget — ownership gating', () => {
       PARTNER_ID
     );
     expect(result.valid).toBe(false);
-    expect(result.error).toMatch(/Only partner-wide policies can be assigned at the Partner level/i);
+    if (!result.valid) expect(result.error).toMatch(/Only partner-wide policies can be assigned at the Partner level/i);
     // Pure early return — no DB lookup for this illegal combination.
     expect(selectMock).not.toHaveBeenCalled();
   });
@@ -63,7 +63,7 @@ describe('validateAssignmentTarget — ownership gating', () => {
       'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
     );
     expect(result.valid).toBe(false);
-    expect(result.error).toMatch(/not in this partner/i);
+    if (!result.valid) expect(result.error).toMatch(/not in this partner/i);
   });
 
   it('accepts a partner-owned policy assigned to an in-partner device', async () => {
@@ -93,6 +93,6 @@ describe('validateAssignmentTarget — ownership gating', () => {
       'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
     );
     expect(result.valid).toBe(false);
-    expect(result.error).toMatch(/can only target its own partner/i);
+    if (!result.valid) expect(result.error).toMatch(/can only target its own partner/i);
   });
 });

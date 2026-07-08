@@ -95,7 +95,7 @@ assignmentRoutes.post(
       targetId
     );
     if (!targetValidation.valid) {
-      return c.json({ error: targetValidation.error ?? 'Assignment target is not valid for this policy organization' }, 403);
+      return c.json({ error: targetValidation.error }, 403);
     }
 
     // assignPolicy returns null (instead of throwing) on a duplicate — see the

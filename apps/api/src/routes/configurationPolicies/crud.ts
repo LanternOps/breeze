@@ -132,10 +132,11 @@ crudRoutes.post(
       if (!org) return c.json({ error: 'Organization not found' }, 404);
     }
 
-    // Org-owned policies are intentionally NOT auto-assigned (unlike partner-wide
-    // above): an org policy is commonly meant for a specific site/group/device,
-    // so auto-assigning it at the org level would silently over-apply to every
-    // device in the org. The user picks the assignment target explicitly.
+    // Org-owned policies are intentionally NOT auto-assigned: an org policy is
+    // commonly meant for a specific site/group/device, so auto-assigning it at
+    // the org level would silently over-apply to every device in the org.
+    // Library policies (#2280) — org-owned or partner-owned — are always
+    // created empty; the user assigns them to a target explicitly afterward.
     const policy = await createConfigPolicy({ orgId: orgId as string }, data, auth.user.id);
 
     writeRouteAudit(c, {

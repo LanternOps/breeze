@@ -89,6 +89,11 @@ export { CONFIG_FEATURE_TYPES };
 export type { ConfigFeatureType };
 export type ConfigAssignmentLevel = 'partner' | 'organization' | 'site' | 'device_group' | 'device';
 
+// Discriminated union so a valid result can't carry a stray error string and
+// an invalid result can't omit one — every `return` in validateAssignmentTarget
+// below conforms.
+export type AssignmentTargetValidation = { valid: true } | { valid: false; error: string };
+
 const LEVEL_PRIORITY: Record<ConfigAssignmentLevel, number> = {
   device: 5,
   device_group: 4,
@@ -1168,7 +1173,7 @@ export async function validateAssignmentTarget(
   policyOwner: { orgId: string | null; partnerId: string | null },
   level: ConfigAssignmentLevel,
   targetId: string
-): Promise<{ valid: boolean; error?: string }> {
+): Promise<AssignmentTargetValidation> {
   const policyOrgId = policyOwner.orgId;
 
   // Partner-owned policies (#1724, #2280) are reusable libraries: a partner-level
@@ -1295,7 +1300,7 @@ export async function validateAssignmentTarget(
       // *looks* partner-wide but resolution still clamps it to its single
       // owning org (org_id = device.orgId), so it silently reaches only that
       // one org. True cross-org propagation requires a partner-OWNED policy
-      // (created via the "All organizations" scope). Reject it outright rather
+      // (created via the "Partner library" scope). Reject it outright rather
       // than let it masquerade as fleet-wide (#1724 follow-up).
       return {
         valid: false,
