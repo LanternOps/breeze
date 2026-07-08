@@ -13,6 +13,7 @@ import {
   loginSchema,
   forgotPasswordSchema,
   resetPasswordSchema,
+  acceptInviteSchema,
   SESSION_TTL_MS,
   SESSION_TTL_SECONDS,
   RESET_TTL_MS,
@@ -40,6 +41,8 @@ import {
   clearRateLimitKeys,
   buildPortalUserPayload,
   validatePortalCookieCsrfRequest,
+  consumePortalInviteToken,
+  buildPortalUrl,
 } from './helpers';
 import { isSelfManagedDbContextRoute } from '../../middleware/selfManagedDbContextRoutes';
 
@@ -389,9 +392,8 @@ authRoutes.post('/auth/forgot-password', zValidator('json', forgotPasswordSchema
       capMapByOldest(portalResetTokens, PORTAL_RESET_TOKEN_CAP, (token) => token.createdAt.getTime());
     }
 
-    const appBaseUrl = (process.env.DASHBOARD_URL || process.env.PUBLIC_APP_URL || 'http://localhost:4321').replace(/\/$/, '');
     const orgQuery = orgId ? `&orgId=${encodeURIComponent(orgId)}` : '';
-    const resetUrl = `${appBaseUrl}/reset-password?token=${encodeURIComponent(resetToken)}${orgQuery}`;
+    const resetUrl = buildPortalUrl(`/reset-password?token=${encodeURIComponent(resetToken)}${orgQuery}`);
     const emailService = getEmailService();
 
     if (emailService) {
@@ -500,6 +502,98 @@ authRoutes.post('/auth/reset-password', zValidator('json', resetPasswordSchema),
   }
 
   return c.json({ success: true, message: 'Password reset successfully' });
+});
+
+authRoutes.post('/auth/accept-invite', zValidator('json', acceptInviteSchema), async (c) => {
+  sweepPortalState();
+
+  const { token, password, name } = c.req.valid('json');
+  const clientIp = getClientIp(c);
+  const tokenHash = createHash('sha256').update(token).digest('hex');
+
+  for (const rateKey of [`portal:accept:ip:${clientIp}`, `portal:accept:token:${tokenHash}`]) {
+    const rate = await checkRateLimit(rateKey, RESET_PASSWORD_RATE_LIMIT);
+    if (!rate.allowed) {
+      c.header('Retry-After', String(rate.retryAfterSeconds));
+      return c.json({ error: 'Too many attempts. Please try again later.' }, 429);
+    }
+  }
+
+  const strength = isPasswordStrong(password);
+  if (!strength.valid) {
+    return c.json({ error: strength.errors[0] }, 400);
+  }
+
+  if (PORTAL_USE_REDIS && !getRedis()) {
+    return c.json({ error: 'Service temporarily unavailable' }, 503);
+  }
+
+  const portalUserId = await consumePortalInviteToken(token);
+  if (!portalUserId) {
+    return c.json({ error: 'Invalid or expired invite' }, 400);
+  }
+
+  const [user] = await withSystemDbAccessContext(() =>
+    db
+      .select({
+        id: portalUsers.id,
+        orgId: portalUsers.orgId,
+        email: portalUsers.email,
+        name: portalUsers.name,
+        passwordHash: portalUsers.passwordHash,
+        receiveNotifications: portalUsers.receiveNotifications,
+        status: portalUsers.status
+      })
+      .from(portalUsers)
+      .where(eq(portalUsers.id, portalUserId))
+      .limit(1)
+  );
+
+  if (!user) {
+    return c.json({ error: 'Invalid or expired invite' }, 400);
+  }
+  // An invite must never hijack a live account.
+  if (user.passwordHash && user.status === 'active') {
+    return c.json({ error: 'This account is already set up. Use the login page.' }, 400);
+  }
+
+  const now = new Date();
+  const passwordHash = await hashPassword(password);
+  const resolvedName = user.name ?? (name ?? null);
+
+  await withSystemDbAccessContext(() =>
+    db
+      .update(portalUsers)
+      .set({ passwordHash, name: resolvedName, status: 'active', lastLoginAt: now, updatedAt: now })
+      .where(eq(portalUsers.id, user.id))
+  );
+
+  const sessionToken = nanoid(48);
+  const expiresAt = new Date(now.getTime() + SESSION_TTL_MS);
+
+  if (PORTAL_USE_REDIS) {
+    const redis = getRedis();
+    if (redis) {
+      await redis
+        .multi()
+        .setex(PORTAL_REDIS_KEYS.session(sessionToken), SESSION_TTL_SECONDS, JSON.stringify({ portalUserId: user.id, orgId: user.orgId, createdAt: now.toISOString() }))
+        .sadd(PORTAL_REDIS_KEYS.userSessions(user.id), sessionToken)
+        .expire(PORTAL_REDIS_KEYS.userSessions(user.id), SESSION_TTL_SECONDS * 2)
+        .exec();
+    }
+  } else {
+    portalSessions.set(sessionToken, { token: sessionToken, portalUserId: user.id, orgId: user.orgId, createdAt: now, expiresAt });
+    capMapByOldest(portalSessions, PORTAL_SESSION_CAP, (s) => s.createdAt.getTime());
+  }
+
+  setPortalSessionCookies(c, sessionToken);
+
+  return c.json({
+    user: buildPortalUserPayload({ ...user, name: resolvedName, status: 'active' }),
+    accessToken: sessionToken,
+    expiresAt,
+    tokens: { accessToken: sessionToken, expiresInSeconds: Math.floor(SESSION_TTL_MS / 1000) }
+  });
 });
 
 authRoutes.post('/auth/logout', portalAuthMiddleware, async (c) => {
