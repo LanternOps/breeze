@@ -26,7 +26,14 @@ describe('tokenize', () => {
   });
 });
 
-import { loadCuratedDictionary, loadCpeDictionary, parseCpe, isWellFormedCpe } from './cpeResolver';
+import {
+  buildCatalogIndex,
+  loadCuratedDictionary,
+  loadCpeDictionary,
+  parseCpe,
+  isWellFormedCpe,
+  type CatalogProduct,
+} from './cpeResolver';
 
 describe('parseCpe', () => {
   it('extracts vendor/product from cpe:2.3', () => {
@@ -49,5 +56,72 @@ describe('curated dictionary', () => {
     for (const [, { vendor, product }] of dict) {
       expect(cpedict.has(`${vendor}:${product}`), `${vendor}:${product} missing from cpedict`).toBe(true);
     }
+  });
+});
+
+const CATALOG: CatalogProduct[] = [
+  {
+    id: 'p-chrome',
+    normalizedName: 'chrome',
+    normalizedVendor: 'google',
+    cpe: 'cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*',
+  },
+  {
+    id: 'p-firefox',
+    normalizedName: 'firefox',
+    normalizedVendor: 'mozilla',
+    cpe: 'cpe:2.3:a:mozilla:firefox:*:*:*:*:*:*:*:*',
+  },
+  {
+    id: 'p-acrobat',
+    normalizedName: 'acrobat_reader',
+    normalizedVendor: 'adobe',
+    cpe: 'cpe:2.3:a:adobe:acrobat_reader:*:*:*:*:*:*:*:*',
+  },
+];
+
+describe('buildCatalogIndex', () => {
+  it('indexes exact name, vendor:product, and recall words', () => {
+    const idx = buildCatalogIndex(CATALOG);
+
+    expect(idx.byExactName.get('chrome')).toBe('p-chrome');
+    expect(idx.byVendorProduct.get('google:chrome')).toBe('p-chrome');
+    expect(idx.wordIndex.get('acrobat')).toEqual(new Set(['p-acrobat']));
+    expect(idx.wordIndex.get('adobe')).toEqual(new Set(['p-acrobat']));
+    expect(idx.meta.get('p-firefox')?.cpeVendor).toBe('mozilla');
+    expect(idx.meta.get('p-acrobat')?.productTokens).toEqual(new Set(['acrobat', 'reader']));
+  });
+
+  it('marks ambiguous exact names null (two products, same normalized_name)', () => {
+    const idx = buildCatalogIndex([
+      ...CATALOG,
+      {
+        id: 'p-chrome2',
+        normalizedName: 'chrome',
+        normalizedVendor: 'other',
+        cpe: 'cpe:2.3:a:other:chrome:*:*:*:*:*:*:*:*',
+      },
+    ]);
+
+    expect(idx.byExactName.get('chrome')).toBeNull();
+  });
+
+  it('uses normalized name for productTokens when no cpe while vendor still feeds recall', () => {
+    const idx = buildCatalogIndex([
+      {
+        id: 'p-internal',
+        normalizedName: 'internal_tool',
+        normalizedVendor: 'acme software',
+        cpe: null,
+      },
+    ]);
+
+    expect(idx.meta.get('p-internal')).toEqual({
+      cpe: null,
+      cpeVendor: null,
+      cpeProduct: null,
+      productTokens: new Set(['internal', 'tool']),
+    });
+    expect(idx.wordIndex.get('acme')).toEqual(new Set(['p-internal']));
   });
 });

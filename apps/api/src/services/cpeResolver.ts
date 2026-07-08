@@ -63,3 +63,69 @@ export function loadCuratedDictionary(): Map<string, CuratedEntry> {
 export function loadCpeDictionary(): Set<string> {
   return new Set(cpedictJson as string[]);
 }
+
+export interface CatalogProduct {
+  id: string;
+  normalizedName: string;
+  normalizedVendor: string | null;
+  cpe: string | null;
+}
+
+export interface CatalogIndex {
+  byExactName: Map<string, string | null>;
+  byVendorProduct: Map<string, string>;
+  wordIndex: Map<string, Set<string>>;
+  meta: Map<
+    string,
+    {
+      cpe: string | null;
+      cpeVendor: string | null;
+      cpeProduct: string | null;
+      productTokens: Set<string>;
+    }
+  >;
+}
+
+export function buildCatalogIndex(products: CatalogProduct[]): CatalogIndex {
+  const byExactName = new Map<string, string | null>();
+  const byVendorProduct = new Map<string, string>();
+  const wordIndex = new Map<string, Set<string>>();
+  const meta: CatalogIndex['meta'] = new Map();
+
+  for (const product of products) {
+    if (byExactName.has(product.normalizedName)) {
+      byExactName.set(product.normalizedName, null);
+    } else {
+      byExactName.set(product.normalizedName, product.id);
+    }
+
+    const cpeParts = product.cpe ? parseCpe(product.cpe) : null;
+    if (cpeParts) {
+      byVendorProduct.set(`${cpeParts.vendor}:${cpeParts.product}`, product.id);
+    }
+
+    const productTokens = new Set(
+      cpeParts ? tokenize(cpeParts.product) : tokenize(product.normalizedName),
+    );
+    const recallWords = new Set([
+      ...tokenize(product.normalizedName),
+      ...(product.normalizedVendor ? tokenize(product.normalizedVendor) : []),
+      ...(cpeParts ? [...tokenize(cpeParts.vendor), ...tokenize(cpeParts.product)] : []),
+    ]);
+
+    for (const word of recallWords) {
+      const productIds = wordIndex.get(word) ?? new Set<string>();
+      productIds.add(product.id);
+      wordIndex.set(word, productIds);
+    }
+
+    meta.set(product.id, {
+      cpe: product.cpe,
+      cpeVendor: cpeParts?.vendor ?? null,
+      cpeProduct: cpeParts?.product ?? null,
+      productTokens,
+    });
+  }
+
+  return { byExactName, byVendorProduct, wordIndex, meta };
+}
