@@ -1,5 +1,6 @@
 import type { Context } from 'hono';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
+import { nanoid } from 'nanoid';
 import { getTrustedClientIp } from '../../services/clientIp';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { DEFAULT_ALLOWED_ORIGINS } from '../../services/corsOrigins';
@@ -19,6 +20,9 @@ import {
   RATE_LIMIT_SWEEP_INTERVAL_MS,
   PORTAL_USE_REDIS,
   PORTAL_REDIS_KEYS,
+  INVITE_TTL_MS,
+  INVITE_TTL_SECONDS,
+  PORTAL_INVITE_TOKEN_CAP,
 } from './schemas';
 
 // ============================================
@@ -27,6 +31,7 @@ import {
 
 export const portalSessions = new Map<string, PortalSession>();
 export const portalResetTokens = new Map<string, { userId: string; expiresAt: Date; createdAt: Date }>();
+export const portalInviteTokens = new Map<string, { portalUserId: string; expiresAt: Date; createdAt: Date }>();
 export const portalRateLimitBuckets = new Map<string, {
   count: number;
   resetAtMs: number;
@@ -230,8 +235,15 @@ export function sweepPortalState(nowMs: number = Date.now()) {
     }
   }
 
+  for (const [tokenHash, invite] of portalInviteTokens.entries()) {
+    if (invite.expiresAt.getTime() <= nowMs) {
+      portalInviteTokens.delete(tokenHash);
+    }
+  }
+
   capMapByOldest(portalSessions, PORTAL_SESSION_CAP, (session) => session.createdAt.getTime());
   capMapByOldest(portalResetTokens, PORTAL_RESET_TOKEN_CAP, (token) => token.createdAt.getTime());
+  capMapByOldest(portalInviteTokens, PORTAL_INVITE_TOKEN_CAP, (token) => token.createdAt.getTime());
 }
 
 function sweepRateLimitBuckets(nowMs: number = Date.now()) {
@@ -462,4 +474,52 @@ function safeCompareTokens(headerToken: string, cookieToken: string): boolean {
     return false;
   }
   return timingSafeEqual(headerBuffer, cookieBuffer);
+}
+
+// ============================================
+// Portal URL + invite tokens
+// ============================================
+
+/**
+ * Absolute base for portal-hosted pages in outbound emails (reset, invite).
+ * The portal is served under /portal on the main domain, so links MUST include
+ * that segment — DASHBOARD_URL/PUBLIC_APP_URL point at the MSP app root.
+ */
+export function buildPortalUrl(path: string): string {
+  const explicit = process.env.PUBLIC_PORTAL_URL?.trim();
+  const appRoot = (process.env.DASHBOARD_URL || process.env.PUBLIC_APP_URL || 'http://localhost:4321').trim();
+  const base = (explicit && explicit.length > 0 ? explicit : `${appRoot.replace(/\/$/, '')}/portal`).replace(/\/$/, '');
+  const suffix = path.startsWith('/') ? path : `/${path}`;
+  return `${base}${suffix}`;
+}
+
+export async function storePortalInviteToken(portalUserId: string): Promise<string> {
+  const rawToken = nanoid(48);
+  const tokenHash = createHash('sha256').update(rawToken).digest('hex');
+  if (PORTAL_USE_REDIS) {
+    const redis = getRedis();
+    if (redis) {
+      await redis.setex(PORTAL_REDIS_KEYS.inviteToken(tokenHash), INVITE_TTL_SECONDS, JSON.stringify({ portalUserId }));
+    }
+  } else {
+    portalInviteTokens.set(tokenHash, { portalUserId, expiresAt: new Date(Date.now() + INVITE_TTL_MS), createdAt: new Date() });
+    capMapByOldest(portalInviteTokens, PORTAL_INVITE_TOKEN_CAP, (t) => t.createdAt.getTime());
+  }
+  return rawToken;
+}
+
+export async function consumePortalInviteToken(rawToken: string): Promise<string | null> {
+  const tokenHash = createHash('sha256').update(rawToken).digest('hex');
+  if (PORTAL_USE_REDIS) {
+    const redis = getRedis();
+    if (!redis) return null;
+    const raw = await redis.get(PORTAL_REDIS_KEYS.inviteToken(tokenHash));
+    if (!raw) return null;
+    await redis.del(PORTAL_REDIS_KEYS.inviteToken(tokenHash));
+    try { return JSON.parse(raw).portalUserId ?? null; } catch { return null; }
+  }
+  const stored = portalInviteTokens.get(tokenHash);
+  portalInviteTokens.delete(tokenHash);
+  if (stored && stored.expiresAt.getTime() > Date.now()) return stored.portalUserId;
+  return null;
 }
