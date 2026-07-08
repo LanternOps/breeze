@@ -20,9 +20,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { eq, type SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
-import { configurationPolicies } from '../../db/schema';
+import { configurationPolicies, configPolicyAssignments } from '../../db/schema';
 import { listConfigPolicies } from '../../services/configurationPolicy';
 import { createOrganization, createPartner } from './db-utils';
+import { pgErrorCode } from '../../utils/pgErrors';
 
 const created: string[] = [];
 
@@ -338,5 +339,54 @@ describe('configuration_policies RLS — dual-axis (2026-06-27 migration)', () =
       .where(eq(configurationPolicies.id, id));
 
     expect(rows).toEqual([]);
+  });
+
+  it('rejects a forged assignment linking another partner\'s policy to an out-of-partner org (#2280, 42501)', async () => {
+    // config_policy_assignments_org_isolation gates solely on access to the
+    // PARENT policy (config_policy_assignments -> configuration_policies EXISTS
+    // check), not on the target_id. So the attack this guards against is a
+    // partner with NO access to policyP1 (owned by partnerP1) trying to point an
+    // assignment row at it — e.g. to "claim" a partner-wide policy they don't
+    // own by assigning it into their own org.
+    //
+    // Unlike the sibling forge tests above (which insert directly into
+    // configuration_policies), this WITH CHECK evaluates a nested EXISTS
+    // against configuration_policies itself, another RLS-forced table. The
+    // forced failure is isolated in a nested `db.transaction` (postgres.js
+    // SAVEPOINT) rather than let it reject the outer withDbAccessContext call
+    // directly — the same defense-in-depth pattern proven in
+    // dbSavepointErrorIsolation.integration.test.ts (#2189): each
+    // `sql.savepoint`/`db.transaction` scope tracks its own uncaughtError, so
+    // catching the error on the SAVEPOINT-scoped `tx` here means the outer
+    // transaction commits cleanly instead of carrying a raw driver error to
+    // its own commit — keeping this isolation-sensitive forge test from ever
+    // being able to affect the pooled connection a co-run sibling test picks
+    // up next. The RLS assertion itself is unchanged: still a real INSERT
+    // through the real breeze_app driver, still required to fail with 42501.
+    const partnerP1 = await createPartner();
+    const partnerQ = await createPartner();
+    const orgQ = await createOrganization({ partnerId: partnerQ.id });
+    const policyP1 = await seedPartnerPolicy(partnerP1.id);
+
+    let caught: unknown;
+    await withDbAccessContext(partnerContext(partnerQ.id, [orgQ.id]), async () => {
+      try {
+        await db.transaction((tx) =>
+          tx
+            .insert(configPolicyAssignments)
+            .values({
+              configPolicyId: policyP1,
+              level: 'organization',
+              targetId: orgQ.id,
+              priority: 0,
+            })
+            .returning(),
+        );
+      } catch (err) {
+        caught = err;
+      }
+    });
+
+    expect(pgErrorCode(caught)).toBe('42501');
   });
 });
