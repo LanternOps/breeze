@@ -213,22 +213,27 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       const [policy] = await db.select().from(configurationPolicies).where(and(...conditions)).limit(1);
       if (!policy) return JSON.stringify({ error: 'Configuration policy not found or access denied' });
 
+      // Partner-owned policies (org_id NULL) are the partner library (#2280).
+      // ANY assignment on one — at any level, not just 'partner' — pushes
+      // config into orgs the caller may not fully control, so all writes
+      // require full partner org access. Mirrors the HTTP route's gate
+      // (routes/configurationPolicies/assignments.ts).
+      if (policy.orgId === null && !canManagePartnerWidePolicies(auth)) {
+        return JSON.stringify({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+      }
+
       // At the partner level the target is the partner itself, derived
       // server-side — never from a client-supplied value (#1724). It's the
       // policy's own partner (or the caller's, for a fresh partner-owned
       // policy). An org-owned policy also reaches this block, but its
       // auth.partnerId fallback target is rejected downstream by
       // validateAssignmentTarget, so the fallback only ever serves partner-owned
-      // policies. Partner-level assignments push config to ALL orgs under the
-      // partner, so they carry the same capability gate as the HTTP route.
+      // policies.
       let targetId = input.targetId as string;
       if (input.level === 'partner') {
         const derived = policy.partnerId ?? auth.partnerId;
         if (!derived) {
           return JSON.stringify({ error: 'Partner-wide assignments require partner scope' });
-        }
-        if (!canManagePartnerWidePolicies(auth)) {
-          return JSON.stringify({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
         }
         targetId = derived;
       }
@@ -417,12 +422,12 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
             status: (input.status as 'active' | 'inactive' | 'archived') ?? 'active',
           }, auth.user.id);
 
-          // Seed the partner-level assignment so the policy applies immediately —
-          // ownership and the assignment that drives resolution stay in lockstep,
-          // mirroring the HTTP create route (otherwise it resolves to no devices
-          // until it is separately assigned via apply_configuration_policy).
-          await assignPolicy(policy.id, 'partner', auth.partnerId, 0, auth.user.id);
-
+          // Library model (#2280): partner-owned policies are created EMPTY —
+          // no auto-seeded assignment. It's applied to orgs later via explicit
+          // apply_configuration_policy calls (partner-wide, or a subset of
+          // orgs). Mirrors the HTTP create route
+          // (routes/configurationPolicies/crud.ts), which stopped auto-seeding
+          // the partner-level assignment for the same reason.
           return JSON.stringify({ success: true, policy });
         }
 

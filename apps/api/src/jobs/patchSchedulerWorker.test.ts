@@ -91,14 +91,24 @@ describe('resolveDeviceIdsForAssignment (partner-wide patch, #1724)', () => {
     expect(ids).toEqual(['dev-a', 'dev-b']);
   });
 
-  it('returns [] without querying for an org-scoped level when the policy has no owning org', async () => {
-    // Org/site/group/device levels are never carried by a partner-wide policy
-    // (validateAssignmentTarget rejects them); a null policyOrgId here is a
-    // no-op, guarded before the org-equality queries run.
+  it('resolves an ORGANIZATION-level SUBSET assignment on a partner-owned library policy (policyOrgId null, #2280)', async () => {
+    // Partner-owned policies can now carry org/site/group/device SUBSET
+    // assignments (#2280 library model), not just the partner-wide 'partner'
+    // level. A null policyOrgId here is the NORMAL case for those — resolution
+    // must NOT no-op; it queries devices by the target org alone (no extra
+    // clamp, since there's no single owning org for a library policy). This
+    // branch's query shape is `.from(devices).where(...)` directly (no
+    // innerJoin), which the shared module-level mock doesn't model, so this
+    // test overrides db.select for its one call.
     const { db } = await import('../db');
+    const chain: any = {
+      from: vi.fn(() => chain),
+      where: vi.fn(() => Promise.resolve([{ id: 'dev-a' }])),
+    };
+    vi.mocked(db.select).mockReturnValueOnce(chain);
+
     const ids = await resolveDeviceIdsForAssignment('organization', 'org-x', null);
-    expect(ids).toEqual([]);
-    expect(vi.mocked(db.select)).not.toHaveBeenCalled();
+    expect(ids).toEqual(['dev-a']);
   });
 });
 

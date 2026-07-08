@@ -185,8 +185,10 @@ function getDueOccurrenceKey(settings: PatchInlineSettings, timezone: string, no
 async function resolveDeviceIdsForAssignment(
   assignmentLevel: string,
   assignmentTargetId: string,
-  // null for partner-wide policies (#1724) — they have no owning org and can
-  // only carry a partner-level assignment, resolved across all the partner's orgs.
+  // null for partner-owned library policies (#1724, #2280) — they have no
+  // single owning org and may carry a partner-level assignment (resolved
+  // across all the partner's orgs) AND/OR org/site/group/device-level SUBSET
+  // assignments into individual orgs under the partner.
   policyOrgId: string | null
 ): Promise<string[]> {
   if (assignmentLevel === 'partner') {
@@ -211,55 +213,57 @@ async function resolveDeviceIdsForAssignment(
     return partnerDevices.map((d) => d.id);
   }
 
-  // Every remaining level is org-scoped and clamps to the policy's owning org.
-  // A partner-wide policy never carries one (validateAssignmentTarget rejects),
-  // so a null policyOrgId here should be unreachable — but if a future path
-  // bypasses assignment validation, silently scheduling ZERO patch jobs is a
-  // patch-compliance hole, so make the no-op loud.
-  if (!policyOrgId) {
-    console.warn(
-      `[PatchScheduler] ${assignmentLevel}-level assignment on a policy with no owning org — resolving no devices`,
-      { assignmentLevel, assignmentTargetId }
-    );
-    return [];
-  }
-
+  // Every remaining level is org/site/group/device-scoped. For an org-owned
+  // policy, policyOrgId clamps the target to the policy's own org as
+  // defense-in-depth. For a partner-owned library policy (#2280) resolving a
+  // SUBSET assignment — org/site/group/device, not the partner-wide 'partner'
+  // level above — policyOrgId is null: there is no single owning org to clamp
+  // to, since the same policy can carry subset assignments into several of the
+  // partner's orgs. The target itself is already partner-scoped
+  // (validateAssignmentTarget confirmed it belongs to this partner at assign
+  // time), so it's trusted here without an extra clamp — the same trust model
+  // the 'partner' branch above already uses for assignmentTargetId. Silently
+  // no-op'ing on a null policyOrgId (the old behavior, pre-#2280) would create
+  // a patch-compliance hole for every partner-owned subset assignment.
   switch (assignmentLevel) {
     case 'device': {
+      const conditions = [eq(devices.id, assignmentTargetId)];
+      if (policyOrgId) conditions.push(eq(devices.orgId, policyOrgId));
       const [device] = await db
         .select({ id: devices.id })
         .from(devices)
-        .where(and(eq(devices.id, assignmentTargetId), eq(devices.orgId, policyOrgId)))
+        .where(and(...conditions))
         .limit(1);
       return device ? [device.id] : [];
     }
 
     case 'device_group': {
+      const conditions = [eq(deviceGroupMemberships.groupId, assignmentTargetId)];
+      if (policyOrgId) conditions.push(eq(deviceGroupMemberships.orgId, policyOrgId));
       const members = await db
         .select({ deviceId: deviceGroupMemberships.deviceId })
         .from(deviceGroupMemberships)
-        .where(
-          and(
-            eq(deviceGroupMemberships.groupId, assignmentTargetId),
-            eq(deviceGroupMemberships.orgId, policyOrgId)
-          )
-        );
+        .where(and(...conditions));
       return members.map((m) => m.deviceId);
     }
 
     case 'site': {
+      const conditions = [eq(devices.siteId, assignmentTargetId)];
+      if (policyOrgId) conditions.push(eq(devices.orgId, policyOrgId));
       const siteDevices = await db
         .select({ id: devices.id })
         .from(devices)
-        .where(and(eq(devices.siteId, assignmentTargetId), eq(devices.orgId, policyOrgId)));
+        .where(and(...conditions));
       return siteDevices.map((d) => d.id);
     }
 
     case 'organization': {
+      const conditions = [eq(devices.orgId, assignmentTargetId)];
+      if (policyOrgId) conditions.push(eq(devices.orgId, policyOrgId));
       const orgDevices = await db
         .select({ id: devices.id })
         .from(devices)
-        .where(and(eq(devices.orgId, assignmentTargetId), eq(devices.orgId, policyOrgId)));
+        .where(and(...conditions));
       return orgDevices.map((d) => d.id);
     }
 
