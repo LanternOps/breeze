@@ -32,6 +32,7 @@ import {
   loadCpeDictionary,
   parseCpe,
   isWellFormedCpe,
+  resolve,
   type CatalogProduct,
 } from './cpeResolver';
 
@@ -123,5 +124,33 @@ describe('buildCatalogIndex', () => {
       productTokens: new Set(['internal', 'tool']),
     });
     expect(idx.wordIndex.get('acme')).toEqual(new Set(['p-internal']));
+  });
+});
+
+describe('resolve - Layer A', () => {
+  const idx = buildCatalogIndex(CATALOG);
+  const curated = loadCuratedDictionary();
+
+  it('curated dict hit -> confidence curated, resolves to catalog product', () => {
+    const r = resolve('Adobe Acrobat Reader DC (64-bit)', 'Adobe Inc.', idx, curated);
+    expect(r).toMatchObject({
+      productId: 'p-acrobat',
+      confidence: 'curated',
+      matchedVia: 'dictionary',
+    });
+  });
+
+  it('exact normalized-name catalog hit -> confidence exact', () => {
+    const r = resolve('Firefox', 'Mozilla', idx, curated);
+    expect(r).toMatchObject({
+      productId: 'p-firefox',
+      confidence: 'exact',
+      matchedVia: 'catalog_exact',
+    });
+  });
+
+  it('curated hit whose CPE is absent from catalog -> productId null, matchedVia dictionary', () => {
+    const r = resolve('Microsoft Teams', 'Microsoft', idx, curated);
+    expect(r).toMatchObject({ productId: null, matchedVia: 'dictionary' });
   });
 });

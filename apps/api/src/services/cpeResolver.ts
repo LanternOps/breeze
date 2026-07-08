@@ -129,3 +129,63 @@ export function buildCatalogIndex(products: CatalogProduct[]): CatalogIndex {
 
   return { byExactName, byVendorProduct, wordIndex, meta };
 }
+
+export type ResolutionConfidence = 'curated' | 'exact' | 'fuzzy' | 'none';
+export type ResolutionVia = 'dictionary' | 'catalog_exact' | 'token' | 'unmatched';
+
+export interface Resolution {
+  productId: string | null;
+  cpe: string | null;
+  confidence: ResolutionConfidence;
+  matchedVia: ResolutionVia;
+  tokensMatched: number;
+}
+
+export const NONE: Resolution = {
+  productId: null,
+  cpe: null,
+  confidence: 'none',
+  matchedVia: 'unmatched',
+  tokensMatched: 0,
+};
+
+export function resolve(
+  displayName: string,
+  _vendor: string | null,
+  index: CatalogIndex,
+  curated: Map<string, CuratedEntry>,
+): Resolution {
+  const normName = normalizeDisplayName(displayName);
+
+  // Layer A.1 - curated translation dictionary.
+  const curatedHit = curated.get(normName);
+  if (curatedHit) {
+    const key = `${curatedHit.vendor}:${curatedHit.product}`;
+    const productId = index.byVendorProduct.get(key) ?? null;
+    const cpe = productId
+      ? index.meta.get(productId)?.cpe ?? null
+      : `cpe:2.3:a:${curatedHit.vendor}:${curatedHit.product}`;
+    return {
+      productId,
+      cpe,
+      confidence: productId ? 'curated' : 'none',
+      matchedVia: 'dictionary',
+      tokensMatched: 0,
+    };
+  }
+
+  // Layer A.2 - exact catalog normalized-name match.
+  const exact = index.byExactName.get(normName);
+  if (exact) {
+    return {
+      productId: exact,
+      cpe: index.meta.get(exact)?.cpe ?? null,
+      confidence: 'exact',
+      matchedVia: 'catalog_exact',
+      tokensMatched: 0,
+    };
+  }
+
+  // Layer B added in Task 5.
+  return NONE;
+}
