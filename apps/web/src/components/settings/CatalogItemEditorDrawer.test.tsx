@@ -18,6 +18,9 @@ vi.mock('../../lib/api/catalog', async (importActual) => {
     createCatalogItem: vi.fn(),
     updateCatalogItem: vi.fn(),
     setBundleComponents: vi.fn(),
+    uploadCatalogItemImage: vi.fn(),
+    importCatalogItemImageFromUrl: vi.fn(),
+    deleteCatalogItemImageRequest: vi.fn(),
   };
 });
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
@@ -201,5 +204,60 @@ describe('CatalogItemEditorDrawer — detail load failure (#1944)', () => {
     expect(bundleMock).toHaveBeenCalledWith('item-1', [
       { componentItemId: 'c-1', quantity: 2, showOnInvoice: false },
     ]);
+  });
+});
+
+// Product image "Import from URL" — the server downloads + validates the remote
+// bytes (SSRF-guarded, 5 MB cap), so the client just posts the URL. Mirrors the
+// quote line/image-block URL source.
+describe('CatalogItemEditorDrawer — product image from URL', () => {
+  const importUrlMock = vi.mocked(catalogApi.importCatalogItemImageFromUrl);
+  const toastMock = vi.mocked(showToast);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    claimsMock.mockReturnValue({ scope: 'partner', partnerId: 'p-1', orgId: null });
+    getMock.mockResolvedValue(json({ data: { item: item(), components: [], overrides: [] } }));
+  });
+
+  const renderDrawer = () =>
+    render(<CatalogItemEditorDrawer open item={item()} allItems={[]} onClose={vi.fn()} onSaved={vi.fn()} />);
+
+  it('posts the URL to the import endpoint and reports success', async () => {
+    importUrlMock.mockResolvedValue(json({ data: { imageId: 'img-1' } }));
+    renderDrawer();
+    await screen.findByTestId('catalog-form-image-url');
+
+    fireEvent.change(screen.getByTestId('catalog-form-image-url'), { target: { value: 'https://cdn.example.com/p.png' } });
+    fireEvent.click(screen.getByTestId('catalog-form-image-url-btn'));
+
+    await waitFor(() => expect(importUrlMock).toHaveBeenCalledWith('item-1', 'https://cdn.example.com/p.png'));
+    await waitFor(() => expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ message: 'Image imported' })));
+  });
+
+  it('disables Import from URL until a URL is entered', async () => {
+    renderDrawer();
+    await screen.findByTestId('catalog-form-image-url-btn');
+    expect(screen.getByTestId('catalog-form-image-url-btn')).toBeDisabled();
+    fireEvent.change(screen.getByTestId('catalog-form-image-url'), { target: { value: 'https://x/y.png' } });
+    expect(screen.getByTestId('catalog-form-image-url-btn')).toBeEnabled();
+  });
+
+  it('a failed import toasts an error', async () => {
+    importUrlMock.mockResolvedValue(json(null, false));
+    renderDrawer();
+    await screen.findByTestId('catalog-form-image-url');
+
+    fireEvent.change(screen.getByTestId('catalog-form-image-url'), { target: { value: 'https://internal/p.png' } });
+    fireEvent.click(screen.getByTestId('catalog-form-image-url-btn'));
+
+    await waitFor(() => expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+  });
+
+  it('hides the image controls for a new (unsaved) item until it is saved', async () => {
+    render(<CatalogItemEditorDrawer open item={null} allItems={[]} onClose={vi.fn()} onSaved={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('catalog-item-editor')).toBeInTheDocument());
+    expect(screen.queryByTestId('catalog-form-image-url')).not.toBeInTheDocument();
+    expect(screen.getByTestId('catalog-form-image-hint')).toBeInTheDocument();
   });
 });
