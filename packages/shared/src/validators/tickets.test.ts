@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   createTicketSchema, updateTicketSchema, changeTicketStatusSchema,
   assignTicketSchema, addTicketCommentSchema, listTicketsQuerySchema,
-  ticketCategoryInputSchema, bulkTicketActionSchema, editCommentSchema, moveTicketOrgSchema
+  ticketCategoryInputSchema, bulkTicketActionSchema, editCommentSchema, moveTicketOrgSchema,
+  createTicketFromChatSchema
 } from './tickets';
 
 describe('ticket validators', () => {
@@ -213,5 +214,28 @@ describe('ticket validators', () => {
     it('rejects a non-uuid orgId', () => {
       expect(moveTicketOrgSchema.safeParse({ orgId: 'nope' }).success).toBe(false);
     });
+  });
+});
+
+describe('createTicketFromChatSchema', () => {
+  const base = { subject: 'Outlook would not open', description: 'Sarah could not open Outlook.', status: 'open' as const, timeMinutes: 15, billable: true };
+
+  it('accepts a valid open-ticket payload', () => {
+    expect(createTicketFromChatSchema.parse(base)).toMatchObject({ status: 'open', timeMinutes: 15 });
+  });
+
+  it('requires a resolutionNote when status is resolved', () => {
+    const r = createTicketFromChatSchema.safeParse({ ...base, status: 'resolved' });
+    expect(r.success).toBe(false);
+  });
+
+  it('accepts a resolved payload with a resolutionNote', () => {
+    const r = createTicketFromChatSchema.safeParse({ ...base, status: 'resolved', resolutionNote: 'Rebuilt the mail profile.' });
+    expect(r.success).toBe(true);
+  });
+
+  it('rejects negative timeMinutes and empty subject', () => {
+    expect(createTicketFromChatSchema.safeParse({ ...base, timeMinutes: -1 }).success).toBe(false);
+    expect(createTicketFromChatSchema.safeParse({ ...base, subject: '' }).success).toBe(false);
   });
 });

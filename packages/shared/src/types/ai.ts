@@ -96,6 +96,20 @@ export type AiPageContext =
   | { type: 'dashboard'; orgName?: string; deviceCount?: number; alertCount?: number }
   | { type: 'custom'; label: string; data: Record<string, unknown> };
 
+export interface AiTicketDraft {
+  subject: string;
+  problemSummary: string;
+  resolutionSummary: string;
+  wasFixed: boolean;
+  suggestedStatus: 'open' | 'resolved';
+  suggestedTimeMinutes: number;
+  elapsedMinutes: number;
+  orgId: string;
+  orgName: string | null;
+  deviceId: string | null;
+  deviceHostname: string | null;
+}
+
 // ============================================
 // SSE Event Types
 // ============================================
