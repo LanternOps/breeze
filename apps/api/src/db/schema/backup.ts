@@ -128,7 +128,9 @@ export const backupJobs = pgTable(
       .notNull()
       .references(() => backupConfigs.id),
     policyId: uuid('policy_id').references(() => backupPolicies.id),
-    featureLinkId: uuid('feature_link_id').references(() => configPolicyFeatureLinks.id),
+    featureLinkId: uuid('feature_link_id').references(() => configPolicyFeatureLinks.id, {
+      onDelete: 'cascade',
+    }),
     deviceId: uuid('device_id')
       .notNull()
       .references(() => devices.id),
@@ -167,7 +169,7 @@ export const backupSnapshots = pgTable(
       .references(() => organizations.id),
     jobId: uuid('job_id')
       .notNull()
-      .references(() => backupJobs.id),
+      .references(() => backupJobs.id, { onDelete: 'cascade' }),
     deviceId: uuid('device_id')
       .notNull()
       .references(() => devices.id),
