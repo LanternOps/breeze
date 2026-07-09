@@ -9,7 +9,7 @@ vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 
 import { getToken, graphFetch } from './m365DirectGraph';
 import { captureException } from './sentry';
-import { listSharePointLibraries, resolveUserGroupMembership } from './onedriveGraph';
+import { listSharePointLibraries, resolveUserGroupMembership, buildTenantAutoMountValue } from './onedriveGraph';
 
 describe('listSharePointLibraries', () => {
   beforeEach(() => vi.clearAllMocks());
@@ -92,6 +92,85 @@ describe('listSharePointLibraries', () => {
     expect(res.kind).toBe('ok');
     expect((res as any).data.libraries).toHaveLength(1);
     expect((res as any).data.libraries[0].driveId).toBe('drA');
+  });
+});
+
+describe('buildTenantAutoMountValue', () => {
+  it('matches the known-good real-world composite shape', () => {
+    const val = buildTenantAutoMountValue({
+      tenantId: '02ad5f9c-3696-477b-8cb3-9ba4e0a9ac9c',
+      siteId: '87a9f4b2-757b-4663-b19e-d58398f0f1e4',
+      webId: 'd1135130-a5e3-41d2-a8f1-a547508eaf04',
+      listId: '265BA069-9F1C-4065-83AC-B7C7A0CE4C28',
+      siteUrl: 'https://wvdcloud901026.sharepoint.com/sites/Office_Templates',
+    });
+    expect(val).toBe(
+      'tenantId=02ad5f9c-3696-477b-8cb3-9ba4e0a9ac9c'
+      + '&siteId={87a9f4b2-757b-4663-b19e-d58398f0f1e4}'
+      + '&webId={d1135130-a5e3-41d2-a8f1-a547508eaf04}'
+      + '&listId={265BA069-9F1C-4065-83AC-B7C7A0CE4C28}'
+      + '&webUrl=https%3A%2F%2Fwvdcloud901026.sharepoint.com%2Fsites%2FOffice%5FTemplates'
+      + '&version=1'
+    );
+  });
+
+  it('strips pre-braced GUIDs before re-bracing', () => {
+    const val = buildTenantAutoMountValue({
+      tenantId: 't', siteId: '{s}', webId: '{w}', listId: '{l}', siteUrl: 'https://x',
+    });
+    expect(val).toContain('siteId={s}');
+    expect(val).not.toContain('{{');
+  });
+});
+
+describe('listSharePointLibraries sharePointIds expansion', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('returns sharePointIds-derived fields + a prebuilt autoMountValue', async () => {
+    (graphFetch as any)
+      .mockResolvedValueOnce({ kind: 'ok', data: { value: [
+        { id: 'host,scid,webid', displayName: 'Marketing', webUrl: 'https://c.sharepoint.com/sites/mktg' },
+      ] } })
+      .mockResolvedValueOnce({ kind: 'ok', data: { value: [
+        {
+          id: 'drive-1', name: 'Documents',
+          list: {
+            id: 'list-1',
+            sharePointIds: {
+              tenantId: 'tid', siteId: 'sid-guid', webId: 'wid-guid', listId: 'list-1',
+              siteUrl: 'https://c.sharepoint.com/sites/mktg',
+            },
+          },
+        },
+      ] } });
+
+    const res = await listSharePointLibraries('org-1');
+    expect(res.kind).toBe('ok');
+    const lib = (res as any).data.libraries[0];
+    expect(lib).toMatchObject({
+      siteName: 'Marketing', driveId: 'drive-1', listId: 'list-1',
+      tenantId: 'tid', webId: 'wid-guid', spSiteId: 'sid-guid',
+    });
+    expect(lib.autoMountValue).toContain('tenantId=tid');
+    expect(lib.autoMountValue).toContain('siteId={sid-guid}');
+    // the drives call must request the expansion
+    const drivesPath = (graphFetch as any).mock.calls[1][2] as string;
+    expect(drivesPath).toContain('$expand=list(');
+    expect(drivesPath).toContain('sharePointIds');
+  });
+
+  it('returns an empty autoMountValue when sharePointIds is missing', async () => {
+    (graphFetch as any)
+      .mockResolvedValueOnce({ kind: 'ok', data: { value: [
+        { id: 'host,scid,webid', displayName: 'M', webUrl: 'https://c.sharepoint.com/sites/m' },
+      ] } })
+      .mockResolvedValueOnce({ kind: 'ok', data: { value: [
+        { id: 'drive-1', name: 'Documents', list: { id: 'list-1' } },
+      ] } });
+    const res = await listSharePointLibraries('org-1');
+    const lib = (res as any).data.libraries[0];
+    expect(lib.autoMountValue).toBe('');
+    expect(lib.tenantId).toBe('');
   });
 });
 
