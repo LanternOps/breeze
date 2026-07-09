@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../lib/runAction';
+import { isValidEmail } from '@/lib/email';
 import { pctFromFraction } from './invoiceTypes';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
@@ -68,8 +69,13 @@ export default function OrgBillingSettings({ orgId }: Props) {
 
   useEffect(() => { void load(); }, [load]);
 
+  // Contact email is optional (blank clears it), but a non-empty value must be a
+  // valid address. Guard client-side so the Save button reflects it pre-submit;
+  // the server still validates the format on PATCH.
+  const contactEmailInvalid = contactEmail.trim() !== '' && !isValidEmail(contactEmail);
+
   const save = useCallback(async () => {
-    if (saving) return;
+    if (saving || contactEmailInvalid) return;
     setSaving(true);
     try {
       const pct = taxPercent.trim();
@@ -102,7 +108,7 @@ export default function OrgBillingSettings({ orgId }: Props) {
     } finally {
       setSaving(false);
     }
-  }, [saving, taxId, taxExempt, taxPercent, contactEmail, contactName, line1, line2, city, region, postal, country, orgId, load]);
+  }, [saving, contactEmailInvalid, taxId, taxExempt, taxPercent, contactEmail, contactName, line1, line2, city, region, postal, country, orgId, load]);
 
   if (loading) return <p className="text-sm text-muted-foreground">Loading billing settings…</p>;
   if (loadError) {
@@ -150,7 +156,12 @@ export default function OrgBillingSettings({ orgId }: Props) {
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
           <div>
             <label className="text-sm font-medium" htmlFor="ob-contact-email">Contact email</label>
-            <input id="ob-contact-email" type="email" maxLength={255} value={contactEmail} onChange={(e) => setContactEmail(e.target.value)} placeholder="billing@customer.example" data-testid="org-billing-contact-email" className={inputCls} />
+            <input id="ob-contact-email" type="email" maxLength={255} value={contactEmail} onChange={(e) => setContactEmail(e.target.value)} placeholder="billing@customer.example" data-testid="org-billing-contact-email" aria-invalid={contactEmailInvalid} className={`${inputCls} ${contactEmailInvalid ? 'border-destructive' : ''}`} />
+            {contactEmailInvalid && (
+              <p className="mt-1 text-xs text-destructive" data-testid="org-billing-contact-email-error">
+                Enter a valid email address
+              </p>
+            )}
           </div>
           <div>
             <label className="text-sm font-medium" htmlFor="ob-contact-name">Contact name</label>
@@ -191,7 +202,7 @@ export default function OrgBillingSettings({ orgId }: Props) {
 
       <div className="flex justify-end">
         <button
-          type="button" onClick={() => void save()} disabled={saving}
+          type="button" onClick={() => void save()} disabled={saving || contactEmailInvalid}
           data-testid="org-billing-save"
           className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
         >

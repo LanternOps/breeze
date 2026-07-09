@@ -54,6 +54,27 @@ describe('OrgBillingSettings — billing contact', () => {
     });
   });
 
+  it('blocks save on a client-invalid contact email (guards the round-trip)', async () => {
+    fetchMock.mockImplementation(async (_input: string, opts?: RequestInit) =>
+      opts?.method === 'PATCH' ? json({ data: {} }) : orgPayload());
+    render(<OrgBillingSettings orgId="org-1" />);
+    await waitFor(() => expect(screen.getByTestId('org-billing-settings')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByTestId('org-billing-contact-email'), { target: { value: 'not-an-email' } });
+
+    // Inline error shows and the Save button is disabled…
+    expect(screen.getByTestId('org-billing-contact-email-error')).toBeInTheDocument();
+    expect(screen.getByTestId('org-billing-save')).toBeDisabled();
+    // …and even clicking it issues no PATCH (save() early-returns).
+    fireEvent.click(screen.getByTestId('org-billing-save'));
+    expect(findPatch()).toBeUndefined();
+
+    // Correcting the address clears the error and re-enables save.
+    fireEvent.change(screen.getByTestId('org-billing-contact-email'), { target: { value: 'ap@customer.example' } });
+    expect(screen.queryByTestId('org-billing-contact-email-error')).not.toBeInTheDocument();
+    expect(screen.getByTestId('org-billing-save')).not.toBeDisabled();
+  });
+
   it('serializes a cleared contact email to null (never "") so the schema does not 400', async () => {
     // The linchpin of the design: orgBillingSettingsSchema rejects '' via .email();
     // clearing the field must send null. Mirrors PartnerBillingSettings' address test.

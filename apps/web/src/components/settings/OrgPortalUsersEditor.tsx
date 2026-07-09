@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '@/lib/runAction';
+import { isValidEmail } from '@/lib/email';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
 
 type PortalUser = {
   id: string; email: string; name: string | null; status: string;
@@ -31,6 +33,11 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
   const [name, setName] = useState('');
   const [message, setMessage] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [pendingRemove, setPendingRemove] = useState<PortalUser | null>(null);
+
+  // Client-side email-format guard for the invite form (server still validates).
+  const emailValid = isValidEmail(email);
+  const showEmailError = email.trim() !== '' && !emailValid;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -51,6 +58,7 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
   useEffect(() => { void load(); }, [load]);
 
   const invite = async () => {
+    if (!emailValid) return;
     try {
       await runAction({
         request: () => fetchWithAuth(`${base(orgId)}/invite`, {
@@ -199,7 +207,7 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
                       type="button"
                       data-testid={`portal-user-delete-${u.id}`}
                       disabled={busyId === u.id}
-                      onClick={() => void mutate(u.id, `/${u.id}`, 'DELETE', undefined, 'User removed')}
+                      onClick={() => setPendingRemove(u)}
                       className="rounded-md border px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-500/10 disabled:opacity-50"
                     >
                       Remove
@@ -228,8 +236,14 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
               placeholder="customer@example.com"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="mt-1 w-full rounded-md border bg-background px-3 py-1.5 text-sm"
+              aria-invalid={showEmailError}
+              className={`mt-1 w-full rounded-md border bg-background px-3 py-1.5 text-sm ${showEmailError ? 'border-destructive' : ''}`}
             />
+            {showEmailError && (
+              <p className="mt-1 text-xs text-destructive" data-testid="portal-users-invite-email-error">
+                Enter a valid email address
+              </p>
+            )}
           </div>
           <div>
             <label className="text-sm font-medium" htmlFor="portal-users-invite-name">Name (optional)</label>
@@ -265,7 +279,7 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
             <button
               type="button"
               data-testid="portal-users-invite-submit"
-              disabled={!email}
+              disabled={!emailValid}
               onClick={() => void invite()}
               className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
             >
@@ -274,6 +288,25 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
           </div>
         </div>
       )}
+
+      <ConfirmDialog
+        open={pendingRemove !== null}
+        onClose={() => setPendingRemove(null)}
+        onConfirm={() => {
+          const target = pendingRemove;
+          if (!target) return;
+          void mutate(target.id, `/${target.id}`, 'DELETE', undefined, 'User removed')
+            .finally(() => setPendingRemove(null));
+        }}
+        title="Remove portal user"
+        message={pendingRemove
+          ? `Remove ${pendingRemove.email}? They lose access to this organization's portal immediately. This can't be undone — you'd need to re-invite them.`
+          : ''}
+        confirmLabel="Remove"
+        variant="destructive"
+        isLoading={busyId === pendingRemove?.id}
+        confirmTestId="portal-user-delete-confirm"
+      />
     </section>
   );
 }

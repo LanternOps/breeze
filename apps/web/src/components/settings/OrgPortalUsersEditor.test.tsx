@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 
 const fetchWithAuth = vi.fn();
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: any[]) => fetchWithAuth(...a) }));
@@ -50,6 +50,51 @@ describe('OrgPortalUsersEditor', () => {
     await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith(
       `/orgs/organizations/${ORG_ID}/portal-users/invite`,
       expect.objectContaining({ method: 'POST' })
+    ));
+  });
+
+  it('guards the invite email client-side: invalid disables Send, valid enables it', async () => {
+    fetchWithAuth.mockResolvedValueOnce(ok({ data: [] }));
+    render(<OrgPortalUsersEditor orgId={ORG_ID} />);
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByTestId('portal-users-invite-open'));
+
+    // Empty → disabled, no error yet.
+    expect(screen.getByTestId('portal-users-invite-submit')).toBeDisabled();
+    expect(screen.queryByTestId('portal-users-invite-email-error')).not.toBeInTheDocument();
+
+    // Malformed → disabled + inline error.
+    fireEvent.change(screen.getByTestId('portal-users-invite-email'), { target: { value: 'bad-portal-email' } });
+    expect(screen.getByTestId('portal-users-invite-submit')).toBeDisabled();
+    expect(screen.getByTestId('portal-users-invite-email-error')).toBeInTheDocument();
+
+    // Valid → enabled, error gone.
+    fireEvent.change(screen.getByTestId('portal-users-invite-email'), { target: { value: 'new@acme.example' } });
+    expect(screen.getByTestId('portal-users-invite-submit')).not.toBeDisabled();
+    expect(screen.queryByTestId('portal-users-invite-email-error')).not.toBeInTheDocument();
+  });
+
+  it('confirms before removing a portal user, then issues the DELETE', async () => {
+    fetchWithAuth
+      .mockResolvedValueOnce(ok({ data: [
+        { id: 'pu-1', email: 'gone@acme.example', name: 'G', status: 'active', effectiveStatus: 'active', lastLoginAt: null, invitedAt: null }
+      ] }))                                    // initial list
+      .mockResolvedValueOnce(ok({ data: {} })) // DELETE
+      .mockResolvedValueOnce(ok({ data: [] })); // reload
+    render(<OrgPortalUsersEditor orgId={ORG_ID} />);
+    await waitFor(() => expect(screen.getByText('gone@acme.example')).toBeInTheDocument());
+
+    // Clicking Remove opens a confirm dialog — it does NOT delete yet.
+    fireEvent.click(screen.getByTestId('portal-user-delete-pu-1'));
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText(/gone@acme.example/)).toBeInTheDocument();
+    expect(fetchWithAuth).toHaveBeenCalledTimes(1); // still just the initial list load
+
+    // Confirming issues the org-scoped DELETE.
+    fireEvent.click(screen.getByTestId('portal-user-delete-confirm'));
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith(
+      `/orgs/organizations/${ORG_ID}/portal-users/pu-1`,
+      expect.objectContaining({ method: 'DELETE' })
     ));
   });
 });
