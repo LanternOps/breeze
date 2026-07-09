@@ -515,7 +515,7 @@ export const updateConfigPolicySchema = z.object({
 });
 
 export const addFeatureLinkSchema = z.object({
-  featureType: z.enum(['patch', 'alert_rule', 'backup', 'security', 'monitoring', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data', 'peripheral_control', 'warranty', 'helper', 'remote_access', 'pam', 'vulnerability']),
+  featureType: z.enum(['patch', 'alert_rule', 'backup', 'security', 'monitoring', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data', 'peripheral_control', 'warranty', 'helper', 'remote_access', 'pam', 'onedrive_helper', 'vulnerability']),
   featurePolicyId: z.string().guid().optional(),
   inlineSettings: z.record(z.string(), z.unknown()).optional(),
 }).refine(
@@ -666,6 +666,38 @@ export const sensitiveDataInlineSettingsSchema = z.object({
   intervalMinutes: z.number().int().min(5).max(10080).optional(),
   cron: z.string().max(120).optional(),
   timezone: z.string().max(64).default('UTC'),
+});
+
+export const onedriveLibraryMappingSchema = z.object({
+  libraryId: z.string().min(1).max(1024),
+  displayName: z.string().min(1).max(255),
+  siteUrl: z.string().max(1024).nullable().optional(),
+  siteId: z.string().max(512).nullable().optional(),
+  webId: z.string().max(128).nullable().optional(),
+  listId: z.string().max(128).nullable().optional(),
+  targetingMode: z.enum(['everyone', 'graph_group', 'local_ad_group']).default('everyone'),
+  groupId: z.string().max(128).nullable().optional(),
+  groupName: z.string().max(255).nullable().optional(),
+  hiveScope: z.enum(['hkcu', 'hklm']).default('hkcu'),
+  enabled: z.boolean().default(true),
+}).superRefine((lib, ctx) => {
+  if (lib.targetingMode === 'graph_group' && !lib.groupId && !lib.groupName) {
+    ctx.addIssue({ code: 'custom', message: 'graph_group targeting requires groupId or groupName', path: ['groupId'] });
+  }
+  if (lib.targetingMode === 'local_ad_group' && !lib.groupName) {
+    ctx.addIssue({ code: 'custom', message: 'local_ad_group targeting requires groupName (agent resolves by name)', path: ['groupName'] });
+  }
+});
+
+export const onedriveHelperInlineSettingsSchema = z.object({
+  silentAccountConfig: z.boolean().default(true),
+  filesOnDemand: z.boolean().default(true),
+  kfmSilentOptIn: z.boolean().default(false),
+  kfmFolders: z.array(z.enum(['Desktop', 'Documents', 'Pictures'])).default(['Desktop', 'Documents', 'Pictures']),
+  kfmBlockOptOut: z.boolean().default(false),
+  tenantAssociationId: z.string().max(64).nullable().optional(),
+  restartOnChange: z.boolean().default(true),
+  libraries: z.array(onedriveLibraryMappingSchema).max(100).default([]),
 });
 
 export const monitoringInlineSettingsSchema = z.object({
