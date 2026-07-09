@@ -14,6 +14,8 @@ import {
   configPolicyMonitoringWatches,
   configPolicyRemoteAccessSettings,
   configPolicyBackupSettings,
+  configPolicyOnedriveSettings,
+  configPolicyOnedriveLibraries,
   devices,
   deviceGroups,
   organizations,
@@ -32,7 +34,7 @@ import {
 import { and, eq, desc, or, sql, inArray, asc, getTableColumns, SQL } from 'drizzle-orm';
 import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from './partnerWideAccess';
 import { z } from 'zod';
-import { eventLogInlineSettingsSchema, monitoringInlineSettingsSchema } from '@breeze/shared/validators';
+import { eventLogInlineSettingsSchema, monitoringInlineSettingsSchema, onedriveHelperInlineSettingsSchema } from '@breeze/shared/validators';
 import type { AuthContext } from '../middleware/auth';
 import { normalizePatchInlineSettings, tryNormalizePatchInlineSettings } from './configPolicyPatching';
 import { resolvePartnerIdForOrg } from '../routes/patches/helpers';
@@ -614,6 +616,56 @@ async function decomposeInlineSettings(
       break;
     }
 
+    case 'onedrive_helper': {
+      const parsed = onedriveHelperInlineSettingsSchema.parse(s);
+      // Look up orgId via feature link → policy join (same pattern as 'backup').
+      const [policyRow] = await tx
+        .select({ orgId: configurationPolicies.orgId })
+        .from(configPolicyFeatureLinks)
+        .innerJoin(configurationPolicies, eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id))
+        .where(eq(configPolicyFeatureLinks.id, linkId))
+        .limit(1);
+      if (!policyRow) throw new Error(`Cannot resolve orgId for feature link ${linkId}`);
+      // Library mappings are per-tenant (each org has its own M365 tenant), so
+      // onedrive_helper is org-scoped-only (ORG_SCOPED_ONLY_FEATURE_TYPES). The
+      // route already 400s partner-wide links; this is the service-level backstop.
+      if (!policyRow.orgId) {
+        throw new Error('OneDrive Helper settings are not supported on partner-wide configuration policies');
+      }
+      const [settingsRow] = await tx.insert(configPolicyOnedriveSettings).values({
+        featureLinkId: linkId,
+        orgId: policyRow.orgId,
+        silentAccountConfig: parsed.silentAccountConfig,
+        filesOnDemand: parsed.filesOnDemand,
+        kfmSilentOptIn: parsed.kfmSilentOptIn,
+        kfmFolders: parsed.kfmFolders,
+        kfmBlockOptOut: parsed.kfmBlockOptOut,
+        tenantAssociationId: parsed.tenantAssociationId ?? null,
+        restartOnChange: parsed.restartOnChange,
+      }).returning();
+      if (settingsRow && parsed.libraries.length > 0) {
+        await tx.insert(configPolicyOnedriveLibraries).values(
+          parsed.libraries.map((l, idx) => ({
+            settingsId: settingsRow.id,
+            orgId: policyRow.orgId!,
+            libraryId: l.libraryId,
+            displayName: l.displayName,
+            siteUrl: l.siteUrl ?? null,
+            siteId: l.siteId ?? null,
+            webId: l.webId ?? null,
+            listId: l.listId ?? null,
+            targetingMode: l.targetingMode,
+            groupId: l.groupId ?? null,
+            groupName: l.groupName ?? null,
+            hiveScope: l.hiveScope,
+            sortOrder: idx,
+            enabled: l.enabled,
+          }))
+        );
+      }
+      break;
+    }
+
     case 'warranty':
     case 'helper':
     case 'pam':
@@ -671,6 +723,11 @@ async function deleteNormalizedRows(
     case 'remote_access':
       await tx.delete(configPolicyRemoteAccessSettings).where(eq(configPolicyRemoteAccessSettings.featureLinkId, linkId));
       break;
+    case 'onedrive_helper': {
+      // Libraries cascade-delete from settings, so just delete settings
+      await tx.delete(configPolicyOnedriveSettings).where(eq(configPolicyOnedriveSettings.featureLinkId, linkId));
+      break;
+    }
     case 'warranty':
     case 'helper':
     case 'pam':
