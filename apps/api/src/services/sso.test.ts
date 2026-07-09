@@ -258,8 +258,10 @@ describe('sso service', () => {
 
     it('rejects hostnames that DNS-resolve to loopback (127.0.0.1)', async () => {
       lookupMock.mockResolvedValue([{ address: '127.0.0.1', family: 4 }]);
+      // safeFetch is authoritative for resolved-IP blocks; its specific reason
+      // is surfaced (see discoverOIDCConfig's SsrfBlockedError handling).
       await expect(discoverOIDCConfig('https://attacker.example.com')).rejects.toThrow(
-        /internal network addresses|must not resolve to internal/
+        /OIDC discovery blocked|private\/loopback\/link-local/
       );
       expect(globalThis.fetch).not.toHaveBeenCalled();
     });
@@ -267,7 +269,7 @@ describe('sso service', () => {
     it('rejects hostnames that DNS-resolve to AWS metadata (169.254.169.254)', async () => {
       lookupMock.mockResolvedValue([{ address: '169.254.169.254', family: 4 }]);
       await expect(discoverOIDCConfig('https://metadata-rebind.example.com')).rejects.toThrow(
-        /internal network addresses|must not resolve to internal/
+        /OIDC discovery blocked|private\/loopback\/link-local/
       );
       expect(globalThis.fetch).not.toHaveBeenCalled();
     });
@@ -275,9 +277,18 @@ describe('sso service', () => {
     it('rejects hostnames that resolve to RFC1918 (10.x)', async () => {
       lookupMock.mockResolvedValue([{ address: '10.0.0.5', family: 4 }]);
       await expect(discoverOIDCConfig('https://rebind.example.com')).rejects.toThrow(
-        /internal network addresses|must not resolve to internal/
+        /OIDC discovery blocked|private\/loopback\/link-local/
       );
       expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+
+    it('surfaces the specific reason (no DNS records) rather than a generic SSRF string', async () => {
+      // A mistyped issuer must not masquerade as an HTTPS/internal-address
+      // policy rejection — the "no DNS records" reason must reach the caller.
+      lookupMock.mockResolvedValue([]);
+      await expect(discoverOIDCConfig('https://typo.example.com')).rejects.toThrow(
+        /no DNS records/
+      );
     });
 
     it('rejects IPv6 loopback resolutions', async () => {
@@ -302,9 +313,17 @@ describe('sso service', () => {
       lookupMock.mockResolvedValue([{ address: '169.254.169.254', family: 4 }]);
       await expect(
         discoverOIDCConfig('https://metadata-rebind.example.com', { allowPrivateNetwork: true })
-      ).rejects.toThrow(/internal network addresses/);
+      ).rejects.toThrow(/OIDC discovery blocked|private\/loopback\/link-local/);
       expect(globalThis.fetch).not.toHaveBeenCalled();
     });
+
+    // NOTE: the POSITIVE path (RFC1918 issuer allowed through when the opt-in is
+    // set) is proven WITHOUT a live connection by: the isInternalUrl matrix
+    // below (policy allows RFC1918 in self-host mode), the route-level test that
+    // the flag propagates from IS_HOSTED, and urlSafety.test.ts (safeFetch's
+    // allowPrivateNetwork behavior). A service-level success test would dispatch
+    // a real request to a private IP (safeFetch uses http/https.request, not the
+    // mocked global fetch) and hang, so it is intentionally omitted.
 
     // NOTE: safeFetch (urlSafety.ts) owns the DNS-rebinding defense: IP pinning,
     // mixed-record handling, ENOTFOUND translation. Those cases are covered in
@@ -334,6 +353,16 @@ describe('sso service', () => {
         expect(isInternalUrl('https://169.254.169.254')).toBe(true);
       });
 
+      it('blocks the classic filter-bypass forms (CGNAT, IPv4-mapped IPv6, decimal)', () => {
+        expect(isInternalUrl('https://100.64.1.1')).toBe(true); // CGNAT 100.64/10
+        // URL normalizes ::ffff:169.254.169.254 to the hex-pair [::ffff:a9fe:a9fe];
+        // urlSafety.isPrivateIp decodes it, so the pre-check catches it too.
+        expect(isInternalUrl('https://[::ffff:169.254.169.254]')).toBe(true);
+        expect(isInternalUrl('https://[::ffff:10.0.0.1]')).toBe(true);
+        expect(isInternalUrl('https://2130706433')).toBe(true); // decimal 127.0.0.1
+        expect(isInternalUrl('https://[::]')).toBe(true); // unspecified
+      });
+
       it('allows public hostnames and IPs', () => {
         expect(isInternalUrl('https://accounts.google.com')).toBe(false);
         expect(isInternalUrl('https://8.8.8.8')).toBe(false);
@@ -361,6 +390,13 @@ describe('sso service', () => {
         expect(isInternalUrl('https://169.254.169.254', true)).toBe(true);
         expect(isInternalUrl('https://[fe80::1]', true)).toBe(true);
         expect(isInternalUrl('https://[::1]', true)).toBe(true);
+        expect(isInternalUrl('https://[::]', true)).toBe(true);
+      });
+
+      it('STILL blocks CGNAT, multicast, and mapped-metadata even with the opt-in', () => {
+        expect(isInternalUrl('https://100.64.1.1', true)).toBe(true); // CGNAT
+        expect(isInternalUrl('https://224.0.0.1', true)).toBe(true); // multicast
+        expect(isInternalUrl('https://[::ffff:169.254.169.254]', true)).toBe(true); // mapped metadata
       });
     });
   });

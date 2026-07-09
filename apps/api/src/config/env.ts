@@ -45,15 +45,17 @@ export function isRecognizedSelfHostSignal(raw: string | undefined): boolean {
   return new Set(['0', 'false', 'no', 'off']).has((raw ?? '').trim().toLowerCase());
 }
 
-// Shared gate for "may this deployment reach RFC1918/ULA (and plain-HTTP)
-// targets over safeFetch?" — used by on-prem appliance integrations that
-// legitimately live on the customer LAN (Pi-hole/AdGuard DNS, on-prem PSAs,
-// internal OIDC IdPs like Authentik/Keycloak). Opens ONLY when self-host is
-// AFFIRMATIVELY declared; unset/empty/garbage/truthy IS_HOSTED stays strict
-// (#570 fail-closed lesson). Loopback, link-local, cloud metadata, and CGNAT
-// remain blocked in BOTH modes at the safeFetch/urlSafety layer regardless.
-// `!isHosted()` is implied by the falsey-set membership but kept explicit so
-// the truthy/falsey vocabularies can never drift apart silently.
+// Gate for "may this deployment reach RFC1918/ULA (and plain-HTTP) targets over
+// safeFetch?" for the internal-OIDC/SSO discovery path (issue #2293). The DNS-
+// provider (services/dnsProviders/index.ts) and PSA (services/psa/http.ts)
+// integrations currently carry their own equivalent IS_HOSTED-affirmative gates
+// — consolidating all three onto this helper is a worthwhile follow-up, but as
+// of now this function is called only by the SSO routes. Opens ONLY when
+// self-host is AFFIRMATIVELY declared; unset/empty/garbage/truthy IS_HOSTED
+// stays strict (#570 fail-closed lesson). Loopback, link-local, cloud metadata,
+// and CGNAT remain blocked in BOTH modes at the safeFetch/urlSafety layer
+// regardless. `!isHosted()` is implied by the falsey-set membership but kept
+// explicit so the truthy/falsey vocabularies can never drift apart silently.
 export function selfHostAllowsPrivateNetwork(): boolean {
   return isRecognizedSelfHostSignal(process.env.IS_HOSTED) && !isHosted();
 }
