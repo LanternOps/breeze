@@ -502,6 +502,69 @@ describe('featureLinks routes', () => {
   });
 
   // ============================================================
+  // POST/PATCH — onedrive_helper inlineSettings validation
+  // ============================================================
+
+  describe('onedrive_helper inline settings validation', () => {
+    beforeEach(() => {
+      getConfigPolicyMock.mockResolvedValue(STUB_POLICY);
+      validateFeaturePolicyExistsMock.mockResolvedValue({ valid: true });
+      addFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'onedrive_helper' });
+    });
+
+    it('POST rejects invalid onedrive settings with 400', async () => {
+      const res = await app.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          featureType: 'onedrive_helper',
+          inlineSettings: {
+            libraries: [{ libraryId: 'x', displayName: 'X', targetingMode: 'graph_group' }], // no groupId/groupName
+          },
+        }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.error).toBe('Invalid onedrive_helper settings');
+      expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    });
+
+    it('POST accepts valid onedrive settings (defaults applied)', async () => {
+      const res = await app.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          featureType: 'onedrive_helper',
+          inlineSettings: { libraries: [{ libraryId: 'lib-1', displayName: 'Docs', targetingMode: 'everyone' }] },
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(addFeatureLinkMock).toHaveBeenCalled();
+    });
+
+    it('PATCH rejects invalid onedrive settings with 400', async () => {
+      getConfigPolicyMock.mockResolvedValue({
+        ...STUB_POLICY,
+        featureLinks: [{ id: LINK_ID, featureType: 'onedrive_helper' }],
+      });
+      const res = await app.request(`/${POLICY_ID}/features/${LINK_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          inlineSettings: { kfmFolders: ['Downloads'] },
+        }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.error).toBe('Invalid onedrive_helper settings');
+      expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+    });
+  });
+
+  // ============================================================
   // alert_rule offline-duration cap vs the re-eval horizon (issue #1982)
   // ============================================================
 
