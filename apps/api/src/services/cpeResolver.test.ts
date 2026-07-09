@@ -107,6 +107,24 @@ describe('buildCatalogIndex', () => {
     expect(idx.byExactName.get('chrome')).toBeNull();
   });
 
+  it('keys exact names via normalizeDisplayName so capitalized catalog rows are reachable (#2290)', () => {
+    // The MSRC sync stores software_products.normalized_name verbatim from the CVRF
+    // product name — capitalized. resolve() looks up normalizeDisplayName(displayName)
+    // (lowercased). If the index keyed on the raw value, every capitalized catalog row
+    // would be unreachable by exact match — the #2290/#2292 regression.
+    const idx = buildCatalogIndex([
+      {
+        id: 'p-office',
+        normalizedName: 'Microsoft 365 Apps for Enterprise',
+        normalizedVendor: 'microsoft',
+        cpe: 'cpe:2.3:a:microsoft:365_apps:*:*:*:*:enterprise:*:*:*',
+      },
+    ]);
+
+    expect(idx.byExactName.get('microsoft 365 apps for enterprise')).toBe('p-office');
+    expect(idx.byExactName.get('Microsoft 365 Apps for Enterprise')).toBeUndefined();
+  });
+
   it('uses normalized name for productTokens when no cpe while vendor still feeds recall', () => {
     const idx = buildCatalogIndex([
       {

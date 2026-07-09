@@ -8,6 +8,7 @@ const {
   listAssignmentsMock,
   listAssignmentsForTargetMock,
   validateAssignmentTargetMock,
+  canManagePartnerWideMock,
 } = vi.hoisted(() => ({
   getConfigPolicyMock: vi.fn(),
   assignPolicyMock: vi.fn(),
@@ -15,11 +16,13 @@ const {
   listAssignmentsMock: vi.fn(),
   listAssignmentsForTargetMock: vi.fn(),
   validateAssignmentTargetMock: vi.fn(),
+  canManagePartnerWideMock: vi.fn(),
 }));
 
 vi.mock('../../services/configurationPolicy', async (importOriginal) => {
-  // Spread the original so canManagePartnerWidePolicies (the real capability
-  // gate) and PARTNER_WIDE_WRITE_DENIED_MESSAGE flow through unmocked.
+  // Spread the original so PARTNER_WIDE_WRITE_DENIED_MESSAGE flows through
+  // unmocked; canManagePartnerWidePolicies is mocked so each test controls
+  // the capability outcome directly instead of depending on real auth shape.
   const original = await importOriginal<typeof import('../../services/configurationPolicy')>();
   return {
     ...original,
@@ -29,6 +32,7 @@ vi.mock('../../services/configurationPolicy', async (importOriginal) => {
     listAssignments: listAssignmentsMock,
     listAssignmentsForTarget: listAssignmentsForTargetMock,
     validateAssignmentTarget: validateAssignmentTargetMock,
+    canManagePartnerWidePolicies: canManagePartnerWideMock,
   };
 });
 
@@ -170,6 +174,7 @@ describe('configurationPolicies assignment routes', () => {
 
   it('derives the partner target server-side for a partner-wide assignment (#1724)', async () => {
     getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, orgId: null, partnerId: PARTNER_ID, name: 'Partner-wide' });
+    canManagePartnerWideMock.mockReturnValue(true);
     validateAssignmentTargetMock.mockResolvedValue({ valid: true });
     assignPolicyMock.mockResolvedValue({
       id: '55555555-5555-5555-5555-555555555555',
@@ -220,6 +225,7 @@ describe('configurationPolicies assignment routes', () => {
     // to make a partner-level assignment that would push config to ALL orgs under
     // the partner — including orgs they cannot access.
     getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, orgId: null, partnerId: PARTNER_ID, name: 'Partner-wide' });
+    canManagePartnerWideMock.mockReturnValue(false);
 
     const appPartnerSelected = new Hono();
     appPartnerSelected.use('*', async (c, next) => {
@@ -243,6 +249,7 @@ describe('configurationPolicies assignment routes', () => {
 
   it('denies partner-level assignment when orgAccess is "none"', async () => {
     getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, orgId: null, partnerId: PARTNER_ID, name: 'Partner-wide' });
+    canManagePartnerWideMock.mockReturnValue(false);
 
     const appPartnerNone = new Hono();
     appPartnerNone.use('*', async (c, next) => {
@@ -264,6 +271,7 @@ describe('configurationPolicies assignment routes', () => {
 
   it('allows partner-level assignment when orgAccess is "all" (legit partner admin)', async () => {
     getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, orgId: null, partnerId: PARTNER_ID, name: 'Partner-wide' });
+    canManagePartnerWideMock.mockReturnValue(true);
     validateAssignmentTargetMock.mockResolvedValue({ valid: true });
     assignPolicyMock.mockResolvedValue({
       id: '55555555-5555-5555-5555-555555555555',
@@ -334,6 +342,7 @@ describe('configurationPolicies assignment routes', () => {
     // the partner — same blast radius as assigning, same capability gate.
     const AID = '77777777-7777-7777-7777-777777777777';
     getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, orgId: null, partnerId: PARTNER_ID, name: 'Partner-wide' });
+    canManagePartnerWideMock.mockReturnValue(false);
 
     const appPartnerSelected = new Hono();
     appPartnerSelected.use('*', async (c, next) => {
@@ -353,6 +362,7 @@ describe('configurationPolicies assignment routes', () => {
   it('allows unassigning a partner-wide policy with full partner org access', async () => {
     const AID = '77777777-7777-7777-7777-777777777777';
     getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, orgId: null, partnerId: PARTNER_ID, name: 'Partner-wide' });
+    canManagePartnerWideMock.mockReturnValue(true);
     unassignPolicyMock.mockResolvedValue({ id: AID, level: 'partner', targetId: PARTNER_ID });
 
     const appPartnerAll = new Hono();
@@ -368,5 +378,59 @@ describe('configurationPolicies assignment routes', () => {
 
     expect(res.status).toBe(200);
     expect(unassignPolicyMock).toHaveBeenCalledWith(AID, POLICY_ID);
+  });
+
+  // ============================================================
+  // Security: partner-owned policy assignment gate, any level (#2280)
+  // ============================================================
+
+  it('rejects an org-level assignment on a partner-owned policy without partner-wide access (403)', async () => {
+    getConfigPolicyMock.mockResolvedValue({
+      id: POLICY_ID, orgId: null, partnerId: PARTNER_ID, name: 'Library Policy',
+    });
+    canManagePartnerWideMock.mockReturnValue(false);
+    validateAssignmentTargetMock.mockResolvedValue({ valid: true });
+
+    const appPartnerSelected = new Hono();
+    appPartnerSelected.use('*', async (c, next) => {
+      c.set('auth', makeAuth({ scope: 'partner', orgId: null, partnerId: PARTNER_ID, accessibleOrgIds: [ORG_ID], partnerOrgAccess: 'selected' }));
+      c.set('permissions', makePermissions({ scope: 'partner', partnerId: PARTNER_ID, orgId: null, orgAccess: 'selected', allowedOrgIds: [ORG_ID] }));
+      await next();
+    });
+    appPartnerSelected.route('/', assignmentRoutes);
+
+    const res = await appPartnerSelected.request(`/${POLICY_ID}/assignments`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ level: 'organization', targetId: ORG_ID, priority: 0 }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(assignPolicyMock).not.toHaveBeenCalled();
+  });
+
+  it('allows an org-level assignment on a partner-owned policy with partner-wide access (201)', async () => {
+    getConfigPolicyMock.mockResolvedValue({
+      id: POLICY_ID, orgId: null, partnerId: PARTNER_ID, name: 'Library Policy',
+    });
+    canManagePartnerWideMock.mockReturnValue(true);
+    validateAssignmentTargetMock.mockResolvedValue({ valid: true });
+    assignPolicyMock.mockResolvedValue({ id: 'assign-1', level: 'organization', targetId: ORG_ID });
+
+    const appPartnerAll = new Hono();
+    appPartnerAll.use('*', async (c, next) => {
+      c.set('auth', makeAuth({ scope: 'partner', orgId: null, partnerId: PARTNER_ID, partnerOrgAccess: 'all' }));
+      c.set('permissions', makePermissions({ scope: 'partner', partnerId: PARTNER_ID, orgId: null, orgAccess: 'all' }));
+      await next();
+    });
+    appPartnerAll.route('/', assignmentRoutes);
+
+    const res = await appPartnerAll.request(`/${POLICY_ID}/assignments`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ level: 'organization', targetId: ORG_ID, priority: 0 }),
+    });
+
+    expect(res.status).toBe(201);
   });
 });

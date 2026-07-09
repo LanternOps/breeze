@@ -189,7 +189,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
     tier: 2,
     definition: {
       name: 'apply_configuration_policy',
-      description: 'Assign a configuration policy to a target (partner, organization, site, device group, or device). Use roleFilter and osFilter to scope the assignment to specific device types. The "partner" level is reserved for partner-OWNED ("all organizations") policies — an org-owned policy can only be assigned at organization/site/device_group/device level.',
+      description: 'Assign a configuration policy to a target (partner, organization, site, device group, or device). Use roleFilter and osFilter to scope the assignment to specific device types. The "partner" level is reserved for partner-OWNED policies (a reusable library, #2280, assignable to all orgs or a subset) — an org-owned policy can only be assigned at organization/site/device_group/device level.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -213,22 +213,27 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       const [policy] = await db.select().from(configurationPolicies).where(and(...conditions)).limit(1);
       if (!policy) return JSON.stringify({ error: 'Configuration policy not found or access denied' });
 
+      // Partner-owned policies (org_id NULL) are the partner library (#2280).
+      // ANY assignment on one — at any level, not just 'partner' — pushes
+      // config into orgs the caller may not fully control, so all writes
+      // require full partner org access. Mirrors the HTTP route's gate
+      // (routes/configurationPolicies/assignments.ts).
+      if (policy.orgId === null && !canManagePartnerWidePolicies(auth)) {
+        return JSON.stringify({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+      }
+
       // At the partner level the target is the partner itself, derived
       // server-side — never from a client-supplied value (#1724). It's the
       // policy's own partner (or the caller's, for a fresh partner-owned
       // policy). An org-owned policy also reaches this block, but its
       // auth.partnerId fallback target is rejected downstream by
       // validateAssignmentTarget, so the fallback only ever serves partner-owned
-      // policies. Partner-level assignments push config to ALL orgs under the
-      // partner, so they carry the same capability gate as the HTTP route.
+      // policies.
       let targetId = input.targetId as string;
       if (input.level === 'partner') {
         const derived = policy.partnerId ?? auth.partnerId;
         if (!derived) {
           return JSON.stringify({ error: 'Partner-wide assignments require partner scope' });
-        }
-        if (!canManagePartnerWidePolicies(auth)) {
-          return JSON.stringify({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
         }
         targetId = derived;
       }
@@ -242,7 +247,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
         targetId
       );
       if (!targetValidation.valid) {
-        return JSON.stringify({ error: targetValidation.error ?? 'Assignment target is not valid for this policy organization' });
+        return JSON.stringify({ error: targetValidation.error });
       }
 
       // assignPolicy returns null (instead of throwing) on a duplicate — see
@@ -310,8 +315,10 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
 
       if (!assignment) return JSON.stringify({ error: 'Assignment not found' });
 
-      // Unassigning a partner-wide policy strips config from ALL orgs under the
-      // partner — same blast radius and capability gate as assigning it.
+      // Any assignment on a partner-owned library policy (#2280) — partner-level
+      // (all orgs) or a narrower org/site/group/device row — is a partner-wide-
+      // access capability: the delete may strip config from one org or every org
+      // under the partner. Same blast radius as assigning, so the same gate applies.
       if (assignment.policyOrgId === null && !canManagePartnerWidePolicies(auth)) {
         return JSON.stringify({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
       }
@@ -362,7 +369,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
     tier: 1,
     definition: {
       name: 'manage_configuration_policy',
-      description: 'Create, update, activate, deactivate, or delete configuration policies. Configuration policies bundle feature settings (patch, alert, compliance, etc.) and are assigned to targets in the hierarchy. On create, ownerScope "partner" makes a partner-wide ("all organizations") policy that applies to every org under the partner (requires full partner org access); "organization" (default) owns it in a single org.',
+      description: 'Create, update, activate, deactivate, or delete configuration policies. Configuration policies bundle feature settings (patch, alert, compliance, etc.) and are assigned to targets in the hierarchy. On create, ownerScope "partner" makes a reusable partner-owned library policy that applies to NO organizations until assigned (partner-wide, or a subset of orgs) via apply_configuration_policy (requires full partner org access); "organization" (default) owns it in a single org.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -371,7 +378,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
           name: { type: 'string', description: 'Policy name (required for create)' },
           description: { type: 'string', description: 'Policy description' },
           status: { type: 'string', enum: ['active', 'inactive', 'archived'], description: 'Policy status (for create/update)' },
-          ownerScope: { type: 'string', enum: ['organization', 'partner'], description: 'Ownership for create: "organization" (default, owned by one org) or "partner" (partner-wide "all orgs" template applying to every org under the partner; requires full partner org access)' },
+          ownerScope: { type: 'string', enum: ['organization', 'partner'], description: 'Ownership for create: "organization" (default, owned by one org) or "partner" (a reusable partner-owned library policy, created empty and applied to orgs later via apply_configuration_policy; requires full partner org access)' },
           orgId: { type: 'string', description: 'Organization UUID (for org-scoped create; defaults to current org). Ignored when ownerScope is "partner".' },
         },
         required: ['action'],
@@ -417,12 +424,12 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
             status: (input.status as 'active' | 'inactive' | 'archived') ?? 'active',
           }, auth.user.id);
 
-          // Seed the partner-level assignment so the policy applies immediately —
-          // ownership and the assignment that drives resolution stay in lockstep,
-          // mirroring the HTTP create route (otherwise it resolves to no devices
-          // until it is separately assigned via apply_configuration_policy).
-          await assignPolicy(policy.id, 'partner', auth.partnerId, 0, auth.user.id);
-
+          // Library model (#2280): partner-owned policies are created EMPTY —
+          // no auto-seeded assignment. It's applied to orgs later via explicit
+          // apply_configuration_policy calls (partner-wide, or a subset of
+          // orgs). Mirrors the HTTP create route
+          // (routes/configurationPolicies/crud.ts), which stopped auto-seeding
+          // the partner-level assignment for the same reason.
           return JSON.stringify({ success: true, policy });
         }
 

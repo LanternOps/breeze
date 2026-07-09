@@ -191,4 +191,30 @@ describe('partner-wide configuration policy resolution (#1724)', () => {
     expect(resolved?.features.security?.sourcePolicyId).toBe(orgPolicyId);
     expect(resolved?.features.security?.sourceLevel).toBe('organization');
   });
+
+  it('a partner-owned policy assigned to ONE org resolves only for that org, not a sibling org (#2280)', async () => {
+    // Partner-owned policies are a reusable library (#2280): assigning one at
+    // 'organization' level to a SINGLE org must not leak to sibling orgs of the
+    // same partner that were never assigned — subset resolution, not fan-out.
+    const partner = await createPartner();
+    const orgA = await createOrganization({ partnerId: partner.id });
+    const orgB = await createOrganization({ partnerId: partner.id });
+    const siteA = await createSite({ orgId: orgA!.id });
+    const siteB = await createSite({ orgId: orgB!.id });
+    const deviceA = await seedDevice(orgA!.id, siteA!.id, 'windows', 'server');
+    const deviceB = await seedDevice(orgB!.id, siteB!.id, 'windows', 'server');
+
+    const { policyId } = await seedPartnerPolicyWithFeature(partner.id);
+    // Subset assignment: organization level, org A only — deliberately NO
+    // partner-level assignment, so org B has nothing pointing at this policy.
+    await assign(policyId, 'organization', orgA!.id);
+
+    const resolvedA = await withSystemDbAccessContext(() => resolveEffectiveConfig(deviceA.id, systemAuth()));
+    const resolvedB = await withSystemDbAccessContext(() => resolveEffectiveConfig(deviceB.id, systemAuth()));
+
+    expect(resolvedA?.features.security?.sourcePolicyId).toBe(policyId);
+    expect(resolvedA?.features.security?.sourceLevel).toBe('organization');
+    // Sibling org under the same partner was never assigned this policy — must NOT inherit it.
+    expect(resolvedB?.features.security).toBeUndefined();
+  });
 });

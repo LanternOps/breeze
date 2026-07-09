@@ -174,10 +174,17 @@ export function buildCatalogIndex(products: CatalogProduct[]): CatalogIndex {
   const meta: CatalogIndex['meta'] = new Map();
 
   for (const product of products) {
-    if (byExactName.has(product.normalizedName)) {
-      byExactName.set(product.normalizedName, null);
+    // Key on the SAME normalization the lookup side applies (normalizeDisplayName),
+    // not the raw catalog normalized_name. The MSRC sync stores normalized_name
+    // capitalized (e.g. "Microsoft 365 Apps for Enterprise"), while resolve() looks
+    // up normalizeDisplayName(displayName) (lowercased + token-stripped). Keying on the
+    // raw value here would make every capitalized catalog row unreachable via exact
+    // match — the exact bug #2290/#2292 addressed. null = ambiguous collision, skip.
+    const exactKey = normalizeDisplayName(product.normalizedName);
+    if (byExactName.has(exactKey)) {
+      byExactName.set(exactKey, null);
     } else {
-      byExactName.set(product.normalizedName, product.id);
+      byExactName.set(exactKey, product.id);
     }
 
     const cpeParts = product.cpe ? parseCpe(product.cpe) : null;

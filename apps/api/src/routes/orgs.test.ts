@@ -1014,6 +1014,77 @@ describe('org routes', () => {
       expect(body.pagination.total).toBe(1);
     });
 
+    // A partner with >50 orgs can't reach org #51+ via page/limit alone (#2280
+    // review finding) — the panel needs server-side search to narrow within its
+    // own tenant scope, not a client-side filter over one fetched page.
+    it('narrows results by search within the caller scope, without loosening tenant scoping', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123', accessibleOrgIds: ['org-1', 'org-2'] });
+      const whereSpy = vi.fn().mockResolvedValue([{ count: 1 }]);
+      const orderBySpy = vi.fn().mockResolvedValue([{ id: 'org-1', name: 'Contoso Ltd' }]);
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({ where: whereSpy })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({
+                offset: vi.fn().mockReturnValue({ orderBy: orderBySpy })
+              })
+            })
+          })
+        } as any);
+
+      const res = await app.request('/orgs/organizations?search=contoso');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(1);
+      expect(body.pagination.total).toBe(1);
+
+      // The WHERE condition passed to both the count and data queries must still
+      // include the tenant scoping (inArray over accessibleOrgIds) alongside the
+      // search filter — search must never be able to widen scope.
+      const countWhereArg = whereSpy.mock.calls[0]?.[0];
+      expect(countWhereArg).toBeDefined();
+      expect(JSON.stringify(countWhereArg)).toContain('org-1');
+      expect(JSON.stringify(countWhereArg)).toContain('org-2');
+
+      // The search term itself must also be ANDed into the WHERE — the
+      // assertions above only prove scope survives, not that the ilike
+      // condition was actually applied.
+      expect(JSON.stringify(countWhereArg)).toContain('contoso');
+    });
+
+    it('returns 200 without error when a search param is supplied for an org-scope caller (moot but must not error)', async () => {
+      setAuthContext({ scope: 'organization', orgId: 'org-123' });
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 1 }])
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({
+                offset: vi.fn().mockReturnValue({
+                  orderBy: vi.fn().mockResolvedValue([
+                    { id: 'org-123', name: 'Acme Corp', slug: 'acme', status: 'active' }
+                  ])
+                })
+              })
+            })
+          })
+        } as any);
+
+      const res = await app.request('/orgs/organizations?search=anything');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(1);
+    });
+
     // #1245 residual: org-scope users (Org Admin/Technician/Viewer) lack the
     // organizations:read permission, but the tickets UI needs this route on
     // cold load just to render their own org's name. The route skips the

@@ -40,6 +40,7 @@ import { getTrustedClientIp } from '../services/clientIp';
 import { captureException } from '../services/sentry';
 import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
 import { PERMISSIONS } from '../services/permissions';
+import { selfHostAllowsPrivateNetwork } from '../config/env';
 import { envFlag } from '../utils/envFlag';
 import { setRefreshTokenCookie, getCookieValue, auditLogin } from './auth/helpers';
 
@@ -525,7 +526,11 @@ ssoRoutes.post(
   // If issuer provided, try to discover endpoints
   if (body.issuer && body.type === 'oidc') {
     try {
-      const discovery = await discoverOIDCConfig(body.issuer);
+      // Self-hosted deployments (IS_HOSTED affirmatively false) may point at an
+      // internal IdP on an RFC1918 address; hosted SaaS stays strict.
+      const discovery = await discoverOIDCConfig(body.issuer, {
+        allowPrivateNetwork: selfHostAllowsPrivateNetwork()
+      });
       config.authorizationUrl = discovery.authorization_endpoint;
       config.tokenUrl = discovery.token_endpoint;
       config.userInfoUrl = discovery.userinfo_endpoint;
@@ -795,7 +800,11 @@ ssoRoutes.post(
   try {
     // Test discovery
     if (provider.issuer) {
-      const discovery = await discoverOIDCConfig(provider.issuer);
+      // Self-hosted deployments (IS_HOSTED affirmatively false) may point at an
+      // internal IdP on an RFC1918 address; hosted SaaS stays strict.
+      const discovery = await discoverOIDCConfig(provider.issuer, {
+        allowPrivateNetwork: selfHostAllowsPrivateNetwork()
+      });
       writeRouteAudit(c, {
         orgId: provider.orgId,
         action: 'sso.provider.test',

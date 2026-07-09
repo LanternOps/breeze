@@ -364,8 +364,17 @@ export interface OIDCDiscoveryDocument {
 /**
  * Checks whether a URL points to an internal/private network address.
  * Used to prevent SSRF attacks via OIDC discovery.
+ *
+ * `allowPrivateNetwork` (self-hosted deployments with an internal IdP such as
+ * Authentik/Keycloak) relaxes this to permit plain-HTTP schemes and RFC1918/ULA
+ * hosts — but loopback, 0.0.0.0, link-local, and cloud metadata (169.254/16,
+ * fe80::/10) stay blocked in BOTH modes, mirroring urlSafety.isAlwaysBlockedIp.
+ * The deeper `safeFetch` DNS/IP guard enforces the same floor after resolution.
+ *
+ * Exported for unit testing — this is the SSRF policy pre-check, so its exact
+ * allow/block decisions are worth asserting directly.
  */
-function isInternalUrl(urlStr: string): boolean {
+export function isInternalUrl(urlStr: string, allowPrivateNetwork = false): boolean {
   let url: URL;
   try {
     url = new URL(urlStr);
@@ -373,52 +382,74 @@ function isInternalUrl(urlStr: string): boolean {
     return true; // Malformed URLs are rejected
   }
 
-  if (url.protocol !== 'https:') return true;
+  // Hosted SaaS requires HTTPS; self-hosted may reach an internal IdP over http.
+  if (url.protocol !== 'https:' && !(allowPrivateNetwork && url.protocol === 'http:')) return true;
+
+  // RFC1918/ULA ranges are blocked unless self-host affirmatively opts in.
+  const blockPrivate = !allowPrivateNetwork;
 
   const hostname = url.hostname;
-  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') return true;
 
-  // Block 0.0.0.0
+  // Always blocked, even for self-hosted appliances (loopback + unspecified).
+  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') return true;
   if (hostname === '0.0.0.0') return true;
 
-  // Block IPv6 private ranges (bracket notation)
+  // IPv6 literals (bracket notation). URL.hostname keeps the brackets, so the
+  // bare-string checks above never match an IPv6 literal — handle them here.
   if (hostname.startsWith('[')) {
     const inner = hostname.slice(1, -1).toLowerCase();
-    if (inner.startsWith('fc') || inner.startsWith('fd') || inner.startsWith('fe80:')) return true;
+    if (inner === '::1' || inner === '::') return true; // loopback / unspecified — always
+    if (inner.startsWith('fe80:')) return true; // link-local — always
+    if (inner.startsWith('fc') || inner.startsWith('fd')) return blockPrivate; // ULA
     if (inner.startsWith('::ffff:')) {
       // IPv4-mapped IPv6 — extract and check the IPv4 part
       const ipv4Part = inner.slice(7);
       const v4Parts = ipv4Part.split('.').map(Number);
       if (v4Parts.length === 4) {
-        if (v4Parts[0] === 10) return true;
-        if (v4Parts[0] === 172 && v4Parts[1]! >= 16 && v4Parts[1]! <= 31) return true;
-        if (v4Parts[0] === 192 && v4Parts[1] === 168) return true;
-        if (v4Parts[0] === 127) return true;
-        if (v4Parts[0] === 169 && v4Parts[1] === 254) return true;
+        if (v4Parts[0] === 127) return true; // loopback — always
+        if (v4Parts[0] === 169 && v4Parts[1] === 254) return true; // link-local/metadata — always
+        if (v4Parts[0] === 10) return blockPrivate;
+        if (v4Parts[0] === 172 && v4Parts[1]! >= 16 && v4Parts[1]! <= 31) return blockPrivate;
+        if (v4Parts[0] === 192 && v4Parts[1] === 168) return blockPrivate;
       }
     }
   }
 
-  // Check RFC 1918 and link-local ranges
+  // IPv4 literals
   const parts = hostname.split('.').map(Number);
   if (parts.length === 4 && parts.every(p => !isNaN(p))) {
-    if (parts[0] === 10) return true; // 10.0.0.0/8
-    if (parts[0] === 172 && parts[1] !== undefined && parts[1] >= 16 && parts[1] <= 31) return true; // 172.16.0.0/12
-    if (parts[0] === 192 && parts[1] === 168) return true; // 192.168.0.0/16
-    if (parts[0] === 169 && parts[1] === 254) return true; // 169.254.0.0/16 (link-local + cloud metadata)
+    if (parts[0] === 127) return true; // 127.0.0.0/8 loopback — always
+    if (parts[0] === 169 && parts[1] === 254) return true; // 169.254.0.0/16 link-local + cloud metadata — always
+    if (parts[0] === 10) return blockPrivate; // 10.0.0.0/8
+    if (parts[0] === 172 && parts[1] !== undefined && parts[1] >= 16 && parts[1] <= 31) return blockPrivate; // 172.16.0.0/12
+    if (parts[0] === 192 && parts[1] === 168) return blockPrivate; // 192.168.0.0/16
   }
 
   return false;
 }
 
-export async function discoverOIDCConfig(issuer: string): Promise<OIDCDiscoveryDocument> {
+export interface DiscoverOIDCConfigOptions {
+  /**
+   * Self-hosted opt-in for an internal IdP (Authentik/Keycloak) whose issuer
+   * resolves to an RFC1918/ULA address and/or is served over plain HTTP. Gate
+   * this on `selfHostAllowsPrivateNetwork()` at the call site — NEVER on a
+   * request-supplied value. Loopback/link-local/metadata stay blocked either
+   * way. Default false (strict, hosted-SaaS behavior).
+   */
+  allowPrivateNetwork?: boolean;
+}
+
+export async function discoverOIDCConfig(
+  issuer: string,
+  { allowPrivateNetwork = false }: DiscoverOIDCConfigOptions = {}
+): Promise<OIDCDiscoveryDocument> {
   const wellKnownUrl = `${issuer.replace(/\/$/, '')}/.well-known/openid-configuration`;
 
   // String-level SSRF pre-check: reject obvious private hostnames and
   // non-HTTPS schemes before we do any network work. `safeFetch` enforces the
   // same at a deeper layer (DNS resolution + connection pinning), but this
   // keeps the error message specific and avoids hitting DNS for garbage.
-  if (isInternalUrl(wellKnownUrl)) {
+  if (isInternalUrl(wellKnownUrl, allowPrivateNetwork)) {
     throw new Error('OIDC discovery URL must use HTTPS and must not point to internal network addresses');
   }
 
@@ -426,7 +457,8 @@ export async function discoverOIDCConfig(issuer: string): Promise<OIDCDiscoveryD
   try {
     response = await safeFetch(wellKnownUrl, {
       method: 'GET',
-      headers: { 'Accept': 'application/json' }
+      headers: { 'Accept': 'application/json' },
+      allowPrivateNetwork
     });
   } catch (err) {
     if (err instanceof SsrfBlockedError) {

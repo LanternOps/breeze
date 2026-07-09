@@ -6,6 +6,7 @@ import {
   assertEmailVerified,
   idpAssertedMfa,
   discoverOIDCConfig,
+  isInternalUrl,
   type OIDCConfig,
   PROVIDER_PRESETS,
   SAML_PROVIDER_PRESETS,
@@ -295,9 +296,72 @@ describe('sso service', () => {
       await expect(discoverOIDCConfig('http://issuer.example.com')).rejects.toThrow();
     });
 
+    // The metadata/loopback floor holds even with the opt-in: safeFetch's
+    // isAlwaysBlockedIp still rejects a rebind to cloud metadata.
+    it('still blocks cloud metadata even when allowPrivateNetwork is set', async () => {
+      lookupMock.mockResolvedValue([{ address: '169.254.169.254', family: 4 }]);
+      await expect(
+        discoverOIDCConfig('https://metadata-rebind.example.com', { allowPrivateNetwork: true })
+      ).rejects.toThrow(/internal network addresses/);
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+
     // NOTE: safeFetch (urlSafety.ts) owns the DNS-rebinding defense: IP pinning,
     // mixed-record handling, ENOTFOUND translation. Those cases are covered in
     // urlSafety.test.ts — we only keep sso-level checks here (string literal,
     // non-HTTPS scheme, IPv6 loopback via full integration).
+  });
+
+  describe('isInternalUrl (SSRF pre-check policy)', () => {
+    describe('strict mode (hosted SaaS — allowPrivateNetwork off)', () => {
+      it('requires HTTPS', () => {
+        expect(isInternalUrl('http://issuer.example.com')).toBe(true);
+        expect(isInternalUrl('https://issuer.example.com')).toBe(false);
+      });
+
+      it('rejects malformed URLs', () => {
+        expect(isInternalUrl('not-a-url')).toBe(true);
+      });
+
+      it('blocks loopback, unspecified, and RFC1918/ULA literals', () => {
+        expect(isInternalUrl('https://localhost')).toBe(true);
+        expect(isInternalUrl('https://127.0.0.1')).toBe(true);
+        expect(isInternalUrl('https://0.0.0.0')).toBe(true);
+        expect(isInternalUrl('https://10.0.0.5')).toBe(true);
+        expect(isInternalUrl('https://172.16.4.4')).toBe(true);
+        expect(isInternalUrl('https://192.168.1.10')).toBe(true);
+        expect(isInternalUrl('https://[fd00::1]')).toBe(true);
+        expect(isInternalUrl('https://169.254.169.254')).toBe(true);
+      });
+
+      it('allows public hostnames and IPs', () => {
+        expect(isInternalUrl('https://accounts.google.com')).toBe(false);
+        expect(isInternalUrl('https://8.8.8.8')).toBe(false);
+      });
+    });
+
+    describe('self-host mode (allowPrivateNetwork on)', () => {
+      it('permits plain HTTP', () => {
+        expect(isInternalUrl('http://authentik.internal', true)).toBe(false);
+      });
+
+      it('permits RFC1918 and ULA hosts', () => {
+        expect(isInternalUrl('https://10.0.0.5', true)).toBe(false);
+        expect(isInternalUrl('https://172.16.4.4', true)).toBe(false);
+        expect(isInternalUrl('https://192.168.1.10', true)).toBe(false);
+        expect(isInternalUrl('http://192.168.1.10', true)).toBe(false);
+        expect(isInternalUrl('https://[fd00::1]', true)).toBe(false);
+      });
+
+      it('STILL blocks loopback, unspecified, link-local, and cloud metadata', () => {
+        expect(isInternalUrl('https://localhost', true)).toBe(true);
+        expect(isInternalUrl('https://127.0.0.1', true)).toBe(true);
+        expect(isInternalUrl('http://127.0.0.2', true)).toBe(true);
+        expect(isInternalUrl('https://0.0.0.0', true)).toBe(true);
+        expect(isInternalUrl('https://169.254.169.254', true)).toBe(true);
+        expect(isInternalUrl('https://[fe80::1]', true)).toBe(true);
+        expect(isInternalUrl('https://[::1]', true)).toBe(true);
+      });
+    });
   });
 });

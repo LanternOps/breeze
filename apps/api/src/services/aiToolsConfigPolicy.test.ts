@@ -397,6 +397,52 @@ describe('configuration policy AI tools', () => {
     );
   });
 
+  it('apply_configuration_policy denies an ORGANIZATION-level assignment on a partner-owned policy without partner-wide capability (#2280)', async () => {
+    // The library-model gate applies to ANY assignment level on a partner-owned
+    // policy (org_id NULL), not just the 'partner' level — mirrors the HTTP
+    // route's gate in routes/configurationPolicies/assignments.ts.
+    mockSelectRows([{ id: POLICY_ID, orgId: null, partnerId: PARTNER_ID, name: 'Library Policy' }]);
+    canManagePartnerWidePoliciesMock.mockReturnValue(false);
+
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+
+    const output = await tools.get('apply_configuration_policy')!.handler({
+      configPolicyId: POLICY_ID,
+      level: 'organization',
+      targetId: ORG_ID,
+    }, makePartnerAuth());
+
+    expect(JSON.parse(output)).toEqual({ error: 'partner-wide write denied' });
+    expect(assignPolicyMock).not.toHaveBeenCalled();
+  });
+
+  it('apply_configuration_policy allows an ORGANIZATION-level (subset) assignment on a partner-owned policy with partner-wide capability (#2280)', async () => {
+    mockSelectRows([{ id: POLICY_ID, orgId: null, partnerId: PARTNER_ID, name: 'Library Policy' }]);
+    canManagePartnerWidePoliciesMock.mockReturnValue(true);
+    validateAssignmentTargetMock.mockResolvedValue({ valid: true });
+    assignPolicyMock.mockResolvedValue({ id: 'assignment-1', level: 'organization', targetId: ORG_ID });
+
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+
+    const output = await tools.get('apply_configuration_policy')!.handler({
+      configPolicyId: POLICY_ID,
+      level: 'organization',
+      targetId: ORG_ID,
+    }, makePartnerAuth());
+
+    expect(JSON.parse(output).success).toBe(true);
+    expect(validateAssignmentTargetMock).toHaveBeenCalledWith(
+      { orgId: null, partnerId: PARTNER_ID },
+      'organization',
+      ORG_ID
+    );
+    expect(assignPolicyMock).toHaveBeenCalledWith(
+      POLICY_ID, 'organization', ORG_ID, 0, 'user-1', undefined, undefined
+    );
+  });
+
   it('remove_configuration_policy_assignment denies removing a partner-wide assignment without capability', async () => {
     mockSelectRows([{
       id: 'assignment-1',
@@ -419,10 +465,9 @@ describe('configuration policy AI tools', () => {
     expect(unassignPolicyMock).not.toHaveBeenCalled();
   });
 
-  it('manage_configuration_policy create ownerScope=partner makes a partner-owned policy and seeds the partner assignment', async () => {
+  it('manage_configuration_policy create ownerScope=partner makes a partner-owned policy WITHOUT auto-assigning it (#2280 library model)', async () => {
     mockSelectRows([]); // duplicate-name check → none
     createConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, orgId: null, partnerId: PARTNER_ID, name: 'All-Orgs Baseline' });
-    assignPolicyMock.mockResolvedValue({ id: 'assignment-1' });
 
     const tools = new Map<string, any>();
     registerConfigPolicyTools(tools);
@@ -440,7 +485,10 @@ describe('configuration policy AI tools', () => {
       { name: 'All-Orgs Baseline', description: 'baseline for every org', status: 'active' },
       'user-1'
     );
-    expect(assignPolicyMock).toHaveBeenCalledWith(POLICY_ID, 'partner', PARTNER_ID, 0, 'user-1');
+    // Library policies start empty — no partner-level (or any) assignment is
+    // seeded. The policy is applied later via explicit apply_configuration_policy
+    // calls (#2280 library model), mirroring the HTTP create route.
+    expect(assignPolicyMock).not.toHaveBeenCalled();
   });
 
   it('manage_configuration_policy create ownerScope=partner is denied without partner-wide capability', async () => {
