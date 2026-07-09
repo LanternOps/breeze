@@ -1,6 +1,6 @@
 import { randomBytes, createHash } from 'crypto';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
-import { safeFetch, SsrfBlockedError } from './urlSafety';
+import { safeFetch, SsrfBlockedError, isPrivateIp, isAlwaysBlockedIp } from './urlSafety';
 
 // ============================================
 // Types
@@ -362,14 +362,22 @@ export interface OIDCDiscoveryDocument {
 }
 
 /**
- * Checks whether a URL points to an internal/private network address.
- * Used to prevent SSRF attacks via OIDC discovery.
+ * Fast-path SSRF pre-check for an OIDC discovery URL: rejects a bad scheme or a
+ * literal internal-IP issuer before any DNS work, so the common cases get a
+ * specific error and we avoid resolving garbage. `safeFetch` is the
+ * AUTHORITATIVE gate — it re-checks every resolved IP (with pinning) after DNS,
+ * so a hostname that resolves to an internal address is caught there even if it
+ * sails through here.
  *
- * `allowPrivateNetwork` (self-hosted deployments with an internal IdP such as
- * Authentik/Keycloak) relaxes this to permit plain-HTTP schemes and RFC1918/ULA
- * hosts — but loopback, 0.0.0.0, link-local, and cloud metadata (169.254/16,
- * fe80::/10) stay blocked in BOTH modes, mirroring urlSafety.isAlwaysBlockedIp.
- * The deeper `safeFetch` DNS/IP guard enforces the same floor after resolution.
+ * IP-range decisions delegate to urlSafety's shared predicates so this
+ * pre-check and safeFetch's post-resolution gate use IDENTICAL range logic
+ * (including CGNAT, multicast, TEST-NET, and hex-pair IPv4-mapped IPv6 — the
+ * classic filter-bypass forms a hand-rolled check tends to miss):
+ *   - strict (hosted SaaS): `isPrivateIp` blocks every private/reserved range.
+ *   - `allowPrivateNetwork` (self-hosted internal IdP, e.g. Authentik/Keycloak):
+ *     `isAlwaysBlockedIp` permits ONLY RFC1918/ULA; loopback, 0.0.0.0/8,
+ *     link-local, cloud metadata, CGNAT, multicast, etc. stay blocked. Plain
+ *     HTTP is also permitted in this mode.
  *
  * Exported for unit testing — this is the SSRF policy pre-check, so its exact
  * allow/block decisions are worth asserting directly.
@@ -385,47 +393,21 @@ export function isInternalUrl(urlStr: string, allowPrivateNetwork = false): bool
   // Hosted SaaS requires HTTPS; self-hosted may reach an internal IdP over http.
   if (url.protocol !== 'https:' && !(allowPrivateNetwork && url.protocol === 'http:')) return true;
 
-  // RFC1918/ULA ranges are blocked unless self-host affirmatively opts in.
-  const blockPrivate = !allowPrivateNetwork;
+  // URL.hostname keeps the brackets on IPv6 literals; strip them for the IP
+  // predicates below (which expect a bare address).
+  const hostname = url.hostname.replace(/^\[|\]$/g, '');
 
-  const hostname = url.hostname;
+  // `localhost` is a hostname, not an IP literal — block it explicitly.
+  if (hostname === 'localhost') return true;
 
-  // Always blocked, even for self-hosted appliances (loopback + unspecified).
-  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') return true;
-  if (hostname === '0.0.0.0') return true;
+  // Only literal IPs can be policy-decided here; a real hostname must be
+  // resolved (and pinned) by safeFetch, so let it through this fast-path and
+  // rely on the authoritative post-DNS gate. Node's URL parser has already
+  // normalized decimal/octal/hex IPv4 forms to dotted-decimal by this point.
+  const isLiteralIp = /^[0-9.]+$/.test(hostname) || hostname.includes(':');
+  if (!isLiteralIp) return false;
 
-  // IPv6 literals (bracket notation). URL.hostname keeps the brackets, so the
-  // bare-string checks above never match an IPv6 literal — handle them here.
-  if (hostname.startsWith('[')) {
-    const inner = hostname.slice(1, -1).toLowerCase();
-    if (inner === '::1' || inner === '::') return true; // loopback / unspecified — always
-    if (inner.startsWith('fe80:')) return true; // link-local — always
-    if (inner.startsWith('fc') || inner.startsWith('fd')) return blockPrivate; // ULA
-    if (inner.startsWith('::ffff:')) {
-      // IPv4-mapped IPv6 — extract and check the IPv4 part
-      const ipv4Part = inner.slice(7);
-      const v4Parts = ipv4Part.split('.').map(Number);
-      if (v4Parts.length === 4) {
-        if (v4Parts[0] === 127) return true; // loopback — always
-        if (v4Parts[0] === 169 && v4Parts[1] === 254) return true; // link-local/metadata — always
-        if (v4Parts[0] === 10) return blockPrivate;
-        if (v4Parts[0] === 172 && v4Parts[1]! >= 16 && v4Parts[1]! <= 31) return blockPrivate;
-        if (v4Parts[0] === 192 && v4Parts[1] === 168) return blockPrivate;
-      }
-    }
-  }
-
-  // IPv4 literals
-  const parts = hostname.split('.').map(Number);
-  if (parts.length === 4 && parts.every(p => !isNaN(p))) {
-    if (parts[0] === 127) return true; // 127.0.0.0/8 loopback — always
-    if (parts[0] === 169 && parts[1] === 254) return true; // 169.254.0.0/16 link-local + cloud metadata — always
-    if (parts[0] === 10) return blockPrivate; // 10.0.0.0/8
-    if (parts[0] === 172 && parts[1] !== undefined && parts[1] >= 16 && parts[1] <= 31) return blockPrivate; // 172.16.0.0/12
-    if (parts[0] === 192 && parts[1] === 168) return blockPrivate; // 192.168.0.0/16
-  }
-
-  return false;
+  return allowPrivateNetwork ? isAlwaysBlockedIp(hostname) : isPrivateIp(hostname);
 }
 
 export interface DiscoverOIDCConfigOptions {
@@ -445,10 +427,7 @@ export async function discoverOIDCConfig(
 ): Promise<OIDCDiscoveryDocument> {
   const wellKnownUrl = `${issuer.replace(/\/$/, '')}/.well-known/openid-configuration`;
 
-  // String-level SSRF pre-check: reject obvious private hostnames and
-  // non-HTTPS schemes before we do any network work. `safeFetch` enforces the
-  // same at a deeper layer (DNS resolution + connection pinning), but this
-  // keeps the error message specific and avoids hitting DNS for garbage.
+  // Fast-path SSRF pre-check (see isInternalUrl); safeFetch is authoritative.
   if (isInternalUrl(wellKnownUrl, allowPrivateNetwork)) {
     throw new Error('OIDC discovery URL must use HTTPS and must not point to internal network addresses');
   }
@@ -462,7 +441,13 @@ export async function discoverOIDCConfig(
     });
   } catch (err) {
     if (err instanceof SsrfBlockedError) {
-      throw new Error('OIDC discovery URL must use HTTPS and must not point to internal network addresses');
+      // Surface the SPECIFIC reason (bad scheme / no DNS records / blocked IP)
+      // and keep the cause — a mistyped issuer ("no DNS records for …") must
+      // not masquerade as an SSRF policy rejection. A blanket "must use HTTPS /
+      // no internal addresses" string is also wrong in self-host mode, where
+      // http + RFC1918 are permitted. The Test route relays this message to the
+      // UI verbatim, so the extra detail reaches the operator directly.
+      throw new Error(`OIDC discovery blocked: ${err.message}`, { cause: err });
     }
     throw err;
   }
