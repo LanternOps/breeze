@@ -456,7 +456,10 @@ describe('sso routes', () => {
     });
 
     expect(res.status).toBe(201);
-    expect(discoverOIDCConfig).toHaveBeenCalledWith('https://issuer.example.com');
+    // IS_HOSTED is unset in the test env → strict (no private-network opt-in).
+    expect(discoverOIDCConfig).toHaveBeenCalledWith('https://issuer.example.com', {
+      allowPrivateNetwork: false
+    });
     expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
       orgId: ORG_UUID,
       name: 'Okta',

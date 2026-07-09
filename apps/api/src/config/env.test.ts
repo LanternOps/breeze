@@ -116,4 +116,37 @@ describe('config env', () => {
     const mod = await loadEnv();
     expect(mod.mfaForcePartnerAdmin()).toBe(true);
   });
+
+  // Fail-closed self-host gate for private-network fetching (on-prem PSAs, DNS
+  // appliances, internal OIDC IdPs). Only an AFFIRMATIVE self-host declaration
+  // opens RFC1918/ULA; unset/garbage/truthy IS_HOSTED stays strict (#570).
+  describe('selfHostAllowsPrivateNetwork', () => {
+    afterEach(() => {
+      delete process.env.IS_HOSTED;
+    });
+
+    it('is true only for recognized self-host signals', async () => {
+      for (const value of ['false', '0', 'no', 'off', 'FALSE', ' off ']) {
+        process.env.IS_HOSTED = value;
+        vi.resetModules();
+        const mod = await loadEnv();
+        expect(mod.selfHostAllowsPrivateNetwork()).toBe(true);
+      }
+    });
+
+    it('is false when IS_HOSTED is unset (fail-closed)', async () => {
+      delete process.env.IS_HOSTED;
+      const mod = await loadEnv();
+      expect(mod.selfHostAllowsPrivateNetwork()).toBe(false);
+    });
+
+    it('is false for hosted/truthy or garbage IS_HOSTED', async () => {
+      for (const value of ['true', '1', 'yes', 'on', '', 'garbage']) {
+        process.env.IS_HOSTED = value;
+        vi.resetModules();
+        const mod = await loadEnv();
+        expect(mod.selfHostAllowsPrivateNetwork()).toBe(false);
+      }
+    });
+  });
 });
