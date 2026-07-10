@@ -195,6 +195,10 @@ describe('quoteMath (shared)', () => {
       expect(toQuoteDepositConfig('percent', 30)).toEqual({ type: 'percent', percent: 30 });
       // DB numeric columns arrive as strings.
       expect(toQuoteDepositConfig('percent', '30.00')).toEqual({ type: 'percent', percent: 30 });
+      // Zero/negative pass through as-is — the isFinite && >0 gates downstream
+      // reject them, same as the pre-union Number() coercion did.
+      expect(toQuoteDepositConfig('percent', 0)).toEqual({ type: 'percent', percent: 0 });
+      expect(toQuoteDepositConfig('percent', '-5')).toEqual({ type: 'percent', percent: -5 });
     });
 
     it('treats a missing type as none', () => {
@@ -208,7 +212,7 @@ describe('quoteMath (shared)', () => {
     });
 
     it('normalizes a missing/blank percent on a percent deposit to NaN (still rejected, never silently "none")', () => {
-      for (const missing of [null, undefined, ''] as const) {
+      for (const missing of [null, undefined, '', '  '] as const) {
         const cfg = toQuoteDepositConfig('percent', missing);
         expect(cfg.type).toBe('percent');
         expect(cfg.type === 'percent' && Number.isNaN(cfg.percent)).toBe(true);

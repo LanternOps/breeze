@@ -66,10 +66,9 @@ export function toQuoteDepositConfig(
   percent: number | string | null | undefined,
 ): QuoteDepositConfig {
   if (type === 'percent') {
-    return {
-      type: 'percent',
-      percent: percent === null || percent === undefined || percent === '' ? Number.NaN : Number(percent),
-    };
+    const blank = percent === null || percent === undefined
+      || (typeof percent === 'string' && percent.trim() === '');
+    return { type: 'percent', percent: blank ? Number.NaN : Number(percent) };
   }
   if (type === 'selected_lines') return { type: 'selected_lines' };
   return { type: 'none' };
