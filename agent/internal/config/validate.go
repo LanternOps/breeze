@@ -91,6 +91,10 @@ func (c *Config) ValidateTiered() ValidationResult {
 		}
 	}
 
+	if err := ValidateBackupServerURL(c.BackupServerURL); err != nil {
+		result.Fatals = append(result.Fatals, err)
+	}
+
 	if c.AuthToken != "" {
 		for _, r := range c.AuthToken {
 			if unicode.IsControl(r) {
@@ -234,4 +238,28 @@ func (c *Config) ValidateTiered() ValidationResult {
 	c.PolicyConfigStateProbes = configProbes
 
 	return result
+}
+
+// ValidateBackupServerURL enforces the backup control-plane URL contract:
+// https only, http permitted for loopback hosts, "" means unset (valid).
+func ValidateBackupServerURL(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("backup_server_url %q is not a valid URL", raw)
+	}
+	switch u.Scheme {
+	case "https":
+		return nil
+	case "http":
+		host := u.Hostname()
+		if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+			return nil
+		}
+		return fmt.Errorf("backup_server_url must use https (http allowed only for localhost)")
+	default:
+		return fmt.Errorf("backup_server_url scheme must be http or https, got %q", u.Scheme)
+	}
 }

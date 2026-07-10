@@ -41,34 +41,39 @@ type PolicyConfigStateProbe struct {
 }
 
 type Config struct {
-	AgentID                      string   `mapstructure:"agent_id"`
-	ServerURL                    string   `mapstructure:"server_url"`
-	AuthToken                    string   `mapstructure:"auth_token"`
-	WatchdogAuthToken            string   `mapstructure:"watchdog_auth_token"`
-	HelperAuthToken              string   `mapstructure:"helper_auth_token"`
-	OrgID                        string   `mapstructure:"org_id"`
-	SiteID                       string   `mapstructure:"site_id"`
-	HeartbeatIntervalSeconds     int      `mapstructure:"heartbeat_interval_seconds"`
-	MetricsIntervalSeconds       int      `mapstructure:"metrics_interval_seconds"`
-	ProcessSampleIntervalSeconds int      `mapstructure:"process_sample_interval_seconds"`
+	AgentID   string `mapstructure:"agent_id"`
+	ServerURL string `mapstructure:"server_url"`
+	// BackupServerURL is a second control-plane URL delivered by the server
+	// via heartbeat configUpdate (#2288). The heartbeat loop probes it after
+	// backupProbeThreshold consecutive primary failures and promote-swaps on
+	// a successful authenticated heartbeat. Never a secret; lives in agent.yaml.
+	BackupServerURL              string `mapstructure:"backup_server_url"`
+	AuthToken                    string `mapstructure:"auth_token"`
+	WatchdogAuthToken            string `mapstructure:"watchdog_auth_token"`
+	HelperAuthToken              string `mapstructure:"helper_auth_token"`
+	OrgID                        string `mapstructure:"org_id"`
+	SiteID                       string `mapstructure:"site_id"`
+	HeartbeatIntervalSeconds     int    `mapstructure:"heartbeat_interval_seconds"`
+	MetricsIntervalSeconds       int    `mapstructure:"metrics_interval_seconds"`
+	ProcessSampleIntervalSeconds int    `mapstructure:"process_sample_interval_seconds"`
 	// PatchScanIntervalHours is the cadence of the (expensive) patch scan, in
 	// hours. Clamped to [1, 168] at the use site; defaults to DefaultPatchScanIntervalHours.
-	PatchScanIntervalHours int `mapstructure:"patch_scan_interval_hours"`
-	EnabledCollectors            []string `mapstructure:"enabled_collectors"`
-	BackupEnabled                bool     `mapstructure:"backup_enabled"`
-	BackupPaths                  []string `mapstructure:"backup_paths"`
-	BackupSchedule               string   `mapstructure:"backup_schedule"`
-	BackupRetention              int      `mapstructure:"backup_retention"`
-	BackupProvider               string   `mapstructure:"backup_provider"`
-	BackupLocalPath              string   `mapstructure:"backup_local_path"`
-	BackupS3Bucket               string   `mapstructure:"backup_s3_bucket"`
-	BackupS3Region               string   `mapstructure:"backup_s3_region"`
-	BackupS3AccessKey            string   `mapstructure:"backup_s3_access_key"`
-	BackupS3SecretKey            string   `mapstructure:"backup_s3_secret_key"`
-	BackupVSSEnabled             bool     `mapstructure:"backup_vss_enabled"`          // Windows: VSS shadow copy before backup
-	BackupSystemStateEnabled     bool     `mapstructure:"backup_system_state_enabled"` // Collect system state alongside file backup
-	BackupBinaryPath             string   `mapstructure:"backup_binary_path"`          // Path to breeze-backup helper binary
-	BackupStagingDir             string   `mapstructure:"backup_staging_dir"`          // Staging directory for Hyper-V exports, MSSQL backups, etc. (empty = OS temp dir)
+	PatchScanIntervalHours   int      `mapstructure:"patch_scan_interval_hours"`
+	EnabledCollectors        []string `mapstructure:"enabled_collectors"`
+	BackupEnabled            bool     `mapstructure:"backup_enabled"`
+	BackupPaths              []string `mapstructure:"backup_paths"`
+	BackupSchedule           string   `mapstructure:"backup_schedule"`
+	BackupRetention          int      `mapstructure:"backup_retention"`
+	BackupProvider           string   `mapstructure:"backup_provider"`
+	BackupLocalPath          string   `mapstructure:"backup_local_path"`
+	BackupS3Bucket           string   `mapstructure:"backup_s3_bucket"`
+	BackupS3Region           string   `mapstructure:"backup_s3_region"`
+	BackupS3AccessKey        string   `mapstructure:"backup_s3_access_key"`
+	BackupS3SecretKey        string   `mapstructure:"backup_s3_secret_key"`
+	BackupVSSEnabled         bool     `mapstructure:"backup_vss_enabled"`          // Windows: VSS shadow copy before backup
+	BackupSystemStateEnabled bool     `mapstructure:"backup_system_state_enabled"` // Collect system state alongside file backup
+	BackupBinaryPath         string   `mapstructure:"backup_binary_path"`          // Path to breeze-backup helper binary
+	BackupStagingDir         string   `mapstructure:"backup_staging_dir"`          // Staging directory for Hyper-V exports, MSSQL backups, etc. (empty = OS temp dir)
 
 	// Local vault (SMB share / USB drive) configuration
 	VaultEnabled        bool   `mapstructure:"vault_enabled"`
@@ -428,6 +433,7 @@ func Save(cfg *Config) error {
 func SaveTo(cfg *Config, cfgFile string) error {
 	viper.Set("agent_id", cfg.AgentID)
 	viper.Set("server_url", cfg.ServerURL)
+	viper.Set("backup_server_url", cfg.BackupServerURL)
 	viper.Set("org_id", cfg.OrgID)
 	viper.Set("site_id", cfg.SiteID)
 	viper.Set("heartbeat_interval_seconds", cfg.HeartbeatIntervalSeconds)
