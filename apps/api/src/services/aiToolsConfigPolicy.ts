@@ -660,7 +660,7 @@ For link-only types, set featurePolicyId instead of inlineSettings:
               'patch', 'alert_rule', 'backup', 'security', 'monitoring',
               'maintenance', 'compliance', 'automation', 'event_log',
               'software_policy', 'sensitive_data', 'peripheral_control',
-              'warranty', 'helper', 'remote_access', 'pam', 'vulnerability',
+              'warranty', 'helper', 'remote_access', 'pam', 'onedrive_helper', 'vulnerability',
             ],
             description: 'Feature type (required for add)',
           },
