@@ -11,12 +11,15 @@ vi.mock('../db', () => ({
   },
 }));
 
+const ORG_C = '44444444-4444-4444-4444-444444444444';
+
 // --- mutable auth state, set per-test ---
 let authState: {
   scope: 'organization' | 'partner' | 'system';
   orgId?: string | null;
   accessibleOrgIds?: string[] | null;
   canAccessOrg?: (orgId: string) => boolean;
+  orgCondition?: (col: unknown) => unknown;
   user?: { id: string } | null;
 };
 
@@ -136,7 +139,7 @@ describe('GET /onedrive/state', () => {
     };
   });
 
-  it('returns per-device rows + stats for the org', async () => {
+  it('returns per-device rows + stats for an explicitly-requested org', async () => {
     vi.mocked(db.select).mockReturnValueOnce({
       from: vi.fn().mockReturnValue({
         innerJoin: vi.fn().mockReturnValue({
@@ -177,9 +180,69 @@ describe('GET /onedrive/state', () => {
     expect(body.stats).toEqual({ total: 2, signedIn: 1, kfmProtected: 1, withDrift: 1 });
   });
 
-  it('400s when no org resolvable', async () => {
+  it('400s when an explicitly-requested org is inaccessible', async () => {
     const res = await onedriveRoutes.request(`/state?orgId=${ORG_B}`);
     expect(res.status).toBe(400);
     expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('aggregates across all accessible orgs when no orgId is given (partner scope, multi-org)', async () => {
+    const cond = { sentinel: 'partner-accessible-orgs' };
+    const orgConditionSpy = vi.fn().mockReturnValue(cond);
+    authState = {
+      scope: 'partner',
+      orgId: null,
+      accessibleOrgIds: [ORG_A, ORG_C],
+      canAccessOrg: (orgId: string) => orgId === ORG_A || orgId === ORG_C,
+      orgCondition: orgConditionSpy,
+      user: { id: 'user-1' },
+    };
+
+    // These rows stand in for what Postgres would already have filtered down
+    // to via the where(orgCondition) clause (+ RLS backstop) — one device from
+    // each of the caller's two accessible orgs, ORG_B's rows never surface.
+    const whereSpy = vi.fn().mockResolvedValue([
+      {
+        deviceId: 'device-1',
+        hostname: 'host-1',
+        signedIn: true,
+        filesOnDemandOn: true,
+        oneDriveVersion: '24.100',
+        kfmFolderStates: { Desktop: 'redirected' },
+        mountedLibraries: [],
+        entitledLibraries: [],
+        driftEntries: [],
+        lastReportedAt: new Date('2026-07-01T00:00:00Z'),
+      },
+      {
+        deviceId: 'device-3',
+        hostname: 'host-3',
+        signedIn: true,
+        filesOnDemandOn: true,
+        oneDriveVersion: '24.100',
+        kfmFolderStates: { Desktop: 'redirected' },
+        mountedLibraries: [],
+        entitledLibraries: [],
+        driftEntries: [],
+        lastReportedAt: new Date('2026-07-01T00:00:00Z'),
+      },
+    ]);
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({
+          where: whereSpy,
+        }),
+      }),
+    } as any);
+
+    const res = await onedriveRoutes.request('/state');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.devices).toHaveLength(2);
+    expect(body.stats).toEqual({ total: 2, signedIn: 2, kfmProtected: 2, withDrift: 0 });
+    // Proves the route delegates org-scoping to auth.orgCondition (the vuln
+    // fleet-stats pattern) rather than requiring a single resolvable org.
+    expect(orgConditionSpy).toHaveBeenCalledTimes(1);
+    expect(whereSpy).toHaveBeenCalledWith(cond);
   });
 });

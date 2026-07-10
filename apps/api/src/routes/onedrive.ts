@@ -70,15 +70,29 @@ onedriveRoutes.get(
   }
 );
 
-// Org rollup: entitled-vs-mounted / drift / KFM across the fleet.
+// Org rollup: entitled-vs-mounted / drift / KFM across the fleet. With an
+// explicit ?orgId= we validate + narrow to that one org (400 if inaccessible,
+// same as every other resolveScopedOrgId consumer). Without one — the case
+// OneDriveFleetPage actually calls for partner techs with >1 accessible org —
+// we aggregate across every org the caller can see via auth.orgCondition,
+// mirroring the vuln fleet /stats route (routes/vulnerabilities.ts). System
+// scope with no explicit org yields no condition = every org; RLS backstops
+// this regardless of what the app layer computes.
 onedriveRoutes.get(
   '/state',
   requireScope('organization', 'partner', 'system'),
   requireDevicesRead,
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
-    if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
+    const requestedOrgId = c.req.query('orgId');
+    let orgCond;
+    if (requestedOrgId) {
+      const orgId = resolveScopedOrgId(auth, requestedOrgId);
+      if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
+      orgCond = eq(onedriveDeviceState.orgId, orgId);
+    } else {
+      orgCond = auth.orgCondition(onedriveDeviceState.orgId);
+    }
 
     const rows = await db
       .select({
@@ -95,7 +109,7 @@ onedriveRoutes.get(
       })
       .from(onedriveDeviceState)
       .innerJoin(devices, eq(onedriveDeviceState.deviceId, devices.id))
-      .where(eq(onedriveDeviceState.orgId, orgId));
+      .where(orgCond);
 
     const kfmProtected = (kfm: unknown) => {
       const entries = Object.values((kfm ?? {}) as Record<string, string>);
