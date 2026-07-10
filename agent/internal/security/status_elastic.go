@@ -116,8 +116,31 @@ func linuxSystemdUnitActive(unit string) bool {
 	if !hasCommand("systemctl") {
 		return false
 	}
-	output, err := runCommand(5*time.Second, "systemctl", "is-active", unit)
-	return err == nil && strings.TrimSpace(output) == "active"
+	// firewallStatusFromCommand (status.go) returns stdout regardless of exit
+	// code — needed here because `systemctl is-active` exits non-zero for
+	// transitional states like "activating", whose output we still want.
+	stdout, zeroExit, ok := firewallStatusFromCommand(5*time.Second, "systemctl", "is-active", unit)
+	if !ok {
+		return false
+	}
+	return linuxUnitStateRunning(strings.TrimSpace(stdout), zeroExit)
+}
+
+// linuxUnitStateRunning maps `systemctl is-active` output to a running signal.
+// "activating"/"reloading" count as running so a sensor that is starting up
+// is not reported as real-time protection off for a whole collection cycle.
+// Anything else — including probe failures (dbus down, degraded systemd),
+// which are indistinguishable from "inactive" here — reads as not-running;
+// the process-scan leg and the next collection cycle compensate.
+func linuxUnitStateRunning(state string, zeroExit bool) bool {
+	switch state {
+	case "active":
+		return zeroExit
+	case "activating", "reloading":
+		return true
+	default:
+		return false
+	}
 }
 
 var elasticVersionPattern = regexp.MustCompile(`\d+\.\d+(?:\.\d+)?`)

@@ -94,6 +94,39 @@ func TestDetectLinuxElasticDefend(t *testing.T) {
 			if product.PathToSignedProduct != tc.wantPath {
 				t.Fatalf("PathToSignedProduct = %q, want %q", product.PathToSignedProduct, tc.wantPath)
 			}
+			// Deliberate contract: definitions freshness is not locally
+			// observable for Elastic Defend, so it must never be asserted true.
+			if product.DefinitionsUpToDate {
+				t.Fatal("DefinitionsUpToDate = true, want false (freshness is not locally observable)")
+			}
+		})
+	}
+}
+
+func TestLinuxUnitStateRunning(t *testing.T) {
+	cases := []struct {
+		name     string
+		state    string
+		zeroExit bool
+		want     bool
+	}{
+		{"active with zero exit", "active", true, true},
+		// A non-zero exit that still prints "active" is an ambiguous probe
+		// (mirrors the firewall-cmd hardening) — do not trust it.
+		{"active with non-zero exit", "active", false, false},
+		{"activating counts as running", "activating", false, true},
+		{"reloading counts as running", "reloading", true, true},
+		{"inactive", "inactive", false, false},
+		{"failed", "failed", false, false},
+		{"dbus error output", "Failed to connect to bus: No such file or directory", false, false},
+		{"empty output", "", false, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := linuxUnitStateRunning(tc.state, tc.zeroExit); got != tc.want {
+				t.Fatalf("linuxUnitStateRunning(%q, %v) = %v, want %v", tc.state, tc.zeroExit, got, tc.want)
+			}
 		})
 	}
 }
