@@ -7,11 +7,6 @@ import { formatRelativeTime } from '../../lib/utils';
 import { cn } from '@/lib/utils';
 import { fetchOneDriveFleetState, type OneDriveFleetRow } from '../../lib/api/onedrive';
 
-// The three Known Folder Move targets the agent reports on — a device is
-// "fully protected" only when all three are redirected. Any other value (or an
-// absent folder) leaves a gap.
-const KFM_FOLDER_COUNT = 3;
-
 // Row filters, one per stat tile (Devices reporting → all). "kfm-gap" is every
 // device that is NOT fully protected; "drift" is every device with drift
 // entries. Clicking the active tile toggles back to "all".
@@ -22,13 +17,27 @@ type FleetFilter = 'all' | 'signed-in' | 'kfm-gap' | 'drift';
 const STAT_BUTTON =
   'block h-full w-full rounded-lg text-left focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background';
 
-/** Count of KFM folders currently redirected — the numerator of "x/3 redirected". */
-function kfmRedirectedCount(row: OneDriveFleetRow): number {
-  return Object.values(row.kfmFolderStates).filter((v) => v === 'redirected').length;
+/**
+ * Count of KFM folders redirected vs. the total the device reported — mirrors
+ * the server's `kfmProtected` stat (apps/api/src/routes/onedrive.ts), which
+ * derives "protected" from whatever folder keys the device actually reports
+ * rather than a fixed count of 3.
+ */
+function kfmFolderCounts(row: OneDriveFleetRow): { redirected: number; total: number } {
+  const values = Object.values(row.kfmFolderStates);
+  return { redirected: values.filter((v) => v === 'redirected').length, total: values.length };
 }
 
+/** A device is "fully protected" when it reports at least one KFM folder and every one is redirected. */
 function isFullyProtected(row: OneDriveFleetRow): boolean {
-  return kfmRedirectedCount(row) >= KFM_FOLDER_COUNT;
+  const { redirected, total } = kfmFolderCounts(row);
+  return total > 0 && redirected === total;
+}
+
+/** "x/y redirected" label for the reported folder set, or an em dash when no folders are reported. */
+function kfmLabel(row: OneDriveFleetRow): string {
+  const { redirected, total } = kfmFolderCounts(row);
+  return total > 0 ? `${redirected}/${total} redirected` : '—';
 }
 
 function matchesFilter(row: OneDriveFleetRow, filter: FleetFilter): boolean {
@@ -140,7 +149,7 @@ export function OneDriveFleetPage() {
             </td>
             <td className="px-4 py-3 text-sm"><SignedInBadge signedIn={row.signedIn} /></td>
             <td className="px-4 py-3 text-sm">{row.filesOnDemandOn ? 'On' : 'Off'}</td>
-            <td className="px-4 py-3 text-sm tabular-nums">{kfmRedirectedCount(row)}/{KFM_FOLDER_COUNT} redirected</td>
+            <td className="px-4 py-3 text-sm tabular-nums">{kfmLabel(row)}</td>
             <td className="px-4 py-3 text-sm tabular-nums">{row.mountedLibraries.length}</td>
             <td className="px-4 py-3 text-sm tabular-nums">{row.entitledLibraries.length}</td>
             <td className="px-4 py-3 text-sm">{renderDriftCount(row)}</td>
@@ -162,7 +171,7 @@ export function OneDriveFleetPage() {
       <div className="mt-3 space-y-2 border-t pt-3">
         <CardField label="Files On-Demand"><span className="text-sm">{row.filesOnDemandOn ? 'On' : 'Off'}</span></CardField>
         <CardField label="Known Folder Move">
-          <span className="text-sm tabular-nums">{kfmRedirectedCount(row)}/{KFM_FOLDER_COUNT} redirected</span>
+          <span className="text-sm tabular-nums">{kfmLabel(row)}</span>
         </CardField>
         <CardField label="Mounted"><span className="text-sm tabular-nums">{row.mountedLibraries.length}</span></CardField>
         <CardField label="Entitled"><span className="text-sm tabular-nums">{row.entitledLibraries.length}</span></CardField>
