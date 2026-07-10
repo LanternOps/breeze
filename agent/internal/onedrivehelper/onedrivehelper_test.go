@@ -1,16 +1,18 @@
 package onedrivehelper
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
 
 func TestParseConfig(t *testing.T) {
 	tests := []struct {
-		name string
-		raw  any
-		ok   bool
-		libs int
+		name        string
+		raw         any
+		ok          bool
+		libs        int
+		allowedUpns []string
 	}{
 		{
 			name: "valid full payload",
@@ -21,10 +23,13 @@ func TestParseConfig(t *testing.T) {
 					"kfmBlockOptOut": false, "tenantAssociationId": "tid-1", "restartOnChange": true,
 				},
 				"libraries": []any{
-					map[string]any{"libraryId": "lib-1", "displayName": "Docs", "targetingMode": "everyone", "hiveScope": "hkcu"},
+					map[string]any{
+						"libraryId": "lib-1", "displayName": "Docs", "targetingMode": "everyone", "hiveScope": "hkcu",
+						"allowedUpns": []any{"todd@contoso.com", "alex@contoso.com"},
+					},
 				},
 			},
-			ok: true, libs: 1,
+			ok: true, libs: 1, allowedUpns: []string{"todd@contoso.com", "alex@contoso.com"},
 		},
 		{name: "null tenantAssociationId tolerated", raw: map[string]any{"base": map[string]any{"tenantAssociationId": nil}, "libraries": []any{}}, ok: true, libs: 0},
 		{name: "not an object", raw: "nope", ok: false},
@@ -39,7 +44,31 @@ func TestParseConfig(t *testing.T) {
 			if ok && len(cfg.Libraries) != tt.libs {
 				t.Fatalf("libraries = %d, want %d", len(cfg.Libraries), tt.libs)
 			}
+			if ok && len(tt.allowedUpns) > 0 {
+				got := cfg.Libraries[0].AllowedUpns
+				if len(got) != len(tt.allowedUpns) {
+					t.Fatalf("allowedUpns = %v, want %v", got, tt.allowedUpns)
+				}
+				for i := range got {
+					if got[i] != tt.allowedUpns[i] {
+						t.Errorf("allowedUpns[%d] = %q, want %q", i, got[i], tt.allowedUpns[i])
+					}
+				}
+			}
 		})
+	}
+
+	state := DeviceState{SignedInUpns: []string{"todd@contoso.com"}}
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("marshal DeviceState: %v", err)
+	}
+	var roundTripped DeviceState
+	if err := json.Unmarshal(data, &roundTripped); err != nil {
+		t.Fatalf("unmarshal DeviceState: %v", err)
+	}
+	if len(roundTripped.SignedInUpns) != 1 || roundTripped.SignedInUpns[0] != "todd@contoso.com" {
+		t.Errorf("signedInUpns = %v, want [todd@contoso.com]", roundTripped.SignedInUpns)
 	}
 }
 
@@ -50,12 +79,14 @@ func TestPartitionLibraries(t *testing.T) {
 		{LibraryID: "l-local-yes", TargetingMode: "local_ad_group", GroupName: "Finance-Users"},
 		{LibraryID: "l-local-no", TargetingMode: "local_ad_group", GroupName: "HR-Users"},
 		{LibraryID: "l-local-noname", TargetingMode: "local_ad_group"},
-		{LibraryID: "l-graph", TargetingMode: "graph_group", GroupID: "g-1"},
+		{LibraryID: "l-graph-yes", TargetingMode: "graph_group", GroupID: "g-1", AllowedUpns: []string{"Todd@Contoso.com"}},
+		{LibraryID: "l-graph-no", TargetingMode: "graph_group", GroupID: "g-1", AllowedUpns: []string{"other@contoso.com"}},
+		{LibraryID: "l-graph-untagged", TargetingMode: "graph_group", GroupID: "g-1"},
 		{LibraryID: "l-unknown", TargetingMode: "future_mode"},
 	}
-	apply, pending := PartitionLibraries(rules, member)
+	apply, pending := PartitionLibraries(rules, member, "todd@contoso.com")
 
-	wantApply := []string{"l-every", "l-local-yes"}
+	wantApply := []string{"l-every", "l-local-yes", "l-graph-yes"}
 	if len(apply) != len(wantApply) {
 		t.Fatalf("apply = %d rules, want %d", len(apply), len(wantApply))
 	}
@@ -64,9 +95,9 @@ func TestPartitionLibraries(t *testing.T) {
 			t.Errorf("apply[%d] = %s, want %s", i, apply[i].LibraryID, id)
 		}
 	}
-	// graph_group is pending (Phase 4 evaluates it); unknown modes are pending
-	// (fail closed — never mount something we can't evaluate).
-	wantPending := map[string]bool{"l-graph": true, "l-unknown": true}
+	// Unmatched and untagged graph_group rules stay pending; unknown modes are
+	// also pending (fail closed — never mount something we can't evaluate).
+	wantPending := map[string]bool{"l-graph-no": true, "l-graph-untagged": true, "l-unknown": true}
 	for _, r := range pending {
 		if !wantPending[r.LibraryID] {
 			t.Errorf("unexpected pending rule %s", r.LibraryID)
@@ -81,6 +112,42 @@ func TestPartitionLibraries(t *testing.T) {
 		if r.LibraryID == "l-local-no" || r.LibraryID == "l-local-noname" {
 			t.Errorf("%s must not be applied", r.LibraryID)
 		}
+	}
+
+	applyWithoutSession, pendingWithoutSession := PartitionLibraries(rules, member, "")
+	graphRules := map[string]bool{"l-graph-yes": true, "l-graph-no": true, "l-graph-untagged": true}
+	for _, r := range applyWithoutSession {
+		if graphRules[r.LibraryID] {
+			t.Errorf("%s must not be applied without a session UPN", r.LibraryID)
+		}
+	}
+	for _, r := range pendingWithoutSession {
+		delete(graphRules, r.LibraryID)
+	}
+	if len(graphRules) != 0 {
+		t.Errorf("graph_group rules not pending without a session UPN: %v", graphRules)
+	}
+}
+
+func TestContainsFold(t *testing.T) {
+	tests := []struct {
+		name   string
+		xs     []string
+		x      string
+		wanted bool
+	}{
+		{name: "match", xs: []string{"todd@contoso.com"}, x: "todd@contoso.com", wanted: true},
+		{name: "case-fold match", xs: []string{"Todd@Contoso.com"}, x: "todd@contoso.com", wanted: true},
+		{name: "miss", xs: []string{"other@contoso.com"}, x: "todd@contoso.com", wanted: false},
+		{name: "empty slice", xs: nil, x: "todd@contoso.com", wanted: false},
+		{name: "empty needle", xs: []string{""}, x: "", wanted: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := containsFold(tt.xs, tt.x); got != tt.wanted {
+				t.Errorf("containsFold(%v, %q) = %v, want %v", tt.xs, tt.x, got, tt.wanted)
+			}
+		})
 	}
 }
 

@@ -25,13 +25,14 @@ type BaseConfig struct {
 
 // LibraryRule mirrors one entry of onedrive_helper_settings.libraries.
 type LibraryRule struct {
-	LibraryID     string `json:"libraryId"`
-	DisplayName   string `json:"displayName"`
-	SiteURL       string `json:"siteUrl"`
-	TargetingMode string `json:"targetingMode"`
-	GroupID       string `json:"groupId"`
-	GroupName     string `json:"groupName"`
-	HiveScope     string `json:"hiveScope"`
+	LibraryID     string   `json:"libraryId"`
+	DisplayName   string   `json:"displayName"`
+	SiteURL       string   `json:"siteUrl"`
+	TargetingMode string   `json:"targetingMode"`
+	GroupID       string   `json:"groupId"`
+	GroupName     string   `json:"groupName"`
+	HiveScope     string   `json:"hiveScope"`
+	AllowedUpns   []string `json:"allowedUpns"`
 }
 
 type Config struct {
@@ -51,6 +52,7 @@ type DriftEntry struct {
 // must match the zod schema in apps/api/src/routes/agents/heartbeat.ts.
 type DeviceState struct {
 	SignedIn          bool              `json:"signedIn"`
+	SignedInUpns      []string          `json:"signedInUpns"`
 	OneDriveVersion   string            `json:"oneDriveVersion,omitempty"`
 	FilesOnDemandOn   bool              `json:"filesOnDemandOn"`
 	KfmFolderStates   map[string]string `json:"kfmFolderStates"`
@@ -84,10 +86,10 @@ func ParseConfig(raw any) (Config, bool) {
 //   - everyone            → apply
 //   - local_ad_group      → apply iff the user is a member of GroupName;
 //     a miss (or empty GroupName) is simply not entitled.
-//   - graph_group         → pending (server-side evaluation lands in Phase 4;
-//     NEVER mount an unevaluated graph_group library)
+//   - graph_group         → apply when the server tagged the session's UPN;
+//     an untagged or unmatched rule stays pending.
 //   - anything unknown    → pending (fail closed)
-func PartitionLibraries(rules []LibraryRule, isLocalGroupMember func(groupName string) bool) (apply, pending []LibraryRule) {
+func PartitionLibraries(rules []LibraryRule, isLocalGroupMember func(groupName string) bool, sessionUpn string) (apply, pending []LibraryRule) {
 	for _, r := range rules {
 		switch r.TargetingMode {
 		case "everyone":
@@ -96,11 +98,29 @@ func PartitionLibraries(rules []LibraryRule, isLocalGroupMember func(groupName s
 			if r.GroupName != "" && isLocalGroupMember != nil && isLocalGroupMember(r.GroupName) {
 				apply = append(apply, r)
 			}
-		default: // graph_group + future modes
+		case "graph_group":
+			if sessionUpn != "" && containsFold(r.AllowedUpns, sessionUpn) {
+				apply = append(apply, r)
+			} else {
+				pending = append(pending, r)
+			}
+		default: // future modes
 			pending = append(pending, r)
 		}
 	}
 	return apply, pending
+}
+
+func containsFold(xs []string, x string) bool {
+	if x == "" {
+		return false
+	}
+	for _, candidate := range xs {
+		if strings.EqualFold(candidate, x) {
+			return true
+		}
+	}
+	return false
 }
 
 // ValueName derives the deterministic TenantAutoMount registry value name for a
