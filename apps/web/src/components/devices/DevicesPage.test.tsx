@@ -126,10 +126,11 @@ vi.mock('./DeviceCard', () => ({
 // the per-action buttons to drive DevicesPage.handleBulkAction directly.
 type StubDevice = { id: string; deviceClass?: string; hostname?: string; displayName?: string; watchdogVersion?: string | null };
 vi.mock('./DeviceList', () => ({
-  default: ({ devices, serverFilterIds, onBulkAction, onSelect }: { devices: StubDevice[]; serverFilterIds?: Set<string> | null; onBulkAction?: (action: string, devices: StubDevice[]) => void; onSelect?: (device: StubDevice) => void }) => (
+  default: ({ devices, serverFilterIds, onBulkAction, onSelect, onShowDecommissioned, includeDecommissioned }: { devices: StubDevice[]; serverFilterIds?: Set<string> | null; onBulkAction?: (action: string, devices: StubDevice[]) => void; onSelect?: (device: StubDevice) => void; onShowDecommissioned?: () => void; includeDecommissioned?: boolean }) => (
     <div
       data-testid="device-list"
       data-device-count={devices.length}
+      data-include-decommissioned={includeDecommissioned ? 'true' : 'false'}
       data-filter-ids={serverFilterIds ? [...serverFilterIds].sort().join(',') : ''}
       data-hostnames={devices.map(d => d.hostname ?? '').join(',')}
       data-display-names={devices.map(d => d.displayName ?? '').join(',')}
@@ -155,6 +156,15 @@ vi.mock('./DeviceList', () => ({
           select {d.id}
         </button>
       ))}
+      {onShowDecommissioned && (
+        <button
+          type="button"
+          data-testid="stub-show-decommissioned"
+          onClick={() => onShowDecommissioned()}
+        >
+          show decommissioned
+        </button>
+      )}
     </div>
   ),
 }));
@@ -643,5 +653,106 @@ describe('DevicesPage — row selection routes by device class (#1424)', () => {
     fireEvent.click(selectBtn);
 
     expect(vi.mocked(navigateTo)).toHaveBeenCalledWith(`/devices/${DEV_1}`);
+  });
+});
+
+// #2251 — decommissioned devices are hidden by default with no cue that they
+// exist. The page must surface a "N decommissioned hidden — show" hint in both
+// views, and "show" applies the Decommissioned status filter (the existing
+// unhide mechanism — includeDecommissioned flips true when the active filter
+// targets that status).
+describe('DevicesPage — hidden-decommissioned hint (#2251)', () => {
+  it('grid view shows the hint; clicking "show" applies the Decommissioned filter and reveals the rows', async () => {
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValueOnce(null);
+    vi.mocked(fetchAllDevices).mockResolvedValue({
+      data: [
+        rawDevice(DEV_1, 'host-alpha'),
+        { ...rawDevice(DEV_2, 'host-beta'), status: 'decommissioned' },
+        { ...rawDevice(DEV_3, 'host-gamma'), status: 'decommissioned' },
+      ],
+    } as never);
+    // The decommissioned status filter resolves to the two decommissioned rows.
+    vi.mocked(fetchWithAuth).mockImplementation(async (url: string) => {
+      if (url.startsWith('/filters/preview')) {
+        return jsonResponse({
+          data: { totalCount: 2, deviceIds: [DEV_2, DEV_3], evaluatedAt: new Date().toISOString() },
+        });
+      }
+      return jsonResponse({ data: [] });
+    });
+
+    render(<DevicesPage />);
+    fireEvent.click(await screen.findByLabelText('Grid view'));
+
+    // Hidden rows are called out; only the online card renders.
+    const hint = await screen.findByTestId('decommissioned-hidden-hint');
+    expect(hint).toHaveTextContent('2 decommissioned hidden');
+    expect(screen.getByTestId(`device-card-${DEV_1}`)).toBeTruthy();
+    expect(screen.queryByTestId(`device-card-${DEV_2}`)).toBeNull();
+
+    fireEvent.click(screen.getByTestId('decommissioned-hidden-show'));
+
+    // The status filter now targets decommissioned → those cards render, the
+    // online card drops out (filtered), and the hint disappears.
+    expect(await screen.findByTestId(`device-card-${DEV_2}`)).toBeTruthy();
+    expect(screen.getByTestId(`device-card-${DEV_3}`)).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.queryByTestId(`device-card-${DEV_1}`)).toBeNull();
+    });
+    expect(screen.queryByTestId('decommissioned-hidden-hint')).toBeNull();
+
+    // The applied condition is the toolbar-equivalent status filter.
+    const previewCall = vi.mocked(fetchWithAuth).mock.calls.find(([url]) =>
+      String(url).startsWith('/filters/preview')
+    );
+    expect(previewCall).toBeDefined();
+    const body = JSON.parse(previewCall![1]?.body as string);
+    expect(body.conditions).toEqual({
+      operator: 'AND',
+      conditions: [{ field: 'status', operator: 'equals', value: 'decommissioned' }],
+    });
+  });
+
+  it('grid view renders no hint when no decommissioned devices exist', async () => {
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValueOnce(null);
+
+    render(<DevicesPage />);
+    fireEvent.click(await screen.findByLabelText('Grid view'));
+
+    await screen.findByTestId(`device-card-${DEV_1}`);
+    expect(screen.queryByTestId('decommissioned-hidden-hint')).toBeNull();
+  });
+
+  it('list view: onShowDecommissioned replaces an existing status value and keeps other conditions', async () => {
+    const { decodeFilterFromHash, writeFilterToHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValueOnce({
+      operator: 'AND',
+      conditions: [
+        { field: 'os', operator: 'equals', value: 'windows' },
+        { field: 'status', operator: 'equals', value: 'online' },
+      ],
+    });
+
+    render(<DevicesPage />);
+    const list = await screen.findByTestId('device-list');
+    expect(list.getAttribute('data-include-decommissioned')).toBe('false');
+
+    fireEvent.click(screen.getByTestId('stub-show-decommissioned'));
+
+    // status=online is REPLACED (single-select per field, like the toolbar);
+    // the os condition is preserved.
+    await waitFor(() => {
+      const last = vi.mocked(writeFilterToHash).mock.calls.at(-1)?.[0];
+      expect(last).toEqual({
+        operator: 'AND',
+        conditions: [
+          { field: 'os', operator: 'equals', value: 'windows' },
+          { field: 'status', operator: 'equals', value: 'decommissioned' },
+        ],
+      });
+    });
+    expect(list.getAttribute('data-include-decommissioned')).toBe('true');
   });
 });
