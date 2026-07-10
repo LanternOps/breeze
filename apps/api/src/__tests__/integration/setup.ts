@@ -286,6 +286,10 @@ export async function cleanupDatabase() {
     'device_network',
     'device_hardware',
     'device_software',
+    // #2138 — devices carries a composite FK to device_link_groups; truncate
+    // the groups first (CASCADE clears the referencing devices) so cleanup is
+    // FK-safe and deterministic.
+    'device_link_groups',
     'devices',
     'automation_executions',
     'automations',

@@ -137,6 +137,13 @@ export type Device = {
    * from cached inventory — the list never fans out live commands.
    */
   activeVpns?: VpnPresence[] | null;
+  /**
+   * Linked multi-boot profiles (#2138). `linkGroupId` comes straight from the
+   * devices list API (null/undefined = unlinked). The grouping presentation
+   * (inactive strips / group bracket) is computed client-side per page by
+   * groupLinkedDevices in linkedDevices.ts.
+   */
+  linkGroupId?: string | null;
 };
 
 // Columns that only make sense for the network arm (#1322); hidden unless
@@ -1444,6 +1451,16 @@ export default function DeviceList({
                 >
                   Wake Selected
                 </button>
+                {selectedIds.size >= 2 && (
+                  <button
+                    type="button"
+                    data-testid="bulk-link-multiboot"
+                    onClick={() => handleBulkAction('link-multiboot')}
+                    className="w-full px-4 py-2 text-left text-sm hover:bg-muted"
+                  >
+                    Link as multi-boot
+                  </button>
+                )}
                 <hr className="my-1" />
                 <button
                   type="button"
@@ -1518,6 +1535,26 @@ export default function DeviceList({
                       onChange={e => handleSelectOne(device.id, e.target.checked)}
                       className="h-4 w-4 rounded border-border"
                     />
+                    {device.linkedSiblings && device.linkedSiblings.length > 0 && (
+                      <div className="mt-1.5 flex flex-col items-start gap-1">
+                        <span
+                          data-testid={`device-${device.id}-multiboot-badge`}
+                          title={`Multi-boot machine — ${device.linkedSiblings.length + 1} linked OS profiles${device.status === 'online' ? ` (${device.os} active)` : ''}. Open the device to expand all profiles.`}
+                          className="inline-flex items-center whitespace-nowrap rounded-full border px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+                        >
+                          {device.linkedSiblings.length + 1} OS
+                        </span>
+                        {device.linkConflict && (
+                          <span
+                            data-testid={`device-${device.id}-link-conflict`}
+                            title="More than one linked profile is online at once — the devices may be linked incorrectly."
+                            className="inline-flex items-center whitespace-nowrap rounded-full border border-warning/40 bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning"
+                          >
+                            Conflict
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </td>
                   {renderedColumns.map(id => columnDefs[id].cell(device))}
                   <td className="px-3 py-3 text-sm" onClick={e => e.stopPropagation()}>

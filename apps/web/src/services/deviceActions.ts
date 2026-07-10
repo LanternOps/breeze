@@ -394,6 +394,29 @@ export async function decommissionDevice(deviceId: string): Promise<{ success: b
   return data.data ?? data;
 }
 
+/**
+ * Link 2+ devices as boot profiles of one physical machine (#2138). All must
+ * belong to the same organization and be currently unlinked; the API enforces
+ * both.
+ */
+export async function linkDevicesMultiboot(
+  deviceIds: string[],
+  name?: string,
+): Promise<{ id: string }> {
+  const response = await fetchWithAuth('/devices/link-groups', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(name ? { deviceIds, name } : { deviceIds }),
+  });
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response, 'Failed to link devices'));
+  }
+
+  const data = await response.json();
+  return data.data ?? data;
+}
+
 export async function restoreDevice(deviceId: string): Promise<{ success: boolean }> {
   const response = await fetchWithAuth(`/devices/${deviceId}/restore`, {
     method: 'POST'
