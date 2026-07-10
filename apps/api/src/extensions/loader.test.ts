@@ -1,7 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 vi.mock('../services/aiTools', () => ({ aiTools: new Map() }));
@@ -23,7 +22,8 @@ function scaffoldRuntimeExtension(root: string) {
      const ext = {
        register(ctx) {
          const app = new Hono();
-         app.get('/health', (c) => c.json({ ok: true, ext: 'demo' }));
+         const initialAiToolCount = ctx.aiTools.size;
+         app.get('/health', (c) => c.json({ ok: true, ext: 'demo', initialAiToolCount }));
          ctx.mountRoute(app);
          ctx.aiTools.set('demo_tool', { definition: { name: 'demo_tool', description: 'x', input_schema: { type: 'object' } }, tier: 1, handler: async () => 'ok' });
        },
@@ -33,9 +33,28 @@ function scaffoldRuntimeExtension(root: string) {
   return root;
 }
 
+function scaffoldCjsRuntimeExtension(root: string) {
+  const dir = join(root, 'cjs-demo');
+  mkdirSync(join(dir, 'dist'), { recursive: true });
+  writeFileSync(
+    join(dir, 'breeze-extension.json'),
+    JSON.stringify({ name: 'cjs-demo', routeNamespace: 'cjs-demo', entry: 'src/index.ts', tenancy: {} })
+  );
+  writeFileSync(
+    join(dir, 'dist', 'index.cjs'),
+    "module.exports = { default: { register(ctx){ const {Hono} = require('hono'); const app = new Hono(); app.get('/health', c => c.json({ok:true})); ctx.mountRoute(app); } } };"
+  );
+  return root;
+}
+
 describe('mountExtensions', () => {
   let root: string;
-  beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'ext-rt-')); });
+  beforeEach(async () => {
+    root = mkdtempSync(join(process.cwd(), 'ext-rt-'));
+    const { aiTools } = await import('../services/aiTools');
+    aiTools.clear();
+  });
+  afterEach(() => { rmSync(root, { recursive: true, force: true }); });
 
   it('is a no-op with an empty extensions root', async () => {
     const app = new Hono();
@@ -50,9 +69,18 @@ describe('mountExtensions', () => {
     await mountExtensions(app, root);
     const res = await app.request('/api/v1/demo/health');
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, ext: 'demo' });
+    expect(await res.json()).toEqual({ ok: true, ext: 'demo', initialAiToolCount: 0 });
     const { aiTools } = await import('../services/aiTools');
     expect(aiTools.has('demo_tool')).toBe(true);
+  });
+
+  it('loads the dist CJS default export when present', async () => {
+    scaffoldCjsRuntimeExtension(root);
+    const app = new Hono();
+    await mountExtensions(app, root);
+    const res = await app.request('/api/v1/cjs-demo/health');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
   });
 
   it('respects BREEZE_EXTENSIONS_ENABLED=false', async () => {
@@ -70,6 +98,5 @@ describe('mountExtensions', () => {
     aiTools.set('demo_tool', { definition: { name: 'demo_tool' } } as never);
     const app = new Hono();
     await expect(mountExtensions(app, root)).rejects.toThrow(/demo_tool/);
-    aiTools.delete('demo_tool');
   });
 });

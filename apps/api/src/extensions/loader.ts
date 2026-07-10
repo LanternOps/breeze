@@ -17,7 +17,8 @@ async function loadEntry(dir: string, entry: string): Promise<BreezeExtension> {
   const prodEntry = path.join(dir, 'dist', 'index.cjs');
   const target = existsSync(prodEntry) ? prodEntry : path.join(dir, entry);
   const mod = await import(pathToFileURL(target).href);
-  const ext: BreezeExtension | undefined = mod.default ?? mod.extension;
+  const ext = [mod.default?.default, mod.default?.extension, mod.default, mod.extension]
+    .find((candidate): candidate is BreezeExtension => typeof candidate?.register === 'function');
   if (!ext || typeof ext.register !== 'function') {
     throw new Error(`[extensions] ${target} must default-export a BreezeExtension ({ register })`);
   }
@@ -49,7 +50,7 @@ export async function mountExtensions(app: Hono, root?: string): Promise<void> {
               return target.set(key, value);
             };
           }
-          const v = Reflect.get(target, prop, receiver);
+          const v = Reflect.get(target, prop, target);
           return typeof v === 'function' ? v.bind(target) : v;
         },
       }),
