@@ -64,19 +64,20 @@ type CommandHandler func(cmd Command) CommandResult
 
 // Client manages the WebSocket connection to the server
 type Client struct {
-	config          *Config
-	tlsConfigMu     sync.RWMutex
-	conn            *websocket.Conn
-	connMu          sync.RWMutex
-	capabilitiesMu  sync.RWMutex
+	config               *Config
+	serverURLMu          sync.RWMutex
+	tlsConfigMu          sync.RWMutex
+	conn                 *websocket.Conn
+	connMu               sync.RWMutex
+	capabilitiesMu       sync.RWMutex
 	terminalOutputBase64 bool
-	cmdHandler      CommandHandler
-	done            chan struct{}
-	sendChan        chan []byte
-	binaryFrameChan chan []byte
-	stopOnce        sync.Once
-	isRunning       bool
-	runningMu       sync.RWMutex
+	cmdHandler           CommandHandler
+	done                 chan struct{}
+	sendChan             chan []byte
+	binaryFrameChan      chan []byte
+	stopOnce             sync.Once
+	isRunning            bool
+	runningMu            sync.RWMutex
 }
 
 // New creates a new WebSocket client
@@ -88,6 +89,20 @@ func New(cfg *Config, handler CommandHandler) *Client {
 		sendChan:        make(chan []byte, 256),
 		binaryFrameChan: make(chan []byte, 30),
 	}
+}
+
+// SetServerURL updates the control-plane base URL used by future WebSocket
+// connection attempts after a backup server promotion.
+func (c *Client) SetServerURL(u string) {
+	c.serverURLMu.Lock()
+	defer c.serverURLMu.Unlock()
+	c.config.ServerURL = u
+}
+
+func (c *Client) serverURL() string {
+	c.serverURLMu.RLock()
+	defer c.serverURLMu.RUnlock()
+	return c.config.ServerURL
 }
 
 // Start begins the WebSocket client
@@ -184,12 +199,12 @@ func (c *Client) connect() error {
 	c.connMu.Unlock()
 
 	conn.SetReadLimit(maxMessageSize)
-	log.Info("connected", "server", c.config.ServerURL)
+	log.Info("connected", "server", c.serverURL())
 	return nil
 }
 
 func (c *Client) buildWSURL() (string, error) {
-	serverURL, err := url.Parse(c.config.ServerURL)
+	serverURL, err := url.Parse(c.serverURL())
 	if err != nil {
 		return "", err
 	}

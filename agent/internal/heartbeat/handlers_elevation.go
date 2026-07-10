@@ -32,7 +32,7 @@ func (h *Heartbeat) SendElevationRequest(req etwlua.Event) (etwlua.ElevationOutc
 		return etwlua.ElevationOutcome{}, fmt.Errorf("marshal elevation request: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/api/v1/agents/%s/elevation-requests", h.config.ServerURL, h.config.AgentID)
+	url := fmt.Sprintf("%s/api/v1/agents/%s/elevation-requests", h.serverURL(), h.config.AgentID)
 	headers := http.Header{
 		"Content-Type":  {"application/json"},
 		"Authorization": {h.authHeader()},
