@@ -122,3 +122,66 @@ func TestApplySignature(t *testing.T) {
 	// Compile-time check that Apply exists with the cross-platform signature.
 	var _ func(Config) (*DeviceState, error) = Apply
 }
+
+func TestComputeDrift(t *testing.T) {
+	applied := []LibraryRule{
+		{LibraryID: "l-1", DisplayName: "Finance Docs"},
+		{LibraryID: "l-2", DisplayName: "Company"},
+	}
+	tests := []struct {
+		name    string
+		mounted []string
+		want    []string // drifted library ids
+	}{
+		{
+			name:    "all mounted",
+			mounted: []string{`C:\Users\bob\Contoso\Contoso - Finance Docs`, `C:\Users\bob\Contoso\Contoso - Company`},
+			want:    nil,
+		},
+		{
+			name:    "one missing",
+			mounted: []string{`C:\Users\bob\Contoso\Contoso - Company`},
+			want:    []string{"l-1"},
+		},
+		{
+			name:    "case-insensitive match",
+			mounted: []string{`c:\users\bob\contoso\contoso - FINANCE DOCS`, `c:\x\contoso - company`},
+			want:    nil,
+		},
+		{name: "nothing mounted", mounted: nil, want: []string{"l-1", "l-2"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ComputeDrift(applied, tt.mounted)
+			var ids []string
+			for _, d := range got {
+				ids = append(ids, d.LibraryID)
+				if d.Reason != "not_mounted" {
+					t.Errorf("reason = %q, want not_mounted", d.Reason)
+				}
+			}
+			if len(ids) != len(tt.want) {
+				t.Fatalf("drift ids = %v, want %v", ids, tt.want)
+			}
+			for i := range ids {
+				if ids[i] != tt.want[i] {
+					t.Errorf("drift[%d] = %s, want %s", i, ids[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestFolderRedirectionState(t *testing.T) {
+	tests := []struct{ raw, want string }{
+		{`C:\Users\bob\OneDrive - Contoso\Documents`, "redirected"},
+		{`%USERPROFILE%\Documents`, "not_redirected"},
+		{`D:\Docs`, "not_redirected"},
+		{"", "unknown"},
+	}
+	for _, tt := range tests {
+		if got := FolderRedirectionState(tt.raw); got != tt.want {
+			t.Errorf("FolderRedirectionState(%q) = %q, want %q", tt.raw, got, tt.want)
+		}
+	}
+}

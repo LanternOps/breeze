@@ -58,7 +58,7 @@ func Apply(cfg Config) (*DeviceState, error) {
 		}
 	}
 
-	state := readDeviceState(sessions, entitled, applied) // full reader lands in Task 9
+	state := readDeviceState(sessions, entitled, applied)
 
 	if (baseChanged || anyUserChanged) && cfg.Base.RestartOnChange {
 		restartOneDrive(sessions)
@@ -265,13 +265,87 @@ func restartOneDrive(sessions []userSession) {
 	}
 }
 
-// readDeviceState — minimal placeholder until Task 9 replaces it with the full
-// registry-backed reader. Reports entitlement only.
+// shellFolderValues maps the KFM folder names we manage to their
+// "User Shell Folders" registry value names.
+var shellFolderValues = map[string]string{
+	"Desktop":   "Desktop",
+	"Documents": "Personal",
+	"Pictures":  "My Pictures",
+}
+
+// readDeviceState reads OneDrive state across the active sessions. Flattening
+// rule (device-level row, per-user reality): signedIn/version/KFM come from the
+// first signed-in session; mounted libraries are the union of all sessions.
 func readDeviceState(sessions []userSession, entitled []string, applied []LibraryRule) *DeviceState {
-	return &DeviceState{
+	state := &DeviceState{
 		KfmFolderStates:   map[string]string{},
 		MountedLibraries:  []string{},
 		EntitledLibraries: entitled,
 		DriftEntries:      []DriftEntry{},
 	}
+
+	// FOD reflects the policy we enforce (HKLM read-back).
+	if k, err := registry.OpenKey(registry.LOCAL_MACHINE, policyKeyPath, registry.QUERY_VALUE); err == nil {
+		if v, _, e := k.GetIntegerValue("FilesOnDemandEnabled"); e == nil && v == 1 {
+			state.FilesOnDemandOn = true
+		}
+		k.Close()
+	}
+
+	primaryFound := false
+	for _, s := range sessions {
+		acct, err := registry.OpenKey(registry.USERS, s.sid+`\`+accountKeySuffix, registry.QUERY_VALUE)
+		if err != nil {
+			continue // this user isn't signed in to OneDrive Business
+		}
+		state.SignedIn = true
+		if !primaryFound {
+			primaryFound = true
+			if v, _, e := acct.GetStringValue("OneDriveVersion"); e == nil {
+				state.OneDriveVersion = v
+			} else if k2, e2 := registry.OpenKey(registry.USERS, s.sid+`\SOFTWARE\Microsoft\OneDrive`, registry.QUERY_VALUE); e2 == nil {
+				if v2, _, e3 := k2.GetStringValue("Version"); e3 == nil {
+					state.OneDriveVersion = v2
+				}
+				k2.Close()
+			}
+			// KFM redirection per managed folder, from User Shell Folders.
+			if usf, e := registry.OpenKey(registry.USERS,
+				s.sid+`\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders`,
+				registry.QUERY_VALUE); e == nil {
+				for folder, valueName := range shellFolderValues {
+					raw, _, re := usf.GetStringValue(valueName)
+					if re != nil {
+						state.KfmFolderStates[folder] = "unknown"
+						continue
+					}
+					state.KfmFolderStates[folder] = FolderRedirectionState(raw)
+				}
+				usf.Close()
+			}
+		}
+		acct.Close()
+
+		// Mounted scopes: Tenants\<TenantName> value names are local folder paths.
+		if tenants, e := registry.OpenKey(registry.USERS, s.sid+`\`+accountKeySuffix+`\Tenants`, registry.ENUMERATE_SUB_KEYS); e == nil {
+			if subs, se := tenants.ReadSubKeyNames(-1); se == nil {
+				for _, sub := range subs {
+					if tk, te := registry.OpenKey(registry.USERS, s.sid+`\`+accountKeySuffix+`\Tenants\`+sub, registry.QUERY_VALUE); te == nil {
+						if names, ne := tk.ReadValueNames(-1); ne == nil {
+							for _, n := range names {
+								if !containsString(state.MountedLibraries, n) {
+									state.MountedLibraries = append(state.MountedLibraries, n)
+								}
+							}
+						}
+						tk.Close()
+					}
+				}
+			}
+			tenants.Close()
+		}
+	}
+
+	state.DriftEntries = ComputeDrift(applied, state.MountedLibraries)
+	return state
 }

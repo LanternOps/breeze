@@ -122,3 +122,44 @@ func TenantIDFromComposite(libraryID string) string {
 	}
 	return ""
 }
+
+// ComputeDrift flags applied libraries whose display name matches no mounted
+// local folder path. OneDrive's tenant cache stores mounted scopes as local
+// folder paths of the form "<Org> - <LibraryName>", so a case-insensitive
+// substring match on the display name is the practical detection (validated
+// against the live-spike cache shape, see the 2026-06-19 spike doc). A rule
+// the user previously stop-synced will never re-mount — that is exactly the
+// drift this surfaces (spec: report, don't rewrite forever).
+func ComputeDrift(applied []LibraryRule, mountedPaths []string) []DriftEntry {
+	var out []DriftEntry
+	for _, r := range applied {
+		if r.DisplayName == "" {
+			continue
+		}
+		needle := strings.ToLower(r.DisplayName)
+		found := false
+		for _, p := range mountedPaths {
+			if strings.Contains(strings.ToLower(p), needle) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			out = append(out, DriftEntry{LibraryID: r.LibraryID, DisplayName: r.DisplayName, Reason: "not_mounted"})
+		}
+	}
+	return out
+}
+
+// FolderRedirectionState classifies a raw "User Shell Folders" value: KFM
+// rewrites the shell folder to an absolute path inside the OneDrive root, so
+// containing "onedrive" ⇒ redirected; an env-var/local path ⇒ not; empty ⇒ unknown.
+func FolderRedirectionState(rawShellFolderValue string) string {
+	if rawShellFolderValue == "" {
+		return "unknown"
+	}
+	if strings.Contains(strings.ToLower(rawShellFolderValue), "onedrive") {
+		return "redirected"
+	}
+	return "not_redirected"
+}
