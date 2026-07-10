@@ -191,7 +191,7 @@ export default function OneDriveLibraryPicker({ orgId, onAdd, onClose }: OneDriv
                     meantime you can paste a composite library ID below.
                   </p>
                   <a
-                    href="/settings/integrations"
+                    href="/integrations#m365"
                     className="mt-2 inline-block font-medium text-primary hover:underline"
                   >
                     Open Microsoft 365 connection settings →
