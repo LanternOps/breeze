@@ -34,6 +34,13 @@ export type FeatureTabProps = {
   linkedPolicyId: string | null;
   /** Parent policy's feature link for this tab (for inheritance display) */
   parentLink?: FeatureLink | undefined;
+  /**
+   * Org this policy is scoped to (null for partner-wide policies — #1724).
+   * Optional: only tabs that need to make an org-scoped fetch on behalf of
+   * the policy (e.g. OneDriveHelperTab -> OneDriveLibraryPicker's M365/Graph
+   * calls) destructure it; every other tab ignores it.
+   */
+  orgId?: string | null;
 };
 
 export const FEATURE_META: Record<FeatureType, {

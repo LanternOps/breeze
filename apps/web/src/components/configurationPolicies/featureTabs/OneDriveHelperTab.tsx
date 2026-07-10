@@ -101,7 +101,7 @@ function siteHint(siteUrl?: string | null): string | null {
   }
 }
 
-export default function OneDriveHelperTab({ policyId, existingLink, onLinkChanged, linkedPolicyId, parentLink }: FeatureTabProps) {
+export default function OneDriveHelperTab({ policyId, existingLink, onLinkChanged, linkedPolicyId, parentLink, orgId }: FeatureTabProps) {
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const isInherited = !!parentLink && !existingLink;
   const effectiveLink = existingLink ?? parentLink;
@@ -323,7 +323,7 @@ export default function OneDriveHelperTab({ policyId, existingLink, onLinkChange
           </div>
 
           {showPicker && (
-            <OneDriveLibraryPicker onAdd={handlePickerAdd} onClose={() => setShowPicker(false)} />
+            <OneDriveLibraryPicker orgId={orgId ?? undefined} onAdd={handlePickerAdd} onClose={() => setShowPicker(false)} />
           )}
 
           {settings.libraries.length === 0 && (

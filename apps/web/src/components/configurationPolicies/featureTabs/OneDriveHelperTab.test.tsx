@@ -234,6 +234,17 @@ describe('OneDriveHelperTab', () => {
     expect(screen.getByText(/requires a group/i)).toBeTruthy();
   });
 
+  it('threads the policy orgId into the picker (partner-scoped tech, no ambient auth.orgId)', async () => {
+    mockedStatus.mockResolvedValue(true);
+    mockedLibraries.mockResolvedValue({ libraries: [], skippedSites: [] });
+
+    render(<OneDriveHelperTab {...baseProps} existingLink={undefined} orgId="org-99" />);
+
+    fireEvent.click(screen.getByTestId('onedrive-add-library-btn'));
+
+    await waitFor(() => expect(mockedStatus).toHaveBeenCalledWith('org-99'));
+  });
+
   it('inherited (parentLink only) shows Override and no direct Save', () => {
     const parentLink: FeatureLink = {
       id: 'parent-link',

@@ -335,6 +335,7 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
       onLinkChanged: handleLinkChanged,
       linkedPolicyId,
       parentLink: parentLinkFor(ft),
+      orgId: policy?.orgId ?? null,
     };
     switch (ft) {
       case 'patch': return <PatchTab {...props} />;
