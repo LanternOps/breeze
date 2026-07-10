@@ -5,11 +5,15 @@
  */
 
 import { Hono } from 'hono';
+import { eq } from 'drizzle-orm';
 import { authMiddleware, requirePermission, requireScope } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { resolveScopedOrgId } from './c2c/helpers';
 import { hasDirectM365Connection } from '../services/m365DirectGraph';
 import { listSharePointLibraries } from '../services/onedriveGraph';
+import { db } from '../db';
+import { devices } from '../db/schema/devices';
+import { onedriveDeviceState } from '../db/schema/onedriveHelper';
 
 export const onedriveRoutes = new Hono();
 
@@ -41,4 +45,68 @@ onedriveRoutes.get(
     }
     return c.json(res.data);
   },
+);
+
+// Per-device OneDrive state for the device detail panel. Registered BEFORE
+// '/state' below for clarity — the two paths don't shadow each other under
+// Hono's router, but device-scoped-first keeps the group readable.
+onedriveRoutes.get(
+  '/devices/:deviceId/state',
+  requireScope('organization', 'partner', 'system'),
+  requireDevicesRead,
+  async (c) => {
+    const auth = c.get('auth');
+    const deviceId = c.req.param('deviceId')!;
+    const [device] = await db
+      .select({ id: devices.id, orgId: devices.orgId })
+      .from(devices).where(eq(devices.id, deviceId)).limit(1);
+    if (!device || !resolveScopedOrgId(auth, device.orgId)) {
+      return c.json({ error: 'Device not found' }, 404);
+    }
+    const [state] = await db
+      .select().from(onedriveDeviceState)
+      .where(eq(onedriveDeviceState.deviceId, deviceId)).limit(1);
+    return c.json({ state: state ?? null });
+  }
+);
+
+// Org rollup: entitled-vs-mounted / drift / KFM across the fleet.
+onedriveRoutes.get(
+  '/state',
+  requireScope('organization', 'partner', 'system'),
+  requireDevicesRead,
+  async (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
+    if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
+
+    const rows = await db
+      .select({
+        deviceId: onedriveDeviceState.deviceId,
+        hostname: devices.hostname,
+        signedIn: onedriveDeviceState.signedIn,
+        filesOnDemandOn: onedriveDeviceState.filesOnDemandOn,
+        oneDriveVersion: onedriveDeviceState.oneDriveVersion,
+        kfmFolderStates: onedriveDeviceState.kfmFolderStates,
+        mountedLibraries: onedriveDeviceState.mountedLibraries,
+        entitledLibraries: onedriveDeviceState.entitledLibraries,
+        driftEntries: onedriveDeviceState.driftEntries,
+        lastReportedAt: onedriveDeviceState.lastReportedAt,
+      })
+      .from(onedriveDeviceState)
+      .innerJoin(devices, eq(onedriveDeviceState.deviceId, devices.id))
+      .where(eq(onedriveDeviceState.orgId, orgId));
+
+    const kfmProtected = (kfm: unknown) => {
+      const entries = Object.values((kfm ?? {}) as Record<string, string>);
+      return entries.length > 0 && entries.every((v) => v === 'redirected');
+    };
+    const stats = {
+      total: rows.length,
+      signedIn: rows.filter((r) => r.signedIn).length,
+      kfmProtected: rows.filter((r) => kfmProtected(r.kfmFolderStates)).length,
+      withDrift: rows.filter((r) => Array.isArray(r.driftEntries) && (r.driftEntries as unknown[]).length > 0).length,
+    };
+    return c.json({ devices: rows, stats });
+  }
 );
