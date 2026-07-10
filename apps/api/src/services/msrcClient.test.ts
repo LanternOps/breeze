@@ -68,5 +68,14 @@ describe('parseCvrf', () => {
       expect(warn).toHaveBeenCalledTimes(1);
       expect(warn.mock.calls[0]?.[0]).toContain(malformedCveId);
     });
+
+    it('throws when EVERY CVE id is malformed (probable feed format change)', () => {
+      const allMalformed = {
+        ...doc,
+        Vulnerability: [doc.Vulnerability[0]],
+      };
+
+      expect(() => parseCvrf(allMalformed)).toThrow(/probable upstream feed format change/);
+    });
   });
 });

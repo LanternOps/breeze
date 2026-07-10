@@ -54,4 +54,22 @@ describe('parseSofa', () => {
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0]?.[0]).toContain(malformedCveId);
   });
+
+  it('throws when EVERY CVE id is malformed (probable feed format change)', () => {
+    const doc = {
+      OSVersions: [
+        {
+          OSVersion: 'Tahoe 26',
+          SecurityReleases: [
+            {
+              ProductVersion: '26.5',
+              CVEs: { 'CVE-2023-38039 mariner - do not use this one': true },
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(() => parseSofa(doc)).toThrow(/probable upstream feed format change/);
+  });
 });

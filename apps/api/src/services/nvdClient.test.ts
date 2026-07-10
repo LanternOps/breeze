@@ -68,4 +68,12 @@ describe('parseNvd', () => {
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0]?.[0]).toContain(malformedCveId);
   });
+
+  it('throws when EVERY CVE id is malformed (probable feed format change)', () => {
+    const doc = {
+      vulnerabilities: [{ cve: { id: 'CVE-2023-38039 mariner - do not use this one' } }],
+    };
+
+    expect(() => parseNvd(doc)).toThrow(/probable upstream feed format change/);
+  });
 });

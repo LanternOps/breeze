@@ -38,6 +38,30 @@ export function warnMalformedCveIds(tag: string, skippedIds: ReadonlySet<string>
     .map((id) => JSON.stringify(id.length > MAX_WARNED_ID_LENGTH ? `${id.slice(0, MAX_WARNED_ID_LENGTH)}…` : id));
   const suffix = skippedIds.size > MAX_WARNED_IDS ? `, … +${skippedIds.size - MAX_WARNED_IDS} more` : '';
   console.warn(
-    `[${tag}] Skipped ${skippedIds.size} record(s) with malformed CVE id(s): ${sample.join(', ')}${suffix}`
+    `[${tag}] Skipped ${skippedIds.size} distinct malformed CVE id(s): ${sample.join(', ')}${suffix}`
+  );
+}
+
+/**
+ * Escalation guard for the total-drop case: a feed that contains vulnerability
+ * entries but yields ZERO valid CVE ids is a probable upstream format change
+ * (renamed id field, new id scheme), not the occasional-garbage case the skip
+ * path exists for. Silently completing would mark the source healthy and
+ * advance its cursor past data we never ingested, so throw instead — the sync
+ * jobs' existing error paths mark the source `error` and leave the cursor
+ * untouched for a retry after the parser is fixed. A feed with at least one
+ * valid id never throws.
+ */
+export function assertSomeValidCveIds(params: {
+  tag: string;
+  entryCount: number;
+  validCount: number;
+  malformedIds: ReadonlySet<string>;
+}): void {
+  if (params.entryCount === 0 || params.validCount > 0) return;
+  throw new Error(
+    `[${params.tag}] Feed contains ${params.entryCount} vulnerability entries but zero valid CVE ids `
+    + `(${params.malformedIds.size} malformed, ${params.entryCount - params.malformedIds.size} missing) — `
+    + 'probable upstream feed format change; refusing to mark the sync successful'
   );
 }

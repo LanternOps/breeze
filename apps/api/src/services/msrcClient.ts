@@ -1,4 +1,4 @@
-import { isValidCveId, warnMalformedCveIds } from './cveId';
+import { assertSomeValidCveIds, isValidCveId, warnMalformedCveIds } from './cveId';
 
 const BASE_URL = 'https://api.msrc.microsoft.com/cvrf/v3.0';
 
@@ -104,7 +104,9 @@ export function parseCvrf(doc: unknown): MsrcRecord[] {
 
   const records: MsrcRecord[] = [];
   const malformedCveIds = new Set<string>();
-  for (const vulnerability of asArray<CvrfVulnerability>(cvrf.Vulnerability)) {
+  const vulnerabilityEntries = asArray<CvrfVulnerability>(cvrf.Vulnerability);
+  let validCveIdCount = 0;
+  for (const vulnerability of vulnerabilityEntries) {
     const cveId = stringValue(vulnerability.CVE);
     if (!cveId) continue;
     // Upstream garbage guard (#2261): Microsoft has shipped CVRF records whose
@@ -114,6 +116,7 @@ export function parseCvrf(doc: unknown): MsrcRecord[] {
       malformedCveIds.add(cveId);
       continue;
     }
+    validCveIdCount += 1;
 
     const scoreSet = asArray<CvrfScoreSet>(vulnerability.CVSSScoreSets)[0];
     const cvssScore = numericValue(scoreSet?.BaseScore);
@@ -145,6 +148,12 @@ export function parseCvrf(doc: unknown): MsrcRecord[] {
     }
   }
 
+  assertSomeValidCveIds({
+    tag: 'MsrcClient',
+    entryCount: vulnerabilityEntries.length,
+    validCount: validCveIdCount,
+    malformedIds: malformedCveIds,
+  });
   warnMalformedCveIds('MsrcClient', malformedCveIds);
   return records;
 }
