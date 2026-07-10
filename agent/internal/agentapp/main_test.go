@@ -400,6 +400,64 @@ func TestTrimEnrollInputs(t *testing.T) {
 	}
 }
 
+func TestResolveBackupServerURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		enrollSeed    string
+		bootstrapSeed string
+		primaryURL    string
+		want          string
+	}{
+		{
+			name:          "enroll wins over bootstrap",
+			enrollSeed:    "https://enroll.example.com",
+			bootstrapSeed: "https://bootstrap.example.com",
+			primaryURL:    "https://primary.example.com",
+			want:          "https://enroll.example.com",
+		},
+		{
+			name:          "bootstrap fallback",
+			bootstrapSeed: "https://bootstrap.example.com",
+			primaryURL:    "https://primary.example.com",
+			want:          "https://bootstrap.example.com",
+		},
+		{
+			name:       "both empty",
+			primaryURL: "https://primary.example.com",
+		},
+		{
+			name:       "equal to primary skipped",
+			enrollSeed: "https://primary.example.com",
+			primaryURL: "https://primary.example.com",
+		},
+		{
+			name:       "invalid http non-localhost skipped",
+			enrollSeed: "http://backup.example.com",
+			primaryURL: "https://primary.example.com",
+		},
+		{
+			name:       "valid https accepted",
+			enrollSeed: "https://backup.example.com",
+			primaryURL: "https://primary.example.com",
+			want:       "https://backup.example.com",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := resolveBackupServerURL(tc.enrollSeed, tc.bootstrapSeed, tc.primaryURL)
+			if got != tc.want {
+				t.Errorf("resolveBackupServerURL(%q, %q, %q) = %q, want %q", tc.enrollSeed, tc.bootstrapSeed, tc.primaryURL, got, tc.want)
+			}
+		})
+	}
+}
+
 // writeEnrolledConfig writes a minimal agent.yaml + secrets.yaml pair
 // that config.Load will parse into a config with both AgentID and
 // AuthToken set (IsEnrolled returns true).

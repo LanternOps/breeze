@@ -77,6 +77,7 @@ var (
 	version          = "0.5.0"
 	cfgFile          string
 	serverURL        string
+	backupServerURL  string // seeded by bootstrap/enroll responses (#2288)
 	enrollmentSecret string
 	enrollSiteID     string
 	enrollDeviceRole string
@@ -930,6 +931,24 @@ func trimEnrollInputs(key, server, secret string) (string, string, string) {
 	return strings.TrimSpace(key), strings.TrimSpace(server), strings.TrimSpace(secret)
 }
 
+// resolveBackupServerURL selects and validates the backup control-plane URL
+// seeded during enrollment. The enrollment response takes precedence over the
+// bootstrap response; an invalid seed or one matching the primary URL is
+// discarded rather than persisted into the fresh agent config.
+func resolveBackupServerURL(enrollSeed, bootstrapSeed, primaryServerURL string) string {
+	seed := enrollSeed
+	if seed == "" {
+		seed = bootstrapSeed
+	}
+	if seed == "" || seed == primaryServerURL {
+		return ""
+	}
+	if err := config.ValidateBackupServerURL(seed); err != nil {
+		return ""
+	}
+	return seed
+}
+
 // assertHostnameNonEmpty enforces the #439 contract: enrollment must
 // never proceed with an empty or whitespace-only hostname, because the
 // downstream substitution used to write the device UUID there and
@@ -1134,6 +1153,23 @@ func enrollDevice(enrollmentKey string) {
 	cfg.HelperAuthToken = enrollResp.HelperAuthToken
 	cfg.OrgID = enrollResp.OrgID
 	cfg.SiteID = enrollResp.SiteID
+
+	// Backup control-plane URL (#2288): enroll response wins; bootstrap value
+	// is the fallback. Validated before persisting — a bad value must not
+	// poison a fresh enrollment.
+	if resolved := resolveBackupServerURL(enrollResp.BackupServerURL, backupServerURL, cfg.ServerURL); resolved != "" {
+		cfg.BackupServerURL = resolved
+	} else {
+		seed := enrollResp.BackupServerURL
+		if seed == "" {
+			seed = backupServerURL
+		}
+		if seed != "" && seed != cfg.ServerURL {
+			if err := config.ValidateBackupServerURL(seed); err != nil {
+				enrollLog.Warn("dropped invalid backup server URL seed from enrollment", "error", err)
+			}
+		}
+	}
 
 	if enrollResp.Config.HeartbeatIntervalSeconds > 0 {
 		cfg.HeartbeatIntervalSeconds = enrollResp.Config.HeartbeatIntervalSeconds
