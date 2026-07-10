@@ -1,6 +1,7 @@
 packages:
   - 'apps/*'
   - 'packages/*'
+  - 'extensions/*'
 
 # pnpm 11+ refuses to run install scripts unless they're in this allowlist.
 # Add packages here only after confirming what their install script does:
