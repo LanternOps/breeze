@@ -89,10 +89,11 @@ const HEADERS = {
 } as const;
 
 /**
- * The Hono zValidator default error hook returns `c.json({ success: false,
- * error }, 400)` where `error` is the serialized ZodError. The exact JSON
- * shape isn't part of our public contract, so this helper just stringifies
- * the body and asserts the offending key name appears somewhere in it —
+ * Validation 400s go through the shared zValidator wrapper
+ * (src/lib/validation.ts, #2201), which emits `{error: string, details}`
+ * with unknown-key messages in `details.formErrors`. The exact body is
+ * pinned by the wrapper's own tests, so this helper just stringifies the
+ * body and asserts the offending key name appears somewhere in it —
  * enough to confirm the unknown-key was surfaced to the caller.
  */
 async function bodyContains(res: Response, needle: string): Promise<boolean> {

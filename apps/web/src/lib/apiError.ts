@@ -1,7 +1,9 @@
-// Parses error response bodies returned by the API. The API emits at least
-// four shapes today: a plain `{error: string}`, a zod-validator
-// `{error: {issues: [...]}}`, a `{error: string, details: object|array}`
-// pair from route validators, and Hono's default `{message: string}`.
+// Parses error response bodies returned by the API. Shapes handled: the
+// shared zValidator wrapper's `{error: string, details}` (every validation
+// 400 since #2201 — apps/api/src/lib/validation.ts), a plain
+// `{error: string}`, Hono's default `{message: string}`, and the legacy
+// pre-#2201 raw zod-validator `{error: {issues: [...]}}` / serialized
+// ZodError bodies (kept defensively for older deployed APIs).
 // Falling back to `new Error(obj)` produces `[object Object]` in the UI;
 // this function picks the most readable rendering of whatever we got.
 
@@ -19,9 +21,11 @@ function joinZodIssues(issues: unknown): string | null {
   return messages.length > 0 ? messages.join('; ') : null;
 }
 
-// Renders a zod `error.flatten()` payload ({formErrors: string[], fieldErrors:
-// Record<string, string[]>}) — emitted as `details` by some route validators
-// (e.g. configuration-policy feature links).
+// Renders a zod flatten payload ({formErrors: string[], fieldErrors:
+// Record<string, string[]>}) — emitted as `details` by every zValidator 400
+// via the shared wrapper (apps/api/src/lib/validation.ts, #2201; its `error`
+// string uses the same join rules so the two dedupe below) and by some route
+// validators (e.g. configuration-policy feature links).
 function joinZodFlatten(value: unknown): string | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const { formErrors, fieldErrors } = value as { formErrors?: unknown; fieldErrors?: unknown };
@@ -64,10 +68,12 @@ export function extractApiError(data: unknown, fallback: string): string {
   } else if (body.error && typeof body.error === 'object') {
     const errObj = body.error as { issues?: unknown; message?: unknown; name?: unknown };
     let fromError = joinZodIssues(errObj.issues);
-    // zod v4: ZodError.issues is a NON-enumerable property, so JSON.stringify
+    // Legacy pre-#2201 path (kept defensively for older deployed APIs):
+    // zod v4 ZodError.issues is a NON-enumerable property, so JSON.stringify
     // drops it and the issues array is JSON-stringified into error.message
-    // instead. @hono/zod-validator's default 400 hook emits the bare ZodError,
-    // so recover the issues from the message to keep validation text in the UI.
+    // instead. @hono/zod-validator's default 400 hook emitted the bare
+    // ZodError, so recover the issues from the message to keep validation
+    // text in the UI.
     if (!fromError && errObj.name === 'ZodError' && typeof errObj.message === 'string') {
       try {
         fromError = joinZodIssues(JSON.parse(errObj.message));
