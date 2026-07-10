@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { discoverExtensions } from './discovery';
@@ -47,6 +47,12 @@ describe('discoverExtensions', () => {
   it('ignores directories without a manifest (e.g. README.md, node_modules)', () => {
     mkdirSync(join(root, 'node_modules'));
     writeFileSync(join(root, 'README.md'), 'seam docs');
+    scaffold('workspace', MANIFEST);
+    expect(discoverExtensions(root).map((e) => e.name)).toEqual(['workspace']);
+  });
+
+  it('ignores dangling symlinks alongside valid extensions', () => {
+    symlinkSync(join(root, 'missing-target'), join(root, 'dangling'));
     scaffold('workspace', MANIFEST);
     expect(discoverExtensions(root).map((e) => e.name)).toEqual(['workspace']);
   });

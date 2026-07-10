@@ -37,7 +37,11 @@ export function discoverExtensions(root: string = resolveExtensionsRoot()): Disc
   const out: DiscoveredExtension[] = [];
   for (const entry of readdirSync(root)) {
     const dir = path.join(root, entry);
-    if (!statSync(dir).isDirectory()) continue;
+    try {
+      if (!statSync(dir).isDirectory()) continue;
+    } catch {
+      continue;
+    }
     const manifestPath = path.join(dir, MANIFEST_FILENAME);
     if (!existsSync(manifestPath)) continue; // node_modules, stray dirs
     let manifest: ExtensionManifest;

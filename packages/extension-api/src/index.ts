@@ -64,7 +64,14 @@ export type ExtensionTenancyDeclaration = z.infer<typeof tenancySchema>;
 export type ExtensionManifest = z.infer<typeof manifestSchema>;
 
 export function parseExtensionManifest(raw: unknown): ExtensionManifest {
-  return manifestSchema.parse(raw);
+  try {
+    return manifestSchema.parse(raw);
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      throw new Error(z.prettifyError(err));
+    }
+    throw err;
+  }
 }
 
 /** Structural mirror of apps/api AiTool — extensions never import @breeze/api. */

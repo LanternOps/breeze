@@ -26,6 +26,20 @@ describe('parseExtensionManifest', () => {
     }
   });
 
+  it('reports invalid names with a human-readable validation message', () => {
+    expect(() => parseExtensionManifest({ ...valid, name: 'NOT VALID' })).toThrow(
+      expect.objectContaining({
+        message: expect.stringMatching(/name|pattern/i),
+      })
+    );
+
+    try {
+      parseExtensionManifest({ ...valid, name: 'NOT VALID' });
+    } catch (err) {
+      expect((err as Error).message).not.toContain('"code":');
+    }
+  });
+
   it('rejects a routeNamespace that collides with core mounts', () => {
     for (const ns of ['plugins', 'devices', 'auth', 'ai', 'mcp']) {
       expect(() => parseExtensionManifest({ ...valid, routeNamespace: ns })).toThrow();
