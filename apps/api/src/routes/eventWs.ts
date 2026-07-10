@@ -318,7 +318,8 @@ export function createEventWsTicketRoute(): Hono {
     // (#2256: the old behaviour narrowed no-param multi-org requests to
     // `orgIds[0]` unless a legacy `allOrgs=1` flag was passed, so the
     // All-Orgs Devices view only received live status events for the first
-    // org. `allOrgs=1` is still accepted but no longer required.)
+    // org. The `allOrgs=1` param is no longer read at all — clients that
+    // still send it (e.g. the mobile app) get the same all-orgs result.)
     const requestedOrgId = c.req.query('orgId') ?? undefined;
     const orgAccess = await resolveOrgAccess(auth, requestedOrgId);
 
