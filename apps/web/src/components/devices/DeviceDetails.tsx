@@ -27,6 +27,7 @@ import {
   HeartPulse,
   ShieldCheck,
   Link2,
+  Cloud,
 } from 'lucide-react';
 import { formatUptime } from '../../lib/utils';
 import type { Device, DeviceStatus } from './DeviceList';
@@ -37,6 +38,7 @@ import DeviceHardwareInventory from './DeviceHardwareInventory';
 import DeviceSoftwareInventory from './DeviceSoftwareInventory';
 import DevicePatchStatusTab from './DevicePatchStatusTab';
 import DeviceVulnerabilitiesTab from './DeviceVulnerabilitiesTab';
+import DeviceOneDriveTab from './DeviceOneDriveTab';
 import DeviceSecurityTab from './DeviceSecurityTab';
 import DeviceAlertHistory from './DeviceAlertHistory';
 import DeviceActivityFeed from './DeviceActivityFeed';
@@ -75,6 +77,7 @@ type Tab =
   | 'security'
   | 'management'
   | 'effective-config'
+  | 'onedrive'
   | 'alerts'
   | 'anomalies'
   | 'scripts'
@@ -139,7 +142,7 @@ function formatLastSeen(dateString: string, timezone?: string): string {
 
 const VALID_TABS: Tab[] = [
   'overview', 'details', 'hardware', 'software', 'patches', 'vulnerabilities', 'security',
-  'management', 'effective-config', 'alerts', 'scripts', 'performance',
+  'management', 'effective-config', 'onedrive', 'alerts', 'scripts', 'performance',
   'anomalies', 'eventlog', 'monitoring', 'compliance', 'activities', 'connections', 'filesystem', 'ip-history',
   'boot-performance', 'playbooks', 'peripherals', 'backup', 'linked-profiles', 'tickets',
 ];
@@ -206,6 +209,7 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
     { id: 'scripts', label: 'Scripts', icon: <Terminal className="h-4 w-4" />, separator: true, title: 'Script execution history' },
     { id: 'management', label: 'Management', icon: <Server className="h-4 w-4" />, title: 'Agent settings and device management' },
     { id: 'effective-config', label: 'Config', icon: <Layers className="h-4 w-4" />, title: 'Resolved configuration from all assigned policies' },
+    { id: 'onedrive', label: 'OneDrive', icon: <Cloud className="h-4 w-4" />, title: 'OneDrive/SharePoint sign-in, Known Folder Move, and library drift' },
     { id: 'security', label: 'Security', icon: <Shield className="h-4 w-4" /> },
     { id: 'playbooks', label: 'Playbooks', icon: <Activity className="h-4 w-4" />, title: 'Automated remediation playbook runs' },
     // --- History & Network ---
@@ -376,6 +380,10 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
 
       {activeTab === 'management' && (
         <DeviceManagementTab deviceId={device.id} />
+      )}
+
+      {activeTab === 'onedrive' && (
+        <DeviceOneDriveTab deviceId={device.id} />
       )}
 
       {activeTab === 'effective-config' && (
