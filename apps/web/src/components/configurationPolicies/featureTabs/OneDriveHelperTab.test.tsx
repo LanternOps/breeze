@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import OneDriveHelperTab from './OneDriveHelperTab';
 import type { FeatureLink } from './types';
+import * as onedriveApi from '../../../lib/api/onedrive';
+import type { OneDriveLibrary } from '../../../lib/api/onedrive';
 
 const saveMock = vi.fn();
 const removeMock = vi.fn();
@@ -17,6 +19,32 @@ vi.mock('./useFeatureLink', () => ({
     clearError: clearErrorMock,
   }),
 }));
+
+// The add-library flow now runs through OneDriveLibraryPicker, which calls the
+// onedrive api module. Mock it so the tab tests drive the REAL picker.
+vi.mock('../../../lib/api/onedrive', () => ({
+  fetchM365ConnectionStatus: vi.fn(),
+  fetchOneDriveLibraries: vi.fn(),
+}));
+
+const mockedStatus = vi.mocked(onedriveApi.fetchM365ConnectionStatus);
+const mockedLibraries = vi.mocked(onedriveApi.fetchOneDriveLibraries);
+
+function graphLib(overrides: Partial<OneDriveLibrary> = {}): OneDriveLibrary {
+  return {
+    siteId: 'sp!composite',
+    siteName: 'Finance Site',
+    siteUrl: 'https://contoso.sharepoint.com/sites/finance',
+    driveId: 'drive-1',
+    listId: 'l1',
+    libraryName: 'Finance',
+    tenantId: 't1',
+    webId: 'w1',
+    spSiteId: 's1',
+    autoMountValue: 'tenantId=t1&siteId=s1&webId=w1&listId=l1',
+    ...overrides,
+  };
+}
 
 const baseProps = {
   policyId: 'policy-1',
@@ -117,19 +145,19 @@ describe('OneDriveHelperTab', () => {
     });
   });
 
-  it('adding a manual library then saving includes it with targetingMode everyone', async () => {
+  it('adding a library via the Graph picker then saving includes it with targetingMode everyone', async () => {
+    mockedStatus.mockResolvedValue(true);
+    mockedLibraries.mockResolvedValue({ libraries: [graphLib()], skippedSites: [] });
+
     render(<OneDriveHelperTab {...baseProps} existingLink={undefined} />);
 
+    // Open the picker and pick a Graph library.
     fireEvent.click(screen.getByTestId('onedrive-add-library-btn'));
-    fireEvent.change(screen.getByTestId('onedrive-manual-library-id'), {
-      target: { value: 'tenantId=t1&siteId=s1&webId=w1&listId=l1' },
-    });
-    fireEvent.change(screen.getByTestId('onedrive-manual-display-name'), {
-      target: { value: 'Finance' },
-    });
-    fireEvent.click(screen.getByTestId('onedrive-manual-add-submit'));
+    await waitFor(() => expect(screen.getByTestId('onedrive-picker-add-drive-1')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('onedrive-picker-add-drive-1'));
 
-    // Row now visible.
+    // Close the picker; the row is now on the tab.
+    fireEvent.click(screen.getByTestId('onedrive-picker-close'));
     expect(screen.getByTestId('onedrive-lib-row-0')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
@@ -143,25 +171,36 @@ describe('OneDriveHelperTab', () => {
     expect(payload.inlineSettings.libraries[0]).toMatchObject({
       libraryId: 'tenantId=t1&siteId=s1&webId=w1&listId=l1',
       displayName: 'Finance',
+      siteId: 's1', // spSiteId (bare GUID) flows through
+      webId: 'w1',
+      listId: 'l1',
       targetingMode: 'everyone',
       hiveScope: 'hkcu',
       enabled: true,
     });
   });
 
-  it('rejects a manual library whose id does not start with tenantId=', () => {
+  it('picker manual fallback rejects an id that does not start with tenantId=', async () => {
+    // Disconnected → picker surfaces the manual-paste fallback directly.
+    mockedStatus.mockResolvedValue(false);
+
     render(<OneDriveHelperTab {...baseProps} existingLink={undefined} />);
 
     fireEvent.click(screen.getByTestId('onedrive-add-library-btn'));
-    fireEvent.change(screen.getByTestId('onedrive-manual-library-id'), {
+    await waitFor(() => expect(screen.getByTestId('onedrive-picker-manual-id')).toBeTruthy());
+
+    // Disconnected → libraries never fetched.
+    expect(mockedLibraries).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByTestId('onedrive-picker-manual-id'), {
       target: { value: 'not-a-composite-id' },
     });
-    fireEvent.change(screen.getByTestId('onedrive-manual-display-name'), {
+    fireEvent.change(screen.getByTestId('onedrive-picker-manual-name'), {
       target: { value: 'Bad' },
     });
-    fireEvent.click(screen.getByTestId('onedrive-manual-add-submit'));
+    fireEvent.click(screen.getByTestId('onedrive-picker-manual-submit'));
 
-    // Not added.
+    // Not added to the tab.
     expect(screen.queryByTestId('onedrive-lib-row-0')).toBeNull();
     expect(screen.getByText(/must start with/i)).toBeTruthy();
   });

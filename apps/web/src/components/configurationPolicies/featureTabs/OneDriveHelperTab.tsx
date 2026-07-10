@@ -4,6 +4,7 @@ import type { FeatureTabProps } from './types';
 import { FEATURE_META } from './types';
 import { useFeatureLink } from './useFeatureLink';
 import FeatureTabShell from './FeatureTabShell';
+import OneDriveLibraryPicker, { type PickedLibrary } from './OneDriveLibraryPicker';
 
 type TargetingMode = 'everyone' | 'graph_group' | 'local_ad_group';
 type KfmFolder = 'Desktop' | 'Documents' | 'Pictures';
@@ -108,10 +109,7 @@ export default function OneDriveHelperTab({ policyId, existingLink, onLinkChange
     mergeSettings(defaults, effectiveLink?.inlineSettings as Partial<OneDriveHelperSettings> | undefined),
   );
 
-  const [showAddForm, setShowAddForm] = useState(false);
-  const [manualId, setManualId] = useState('');
-  const [manualName, setManualName] = useState('');
-  const [manualError, setManualError] = useState<string | null>(null);
+  const [showPicker, setShowPicker] = useState(false);
 
   useEffect(() => {
     const link = existingLink ?? parentLink;
@@ -140,29 +138,24 @@ export default function OneDriveHelperTab({ policyId, existingLink, onLinkChange
   const removeLibrary = (index: number) =>
     setSettings((prev) => ({ ...prev, libraries: prev.libraries.filter((_, i) => i !== index) }));
 
-  // Task-3 manual-entry add. The Graph picker (Task 4) will swap this internal
-  // form for OneDriveLibraryPicker; keep the add-flow isolated so that's a small
-  // change (append the returned mapping via addLibrary and drop this form).
-  const addLibrary = (lib: LibraryMapping) =>
-    setSettings((prev) => ({ ...prev, libraries: [...prev.libraries, lib] }));
-
-  const submitManual = () => {
-    const libraryId = manualId.trim();
-    const displayName = manualName.trim();
-    if (!libraryId.startsWith('tenantId=')) {
-      setManualError('Library ID must start with "tenantId=" (paste the composite ID from SharePoint).');
-      return;
-    }
-    if (!displayName) {
-      setManualError('Display name is required.');
-      return;
-    }
-    addLibrary(normalizeLibrary({ libraryId, displayName }));
-    setManualId('');
-    setManualName('');
-    setManualError(null);
-    setShowAddForm(false);
-  };
+  // The Graph picker (OneDriveLibraryPicker) owns the whole add-flow — Graph
+  // browse AND the manual composite-ID paste fallback. It hands back a resolved
+  // library, which we normalize into a full mapping row (default targeting).
+  const handlePickerAdd = (lib: PickedLibrary) =>
+    setSettings((prev) => ({
+      ...prev,
+      libraries: [
+        ...prev.libraries,
+        normalizeLibrary({
+          libraryId: lib.libraryId,
+          displayName: lib.displayName,
+          siteUrl: lib.siteUrl || null,
+          siteId: lib.siteId || null,
+          webId: lib.webId || null,
+          listId: lib.listId || null,
+        }),
+      ],
+    }));
 
   // EventLogTab-style allowlist: build the wire payload from known keys only so
   // legacy/unknown fields on an older link are never re-persisted.
@@ -321,10 +314,7 @@ export default function OneDriveHelperTab({ policyId, existingLink, onLinkChange
             <button
               type="button"
               data-testid="onedrive-add-library-btn"
-              onClick={() => {
-                setShowAddForm((v) => !v);
-                setManualError(null);
-              }}
+              onClick={() => setShowPicker(true)}
               className="inline-flex items-center gap-2 rounded-md border border-primary/40 px-3 py-2 text-sm font-medium text-primary transition hover:bg-primary/10"
             >
               <Plus className="h-4 w-4" />
@@ -332,46 +322,11 @@ export default function OneDriveHelperTab({ policyId, existingLink, onLinkChange
             </button>
           </div>
 
-          {showAddForm && (
-            <div className="space-y-3 rounded-md border border-dashed bg-muted/30 px-4 py-4">
-              <div>
-                <label className="text-sm font-medium">Composite library ID</label>
-                <input
-                  type="text"
-                  data-testid="onedrive-manual-library-id"
-                  value={manualId}
-                  onChange={(e) => setManualId(e.target.value)}
-                  placeholder="tenantId=…&siteId=…&webId=…&listId=…"
-                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                />
-                <p className="mt-1 text-xs text-muted-foreground">Paste the composite ID from SharePoint. A Graph picker replaces this soon.</p>
-              </div>
-              <div>
-                <label className="text-sm font-medium">Display name</label>
-                <input
-                  type="text"
-                  data-testid="onedrive-manual-display-name"
-                  value={manualName}
-                  onChange={(e) => setManualName(e.target.value)}
-                  placeholder="e.g. Marketing Share"
-                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                />
-              </div>
-              {manualError && <p className="text-xs text-destructive">{manualError}</p>}
-              <div className="flex justify-end">
-                <button
-                  type="button"
-                  data-testid="onedrive-manual-add-submit"
-                  onClick={submitManual}
-                  className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90"
-                >
-                  Add
-                </button>
-              </div>
-            </div>
+          {showPicker && (
+            <OneDriveLibraryPicker onAdd={handlePickerAdd} onClose={() => setShowPicker(false)} />
           )}
 
-          {settings.libraries.length === 0 && !showAddForm && (
+          {settings.libraries.length === 0 && (
             <p className="rounded-md border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">
               No libraries mapped yet.
             </p>
