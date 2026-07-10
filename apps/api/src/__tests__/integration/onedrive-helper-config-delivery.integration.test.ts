@@ -531,4 +531,71 @@ describe('heartbeat ingest: onedriveDeviceState', () => {
     );
     expect(rows).toHaveLength(0);
   });
+
+  runDb('persists signedInUpns, and a follow-up heartbeat without the field resets it to []', async () => {
+    const { deviceId, agentId, agentToken } = await seedDeviceWithOnedrivePolicy({
+      base: null,
+      libraries: [],
+    });
+
+    const app = buildHeartbeatApp();
+
+    // First heartbeat — reports signed-in UPNs.
+    const res1 = await app.request(`/${agentId}/heartbeat`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${agentToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        status: 'ok',
+        agentVersion: '1.0.0-test',
+        onedriveDeviceState: {
+          signedIn: true,
+          filesOnDemandOn: true,
+          kfmFolderStates: {},
+          mountedLibraries: ['lib-all'],
+          entitledLibraries: ['lib-all'],
+          signedInUpns: ['Todd@example.com', 'second@example.com'],
+          driftEntries: [],
+        },
+      }),
+    });
+    expect(res1.status, `heartbeat returned ${res1.status}: ${await res1.text()}`).toBe(200);
+
+    const [row1] = await withSystemDbAccessContext(() =>
+      db.select().from(onedriveDeviceState).where(eq(onedriveDeviceState.deviceId, deviceId))
+    );
+    expect(row1, 'onedrive_device_state row should exist after heartbeat').toBeDefined();
+    expect(row1!.signedInUpns).toEqual(['Todd@example.com', 'second@example.com']);
+
+    // Second heartbeat — omits signedInUpns entirely; the zod default must
+    // reset the stored value to [] rather than leaving the stale UPNs behind.
+    const res2 = await app.request(`/${agentId}/heartbeat`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${agentToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        status: 'ok',
+        agentVersion: '1.0.0-test',
+        onedriveDeviceState: {
+          signedIn: true,
+          filesOnDemandOn: true,
+          kfmFolderStates: {},
+          mountedLibraries: ['lib-all'],
+          entitledLibraries: ['lib-all'],
+          driftEntries: [],
+        },
+      }),
+    });
+    expect(res2.status, `heartbeat returned ${res2.status}: ${await res2.text()}`).toBe(200);
+
+    const [row2] = await withSystemDbAccessContext(() =>
+      db.select().from(onedriveDeviceState).where(eq(onedriveDeviceState.deviceId, deviceId))
+    );
+    expect(row2, 'onedrive_device_state row should still exist after second heartbeat').toBeDefined();
+    expect(row2!.signedInUpns).toEqual([]);
+  });
 });

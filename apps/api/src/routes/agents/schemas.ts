@@ -212,6 +212,7 @@ export const heartbeatSchema = z.object({
     kfmFolderStates: z.record(z.string(), z.string()).default({}),
     mountedLibraries: z.array(z.string().max(1024)).default([]),
     entitledLibraries: z.array(z.string().max(1024)).default([]),
+    signedInUpns: z.array(z.string().max(320)).max(16).default([]),
     driftEntries: z.array(z.record(z.string(), z.unknown())).default([]),
   }).optional().catch(undefined),
 });

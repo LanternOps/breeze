@@ -64,6 +64,7 @@ export const onedriveDeviceState = pgTable('onedrive_device_state', {
   kfmFolderStates: jsonb('kfm_folder_states').notNull().default({}),
   mountedLibraries: jsonb('mounted_libraries').notNull().default([]),
   entitledLibraries: jsonb('entitled_libraries').notNull().default([]),
+  signedInUpns: jsonb('signed_in_upns').notNull().default([]),
   driftEntries: jsonb('drift_entries').notNull().default([]),
   lastReportedAt: timestamp('last_reported_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
