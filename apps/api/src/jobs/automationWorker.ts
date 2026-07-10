@@ -1000,4 +1000,5 @@ export async function shutdownAutomationWorker(): Promise<void> {
 // resolution (#2286). Internal helper, not part of the worker's public surface.
 export const __testOnly = {
   resolveDeviceIdsForAssignment,
+  processTriggerConfigPolicySchedule,
 };

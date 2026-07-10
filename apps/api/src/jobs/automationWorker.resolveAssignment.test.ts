@@ -64,7 +64,7 @@ import { __testOnly } from './automationWorker';
 import { db } from '../db';
 import { organizations } from '../db/schema';
 
-const { resolveDeviceIdsForAssignment } = __testOnly;
+const { resolveDeviceIdsForAssignment, processTriggerConfigPolicySchedule } = __testOnly;
 
 // Drizzle's `eq`/`and` build a real SQL AST (queryChunks tree), even though our
 // mocked schema columns are plain strings rather than real Column objects —
@@ -212,11 +212,108 @@ describe('automationWorker resolveDeviceIdsForAssignment — partner re-clamp (#
     expect(whereArgs).toContain('partner-123');
   });
 
+  it('clamps an org-owned policy subset resolution to the POLICY org even when the target differs (cross-org forge)', async () => {
+    // Target id and policyOrgId are deliberately DIFFERENT strings so this
+    // test fails if the `if (policyOrgId) conditions.push(...)` clamp is
+    // dropped — the org-owned tests above use the same id for both and
+    // cannot distinguish the target filter from the org clamp.
+    const chain: any = {
+      from: vi.fn(() => chain),
+      where: vi.fn(() => Promise.resolve([])),
+    };
+    vi.mocked(db.select).mockReturnValueOnce(chain);
+
+    const ids = await resolveDeviceIdsForAssignment('site', 'site-x', 'org-y', null);
+
+    expect(ids).toEqual([]);
+    const whereArgs = collectSqlLeafStrings(chain.where.mock.calls[0][0]);
+    expect(whereArgs).toContain('site-x');
+    expect(whereArgs).toContain('org-y');
+  });
+
   it('returns [] for an unknown assignment level without querying', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const ids = await resolveDeviceIdsForAssignment('bogus', 'x', null, null);
     expect(ids).toEqual([]);
     expect(vi.mocked(db.select)).not.toHaveBeenCalled();
     warn.mockRestore();
+  });
+});
+
+describe('processTriggerConfigPolicySchedule — run-time policy-owner load (#2286)', () => {
+  beforeEach(() => {
+    vi.mocked(db.select).mockReset();
+  });
+
+  const jobData = {
+    type: 'trigger-config-policy-schedule',
+    configPolicyAutomationId: 'cp-auto-1',
+    slotKey: '2026-01-01T10:00',
+    assignmentTargets: [{ level: 'organization', targetId: 'org-x' }],
+  } as any;
+
+  it("skips with 'config_policy_not_found' when the featureLink→policy join resolves nothing", async () => {
+    // Chain 1: cpAutomation lookup — found and enabled.
+    const cpChain: any = {
+      from: vi.fn(() => cpChain),
+      where: vi.fn(() => cpChain),
+      limit: vi.fn(() => Promise.resolve([{ id: 'cp-auto-1', featureLinkId: 'fl-1' }])),
+    };
+    // Chain 2: policy-owner join — empty (policy/feature link deleted between
+    // enqueue and run; race window only, given FK cascades).
+    const ownerChain: any = {
+      from: vi.fn(() => ownerChain),
+      innerJoin: vi.fn(() => ownerChain),
+      where: vi.fn(() => ownerChain),
+      limit: vi.fn(() => Promise.resolve([])),
+    };
+    vi.mocked(db.select).mockReturnValueOnce(cpChain).mockReturnValueOnce(ownerChain);
+
+    const result = await processTriggerConfigPolicySchedule(jobData);
+
+    expect(result).toEqual({ skipped: 'config_policy_not_found' });
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
+  });
+
+  it('threads the LOADED policy ownership into device resolution (partner clamp reaches the resolver)', async () => {
+    // This is the seam that wires the clamp into the run path: if a refactor
+    // dropped the policy-owner load or passed (null, null) through, the
+    // resolver-level tests above would stay green while the TOCTOU hole
+    // silently reopened. Prove the partnerId loaded from the DB (NOT from job
+    // data — the job carries no ownership) lands in the resolver's WHERE.
+    const cpChain: any = {
+      from: vi.fn(() => cpChain),
+      where: vi.fn(() => cpChain),
+      limit: vi.fn(() => Promise.resolve([{ id: 'cp-auto-1', featureLinkId: 'fl-1' }])),
+    };
+    // Partner-owned library policy: orgId null, partnerId set.
+    const ownerChain: any = {
+      from: vi.fn(() => ownerChain),
+      innerJoin: vi.fn(() => ownerChain),
+      where: vi.fn(() => ownerChain),
+      limit: vi.fn(() => Promise.resolve([{ orgId: null, partnerId: 'partner-123' }])),
+    };
+    // Chain 3: the resolver's clamped organization branch. Resolves no devices
+    // so the handler stops at 'no_target_devices' — before the maintenance
+    // filter and BullMQ enqueue, which are irrelevant to this seam.
+    const resolveChain: any = {
+      from: vi.fn(() => resolveChain),
+      innerJoin: vi.fn(() => resolveChain),
+      where: vi.fn(() => Promise.resolve([])),
+    };
+    vi.mocked(db.select)
+      .mockReturnValueOnce(cpChain)
+      .mockReturnValueOnce(ownerChain)
+      .mockReturnValueOnce(resolveChain);
+
+    const result = await processTriggerConfigPolicySchedule(jobData);
+
+    expect(result).toEqual({ skipped: 'no_target_devices' });
+    // Partner-owned → the subset branch re-clamps via the organizations join.
+    expect(resolveChain.innerJoin).toHaveBeenCalledTimes(1);
+    expect(resolveChain.innerJoin.mock.calls[0][0]).toBe(organizations);
+    const whereArgs = collectSqlLeafStrings(resolveChain.where.mock.calls[0][0]);
+    expect(whereArgs).toContain('org-x');
+    expect(whereArgs).toContain('partner-123');
   });
 });
