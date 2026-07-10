@@ -247,22 +247,66 @@ func isTokenGroupMember(s userSession, groupName string) bool {
 }
 
 // restartOneDrive best-effort kills + relaunches OneDrive in each session so
-// policy/AutoMount changes take effect promptly. Errors are ignored: OneDrive
-// also picks changes up on its own schedule.
+// policy/AutoMount changes take effect promptly. Confirmed-path-first: for
+// each session we resolve a launchable, absolute OneDrive.exe path (machine
+// install, else the user's real per-user install resolved via their HKU
+// Volatile Environment) BEFORE ever taskkilling. SpawnProcessInSessionWithArgs
+// passes filepath.Dir(binaryPath) as CreateProcessAsUser's lpCurrentDirectory,
+// so an unexpanded literal like `%LOCALAPPDATA%\...` can never resolve — that
+// would kill OneDrive with no way to bring it back. If no launchable path is
+// found for a session, we skip that session's taskkill entirely: failure mode
+// is "no restart", never "killed and not restarted". Errors from the spawn
+// itself are ignored: OneDrive also picks changes up on its own schedule.
 func restartOneDrive(sessions []userSession) {
 	machineExe := `C:\Program Files\Microsoft OneDrive\OneDrive.exe`
+	machineExeOK := false
+	if _, err := os.Stat(machineExe); err == nil {
+		machineExeOK = true
+	}
 	for _, s := range sessions {
+		exe := ""
+		if machineExeOK {
+			exe = machineExe
+		} else if userExe := resolveUserOneDriveExe(s.sid); userExe != "" {
+			exe = userExe
+		}
+		if exe == "" {
+			// No confirmed launch path for this session: never kill without a
+			// way to relaunch.
+			continue
+		}
 		_ = sessionbroker.SpawnProcessInSessionWithArgs(
 			`C:\Windows\System32\taskkill.exe`, []string{"/f", "/im", "OneDrive.exe"}, s.sessionID)
-		if _, err := os.Stat(machineExe); err == nil {
-			_ = sessionbroker.SpawnProcessInSessionWithArgs(machineExe, []string{"/background"}, s.sessionID)
-		} else {
-			// Per-user install path; %LOCALAPPDATA% expands in the user's env
-			// block inside the spawn's cmd wrapper.
-			_ = sessionbroker.SpawnProcessInSessionWithArgs(
-				`%LOCALAPPDATA%\Microsoft\OneDrive\OneDrive.exe`, []string{"/background"}, s.sessionID)
-		}
+		_ = sessionbroker.SpawnProcessInSessionWithArgs(exe, []string{"/background"}, s.sessionID)
 	}
+}
+
+// resolveUserOneDriveExe resolves the per-user OneDrive.exe path for sid by
+// reading the user's real LocalAppData out of their HKU\<SID>\Volatile
+// Environment values (populated by the OS at logon), then stat-ing the
+// resulting path. Returns "" if the environment values or the exe itself
+// can't be resolved/confirmed.
+func resolveUserOneDriveExe(sid string) string {
+	k, err := registry.OpenKey(registry.USERS, sid+`\Volatile Environment`, registry.QUERY_VALUE)
+	if err != nil {
+		return ""
+	}
+	defer k.Close()
+
+	localAppData, _, err := k.GetStringValue("LOCALAPPDATA")
+	if err != nil || localAppData == "" {
+		userProfile, _, err := k.GetStringValue("USERPROFILE")
+		if err != nil || userProfile == "" {
+			return ""
+		}
+		localAppData = userProfile + `\AppData\Local`
+	}
+
+	exe := localAppData + `\Microsoft\OneDrive\OneDrive.exe`
+	if _, err := os.Stat(exe); err != nil {
+		return ""
+	}
+	return exe
 }
 
 // shellFolderValues maps the KFM folder names we manage to their
