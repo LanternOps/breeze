@@ -401,6 +401,7 @@ const envSchema = z
     RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: z.string().optional(),
     BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: z.string().optional(),
     IS_HOSTED: z.string().optional(),
+    AGENT_BACKUP_SERVER_URL: z.string().optional(),
 
     // Controlled agent-fleet rollout (decouple registration from promotion).
     // When false, binarySync registers new binaries WITHOUT touching
@@ -546,6 +547,33 @@ const envSchema = z
   // --- Cross-field refinements (insecure defaults for required secrets) -------
   .superRefine((data, ctx) => {
     const isProduction = data.NODE_ENV === 'production';
+
+    // #2288 — instance-level backup control-plane URL pushed to agents.
+    // Malformed value = refuse to boot; a silently-dropped backup URL would
+    // defeat the whole failover story exactly when it's needed.
+    const backupUrlRaw = (data.AGENT_BACKUP_SERVER_URL ?? '').trim();
+    if (backupUrlRaw) {
+      let parsed: URL | null = null;
+      try {
+        parsed = new URL(backupUrlRaw);
+      } catch {
+        parsed = null;
+      }
+      const isLoopback =
+        parsed !== null &&
+        ['localhost', '127.0.0.1', '[::1]', '::1'].includes(parsed.hostname);
+      const ok =
+        parsed !== null &&
+        (parsed.protocol === 'https:' || (parsed.protocol === 'http:' && isLoopback));
+      if (!ok) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['AGENT_BACKUP_SERVER_URL'],
+          message:
+            'AGENT_BACKUP_SERVER_URL must be a valid https:// URL (http:// allowed only for localhost)',
+        });
+      }
+    }
 
     // --- JWT signing keyring (zero-downtime rotation) ---
     // Validated in every environment: a malformed keyring would break auth
@@ -1289,6 +1317,7 @@ export function validateConfig(): AppConfig {
     RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS,
     BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: env.BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS,
     IS_HOSTED: env.IS_HOSTED,
+    AGENT_BACKUP_SERVER_URL: env.AGENT_BACKUP_SERVER_URL,
     ENABLE_2FA: env.ENABLE_2FA,
     OAUTH_DCR_ENABLED: env.OAUTH_DCR_ENABLED,
     OAUTH_DCR_REQUIRE_IAT: env.OAUTH_DCR_REQUIRE_IAT,

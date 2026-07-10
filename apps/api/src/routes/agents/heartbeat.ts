@@ -796,21 +796,23 @@ if (latestHelper) {
     captureException(err);
   }
 
-  let mergedConfigUpdate: Record<string, unknown> | null = null;
-  if (eventLogSettings || monitoringSettings || onedriveSettings || patchSourceSettings) {
-    mergedConfigUpdate = {};
-    if (eventLogSettings) {
-      mergedConfigUpdate.event_log_settings = eventLogSettings;
-    }
-    if (monitoringSettings) {
-      mergedConfigUpdate.monitoring_settings = monitoringSettings;
-    }
-    if (onedriveSettings) {
-      mergedConfigUpdate.onedrive_helper_settings = onedriveSettings;
-    }
-    if (patchSourceSettings) {
-      mergedConfigUpdate.patch_source_settings = patchSourceSettings;
-    }
+  // #2288 — backup control-plane URL. ALWAYS present: the configured value,
+  // or '' so agents clear a previously-pushed backup (absent = old API =
+  // no change; '' = authoritative clear).
+  const mergedConfigUpdate: Record<string, unknown> = {
+    backup_server_url: (process.env.AGENT_BACKUP_SERVER_URL ?? '').trim(),
+  };
+  if (eventLogSettings) {
+    mergedConfigUpdate.event_log_settings = eventLogSettings;
+  }
+  if (monitoringSettings) {
+    mergedConfigUpdate.monitoring_settings = monitoringSettings;
+  }
+  if (onedriveSettings) {
+    mergedConfigUpdate.onedrive_helper_settings = onedriveSettings;
+  }
+  if (patchSourceSettings) {
+    mergedConfigUpdate.patch_source_settings = patchSourceSettings;
   }
 
   const authenticatedWithPreviousToken = c.get('agentTokenRotationRequired') === true;

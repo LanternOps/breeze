@@ -1501,6 +1501,9 @@ async function bootstrap(): Promise<void> {
   // The validated config is stored as a singleton; retrieve later via getConfig().
   const config = validateConfig();
   console.log(`[config] Validated: NODE_ENV=${config.NODE_ENV}, port=${config.API_PORT}`);
+  if ((process.env.AGENT_BACKUP_SERVER_URL ?? '').trim()) {
+    console.log(`[config] AGENT_BACKUP_SERVER_URL active: ${process.env.AGENT_BACKUP_SERVER_URL!.trim()}`);
+  }
 
   // Auto-migrate schema and seed on first boot (set AUTO_MIGRATE=false to
   // disable). Runs BEFORE runStartupChecks because ensureAppRole() — called
