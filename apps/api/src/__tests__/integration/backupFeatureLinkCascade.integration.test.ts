@@ -19,7 +19,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { eq } from 'drizzle-orm';
 import './setup';
 import { getTestDb } from './setup';
-import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { withDbAccessContext, type DbAccessContext } from '../../db';
 import { partners, organizations, sites, devices } from '../../db/schema';
 import { configurationPolicies, configPolicyFeatureLinks } from '../../db/schema/configurationPolicies';
 import { backupConfigs, backupJobs, backupSnapshots } from '../../db/schema/backup';
@@ -30,6 +30,7 @@ let orgId: string;
 let policyId: string;
 let featureLinkId: string;
 let backupJobId: string;
+let orgContext: DbAccessContext;
 
 beforeEach(async () => {
   const tdb = getTestDb();
@@ -111,10 +112,21 @@ beforeEach(async () => {
     status: 'failed',
     startedAt: new Date(),
   });
+
+  // The real endpoints delete the feature link under an org-scoped breeze_app
+  // context; exercise that path rather than a system context.
+  orgContext = {
+    scope: 'organization',
+    orgId,
+    accessibleOrgIds: [orgId],
+    accessiblePartnerIds: null,
+    userId: null,
+    currentPartnerId: p!.id,
+  };
 });
 
-describe('#2302 backup feature-link ON DELETE CASCADE', () => {
-  it('removeFeatureLink succeeds and cascade-deletes dependent backup rows', async () => {
+describe('#2302 backup feature-link FK actions', () => {
+  it('removeFeatureLink succeeds and detaches (SET NULL) backup history without destroying it', async () => {
     const tdb = getTestDb();
 
     // Precondition: the job (and children) exist and reference the feature link.
@@ -122,20 +134,37 @@ describe('#2302 backup feature-link ON DELETE CASCADE', () => {
       await tdb.select().from(backupJobs).where(eq(backupJobs.featureLinkId, featureLinkId))
     ).toHaveLength(1);
 
-    // The reported code path. RED before the migration: throws PostgresError
-    // 23503 on backup_jobs_feature_link_id_fkey.
-    const deleted = await runOutsideDbContext(() =>
-      withSystemDbAccessContext(() => removeFeatureLink(featureLinkId, policyId))
+    // The reported code path, under the endpoint's org-scoped context. RED before
+    // the migration: threw PostgresError 23503 on backup_jobs_feature_link_id_fkey.
+    const deleted = await withDbAccessContext(orgContext, () =>
+      removeFeatureLink(featureLinkId, policyId)
     );
     expect(deleted?.id).toBe(featureLinkId);
 
-    // The link and its whole backup chain are gone.
+    // The link is gone...
     expect(
       await tdb.select().from(configPolicyFeatureLinks).where(eq(configPolicyFeatureLinks.id, featureLinkId))
     ).toHaveLength(0);
+
+    // ...but the backup history SURVIVES, detached (feature_link_id nulled), so a
+    // device's backup jobs / snapshots / verifications are not silently destroyed
+    // just because the Backup feature was unlinked.
+    const [job] = await tdb.select().from(backupJobs).where(eq(backupJobs.id, backupJobId));
+    expect(job).toBeDefined();
+    expect(job!.featureLinkId).toBeNull();
     expect(
-      await tdb.select().from(backupJobs).where(eq(backupJobs.id, backupJobId))
-    ).toHaveLength(0);
+      await tdb.select().from(backupSnapshots).where(eq(backupSnapshots.jobId, backupJobId))
+    ).toHaveLength(1);
+    expect(
+      await tdb.select().from(backupVerifications).where(eq(backupVerifications.backupJobId, backupJobId))
+    ).toHaveLength(1);
+  });
+
+  it('deleting a backup_job cascades its snapshots and verifications', async () => {
+    // The children kept ON DELETE CASCADE: they have no meaning without their job
+    // row, so retention / org-delete removing a backup_job takes them with it.
+    const tdb = getTestDb();
+    await tdb.delete(backupJobs).where(eq(backupJobs.id, backupJobId));
     expect(
       await tdb.select().from(backupSnapshots).where(eq(backupSnapshots.jobId, backupJobId))
     ).toHaveLength(0);

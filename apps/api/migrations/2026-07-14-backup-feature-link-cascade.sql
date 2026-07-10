@@ -5,15 +5,17 @@
 -- the FK and returns 500, permanently blocking deletion of any policy whose backup
 -- has ever produced a job row (including failed runs).
 --
--- Fix: give the backup feature-link -> jobs -> children chain the same ON DELETE
--- CASCADE the other feature-link children already have, so removing a feature link
--- (or deleting a policy) cleans up its dependent backup rows. Consistent with the
--- org-delete path, which already cascades/deletes backup_jobs (tenantCascade.ts).
---
--- Three FKs, in cascade order feature_link -> backup_jobs -> {snapshots,verifications}:
---   backup_jobs.feature_link_id           -> config_policy_feature_links.id
---   backup_snapshots.job_id               -> backup_jobs.id
---   backup_verifications.backup_job_id    -> backup_jobs.id
+-- Fix: unblock the delete without destroying backup history.
+--   backup_jobs.feature_link_id -> config_policy_feature_links : ON DELETE SET NULL
+--     feature_link_id is nullable and backup_jobs are execution/audit history with
+--     a lifecycle independent of the policy link. Cascade here would silently wipe
+--     the entire backup history (and the only rows tracking objects already in
+--     storage, which aren't cleaned up) merely on unlinking the Backup feature.
+--     SET NULL fixes the 500 while keeping history attached to the device.
+--   backup_snapshots.job_id            -> backup_jobs : ON DELETE CASCADE
+--   backup_verifications.backup_job_id -> backup_jobs : ON DELETE CASCADE
+--     these children genuinely have no meaning without their job row, so they
+--     cascade when a backup_job itself is deleted (retention / org-delete).
 -- (backup_snapshots' own children, e.g. backup_snapshot_files, already cascade.)
 --
 -- Idempotent: each FK is looked up by (table, column) so we drop whatever it is
@@ -35,7 +37,7 @@ BEGIN
   END IF;
   ALTER TABLE backup_jobs
     ADD CONSTRAINT backup_jobs_feature_link_id_fkey
-    FOREIGN KEY (feature_link_id) REFERENCES config_policy_feature_links (id) ON DELETE CASCADE;
+    FOREIGN KEY (feature_link_id) REFERENCES config_policy_feature_links (id) ON DELETE SET NULL;
 
   -- 2) backup_snapshots.job_id -> backup_jobs(id)
   SELECT con.conname INTO cname
