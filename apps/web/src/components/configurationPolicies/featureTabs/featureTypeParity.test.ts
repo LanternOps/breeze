@@ -33,4 +33,13 @@ describe('config-policy editor feature-type parity (#2004)', () => {
       expect(CONFIG_FEATURE_TYPES).toContain(excluded);
     }
   });
+
+  it('excludes nothing — every canonical feature type has an editor tab', () => {
+    // onedrive_helper gained its editor tab in the phase-3 work, emptying the
+    // exclusion list. The mechanism is retained (see types.ts) but currently
+    // exposes the full canonical set; assert that so a stray re-exclusion is
+    // caught here rather than silently hiding a tab.
+    expect([...EDITOR_EXCLUDED_FEATURE_TYPES]).toEqual([]);
+    expect(Object.keys(FEATURE_META).sort()).toEqual([...CONFIG_FEATURE_TYPES].sort());
+  });
 });
