@@ -377,15 +377,27 @@ func readDeviceState(sessions []userSession, entitled []string, applied []Librar
 				}
 			}
 		}
+
+		// Personal OneDrive folder for this account, read before acct.Close() so
+		// we can exclude it below when collecting Tenants value names.
+		userFolder, _, _ := acct.GetStringValue("UserFolder")
 		acct.Close()
 
 		// Mounted scopes: Tenants\<TenantName> value names are local folder paths.
+		// The tenant cache also lists the signed-in user's own personal OneDrive
+		// folder (Business1's UserFolder) alongside real SharePoint library
+		// mounts — live spike validation (2026-06-19 doc; live-validated
+		// 2026-07-09) confirmed every signed-in device was misreporting its
+		// personal folder as a mounted library. Skip it explicitly.
 		if tenants, e := registry.OpenKey(registry.USERS, s.sid+`\`+accountKeySuffix+`\Tenants`, registry.ENUMERATE_SUB_KEYS); e == nil {
 			if subs, se := tenants.ReadSubKeyNames(-1); se == nil {
 				for _, sub := range subs {
 					if tk, te := registry.OpenKey(registry.USERS, s.sid+`\`+accountKeySuffix+`\Tenants\`+sub, registry.QUERY_VALUE); te == nil {
 						if names, ne := tk.ReadValueNames(-1); ne == nil {
 							for _, n := range names {
+								if userFolder != "" && strings.EqualFold(n, userFolder) {
+									continue
+								}
 								if !containsString(state.MountedLibraries, n) {
 									state.MountedLibraries = append(state.MountedLibraries, n)
 								}
