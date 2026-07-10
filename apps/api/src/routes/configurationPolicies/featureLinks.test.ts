@@ -577,7 +577,7 @@ describe('featureLinks routes', () => {
       expect(expectedSettings.restartOnChange).toBe(true);
       expect(expectedSettings.libraries[0]).toMatchObject({ hiveScope: 'hkcu', enabled: true });
 
-      const [, , , inlineSettingsArg] = addFeatureLinkMock.mock.calls[0];
+      const [, , , inlineSettingsArg] = addFeatureLinkMock.mock.calls[0]!;
       expect(inlineSettingsArg).toEqual(expectedSettings);
     });
 
