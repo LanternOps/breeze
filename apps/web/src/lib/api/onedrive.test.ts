@@ -48,6 +48,18 @@ describe('onedrive api client', () => {
       fetchWithAuth.mockResolvedValue(new Response(JSON.stringify({ connected: 'true' })));
       expect(await fetchM365ConnectionStatus()).toBe(false);
     });
+
+    it('resolves false (does not throw) on a 404 when the M365 flag is disabled server-side', async () => {
+      fetchWithAuth.mockResolvedValue(
+        new Response(JSON.stringify({ error: 'Microsoft 365 integration is not enabled' }), { status: 404 }),
+      );
+      await expect(fetchM365ConnectionStatus()).resolves.toBe(false);
+    });
+
+    it('resolves false (does not throw) on any other non-ok response', async () => {
+      fetchWithAuth.mockResolvedValue(new Response(JSON.stringify({ error: 'boom' }), { status: 500 }));
+      await expect(fetchM365ConnectionStatus()).resolves.toBe(false);
+    });
   });
 
   describe('fetchOneDriveLibraries', () => {

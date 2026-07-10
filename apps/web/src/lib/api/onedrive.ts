@@ -43,7 +43,12 @@ async function extractError(res: Response): Promise<string> {
 
 export async function fetchM365ConnectionStatus(orgId?: string): Promise<boolean> {
   const res = await fetchWithAuth(`/m365/connection${orgQuery(orgId)}`);
-  if (!res.ok) throw new Error(await extractError(res));
+  // A non-ok response (including the 404 the server returns for the whole
+  // m365Routes group when the M365 integration feature-flag is off) simply
+  // means "cannot browse via Graph right now" — treat it as disconnected
+  // rather than throwing, so the UI falls back to manual library-ID paste
+  // instead of showing an error state with no way forward.
+  if (!res.ok) return false;
   const data = (await res.json()) as { connected?: unknown };
   return data.connected === true;
 }

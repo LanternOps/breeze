@@ -52,6 +52,27 @@ describe('OneDriveLibraryPicker', () => {
     expect(mockedLibraries).not.toHaveBeenCalled();
   });
 
+  it('connection probe 404s (M365 flag disabled server-side) → disconnected state, not error, libraries never fetched', async () => {
+    // fetchM365ConnectionStatus never throws for a non-ok response (see onedrive.ts) —
+    // a flag-disabled 404 resolves to `false` here, same as any other disconnected probe.
+    mockedStatus.mockResolvedValue(false);
+
+    render(<OneDriveLibraryPicker onAdd={onAdd} onClose={onClose} />);
+
+    await waitFor(() => expect(screen.getByTestId('onedrive-picker-no-connection')).toBeTruthy());
+
+    // Manual-paste fallback is reachable — this is the whole point of the fix.
+    expect(screen.getByTestId('onedrive-picker-manual-id')).toBeTruthy();
+    expect(screen.getByTestId('onedrive-picker-manual-name')).toBeTruthy();
+
+    // Must NOT land in the error state.
+    expect(screen.queryByTestId('onedrive-picker-error')).toBeNull();
+    expect(screen.queryByTestId('onedrive-picker-retry')).toBeNull();
+
+    // Libraries never fetched when disconnected.
+    expect(mockedLibraries).not.toHaveBeenCalled();
+  });
+
   it('manual fallback rejects an id that does not start with tenantId=', async () => {
     mockedStatus.mockResolvedValue(false);
 
