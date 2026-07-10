@@ -26,6 +26,7 @@ import {
   TrendingUp,
   HeartPulse,
   ShieldCheck,
+  Link2,
 } from 'lucide-react';
 import { formatUptime } from '../../lib/utils';
 import type { Device, DeviceStatus } from './DeviceList';
@@ -62,6 +63,7 @@ import DeviceAnomaliesPanel from './DeviceAnomaliesPanel';
 import DeviceReliabilityPanel from './DeviceReliabilityPanel';
 import DeviceMonitoringTab from './DeviceMonitoringTab';
 import DeviceComplianceTab from './DeviceComplianceTab';
+import DeviceLinkedProfilesTab from './DeviceLinkedProfilesTab';
 
 type Tab =
   | 'overview'
@@ -88,6 +90,7 @@ type Tab =
   | 'playbooks'
   | 'peripherals'
   | 'backup'
+  | 'linked-profiles'
   | 'tickets';
 
 type DeviceDetailsProps = {
@@ -138,7 +141,7 @@ const VALID_TABS: Tab[] = [
   'overview', 'details', 'hardware', 'software', 'patches', 'vulnerabilities', 'security',
   'management', 'effective-config', 'alerts', 'scripts', 'performance',
   'anomalies', 'eventlog', 'monitoring', 'compliance', 'activities', 'connections', 'filesystem', 'ip-history',
-  'boot-performance', 'playbooks', 'peripherals', 'backup', 'tickets',
+  'boot-performance', 'playbooks', 'peripherals', 'backup', 'linked-profiles', 'tickets',
 ];
 
 function getTabFromHash(): Tab {
@@ -184,6 +187,7 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
     // --- Summary ---
     { id: 'overview', label: 'Overview', icon: <Monitor className="h-4 w-4" /> },
     { id: 'details', label: 'Details', icon: <Info className="h-4 w-4" />, title: 'OS, network, and system details' },
+    { id: 'linked-profiles', label: 'Linked Profiles', icon: <Link2 className="h-4 w-4" />, title: 'Multi-boot OS profiles linked to this machine' },
     // --- Monitoring ---
     { id: 'performance', label: 'Performance', icon: <Activity className="h-4 w-4" />, separator: true, title: 'CPU, RAM, and disk usage over time' },
     { id: 'alerts', label: 'Alerts', icon: <AlertTriangle className="h-4 w-4" />, title: 'Alert history for this device' },
@@ -326,6 +330,10 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
 
       {activeTab === 'details' && (
         <DeviceInfoTab deviceId={device.id} />
+      )}
+
+      {activeTab === 'linked-profiles' && (
+        <DeviceLinkedProfilesTab deviceId={device.id} />
       )}
 
       {activeTab === 'hardware' && (

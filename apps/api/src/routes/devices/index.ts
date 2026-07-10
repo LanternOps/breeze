@@ -25,6 +25,7 @@ import { actuateElevationRoutes } from './actuateElevation';
 import { softwareActionsRoutes } from './softwareActions';
 import { networkRoutes } from './network';
 import { customFieldValuesRoutes } from './customFieldValues';
+import { linksRoutes } from './links';
 
 export const deviceRoutes = new Hono();
 
@@ -57,6 +58,10 @@ deviceRoutes.route('/', moveOrgRoutes);
 // routes — `GET /network` is a static path that must not be eaten by the
 // `/:id` matcher in coreRoutes.
 deviceRoutes.route('/', networkRoutes);
+
+// Mount linked-device-profile routes (#2138) BEFORE core — the static
+// `/link-groups` paths must not be eaten by the `/:id` matcher in coreRoutes.
+deviceRoutes.route('/', linksRoutes);
 
 // Mount core routes (/, /:id, PATCH /:id, DELETE /:id)
 deviceRoutes.route('/', coreRoutes);

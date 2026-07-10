@@ -183,3 +183,24 @@ export const createGroupSchema = z.object({
 });
 
 export const updateGroupSchema = createGroupSchema.partial().omit({ orgId: true });
+
+// Linked device profiles for multi-boot systems (#2138). A link group ties 2+
+// device records together as boot profiles of one physical machine. Sizes track
+// MIN_LINK_GROUP_SIZE / MAX_LINK_GROUP_SIZE in services/deviceLinkGroups.ts.
+export const createLinkGroupSchema = z.object({
+  name: z.string().min(1).max(255).optional(),
+  deviceIds: z.array(z.string().guid()).min(2).max(10),
+});
+
+export const updateLinkGroupSchema = z
+  .object({
+    // Nullable so the label can be cleared (the UI then shows its generic
+    // "Linked boot profiles" heading).
+    name: z.string().min(1).max(255).nullable().optional(),
+    addDeviceIds: z.array(z.string().guid()).min(1).max(10).optional(),
+    removeDeviceIds: z.array(z.string().guid()).min(1).max(10).optional(),
+  })
+  .refine(
+    (d) => d.name !== undefined || d.addDeviceIds !== undefined || d.removeDeviceIds !== undefined,
+    { message: 'Provide at least one of name, addDeviceIds, or removeDeviceIds' },
+  );
