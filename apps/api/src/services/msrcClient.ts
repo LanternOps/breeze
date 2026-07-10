@@ -1,3 +1,5 @@
+import { isValidCveId, warnMalformedCveIds } from './cveId';
+
 const BASE_URL = 'https://api.msrc.microsoft.com/cvrf/v3.0';
 
 export interface MsrcRecord {
@@ -101,9 +103,17 @@ export function parseCvrf(doc: unknown): MsrcRecord[] {
   }
 
   const records: MsrcRecord[] = [];
+  const malformedCveIds = new Set<string>();
   for (const vulnerability of asArray<CvrfVulnerability>(cvrf.Vulnerability)) {
     const cveId = stringValue(vulnerability.CVE);
     if (!cveId) continue;
+    // Upstream garbage guard (#2261): Microsoft has shipped CVRF records whose
+    // CVE id is free text longer than varchar(32). Drop them here so one bad
+    // record can't abort the whole sync transaction.
+    if (!isValidCveId(cveId)) {
+      malformedCveIds.add(cveId);
+      continue;
+    }
 
     const scoreSet = asArray<CvrfScoreSet>(vulnerability.CVSSScoreSets)[0];
     const cvssScore = numericValue(scoreSet?.BaseScore);
@@ -135,6 +145,7 @@ export function parseCvrf(doc: unknown): MsrcRecord[] {
     }
   }
 
+  warnMalformedCveIds('MsrcClient', malformedCveIds);
   return records;
 }
 

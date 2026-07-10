@@ -1,3 +1,4 @@
+import { isValidCveId, warnMalformedCveIds } from './cveId';
 import type { VersionRange } from './versionCompare';
 
 const NVD_CVES_URL = 'https://services.nvd.nist.gov/rest/json/cves/2.0';
@@ -65,11 +66,18 @@ function flattenNodes(configurations: unknown): JsonObject[] {
 export function parseNvd(doc: unknown): NvdRecord[] {
   const root = asObject(doc);
   const records: NvdRecord[] = [];
+  const malformedCveIds = new Set<string>();
 
   for (const item of asArray(root?.vulnerabilities)) {
     const cve = asObject(asObject(item)?.cve);
     const cveId = asString(cve?.id);
     if (!cve || !cveId) continue;
+    // Upstream garbage guard (#2261): drop records whose CVE id doesn't match
+    // the canonical shape (would overflow varchar(32) and abort the sync).
+    if (!isValidCveId(cveId)) {
+      malformedCveIds.add(cveId);
+      continue;
+    }
 
     const metric = selectedMetric(cve);
     const cvssData = asObject(metric?.cvssData);
@@ -104,6 +112,7 @@ export function parseNvd(doc: unknown): NvdRecord[] {
     });
   }
 
+  warnMalformedCveIds('NvdClient', malformedCveIds);
   return records;
 }
 
