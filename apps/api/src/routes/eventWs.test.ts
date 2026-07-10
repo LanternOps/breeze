@@ -506,6 +506,45 @@ describe('createEventWsTicketRoute', () => {
     expect(identity).toEqual({ userId: 'user-abc', orgIds: ['org-a', 'org-b'] });
   });
 
+  // Regression guard (#2256): the All-Organizations Devices view opens the
+  // event stream WITHOUT `orgId` or `allOrgs=1`. A partner user with multiple
+  // accessible orgs must get a ticket scoped to ALL of them — the old
+  // behaviour silently narrowed to `orgIds[0]`, so live device.online/offline
+  // events for every other org were never delivered until a manual refresh.
+  it('issues a multi-org ticket for partner users by default (no orgId, no allOrgs) — #2256', async () => {
+    const { Hono } = await import('hono');
+    const app = new Hono();
+
+    app.use('*', async (c, next) => {
+      c.set('auth', {
+        user: { id: 'user-abc', email: 'a@b.com', name: 'A' },
+        orgId: null,
+        scope: 'partner',
+        partnerId: 'partner-1',
+        canAccessOrg: () => true,
+        accessibleOrgIds: ['org-a', 'org-b', 'org-c'],
+      } as any);
+      await next();
+    });
+
+    const { resolveOrgAccess } = await import('../middleware/auth');
+    vi.mocked(resolveOrgAccess).mockResolvedValueOnce({
+      type: 'multiple',
+      orgIds: ['org-a', 'org-b', 'org-c'],
+    });
+
+    const ticketApp = createEventWsTicketRoute();
+    app.route('/events', ticketApp);
+
+    // No orgId, no allOrgs — exactly what useEventStream sends.
+    const res = await app.request('/events/ws-ticket', { method: 'POST' });
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    const identity = await consumeTicket(body.ticket);
+    expect(identity).toEqual({ userId: 'user-abc', orgIds: ['org-a', 'org-b', 'org-c'] });
+  });
+
   it('issued ticket is consumable with correct identity', async () => {
     const { Hono } = await import('hono');
     const app = new Hono();
