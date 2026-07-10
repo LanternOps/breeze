@@ -29,6 +29,12 @@
 CREATE TABLE IF NOT EXISTS device_link_groups (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id uuid NOT NULL REFERENCES organizations(id),
+  -- What the link MEANS. 'multiboot' (v1): members are peer boot profiles of
+  -- one physical machine. Reserved future value: 'vm_host' (VM guests nested
+  -- under their host server) — schema accommodation only, not built yet. A
+  -- future kind with asymmetric members adds a member-role column on devices;
+  -- multiboot members are all peers so none exists today.
+  kind varchar(32) NOT NULL DEFAULT 'multiboot',
   -- Optional operator label for the physical machine (e.g. "Todd's ThinkPad").
   -- NULL is fine; the UI falls back to the members' hostnames.
   name varchar(255),
@@ -36,6 +42,9 @@ CREATE TABLE IF NOT EXISTS device_link_groups (
   created_at timestamp NOT NULL DEFAULT now(),
   updated_at timestamp NOT NULL DEFAULT now()
 );
+
+-- Idempotent for DBs that applied a pre-kind build of this migration.
+ALTER TABLE device_link_groups ADD COLUMN IF NOT EXISTS kind varchar(32) NOT NULL DEFAULT 'multiboot';
 
 CREATE INDEX IF NOT EXISTS device_link_groups_org_id_idx ON device_link_groups(org_id);
 

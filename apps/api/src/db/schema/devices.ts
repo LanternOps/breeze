@@ -123,6 +123,11 @@ export const devices = pgTable('devices', {
 export const deviceLinkGroups = pgTable('device_link_groups', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
+  // What the link MEANS. 'multiboot' (v1): members are peer boot profiles of
+  // one physical machine. Reserved future value: 'vm_host' (VM guests nested
+  // under their host server) — schema accommodation only; a future asymmetric
+  // kind adds a member-role column on devices (multiboot members are peers).
+  kind: varchar('kind', { length: 32 }).notNull().default('multiboot'),
   name: varchar('name', { length: 255 }),
   createdBy: uuid('created_by').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull(),

@@ -546,6 +546,9 @@ coreRoutes.get(
         pendingReboot: devices.pendingReboot,
         batteryStatus: devices.batteryStatus,
         activeVpns: devices.activeVpns,
+        // Linked multi-boot profiles (#2138): null => unlinked. The web list
+        // groups rows client-side by this id (inactive strips / group bar).
+        linkGroupId: devices.linkGroupId,
         createdAt: devices.createdAt,
         updatedAt: devices.updatedAt,
         // Hardware summary
@@ -664,6 +667,7 @@ coreRoutes.get(
         isHeadless: d.isHeadless,
         batteryStatus: d.batteryStatus ?? null,
         activeVpns: d.activeVpns ?? null,
+        linkGroupId: d.linkGroupId ?? null,
         createdAt: d.createdAt,
         updatedAt: d.updatedAt,
         cpuPercent: latestMetrics?.cpuPercent ?? 0,

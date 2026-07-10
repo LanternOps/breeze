@@ -1,6 +1,6 @@
-import { useMemo, useState, useEffect, useRef } from 'react';
+import { Fragment, useMemo, useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { ChevronLeft, ChevronRight, ChevronUp, ChevronDown, ArrowUpDown, MoreHorizontal, MoreVertical, Filter, Terminal, FileCode, RotateCcw, Settings, Trash2, Zap, Columns3, Network, Cpu, Battery, BatteryCharging, BatteryWarning, Plug } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ChevronUp, ChevronDown, ArrowUpDown, MoreHorizontal, MoreVertical, Filter, Terminal, FileCode, RotateCcw, Settings, Trash2, Zap, Columns3, Network, Cpu, Battery, BatteryCharging, BatteryWarning, Plug, Link2 } from 'lucide-react';
 import type { BatteryStatus, DesktopAccessState, RemoteAccessPolicy, VpnPresence } from '@breeze/shared';
 import ConnectDesktopButton from '../remote/ConnectDesktopButton';
 import { widthPercentClass, formatUptime } from '@/lib/utils';
@@ -34,6 +34,13 @@ import {
   subscribeDensity,
   type Density,
 } from '@/lib/density';
+import {
+  readLinkedProfileCollapsePreference,
+  subscribeLinkedProfileCollapse,
+  writeLinkedProfileCollapsePreference,
+  type LinkedProfileCollapsePreference,
+} from '@/lib/appearance';
+import { groupLinkedDevices } from './linkedDevices';
 import { OSIcon } from './osIcons';
 import { formatDeviceOsVersion } from './osDisplay';
 import { type ListFilters, DEFAULT_LIST_FILTERS } from './deviceListFilters';
@@ -392,6 +399,13 @@ export default function DeviceList({
   // table re-renders when it changes, without a reload.
   const [density, setDensity] = useState<Density>(() => readDensity());
   useEffect(() => subscribeDensity(setDensity), []);
+  // Linked multi-boot profiles (#2138): per-user "Collapse linked inactive
+  // profiles" presentation toggle, persisted via the appearance module
+  // (localStorage — NOT a query param / URL hash). Default on.
+  const [linkedCollapse, setLinkedCollapse] = useState<LinkedProfileCollapsePreference>(
+    () => readLinkedProfileCollapsePreference()
+  );
+  useEffect(() => subscribeLinkedProfileCollapse(setLinkedCollapse), []);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkMenuOpen, setBulkMenuOpen] = useState(false);
   const [rowMenuOpenId, setRowMenuOpenId] = useState<string | null>(null);
@@ -634,6 +648,19 @@ export default function DeviceList({
   const startIndex = (currentPage - 1) * effectivePageSize;
   const paginatedDevices = sortedDevices.slice(startIndex, startIndex + effectivePageSize);
 
+  // Linked multi-boot presentation (#2138): computed client-side WITHIN the
+  // current page. Exactly one online member → offline siblings render as thin
+  // strips beneath it; all offline → full rows with a left-edge group bar;
+  // 2+ online → all normal rows. Toggle off → flat list.
+  const displayRows = useMemo(
+    () => groupLinkedDevices(paginatedDevices, linkedCollapse === 'on'),
+    [paginatedDevices, linkedCollapse]
+  );
+  // Strips are NOT selectable rows — bulk selection only sees real full rows.
+  const selectablePageDevices = useMemo(() => displayRows.map(r => r.device), [displayRows]);
+  // Only offer the toggle when the fleet actually has linked profiles.
+  const hasLinkedDevices = useMemo(() => devices.some(d => d.linkGroupId), [devices]);
+
   const handlePageSizeChange = (newSize: number) => {
     setEffectivePageSize(newSize);
     writePageSizePreference(newSize);
@@ -644,7 +671,7 @@ export default function DeviceList({
 
   const handleSelectAll = (checked: boolean) => {
     if (checked) {
-      setSelectedIds(new Set(paginatedDevices.map(d => d.id)));
+      setSelectedIds(new Set(selectablePageDevices.map(d => d.id)));
     } else {
       setSelectedIds(new Set());
     }
@@ -667,8 +694,8 @@ export default function DeviceList({
     setSelectedIds(new Set());
   };
 
-  const allSelected = paginatedDevices.length > 0 && paginatedDevices.every(d => selectedIds.has(d.id));
-  const someSelected = paginatedDevices.some(d => selectedIds.has(d.id));
+  const allSelected = selectablePageDevices.length > 0 && selectablePageDevices.every(d => selectedIds.has(d.id));
+  const someSelected = selectablePageDevices.some(d => selectedIds.has(d.id));
 
   // The Class/Type columns belong to the network arm (#1322); hide them
   // entirely when the feature flag is off so the list is the agent-only view.
@@ -1302,6 +1329,23 @@ export default function DeviceList({
                 ))}
               </select>
             )}
+            {hasLinkedDevices && (
+              <button
+                type="button"
+                data-testid="collapse-linked-toggle"
+                aria-pressed={linkedCollapse === 'on'}
+                onClick={() => writeLinkedProfileCollapsePreference(linkedCollapse === 'on' ? 'off' : 'on')}
+                title="Multi-boot machines: tuck expected-offline boot profiles beneath their online sibling as thin strips. Off = flat list."
+                className={`flex h-10 items-center gap-1.5 whitespace-nowrap rounded-md border px-3 text-sm font-medium ${
+                  linkedCollapse === 'on'
+                    ? 'border-primary/40 bg-primary/10 text-primary'
+                    : 'text-muted-foreground hover:bg-muted'
+                }`}
+              >
+                <Link2 className="h-3.5 w-3.5" />
+                Collapse linked inactive profiles
+              </button>
+            )}
             {/* Interface density is now an account-wide control in the
                 top-bar theme/display menu (Header.tsx). The table still
                 reflects the saved preference via densityTableClasses +
@@ -1513,9 +1557,9 @@ export default function DeviceList({
                 </td>
               </tr>
             ) : (
-              paginatedDevices.map(device => (
+              displayRows.map(({ device, inactiveSiblings, offlineGroup }) => (
+                <Fragment key={device.id}>
                 <tr
-                  key={device.id}
                   onClick={() => onSelect?.(device)}
                   tabIndex={0}
                   onKeyDown={(e) => {
@@ -1526,7 +1570,15 @@ export default function DeviceList({
                   }}
                   className="cursor-pointer transition hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-hidden"
                 >
-                  <td className="px-3 py-3">
+                  <td
+                    className={`px-3 py-3 ${offlineGroup ? 'border-l-2 border-l-primary/40' : ''}`}
+                    {...(offlineGroup
+                      ? {
+                          'data-testid': `device-${device.id}-group-bar`,
+                          title: 'Linked multi-boot profile — all boot profiles of this machine are offline.',
+                        }
+                      : {})}
+                  >
                     <input
                       type="checkbox"
                       checked={selectedIds.has(device.id)}
@@ -1535,26 +1587,6 @@ export default function DeviceList({
                       onChange={e => handleSelectOne(device.id, e.target.checked)}
                       className="h-4 w-4 rounded border-border"
                     />
-                    {device.linkedSiblings && device.linkedSiblings.length > 0 && (
-                      <div className="mt-1.5 flex flex-col items-start gap-1">
-                        <span
-                          data-testid={`device-${device.id}-multiboot-badge`}
-                          title={`Multi-boot machine — ${device.linkedSiblings.length + 1} linked OS profiles${device.status === 'online' ? ` (${device.os} active)` : ''}. Open the device to expand all profiles.`}
-                          className="inline-flex items-center whitespace-nowrap rounded-full border px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
-                        >
-                          {device.linkedSiblings.length + 1} OS
-                        </span>
-                        {device.linkConflict && (
-                          <span
-                            data-testid={`device-${device.id}-link-conflict`}
-                            title="More than one linked profile is online at once — the devices may be linked incorrectly."
-                            className="inline-flex items-center whitespace-nowrap rounded-full border border-warning/40 bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning"
-                          >
-                            Conflict
-                          </span>
-                        )}
-                      </div>
-                    )}
                   </td>
                   {renderedColumns.map(id => columnDefs[id].cell(device))}
                   <td className="px-3 py-3 text-sm" onClick={e => e.stopPropagation()}>
@@ -1707,6 +1739,46 @@ export default function DeviceList({
                     )}
                   </td>
                 </tr>
+                {/* Linked multi-boot: expected-offline boot profiles tucked
+                    beneath their online sibling as thin muted strips (#2138).
+                    Clickable through to the device's own detail page; NOT
+                    selectable for bulk actions. */}
+                {inactiveSiblings.map(sib => (
+                  <tr
+                    key={sib.id}
+                    data-testid={`device-${sib.id}-inactive-strip`}
+                    onClick={() => onSelect?.(sib)}
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        onSelect?.(sib);
+                      }
+                    }}
+                    className="cursor-pointer bg-muted/30 transition hover:bg-muted/50 focus-visible:bg-muted/50 focus-visible:outline-hidden"
+                  >
+                    <td
+                      colSpan={renderedColumns.length + 2 /* checkbox + Actions */}
+                      className="px-3 py-1.5"
+                    >
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 pl-7 text-xs text-muted-foreground">
+                        <span className="inline-flex items-center gap-1.5">
+                          <OSIcon os={sib.os} className="h-3.5 w-3.5" />
+                          <span className="font-medium">
+                            {formatDeviceOsVersion(sib.os, sib.osVersion) || sib.hostname}
+                          </span>
+                          <span>· inactive</span>
+                        </span>
+                        <span className="inline-flex items-center whitespace-nowrap rounded-full border px-1.5 py-px text-[10px] font-medium">
+                          Expected offline
+                        </span>
+                        <span>Last seen {formatLastSeen(sib.lastSeen, effectiveTimezone)}</span>
+                        {sib.agentVersion && <span>Agent v{sib.agentVersion}</span>}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                </Fragment>
               ))
             )}
           </tbody>

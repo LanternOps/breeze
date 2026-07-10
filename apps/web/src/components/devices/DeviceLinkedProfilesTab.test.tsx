@@ -46,8 +46,6 @@ describe('DeviceLinkedProfilesTab', () => {
     expect(screen.getByTestId('linked-profile-dev-1')).toBeInTheDocument();
     expect(screen.getByTestId('linked-profile-dev-2')).toBeInTheDocument();
     expect(screen.getByText('v1.2.3')).toBeInTheDocument();
-    // No conflict: only one profile online.
-    expect(screen.queryByTestId('linked-profiles-conflict')).not.toBeInTheDocument();
   });
 
   it('shows an access-denied state (no Retry) on a 403', async () => {
@@ -59,7 +57,7 @@ describe('DeviceLinkedProfilesTab', () => {
     expect(screen.queryByText('Retry')).not.toBeInTheDocument();
   });
 
-  it('flags a conflict when more than one profile is online', async () => {
+  it('renders every profile as a normal row when more than one is online (no conflict state — designed out)', async () => {
     fetchWithAuthMock.mockResolvedValue(
       jsonResponse({
         group: { id: 'g1', name: null },
@@ -70,6 +68,9 @@ describe('DeviceLinkedProfilesTab', () => {
       }),
     );
     render(<DeviceLinkedProfilesTab deviceId="dev-1" />);
-    await waitFor(() => expect(screen.getByTestId('linked-profiles-conflict')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('linked-profiles-tab')).toBeInTheDocument());
+    expect(screen.getByTestId('linked-profile-dev-1')).toBeInTheDocument();
+    expect(screen.getByTestId('linked-profile-dev-2')).toBeInTheDocument();
+    expect(screen.queryByTestId('linked-profiles-conflict')).not.toBeInTheDocument();
   });
 });

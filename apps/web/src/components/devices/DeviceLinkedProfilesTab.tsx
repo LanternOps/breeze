@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Link2, Link2Off, AlertTriangle, Circle } from 'lucide-react';
+import { Link2, Link2Off, Circle } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError } from '../../lib/runAction';
 
@@ -71,8 +71,6 @@ export default function DeviceLinkedProfilesTab({ deviceId }: { deviceId: string
 
   const group = data?.group ?? null;
   const members = data?.members ?? [];
-  const onlineCount = members.filter((m) => m.status === 'online').length;
-  const hasConflict = onlineCount > 1;
 
   const unlinkThisDevice = async () => {
     if (!group) return;
@@ -152,8 +150,9 @@ export default function DeviceLinkedProfilesTab({ deviceId }: { deviceId: string
         <p className="mt-2 max-w-prose text-sm text-muted-foreground">
           Multi-boot machines run a separate Breeze agent per OS, so the same hardware shows up as several
           devices. Select this device and its other boot profiles in the device list, then choose
-          <span className="font-medium"> Link as multi-boot</span> to group them. The offline profiles stop
-          adding noise to your online/offline counts while every device keeps its own history.
+          <span className="font-medium"> Link as multi-boot</span> to group them. When only one profile is
+          online, the expected-offline siblings tuck beneath it in the device list as small strips — every
+          device stays a fully managed endpoint with its own inventory and history.
         </p>
       </div>
     );
@@ -192,20 +191,6 @@ export default function DeviceLinkedProfilesTab({ deviceId }: { deviceId: string
         </div>
       </div>
 
-      {hasConflict && (
-        <div
-          data-testid="linked-profiles-conflict"
-          className="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-sm text-warning"
-        >
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-          <span>
-            More than one linked profile is reporting online at the same time. A multi-boot machine can only
-            run one OS at once — this usually means the devices were linked incorrectly or the hardware
-            identity changed.
-          </span>
-        </div>
-      )}
-
       <div className="overflow-hidden rounded-lg border">
         <table className="w-full text-sm">
           <thead className="bg-muted/50 text-left text-xs uppercase text-muted-foreground">
@@ -243,7 +228,7 @@ export default function DeviceLinkedProfilesTab({ deviceId }: { deviceId: string
                       data-testid={`linked-profile-${m.deviceId}-status`}
                     >
                       <Circle className={`h-2 w-2 ${isOnline ? 'fill-success' : 'fill-muted-foreground'}`} />
-                      {isOnline ? 'Online (active)' : m.status}
+                      {isOnline ? 'Online' : m.status}
                     </span>
                   </td>
                   <td className="px-3 py-2">v{m.agentVersion}</td>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { collapseLinkedDevices, type LinkGroupSummary } from './linkedDevices';
+import { groupLinkedDevices } from './linkedDevices';
 import type { Device } from './DeviceList';
 
 function mk(id: string, over: Partial<Device> = {}): Device {
@@ -22,68 +22,100 @@ function mk(id: string, over: Partial<Device> = {}): Device {
   };
 }
 
-const group = (id: string, deviceIds: string[], name: string | null = null): LinkGroupSummary => ({
-  id,
-  name,
-  deviceIds,
-});
-
-describe('collapseLinkedDevices', () => {
-  it('returns the input unchanged when there are no groups', () => {
+describe('groupLinkedDevices', () => {
+  it('passes unlinked devices through as plain rows', () => {
     const devices = [mk('a'), mk('b')];
-    expect(collapseLinkedDevices(devices, [])).toBe(devices);
+    const out = groupLinkedDevices(devices, true);
+    expect(out).toHaveLength(2);
+    expect(out.map((r) => r.device.id)).toEqual(['a', 'b']);
+    expect(out.every((r) => r.inactiveSiblings.length === 0 && !r.offlineGroup)).toBe(true);
   });
 
-  it('collapses a group to the online (active) profile and de-emphasizes siblings', () => {
-    const win = mk('win', { os: 'windows', status: 'online' });
-    const linux = mk('lin', { os: 'linux', status: 'offline' });
-    const out = collapseLinkedDevices([win, linux], [group('g1', ['win', 'lin'], 'Bootbox')]);
+  it('returns a flat list when the toggle is off, even for linked devices', () => {
+    const win = mk('win', { linkGroupId: 'g1', status: 'online' });
+    const lin = mk('lin', { os: 'linux', linkGroupId: 'g1', status: 'offline' });
+    const out = groupLinkedDevices([win, lin], false);
+    expect(out.map((r) => r.device.id)).toEqual(['win', 'lin']);
+    expect(out.every((r) => r.inactiveSiblings.length === 0 && !r.offlineGroup)).toBe(true);
+  });
 
+  it('tucks offline siblings beneath the single online member as strips', () => {
+    const before = mk('before');
+    const lin = mk('lin', { os: 'linux', linkGroupId: 'g1', status: 'offline' });
+    const win = mk('win', { linkGroupId: 'g1', status: 'online' });
+    const after = mk('after');
+
+    const out = groupLinkedDevices([before, lin, win, after], true);
+
+    // The offline sibling no longer renders as its own row…
+    expect(out.map((r) => r.device.id)).toEqual(['before', 'win', 'after']);
+    // …but attaches beneath the online member as a strip.
+    const anchor = out.find((r) => r.device.id === 'win')!;
+    expect(anchor.inactiveSiblings.map((d) => d.id)).toEqual(['lin']);
+    expect(anchor.offlineGroup).toBe(false);
+  });
+
+  it('supports several strips under one anchor (3-way multi-boot)', () => {
+    const win = mk('win', { linkGroupId: 'g1', status: 'online' });
+    const lin = mk('lin', { os: 'linux', linkGroupId: 'g1', status: 'offline' });
+    const mac = mk('mac', { os: 'macos', linkGroupId: 'g1', status: 'offline' });
+
+    const out = groupLinkedDevices([win, lin, mac], true);
     expect(out).toHaveLength(1);
-    expect(out[0]!.id).toBe('win');
-    expect(out[0]!.linkGroupId).toBe('g1');
-    expect(out[0]!.linkGroupName).toBe('Bootbox');
-    expect(out[0]!.linkedSiblings?.map((s) => s.id)).toEqual(['lin']);
-    expect(out[0]!.linkConflict).toBe(false);
+    expect(out[0]!.device.id).toBe('win');
+    expect(out[0]!.inactiveSiblings.map((d) => d.id)).toEqual(['lin', 'mac']);
   });
 
-  it('surfaces the most-recently-seen profile when all are offline', () => {
-    const older = mk('old', { status: 'offline', lastSeen: '2026-01-01T00:00:00.000Z' });
-    const newer = mk('new', { status: 'offline', lastSeen: '2026-06-01T00:00:00.000Z' });
-    const out = collapseLinkedDevices([older, newer], [group('g1', ['old', 'new'])]);
+  it('marks all members with the offline-group bar when every profile is offline (no primary election)', () => {
+    const win = mk('win', { linkGroupId: 'g1', status: 'offline', lastSeen: '2026-01-02T00:00:00.000Z' });
+    const lin = mk('lin', { os: 'linux', linkGroupId: 'g1', status: 'offline' });
+    const plain = mk('plain');
 
+    const out = groupLinkedDevices([win, lin, plain], true);
+    expect(out.map((r) => r.device.id)).toEqual(['win', 'lin', 'plain']);
+    expect(out.find((r) => r.device.id === 'win')!.offlineGroup).toBe(true);
+    expect(out.find((r) => r.device.id === 'lin')!.offlineGroup).toBe(true);
+    expect(out.find((r) => r.device.id === 'plain')!.offlineGroup).toBe(false);
+    expect(out.every((r) => r.inactiveSiblings.length === 0)).toBe(true);
+  });
+
+  it('renders all members as normal full rows when two or more are online (conflict state designed out)', () => {
+    const win = mk('win', { linkGroupId: 'g1', status: 'online' });
+    const lin = mk('lin', { os: 'linux', linkGroupId: 'g1', status: 'online' });
+
+    const out = groupLinkedDevices([win, lin], true);
+    expect(out.map((r) => r.device.id)).toEqual(['win', 'lin']);
+    expect(out.every((r) => r.inactiveSiblings.length === 0 && !r.offlineGroup)).toBe(true);
+  });
+
+  it('leaves a lone member ungrouped when its sibling is on another page (pagination caveat)', () => {
+    const win = mk('win', { linkGroupId: 'g1', status: 'online' });
+    const out = groupLinkedDevices([win], true);
     expect(out).toHaveLength(1);
-    expect(out[0]!.id).toBe('new');
-    expect(out[0]!.linkConflict).toBe(false);
+    expect(out[0]!.inactiveSiblings).toHaveLength(0);
+    expect(out[0]!.offlineGroup).toBe(false);
   });
 
-  it('flags a conflict when more than one profile is online', () => {
-    const a = mk('a', { status: 'online', lastSeen: '2026-06-02T00:00:00.000Z' });
-    const b = mk('b', { status: 'online', lastSeen: '2026-06-01T00:00:00.000Z' });
-    const out = collapseLinkedDevices([a, b], [group('g1', ['a', 'b'])]);
+  it('keeps a non-offline sibling (e.g. maintenance) as a full row, not an expected-offline strip', () => {
+    const win = mk('win', { linkGroupId: 'g1', status: 'online' });
+    const lin = mk('lin', { os: 'linux', linkGroupId: 'g1', status: 'maintenance' });
+    const mac = mk('mac', { os: 'macos', linkGroupId: 'g1', status: 'offline' });
 
-    expect(out).toHaveLength(1);
-    expect(out[0]!.id).toBe('a'); // most-recently-seen online
-    expect(out[0]!.linkConflict).toBe(true);
-    expect(out[0]!.linkedSiblings?.map((s) => s.id)).toEqual(['b']);
+    const out = groupLinkedDevices([win, lin, mac], true);
+    expect(out.map((r) => r.device.id)).toEqual(['win', 'lin']);
+    expect(out.find((r) => r.device.id === 'win')!.inactiveSiblings.map((d) => d.id)).toEqual(['mac']);
   });
 
-  it('does not collapse a group with only one present member', () => {
-    // Sibling 'b' filtered out of the current view → 'a' renders normally.
-    const a = mk('a');
-    const out = collapseLinkedDevices([a], [group('g1', ['a', 'b'])]);
-    expect(out).toHaveLength(1);
-    expect(out[0]!.linkedSiblings).toBeUndefined();
-    expect(out[0]!.linkGroupId).toBeUndefined();
-  });
+  it('handles two independent groups on the same page', () => {
+    const aWin = mk('a-win', { linkGroupId: 'gA', status: 'online' });
+    const aLin = mk('a-lin', { os: 'linux', linkGroupId: 'gA', status: 'offline' });
+    const bWin = mk('b-win', { linkGroupId: 'gB', status: 'offline' });
+    const bLin = mk('b-lin', { os: 'linux', linkGroupId: 'gB', status: 'offline' });
 
-  it('keeps ungrouped devices and preserves first-encountered ordering', () => {
-    const solo1 = mk('s1');
-    const win = mk('win', { status: 'online' });
-    const lin = mk('lin', { status: 'offline' });
-    const solo2 = mk('s2');
-    const out = collapseLinkedDevices([solo1, win, lin, solo2], [group('g1', ['win', 'lin'])]);
-
-    expect(out.map((d) => d.id)).toEqual(['s1', 'win', 's2']);
+    const out = groupLinkedDevices([aWin, aLin, bWin, bLin], true);
+    expect(out.map((r) => r.device.id)).toEqual(['a-win', 'b-win', 'b-lin']);
+    expect(out.find((r) => r.device.id === 'a-win')!.inactiveSiblings.map((d) => d.id)).toEqual(['a-lin']);
+    expect(out.find((r) => r.device.id === 'b-win')!.offlineGroup).toBe(true);
+    expect(out.find((r) => r.device.id === 'b-lin')!.offlineGroup).toBe(true);
   });
 });

@@ -116,6 +116,7 @@ linksRoutes.get(
       data: groups.map((g) => ({
         id: g.id,
         orgId: g.orgId,
+        kind: g.kind,
         name: g.name,
         createdBy: g.createdBy,
         createdAt: g.createdAt,
@@ -191,7 +192,9 @@ linksRoutes.post(
 
     const members = await loadMembers([groupId!], auth);
     return c.json(
-      { id: groupId!, orgId, name: name ?? null, members: members.get(groupId!) ?? [] },
+      // kind is 'multiboot' for every group creatable today; surfaced so the
+      // client shape is stable when future kinds (e.g. vm_host) land.
+      { id: groupId!, orgId, kind: 'multiboot', name: name ?? null, members: members.get(groupId!) ?? [] },
       201,
     );
   },
@@ -225,6 +228,7 @@ linksRoutes.get(
     return c.json({
       id: group.id,
       orgId: group.orgId,
+      kind: group.kind,
       name: group.name,
       createdBy: group.createdBy,
       createdAt: group.createdAt,
@@ -337,6 +341,7 @@ linksRoutes.patch(
     return c.json({
       id: group.id,
       orgId: group.orgId,
+      kind: group.kind,
       name: name !== undefined ? name : group.name,
       members: members.get(groupId) ?? [],
     });
@@ -410,6 +415,7 @@ linksRoutes.get(
       group: {
         id: group.id,
         orgId: group.orgId,
+        kind: group.kind,
         name: group.name,
         createdAt: group.createdAt,
         updatedAt: group.updatedAt,

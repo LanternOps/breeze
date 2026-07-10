@@ -12,6 +12,15 @@ export type FontPreference = (typeof FONT_OPTIONS)[number];
 export const TIME_FORMAT_OPTIONS = ['12h', '24h'] as const satisfies readonly TimeFormat[];
 export type TimeFormatPreference = TimeFormat;
 
+/**
+ * Devices-list presentation of linked multi-boot profiles (#2138). 'on' =
+ * when exactly one profile of a link group is online, its offline siblings
+ * render as thin "expected offline" strips beneath it; 'off' = today's flat
+ * list. Per-user, localStorage-persisted (NOT a query param / URL hash).
+ */
+export const LINKED_PROFILE_COLLAPSE_OPTIONS = ['on', 'off'] as const;
+export type LinkedProfileCollapsePreference = (typeof LINKED_PROFILE_COLLAPSE_OPTIONS)[number];
+
 export type AppearancePreferences = {
   theme?: ThemePreference;
   density?: Density;
@@ -22,11 +31,13 @@ export type AppearancePreferences = {
 export const DEFAULT_THEME: ThemePreference = 'system';
 export const DEFAULT_DENSITY: Density = 'comfortable';
 export const DEFAULT_FONT: FontPreference = 'breeze';
+export const DEFAULT_LINKED_PROFILE_COLLAPSE: LinkedProfileCollapsePreference = 'on';
 
 export const THEME_STORAGE_KEY = 'theme';
 export const DENSITY_STORAGE_KEY = 'breeze.density';
 export const FONT_STORAGE_KEY = 'breeze.font';
 export const TIME_FORMAT_STORAGE_KEY = 'breeze.timeFormat';
+export const LINKED_PROFILE_COLLAPSE_STORAGE_KEY = 'breeze.collapseLinkedProfiles';
 
 export function isValidTheme(value: unknown): value is ThemePreference {
   return typeof value === 'string' && (THEME_OPTIONS as readonly string[]).includes(value);
@@ -44,6 +55,10 @@ export function isValidTimeFormat(value: unknown): value is TimeFormatPreference
   return typeof value === 'string' && (TIME_FORMAT_OPTIONS as readonly string[]).includes(value);
 }
 
+export function isValidLinkedProfileCollapse(value: unknown): value is LinkedProfileCollapsePreference {
+  return typeof value === 'string' && (LINKED_PROFILE_COLLAPSE_OPTIONS as readonly string[]).includes(value);
+}
+
 export function normalizeTheme(value: unknown): ThemePreference | undefined {
   return isValidTheme(value) ? value : undefined;
 }
@@ -58,6 +73,10 @@ export function normalizeFont(value: unknown): FontPreference | undefined {
 
 export function normalizeTimeFormat(value: unknown): TimeFormatPreference | undefined {
   return isValidTimeFormat(value) ? value : undefined;
+}
+
+export function normalizeLinkedProfileCollapse(value: unknown): LinkedProfileCollapsePreference | undefined {
+  return isValidLinkedProfileCollapse(value) ? value : undefined;
 }
 
 function readStorageValue(key: string): string | null {
@@ -96,6 +115,11 @@ export function readFontPreference(): FontPreference {
 
 export function readTimeFormatPreference(): TimeFormatPreference | undefined {
   return normalizeTimeFormat(readStorageValue(TIME_FORMAT_STORAGE_KEY));
+}
+
+export function readLinkedProfileCollapsePreference(): LinkedProfileCollapsePreference {
+  return normalizeLinkedProfileCollapse(readStorageValue(LINKED_PROFILE_COLLAPSE_STORAGE_KEY))
+    ?? DEFAULT_LINKED_PROFILE_COLLAPSE;
 }
 
 export function detectBrowserTimeFormat(): TimeFormatPreference {
@@ -161,6 +185,12 @@ export function writeTimeFormatPreference(value: TimeFormatPreference): void {
   notifyTimeFormat(value);
 }
 
+export function writeLinkedProfileCollapsePreference(value: LinkedProfileCollapsePreference): void {
+  if (!isValidLinkedProfileCollapse(value)) return;
+  writeStorageValue(LINKED_PROFILE_COLLAPSE_STORAGE_KEY, value);
+  notifyLinkedProfileCollapse(value);
+}
+
 export function applyAppearancePreferences(preferences: AppearancePreferences): void {
   if (preferences.theme) {
     writeThemePreference(preferences.theme);
@@ -180,6 +210,7 @@ const themeSubscribers = new Set<(value: ThemePreference) => void>();
 const densitySubscribers = new Set<(value: Density) => void>();
 const fontSubscribers = new Set<(value: FontPreference) => void>();
 const timeFormatSubscribers = new Set<(value: TimeFormatPreference) => void>();
+const linkedProfileCollapseSubscribers = new Set<(value: LinkedProfileCollapsePreference) => void>();
 
 function notifyTheme(value: ThemePreference): void {
   for (const fn of themeSubscribers) {
@@ -221,6 +252,16 @@ function notifyTimeFormat(value: TimeFormatPreference): void {
   }
 }
 
+function notifyLinkedProfileCollapse(value: LinkedProfileCollapsePreference): void {
+  for (const fn of linkedProfileCollapseSubscribers) {
+    try {
+      fn(value);
+    } catch {
+      // Subscriber errors must not break setter.
+    }
+  }
+}
+
 export function subscribeTheme(fn: (value: ThemePreference) => void): () => void {
   themeSubscribers.add(fn);
   return () => {
@@ -246,6 +287,13 @@ export function subscribeTimeFormat(fn: (value: TimeFormatPreference) => void): 
   timeFormatSubscribers.add(fn);
   return () => {
     timeFormatSubscribers.delete(fn);
+  };
+}
+
+export function subscribeLinkedProfileCollapse(fn: (value: LinkedProfileCollapsePreference) => void): () => void {
+  linkedProfileCollapseSubscribers.add(fn);
+  return () => {
+    linkedProfileCollapseSubscribers.delete(fn);
   };
 }
 
