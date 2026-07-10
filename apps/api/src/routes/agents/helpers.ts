@@ -30,6 +30,7 @@ import {
   configPolicyMonitoringWatches,
   configPolicyOnedriveSettings,
   configPolicyOnedriveLibraries,
+  onedriveDeviceState,
   pamOrgConfig,
   agentVersions,
 } from '../../db/schema';
@@ -54,6 +55,7 @@ import {
 } from '../../services/filesystemAnalysis';
 import { recordSoftwarePolicyAudit } from '../../services/softwarePolicyService';
 import { resolvePatchConfigForDevice } from '../../services/featureConfigResolver';
+import { resolveUserGroupMembershipCached } from '../../services/onedriveGraph';
 import { captureException } from '../../services/sentry';
 import { CloudflareMtlsService } from '../../services/cloudflareMtls';
 import { isAllowedPolicyConfigProbe } from './policyProbeSafety';
@@ -2655,6 +2657,7 @@ export interface OnedriveConfigUpdate {
     groupId: string | null;
     groupName: string | null;
     hiveScope: string;
+    allowedUpns: string[];
   }>;
 }
 
@@ -2748,6 +2751,40 @@ async function resolveDeviceOnedriveSettings(deviceId: string): Promise<Onedrive
     ))
     .orderBy(configPolicyOnedriveLibraries.sortOrder);
 
+  const [state] = libs.length > 0
+    ? await db
+      .select()
+      .from(onedriveDeviceState)
+      .where(eq(onedriveDeviceState.deviceId, deviceId))
+      .limit(1)
+    : [];
+
+  // Phase 4: tag enabled graph_group libraries with the reported UPNs whose
+  // transitive Entra membership includes the rule's groupId. Fail closed:
+  // no UPNs / no groupId / Graph error → no tag → the agent never mounts it.
+  const graphRules = libs.filter((l) => l.targetingMode === 'graph_group' && l.groupId);
+  const upns = ((state?.signedInUpns as string[] | undefined) ?? []).filter(
+    (u): u is string => typeof u === 'string' && u.length > 0
+  );
+  const allowedByLib = new Map<string, string[]>();
+  if (graphRules.length > 0 && upns.length > 0) {
+    for (const upn of upns) {
+      const res = await resolveUserGroupMembershipCached(device.orgId, upn);
+      if (res.kind !== 'ok') {
+        console.warn(`[agents] graph_group tagging: membership lookup failed for device ${deviceId}: ${res.code}`);
+        continue;
+      }
+      const groupIds = new Set(((res.data as { groupIds: string[] }).groupIds ?? []));
+      for (const rule of graphRules) {
+        if (rule.groupId && groupIds.has(rule.groupId)) {
+          const arr = allowedByLib.get(rule.id) ?? [];
+          arr.push(upn);
+          allowedByLib.set(rule.id, arr);
+        }
+      }
+    }
+  }
+
   return {
     base: {
       silentAccountConfig: winner.silentAccountConfig,
@@ -2766,6 +2803,7 @@ async function resolveDeviceOnedriveSettings(deviceId: string): Promise<Onedrive
       groupId: l.groupId,
       groupName: l.groupName,
       hiveScope: l.hiveScope,
+      allowedUpns: allowedByLib.get(l.id) ?? [],
     })),
   };
 }

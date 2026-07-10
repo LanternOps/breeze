@@ -19,7 +19,7 @@
  */
 import './setup';
 import { createHash } from 'node:crypto';
-import { describe, it, expect } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { Hono } from 'hono';
 import { eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
@@ -35,6 +35,16 @@ import {
   sites,
   onedriveDeviceState,
 } from '../../db/schema';
+
+vi.mock('../../services/onedriveGraph', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/onedriveGraph')>();
+  return {
+    ...actual,
+    resolveUserGroupMembershipCached: vi.fn(),
+  };
+});
+
+import { resolveUserGroupMembershipCached } from '../../services/onedriveGraph';
 import { buildOnedriveHelperConfigUpdate } from '../../routes/agents/helpers';
 import { agentRoutes } from '../../routes/agents';
 
@@ -257,6 +267,16 @@ async function attachOnedrivePolicy(opts: {
   });
 }
 
+async function seedSignedInUpns(deviceId: string, orgId: string, signedInUpns: string[]): Promise<void> {
+  await withSystemDbAccessContext(() =>
+    db.insert(onedriveDeviceState).values({
+      deviceId,
+      orgId,
+      signedInUpns,
+    })
+  );
+}
+
 // ============================================================================
 // Heartbeat app for ingest tests
 // ============================================================================
@@ -272,6 +292,10 @@ function buildHeartbeatApp(): Hono {
 // ============================================================================
 
 describe('buildOnedriveHelperConfigUpdate', () => {
+  beforeEach(() => {
+    vi.mocked(resolveUserGroupMembershipCached).mockReset();
+  });
+
   runDb('returns base config + library rules for an assigned device', async () => {
     const { deviceId } = await seedDeviceWithOnedrivePolicy({
       base: { silentAccountConfig: true, filesOnDemand: true, kfmSilentOptIn: true },
@@ -379,6 +403,89 @@ describe('buildOnedriveHelperConfigUpdate', () => {
     expect(cfg!.base.filesOnDemand).toBe(true);
     expect(cfg!.base.kfmSilentOptIn).toBe(false);
     expect(cfg!.libraries).toHaveLength(0);
+  });
+
+  runDb('tags graph_group libraries with allowed UPNs from reported sign-ins', async () => {
+    const { deviceId, orgId } = await seedDeviceWithOnedrivePolicy({
+      base: {},
+      libraries: [
+        { libraryId: 'lib-fin', displayName: 'Finance', targetingMode: 'graph_group', groupId: 'g-fin' },
+        { libraryId: 'lib-all', displayName: 'Company', targetingMode: 'everyone' },
+      ],
+    });
+    await seedSignedInUpns(deviceId, orgId, ['todd@contoso.com', 'other@contoso.com']);
+    vi.mocked(resolveUserGroupMembershipCached).mockImplementation(async (_orgId, upn) => ({
+      kind: 'ok',
+      data: { groupIds: upn === 'todd@contoso.com' ? ['g-fin', 'g-x'] : ['g-x'] },
+    }));
+
+    const cfg = await withSystemDbAccessContext(() => buildOnedriveHelperConfigUpdate(deviceId));
+
+    const fin = cfg!.libraries.find((l) => l.libraryId === 'lib-fin')!;
+    expect(fin.allowedUpns).toEqual(['todd@contoso.com']);
+    const all = cfg!.libraries.find((l) => l.libraryId === 'lib-all')!;
+    expect(all.allowedUpns).toEqual([]);
+  });
+
+  runDb('does not call Graph when the policy has no graph_group libraries', async () => {
+    const { deviceId, orgId } = await seedDeviceWithOnedrivePolicy({
+      base: {},
+      libraries: [{ libraryId: 'lib-all', displayName: 'Company', targetingMode: 'everyone' }],
+    });
+    await seedSignedInUpns(deviceId, orgId, ['todd@contoso.com']);
+
+    const cfg = await withSystemDbAccessContext(() => buildOnedriveHelperConfigUpdate(deviceId));
+
+    expect(resolveUserGroupMembershipCached).not.toHaveBeenCalled();
+    expect(cfg!.libraries[0]!.allowedUpns).toEqual([]);
+  });
+
+  runDb('does not call Graph when no UPNs reported', async () => {
+    const { deviceId } = await seedDeviceWithOnedrivePolicy({
+      base: {},
+      libraries: [
+        { libraryId: 'lib-fin', displayName: 'Finance', targetingMode: 'graph_group', groupId: 'g-fin' },
+      ],
+    });
+
+    const cfg = await withSystemDbAccessContext(() => buildOnedriveHelperConfigUpdate(deviceId));
+
+    expect(resolveUserGroupMembershipCached).not.toHaveBeenCalled();
+    expect(cfg!.libraries[0]!.allowedUpns).toEqual([]);
+  });
+
+  runDb('graph_group with only groupName stays untagged', async () => {
+    const { deviceId, orgId } = await seedDeviceWithOnedrivePolicy({
+      base: {},
+      libraries: [
+        { libraryId: 'lib-fin', displayName: 'Finance', targetingMode: 'graph_group', groupName: 'Finance' },
+      ],
+    });
+    await seedSignedInUpns(deviceId, orgId, ['todd@contoso.com']);
+
+    const cfg = await withSystemDbAccessContext(() => buildOnedriveHelperConfigUpdate(deviceId));
+
+    expect(resolveUserGroupMembershipCached).not.toHaveBeenCalled();
+    expect(cfg!.libraries[0]!.allowedUpns).toEqual([]);
+  });
+
+  runDb('Graph error leaves the library untagged (fail closed)', async () => {
+    const { deviceId, orgId } = await seedDeviceWithOnedrivePolicy({
+      base: {},
+      libraries: [
+        { libraryId: 'lib-fin', displayName: 'Finance', targetingMode: 'graph_group', groupId: 'g-fin' },
+      ],
+    });
+    await seedSignedInUpns(deviceId, orgId, ['failed@contoso.com', 'member@contoso.com']);
+    vi.mocked(resolveUserGroupMembershipCached).mockImplementation(async (_orgId, upn) =>
+      upn === 'failed@contoso.com'
+        ? { kind: 'error', code: 'graph_unavailable', message: 'Graph unavailable' }
+        : { kind: 'ok', data: { groupIds: ['g-fin'] } }
+    );
+
+    const cfg = await withSystemDbAccessContext(() => buildOnedriveHelperConfigUpdate(deviceId));
+
+    expect(cfg!.libraries[0]!.allowedUpns).toEqual(['member@contoso.com']);
   });
 });
 
