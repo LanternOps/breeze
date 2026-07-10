@@ -4,9 +4,9 @@ import { PgTable } from 'drizzle-orm/pg-core';
 import * as schema from '../../db/schema';
 import {
   CUSTOM_ORG_REWRITE_TABLES,
-  DEVICE_CASCADE_DELETE_TABLES,
+  getDeviceCascadeDeleteTables,
   DEVICE_DETACH_DEVICE_ID_TABLES,
-  DEVICE_ORG_DENORMALIZED_TABLES,
+  getDeviceOrgDenormalizedTables,
   DEVICE_SITE_DENORMALIZED_TABLES,
 } from './core';
 
@@ -16,7 +16,7 @@ import {
  * `POST /devices/:id/move-org` works by rewriting the denormalized `org_id`
  * column on every device-scoped table inside the same transaction that
  * flips `devices.org_id`. If a new device-scoped table is added with an
- * `org_id` column but NOT added to DEVICE_ORG_DENORMALIZED_TABLES, the move
+ * `org_id` column but NOT returned by getDeviceOrgDenormalizedTables(), the move
  * will strand its rows under the OLD org's RLS — invisible to the new org.
  *
  * This test catches that drift at CI time.
@@ -38,18 +38,21 @@ const INTENTIONALLY_NO_ORG_ID: ReadonlySet<string> = new Set([
   'software_compliance_status',
 ]);
 
+const deviceCascadeDeleteTables = getDeviceCascadeDeleteTables();
+const deviceOrgDenormalizedTables = getDeviceOrgDenormalizedTables();
+
 function getColumns(table: PgTable<any>): any[] {
   return Object.values(
     (table as any)[Symbol.for('drizzle:Columns')] ?? {},
   );
 }
 
-describe('DEVICE_ORG_DENORMALIZED_TABLES coverage', () => {
-  const denormSet = new Set<string>(DEVICE_ORG_DENORMALIZED_TABLES);
+describe('getDeviceOrgDenormalizedTables() coverage', () => {
+  const denormSet = new Set<string>(deviceOrgDenormalizedTables);
   // Device-managed tables = cascade-deleted ∪ detached (device_id SET NULL,
   // e.g. tickets). Both kinds must keep org_id in sync on cross-org moves.
   const managedSet = new Set<string>([
-    ...DEVICE_CASCADE_DELETE_TABLES,
+    ...deviceCascadeDeleteTables,
     ...DEVICE_DETACH_DEVICE_ID_TABLES,
   ]);
 
@@ -74,8 +77,8 @@ describe('DEVICE_ORG_DENORMALIZED_TABLES coverage', () => {
 
     expect(
       missing,
-      `These tables are in DEVICE_CASCADE_DELETE_TABLES or DEVICE_DETACH_DEVICE_ID_TABLES and have an org_id column ` +
-        `but are missing from DEVICE_ORG_DENORMALIZED_TABLES in core.ts. ` +
+      `These tables are in getDeviceCascadeDeleteTables() or DEVICE_DETACH_DEVICE_ID_TABLES and have an org_id column ` +
+        `but are missing from getDeviceOrgDenormalizedTables() in core.ts. ` +
         `Add them, or — if their org_id is intentionally not denormalized for ` +
         `move purposes — add them to INTENTIONALLY_NO_ORG_ID in this test ` +
         `AND to the comment block in core.ts.\n\nMissing: ${missing.join(', ')}`,
@@ -84,10 +87,10 @@ describe('DEVICE_ORG_DENORMALIZED_TABLES coverage', () => {
 
   it('only lists tables that exist in the schema', () => {
     const allNames = new Set(allTables.map((t) => getTableName(t)));
-    const stale = DEVICE_ORG_DENORMALIZED_TABLES.filter((t) => !allNames.has(t));
+    const stale = deviceOrgDenormalizedTables.filter((t) => !allNames.has(t));
     expect(
       stale,
-      `These tables are listed in DEVICE_ORG_DENORMALIZED_TABLES but no longer exist in the schema. Remove them.`,
+      `These tables are returned by getDeviceOrgDenormalizedTables() but no longer exist in the schema. Remove them.`,
     ).toEqual([]);
   });
 
@@ -95,7 +98,7 @@ describe('DEVICE_ORG_DENORMALIZED_TABLES coverage', () => {
     const tablesWithoutOrgId: string[] = [];
     const tableByName = new Map(allTables.map((t) => [getTableName(t), t] as const));
 
-    for (const name of DEVICE_ORG_DENORMALIZED_TABLES) {
+    for (const name of deviceOrgDenormalizedTables) {
       const table = tableByName.get(name);
       if (!table) continue; // covered by the stale-name test above
       const hasOrgId = getColumns(table).some((c) => c.name === 'org_id');
@@ -104,7 +107,7 @@ describe('DEVICE_ORG_DENORMALIZED_TABLES coverage', () => {
 
     expect(
       tablesWithoutOrgId,
-      `These tables are listed in DEVICE_ORG_DENORMALIZED_TABLES but do not have an org_id column. ` +
+      `These tables are returned by getDeviceOrgDenormalizedTables() but do not have an org_id column. ` +
         `Move them to INTENTIONALLY_NO_ORG_ID, or remove from the denormalized list.`,
     ).toEqual([]);
   });
@@ -113,17 +116,17 @@ describe('DEVICE_ORG_DENORMALIZED_TABLES coverage', () => {
     // Sanity: a denormalized device table that is neither cascade-deleted
     // nor detached on permanent delete is a bug elsewhere; flag it here so
     // we don't ship a half-managed table.
-    const orphans = DEVICE_ORG_DENORMALIZED_TABLES.filter((t) => !managedSet.has(t));
+    const orphans = deviceOrgDenormalizedTables.filter((t) => !managedSet.has(t));
     expect(
       orphans,
-      `These tables are in DEVICE_ORG_DENORMALIZED_TABLES but missing from both ` +
-        `DEVICE_CASCADE_DELETE_TABLES and DEVICE_DETACH_DEVICE_ID_TABLES.`,
+      `These tables are in getDeviceOrgDenormalizedTables() but missing from both ` +
+        `getDeviceCascadeDeleteTables() and DEVICE_DETACH_DEVICE_ID_TABLES.`,
     ).toEqual([]);
   });
 
   it('includes ML output tables so device moves do not strand old-org rows', () => {
-    expect(DEVICE_ORG_DENORMALIZED_TABLES).toContain('metric_anomalies');
-    expect(DEVICE_ORG_DENORMALIZED_TABLES).toContain('remediation_suggestions');
+    expect(deviceOrgDenormalizedTables).toContain('metric_anomalies');
+    expect(deviceOrgDenormalizedTables).toContain('remediation_suggestions');
   });
 });
 
@@ -131,7 +134,7 @@ describe('DEVICE_ORG_DENORMALIZED_TABLES coverage', () => {
  * CUSTOM_ORG_REWRITE_TABLES — documented exemption from the generic loop.
  *
  * These tables denormalize `org_id` for RLS but have NO `device_id` column,
- * so the generic DEVICE_ORG_DENORMALIZED_TABLES loop in moveOrg.ts (which
+ * so the generic getDeviceOrgDenormalizedTables() loop in moveOrg.ts (which
  * keys on `WHERE device_id = ...`) cannot reach them. Each gets a dedicated,
  * hand-written UPDATE inside the move-org transaction — e.g.
  * `ticket_alert_links` is rewritten via its alert_id join to alerts.device_id.
@@ -162,11 +165,11 @@ describe('CUSTOM_ORG_REWRITE_TABLES coverage', () => {
 
   it('is disjoint from the generic denorm, device-managed, and intentional-exclusion lists', () => {
     const overlapping = [
-      ...DEVICE_ORG_DENORMALIZED_TABLES.filter((t) => customSet.has(t)).map(
-        (t) => `${t} (also in DEVICE_ORG_DENORMALIZED_TABLES)`,
+      ...deviceOrgDenormalizedTables.filter((t) => customSet.has(t)).map(
+        (t) => `${t} (also in getDeviceOrgDenormalizedTables())`,
       ),
-      ...DEVICE_CASCADE_DELETE_TABLES.filter((t) => customSet.has(t)).map(
-        (t) => `${t} (also in DEVICE_CASCADE_DELETE_TABLES)`,
+      ...deviceCascadeDeleteTables.filter((t) => customSet.has(t)).map(
+        (t) => `${t} (also in getDeviceCascadeDeleteTables())`,
       ),
       ...DEVICE_DETACH_DEVICE_ID_TABLES.filter((t) => customSet.has(t)).map(
         (t) => `${t} (also in DEVICE_DETACH_DEVICE_ID_TABLES)`,
@@ -179,7 +182,7 @@ describe('CUSTOM_ORG_REWRITE_TABLES coverage', () => {
       overlapping,
       `CUSTOM_ORG_REWRITE_TABLES must be disjoint from the generic move-org ` +
         `lists — a table is rewritten by exactly one path. If the table has a ` +
-        `device_id column it belongs in DEVICE_ORG_DENORMALIZED_TABLES, not here.`,
+        `device_id column it belongs in getDeviceOrgDenormalizedTables(), not here.`,
     ).toEqual([]);
   });
 
@@ -198,7 +201,7 @@ describe('CUSTOM_ORG_REWRITE_TABLES coverage', () => {
       }
       if (cols.some((c) => c.name === 'device_id')) {
         invalid.push(
-          `${name} (has a device_id column — move it to DEVICE_ORG_DENORMALIZED_TABLES; ` +
+          `${name} (has a device_id column — move it to getDeviceOrgDenormalizedTables(); ` +
             `the generic loop can reach it)`,
         );
       }

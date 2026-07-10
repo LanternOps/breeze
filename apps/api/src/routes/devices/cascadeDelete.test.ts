@@ -84,11 +84,13 @@ vi.mock('../agents/enrollment', () => ({
 import * as schema from '../../db/schema';
 import {
   coreRoutes,
-  DEVICE_CASCADE_DELETE_TABLES,
+  getDeviceCascadeDeleteTables,
   DEVICE_DETACH_DEVICE_ID_TABLES,
   DEVICE_LINKED_DEVICE_ID_TABLES,
 } from './core';
 import { db } from '../../db';
+
+const deviceCascadeDeleteTables = getDeviceCascadeDeleteTables();
 
 /**
  * Tables that have a column named `device_id` but it does NOT reference devices.id.
@@ -112,7 +114,7 @@ function allSchemaTables(): PgTable<any>[] {
 
 describe('device hard-delete table coverage contract', () => {
   it('every table with a device_id FK to devices.id is in exactly one of cascade/detach/linked sets', () => {
-    const cascadeSet = new Set<string>(DEVICE_CASCADE_DELETE_TABLES);
+    const cascadeSet = new Set<string>(deviceCascadeDeleteTables);
     const detachSet = new Set<string>(DEVICE_DETACH_DEVICE_ID_TABLES);
     const linkedSet = new Set<string>(DEVICE_LINKED_DEVICE_ID_TABLES);
 
@@ -126,7 +128,7 @@ describe('device hard-delete table coverage contract', () => {
       if (!hasDeviceId) continue;
 
       const memberships = [
-        cascadeSet.has(tableName) ? 'DEVICE_CASCADE_DELETE_TABLES' : null,
+        cascadeSet.has(tableName) ? 'getDeviceCascadeDeleteTables()' : null,
         detachSet.has(tableName) ? 'DEVICE_DETACH_DEVICE_ID_TABLES' : null,
         linkedSet.has(tableName) ? 'DEVICE_LINKED_DEVICE_ID_TABLES' : null,
       ].filter((m): m is string => m !== null);
@@ -141,7 +143,7 @@ describe('device hard-delete table coverage contract', () => {
     expect(
       problems,
       `Every table with a device_id FK to devices.id must appear in EXACTLY ONE of ` +
-        `DEVICE_CASCADE_DELETE_TABLES (rows deleted; order matters — children before parents), ` +
+        `getDeviceCascadeDeleteTables() (rows deleted; order matters — children before parents), ` +
         `DEVICE_DETACH_DEVICE_ID_TABLES (tenant business records — device_id SET NULL), or ` +
         `DEVICE_LINKED_DEVICE_ID_TABLES (linked_device_id SET NULL) in core.ts. ` +
         `If the device_id column references a table other than devices, add it to NOT_DEVICES_FK ` +
@@ -153,14 +155,14 @@ describe('device hard-delete table coverage contract', () => {
     // Tickets are tenant business records — hard-deleting a device must
     // preserve ticket history and detach the device, never destroy tickets.
     expect(DEVICE_DETACH_DEVICE_ID_TABLES).toContain('tickets');
-    expect(DEVICE_CASCADE_DELETE_TABLES).not.toContain('tickets');
+    expect(deviceCascadeDeleteTables).not.toContain('tickets');
   });
 
   it('deletes ML output rows before anomaly parent rows during device hard-delete', () => {
-    expect(DEVICE_CASCADE_DELETE_TABLES).toContain('remediation_suggestions');
-    expect(DEVICE_CASCADE_DELETE_TABLES).toContain('metric_anomalies');
-    expect(DEVICE_CASCADE_DELETE_TABLES.indexOf('remediation_suggestions')).toBeLessThan(
-      DEVICE_CASCADE_DELETE_TABLES.indexOf('metric_anomalies'),
+    expect(deviceCascadeDeleteTables).toContain('remediation_suggestions');
+    expect(deviceCascadeDeleteTables).toContain('metric_anomalies');
+    expect(deviceCascadeDeleteTables.indexOf('remediation_suggestions')).toBeLessThan(
+      deviceCascadeDeleteTables.indexOf('metric_anomalies'),
     );
   });
 
@@ -190,7 +192,7 @@ describe('device hard-delete table coverage contract', () => {
   it('does not list tables that no longer exist in the schema', () => {
     const allTableNames = new Set(allSchemaTables().map((t) => getTableName(t)));
 
-    const staleCascade = DEVICE_CASCADE_DELETE_TABLES.filter(
+    const staleCascade = deviceCascadeDeleteTables.filter(
       (t) => !allTableNames.has(t)
     );
     const staleDetach = DEVICE_DETACH_DEVICE_ID_TABLES.filter(
@@ -202,7 +204,7 @@ describe('device hard-delete table coverage contract', () => {
 
     expect(
       staleCascade,
-      `These tables are in DEVICE_CASCADE_DELETE_TABLES but no longer exist in the schema. Remove them.`
+      `These tables are in getDeviceCascadeDeleteTables() but no longer exist in the schema. Remove them.`
     ).toEqual([]);
     expect(
       staleDetach,

@@ -54,7 +54,7 @@ vi.mock('../db', () => ({
 }));
 
 import { buildOrgExportZip } from './tenantExport';
-import { ORG_CASCADE_DELETE_ORDER } from './tenantCascade';
+import { getOrgCascadeDeleteOrder } from './tenantCascade';
 
 describe('buildOrgExportZip', () => {
   beforeEach(() => {
@@ -63,6 +63,7 @@ describe('buildOrgExportZip', () => {
   });
 
   it('returns a valid ZIP containing one file per cascade table plus manifest.json', async () => {
+    const cascadeOrder = getOrgCascadeDeleteOrder();
     const { zipBuffer, manifest } = await buildOrgExportZip(
       '00000000-0000-0000-0000-000000000001',
       '00000000-0000-0000-0000-000000000002',
@@ -76,13 +77,13 @@ describe('buildOrgExportZip', () => {
     const fileNames = Object.keys(zip.files);
     expect(fileNames).toContain('manifest.json');
     // Every cascade table that didn't throw should be present.
-    for (const table of ORG_CASCADE_DELETE_ORDER) {
+    for (const table of cascadeOrder) {
       expect(fileNames).toContain(`${table}.json`);
     }
     expect(manifest.actor).toBe('00000000-0000-0000-0000-000000000002');
     expect(manifest.actorEmail).toBe('admin@example.com');
     expect(manifest.orgId).toBe('00000000-0000-0000-0000-000000000001');
-    expect(manifest.files.length).toBe(ORG_CASCADE_DELETE_ORDER.length);
+    expect(manifest.files.length).toBe(cascadeOrder.length);
   });
 
   it('manifest sha256 matches the file body contents', async () => {

@@ -53,7 +53,7 @@ import { disconnectAgent } from '../agentWs';
 import { moveOrgRoutes } from './moveOrg';
 import {
   CUSTOM_ORG_REWRITE_TABLES,
-  DEVICE_ORG_DENORMALIZED_TABLES,
+  getDeviceOrgDenormalizedTables,
   DEVICE_SITE_DENORMALIZED_TABLES,
 } from './core';
 
@@ -258,7 +258,7 @@ describe('POST /devices/:id/move-org', () => {
       // last and any table in DEVICE_SITE_DENORMALIZED_TABLES appears in
       // updatedTables a second time for the site_id rewrite.
       expect(updatedTables).toEqual([
-        ...DEVICE_ORG_DENORMALIZED_TABLES,
+        ...getDeviceOrgDenormalizedTables(),
         ...CUSTOM_ORG_REWRITE_TABLES,
         ...DEVICE_SITE_DENORMALIZED_TABLES,
       ]);
@@ -293,7 +293,7 @@ describe('POST /devices/:id/move-org', () => {
       expect(res.status).toBe(200);
 
       // ticket_alert_links denormalizes org_id for RLS but has NO device_id
-      // column, so the generic DEVICE_ORG_DENORMALIZED_TABLES loop can't
+      // column, so the generic getDeviceOrgDenormalizedTables() loop can't
       // reach it. Without this dedicated rewrite, links for the moved
       // device's alerts stay under the OLD org's RLS and disappear from the
       // new org's ticket views (tenant-isolation bug).

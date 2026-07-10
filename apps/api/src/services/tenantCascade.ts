@@ -7,7 +7,7 @@
  *
  * The list is authoritative. A contract test
  * (`__tests__/integration/tenantCascade.integration.test.ts`) cross-
- * checks `ORG_CASCADE_DELETE_ORDER` against `information_schema.columns`
+ * checks `getOrgCascadeDeleteOrder()` against `information_schema.columns`
  * and the documented `INTENTIONAL_UNSCOPED` allowlist mirror — a new
  * `org_id`-columned table that isn't in the cascade list will fail CI.
  *
@@ -38,6 +38,7 @@
 
 import { sql } from 'drizzle-orm';
 import * as dbModule from '../db';
+import { withExtensionOrgCascade } from '../extensions/tenancyRegistry';
 import { createAuditLog } from './auditService';
 // Self-import so cascadeDeletePartner calls cascadeDeleteOrg /
 // topologicalCascadeOrder through the module namespace. This keeps those
@@ -60,7 +61,7 @@ import * as self from './tenantCascade';
  * The contract test (`tenantCascade.integration.test.ts`) verifies this
  * list is the complete set — any new `org_id` table breaks CI.
  */
-export const ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
+const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'access_reviews',
   'account_deletion_requests',
   'agent_logs',
@@ -311,6 +312,13 @@ export const ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'organizations',
 ]);
 
+export function getOrgCascadeDeleteOrder(): readonly string[] {
+  return withExtensionOrgCascade(CORE_ORG_CASCADE_DELETE_ORDER);
+}
+
+/** @deprecated Static core-only snapshot retained for call sites that predate extensions. */
+export const ORG_CASCADE_DELETE_ORDER = CORE_ORG_CASCADE_DELETE_ORDER;
+
 /**
  * Tables that hold FK references INTO the cascade set but are themselves
  * system-scoped (no org_id) — they need targeted pre-clearing so cascade
@@ -374,9 +382,9 @@ interface FkEdge {
 
 /**
  * Read foreign-key edges from pg_catalog and return a topological order
- * of `ORG_CASCADE_DELETE_ORDER` where children come before parents.
+ * of `getOrgCascadeDeleteOrder()` where children come before parents.
  *
- * Tables not in `ORG_CASCADE_DELETE_ORDER` are ignored — they're either
+ * Tables not in `getOrgCascadeDeleteOrder()` are ignored — they're either
  * out-of-scope or handled by `ASSOCIATED_SYSTEM_SCOPED_TABLES`.
  *
  * Self-referential FKs (e.g. devices.parent_id → devices.id) are
@@ -388,7 +396,7 @@ interface FkEdge {
  * partial cascade.
  */
 export async function topologicalCascadeOrder(
-  tables: Iterable<string> = ORG_CASCADE_DELETE_ORDER,
+  tables: Iterable<string> = getOrgCascadeDeleteOrder(),
 ): Promise<string[]> {
   const tableSet = new Set(tables);
   const edges = (await dbModule.db.execute(sql`
@@ -743,7 +751,7 @@ export async function cascadeDeletePartner(
   // cascadeDeleteOrg manages its own per-statement withSystemDbAccessContext calls;
   // do NOT wrap these calls in an outer context (would nest transactions).
   // NB: org_id-direct tables (e.g. topology_layout, #1728) are purged here too,
-  // since cascadeDeleteOrg walks the full ORG_CASCADE_DELETE_ORDER per child org.
+  // since cascadeDeleteOrg walks the full getOrgCascadeDeleteOrder() result per child org.
   for (const row of orgRows) {
     const orgStats = await self.cascadeDeleteOrg(row.id, performedBy);
     totalRowsDeleted += orgStats.totalRowsDeleted;
