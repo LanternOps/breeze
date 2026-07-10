@@ -756,3 +756,79 @@ describe('DevicesPage — hidden-decommissioned hint (#2251)', () => {
     expect(list.getAttribute('data-include-decommissioned')).toBe('true');
   });
 });
+
+// #2251 — the two trickier handleShowDecommissioned branches: an OR sentence
+// from the Advanced drawer must be nested (not rewritten to AND, and the
+// status condition must stay top-level where the includeDecommissioned memo
+// looks), and a multi-select `in` status condition must be replaced, not
+// stacked into a contradictory AND.
+describe('DevicesPage — show-decommissioned filter rewrite edge cases (#2251)', () => {
+  it('nests an OR group and keeps the status condition top-level', async () => {
+    const { decodeFilterFromHash, writeFilterToHash } = await import('./filterUrl');
+    const orGroup = {
+      operator: 'OR' as const,
+      conditions: [
+        { field: 'os', operator: 'equals' as const, value: 'windows' },
+        { field: 'os', operator: 'equals' as const, value: 'macos' },
+      ],
+    };
+    vi.mocked(decodeFilterFromHash).mockReturnValueOnce(orGroup);
+
+    render(<DevicesPage />);
+    const list = await screen.findByTestId('device-list');
+    expect(list.getAttribute('data-include-decommissioned')).toBe('false');
+
+    fireEvent.click(screen.getByTestId('stub-show-decommissioned'));
+
+    await waitFor(() => {
+      const last = vi.mocked(writeFilterToHash).mock.calls.at(-1)?.[0];
+      expect(last).toEqual({
+        operator: 'AND',
+        conditions: [
+          orGroup,
+          { field: 'status', operator: 'equals', value: 'decommissioned' },
+        ],
+      });
+    });
+    // The top-level status condition is what flips includeDecommissioned —
+    // a condition buried inside the nested group would leave the rows hidden.
+    expect(list.getAttribute('data-include-decommissioned')).toBe('true');
+  });
+
+  it('replaces a multi-select `in` status condition and preserves nested subgroups', async () => {
+    const { decodeFilterFromHash, writeFilterToHash } = await import('./filterUrl');
+    const nestedGroup = {
+      operator: 'OR' as const,
+      conditions: [
+        { field: 'os', operator: 'equals' as const, value: 'windows' },
+        { field: 'os', operator: 'equals' as const, value: 'linux' },
+      ],
+    };
+    vi.mocked(decodeFilterFromHash).mockReturnValueOnce({
+      operator: 'AND',
+      conditions: [
+        nestedGroup,
+        { field: 'status', operator: 'in', value: ['online', 'offline'] },
+      ],
+    });
+
+    render(<DevicesPage />);
+    const list = await screen.findByTestId('device-list');
+
+    fireEvent.click(screen.getByTestId('stub-show-decommissioned'));
+
+    // A leftover `status in [...]` would AND with the new equals to an
+    // always-empty result; it must be replaced. The nested subgroup survives.
+    await waitFor(() => {
+      const last = vi.mocked(writeFilterToHash).mock.calls.at(-1)?.[0];
+      expect(last).toEqual({
+        operator: 'AND',
+        conditions: [
+          nestedGroup,
+          { field: 'status', operator: 'equals', value: 'decommissioned' },
+        ],
+      });
+    });
+    expect(list.getAttribute('data-include-decommissioned')).toBe('true');
+  });
+});
