@@ -859,9 +859,10 @@ describe('DeviceList — linked multi-boot profiles (#2138)', () => {
   });
 });
 
-// #2251 — the default view hides decommissioned devices; the count footer must
-// say so and offer the existing unhide mechanism (the Decommissioned status
-// filter, applied upstream via onShowDecommissioned).
+// #2251 — the default view hides decommissioned devices; the "X of Y devices"
+// count line (rendered above the table) must say so and offer the existing
+// unhide mechanism (the Decommissioned status filter, applied upstream via
+// onShowDecommissioned).
 describe('DeviceList — hidden-decommissioned hint (#2251)', () => {
   beforeEach(() => {
     window.localStorage?.clear();
@@ -890,7 +891,7 @@ describe('DeviceList — hidden-decommissioned hint (#2251)', () => {
     expect(onShow).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps the footer total consistent with the hidden rows (excludes decommissioned)', () => {
+  it('keeps the count-line total consistent with the hidden rows (excludes decommissioned)', () => {
     render(
       <DeviceList
         devices={[baseDevice, decomDevice]}

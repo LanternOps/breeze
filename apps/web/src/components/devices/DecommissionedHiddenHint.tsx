@@ -3,9 +3,10 @@
 // unhide mechanism was knowing the status filter has a "Decommissioned"
 // option. This renders a lightweight "N decommissioned hidden — show" line
 // next to the device count (list view) / above the grid (grid view), where
-// "show" applies the existing Decommissioned status filter upstream. Callers
-// gate rendering on the hidden count being non-zero and on decommissioned
-// devices not already being visible.
+// "show" applies the existing Decommissioned status filter upstream. The
+// upstream count memos return 0 when decommissioned devices are already
+// visible (includeDecommissioned), and the component renders nothing for
+// count <= 0 — so it self-dismisses once the rows are shown.
 export default function DecommissionedHiddenHint({
   count,
   onShow,

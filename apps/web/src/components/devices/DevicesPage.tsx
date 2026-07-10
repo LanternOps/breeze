@@ -206,12 +206,16 @@ export default function DevicesPage() {
 
   // "Show" action for the hidden-decommissioned hint (#2251): applies the
   // Decommissioned status filter — the same unhide mechanism the toolbar's
-  // status picker uses — replacing any other status value (status is
-  // single-select per field, mirroring DeviceFilterToolbar's addCondition).
-  // Other filter conditions are preserved. If the current group is an OR
-  // sentence built in the Advanced drawer, nest it instead of rewriting it so
-  // its meaning is kept and the status condition stays top-level (where the
-  // includeDecommissioned memo looks).
+  // status picker uses — replacing any other status equals/in value. Same
+  // single-select-per-field semantics as DeviceFilterToolbar's addCondition
+  // (independent implementation; chip order may differ — the replacement is
+  // appended rather than placed in the replaced condition's slot). Other
+  // filter conditions are preserved. If the current group is an OR sentence
+  // built in the Advanced drawer, nest it instead of rewriting it so its
+  // meaning is kept and the status condition stays top-level (where the
+  // includeDecommissioned memo looks); the AND intersection can be empty if
+  // the OR sentence itself constrains status — the rows still unhide, but
+  // zero of them may match.
   const handleShowDecommissioned = useCallback(() => {
     setAdvancedFilter(prev => {
       const statusCond: FilterCondition = { field: 'status', operator: 'equals', value: 'decommissioned' };
