@@ -17,7 +17,7 @@ import (
 const (
 	policyKeyPath    = `SOFTWARE\Policies\Microsoft\OneDrive`
 	autoMountSubKey  = policyKeyPath + `\TenantAutoMount`
-	accountKeySubfix = `SOFTWARE\Microsoft\OneDrive\Accounts\Business1`
+	accountKeySuffix = `SOFTWARE\Microsoft\OneDrive\Accounts\Business1`
 	sentinelValue    = "BreezeOneDriveManaged"
 )
 
@@ -125,6 +125,8 @@ func applyBaseConfig(cfg Config) (bool, error) {
 			if got, _, e := k.GetStringValue("KFMSilentOptIn"); e != nil || got != tenantID {
 				if e := k.SetStringValue("KFMSilentOptIn", tenantID); e != nil {
 					keep(fmt.Errorf("set KFMSilentOptIn: %w", e))
+				} else if got, _, e := k.GetStringValue("KFMSilentOptIn"); e != nil || got != tenantID {
+					keep(fmt.Errorf("verify KFMSilentOptIn read-back: got %q (err %v)", got, e))
 				} else {
 					changed = true
 				}
@@ -187,7 +189,7 @@ func applyUserAutoMount(sid string, rules []LibraryRule) (bool, error) {
 // Business1 account key (i.e. is signed in); missing key is fine — OneDrive
 // will process on sign-in.
 func pokeAutoMountTimer(sid string) {
-	k, err := registry.OpenKey(registry.USERS, sid+`\`+accountKeySubfix, registry.SET_VALUE)
+	k, err := registry.OpenKey(registry.USERS, sid+`\`+accountKeySuffix, registry.SET_VALUE)
 	if err != nil {
 		return
 	}
