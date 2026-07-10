@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS device_link_groups (
   -- multiboot members are all peers so none exists today.
   kind varchar(32) NOT NULL DEFAULT 'multiboot',
   -- Optional operator label for the physical machine (e.g. "Todd's ThinkPad").
-  -- NULL is fine; the UI falls back to the members' hostnames.
+  -- NULL is fine; the UI shows a generic "Linked boot profiles" heading.
   name varchar(255),
   created_by uuid REFERENCES users(id),
   created_at timestamp NOT NULL DEFAULT now(),

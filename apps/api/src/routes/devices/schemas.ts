@@ -194,7 +194,8 @@ export const createLinkGroupSchema = z.object({
 
 export const updateLinkGroupSchema = z
   .object({
-    // Nullable so the label can be cleared back to the hostname fallback.
+    // Nullable so the label can be cleared (the UI then shows its generic
+    // "Linked boot profiles" heading).
     name: z.string().min(1).max(255).nullable().optional(),
     addDeviceIds: z.array(z.string().guid()).min(1).max(10).optional(),
     removeDeviceIds: z.array(z.string().guid()).min(1).max(10).optional(),

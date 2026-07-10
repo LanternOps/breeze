@@ -23,6 +23,10 @@ vi.mock('../../db', () => ({
   },
 }));
 
+vi.mock('../../services/deviceLinkGroups', () => ({
+  dissolveLinkGroupIfBelowMinimum: vi.fn(async () => false),
+}));
+
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
@@ -315,5 +319,37 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
     expect(
       statements.some((s) => s.startsWith('DELETE FROM psa_ticket_mappings WHERE'))
     ).toBe(true);
+  });
+
+  it('runs the link-group dissolve check when hard-deleting a linked boot profile (#2138)', async () => {
+    const { dissolveLinkGroupIfBelowMinimum } = await import('../../services/deviceLinkGroups');
+    rigDeviceLookup({ ...DEVICE, linkGroupId: 'grp-multiboot-1' });
+    rigDeleteTransaction();
+
+    const res = await app.request(`/devices/${DEVICE.id}/permanent`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(200);
+    // The deleted device's link_group_id went with its row; the group may now
+    // have a single lone survivor. Dropping this call silently strands a
+    // 1-member group (the survivor renders ungrouped and re-linking it 409s).
+    expect(dissolveLinkGroupIfBelowMinimum).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(dissolveLinkGroupIfBelowMinimum).mock.calls[0]![1]).toBe('grp-multiboot-1');
+  });
+
+  it('does not touch link groups when the deleted device was unlinked', async () => {
+    const { dissolveLinkGroupIfBelowMinimum } = await import('../../services/deviceLinkGroups');
+    rigDeviceLookup(DEVICE);
+    rigDeleteTransaction();
+
+    const res = await app.request(`/devices/${DEVICE.id}/permanent`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(dissolveLinkGroupIfBelowMinimum).not.toHaveBeenCalled();
   });
 });

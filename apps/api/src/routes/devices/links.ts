@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import { db } from '../../db';
 import { deviceLinkGroups, devices } from '../../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../../middleware/auth';
@@ -17,6 +17,7 @@ import {
   deleteLinkGroup,
   dissolveLinkGroupIfBelowMinimum,
 } from '../../services/deviceLinkGroups';
+import { captureException } from '../../services/sentry';
 import type { AuthContext } from '../../middleware/auth';
 
 /**
@@ -24,9 +25,12 @@ import type { AuthContext } from '../../middleware/auth';
  *
  * Manual link/unlink of 2+ device records as boot profiles of one physical
  * machine. NON-destructive: each device keeps its own inventory/history. The
- * device-list and device-detail UI use these to collapse a linked group into a
- * single primary row (active OS surfaced, siblings de-emphasized) and to flag a
- * link as conflicting when more than one profile reports online at once.
+ * device list renders offline siblings as thin "expected offline" strips
+ * beneath the single online member (all-offline groups get a left-edge bar;
+ * 2+ online renders plain full rows — no conflict state, no primary election;
+ * see apps/web/src/components/devices/linkedDevices.ts for the presentation
+ * rules). The device-detail Linked Profiles tab lists all members and hosts
+ * the unlink/dissolve actions.
  *
  * Mounted BEFORE coreRoutes so the static `/link-groups` paths are not eaten by
  * the core `/:id` matcher.
@@ -34,6 +38,19 @@ import type { AuthContext } from '../../middleware/auth';
 export const linksRoutes = new Hono();
 
 linksRoutes.use('*', authMiddleware);
+
+/**
+ * Thrown inside a link/patch transaction when the guarded membership UPDATE
+ * claims fewer rows than expected — i.e. a concurrent request linked one of
+ * the devices between the pre-check and the transaction. Aborts (rolls back)
+ * the whole operation; the route maps it to a 409.
+ */
+class LinkRaceError extends Error {
+  constructor() {
+    super('link group membership changed concurrently');
+    this.name = 'LinkRaceError';
+  }
+}
 
 /** Client-facing shape of one boot profile in a link group. */
 interface LinkGroupMember {
@@ -169,17 +186,33 @@ linksRoutes.post(
     }
 
     let groupId: string;
-    await db.transaction(async (tx) => {
-      const [group] = await tx
-        .insert(deviceLinkGroups)
-        .values({ orgId, name: name ?? null, createdBy: auth.user.id })
-        .returning({ id: deviceLinkGroups.id });
-      groupId = group!.id;
-      await tx
-        .update(devices)
-        .set({ linkGroupId: groupId, updatedAt: new Date() })
-        .where(inArray(devices.id, uniqueIds));
-    });
+    try {
+      await db.transaction(async (tx) => {
+        const [group] = await tx
+          .insert(deviceLinkGroups)
+          .values({ orgId, name: name ?? null, createdBy: auth.user.id })
+          .returning({ id: deviceLinkGroups.id });
+        groupId = group!.id;
+        // Self-guarding claim: only devices STILL unlinked take the group id.
+        // The pre-check above ran outside this transaction, so a concurrent
+        // link could have claimed a device in between (TOCTOU) — without the
+        // guard the winner's group would silently lose the device. A row-count
+        // mismatch aborts the whole link with a 409 instead.
+        const claimed = await tx
+          .update(devices)
+          .set({ linkGroupId: groupId, updatedAt: new Date() })
+          .where(and(inArray(devices.id, uniqueIds), isNull(devices.linkGroupId)))
+          .returning({ id: devices.id });
+        if (claimed.length !== uniqueIds.length) {
+          throw new LinkRaceError();
+        }
+      });
+    } catch (err) {
+      if (err instanceof LinkRaceError) {
+        return c.json({ error: 'A device was linked by another request — retry' }, 409);
+      }
+      throw err;
+    }
 
     writeRouteAudit(c, {
       orgId,
@@ -284,6 +317,12 @@ linksRoutes.patch(
       if (!device) {
         return c.json({ error: `Device ${id} not found` }, 404);
       }
+      // Removing a device that is NOT a member of this group would silently
+      // no-op (the tx update is scoped to this group) while returning 200 and
+      // recording a false audit entry. Reject it instead.
+      if (device.linkGroupId !== groupId) {
+        return c.json({ error: `Device ${id} is not a member of this link group` }, 409);
+      }
     }
 
     // Enforce the size ceiling on the resulting membership.
@@ -299,30 +338,48 @@ linksRoutes.patch(
     }
 
     let dissolved = false;
-    await db.transaction(async (tx) => {
-      if (name !== undefined || toAdd.length > 0) {
-        await tx
-          .update(deviceLinkGroups)
-          .set({ ...(name !== undefined ? { name } : {}), updatedAt: new Date() })
-          .where(eq(deviceLinkGroups.id, groupId));
+    try {
+      await db.transaction(async (tx) => {
+        if (name !== undefined || toAdd.length > 0 || toRemove.length > 0) {
+          await tx
+            .update(deviceLinkGroups)
+            .set({ ...(name !== undefined ? { name } : {}), updatedAt: new Date() })
+            .where(eq(deviceLinkGroups.id, groupId));
+        }
+        if (toRemove.length > 0) {
+          // Only unlink devices actually in THIS group.
+          await tx
+            .update(devices)
+            .set({ linkGroupId: null, updatedAt: new Date() })
+            .where(and(inArray(devices.id, toRemove), eq(devices.linkGroupId, groupId)));
+        }
+        if (toAdd.length > 0) {
+          // Self-guarding claim (same TOCTOU rationale as the create route):
+          // only devices still unlinked — or already in this group — take the
+          // group id. A concurrent link stealing one of them aborts with 409
+          // instead of silently succeeding with fewer members.
+          const claimed = await tx
+            .update(devices)
+            .set({ linkGroupId: groupId, updatedAt: new Date() })
+            .where(and(
+              inArray(devices.id, toAdd),
+              or(isNull(devices.linkGroupId), eq(devices.linkGroupId, groupId)),
+            ))
+            .returning({ id: devices.id });
+          if (claimed.length !== toAdd.length) {
+            throw new LinkRaceError();
+          }
+        }
+        // A group that fell below the minimum after removals is meaningless —
+        // dissolve it (unlink the lone survivor, delete the row).
+        dissolved = await dissolveLinkGroupIfBelowMinimum(tx, groupId);
+      });
+    } catch (err) {
+      if (err instanceof LinkRaceError) {
+        return c.json({ error: 'A device was linked by another request — retry' }, 409);
       }
-      if (toRemove.length > 0) {
-        // Only unlink devices actually in THIS group.
-        await tx
-          .update(devices)
-          .set({ linkGroupId: null, updatedAt: new Date() })
-          .where(and(inArray(devices.id, toRemove), eq(devices.linkGroupId, groupId)));
-      }
-      if (toAdd.length > 0) {
-        await tx
-          .update(devices)
-          .set({ linkGroupId: groupId, updatedAt: new Date() })
-          .where(inArray(devices.id, toAdd));
-      }
-      // A group that fell below the minimum after removals is meaningless —
-      // dissolve it (unlink the lone survivor, delete the row).
-      dissolved = await dissolveLinkGroupIfBelowMinimum(tx, groupId);
-    });
+      throw err;
+    }
 
     writeRouteAudit(c, {
       orgId: group.orgId,
@@ -406,7 +463,17 @@ linksRoutes.get(
       .where(eq(deviceLinkGroups.id, device.linkGroupId))
       .limit(1);
     if (!group) {
-      // Defensive: dangling reference (should be impossible under the FK).
+      // Dangling reference — impossible under the composite FK, so if it ever
+      // fires something bypassed the constraint (manual fix-up, bad migration,
+      // RLS filtering the group row while the device stays visible). Be LOUD:
+      // silently rendering "not linked" would mask data corruption.
+      console.error(
+        `Device ${deviceId} references link group ${device.linkGroupId} which is not visible/present`,
+      );
+      captureException(
+        new Error(`device link group dangling reference: device ${deviceId} -> group ${device.linkGroupId}`),
+        c,
+      );
       return c.json({ group: null, members: [] });
     }
 

@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import DeviceLinkedProfilesTab from './DeviceLinkedProfilesTab';
@@ -72,5 +72,54 @@ describe('DeviceLinkedProfilesTab', () => {
     expect(screen.getByTestId('linked-profile-dev-1')).toBeInTheDocument();
     expect(screen.getByTestId('linked-profile-dev-2')).toBeInTheDocument();
     expect(screen.queryByTestId('linked-profiles-conflict')).not.toBeInTheDocument();
+  });
+
+  it('unlink-this-device PATCHes removeDeviceIds and reloads the panel', async () => {
+    const groupPayload = {
+      group: { id: 'g1', name: null },
+      members: [
+        { deviceId: 'dev-1', hostname: 'a', displayName: null, osType: 'windows', osVersion: '11', agentVersion: '1', status: 'online', lastSeenAt: null },
+        { deviceId: 'dev-2', hostname: 'b', displayName: null, osType: 'linux', osVersion: '22', agentVersion: '1', status: 'offline', lastSeenAt: null },
+      ],
+    };
+    fetchWithAuthMock
+      .mockResolvedValueOnce(jsonResponse(groupPayload)) // initial load
+      .mockResolvedValueOnce(jsonResponse({ id: 'g1', dissolved: true, members: [] })) // PATCH
+      .mockResolvedValueOnce(jsonResponse({ group: null, members: [] })); // reload
+
+    render(<DeviceLinkedProfilesTab deviceId="dev-1" />);
+    await waitFor(() => expect(screen.getByTestId('linked-profiles-tab')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('linked-profiles-unlink-self'));
+
+    await waitFor(() => expect(screen.getByTestId('linked-profiles-empty')).toBeInTheDocument());
+    const patchCall = fetchWithAuthMock.mock.calls[1]!;
+    expect(patchCall[0]).toBe('/devices/link-groups/g1');
+    expect(patchCall[1]).toMatchObject({ method: 'PATCH' });
+    expect(JSON.parse((patchCall[1] as RequestInit).body as string)).toEqual({ removeDeviceIds: ['dev-1'] });
+  });
+
+  it('remove-link DELETEs the group and reloads the panel', async () => {
+    const groupPayload = {
+      group: { id: 'g1', name: null },
+      members: [
+        { deviceId: 'dev-1', hostname: 'a', displayName: null, osType: 'windows', osVersion: '11', agentVersion: '1', status: 'online', lastSeenAt: null },
+        { deviceId: 'dev-2', hostname: 'b', displayName: null, osType: 'linux', osVersion: '22', agentVersion: '1', status: 'offline', lastSeenAt: null },
+      ],
+    };
+    fetchWithAuthMock
+      .mockResolvedValueOnce(jsonResponse(groupPayload)) // initial load
+      .mockResolvedValueOnce(jsonResponse({ success: true })) // DELETE
+      .mockResolvedValueOnce(jsonResponse({ group: null, members: [] })); // reload
+
+    render(<DeviceLinkedProfilesTab deviceId="dev-1" />);
+    await waitFor(() => expect(screen.getByTestId('linked-profiles-tab')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('linked-profiles-dissolve'));
+
+    await waitFor(() => expect(screen.getByTestId('linked-profiles-empty')).toBeInTheDocument());
+    const deleteCall = fetchWithAuthMock.mock.calls[1]!;
+    expect(deleteCall[0]).toBe('/devices/link-groups/g1');
+    expect(deleteCall[1]).toMatchObject({ method: 'DELETE' });
   });
 });

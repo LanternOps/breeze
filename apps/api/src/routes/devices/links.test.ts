@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
-const { siteDenied } = vi.hoisted(() => ({
+const { siteDenied, authState } = vi.hoisted(() => ({
   siteDenied: Symbol('SITE_ACCESS_DENIED'),
+  // Mutable so individual tests can restrict site access (loadMembers filter).
+  authState: { canAccessSite: ((_siteId: string | null) => true) as (siteId: string | null) => boolean },
 }));
 
 vi.mock('../../db', () => ({
@@ -19,7 +21,7 @@ vi.mock('../../middleware/auth', () => ({
       scope: 'organization',
       orgId: 'org-123',
       canAccessOrg: (orgId: string) => orgId === 'org-123',
-      canAccessSite: () => true,
+      canAccessSite: (siteId: string | null) => authState.canAccessSite(siteId),
       orgCondition: () => undefined,
     });
     return next();
@@ -37,6 +39,10 @@ vi.mock('./helpers', () => ({
 
 vi.mock('../../services/auditEvents', () => ({
   writeRouteAudit: vi.fn(),
+}));
+
+vi.mock('../../services/sentry', () => ({
+  captureException: vi.fn(),
 }));
 
 vi.mock('../../services/deviceLinkGroups', () => ({
@@ -95,6 +101,7 @@ describe('device link-group routes (guard branches)', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    authState.canAccessSite = () => true;
     app = new Hono();
     app.route('/devices', linksRoutes);
   });
@@ -147,6 +154,7 @@ describe('device link-group routes (create success + PATCH branches)', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    authState.canAccessSite = () => true;
     app = new Hono();
     app.route('/devices', linksRoutes);
   });
@@ -158,7 +166,9 @@ describe('device link-group routes (create success + PATCH branches)', () => {
     dbTransactionMock.mockImplementation((async (cb: any) =>
       cb({
         insert: () => ({ values: () => ({ returning: () => Promise.resolve([{ id: 'grp-1' }]) }) }),
-        update: () => ({ set: () => ({ where: () => Promise.resolve(undefined) }) }),
+        // The guarded membership claim returns the rows it actually updated;
+        // both devices are still unlinked here, so both are claimed.
+        update: () => ({ set: () => ({ where: () => ({ returning: () => Promise.resolve([{ id: UUID_A }, { id: UUID_B }]) }) }) }),
       })) as any);
     dbSelectMock.mockReturnValueOnce(
       selectChain([
@@ -200,5 +210,92 @@ describe('device link-group routes (create success + PATCH branches)', () => {
     dbSelectMock.mockReturnValueOnce(selectChain(Array.from({ length: 10 }, (_, i) => ({ id: `d${i}` }))) as any);
     const res = await app.request(jsonReq('/devices/link-groups/grp-1', 'PATCH', { addDeviceIds: [UUID_A] }));
     expect(res.status).toBe(400);
+  });
+
+  it('409s a PATCH remove for a device that is not a member of this group (no silent no-op)', async () => {
+    dbSelectMock.mockReturnValueOnce(selectChain([{ id: 'grp-1', orgId: 'org-123', name: null }]) as any);
+    // The device exists and is accessible, but belongs to a DIFFERENT group.
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValueOnce(
+      mockDevice({ id: UUID_A, linkGroupId: 'other-group' }) as any,
+    );
+    const res = await app.request(jsonReq('/devices/link-groups/grp-1', 'PATCH', { removeDeviceIds: [UUID_A] }));
+    expect(res.status).toBe(409);
+  });
+
+  it('409s a create when a device is claimed concurrently (guarded update claims fewer rows)', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck)
+      .mockResolvedValueOnce(mockDevice({ id: UUID_A }) as any)
+      .mockResolvedValueOnce(mockDevice({ id: UUID_B }) as any);
+    dbTransactionMock.mockImplementation((async (cb: any) =>
+      cb({
+        insert: () => ({ values: () => ({ returning: () => Promise.resolve([{ id: 'grp-1' }]) }) }),
+        // Simulate a concurrent link stealing UUID_B between the pre-check and
+        // the transaction: only one row still satisfies link_group_id IS NULL.
+        update: () => ({ set: () => ({ where: () => ({ returning: () => Promise.resolve([{ id: UUID_A }]) }) }) }),
+      })) as any);
+
+    const res = await app.request(jsonReq('/devices/link-groups', 'POST', { deviceIds: [UUID_A, UUID_B] }));
+    expect(res.status).toBe(409);
+  });
+
+  it('returns dissolved:true when a removal drops the group below the two-member minimum', async () => {
+    dbSelectMock.mockReturnValueOnce(selectChain([{ id: 'grp-1', orgId: 'org-123', name: null }]) as any);
+    // Removal target is a member of THIS group.
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValueOnce(
+      mockDevice({ id: UUID_A, linkGroupId: 'grp-1' }) as any,
+    );
+    // Current membership: two devices.
+    dbSelectMock.mockReturnValueOnce(selectChain([{ id: UUID_A }, { id: UUID_B }]) as any);
+    dbTransactionMock.mockImplementation((async (cb: any) =>
+      cb({
+        update: () => ({ set: () => ({ where: () => Promise.resolve(undefined) }) }),
+      })) as any);
+    const { dissolveLinkGroupIfBelowMinimum } = await import('../../services/deviceLinkGroups');
+    vi.mocked(dissolveLinkGroupIfBelowMinimum).mockResolvedValueOnce(true);
+
+    const res = await app.request(jsonReq('/devices/link-groups/grp-1', 'PATCH', { removeDeviceIds: [UUID_A] }));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { dissolved: boolean; members: unknown[] };
+    expect(body.dissolved).toBe(true);
+    expect(body.members).toEqual([]);
+  });
+});
+
+describe('device link-group routes (site-scope member filtering)', () => {
+  let app: Hono;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    authState.canAccessSite = () => true;
+    app = new Hono();
+    app.route('/devices', linksRoutes);
+  });
+
+  it('omits members in sites the caller cannot access from the group list', async () => {
+    // Site-restricted tech: can only see site-1.
+    authState.canAccessSite = (siteId: string | null) => siteId === 'site-1';
+
+    // Groups query, then loadMembers query.
+    dbSelectMock.mockReturnValueOnce(
+      selectChain([{ id: 'grp-1', orgId: 'org-123', kind: 'multiboot', name: null, createdBy: null, createdAt: new Date(), updatedAt: new Date() }]) as any,
+    );
+    dbSelectMock.mockReturnValueOnce(
+      selectChain([
+        { deviceId: UUID_A, linkGroupId: 'grp-1', siteId: 'site-1', hostname: 'visible', displayName: null, osType: 'windows', osVersion: '11', agentVersion: '1', status: 'online', lastSeenAt: null },
+        { deviceId: UUID_B, linkGroupId: 'grp-1', siteId: 'site-2', hostname: 'forbidden', displayName: null, osType: 'linux', osVersion: '22', agentVersion: '1', status: 'offline', lastSeenAt: null },
+      ]) as any,
+    );
+
+    const res = await app.request(new Request('http://localhost/devices/link-groups'));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: Array<{ members: Array<{ deviceId: string; hostname: string }> }> };
+    expect(body.data).toHaveLength(1);
+    const members = body.data[0]!.members;
+    // The forbidden-site sibling is filtered out — its hostname/OS/status must
+    // not leak to a site-restricted caller. This filter (loadMembers) is the
+    // ONLY enforcement layer: RLS is org-axis, site scope is app-layer.
+    expect(members).toHaveLength(1);
+    expect(members[0]!.deviceId).toBe(UUID_A);
+    expect(JSON.stringify(body)).not.toContain('forbidden');
   });
 });

@@ -147,7 +147,7 @@ export type Device = {
   /**
    * Linked multi-boot profiles (#2138). `linkGroupId` comes straight from the
    * devices list API (null/undefined = unlinked). The grouping presentation
-   * (inactive strips / group bracket) is computed client-side per page by
+   * (inactive strips / left-edge group bar) is computed client-side per page by
    * groupLinkedDevices in linkedDevices.ts.
    */
   linkGroupId?: string | null;

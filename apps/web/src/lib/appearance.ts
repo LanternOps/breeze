@@ -15,8 +15,9 @@ export type TimeFormatPreference = TimeFormat;
 /**
  * Devices-list presentation of linked multi-boot profiles (#2138). 'on' =
  * when exactly one profile of a link group is online, its offline siblings
- * render as thin "expected offline" strips beneath it; 'off' = today's flat
- * list. Per-user, localStorage-persisted (NOT a query param / URL hash).
+ * render as thin "expected offline" strips beneath it (and all-offline groups
+ * get a left-edge bar); 'off' = a plain flat list with no grouping markers.
+ * Per-user, localStorage-persisted (NOT a query param / URL hash).
  */
 export const LINKED_PROFILE_COLLAPSE_OPTIONS = ['on', 'off'] as const;
 export type LinkedProfileCollapsePreference = (typeof LINKED_PROFILE_COLLAPSE_OPTIONS)[number];
