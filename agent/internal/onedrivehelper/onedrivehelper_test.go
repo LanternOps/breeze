@@ -115,3 +115,10 @@ func TestTenantIDFromComposite(t *testing.T) {
 		}
 	}
 }
+
+// A "go:build !windows" tag is not needed here — this test file has no build
+// tag, and on Windows dev boxes the windows Apply also satisfies the signature.
+func TestApplySignature(t *testing.T) {
+	// Compile-time check that Apply exists with the cross-platform signature.
+	var _ func(Config) (*DeviceState, error) = Apply
+}
