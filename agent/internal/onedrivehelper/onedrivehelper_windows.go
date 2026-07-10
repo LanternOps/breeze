@@ -40,7 +40,8 @@ func Apply(cfg Config) (*DeviceState, error) {
 	var applied []LibraryRule
 	for _, s := range sessions {
 		isMember := func(groupName string) bool { return isTokenGroupMember(s, groupName) }
-		apply, _ := PartitionLibraries(cfg.Libraries, isMember)
+		upn := sessionUpn(s.sid)
+		apply, _ := PartitionLibraries(cfg.Libraries, isMember, upn)
 		changed, err := applyUserAutoMount(s.sid, apply)
 		if err != nil {
 			// One broken user hive must not stop the others.
@@ -246,6 +247,23 @@ func isTokenGroupMember(s userSession, groupName string) bool {
 	return s.groupSIDs[strings.ToUpper(sid.String())]
 }
 
+// sessionUpn reads the signed-in user's UPN from the session's own OneDrive
+// account key. Empty when the user isn't signed in to OneDrive Business or the
+// value is unreadable — callers treat empty as "cannot match graph_group rules"
+// (fail closed).
+func sessionUpn(sid string) string {
+	k, err := registry.OpenKey(registry.USERS, sid+`\`+accountKeySuffix, registry.QUERY_VALUE)
+	if err != nil {
+		return ""
+	}
+	defer k.Close()
+	v, _, err := k.GetStringValue("UserEmail")
+	if err != nil {
+		return ""
+	}
+	return v
+}
+
 // restartOneDrive best-effort kills + relaunches OneDrive in each session so
 // policy/AutoMount changes take effect promptly. Confirmed-path-first: for
 // each session we resolve a launchable, absolute OneDrive.exe path (machine
@@ -329,6 +347,7 @@ func readDeviceState(sessions []userSession, entitled []string, applied []Librar
 		MountedLibraries:  []string{},
 		EntitledLibraries: entitled,
 		DriftEntries:      []DriftEntry{},
+		SignedInUpns:      []string{},
 	}
 
 	// FOD reflects the policy we enforce (HKLM read-back).
@@ -346,6 +365,9 @@ func readDeviceState(sessions []userSession, entitled []string, applied []Librar
 			continue // this user isn't signed in to OneDrive Business
 		}
 		state.SignedIn = true
+		if upn, _, e := acct.GetStringValue("UserEmail"); e == nil && upn != "" && !containsFold(state.SignedInUpns, upn) {
+			state.SignedInUpns = append(state.SignedInUpns, upn)
+		}
 		if !primaryFound {
 			primaryFound = true
 			if v, _, e := acct.GetStringValue("OneDriveVersion"); e == nil {
