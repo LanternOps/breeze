@@ -264,6 +264,7 @@ import { drainAuditRetryQueue } from './services/auditService';
 import { createCorsOriginResolver } from './services/corsOrigins';
 import { validateConfig } from './config/validate';
 import { autoMigrate } from './db/autoMigrate';
+import { mountExtensions } from './extensions/loader';
 import { syncBinaries } from './services/binarySync';
 import * as dbModule from './db';
 import { deviceGroups, devices, securityThreats, webhookDeliveries, webhooks as webhooksTable } from './db/schema';
@@ -1511,6 +1512,8 @@ async function bootstrap(): Promise<void> {
   if (process.env.AUTO_MIGRATE !== 'false') {
     await autoMigrate();
   }
+
+  await mountExtensions(app);
 
   try {
     await bootstrapPlatformAdmins();
