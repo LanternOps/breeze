@@ -1647,6 +1647,56 @@ func equalPolicyConfigProbes(left, right []config.PolicyConfigStateProbe) bool {
 	return true
 }
 
+// decideBackupURLUpdate is the pure decision core for a pushed
+// backup_server_url value. Empty string = clear, equal-to-primary and
+// invalid values are ignored. Returns (newValue, apply).
+func decideBackupURLUpdate(raw any, primary, current string) (string, bool) {
+	s, ok := raw.(string)
+	if !ok {
+		log.Warn("ignoring non-string backup_server_url config update payload")
+		return "", false
+	}
+	s = strings.TrimSpace(s)
+	if s == current {
+		return "", false
+	}
+	if s == "" {
+		return "", true // clear
+	}
+	if s == primary {
+		log.Debug("ignoring backup_server_url identical to primary server_url")
+		return "", false
+	}
+	if err := config.ValidateBackupServerURL(s); err != nil {
+		log.Warn("ignoring invalid backup_server_url config update", "error", err.Error())
+		return "", false
+	}
+	return s, true
+}
+
+func (h *Heartbeat) applyBackupServerURLConfig(raw any) {
+	h.mu.Lock()
+	primary, current := h.config.ServerURL, h.config.BackupServerURL
+	h.mu.Unlock()
+
+	val, apply := decideBackupURLUpdate(raw, primary, current)
+	if !apply {
+		return
+	}
+	h.mu.Lock()
+	h.config.BackupServerURL = val
+	h.mu.Unlock()
+	if err := config.SetAndPersist("backup_server_url", val); err != nil {
+		log.Warn("failed to persist backup_server_url", "error", err.Error())
+		return
+	}
+	if val == "" {
+		log.Info("cleared backup server URL")
+	} else {
+		log.Info("stored backup server URL", "backupServerUrl", val)
+	}
+}
+
 func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 	if len(update) == 0 {
 		return
@@ -1681,6 +1731,16 @@ func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 	}
 	if hasPS {
 		h.applyPatchSourceConfig(psRaw)
+	}
+
+	// Backup control-plane URL (#2288). Key absent = no change; present
+	// empty string = clear. Snake_case and camelCase both accepted.
+	bsRaw, hasBS := update["backup_server_url"]
+	if !hasBS {
+		bsRaw, hasBS = update["backupServerUrl"]
+	}
+	if hasBS {
+		h.applyBackupServerURLConfig(bsRaw)
 	}
 
 	registryRaw, hasRegistry := update["policy_registry_state_probes"]
