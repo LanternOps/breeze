@@ -9,7 +9,13 @@ vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 
 import { getToken, graphFetch } from './m365DirectGraph';
 import { captureException } from './sentry';
-import { listSharePointLibraries, resolveUserGroupMembership, buildTenantAutoMountValue } from './onedriveGraph';
+import {
+  clearGroupMembershipCache,
+  listSharePointLibraries,
+  resolveUserGroupMembership,
+  resolveUserGroupMembershipCached,
+  buildTenantAutoMountValue,
+} from './onedriveGraph';
 
 describe('listSharePointLibraries', () => {
   beforeEach(() => vi.clearAllMocks());
@@ -193,5 +199,39 @@ describe('resolveUserGroupMembership', () => {
     const res = await resolveUserGroupMembership('org-1', '');
     expect(res.kind).toBe('error');
     expect((graphFetch as any)).not.toHaveBeenCalled();
+  });
+});
+
+describe('resolveUserGroupMembershipCached', () => {
+  beforeEach(() => { vi.clearAllMocks(); clearGroupMembershipCache(); });
+
+  it('second call within TTL hits the cache (no second Graph call)', async () => {
+    (graphFetch as any).mockResolvedValueOnce({ kind: 'ok', data: { value: [{ id: 'g-1' }] } });
+    const a = await resolveUserGroupMembershipCached('org-1', 'User@Contoso.com');
+    const b = await resolveUserGroupMembershipCached('org-1', 'user@contoso.com'); // case-insensitive key
+    expect((a as any).data.groupIds).toEqual(['g-1']);
+    expect(b).toEqual(a);
+    expect(graphFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('errors are not cached (next call retries)', async () => {
+    (graphFetch as any)
+      .mockResolvedValueOnce({ kind: 'error', code: 'throttled', message: 'x' })
+      .mockResolvedValueOnce({ kind: 'ok', data: { value: [{ id: 'g-2' }] } });
+    const a = await resolveUserGroupMembershipCached('org-1', 'u@c.com');
+    expect(a.kind).toBe('error');
+    const b = await resolveUserGroupMembershipCached('org-1', 'u@c.com');
+    expect((b as any).data.groupIds).toEqual(['g-2']);
+    expect(graphFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('distinct orgs do not share cache entries', async () => {
+    (graphFetch as any)
+      .mockResolvedValueOnce({ kind: 'ok', data: { value: [{ id: 'g-1' }] } })
+      .mockResolvedValueOnce({ kind: 'ok', data: { value: [{ id: 'g-9' }] } });
+    await resolveUserGroupMembershipCached('org-1', 'u@c.com');
+    const b = await resolveUserGroupMembershipCached('org-2', 'u@c.com');
+    expect((b as any).data.groupIds).toEqual(['g-9']);
+    expect(graphFetch).toHaveBeenCalledTimes(2);
   });
 });

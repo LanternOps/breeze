@@ -127,3 +127,25 @@ export async function resolveUserGroupMembership(orgId: string, upn: string): Pr
   const groupIds = rows.map((g: any) => g.id).filter((id: unknown): id is string => typeof id === 'string');
   return { kind: 'ok', data: { groupIds } };
 }
+
+export const GROUP_MEMBERSHIP_CACHE_TTL_MS = 30 * 60 * 1000;
+
+type CacheEntry = { at: number; result: DirectInvokeResult };
+const groupMembershipCache = new Map<string, CacheEntry>();
+
+export function clearGroupMembershipCache(): void {
+  groupMembershipCache.clear();
+}
+
+/** TTL-cached transitive group membership. Delivery calls this once per
+ * reported UPN per heartbeat; without the cache that is a Graph round-trip
+ * per user per minute per device. Errors are never cached (fail closed but
+ * retry next heartbeat). */
+export async function resolveUserGroupMembershipCached(orgId: string, upn: string): Promise<DirectInvokeResult> {
+  const key = `${orgId}:${upn.toLowerCase()}`;
+  const hit = groupMembershipCache.get(key);
+  if (hit && Date.now() - hit.at < GROUP_MEMBERSHIP_CACHE_TTL_MS) return hit.result;
+  const result = await resolveUserGroupMembership(orgId, upn);
+  if (result.kind === 'ok') groupMembershipCache.set(key, { at: Date.now(), result });
+  return result;
+}
