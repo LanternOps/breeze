@@ -38,6 +38,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/monitoring"
 	"github.com/breeze-rmm/agent/internal/mtls"
 	"github.com/breeze-rmm/agent/internal/observability"
+	"github.com/breeze-rmm/agent/internal/onedrivehelper"
 	"github.com/breeze-rmm/agent/internal/patching"
 	"github.com/breeze-rmm/agent/internal/peripheral"
 	"github.com/breeze-rmm/agent/internal/privilege"
@@ -73,22 +74,25 @@ type HeartbeatPayload struct {
 	// pointer so an old-agent omission (nil) is distinguishable from a
 	// genuine "physical" report (false) — the server only overwrites the
 	// stored value when the agent actually sends one.
-	IsVirtual              *bool          `json:"isVirtual,omitempty"`
-	VirtualizationPlatform string         `json:"virtualizationPlatform,omitempty"`
-	HealthStatus           map[string]any `json:"healthStatus,omitempty"`
-	DroppedLogs      int64                     `json:"droppedLogs,omitempty"`
-	HelperVersion    string                    `json:"helperVersion,omitempty"`
-	WatchdogVersion  string                    `json:"watchdogVersion,omitempty"`
-	TCCPermissions   *ipc.TCCStatus            `json:"tccPermissions,omitempty"`
-	DesktopAccess    *DesktopAccessState       `json:"desktopAccess,omitempty"`
-	Hostname         string                    `json:"hostname,omitempty"`
-	OSVersion        string                    `json:"osVersion,omitempty"`
-	OSBuild          string                    `json:"osBuild,omitempty"`
-	IsHeadless       bool                      `json:"isHeadless"`
+	IsVirtual              *bool               `json:"isVirtual,omitempty"`
+	VirtualizationPlatform string              `json:"virtualizationPlatform,omitempty"`
+	HealthStatus           map[string]any      `json:"healthStatus,omitempty"`
+	DroppedLogs            int64               `json:"droppedLogs,omitempty"`
+	HelperVersion          string              `json:"helperVersion,omitempty"`
+	WatchdogVersion        string              `json:"watchdogVersion,omitempty"`
+	TCCPermissions         *ipc.TCCStatus      `json:"tccPermissions,omitempty"`
+	DesktopAccess          *DesktopAccessState `json:"desktopAccess,omitempty"`
+	Hostname               string              `json:"hostname,omitempty"`
+	OSVersion              string              `json:"osVersion,omitempty"`
+	OSBuild                string              `json:"osBuild,omitempty"`
+	IsHeadless             bool                `json:"isHeadless"`
 	// Current-state power/battery telemetry (#2142). Pointer + omitempty so an
 	// old agent (or a platform that can't report power state) omits the field
 	// and the server keeps whatever it last knew rather than clobbering it.
-	Battery          *collectors.BatteryInfo   `json:"battery,omitempty"`
+	Battery *collectors.BatteryInfo `json:"battery,omitempty"`
+	// OneDrive helper state (Phase 2). Nil until a config has been applied on a
+	// Windows box — omitempty then drops the field entirely.
+	OneDriveDeviceState *onedrivehelper.DeviceState `json:"onedriveDeviceState,omitempty"`
 }
 
 type DesktopAccessState struct {
@@ -238,6 +242,10 @@ type Heartbeat struct {
 
 	// Service & process monitoring
 	monitor *monitoring.Monitor
+
+	// OneDrive helper state captured on config apply, reported next heartbeat.
+	onedriveMu    sync.Mutex
+	onedriveState *onedrivehelper.DeviceState
 
 	// Cached device role classification (computed once at startup)
 	cachedDeviceRole string
@@ -1686,6 +1694,15 @@ func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 		h.applyPatchSourceConfig(psRaw)
 	}
 
+	// Apply onedrive_helper_settings if present (Phase 2). No-op on non-Windows.
+	odRaw, hasOD := update["onedrive_helper_settings"]
+	if !hasOD {
+		odRaw, hasOD = update["onedriveHelperSettings"]
+	}
+	if hasOD {
+		h.applyOneDriveHelperConfig(odRaw)
+	}
+
 	registryRaw, hasRegistry := update["policy_registry_state_probes"]
 	if !hasRegistry {
 		registryRaw, hasRegistry = update["policyRegistryStateProbes"]
@@ -2620,6 +2637,12 @@ func (h *Heartbeat) sendHeartbeat() {
 	// Current power/battery state (#2142). Nil on platforms that can't report
 	// it or when the query failed — omitempty then drops the field.
 	payload.Battery = h.hardwareCol.CollectBattery()
+
+	// OneDrive helper state (Phase 2). Nil until a config has been applied on a
+	// Windows box — omitempty then drops the field entirely.
+	h.onedriveMu.Lock()
+	payload.OneDriveDeviceState = h.onedriveState
+	h.onedriveMu.Unlock()
 
 	// Check for pending reboot
 	pendingReboot, _ := patching.DetectPendingReboot()
