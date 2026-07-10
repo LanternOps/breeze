@@ -36,11 +36,43 @@ export function computeLineTotal(quantity: string | number, unitPrice: string | 
   return fromCents(roundHalfUp(fractionalCents));
 }
 
-export type QuoteDepositType = 'none' | 'percent' | 'selected_lines';
-export interface QuoteDepositConfig {
-  type: QuoteDepositType;
-  /** Required for type 'percent'. Whole-percent scale (30 = 30%), 2dp. */
-  percent?: number | string | null;
+/**
+ * Deposit config as a discriminated union so illegal states ({ type: 'percent' }
+ * with no percent, or a percent on a non-percent type) are unrepresentable at
+ * compile time. Mirrors the QuoteDepositValidation union below.
+ */
+export type QuoteDepositConfig =
+  /** No deposit. */
+  | { type: 'none' }
+  /** Whole-percent scale (30 = 30%), 2dp. May be NaN when normalized from a
+   *  missing/blank source value — validateQuoteDeposit rejects it and
+   *  computeQuoteTotals treats it as "no deposit" (both gate on isFinite). */
+  | { type: 'percent'; percent: number }
+  /** Eligibility lives on the lines (QuoteLineForMath.depositEligible). */
+  | { type: 'selected_lines' };
+
+export type QuoteDepositType = QuoteDepositConfig['type'];
+
+/**
+ * Normalize the flat persisted/wire pair (deposit_type, deposit_percent) into
+ * the union. The DB and API keep the flat columns/fields — this is the single
+ * read-boundary adapter, so construction sites don't hand-build literals.
+ * A missing/blank percent on a 'percent' deposit becomes NaN (NOT a silent
+ * 'none'): validateQuoteDeposit must still fail it with DEPOSIT_PERCENT_INVALID,
+ * exactly as the pre-union code did.
+ */
+export function toQuoteDepositConfig(
+  type: QuoteDepositType | null | undefined,
+  percent: number | string | null | undefined,
+): QuoteDepositConfig {
+  if (type === 'percent') {
+    return {
+      type: 'percent',
+      percent: percent === null || percent === undefined || percent === '' ? Number.NaN : Number(percent),
+    };
+  }
+  if (type === 'selected_lines') return { type: 'selected_lines' };
+  return { type: 'none' };
 }
 
 export interface QuoteLineForMath {
@@ -125,9 +157,11 @@ export function computeQuoteTotals(
 
   let depositCents: number | null = null;
   if (deposit && deposit.type === 'percent') {
-    const pct = Number(deposit.percent);
-    if (Number.isFinite(pct) && pct > 0) {
-      depositCents = Math.floor(dueOnAcceptanceCents * (pct / 100) + 0.5);
+    // The union guarantees a number, but not a *sane* one (NaN from a blank
+    // normalized source, or ≤0 from an unvalidated caller) — money code keeps
+    // the finite-positive gate rather than trusting compile-time alone.
+    if (Number.isFinite(deposit.percent) && deposit.percent > 0) {
+      depositCents = Math.floor(dueOnAcceptanceCents * (deposit.percent / 100) + 0.5);
     }
   } else if (deposit && deposit.type === 'selected_lines') {
     depositCents = eligibleCents + Math.floor(eligibleTaxableCents * rate + 0.5);
@@ -176,7 +210,7 @@ export function validateQuoteDeposit(
       message: 'A deposit needs at least one one-time, customer-visible line' };
   }
   if (deposit.type === 'percent') {
-    const pct = Number(deposit.percent);
+    const pct = deposit.percent;
     if (!Number.isFinite(pct) || pct <= 0 || pct >= 100) {
       return { ok: false, code: 'DEPOSIT_PERCENT_INVALID', message: 'Deposit percent must be between 0 and 100 (exclusive)' };
     }

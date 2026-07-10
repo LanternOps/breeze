@@ -16,7 +16,7 @@ import { toCustomerLines } from '../services/quoteService';
 import { InvoiceServiceError } from '../services/invoiceTypes';
 import { isQuoteExpired } from '../services/quoteExpiry';
 import { createQuotePayLink } from '../services/quotePay';
-import { computeQuoteTotals, type QuoteLineForMath } from '../services/quoteMath';
+import { computeQuoteTotals, toQuoteDepositConfig, type QuoteLineForMath } from '../services/quoteMath';
 import { captureException } from '../services/sentry';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 
@@ -58,7 +58,7 @@ quotesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) => 
     // Derive the amount accept actually invoices (one-time only) so the prospect
     // sees an accurate "due on acceptance" instead of the recurring-inclusive total,
     // plus the deposit due + per-category subtotals for the summary panel.
-    const totals = computeQuoteTotals(lines as QuoteLineForMath[], quote.taxRate ? parseFloat(quote.taxRate) : null, { type: quote.depositType, percent: quote.depositPercent });
+    const totals = computeQuoteTotals(lines as QuoteLineForMath[], quote.taxRate ? parseFloat(quote.taxRate) : null, toQuoteDepositConfig(quote.depositType, quote.depositPercent));
     return { quote: { ...quote, status: quote.status === 'sent' ? 'viewed' : quote.status, dueOnAcceptanceTotal: totals.dueOnAcceptanceTotal, depositDueTotal: totals.depositDueTotal, categoryBreakdown: totals.categoryBreakdown }, blocks, lines, branding: { partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null } };
   }));
   if (!data) return c.json({ error: 'Quote not found' }, 404);
