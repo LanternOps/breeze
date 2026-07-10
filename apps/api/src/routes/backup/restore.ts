@@ -1,5 +1,5 @@
 import { Hono, type Context } from 'hono';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../../lib/validation';
 import { eq, and, desc, gte, lte, sql, inArray } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbAccessContext } from '../../db';
 import { backupSnapshotFiles, backupSnapshots, restoreJobs, devices, deviceCommands } from '../../db/schema';

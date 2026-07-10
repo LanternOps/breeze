@@ -80,7 +80,7 @@ import { networkRoutes } from './network';
 import { authMiddleware, requireScope, requirePermission } from '../../middleware/auth';
 import { listNetworkDevicesSchema } from './schemas';
 import { db } from '../../db';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../../lib/validation';
 
 /**
  * Rig the two query shapes the route uses:
