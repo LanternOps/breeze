@@ -131,7 +131,7 @@ func TenantIDFromComposite(libraryID string) string {
 // the user previously stop-synced will never re-mount — that is exactly the
 // drift this surfaces (spec: report, don't rewrite forever).
 func ComputeDrift(applied []LibraryRule, mountedPaths []string) []DriftEntry {
-	var out []DriftEntry
+	out := []DriftEntry{}
 	for _, r := range applied {
 		if r.DisplayName == "" {
 			continue

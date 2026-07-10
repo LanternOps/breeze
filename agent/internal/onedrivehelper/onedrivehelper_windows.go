@@ -277,6 +277,9 @@ var shellFolderValues = map[string]string{
 // rule (device-level row, per-user reality): signedIn/version/KFM come from the
 // first signed-in session; mounted libraries are the union of all sessions.
 func readDeviceState(sessions []userSession, entitled []string, applied []LibraryRule) *DeviceState {
+	if entitled == nil {
+		entitled = []string{}
+	}
 	state := &DeviceState{
 		KfmFolderStates:   map[string]string{},
 		MountedLibraries:  []string{},
@@ -322,6 +325,12 @@ func readDeviceState(sessions []userSession, entitled []string, applied []Librar
 					state.KfmFolderStates[folder] = FolderRedirectionState(raw)
 				}
 				usf.Close()
+			} else {
+				// Whole key failed to open: every managed folder is explicitly
+				// unknown rather than silently missing from the map.
+				for folder := range shellFolderValues {
+					state.KfmFolderStates[folder] = "unknown"
+				}
 			}
 		}
 		acct.Close()

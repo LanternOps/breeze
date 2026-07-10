@@ -153,6 +153,9 @@ func TestComputeDrift(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := ComputeDrift(applied, tt.mounted)
+			if got == nil {
+				t.Error("ComputeDrift must never return nil (wire contract: driftEntries is always an array)")
+			}
 			var ids []string
 			for _, d := range got {
 				ids = append(ids, d.LibraryID)
