@@ -4,6 +4,7 @@ import path from 'path';
 export default defineConfig({
   resolve: {
     alias: {
+      '@breeze/extension-api': path.resolve(__dirname, '../../packages/extension-api/src'),
       '@breeze/shared': path.resolve(__dirname, '../../packages/shared/src'),
     },
   },

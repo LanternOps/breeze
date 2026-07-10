@@ -88,6 +88,9 @@ importers:
       '@aws-sdk/s3-request-presigner':
         specifier: ^3.1030.0
         version: 3.1030.0
+      '@breeze/extension-api':
+        specifier: workspace:*
+        version: link:../../packages/extension-api
       '@breeze/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -13086,9 +13089,7 @@ snapshots:
       metro-runtime: 0.84.4
     transitivePeerDependencies:
       - '@babel/core'
-      - bufferutil
       - supports-color
-      - utf-8-validate
 
   '@react-native/normalize-colors@0.85.3': {}
 
