@@ -11,7 +11,7 @@ vi.mock('./discovery', () => ({
         migrationsDir: 'migrations',
         tenancy: {
           orgCascadeDeleteTables: ['workspace_sources', 'memory_blocks'],
-          deviceCascadeDeleteTables: [],
+          deviceCascadeDeleteTables: ['workspace_child', 'workspace_parent'],
           deviceOrgDenormalizedTables: ['workspace_file_activity'],
         },
       },
@@ -19,6 +19,7 @@ vi.mock('./discovery', () => ({
   ]),
 }));
 
+import { discoverExtensions } from './discovery';
 import {
   withExtensionOrgCascade,
   withExtensionDeviceCascade,
@@ -26,7 +27,10 @@ import {
   resetExtensionTenancyCacheForTests,
 } from './tenancyRegistry';
 
-beforeEach(() => resetExtensionTenancyCacheForTests());
+beforeEach(() => {
+  vi.clearAllMocks();
+  resetExtensionTenancyCacheForTests();
+});
 
 describe('tenancyRegistry', () => {
   it('unions org-cascade tables alphabetised with organizations last', () => {
@@ -34,9 +38,38 @@ describe('tenancyRegistry', () => {
     expect(merged).toEqual(['alerts', 'devices', 'memory_blocks', 'workspace_sources', 'organizations']);
   });
 
+  it('does not add organizations when neither core nor extensions declare it', () => {
+    expect(withExtensionOrgCascade(['devices', 'alerts'])).toEqual([
+      'alerts', 'devices', 'memory_blocks', 'workspace_sources',
+    ]);
+  });
+
+  it('includes extension-declared organizations exactly once and last', () => {
+    vi.mocked(discoverExtensions).mockReturnValueOnce([
+      {
+        name: 'workspace',
+        dir: '/x/workspace',
+        migrationsDir: null,
+        manifest: {
+          name: 'workspace', routeNamespace: 'workspace', entry: 'src/index.ts',
+          migrationsDir: 'migrations',
+          tenancy: {
+            orgCascadeDeleteTables: ['organizations', 'workspace_sources', 'organizations'],
+            deviceCascadeDeleteTables: ['workspace_child', 'workspace_parent'],
+            deviceOrgDenormalizedTables: ['workspace_file_activity'],
+          },
+        },
+      },
+    ]);
+
+    expect(withExtensionOrgCascade(['devices'])).toEqual([
+      'devices', 'workspace_sources', 'organizations',
+    ]);
+  });
+
   it('prepends extension device-cascade tables, preserving core order', () => {
     expect(withExtensionDeviceCascade(['backup_chains', 'backup_jobs'])).toEqual([
-      'backup_chains', 'backup_jobs', // no extension device-cascade tables declared
+      'workspace_child', 'workspace_parent', 'backup_chains', 'backup_jobs',
     ]);
   });
 
@@ -47,9 +80,18 @@ describe('tenancyRegistry', () => {
   });
 
   it('is a pure pass-through with no extensions', async () => {
-    const { discoverExtensions } = await import('./discovery');
     vi.mocked(discoverExtensions).mockReturnValueOnce([]);
     resetExtensionTenancyCacheForTests();
     expect(withExtensionOrgCascade(['alerts', 'organizations'])).toEqual(['alerts', 'organizations']);
+  });
+
+  it('caches discovery across getters and discovers again after reset', () => {
+    withExtensionOrgCascade(['alerts', 'organizations']);
+    withExtensionDeviceCascade(['backup_jobs']);
+    expect(discoverExtensions).toHaveBeenCalledTimes(1);
+
+    resetExtensionTenancyCacheForTests();
+    withExtensionDeviceOrgDenormalized(['agent_logs']);
+    expect(discoverExtensions).toHaveBeenCalledTimes(2);
   });
 });

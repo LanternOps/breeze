@@ -85,6 +85,7 @@ import * as schema from '../../db/schema';
 import {
   coreRoutes,
   getDeviceCascadeDeleteTables,
+  DEVICE_CASCADE_DELETE_TABLES,
   DEVICE_DETACH_DEVICE_ID_TABLES,
   DEVICE_LINKED_DEVICE_ID_TABLES,
 } from './core';
@@ -192,7 +193,7 @@ describe('device hard-delete table coverage contract', () => {
   it('does not list tables that no longer exist in the schema', () => {
     const allTableNames = new Set(allSchemaTables().map((t) => getTableName(t)));
 
-    const staleCascade = deviceCascadeDeleteTables.filter(
+    const staleCascade = DEVICE_CASCADE_DELETE_TABLES.filter(
       (t) => !allTableNames.has(t)
     );
     const staleDetach = DEVICE_DETACH_DEVICE_ID_TABLES.filter(
@@ -204,7 +205,7 @@ describe('device hard-delete table coverage contract', () => {
 
     expect(
       staleCascade,
-      `These tables are in getDeviceCascadeDeleteTables() but no longer exist in the schema. Remove them.`
+      `These core tables are in DEVICE_CASCADE_DELETE_TABLES but no longer exist in the schema. Remove them.`
     ).toEqual([]);
     expect(
       staleDetach,

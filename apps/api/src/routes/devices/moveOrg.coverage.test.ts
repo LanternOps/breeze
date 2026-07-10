@@ -7,6 +7,7 @@ import {
   getDeviceCascadeDeleteTables,
   DEVICE_DETACH_DEVICE_ID_TABLES,
   getDeviceOrgDenormalizedTables,
+  DEVICE_ORG_DENORMALIZED_TABLES,
   DEVICE_SITE_DENORMALIZED_TABLES,
 } from './core';
 
@@ -87,10 +88,10 @@ describe('getDeviceOrgDenormalizedTables() coverage', () => {
 
   it('only lists tables that exist in the schema', () => {
     const allNames = new Set(allTables.map((t) => getTableName(t)));
-    const stale = deviceOrgDenormalizedTables.filter((t) => !allNames.has(t));
+    const stale = DEVICE_ORG_DENORMALIZED_TABLES.filter((t) => !allNames.has(t));
     expect(
       stale,
-      `These tables are returned by getDeviceOrgDenormalizedTables() but no longer exist in the schema. Remove them.`,
+      `These core tables are in DEVICE_ORG_DENORMALIZED_TABLES but no longer exist in the schema. Remove them.`,
     ).toEqual([]);
   });
 
