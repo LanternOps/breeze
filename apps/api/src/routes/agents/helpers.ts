@@ -2770,9 +2770,21 @@ async function resolveDeviceOnedriveSettings(deviceId: string): Promise<Onedrive
   if (rawUpns != null && !Array.isArray(rawUpns)) {
     console.warn(`[agents] graph_group tagging: signed_in_upns is not an array for device ${deviceId}; treating as empty`);
   }
-  const upns = (Array.isArray(rawUpns) ? rawUpns : []).filter(
+  const reportedUpns = (Array.isArray(rawUpns) ? rawUpns : []).filter(
     (u): u is string => typeof u === 'string' && u.length > 0
   );
+  // Dedupe case-insensitively, keeping the first occurrence's casing: the agent already
+  // dedupes case-insensitively via EqualFold before reporting, so which casing survives
+  // here is cosmetic. This is defense-in-depth against a stale agent version or an
+  // out-of-band write — each duplicate otherwise costs a Graph resolution and produces
+  // duplicate allowedUpns entries on the wire.
+  const seenUpns = new Set<string>();
+  const upns = reportedUpns.filter((u) => {
+    const key = u.toLowerCase();
+    if (seenUpns.has(key)) return false;
+    seenUpns.add(key);
+    return true;
+  });
   // Group ids are GUIDs from two sources (Graph responses vs. the stored rule,
   // which future entry paths may brace/uppercase) — normalize both sides so a
   // formatting mismatch can't silently fail-close the library forever.

@@ -66,6 +66,39 @@ function generateTempPassword(): string {
   return `Mz9!${raw.slice(0, 18)}`;
 }
 
+// Process-level cache of acquired Graph tokens, keyed `${orgId}:${clientId}`
+// so a stored connection's client id rotating (new app registration on the
+// same org) can never collide with a stale cached token from the old one.
+// Every getToken caller (invokeDirect here, plus onedriveGraph.ts's
+// listSharePointLibraries/resolveUserGroupMembership) goes through this same
+// function, so the cache is transparent to all of them.
+const TOKEN_CACHE_SKEW_MS = 60_000;
+// Bounded even when Graph grants a longer-lived token — keeps the worst-case
+// staleness window (e.g. after an app permission change) predictable.
+const TOKEN_CACHE_MAX_TTL_MS = 30 * 60 * 1000;
+export const TOKEN_CACHE_MAX = 1_000;
+
+type TokenCacheEntry = { token: string; expiresAt: number };
+const tokenCache = new Map<string, TokenCacheEntry>();
+
+/** Test hook. */
+export function clearTokenCache(): void {
+  tokenCache.clear();
+}
+
+/** Insert/refresh a cache entry, bounding the map size. Map preserves
+ * insertion order, so delete-then-set moves a refreshed key to the back, and
+ * evicting past the bound just means deleting the first (oldest) key. */
+function setTokenCacheEntry(key: string, token: string, expiresInSeconds: number): void {
+  const ttlMs = Math.min(Math.max(expiresInSeconds * 1000 - TOKEN_CACHE_SKEW_MS, 0), TOKEN_CACHE_MAX_TTL_MS);
+  tokenCache.delete(key);
+  tokenCache.set(key, { token, expiresAt: Date.now() + ttlMs });
+  if (tokenCache.size > TOKEN_CACHE_MAX) {
+    const oldestKey = tokenCache.keys().next().value;
+    if (oldestKey !== undefined) tokenCache.delete(oldestKey);
+  }
+}
+
 export async function getToken(orgId: string): Promise<{ token: string } | DirectInvokeError> {
   const [row] = await db
     .select()
@@ -75,6 +108,13 @@ export async function getToken(orgId: string): Promise<{ token: string } | Direc
   if (!row) {
     return { kind: 'error', code: 'no_connection', message: 'No Microsoft 365 connection for this organization.' };
   }
+
+  const cacheKey = `${orgId}:${row.clientId}`;
+  const cached = tokenCache.get(cacheKey);
+  if (cached && Date.now() < cached.expiresAt) {
+    return { token: cached.token };
+  }
+
   const secret = decryptForColumn('m365_connections', 'client_secret', row.clientSecret);
   if (!secret) {
     return { kind: 'error', code: 'connection_key_error', message: 'Could not decrypt the stored client secret.' };
@@ -91,8 +131,16 @@ export async function getToken(orgId: string): Promise<{ token: string } | Direc
       clientId: row.clientId,
       clientSecret: secret,
     });
+    setTokenCacheEntry(cacheKey, t.accessToken, t.expiresIn);
     return { token: t.accessToken };
   } catch (err) {
+    // Reaching here means we didn't have a live cache hit (a hit above
+    // returns before ever calling Azure), so any entry still sitting under
+    // this key is already-expired debris. Delete it explicitly rather than
+    // leaving it for the next TTL check — belt-and-suspenders so a rotated
+    // secret can never be blocked by a stale entry, including across a
+    // future refactor of the cache-hit branch above.
+    tokenCache.delete(cacheKey);
     return { kind: 'error', code: 'auth_failed', message: err instanceof Error ? err.message : 'token acquisition failed' };
   }
 }

@@ -162,7 +162,41 @@ export async function resolveUserGroupMembership(
 // group stays tagged (mountable) for up to this TTL + one heartbeat.
 export const GROUP_MEMBERSHIP_CACHE_TTL_MS = 30 * 60 * 1000;
 
-type CacheEntry = { at: number; result: DirectInvokeResult<{ groupIds: string[] }> };
+// Short TTL for a narrow set of error codes that are deterministic/stable for
+// a given org (misconfiguration, not transient upstream trouble). Without
+// this, an org with graph_group libraries but no M365 connection pays a
+// token round-trip + warn log per reported UPN per device per heartbeat,
+// forever. 5 minutes bounds how long a fixed misconfiguration keeps denying
+// after an admin repairs it.
+export const GROUP_MEMBERSHIP_NEGATIVE_TTL_MS = 5 * 60 * 1000;
+
+// Only codes whose cause cannot resolve itself between heartbeats belong
+// here. Everything else (graph_unreachable, auth_failed, graph_unavailable,
+// graph_malformed_response, not_found, and any code not in this set) stays
+// UNCACHED so the next heartbeat retries — a fail-closed denial must never
+// persist longer than necessary for a transient cause.
+//
+// `not_found` is deliberately excluded even though it can look "stable": a
+// just-provisioned user should be able to resolve promptly once Entra catches
+// up, rather than being denied for up to 5 more minutes because of a cached
+// miss recorded before provisioning finished.
+const GROUP_MEMBERSHIP_NEGATIVE_CACHEABLE_CODES = new Set([
+  'no_connection',
+  'connection_key_error',
+  'bad_request',
+  'too_many_groups',
+]);
+
+// Bound on distinct org:upn keys held in memory for the life of the process.
+// Without this the map grows unbounded across every org/user pair ever
+// reported by a heartbeat.
+export const GROUP_MEMBERSHIP_CACHE_MAX = 10_000;
+
+type CacheEntry = {
+  at: number;
+  ttlMs: number;
+  result: DirectInvokeResult<{ groupIds: string[] }>;
+};
 const groupMembershipCache = new Map<string, CacheEntry>();
 
 /** Test hook. */
@@ -170,19 +204,37 @@ export function clearGroupMembershipCache(): void {
   groupMembershipCache.clear();
 }
 
+/** Insert/refresh a cache entry, bounding the map size. Map preserves
+ * insertion order, so delete-then-set moves a refreshed key to the back, and
+ * evicting past the bound just means deleting the first (oldest) key. */
+function setGroupMembershipCacheEntry(key: string, entry: CacheEntry): void {
+  groupMembershipCache.delete(key);
+  groupMembershipCache.set(key, entry);
+  if (groupMembershipCache.size > GROUP_MEMBERSHIP_CACHE_MAX) {
+    const oldestKey = groupMembershipCache.keys().next().value;
+    if (oldestKey !== undefined) groupMembershipCache.delete(oldestKey);
+  }
+}
+
 /** TTL-cached transitive group membership. Delivery calls this once per
  * reported UPN per heartbeat; without the cache an uncached miss costs two
  * sequential HTTP round-trips (client-credentials token + Graph) per user per
- * heartbeat (default 60s, configurable 5-3600s) per device. Errors are never
- * cached (fail closed but retry next heartbeat). */
+ * heartbeat (default 60s, configurable 5-3600s) per device. Positive results
+ * cache for GROUP_MEMBERSHIP_CACHE_TTL_MS; a narrow set of deterministic
+ * error codes cache for the much shorter GROUP_MEMBERSHIP_NEGATIVE_TTL_MS;
+ * everything else is never cached (fail closed but retry next heartbeat). */
 export async function resolveUserGroupMembershipCached(
   orgId: string,
   upn: string,
 ): Promise<DirectInvokeResult<{ groupIds: string[] }>> {
   const key = `${orgId}:${upn.toLowerCase()}`;
   const hit = groupMembershipCache.get(key);
-  if (hit && Date.now() - hit.at < GROUP_MEMBERSHIP_CACHE_TTL_MS) return hit.result;
+  if (hit && Date.now() - hit.at < hit.ttlMs) return hit.result;
   const result = await resolveUserGroupMembership(orgId, upn);
-  if (result.kind === 'ok') groupMembershipCache.set(key, { at: Date.now(), result });
+  if (result.kind === 'ok') {
+    setGroupMembershipCacheEntry(key, { at: Date.now(), ttlMs: GROUP_MEMBERSHIP_CACHE_TTL_MS, result });
+  } else if (GROUP_MEMBERSHIP_NEGATIVE_CACHEABLE_CODES.has(result.code)) {
+    setGroupMembershipCacheEntry(key, { at: Date.now(), ttlMs: GROUP_MEMBERSHIP_NEGATIVE_TTL_MS, result });
+  }
   return result;
 }
