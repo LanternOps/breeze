@@ -4,6 +4,27 @@ Tracking file for post-implementation feature verification results. Entries are 
 
 Use the `feature-testing` skill to run structured verification and record results here.
 
+## Agent backup server URL failover + DNS cache (#2288) — live two-stack e2e — 2026-07-10
+
+**Branch:** `feat/agent-backup-server-url` · **Tested by:** Claude · **Result:** PASS (7/8 steps live; DNS-outage fallback covered by unit tests — /etc/hosts step needs sudo)
+
+**Setup:** wt-stack for the branch ("old" API, direct port) + a cloned second API container ("new", `localhost:32790`) sharing the same Postgres — domain-rename simulation. Agent = branch-built linux/arm64 binary in an isolated `debian:bookworm-slim` container with host networking (kept fully clear of the production agent installed on this Mac), 5s heartbeat interval.
+
+| Step | Result |
+|---|---|
+| 1. Old stack up, agent enrolled + heartbeating | PASS |
+| 2. `AGENT_BACKUP_SERVER_URL` set on old API, restart | PASS (required adding the compose `environment:` mapping — see finding below) |
+| 3. Agent log `stored backup server URL` + `backup_server_url` in agent.yaml | PASS (`backupServerUrl=http://localhost:32790` logged; persisted) |
+| 4. Second stack on :32790, same Postgres | PASS |
+| 5. Kill old API → 10 failures → probe → promote | PASS — `primary server unreachable, probing backup (failures=10)` at T+61s, `PROMOTED backup server URL to primary` 1s later; agent.yaml swapped (`server_url: :32790`, `backup_server_url: :32782` = old URL kept as rollback) |
+| 6. Web UI "Server" column | PASS — opt-in via column picker (auto-surfaced by merge-on-read); live device shows `localhost` + full URL tooltip `http://localhost:32790`; never-reported devices show `—`. Note: hostname-only display means a same-host port change reads identically in the cell — the tooltip disambiguates; real domain migrations show distinct hostnames. |
+| 7. DNS cache | PARTIAL — `dns-cache.json` created and populated live (`{"localhost":["127.0.0.1","::1"]}`); the DNS-failure→cached-IP fallback path is covered by the 11-test netcache race suite. The /etc/hosts outage simulation needs sudo (not available to the automated run) — optional manual step. |
+| 8. Full-suite gate | PASS — API 11,757 (10 CPU-contention flakes re-verified green in isolation), web 390/390 files, `go test -race ./...` clean, `cargo check` clean |
+
+**Finding fixed during e2e:** `AGENT_BACKUP_SERVER_URL` was not mapped in any compose `environment:` block, so a `.env`-only value silently never reached the API (the exact #570/IS_HOSTED trap). Added `AGENT_BACKUP_SERVER_URL: ${AGENT_BACKUP_SERVER_URL:-}` to `docker-compose.yml` and `deploy/docker-compose.prod.yml`.
+
+**Test residue (local only):** wt-stack for this worktree left up; e2e containers `breeze-e2e-agent` + `breeze-e2e-newapi` and the enrolled `orbstack` device row in the wt-stack DB can be discarded with the stack.
+
 ## BE-16 Enhancement P1 — Risk-acceptance RBAC (`vulnerabilities:accept_risk`) — unit tests + type-check — 2026-06-24
 
 **Branch:** `feat/be16-vuln-phase1` · **Tested by:** Claude · **Result:** PASS (unit/web suites + astro check); browser wt-stack spot-check **pending Todd's manual UI verification**.
