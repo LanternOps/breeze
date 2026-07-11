@@ -5,9 +5,12 @@
  * fake DbExecutor. Real-DB coverage of the composite-FK ordering lives in
  * deviceLinkGroupsRls.integration.test.ts.
  */
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../db', () => ({ db: {} }));
+vi.mock('./sentry', () => ({ captureException: vi.fn() }));
+
+import { captureException } from './sentry';
 
 import {
   dissolveLinkGroupIfBelowMinimum,
@@ -57,6 +60,10 @@ function makeExec(
   } as unknown as DbExecutor;
   return { exec, calls };
 }
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
 
 describe('unlinkDevices', () => {
   it('clears link_group_role together with link_group_id (#2308)', async () => {
@@ -147,9 +154,12 @@ describe('dissolveLinkGroupIfBelowMinimum', () => {
     expect(calls.deletes).toBe(0);
   });
 
-  it('treats a missing group row as not-headless (dissolve only on member count)', async () => {
-    // Group already deleted concurrently: members query still returned rows
-    // (snapshot), but the kind lookup finds nothing — don't invent a dissolve.
+  it('reports a missing group row LOUDLY and does not invent a dissolve', async () => {
+    // 2+ devices reference the group but its row is invisible. The composite
+    // FK makes "deleted while referenced" unreachable, so this is corruption
+    // or an RLS policy filtering the group row — surface it (console.error +
+    // Sentry), return false, touch nothing.
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { exec, calls } = makeExec(
       [
         { id: 'dev-1', role: null },
@@ -160,5 +170,9 @@ describe('dissolveLinkGroupIfBelowMinimum', () => {
     const dissolved = await dissolveLinkGroupIfBelowMinimum(exec, 'grp-1');
     expect(dissolved).toBe(false);
     expect(calls.deletes).toBe(0);
+    expect(calls.updateSets).toHaveLength(0);
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('grp-1'));
+    expect(vi.mocked(captureException)).toHaveBeenCalledTimes(1);
+    errorSpy.mockRestore();
   });
 });

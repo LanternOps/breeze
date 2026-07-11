@@ -810,10 +810,13 @@ export default function DeviceList({
     startIndex + effectivePageSize,
   );
 
-  // Linked multi-boot presentation (#2138): computed client-side WITHIN the
-  // current page. Exactly one online member → offline siblings render as thin
-  // strips beneath it; all offline → full rows with a left-edge group bar;
-  // 2+ online → all normal rows. Toggle off → flat list.
+  // Linked-device presentation, computed client-side WITHIN the current page.
+  // Multiboot (#2138): exactly one online member → offline siblings render as
+  // thin strips beneath it; all offline → full rows with a left-edge group
+  // bar; 2+ online → all normal rows. The collapse toggle gates ONLY these
+  // multiboot heuristics (off → flat multiboot rows). vm_host nesting (#2308)
+  // is hierarchical organization, not offline-noise suppression, so guests
+  // nest under their host regardless of the toggle.
   const displayRows = useMemo(
     () => groupLinkedDevices(paginatedDevices, linkedCollapse === "on"),
     [paginatedDevices, linkedCollapse],
@@ -831,9 +834,11 @@ export default function DeviceList({
     () => visibleRows.map((r) => r.device),
     [visibleRows],
   );
-  // Only offer the toggle when the fleet actually has linked profiles.
+  // Only offer the collapse toggle when the fleet actually has MULTIBOOT
+  // linked profiles — it doesn't govern vm_host nesting (#2308), so a fleet
+  // with only vm_host groups gets no dead toggle.
   const hasLinkedDevices = useMemo(
-    () => devices.some((d) => d.linkGroupId),
+    () => devices.some((d) => d.linkGroupId && !d.linkGroupRole),
     [devices],
   );
 
@@ -2079,6 +2084,27 @@ export default function DeviceList({
                             title={`VM host — ${vmGuestCount ?? 0} guest VM${vmGuestCount === 1 ? "" : "s"} on this page`}
                             onClick={(e) => {
                               e.stopPropagation();
+                              const collapsing =
+                                !collapsedVmGroups.has(vmGroupId);
+                              if (collapsing) {
+                                // Deselect the guests being hidden — a checked
+                                // row must never stay a bulk-action target while
+                                // invisible.
+                                const hiddenIds = displayRows
+                                  .filter(
+                                    (r) =>
+                                      r.vmRole === "guest" &&
+                                      r.vmGroupId === vmGroupId,
+                                  )
+                                  .map((r) => r.device.id);
+                                if (hiddenIds.some((id) => selectedIds.has(id))) {
+                                  setSelectedIds((prev) => {
+                                    const next = new Set(prev);
+                                    for (const id of hiddenIds) next.delete(id);
+                                    return next;
+                                  });
+                                }
+                              }
                               setCollapsedVmGroups((prev) => {
                                 const next = new Set(prev);
                                 if (next.has(vmGroupId)) next.delete(vmGroupId);

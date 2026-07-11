@@ -172,12 +172,22 @@ describe('groupLinkedDevices — vm_host nesting (#2308)', () => {
     expect(out[0]!.vmRole).toBeUndefined();
   });
 
-  it('returns a flat unmarked list when the toggle is off', () => {
+  it('keeps vm_host nesting when the multiboot collapse toggle is off (toggle gates multiboot only)', () => {
+    // The "Collapse linked inactive profiles" preference is offline-noise
+    // suppression for multiboot machines; vm_host nesting is hierarchical
+    // organization and must not be coupled to it.
     const host = mk('hv', { linkGroupId: 'gVM', linkGroupRole: 'host' });
     const vm1 = mk('vm1', { linkGroupId: 'gVM', linkGroupRole: 'guest' });
-    const out = groupLinkedDevices([host, vm1], false);
-    expect(out.map((r) => r.device.id)).toEqual(['hv', 'vm1']);
-    expect(out.every((r) => r.vmRole === undefined)).toBe(true);
+    const mbWin = mk('mb-win', { linkGroupId: 'gMB', status: 'online' });
+    const mbLin = mk('mb-lin', { os: 'linux', linkGroupId: 'gMB', status: 'offline' });
+
+    const out = groupLinkedDevices([mbWin, host, mbLin, vm1], false);
+    // Multiboot members: flat plain rows. vm_host: still nested + marked.
+    expect(out.map((r) => r.device.id)).toEqual(['mb-win', 'hv', 'vm1', 'mb-lin']);
+    expect(out.find((r) => r.device.id === 'mb-win')!.inactiveSiblings).toHaveLength(0);
+    expect(out.find((r) => r.device.id === 'mb-lin')!.offlineGroup).toBe(false);
+    expect(out.find((r) => r.device.id === 'hv')!.vmRole).toBe('host');
+    expect(out.find((r) => r.device.id === 'vm1')!.vmRole).toBe('guest');
   });
 
   it('handles a vm_host group and a multiboot group on the same page independently', () => {

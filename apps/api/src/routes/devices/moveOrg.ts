@@ -130,6 +130,11 @@ moveOrgRoutes.post(
 
     // ----------- the actual move -----------
     let updated: typeof devices.$inferSelect | undefined;
+    // #2138/#2308 — whether the move dissolved the device's old link group
+    // (lone multiboot survivor unlinked, or a vm_host group left headless
+    // when its HOST moved, unlinking every guest). Recorded in the audit
+    // details so an un-grouped fleet is traceable to this move.
+    let linkGroupDissolved = false;
     try {
       await db.transaction(async (tx) => {
         // Flip the device row first so any concurrent agent heartbeat
@@ -155,9 +160,10 @@ moveOrgRoutes.post(
         updated = row;
 
         // #2138 — if the moved device left a link group with a single lone
-        // profile behind, that group is no longer meaningful: dissolve it.
+        // profile behind — or it was a vm_host group's HOST (#2308), leaving
+        // the group headless — that group is no longer meaningful: dissolve it.
         if (device.linkGroupId) {
-          await dissolveLinkGroupIfBelowMinimum(tx, device.linkGroupId);
+          linkGroupDissolved = await dissolveLinkGroupIfBelowMinimum(tx, device.linkGroupId);
         }
 
         // Rewrite the denormalized org_id on every device-scoped table.
@@ -232,6 +238,13 @@ moveOrgRoutes.post(
       targetOrgId,
       sourceSiteId: device.siteId,
       targetSiteId,
+      // #2138/#2308 — a move can dissolve the device's old link group and
+      // unlink every remaining member (all guests, when a vm_host group's
+      // host moves). Without this the audit trail shows only "device moved"
+      // while sibling devices silently lost their grouping.
+      ...(device.linkGroupId
+        ? { linkGroupId: device.linkGroupId, linkGroupDissolved }
+        : {}),
     } as const;
 
     writeRouteAudit(c, {

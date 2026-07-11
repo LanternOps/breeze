@@ -294,7 +294,10 @@ export default function DeviceLinkedProfilesTab({
                           m.role === 'host' ? 'border-primary/40 text-primary' : 'text-muted-foreground'
                         }`}
                       >
-                        {m.role === 'host' ? 'Host' : 'Guest'}
+                        {/* Only assert a role the data actually carries — a
+                            null/unknown role (invariant violation, stale
+                            payload) renders a neutral dash, not "Guest". */}
+                        {m.role === 'host' ? 'Host' : m.role === 'guest' ? 'Guest' : '—'}
                       </span>
                     </td>
                   )}

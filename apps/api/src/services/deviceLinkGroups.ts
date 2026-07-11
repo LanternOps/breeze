@@ -22,6 +22,7 @@
 import { eq } from 'drizzle-orm';
 import { db } from '../db';
 import { deviceLinkGroups, devices } from '../db/schema';
+import { captureException } from './sentry';
 
 /** db instance or an open transaction — both expose the query builders used here. */
 export type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -71,7 +72,21 @@ export async function dissolveLinkGroupIfBelowMinimum(
       .from(deviceLinkGroups)
       .where(eq(deviceLinkGroups.id, groupId))
       .limit(1);
-    const headlessVmHost = group?.kind === 'vm_host' && !members.some((m) => m.role === 'host');
+    if (!group) {
+      // Members reference the group but its row is not visible/present. The
+      // composite FK makes "deleted while still referenced" unreachable, so
+      // this is corruption or an RLS policy filtering the group row while the
+      // device rows stay visible — the same class the /:id/link-group route
+      // reports LOUDLY. Don't invent a dissolve on it, but never swallow it.
+      console.error(
+        `link group ${groupId} has ${members.length} members but no visible group row — possible RLS filtering or data corruption`,
+      );
+      captureException(
+        new Error(`device link group dangling membership: group ${groupId} invisible with ${members.length} members`),
+      );
+      return false;
+    }
+    const headlessVmHost = group.kind === 'vm_host' && !members.some((m) => m.role === 'host');
     if (!headlessVmHost) return false;
   }
 

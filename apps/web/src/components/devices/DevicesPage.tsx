@@ -39,6 +39,21 @@ import ProgressBar from '../shared/ProgressBar';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { scopeConfirmMessage } from '@/lib/scopeConfirmMessage';
 
+// vm_host member role (#2308): unknown values degrade to "ungrouped" (null) by
+// design — a wrong nesting would be worse than none — but the degradation must
+// be observable, or a future third role silently flattens every affected fleet
+// until someone files "VM nesting stopped working". Warn once per value, not
+// per row/refetch.
+const warnedUnknownLinkGroupRoles = new Set<string>();
+function normalizeLinkGroupRole(value: unknown): 'host' | 'guest' | null {
+  if (value === 'host' || value === 'guest') return value;
+  if (value != null && !warnedUnknownLinkGroupRoles.has(String(value))) {
+    warnedUnknownLinkGroupRoles.add(String(value));
+    console.warn(`[devices] unknown linkGroupRole ${JSON.stringify(value)} — treating the device as ungrouped`);
+  }
+  return null;
+}
+
 type ViewMode = 'list' | 'grid';
 
 type Org = {
@@ -367,8 +382,9 @@ export default function DevicesPage() {
           // client-side per page in DeviceList from this id alone.
           linkGroupId: typeof d.linkGroupId === 'string' ? d.linkGroupId : null,
           // vm_host member role (#2308): validated against the known values so
-          // an unexpected API value degrades to "ungrouped" instead of leaking.
-          linkGroupRole: d.linkGroupRole === 'host' || d.linkGroupRole === 'guest' ? d.linkGroupRole : null,
+          // an unexpected API value degrades to "ungrouped" instead of leaking
+          // (warned once per value — see normalizeLinkGroupRole).
+          linkGroupRole: normalizeLinkGroupRole(d.linkGroupRole),
           enrolledAt: d.enrolledAt as string | undefined,
           desktopAccess: (d.desktopAccess as Device['desktopAccess']) ?? null,
           hardware: hardware ? {

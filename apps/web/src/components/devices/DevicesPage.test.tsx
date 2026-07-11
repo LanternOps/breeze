@@ -51,6 +51,8 @@ vi.mock('../../services/deviceActions', () => ({
   watchWakeOutcome: vi.fn(),
   WakeCommandError: class WakeCommandError extends Error { code = 'x'; },
   wakeFriendlyErrorMessage: vi.fn(() => null),
+  linkDevicesMultiboot: vi.fn(),
+  linkDevicesVmHost: vi.fn(),
 }));
 
 vi.mock('@/lib/navigation', () => ({
@@ -138,7 +140,7 @@ vi.mock('./DeviceList', () => ({
       data-display-names={devices.map(d => d.displayName ?? '').join(',')}
       data-watchdog-versions={devices.map(d => d.watchdogVersion ?? '').join(',')}
     >
-      {['maintenance-on', 'maintenance-off', 'decommission', 'reboot', 'run-script'].map(action => (
+      {['maintenance-on', 'maintenance-off', 'decommission', 'reboot', 'run-script', 'link-vm-host'].map(action => (
         <button
           key={action}
           type="button"

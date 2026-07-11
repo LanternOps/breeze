@@ -51,13 +51,17 @@ export interface DeviceListRow {
   vmGuestCount?: number;
 }
 
-function toRow(device: Device): DeviceListRow {
-  return { device, inactiveSiblings: [], offlineGroup: false };
-}
-
-export function groupLinkedDevices(pageDevices: Device[], enabled: boolean): DeviceListRow[] {
-  if (!enabled) return pageDevices.map(toRow);
-
+/**
+ * @param multibootCollapseEnabled Gates ONLY the multiboot strip/bar
+ * heuristics (the per-user "Collapse linked inactive profiles" preference —
+ * an offline-noise-suppression concern). vm_host nesting (#2308) is
+ * hierarchical organization, unrelated to that preference, and applies
+ * regardless of the toggle.
+ */
+export function groupLinkedDevices(
+  pageDevices: Device[],
+  multibootCollapseEnabled: boolean,
+): DeviceListRow[] {
   // Members of each link group present on THIS page, in page order.
   const membersByGroup = new Map<string, Device[]>();
   for (const d of pageDevices) {
@@ -97,6 +101,10 @@ export function groupLinkedDevices(pageDevices: Device[], enabled: boolean): Dev
       for (const g of guests) nestedGuestIds.add(g.id);
       continue;
     }
+
+    // Multiboot strip/bar heuristics respect the collapse preference: off →
+    // multiboot members render as a flat list of plain rows.
+    if (!multibootCollapseEnabled) continue;
 
     const online = members.filter((m) => m.status === 'online');
     if (online.length === 1) {
