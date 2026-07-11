@@ -245,7 +245,7 @@ export default function C2CConnectionWizard({ onClose, onComplete }: C2CConnecti
                   value={displayName}
                   onChange={(e) => setDisplayName(e.target.value)}
                   className="w-full rounded-md border bg-background px-3 py-2 text-sm"
-                  placeholder="Microsoft 365"
+                  placeholder={t('longTail.c2c.C2CConnectionWizard.displayNamePlaceholder')}
                 />
               </div>
 
@@ -325,7 +325,7 @@ export default function C2CConnectionWizard({ onClose, onComplete }: C2CConnecti
                   value={displayName}
                   onChange={(e) => setDisplayName(e.target.value)}
                   className="w-full rounded-md border bg-background px-3 py-2 text-sm"
-                  placeholder="My M365 Connection"
+                  placeholder={t('longTail.c2c.C2CConnectionWizard.manualDisplayNamePlaceholder')}
                 />
               </div>
               {provider === 'microsoft_365' && (

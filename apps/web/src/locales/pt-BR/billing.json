@@ -547,8 +547,10 @@
       "sending": "Enviando…"
     },
     "detail": {
+      "addContentInEditor": "Adicionar conteúdo no Editor",
       "created": "Criada",
       "customer": "Cliente",
+      "empty": "Esta cotação ainda não tem conteúdo.",
       "expires": "Expira em {{date}}",
       "from": "De",
       "imageUnavailable": "Imagem indisponível",
@@ -781,6 +783,82 @@
       "void": "Anulada"
     }
   },
+  "invoiceEditor": {
+    "addLine": {
+      "add": "Adicionar",
+      "addInCatalog": "Adicione itens no Catálogo de Produtos",
+      "bundle": "Pacote",
+      "catalogItem": "Item do catálogo",
+      "clearSelection": "Limpar seleção",
+      "manualLine": "Linha manual",
+      "noCatalogItems": "Nenhum item de catálogo.",
+      "searchCatalog": "Pesquisar no catálogo por nome ou SKU",
+      "sourceAria": "Origem da linha a adicionar"
+    },
+    "billTo": {
+      "addInSettings": "Adicione um contato nas configurações da organização",
+      "noContact": "Nenhum contato de cobrança definido.",
+      "title": "Faturar para"
+    },
+    "errors": {
+      "addLine": "Não foi possível adicionar a linha.",
+      "loadCatalog": "Não foi possível carregar o catálogo.",
+      "nameOrDescription": "A linha precisa de um nome ou uma descrição.",
+      "nonNegativeUnitPrice": "Informe um preço unitário igual ou maior que 0.",
+      "quantityGreaterThanZero": "Informe uma quantidade maior que 0.",
+      "removeLine": "Não foi possível remover a linha.",
+      "saveNotes": "Não foi possível salvar as observações.",
+      "saveTerms": "Não foi possível salvar os termos.",
+      "updateLine": "Não foi possível atualizar a linha."
+    },
+    "fields": {
+      "descriptionOptional": "Descrição (opcional)",
+      "lineDescription": "Descrição da linha",
+      "lineName": "Nome da linha",
+      "name": "Nome",
+      "quantity": "Quantidade",
+      "taxable": "Tributável",
+      "unitPrice": "Preço unitário"
+    },
+    "hiddenSuffix": " (oculta)",
+    "notes": {
+      "placeholder": "Observações internas ou para o cliente…",
+      "title": "Observações"
+    },
+    "remove": "Remover",
+    "saved": "Salvo",
+    "success": {
+      "lineAdded": "Linha adicionada",
+      "lineRemoved": "Linha removida",
+      "notesSaved": "Observações salvas",
+      "termsSaved": "Termos salvos"
+    },
+    "summary": {
+      "noTaxRate": "Há linhas marcadas como tributáveis, mas nenhuma alíquota foi definida.",
+      "setTaxRate": "Defina uma nas configurações de cobrança",
+      "subtotal": "Subtotal",
+      "tax": "Imposto",
+      "title": "Resumo",
+      "total": "Total"
+    },
+    "table": {
+      "customerVisible": "Visível ao cliente",
+      "customerVisibleTitle": "Indica se esta linha aparece na fatura do cliente",
+      "empty": "Ainda não há linhas. Adicione abaixo itens do catálogo, um pacote ou uma linha manual.",
+      "item": "Item",
+      "price": "Preço",
+      "qty": "Qtd.",
+      "tax": "Imposto",
+      "total": "Total"
+    },
+    "terms": {
+      "placeholder": "Condições de pagamento, cláusulas de garantia etc.",
+      "title": "Termos e condições"
+    },
+    "unapprovedTime": "{{count}} linhas fazem referência a horas não aprovadas. Revise antes de emitir.",
+    "unapprovedTime_one": "{{count}} linha faz referência a horas não aprovadas. Revise antes de emitir.",
+    "unapprovedTime_other": "{{count}} linhas fazem referência a horas não aprovadas. Revise antes de emitir."
+  },
   "invoiceActions": {
     "deleteConfirm": {
       "message": "Esta ação exclui permanentemente a fatura em rascunho. Não é possível desfazê-la.",
@@ -991,6 +1069,7 @@
       "from": "De",
       "selectOrganization": "Selecione uma organização…",
       "siteOptional": "Site (opcional)",
+      "sourceAria": "Origem da fatura",
       "title": "Nova fatura",
       "to": "Até",
       "working": "Processando…"

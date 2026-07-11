@@ -621,7 +621,7 @@ export default function DashboardCustomizer() {
               className="inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium text-muted-foreground transition hover:text-foreground"
             >
               <Plus className="h-4 w-4" />
-              Create
+              {t('actions.create')}
             </button>
           </div>
         </div>
@@ -632,7 +632,7 @@ export default function DashboardCustomizer() {
             className="inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium text-muted-foreground transition hover:text-foreground"
           >
             <RotateCcw className="h-4 w-4" />
-            Revert layout
+            {t('dashboard.customizer.revertLayout')}
           </button>
           <button
             type="button"
@@ -640,7 +640,7 @@ export default function DashboardCustomizer() {
             className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
           >
             <Save className="h-4 w-4" />
-            Save dashboards
+            {t('dashboard.customizer.saveDashboards')}
           </button>
           {saveStatus !== 'idle' && (
             <span
@@ -651,9 +651,9 @@ export default function DashboardCustomizer() {
                 saveStatus === 'error' && 'text-destructive'
               )}
             >
-              {saveStatus === 'saving' && 'Saving...'}
-              {saveStatus === 'saved' && 'Saved'}
-              {saveStatus === 'error' && 'Save failed'}
+              {saveStatus === 'saving' && t('states.saving')}
+              {saveStatus === 'saved' && t('states.saved')}
+              {saveStatus === 'error' && t('dashboard.customizer.saveFailed')}
             </span>
           )}
         </div>
@@ -665,7 +665,7 @@ export default function DashboardCustomizer() {
             <div className="mb-4">
               <h3 className="text-sm font-semibold">{t('dashboard.customizer.widgetLibrary')}</h3>
               <p className="text-xs text-muted-foreground">
-                Drag widgets onto the grid or tap to add.
+                {t('dashboard.customizer.widgetLibraryHint')}
               </p>
             </div>
             <div className="space-y-3">
@@ -701,7 +701,7 @@ export default function DashboardCustomizer() {
           <div className="rounded-lg border bg-card p-4 shadow-xs">
             <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
               <Share2 className="h-4 w-4 text-muted-foreground" />
-              Share dashboard
+              {t('dashboard.customizer.shareDashboard')}
             </div>
             <div className="flex items-center gap-2">
               <input
@@ -715,7 +715,7 @@ export default function DashboardCustomizer() {
                 onClick={handleShareAdd}
                 className="inline-flex h-9 items-center rounded-md border px-3 text-sm font-medium text-muted-foreground transition hover:text-foreground"
               >
-                Add
+                {t('actions.add')}
               </button>
             </div>
             <div className="mt-3 space-y-2">
@@ -731,7 +731,7 @@ export default function DashboardCustomizer() {
                       onClick={() => handleShareRemove(email)}
                       className="text-muted-foreground transition hover:text-foreground"
                     >
-                      Remove
+                      {t('actions.remove')}
                     </button>
                   </div>
                 ))
@@ -747,11 +747,11 @@ export default function DashboardCustomizer() {
             <div>
               <h3 className="text-sm font-semibold">{t('dashboard.customizer.grid')}</h3>
               <p className="text-xs text-muted-foreground">
-                {activeWidgets.length} widgets placed
+                {t('dashboard.customizer.widgetsPlaced', { count: activeWidgets.length })}
               </p>
             </div>
             <div className="text-xs text-muted-foreground">
-              Drag to move. Resize from the corner handle.
+              {t('dashboard.customizer.gridHint')}
             </div>
           </div>
           <div
@@ -804,16 +804,16 @@ export default function DashboardCustomizer() {
                   <div className="flex-1 rounded-md border border-dashed border-muted-foreground/30 bg-muted/30 p-3 text-xs text-muted-foreground">
                     {widget.type === 'device-count' && (
                       <div className="space-y-1">
-                        <div className="font-medium text-foreground">1,247 devices</div>
-                        <div>95% online</div>
-                        <div>Last refresh {widget.settings.refreshInterval}m</div>
+                        <div className="font-medium text-foreground">{t('dashboard.customizer.preview.devices', { count: 1247 })}</div>
+                        <div>{t('dashboard.customizer.preview.online', { percent: 95 })}</div>
+                        <div>{t('dashboard.customizer.preview.lastRefresh', { minutes: widget.settings.refreshInterval })}</div>
                       </div>
                     )}
                     {widget.type === 'alert-summary' && (
                       <div className="space-y-1">
-                        <div className="font-medium text-foreground">23 active alerts</div>
-                        <div>Filter: {widget.settings.severityFilter ?? 'all'}</div>
-                        <div>Last refresh {widget.settings.refreshInterval}m</div>
+                        <div className="font-medium text-foreground">{t('dashboard.customizer.preview.activeAlerts', { count: 23 })}</div>
+                        <div>{t('dashboard.customizer.preview.filter', { filter: widget.settings.severityFilter ?? 'all' })}</div>
+                        <div>{t('dashboard.customizer.preview.lastRefresh', { minutes: widget.settings.refreshInterval })}</div>
                       </div>
                     )}
                     {widget.type === 'chart' && (
@@ -822,7 +822,7 @@ export default function DashboardCustomizer() {
                         <div>
                           {widget.settings.chartType ?? 'line'} · {widget.settings.timeRange ?? '24h'}
                         </div>
-                        <div>Last refresh {widget.settings.refreshInterval}m</div>
+                        <div>{t('dashboard.customizer.preview.lastRefresh', { minutes: widget.settings.refreshInterval })}</div>
                       </div>
                     )}
                   </div>
@@ -835,7 +835,7 @@ export default function DashboardCustomizer() {
             })}
             {!activeWidgets.length && (
               <div className="col-span-12 flex h-full items-center justify-center text-sm text-muted-foreground">
-                Drag widgets here to start building your dashboard.
+                {t('dashboard.customizer.emptyGrid')}
               </div>
             )}
           </div>
@@ -857,8 +857,10 @@ export default function DashboardCustomizer() {
                 />
               </div>
               <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
-                Widgets: {activeWidgets.length} · Shared with:{' '}
-                {activeDashboard?.sharedWith.length ?? 0}
+                {t('dashboard.customizer.summary', {
+                  widgets: activeWidgets.length,
+                  shared: activeDashboard?.sharedWith.length ?? 0,
+                })}
               </div>
             </div>
           </div>
@@ -909,7 +911,7 @@ export default function DashboardCustomizer() {
                       }
                       className="h-4 w-4 rounded border"
                     />
-                    Show device trend line
+                    {t('dashboard.customizer.showTrend')}
                   </label>
                 )}
                 {selectedWidget.type === 'alert-summary' && (
@@ -978,7 +980,7 @@ export default function DashboardCustomizer() {
                         }
                         className="h-4 w-4 rounded border"
                       />
-                      Show legend
+                      {t('dashboard.customizer.showLegend')}
                     </label>
                   </>
                 )}
@@ -987,12 +989,12 @@ export default function DashboardCustomizer() {
                   onClick={() => handleRemoveWidget(selectedWidget.id)}
                   className="inline-flex h-9 items-center justify-center rounded-md border px-3 text-sm font-medium text-destructive transition hover:bg-destructive/10"
                 >
-                  Remove widget
+                  {t('dashboard.customizer.removeWidget')}
                 </button>
               </div>
             ) : (
               <p className="text-sm text-muted-foreground">
-                Select a widget to configure its settings.
+                {t('dashboard.customizer.selectWidget')}
               </p>
             )}
           </div>

@@ -222,10 +222,20 @@
       "title": "Dashboard Customizer",
       "newName": "New dashboard name",
       "widgetLibrary": "Widget Library",
+      "widgetLibraryHint": "Drag widgets onto the grid or tap to add.",
       "emailPlaceholder": "email@company.com",
       "noSharedUsers": "No shared users yet.",
       "grid": "Dashboard Grid",
+      "gridHint": "Drag to move. Resize from the corner handle.",
+      "emptyGrid": "Drag widgets here to start building your dashboard.",
       "trendChart": "Trend chart",
+      "revertLayout": "Revert layout",
+      "saveDashboards": "Save dashboards",
+      "saveFailed": "Save failed",
+      "shareDashboard": "Share dashboard",
+      "widgetsPlaced": "{{count}} widgets placed",
+      "widgetsPlaced_one": "{{count}} widget placed",
+      "widgetsPlaced_other": "{{count}} widgets placed",
       "dashboardSettings": "Dashboard Settings",
       "layout": "Layout",
       "dashboardName": "Dashboard name",
@@ -235,6 +245,18 @@
       "severityFilter": "Severity filter",
       "chartType": "Chart type",
       "timeRange": "Time range",
+      "showTrend": "Show device trend line",
+      "showLegend": "Show legend",
+      "removeWidget": "Remove widget",
+      "selectWidget": "Select a widget to configure its settings.",
+      "summary": "Widgets: {{widgets}} · Shared with: {{shared}}",
+      "preview": {
+        "devices": "{{count}} devices",
+        "online": "{{percent}}% online",
+        "activeAlerts": "{{count}} active alerts",
+        "filter": "Filter: {{filter}}",
+        "lastRefresh": "Last refresh {{minutes}}m"
+      },
       "severity": {
         "all": "All severities",
         "critical": "Critical only",
@@ -256,6 +278,9 @@
     }
   },
   "filters": {
+    "advanced": "Advanced Filter",
+    "collapse": "Collapse",
+    "computed": "Computed",
     "match": "Match",
     "allConditions": "All conditions (AND)",
     "anyCondition": "Any condition (OR)",
@@ -293,6 +318,9 @@
       "search": "Search filters…",
       "noMatches": "No filters match your search",
       "empty": "No saved filters yet. Create one to reuse across groups and deployments.",
+      "createFirst": "Create your first filter",
+      "created": "Created {{date}}",
+      "deleteConfirm": "Delete this filter?",
       "duplicate": "Duplicate"
     },
     "targets": {
@@ -319,7 +347,8 @@
       "matchCount": "devices match",
       "matchCount_one": "device match",
       "matchCount_other": "devices match",
-      "showing": "Showing {{shown}} of {{total}}"
+      "showing": "Showing {{shown}} of {{total}}",
+      "noMatches": "No devices match the current filter criteria"
     },
     "operators": {
       "equals": "equals",
@@ -1270,6 +1299,8 @@
         "oneClickTitle": "One-click Microsoft 365 integration",
         "oneClickDescription": "Your Breeze instance has a pre-configured Microsoft 365 app. Click \"Grant Access\" to authorize backup access to your M365 tenant. A Global Admin must approve the consent prompt.",
         "displayName": "Display Name",
+        "displayNamePlaceholder": "Microsoft 365",
+        "manualDisplayNamePlaceholder": "My M365 Connection",
         "selectBackupScope": "Select what to back up",
         "scopes": {
           "mailbox": "Exchange Mailbox",
@@ -1431,6 +1462,14 @@
         "templateDetails": "Template details",
         "vendor": "Vendor",
         "deviceType": "Device type",
+        "placeholders": {
+          "name": "Cisco Core",
+          "vendor": "Cisco",
+          "deviceType": "Core Switch",
+          "description": "High-throughput switches with multiple uplinks",
+          "oidName": "System Uptime",
+          "oidDescription": "What this OID measures"
+        },
         "oidList": "OID list",
         "oidListDescription": "Configure the OIDs that power metrics and thresholds.",
         "importFromFile": "Import from file",

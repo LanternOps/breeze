@@ -76,31 +76,15 @@ const statusColors: Record<DeviceStatus, string> = {
   pending: "bg-muted text-muted-foreground border-border",
 };
 
-const statusLabels: Record<DeviceStatus, string> = {
-  online: "Online",
-  offline: "Offline",
-  maintenance: "Maintenance",
-  decommissioned: "Decommissioned",
-  quarantined: "Quarantined",
-  updating: "Updating",
-  pending: "Pending",
-};
-
-const osLabels: Record<OSType, string> = {
-  windows: "Windows",
-  macos: "macOS",
-  linux: "Linux",
-};
-
 const metricColors = ["#3b82f6", "#22c55e", "#f97316", "#a855f7"];
 
 const timeRangeOptions: Record<
   TimeRange,
-  { label: string; count: number; intervalMs: number }
+  { count: number; intervalMs: number }
 > = {
-  "1h": { label: "Last hour", count: 12, intervalMs: 5 * 60 * 1000 },
-  "6h": { label: "Last 6 hours", count: 24, intervalMs: 15 * 60 * 1000 },
-  "24h": { label: "Last 24 hours", count: 24, intervalMs: 60 * 60 * 1000 },
+  "1h": { count: 12, intervalMs: 5 * 60 * 1000 },
+  "6h": { count: 24, intervalMs: 15 * 60 * 1000 },
+  "24h": { count: 24, intervalMs: 60 * 60 * 1000 },
 };
 
 function normalizeOs(value: unknown): OSType {
@@ -133,7 +117,7 @@ function toNumber(value: unknown, fallback = 0): number {
   return fallback;
 }
 
-function formatCapacity(value: unknown, fallback = "Unknown"): string {
+function formatCapacity(value: unknown, fallback: string): string {
   if (typeof value === "string" && value.trim().length > 0) return value;
   if (typeof value !== "number" || Number.isNaN(value)) return fallback;
   if (value < 128) return `${Math.round(value)} GB`;
@@ -204,16 +188,17 @@ function hashSeed(input: string): number {
 function normalizeDeviceSummary(
   raw: Record<string, unknown>,
   index: number,
+  labels: { device: string; unknown: string },
 ): Device {
   const id = String(raw.id ?? raw.deviceId ?? raw.uuid ?? `device-${index}`);
   const hostname = String(
-    raw.hostname ?? raw.displayName ?? raw.name ?? `Device ${id}`,
+    raw.hostname ?? raw.displayName ?? raw.name ?? `${labels.device} ${id}`,
   );
   const os = normalizeOs(
     raw.os ?? raw.osType ?? raw.platform ?? raw.operatingSystem ?? "windows",
   );
   const osVersion = String(
-    raw.osVersion ?? raw.platformVersion ?? raw.version ?? "Unknown",
+    raw.osVersion ?? raw.platformVersion ?? raw.version ?? labels.unknown,
   );
   const status = normalizeStatus(
     raw.status ?? raw.state ?? raw.connectionStatus ?? "offline",
@@ -233,10 +218,10 @@ function normalizeDeviceSummary(
     raw.lastSeen ?? raw.lastSeenAt ?? raw.seenAt ?? "2024-01-15T12:00:00.000Z",
   );
   const orgId = String(raw.orgId ?? raw.organizationId ?? "");
-  const orgName = String(raw.orgName ?? raw.organizationName ?? "Unknown");
+  const orgName = String(raw.orgName ?? raw.organizationName ?? labels.unknown);
   const siteId = String(raw.siteId ?? raw.locationId ?? "site-0");
   const siteName = String(
-    raw.siteName ?? raw.location ?? raw.site ?? "Unknown",
+    raw.siteName ?? raw.location ?? raw.site ?? labels.unknown,
   );
   const agentVersion = String(
     raw.agentVersion ?? agent?.version ?? raw.agent ?? "-",
@@ -263,7 +248,10 @@ function normalizeDeviceSummary(
   };
 }
 
-function normalizeSoftwareList(raw: unknown): SoftwareItem[] {
+function normalizeSoftwareList(
+  raw: unknown,
+  unknownLabel: string,
+): SoftwareItem[] {
   if (!raw) return [];
   if (Array.isArray(raw)) {
     return raw
@@ -279,7 +267,7 @@ function normalizeSoftwareList(raw: unknown): SoftwareItem[] {
                 record.title ??
                 record.package ??
                 record.app ??
-                "Unknown",
+                unknownLabel,
             ),
             version: record.version ? String(record.version) : undefined,
             publisher: record.publisher ? String(record.publisher) : undefined,
@@ -292,12 +280,16 @@ function normalizeSoftwareList(raw: unknown): SoftwareItem[] {
   if (typeof raw === "object") {
     const record = raw as Record<string, unknown>;
     const installed = record.installedApps ?? record.apps ?? record.software;
-    if (Array.isArray(installed)) return normalizeSoftwareList(installed);
+    if (Array.isArray(installed))
+      return normalizeSoftwareList(installed, unknownLabel);
   }
   return [];
 }
 
-function normalizePatchList(raw: unknown): PatchItem[] {
+function normalizePatchList(
+  raw: unknown,
+  labels: { patch: string; unknown: string },
+): PatchItem[] {
   if (!raw) return [];
   if (Array.isArray(raw)) {
     return raw
@@ -329,7 +321,9 @@ function normalizePatchList(raw: unknown): PatchItem[] {
             status = "pending";
           return {
             id: String(record.id ?? record.patchId ?? `patch-${index}`),
-            name: String(record.name ?? record.title ?? record.kb ?? "Patch"),
+            name: String(
+              record.name ?? record.title ?? record.kb ?? labels.patch,
+            ),
             status,
           };
         }
@@ -345,7 +339,7 @@ function normalizePatchList(raw: unknown): PatchItem[] {
 
     if (Array.isArray(installed)) {
       items.push(
-        ...normalizePatchList(installed).map((item) => ({
+        ...normalizePatchList(installed, labels).map((item) => ({
           ...item,
           status: "installed" as PatchStatus,
         })),
@@ -353,7 +347,7 @@ function normalizePatchList(raw: unknown): PatchItem[] {
     }
     if (Array.isArray(missing)) {
       items.push(
-        ...normalizePatchList(missing).map((item) => ({
+        ...normalizePatchList(missing, labels).map((item) => ({
           ...item,
           status: "missing" as PatchStatus,
         })),
@@ -443,12 +437,15 @@ function generateMetrics(device: Device, range: TimeRange): MetricPoint[] {
   return points;
 }
 
-function deviceToComparisonData(device: Device): DeviceComparisonData {
+function deviceToComparisonData(
+  device: Device,
+  unknownLabel: string,
+): DeviceComparisonData {
   return {
     ...device,
-    cpuModel: "Unknown",
-    totalRam: "Unknown",
-    diskTotal: "Unknown",
+    cpuModel: unknownLabel,
+    totalRam: unknownLabel,
+    diskTotal: unknownLabel,
     software: [],
     patches: [],
     config: {},
@@ -459,6 +456,7 @@ function deviceToComparisonData(device: Device): DeviceComparisonData {
 function normalizeDeviceDetail(
   raw: Record<string, unknown>,
   fallback: Device,
+  labels: { patch: string; unknown: string },
 ): DeviceComparisonData {
   const source = (raw.device ?? raw.data ?? raw.item ?? raw) as Record<
     string,
@@ -475,7 +473,7 @@ function normalizeDeviceDetail(
     source.osVersion ??
       source.platformVersion ??
       fallback.osVersion ??
-      "Unknown",
+      labels.unknown,
   );
   const status = normalizeStatus(
     source.status ?? source.state ?? fallback.status,
@@ -513,7 +511,7 @@ function normalizeDeviceDetail(
     hardware.cpuModel ??
       (hardware.cpu as Record<string, unknown> | undefined)?.model ??
       source.cpuModel ??
-      "Unknown",
+      labels.unknown,
   );
   const totalRam = formatCapacity(
     hardware.totalRam ??
@@ -521,25 +519,27 @@ function normalizeDeviceDetail(
       (hardware.memory as Record<string, unknown> | undefined)?.total ??
       source.totalRam ??
       source.ramTotal,
-    "Unknown",
+    labels.unknown,
   );
   const diskTotal = formatCapacity(
     hardware.diskTotal ??
       (hardware.disk as Record<string, unknown> | undefined)?.total ??
       source.diskTotal ??
       source.storageTotal,
-    "Unknown",
+    labels.unknown,
   );
 
   const softwareRecord = source.software as Record<string, unknown> | undefined;
   const software = normalizeSoftwareList(
     softwareRecord?.installedApps ?? source.installedApps ?? source.software,
+    labels.unknown,
   );
   const patches = normalizePatchList(
     source.patches ??
       source.patchStatus ??
       source.patchSummary ??
       source.updates,
+    labels,
   );
   const config = normalizeConfig(
     source.configuration ?? source.config ?? source.settings,
@@ -558,7 +558,9 @@ function normalizeDeviceDetail(
     ramPercent,
     lastSeen,
     orgId: String(source.orgId ?? source.organizationId ?? ""),
-    orgName: String(source.orgName ?? source.organizationName ?? "Unknown"),
+    orgName: String(
+      source.orgName ?? source.organizationName ?? labels.unknown,
+    ),
     siteId,
     siteName,
     agentVersion,
@@ -598,31 +600,54 @@ function buildPdfHtml(
   selectedDevices: DeviceComparisonData[],
   osLabels: Record<OSType, string>,
   generatedDate: string,
+  labels: {
+    title: string;
+    reportTitle: string;
+    generated: string;
+    specs: string;
+    spec: string;
+    os: string;
+    cpu: string;
+    ram: string;
+    disk: string;
+    agentVersion: string;
+    software: string;
+    noSoftwareData: string;
+    patches: string;
+    missingForDevice: (hostname: string) => string;
+    none: string;
+    configuration: string;
+    key: string;
+    unknown: string;
+  },
 ): string {
   const safe = (value: unknown): string => escapeHtml(String(value ?? "-"));
 
   const specsRows = [
     {
-      label: "OS",
+      label: labels.os,
       getValue: (device: DeviceComparisonData) =>
         `${osLabels[device.os]} ${device.osVersion}`,
     },
     {
-      label: "CPU",
-      getValue: (device: DeviceComparisonData) => device.cpuModel || "Unknown",
-    },
-    {
-      label: "RAM",
-      getValue: (device: DeviceComparisonData) => device.totalRam || "Unknown",
-    },
-    {
-      label: "Disk",
-      getValue: (device: DeviceComparisonData) => device.diskTotal || "Unknown",
-    },
-    {
-      label: "Agent Version",
+      label: labels.cpu,
       getValue: (device: DeviceComparisonData) =>
-        device.agentVersion || "Unknown",
+        device.cpuModel || labels.unknown,
+    },
+    {
+      label: labels.ram,
+      getValue: (device: DeviceComparisonData) =>
+        device.totalRam || labels.unknown,
+    },
+    {
+      label: labels.disk,
+      getValue: (device: DeviceComparisonData) =>
+        device.diskTotal || labels.unknown,
+    },
+    {
+      label: labels.agentVersion,
+      getValue: (device: DeviceComparisonData) =>
+        device.agentVersion || labels.unknown,
     },
   ];
 
@@ -636,7 +661,7 @@ function buildPdfHtml(
   const softwareSection = selectedDevices
     .map((device) => {
       const list = device.software.map((item) => item.name).join(", ");
-      return `<div><strong>${safe(device.hostname)}:</strong> ${safe(list || "No software data")}</div>`;
+      return `<div><strong>${safe(device.hostname)}:</strong> ${safe(list || labels.noSoftwareData)}</div>`;
     })
     .join("");
 
@@ -645,7 +670,7 @@ function buildPdfHtml(
       const missing = device.patches
         .filter((patch) => patch.status === "missing")
         .map((patch) => patch.name);
-      return `<div><strong>${safe(device.hostname)} missing:</strong> ${safe(missing.join(", ") || "None")}</div>`;
+      return `<div><strong>${safe(labels.missingForDevice(device.hostname))}:</strong> ${safe(missing.join(", ") || labels.none)}</div>`;
     })
     .join("");
 
@@ -662,16 +687,16 @@ function buildPdfHtml(
   return `<!DOCTYPE html>
 <html>
   <head>
-    <title>Device Comparison</title>
+    <title>${safe(labels.title)}</title>
   </head>
   <body>
-    <h1>Device Comparison Report</h1>
-    <div>Generated ${safe(generatedDate)}</div>
-    <h2>Specs</h2>
+    <h1>${safe(labels.reportTitle)}</h1>
+    <div>${safe(labels.generated)} ${safe(generatedDate)}</div>
+    <h2>${safe(labels.specs)}</h2>
     <table>
       <thead>
         <tr>
-          <th>Spec</th>
+          <th>${safe(labels.spec)}</th>
           ${selectedDevices.map((device) => `<th>${safe(device.hostname)}</th>`).join("")}
         </tr>
       </thead>
@@ -679,15 +704,15 @@ function buildPdfHtml(
         ${specsTableRows}
       </tbody>
     </table>
-    <h2>Software</h2>
+    <h2>${safe(labels.software)}</h2>
     ${softwareSection}
-    <h2>Patches</h2>
+    <h2>${safe(labels.patches)}</h2>
     ${patchesSection}
-    <h2>Configuration</h2>
+    <h2>${safe(labels.configuration)}</h2>
     <table>
       <thead>
         <tr>
-          <th>Key</th>
+          <th>${safe(labels.key)}</th>
           ${selectedDevices.map((device) => `<th>${safe(device.hostname)}</th>`).join("")}
         </tr>
       </thead>
@@ -701,6 +726,26 @@ function buildPdfHtml(
 
 export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
   const { t } = useTranslation("devices");
+  const unknownLabel = t("deviceCompare.values.unknown");
+  const statusLabels: Record<DeviceStatus, string> = {
+    online: t("deviceCompare.status.online"),
+    offline: t("deviceCompare.status.offline"),
+    maintenance: t("deviceCompare.status.maintenance"),
+    decommissioned: t("deviceCompare.status.decommissioned"),
+    quarantined: t("deviceCompare.status.quarantined"),
+    updating: t("deviceCompare.status.updating"),
+    pending: t("deviceCompare.status.pending"),
+  };
+  const osLabels: Record<OSType, string> = {
+    windows: t("deviceCompare.operatingSystems.windows"),
+    macos: t("deviceCompare.operatingSystems.macos"),
+    linux: t("deviceCompare.operatingSystems.linux"),
+  };
+  const timeRangeLabels: Record<TimeRange, string> = {
+    "1h": t("deviceCompare.timeRanges.1h"),
+    "6h": t("deviceCompare.timeRanges.6h"),
+    "24h": t("deviceCompare.timeRanges.24h"),
+  };
   const [availableDevices, setAvailableDevices] = useState<Device[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [deviceDetails, setDeviceDetails] = useState<
@@ -739,11 +784,11 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
       .map((id) => {
         if (deviceDetails[id]) return deviceDetails[id];
         const device = deviceMap.get(id);
-        if (device) return deviceToComparisonData(device);
+        if (device) return deviceToComparisonData(device, unknownLabel);
         return null;
       })
       .filter((item): item is DeviceComparisonData => item !== null);
-  }, [selectedIds, deviceDetails, deviceMap]);
+  }, [selectedIds, deviceDetails, deviceMap, unknownLabel]);
 
   const canCompare = selectedIds.length >= 2;
   const selectionLimitReached = selectedIds.length >= 4;
@@ -754,17 +799,21 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
       setListError(undefined);
       const response = await fetchWithAuth("/devices");
       if (!response.ok) {
-        throw new Error("Failed to fetch devices");
+        throw new Error(t("deviceCompare.errors.fetchDevices"));
       }
       const data = await response.json();
       const items = (data.devices ??
         data.data ??
         data.items ??
         data) as unknown;
-      if (!Array.isArray(items)) throw new Error("Unexpected response");
+      if (!Array.isArray(items))
+        throw new Error(t("deviceCompare.errors.unexpectedResponse"));
       const normalized = items.map(
         (device: Record<string, unknown>, index: number) =>
-          normalizeDeviceSummary(device, index),
+          normalizeDeviceSummary(device, index, {
+            device: t("deviceCompare.values.device"),
+            unknown: unknownLabel,
+          }),
       );
       setAvailableDevices(normalized);
     } catch (err) {
@@ -777,7 +826,7 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
     } finally {
       setLoadingDevices(false);
     }
-  }, []);
+  }, [t, unknownLabel]);
 
   const fetchDeviceDetails = useCallback(
     async (ids: string[]) => {
@@ -792,33 +841,41 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
             const fallback = deviceMap.get(id);
             try {
               const response = await fetchWithAuth(`/devices/${id}`);
-              if (!response.ok) throw new Error("Failed to fetch device");
+              if (!response.ok)
+                throw new Error(t("deviceCompare.errors.fetchDevice"));
               const data = await response.json();
               const baseFallback: Device = fallback ?? {
                 id,
-                hostname: `Device ${id}`,
+                hostname: `${t("deviceCompare.values.device")} ${id}`,
                 os: "windows",
-                osVersion: "Unknown",
+                osVersion: unknownLabel,
                 status: "offline",
                 cpuPercent: 0,
                 ramPercent: 0,
                 lastSeen: new Date().toISOString(),
                 orgId: "",
-                orgName: "Unknown",
+                orgName: unknownLabel,
                 siteId: "",
-                siteName: "Unknown",
+                siteName: unknownLabel,
                 agentVersion: "-",
                 tags: [],
               };
               const normalized = normalizeDeviceDetail(
                 data as Record<string, unknown>,
                 baseFallback,
+                {
+                  patch: t("deviceCompare.values.patch"),
+                  unknown: unknownLabel,
+                },
               );
               return [id, normalized] as const;
             } catch {
               failedIds.push(id);
               if (fallback) {
-                return [id, deviceToComparisonData(fallback)] as const;
+                return [
+                  id,
+                  deviceToComparisonData(fallback, unknownLabel),
+                ] as const;
               }
               return [id, null] as const;
             }
@@ -838,7 +895,9 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
         });
         if (failedIds.length > 0) {
           setDetailsError(
-            `Failed to load details for ${failedIds.length} device(s)`,
+            t("deviceCompare.errors.detailsCount", {
+              count: failedIds.length,
+            }),
           );
         }
       } catch (err) {
@@ -851,7 +910,7 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
         setLoadingDetails(false);
       }
     },
-    [deviceMap],
+    [deviceMap, t, unknownLabel],
   );
 
   useEffect(() => {
@@ -921,7 +980,7 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch (err) {
-      window.prompt("Copy this link to share the comparison:", url);
+      window.prompt(t("deviceCompare.sharePrompt"), url);
     }
   };
 
@@ -930,38 +989,38 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
 
     const rows: string[][] = [];
     const header = [
-      "Category",
-      "Item",
+      t("deviceCompare.csv.category"),
+      t("deviceCompare.csv.item"),
       ...selectedDevices.map((device) => device.hostname),
     ];
     rows.push(header);
 
     rows.push([
-      "Specs",
-      "OS",
+      t("deviceCompare.csv.specs"),
+      t("deviceCompare.labels.os"),
       ...selectedDevices.map(
         (device) => `${osLabels[device.os]} ${device.osVersion}`,
       ),
     ]);
     rows.push([
-      "Specs",
-      "CPU",
-      ...selectedDevices.map((device) => device.cpuModel || "Unknown"),
+      t("deviceCompare.csv.specs"),
+      t("deviceCompare.labels.cpu"),
+      ...selectedDevices.map((device) => device.cpuModel || unknownLabel),
     ]);
     rows.push([
-      "Specs",
-      "RAM",
-      ...selectedDevices.map((device) => device.totalRam || "Unknown"),
+      t("deviceCompare.csv.specs"),
+      t("deviceCompare.labels.ram"),
+      ...selectedDevices.map((device) => device.totalRam || unknownLabel),
     ]);
     rows.push([
-      "Specs",
-      "Disk",
-      ...selectedDevices.map((device) => device.diskTotal || "Unknown"),
+      t("deviceCompare.csv.specs"),
+      t("deviceCompare.labels.disk"),
+      ...selectedDevices.map((device) => device.diskTotal || unknownLabel),
     ]);
     rows.push([
-      "Specs",
-      "Agent Version",
-      ...selectedDevices.map((device) => device.agentVersion || "Unknown"),
+      t("deviceCompare.csv.specs"),
+      t("deviceCompare.labels.agentVersion"),
+      ...selectedDevices.map((device) => device.agentVersion || unknownLabel),
     ]);
 
     const commonSoftware = selectedDevices
@@ -970,14 +1029,20 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
         if (index === 0) return list;
         return acc.filter((item) => list.includes(item));
       }, []);
-    rows.push(["Software", "Common", commonSoftware.join("; ")]);
+    rows.push([
+      t("deviceCompare.csv.software"),
+      t("deviceCompare.csv.common"),
+      commonSoftware.join("; "),
+    ]);
     selectedDevices.forEach((device) => {
       const unique = device.software
         .map((item) => item.name)
         .filter((name) => !commonSoftware.includes(name));
       rows.push([
-        "Software",
-        `Unique to ${device.hostname}`,
+        t("deviceCompare.csv.software"),
+        t("deviceCompare.csv.uniqueToDevice", {
+          hostname: device.hostname,
+        }),
         unique.join("; "),
       ]);
     });
@@ -986,7 +1051,13 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
       const missing = device.patches
         .filter((patch) => patch.status === "missing")
         .map((patch) => patch.name);
-      rows.push(["Patches", `${device.hostname} missing`, missing.join("; ")]);
+      rows.push([
+        t("deviceCompare.csv.patches"),
+        t("deviceCompare.csv.missingForDevice", {
+          hostname: device.hostname,
+        }),
+        missing.join("; "),
+      ]);
     });
 
     const configKeys = Array.from(
@@ -994,7 +1065,7 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
     );
     configKeys.forEach((key) => {
       rows.push([
-        "Config",
+        t("deviceCompare.csv.configuration"),
         key,
         ...selectedDevices.map((device) => device.config[key] ?? "-"),
       ]);
@@ -1008,7 +1079,9 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
 
     const link = document.createElement("a");
     link.href = url;
-    link.download = `device-comparison-${Date.now()}.csv`;
+    link.download = t("deviceCompare.csv.filename", {
+      timestamp: Date.now(),
+    });
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -1021,7 +1094,27 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
       new Date().toISOString(),
       effectiveTimezone,
     );
-    const html = buildPdfHtml(selectedDevices, osLabels, generatedDate);
+    const html = buildPdfHtml(selectedDevices, osLabels, generatedDate, {
+      title: t("deviceCompare.deviceComparison"),
+      reportTitle: t("deviceCompare.report.title"),
+      generated: t("deviceCompare.report.generated"),
+      specs: t("deviceCompare.csv.specs"),
+      spec: t("deviceCompare.spec"),
+      os: t("deviceCompare.labels.os"),
+      cpu: t("deviceCompare.labels.cpu"),
+      ram: t("deviceCompare.labels.ram"),
+      disk: t("deviceCompare.labels.disk"),
+      agentVersion: t("deviceCompare.labels.agentVersion"),
+      software: t("deviceCompare.csv.software"),
+      noSoftwareData: t("deviceCompare.report.noSoftwareData"),
+      patches: t("deviceCompare.csv.patches"),
+      missingForDevice: (hostname) =>
+        t("deviceCompare.csv.missingForDevice", { hostname }),
+      none: t("deviceCompare.values.none"),
+      configuration: t("deviceCompare.report.configuration"),
+      key: t("deviceCompare.key"),
+      unknown: unknownLabel,
+    });
     const blob = new Blob([html], { type: "text/html;charset=utf-8" });
     const blobUrl = URL.createObjectURL(blob);
     const printWindow = window.open(blobUrl, "_blank", "width=900,height=700");
@@ -1237,7 +1330,7 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
                         isSelected
                           ? "border-primary/50 bg-primary/5"
                           : "border-muted hover:border-primary/30 hover:bg-muted/40"
-                      } ${disabled ? t("deviceCompare.opacity50") : ""}`}
+                      } ${disabled ? "opacity-50" : ""}`}
                     >
                       <div className="flex items-start gap-3">
                         <div
@@ -1320,7 +1413,9 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
                       type="button"
                       onClick={() => handleToggleDevice(device.id)}
                       className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-                      aria-label={`Remove ${device.hostname}`}
+                      aria-label={t("deviceCompare.removeDevice", {
+                        hostname: device.hostname,
+                      })}
                     >
                       <X className="h-4 w-4" />
                     </button>
@@ -1332,7 +1427,9 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
               className={`rounded-md border p-3 text-xs ${canCompare ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700" : "border-muted text-muted-foreground"}`}
             >
               {canCompare
-                ? `Ready to compare ${selectedIds.length} devices.`
+                ? t("deviceCompare.readyToCompare", {
+                    count: selectedIds.length,
+                  })
                 : t("deviceCompare.selectAtLeastTwoDevicesTo2")}
             </div>
           </div>
@@ -1365,7 +1462,9 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
                 </p>
               </div>
               <span className="text-xs text-muted-foreground">
-                {selectedIds.length} {t("deviceCompare.devices")}
+                {t("deviceCompare.deviceCount", {
+                  count: selectedIds.length,
+                })}
               </span>
             </div>
             <div className="mt-4 overflow-x-auto">
@@ -1388,24 +1487,24 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
                         `${osLabels[device.os]} ${device.osVersion}`,
                     },
                     {
-                      label: "CPU",
+                      label: t("deviceCompare.labels.cpu"),
                       value: (device: DeviceComparisonData) =>
-                        device.cpuModel || "Unknown",
+                        device.cpuModel || unknownLabel,
                     },
                     {
-                      label: "RAM",
+                      label: t("deviceCompare.labels.ram"),
                       value: (device: DeviceComparisonData) =>
-                        device.totalRam || "Unknown",
+                        device.totalRam || unknownLabel,
                     },
                     {
                       label: t("deviceCompare.disk"),
                       value: (device: DeviceComparisonData) =>
-                        device.diskTotal || "Unknown",
+                        device.diskTotal || unknownLabel,
                     },
                     {
                       label: t("deviceCompare.agentVersion"),
                       value: (device: DeviceComparisonData) =>
-                        device.agentVersion || "Unknown",
+                        device.agentVersion || unknownLabel,
                     },
                   ].map((row) => (
                     <tr key={row.label} className="border-b last:border-0">
@@ -1525,7 +1624,7 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
                       {device.patches
                         .filter((patch) => patch.status === "missing")
                         .map((patch) => patch.name)
-                        .join(", ") || "None"}
+                        .join(", ") || t("deviceCompare.values.none")}
                     </div>
                   </div>
                 );
@@ -1698,9 +1797,9 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
                   }
                   className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 >
-                  {Object.entries(timeRangeOptions).map(([value, option]) => (
+                  {Object.entries(timeRangeOptions).map(([value]) => (
                     <option key={value} value={value}>
-                      {option.label}
+                      {timeRangeLabels[value as TimeRange]}
                     </option>
                   ))}
                 </select>

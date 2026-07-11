@@ -390,7 +390,73 @@
     "bgPrimaryTextPrimaryForeground": "bg-primary text-primary-foreground",
     "textMutedForegroundHoverTextForeground": "text-muted-foreground hover:text-foreground",
     "noPerformanceDataAvailable": "No performance data available.",
-    "selectAtLeastTwoDevicesTo3": "Select at least two devices to access comparison details."
+    "selectAtLeastTwoDevicesTo3": "Select at least two devices to access comparison details.",
+    "sharePrompt": "Copy this link to share the comparison:",
+    "removeDevice": "Remove {{hostname}}",
+    "readyToCompare": "Ready to compare {{count}} devices.",
+    "readyToCompare_one": "Ready to compare {{count}} device.",
+    "readyToCompare_other": "Ready to compare {{count}} devices.",
+    "deviceCount": "{{count}} devices",
+    "deviceCount_one": "{{count}} device",
+    "deviceCount_other": "{{count}} devices",
+    "errors": {
+      "fetchDevices": "Failed to fetch devices",
+      "fetchDevice": "Failed to fetch device",
+      "unexpectedResponse": "Unexpected response",
+      "detailsCount": "Failed to load details for {{count}} devices",
+      "detailsCount_one": "Failed to load details for {{count}} device",
+      "detailsCount_other": "Failed to load details for {{count}} devices"
+    },
+    "values": {
+      "device": "Device",
+      "patch": "Patch",
+      "unknown": "Unknown",
+      "none": "None"
+    },
+    "status": {
+      "online": "Online",
+      "offline": "Offline",
+      "maintenance": "Maintenance",
+      "decommissioned": "Decommissioned",
+      "quarantined": "Quarantined",
+      "updating": "Updating",
+      "pending": "Pending"
+    },
+    "operatingSystems": {
+      "windows": "Windows",
+      "macos": "macOS",
+      "linux": "Linux"
+    },
+    "timeRanges": {
+      "1h": "Last hour",
+      "6h": "Last 6 hours",
+      "24h": "Last 24 hours"
+    },
+    "labels": {
+      "os": "OS",
+      "cpu": "CPU",
+      "ram": "RAM",
+      "disk": "Disk",
+      "agentVersion": "Agent Version"
+    },
+    "csv": {
+      "category": "Category",
+      "item": "Item",
+      "specs": "Specs",
+      "software": "Software",
+      "common": "Common",
+      "uniqueToDevice": "Unique to {{hostname}}",
+      "patches": "Patches",
+      "missingForDevice": "{{hostname}} missing",
+      "configuration": "Config",
+      "filename": "device-comparison-{{timestamp}}.csv"
+    },
+    "report": {
+      "title": "Device Comparison Report",
+      "generated": "Generated",
+      "noSoftwareData": "No software data",
+      "configuration": "Configuration"
+    }
   },
   "deviceComplianceTab": {
     "failedToLoadComplianceStatus": "Failed to load compliance status",

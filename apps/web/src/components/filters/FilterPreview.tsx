@@ -102,7 +102,7 @@ export function FilterPreview({
 
           {preview.totalCount === 0 && (
             <div className="text-center py-4 text-sm text-muted-foreground">
-              No devices match the current filter criteria
+              {t('filters.preview.noMatches')}
             </div>
           )}
         </div>

@@ -498,7 +498,7 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
               type="text"
               value={name}
               onChange={e => setName(e.target.value)}
-              placeholder="Cisco Core"
+              placeholder={t('longTail.snmp.SNMPTemplateEditor.placeholders.name')}
               className="mt-2 w-full rounded-md border bg-background px-3 py-2 text-sm"
             />
           </div>
@@ -508,7 +508,7 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
               type="text"
               value={vendor}
               onChange={e => setVendor(e.target.value)}
-              placeholder="Cisco"
+              placeholder={t('longTail.snmp.SNMPTemplateEditor.placeholders.vendor')}
               className="mt-2 w-full rounded-md border bg-background px-3 py-2 text-sm"
             />
           </div>
@@ -518,7 +518,7 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
               type="text"
               value={deviceType}
               onChange={e => setDeviceType(e.target.value)}
-              placeholder="Core Switch"
+              placeholder={t('longTail.snmp.SNMPTemplateEditor.placeholders.deviceType')}
               className="mt-2 w-full rounded-md border bg-background px-3 py-2 text-sm"
             />
           </div>
@@ -528,7 +528,7 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
               type="text"
               value={description}
               onChange={e => setDescription(e.target.value)}
-              placeholder="High-throughput switches with multiple uplinks"
+              placeholder={t('longTail.snmp.SNMPTemplateEditor.placeholders.description')}
               className="mt-2 w-full rounded-md border bg-background px-3 py-2 text-sm"
             />
           </div>
@@ -590,7 +590,7 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
                         type="text"
                         value={row.name}
                         onChange={event => updateOid(row.id, 'name', event.target.value)}
-                        placeholder="System Uptime"
+                        placeholder={t('longTail.snmp.SNMPTemplateEditor.placeholders.oidName')}
                         className="mt-2 w-full rounded-md border bg-background px-3 py-2 text-sm"
                       />
                     </div>
@@ -614,7 +614,7 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
                         type="text"
                         value={row.description}
                         onChange={event => updateOid(row.id, 'description', event.target.value)}
-                        placeholder="What this OID measures"
+                        placeholder={t('longTail.snmp.SNMPTemplateEditor.placeholders.oidDescription')}
                         className="mt-2 w-full rounded-md border bg-background px-3 py-2 text-sm"
                       />
                     </div>

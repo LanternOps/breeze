@@ -366,9 +366,11 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
   if (needsOrgSelection) {
     return (
       <div className="rounded-md border bg-muted/40 p-4 text-sm text-muted-foreground">
-        <Trans t={t} i18nKey="longTail.monitoring.MonitoringAssetsDashboard.needsOrgSelection">
-          <span className="font-medium text-foreground">All orgs</span>
-        </Trans>
+        <Trans
+          t={t}
+          i18nKey="longTail.monitoring.MonitoringAssetsDashboard.needsOrgSelection"
+          components={[<span className="font-medium text-foreground" />]}
+        />
       </div>
     );
   }

@@ -108,7 +108,7 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
         <div className="min-w-0 space-y-4">
           {sortedBlocks.length === 0 && looseLines.length === 0 ? (
             <div className="rounded-lg border border-dashed bg-card p-8 text-center" data-testid="quote-detail-empty">
-              <p className="text-sm text-muted-foreground">This quote has no content yet.</p>
+              <p className="text-sm text-muted-foreground">{t('quotes.detail.empty')}</p>
               {quote.status === 'draft' && can('quotes', 'write') && (
                 <button
                   type="button"
@@ -116,7 +116,7 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
                   data-testid="quote-detail-empty-edit"
                   className="mt-3 inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
                 >
-                  Add content in the Editor
+                  {t('quotes.detail.addContentInEditor')}
                 </button>
               )}
             </div>
@@ -134,7 +134,7 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
           )}
 
           {looseLines.length > 0 && (
-            <LineTable lines={looseLines} currency={currency} label="Additional items" testId="quote-detail-loose-lines" taxRate={quote.taxRate} showTax={showTax} />
+            <LineTable lines={looseLines} currency={currency} label={t('quotes.document.additionalItems')} testId="quote-detail-loose-lines" taxRate={quote.taxRate} showTax={showTax} />
           )}
         </div>
 

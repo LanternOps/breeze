@@ -547,8 +547,10 @@
       "sending": "Sending…"
     },
     "detail": {
+      "addContentInEditor": "Add content in the Editor",
       "created": "Created",
       "customer": "Customer",
+      "empty": "This quote has no content yet.",
       "expires": "Expires {{date}}",
       "from": "From",
       "imageUnavailable": "Image unavailable",
@@ -781,6 +783,82 @@
       "void": "Void"
     }
   },
+  "invoiceEditor": {
+    "addLine": {
+      "add": "Add",
+      "addInCatalog": "Add some in Product Catalog",
+      "bundle": "Bundle",
+      "catalogItem": "Catalog item",
+      "clearSelection": "Clear selection",
+      "manualLine": "Manual line",
+      "noCatalogItems": "No catalog items.",
+      "searchCatalog": "Search catalog by name or SKU",
+      "sourceAria": "Add line source"
+    },
+    "billTo": {
+      "addInSettings": "Add one in Organization settings",
+      "noContact": "No billing contact set.",
+      "title": "Bill to"
+    },
+    "errors": {
+      "addLine": "Could not add line.",
+      "loadCatalog": "Failed to load catalog.",
+      "nameOrDescription": "A line needs a name or a description.",
+      "nonNegativeUnitPrice": "Enter a unit price of 0 or more.",
+      "quantityGreaterThanZero": "Enter a quantity greater than 0.",
+      "removeLine": "Could not remove line.",
+      "saveNotes": "Could not save notes.",
+      "saveTerms": "Could not save terms.",
+      "updateLine": "Could not update line."
+    },
+    "fields": {
+      "descriptionOptional": "Description (optional)",
+      "lineDescription": "Line description",
+      "lineName": "Line name",
+      "name": "Name",
+      "quantity": "Quantity",
+      "taxable": "Taxable",
+      "unitPrice": "Unit price"
+    },
+    "hiddenSuffix": " (hidden)",
+    "notes": {
+      "placeholder": "Internal or customer notes…",
+      "title": "Notes"
+    },
+    "remove": "Remove",
+    "saved": "Saved",
+    "success": {
+      "lineAdded": "Line added",
+      "lineRemoved": "Line removed",
+      "notesSaved": "Notes saved",
+      "termsSaved": "Terms saved"
+    },
+    "summary": {
+      "noTaxRate": "Lines are marked taxable, but no tax rate is set.",
+      "setTaxRate": "Set one in Billing settings",
+      "subtotal": "Subtotal",
+      "tax": "Tax",
+      "title": "Summary",
+      "total": "Total"
+    },
+    "table": {
+      "customerVisible": "Customer-visible",
+      "customerVisibleTitle": "Whether this line appears on the customer's invoice",
+      "empty": "No lines yet. Add catalog items, a bundle, or a manual line below.",
+      "item": "Item",
+      "price": "Price",
+      "qty": "Qty",
+      "tax": "Tax",
+      "total": "Total"
+    },
+    "terms": {
+      "placeholder": "Payment terms, warranty clauses, etc.",
+      "title": "Terms & Conditions"
+    },
+    "unapprovedTime": "{{count}} lines reference unapproved time. Review before issuing.",
+    "unapprovedTime_one": "{{count}} line reference unapproved time. Review before issuing.",
+    "unapprovedTime_other": "{{count}} lines reference unapproved time. Review before issuing."
+  },
   "invoiceActions": {
       "deleteConfirm": {
         "message": "This permanently deletes the draft invoice. This cannot be undone.",
@@ -991,6 +1069,7 @@
       "from": "From",
       "selectOrganization": "Select an organization…",
       "siteOptional": "Site (optional)",
+      "sourceAria": "Invoice source",
       "title": "New invoice",
       "to": "To",
       "working": "Working…"

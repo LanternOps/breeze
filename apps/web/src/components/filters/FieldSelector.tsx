@@ -150,7 +150,7 @@ export function FieldSelector({
                         </div>
                         {field.computed && (
                           <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                            Computed
+                            {t('filters.computed')}
                           </span>
                         )}
                       </button>

@@ -180,7 +180,7 @@ export function SavedFilterList({
             onClick={handleCancel}
             className="text-sm text-muted-foreground hover:text-foreground"
           >
-            Cancel
+            {t('actions.cancel')}
           </button>
         </div>
 
@@ -295,7 +295,7 @@ export function SavedFilterList({
               className="mt-4 inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90"
             >
               <Plus className="h-4 w-4" />
-              Create your first filter
+              {t('filters.saved.createFirst')}
             </button>
           )}
         </div>
@@ -326,8 +326,9 @@ export function SavedFilterList({
                     </span>
                     <span>·</span>
                     <span>
-                      Created{' '}
-                      {new Date(filter.createdAt).toLocaleDateString([], { timeZone: timezone })}
+                      {t('filters.saved.created', {
+                        date: new Date(filter.createdAt).toLocaleDateString([], { timeZone: timezone }),
+                      })}
                     </span>
                   </div>
                 </div>
@@ -362,7 +363,7 @@ export function SavedFilterList({
               {deleteConfirmId === filter.id && (
                 <div className="mt-3 flex items-center justify-between rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2">
                   <span className="text-sm text-destructive">
-                    Delete this filter?
+                    {t('filters.saved.deleteConfirm')}
                   </span>
                   <div className="flex gap-2">
                     <button
@@ -370,14 +371,14 @@ export function SavedFilterList({
                       onClick={() => setDeleteConfirmId(null)}
                       className="h-7 rounded border px-2 text-xs font-medium hover:bg-muted"
                     >
-                      Cancel
+                      {t('actions.cancel')}
                     </button>
                     <button
                       type="button"
                       onClick={() => handleDelete(filter.id)}
                       className="h-7 rounded bg-destructive px-2 text-xs font-medium text-destructive-foreground hover:opacity-90"
                     >
-                      Delete
+                      {t('actions.delete')}
                     </button>
                   </div>
                 </div>

@@ -756,7 +756,7 @@ export function InvoicesPage() {
           </div>
 
           {/* Mode toggle */}
-          <div className="flex gap-1 rounded-md border bg-muted/40 p-1" role="group" aria-label="Invoice source">
+          <div className="flex gap-1 rounded-md border bg-muted/40 p-1" role="group" aria-label={t('invoicesPage.dialog.sourceAria')}>
             {(['assemble', 'blank'] as const).map((m) => (
               <button
                 key={m}

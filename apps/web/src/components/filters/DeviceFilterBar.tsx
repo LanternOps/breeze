@@ -126,7 +126,7 @@ export function DeviceFilterBar({
             className="inline-flex h-7 items-center gap-1 rounded border px-2 text-xs font-medium text-muted-foreground transition hover:bg-muted hover:text-foreground"
           >
             <X className="h-3 w-3" />
-            Clear
+            {t('actions.clear')}
           </button>
         )}
 
@@ -139,12 +139,12 @@ export function DeviceFilterBar({
             {expanded ? (
               <>
                 <ChevronUp className="h-3 w-3" />
-                Collapse
+                {t('filters.collapse')}
               </>
             ) : (
               <>
                 <ChevronDown className="h-3 w-3" />
-                Advanced Filter
+                {t('filters.advanced')}
               </>
             )}
           </button>

@@ -222,10 +222,20 @@
       "title": "Personalizador do painel",
       "newName": "Nome do novo painel",
       "widgetLibrary": "Biblioteca de widgets",
+      "widgetLibraryHint": "Arraste widgets para a grade ou toque para adicionar.",
       "emailPlaceholder": "email@empresa.com",
       "noSharedUsers": "Nenhum usuário compartilhado ainda.",
       "grid": "Grade do painel",
+      "gridHint": "Arraste para mover. Redimensione pela alça no canto.",
+      "emptyGrid": "Arraste widgets para cá para começar a criar seu painel.",
       "trendChart": "Gráfico de tendência",
+      "revertLayout": "Reverter layout",
+      "saveDashboards": "Salvar painéis",
+      "saveFailed": "Falha ao salvar",
+      "shareDashboard": "Compartilhar painel",
+      "widgetsPlaced": "{{count}} widgets posicionados",
+      "widgetsPlaced_one": "{{count}} widget posicionado",
+      "widgetsPlaced_other": "{{count}} widgets posicionados",
       "dashboardSettings": "Configurações do painel",
       "layout": "Layout",
       "dashboardName": "Nome do painel",
@@ -235,6 +245,18 @@
       "severityFilter": "Filtro de gravidade",
       "chartType": "Tipo de gráfico",
       "timeRange": "Período",
+      "showTrend": "Mostrar linha de tendência dos dispositivos",
+      "showLegend": "Mostrar legenda",
+      "removeWidget": "Remover widget",
+      "selectWidget": "Selecione um widget para definir suas configurações.",
+      "summary": "Widgets: {{widgets}} · Compartilhado com: {{shared}}",
+      "preview": {
+        "devices": "{{count}} dispositivos",
+        "online": "{{percent}}% online",
+        "activeAlerts": "{{count}} alertas ativos",
+        "filter": "Filtro: {{filter}}",
+        "lastRefresh": "Última atualização há {{minutes}} min"
+      },
       "severity": {
         "all": "Todas as gravidades",
         "critical": "Somente crítica",
@@ -256,6 +278,9 @@
     }
   },
   "filters": {
+    "advanced": "Filtro avançado",
+    "collapse": "Recolher",
+    "computed": "Calculado",
     "match": "Corresponder",
     "allConditions": "Todas as condições (E)",
     "anyCondition": "Qualquer condição (OU)",
@@ -293,6 +318,9 @@
       "search": "Pesquisar filtros…",
       "noMatches": "Nenhum filtro corresponde à pesquisa",
       "empty": "Nenhum filtro salvo ainda. Crie um para reutilizar em grupos e implantações.",
+      "createFirst": "Crie seu primeiro filtro",
+      "created": "Criado em {{date}}",
+      "deleteConfirm": "Excluir este filtro?",
       "duplicate": "Duplicar"
     },
     "targets": {
@@ -319,7 +347,8 @@
       "matchCount": "dispositivos correspondentes",
       "matchCount_one": "dispositivo correspondente",
       "matchCount_other": "dispositivos correspondentes",
-      "showing": "Exibindo {{shown}} de {{total}}"
+      "showing": "Exibindo {{shown}} de {{total}}",
+      "noMatches": "Nenhum dispositivo corresponde aos critérios de filtro atuais"
     },
     "operators": {
       "equals": "é igual a",
@@ -1270,6 +1299,8 @@
         "oneClickTitle": "Integração Microsoft 365 com um clique",
         "oneClickDescription": "Sua instância do Breeze tem um aplicativo Microsoft 365 pré-configurado. Clique em \"Conceder Acesso\" para autorizar o acesso de backup ao seu tenant M365. Um Administrador Global precisa aprovar a solicitação de consentimento.",
         "displayName": "Nome de Exibição",
+        "displayNamePlaceholder": "Microsoft 365",
+        "manualDisplayNamePlaceholder": "Minha conexão M365",
         "selectBackupScope": "Selecione o que será copiado",
         "scopes": {
           "mailbox": "Caixa de Correio do Exchange",
@@ -1431,6 +1462,14 @@
         "templateDetails": "Detalhes do modelo",
         "vendor": "Fabricante",
         "deviceType": "Tipo de dispositivo",
+        "placeholders": {
+          "name": "Núcleo Cisco",
+          "vendor": "Cisco",
+          "deviceType": "Switch principal",
+          "description": "Switches de alto desempenho com vários uplinks",
+          "oidName": "Tempo de atividade do sistema",
+          "oidDescription": "O que este OID mede"
+        },
         "oidList": "Lista de OIDs",
         "oidListDescription": "Configure os OIDs que alimentam métricas e limites.",
         "importFromFile": "Importar de arquivo",
