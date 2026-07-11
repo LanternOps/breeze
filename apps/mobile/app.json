@@ -14,6 +14,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.breeze.rmm",
+      "buildNumber": "1",
       "infoPlist": {
         "NSFaceIDUsageDescription": "Use Face ID to unlock the app",
         "NSCameraUsageDescription": "Camera access for QR code scanning",

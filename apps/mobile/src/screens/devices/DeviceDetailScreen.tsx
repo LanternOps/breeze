@@ -410,16 +410,6 @@ export function DeviceDetailScreen({ route }: Props) {
           brand={theme.brand}
         />
         <ActionButton
-          label="Lock"
-          onPress={() => handleAction('lock')}
-          loading={actionLoading === 'lock'}
-          disabled={offline || actionLoading !== null}
-          textHi={theme.textHi}
-          bg={theme.bg2}
-          border={theme.border}
-          brand={theme.brand}
-        />
-        <ActionButton
           label="Wake"
           onPress={() => handleAction('wake')}
           loading={actionLoading === 'wake'}

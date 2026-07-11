@@ -28,6 +28,32 @@ export function isValidServerUrl(input: string): boolean {
   }
 }
 
+const ACCOUNT_DELETE_PATH = '/account/delete';
+
+/**
+ * Build the account-deletion web URL from the user's selected server base.
+ * Pure/testable: pass the stored server URL (may be null) and a fallback base
+ * (typically the app's API base) to use when nothing is stored.
+ */
+export function buildAccountDeletionUrl(
+  storedServerUrl: string | null | undefined,
+  fallbackBaseUrl: string,
+): string {
+  const source =
+    storedServerUrl && storedServerUrl.trim() ? storedServerUrl : fallbackBaseUrl;
+  return `${normalizeServerUrl(source)}${ACCOUNT_DELETE_PATH}`;
+}
+
+/**
+ * Resolve the account-deletion URL from the server chosen at sign-in
+ * (SecureStore key `breeze_server_url`). Falls back to `fallbackBaseUrl` when
+ * no server is stored.
+ */
+export async function getAccountDeletionUrl(fallbackBaseUrl: string): Promise<string> {
+  const stored = await getServerUrl();
+  return buildAccountDeletionUrl(stored, fallbackBaseUrl);
+}
+
 export async function getServerUrl(): Promise<string | null> {
   try {
     return await SecureStore.getItemAsync(SERVER_URL_KEY);

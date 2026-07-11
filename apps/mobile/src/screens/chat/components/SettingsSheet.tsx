@@ -37,6 +37,8 @@ import {
   isBiometricEnabled,
   setBiometricEnabled,
 } from '../../../services/biometrics';
+import { FALLBACK_API_BASE_URL } from '../../../services/api';
+import { getAccountDeletionUrl } from '../../../services/serverConfig';
 import { ease, duration } from '../../../lib/motion';
 import { track } from '../../../lib/analytics';
 import { relativeTime } from '../../../lib/relativeTime';
@@ -55,7 +57,6 @@ const NOTIF_KEY = 'notificationsEnabled';
 const NOTIF_CRITICAL_ONLY_KEY = 'notificationsCriticalOnly';
 const TERMS_URL = 'https://breezermm.com/legal/terms-of-service/';
 const PRIVACY_URL = 'https://breezermm.com/legal/privacy-policy/';
-const DELETE_ACCOUNT_URL = 'https://breezermm.com/account/delete';
 
 async function safeOpen(url: string) {
   try {
@@ -224,11 +225,15 @@ export function SettingsSheet({ visible, onCancel }: Props) {
         {
           text: 'Continue',
           style: 'destructive',
-          onPress: () => {
+          onPress: async () => {
             // We track the user-intent click, not the actual server-side
             // deletion request (that happens on the web flow).
             track('account_deletion_requested');
-            safeOpen(DELETE_ACCOUNT_URL);
+            // The deletion page is served on the server the user selected at
+            // sign-in (e.g. https://us.2breeze.app/account/delete), not a
+            // hardcoded marketing domain. Resolve it at tap time.
+            const url = await getAccountDeletionUrl(FALLBACK_API_BASE_URL);
+            await safeOpen(url);
           },
         },
       ],

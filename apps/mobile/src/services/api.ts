@@ -3,7 +3,8 @@ import * as SecureStore from 'expo-secure-store';
 import { getServerUrl } from './serverConfig';
 import { getOrCreateInstallationId } from './installationId';
 
-const FALLBACK_API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
+export const FALLBACK_API_BASE_URL =
+  process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
 const API_PREFIX = '/api/v1/mobile';
 const API_CORE_PREFIX = '/api/v1';
 const CSRF_HEADER_NAME = 'x-breeze-csrf';
@@ -262,7 +263,7 @@ async function request<T>(
   return requestWithPrefix<T>(endpoint, API_PREFIX, options);
 }
 
-export type DeviceAction = 'reboot' | 'shutdown' | 'lock' | 'wake' | 'update';
+export type DeviceAction = 'reboot' | 'shutdown' | 'wake' | 'update';
 
 function mapAlert(alert: MobileAlertRecord): Alert {
   const normalizedSeverity: Alert['severity'] =
