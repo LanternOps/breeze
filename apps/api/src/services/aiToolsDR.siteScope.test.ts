@@ -71,7 +71,7 @@ describe('execute_dr_plan — cross-site device authorization', () => {
     const parsed = JSON.parse(result);
     expect(parsed.success).toBe(true);
     expect(mockEnqueue).toHaveBeenCalledTimes(1);
-    expect(mockEnqueue.mock.calls[0][0].authorizedDeviceIds).toEqual(['dev-A']);
+    expect(mockEnqueue.mock.calls[0]![0].authorizedDeviceIds).toEqual(['dev-A']);
   });
 
   it('unrestricted caller executes with no authorization pin (authorizedDeviceIds null)', async () => {
@@ -83,7 +83,7 @@ describe('execute_dr_plan — cross-site device authorization', () => {
     const result = await handlerFor('execute_dr_plan')({ planId: 'p1', executionType: 'failover' }, makeAuth(undefined));
     const parsed = JSON.parse(result);
     expect(parsed.success).toBe(true);
-    expect(mockEnqueue.mock.calls[0][0].authorizedDeviceIds).toBeNull();
+    expect(mockEnqueue.mock.calls[0]![0].authorizedDeviceIds).toBeNull();
   });
 });
 
