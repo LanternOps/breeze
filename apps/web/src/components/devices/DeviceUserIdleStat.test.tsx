@@ -1,3 +1,5 @@
+import '@/lib/i18n';
+
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import DeviceUserIdleStat, { selectIdleSession, formatIdle, type ActiveSession } from './DeviceUserIdleStat';

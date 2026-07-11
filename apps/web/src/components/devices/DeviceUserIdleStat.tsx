@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Timer } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { formatTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 
@@ -26,21 +27,21 @@ export function selectIdleSession(sessions: ActiveSession[]): ActiveSession | nu
   )[0];
 }
 
-export function formatIdle(session: ActiveSession | null): string {
+export function formatIdle(session: ActiveSession | null, translate?: (key: string) => string): string {
   if (!session) return '—';
-  if (session.activityState === 'locked') return 'Locked';
+  if (session.activityState === 'locked') return translate?.('deviceUserIdleStat.locked') ?? 'Locked';
   if (session.idleMinutes === null || session.idleMinutes === undefined) return '—';
-  if (session.idleMinutes < 1) return 'Active';
+  if (session.idleMinutes < 1) return translate?.('deviceUserIdleStat.active') ?? 'Active';
   const hours = Math.floor(session.idleMinutes / 60);
   const minutes = Math.floor(session.idleMinutes % 60);
   if (hours > 0) return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
   return `${minutes}m`;
 }
 
-function tooltip(sessions: ActiveSession[]): string | undefined {
+function tooltip(sessions: ActiveSession[], translate: (key: string, options?: Record<string, unknown>) => string): string | undefined {
   if (sessions.length === 0) return undefined;
   const lines = sessions.map(
-    (s) => `${s.username} (${s.sessionType ?? 'unknown'}): ${formatIdle(s)}`
+    (s) => `${s.username} (${s.sessionType ?? translate('deviceUserIdleStat.unknown')}): ${formatIdle(s, translate)}`
   );
   const updatedAt = sessions
     .map((s) => s.updatedAt)
@@ -50,7 +51,7 @@ function tooltip(sessions: ActiveSession[]): string | undefined {
   if (updatedAt) {
     const d = new Date(updatedAt);
     if (!isNaN(d.getTime())) {
-      lines.push(`As of ${formatTime(d, { hour: '2-digit', minute: '2-digit' })}`);
+      lines.push(translate('deviceUserIdleStat.asOf', { time: formatTime(d, { hour: '2-digit', minute: '2-digit' }) }));
     }
   }
   return lines.join('\n');
@@ -61,6 +62,7 @@ type DeviceUserIdleStatProps = {
 };
 
 export default function DeviceUserIdleStat({ deviceId }: DeviceUserIdleStatProps) {
+  const { t } = useTranslation('devices');
   const [sessions, setSessions] = useState<ActiveSession[]>([]);
   const [error, setError] = useState(false);
 
@@ -94,7 +96,7 @@ export default function DeviceUserIdleStat({ deviceId }: DeviceUserIdleStatProps
     <div>
       <div className="flex items-center gap-1.5 whitespace-nowrap text-xs font-medium text-muted-foreground">
         <Timer className="h-3.5 w-3.5" />
-        User Idle
+        {t('deviceUserIdleStat.label')}
       </div>
       {error ? (
         // Distinct from the legitimate "—" empty state: a fetch failure is
@@ -103,15 +105,15 @@ export default function DeviceUserIdleStat({ deviceId }: DeviceUserIdleStatProps
         <button
           type="button"
           onClick={() => { setError(false); void fetchSessions(); }}
-          title="Couldn't load idle status — click to retry"
-          aria-label="Couldn't load idle status — retry"
+          title={t('deviceUserIdleStat.retryTitle')}
+          aria-label={t('deviceUserIdleStat.retryAria')}
           className="mt-1 text-lg font-semibold text-muted-foreground underline decoration-dotted underline-offset-4 hover:text-foreground"
         >
           —
         </button>
       ) : (
-        <p className="mt-1 text-lg font-semibold" title={tooltip(sessions)}>
-          {formatIdle(selected)}
+        <p className="mt-1 text-lg font-semibold" title={tooltip(sessions, t)}>
+          {formatIdle(selected, t)}
         </p>
       )}
     </div>

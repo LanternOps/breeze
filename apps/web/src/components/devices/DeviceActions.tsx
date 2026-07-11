@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState } from "react";
 import {
   Play,
   RotateCcw,
@@ -14,11 +14,13 @@ import {
   Package,
   MapPin,
   Zap,
-  ChevronDown
-} from 'lucide-react';
-import type { Device, DeviceStatus } from './DeviceList';
-import ConnectDesktopButton from '../remote/ConnectDesktopButton';
-import { ConfirmDialog } from '../shared/ConfirmDialog';
+  ChevronDown,
+} from "lucide-react";
+import type { Device, DeviceStatus } from "./DeviceList";
+import ConnectDesktopButton from "../remote/ConnectDesktopButton";
+import { ConfirmDialog } from "../shared/ConfirmDialog";
+import { useTranslation } from "react-i18next";
+import "../../lib/i18n";
 
 // Live sessions and agent commands (Connect Desktop, Run Script, Remote Tools,
 // Power, Reboot, Refresh, …) require an actively-connected agent — i.e.
@@ -29,28 +31,30 @@ import { ConfirmDialog } from '../shared/ConfirmDialog';
 // intermediate states don't fire doomed requests (#2078). Wake (Wake-on-LAN) is
 // the deliberate exception — it targets offline devices and stays reachable.
 function isDeviceOnline(device: Device): boolean {
-  return device.status === 'online';
+  return device.status === "online";
 }
 
 // Status-accurate tooltip for a disabled session/command button. The old copy
 // hard-coded "Device is offline", which was wrong for e.g. a quarantined or
 // updating device.
-function unavailableTitle(status: DeviceStatus): string {
+type DeviceTranslation = ReturnType<typeof useTranslation<"devices">>["t"];
+
+function unavailableTitle(status: DeviceStatus, t: DeviceTranslation): string {
   switch (status) {
-    case 'offline':
-      return 'Device is offline';
-    case 'maintenance':
-      return 'Device is in maintenance mode';
-    case 'decommissioned':
-      return 'Device is decommissioned';
-    case 'quarantined':
-      return 'Device is quarantined';
-    case 'updating':
-      return 'Device is updating';
-    case 'pending':
-      return 'Device is pending enrollment';
+    case "offline":
+      return t("deviceActions.unavailable.offline");
+    case "maintenance":
+      return t("deviceActions.unavailable.maintenance");
+    case "decommissioned":
+      return t("deviceActions.unavailable.decommissioned");
+    case "quarantined":
+      return t("deviceActions.unavailable.quarantined");
+    case "updating":
+      return t("deviceActions.unavailable.updating");
+    case "pending":
+      return t("deviceActions.unavailable.pending");
     default:
-      return 'Device is not online';
+      return t("deviceActions.unavailable.notOnline");
   }
 }
 
@@ -60,83 +64,113 @@ type DeviceActionsProps = {
   compact?: boolean;
 };
 
-type ModalType = 'none' | 'reboot' | 'reboot_safe_mode' | 'shutdown' | 'maintenance' | 'decommission' | 'clear-sessions';
+type ModalType =
+  | "none"
+  | "reboot"
+  | "reboot_safe_mode"
+  | "shutdown"
+  | "maintenance"
+  | "decommission"
+  | "clear-sessions";
 
 type ModalConfigEntry = {
   title: string;
   message: string;
   confirmLabel: string;
-  variant: 'destructive' | 'warning';
+  variant: "destructive" | "warning";
 };
 
 // Copy + variant for each confirm action. Rendered via the shared ConfirmDialog
 // (which owns the focus trap, Escape, scroll-lock, portal, and animation) rather
 // than a bespoke modal. `destructive` = irreversible/offline-inducing; everything
 // else is `warning`.
-function getModalConfig(type: Exclude<ModalType, 'none'>, device: Device): ModalConfigEntry {
+function getModalConfig(
+  type: Exclude<ModalType, "none">,
+  device: Device,
+  t: DeviceTranslation,
+): ModalConfigEntry {
   switch (type) {
-    case 'reboot':
+    case "reboot":
       return {
-        title: 'Reboot Device',
-        message: `Are you sure you want to reboot ${device.hostname}? This will temporarily disconnect the device and any active sessions.`,
-        confirmLabel: 'Reboot',
-        variant: 'warning',
+        title: t("deviceActions.confirm.reboot.title"),
+        message: t("deviceActions.confirm.reboot.message", {
+          hostname: device.hostname,
+        }),
+        confirmLabel: t("deviceActions.confirm.reboot.confirm"),
+        variant: "warning",
       };
-    case 'reboot_safe_mode':
+    case "reboot_safe_mode":
       return {
-        title: 'Reboot to Safe Mode',
-        message: `Are you sure you want to reboot ${device.hostname} into Safe Mode with Networking? The device will boot into a minimal Windows environment with network access. The agent will automatically clear the safe mode flag so the next reboot returns to normal mode.`,
-        confirmLabel: 'Reboot to Safe Mode',
-        variant: 'warning',
+        title: t("deviceActions.confirm.rebootSafeMode.title"),
+        message: t("deviceActions.confirm.rebootSafeMode.message", {
+          hostname: device.hostname,
+        }),
+        confirmLabel: t("deviceActions.confirm.rebootSafeMode.confirm"),
+        variant: "warning",
       };
-    case 'shutdown':
+    case "shutdown":
       return {
-        title: 'Shutdown Device',
-        message: `Are you sure you want to shutdown ${device.hostname}? The device will go offline and will need to be manually powered on again.`,
-        confirmLabel: 'Shutdown',
-        variant: 'destructive',
+        title: t("deviceActions.confirm.shutdown.title"),
+        message: t("deviceActions.confirm.shutdown.message", {
+          hostname: device.hostname,
+        }),
+        confirmLabel: t("deviceActions.confirm.shutdown.confirm"),
+        variant: "destructive",
       };
-    case 'maintenance':
-      return device.status === 'maintenance'
+    case "maintenance":
+      return device.status === "maintenance"
         ? {
-            title: 'Exit Maintenance Mode',
-            message: `Are you sure you want to exit maintenance mode for ${device.hostname}? Alerting and monitoring will resume.`,
-            confirmLabel: 'Exit Maintenance',
-            variant: 'warning',
+            title: t("deviceActions.confirm.exitMaintenance.title"),
+            message: t("deviceActions.confirm.exitMaintenance.message", {
+              hostname: device.hostname,
+            }),
+            confirmLabel: t("deviceActions.confirm.exitMaintenance.confirm"),
+            variant: "warning",
           }
         : {
-            title: 'Enter Maintenance Mode',
-            message: `Are you sure you want to put ${device.hostname} into maintenance mode? Alerting will be suppressed while in this mode.`,
-            confirmLabel: 'Enter Maintenance',
-            variant: 'warning',
+            title: t("deviceActions.confirm.enterMaintenance.title"),
+            message: t("deviceActions.confirm.enterMaintenance.message", {
+              hostname: device.hostname,
+            }),
+            confirmLabel: t("deviceActions.confirm.enterMaintenance.confirm"),
+            variant: "warning",
           };
-    case 'decommission':
+    case "decommission":
       return {
-        title: 'Decommission Device',
-        message: `Are you sure you want to decommission ${device.hostname}? This will permanently remove the device from your fleet. The agent will stop reporting and the device will no longer be monitored.`,
-        confirmLabel: 'Decommission',
-        variant: 'destructive',
+        title: t("deviceActions.confirm.decommission.title"),
+        message: t("deviceActions.confirm.decommission.message", {
+          hostname: device.hostname,
+        }),
+        confirmLabel: t("deviceActions.confirm.decommission.confirm"),
+        variant: "destructive",
       };
-    case 'clear-sessions':
+    case "clear-sessions":
       return {
-        title: 'Clear Sessions',
-        message: `End all active remote sessions for ${device.hostname}? This will disconnect any users currently connected via terminal, desktop, or file transfer.`,
-        confirmLabel: 'Clear Sessions',
-        variant: 'warning',
+        title: t("deviceActions.confirm.clearSessions.title"),
+        message: t("deviceActions.confirm.clearSessions.message", {
+          hostname: device.hostname,
+        }),
+        confirmLabel: t("deviceActions.confirm.clearSessions.confirm"),
+        variant: "warning",
       };
   }
 }
 
-export default function DeviceActions({ device, onAction, compact = false }: DeviceActionsProps) {
+export default function DeviceActions({
+  device,
+  onAction,
+  compact = false,
+}: DeviceActionsProps) {
+  const { t } = useTranslation("devices");
   const [menuOpen, setMenuOpen] = useState(false);
   const [powerMenuOpen, setPowerMenuOpen] = useState(false);
-  const [modalType, setModalType] = useState<ModalType>('none');
+  const [modalType, setModalType] = useState<ModalType>("none");
   const [loading, setLoading] = useState(false);
 
   // Session/command buttons are unavailable unless the agent is online. Wake
   // (Wake-on-LAN) is intentionally exempt and gated on `=== 'offline'`.
   const online = isDeviceOnline(device);
-  const offlineTitle = online ? undefined : unavailableTitle(device.status);
+  const offlineTitle = online ? undefined : unavailableTitle(device.status, t);
 
   const closeMenus = () => {
     setMenuOpen(false);
@@ -144,7 +178,14 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
   };
 
   const handleAction = async (action: string) => {
-    if (action === 'reboot' || action === 'reboot_safe_mode' || action === 'shutdown' || action === 'maintenance' || action === 'decommission' || action === 'clear-sessions') {
+    if (
+      action === "reboot" ||
+      action === "reboot_safe_mode" ||
+      action === "shutdown" ||
+      action === "maintenance" ||
+      action === "decommission" ||
+      action === "clear-sessions"
+    ) {
       setModalType(action);
       closeMenus();
       return;
@@ -160,12 +201,12 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
   };
 
   const handleConfirm = async () => {
-    if (modalType === 'none') return;
+    if (modalType === "none") return;
 
     setLoading(true);
     try {
       await onAction?.(modalType, device);
-      setModalType('none');
+      setModalType("none");
     } finally {
       setLoading(false);
     }
@@ -173,11 +214,12 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
 
   const closeModal = () => {
     if (!loading) {
-      setModalType('none');
+      setModalType("none");
     }
   };
 
-  const modalCfg = modalType === 'none' ? null : getModalConfig(modalType, device);
+  const modalCfg =
+    modalType === "none" ? null : getModalConfig(modalType, device, t);
 
   if (compact) {
     return (
@@ -194,105 +236,122 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
             <div className="absolute right-0 top-full z-10 mt-1 w-48 rounded-md border bg-card shadow-lg">
               <button
                 type="button"
-                onClick={() => handleAction('run-script')}
+                onClick={() => handleAction("run-script")}
                 disabled={!online}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Play className="h-4 w-4" />
-                Run Script
+                {t("deviceActions.runScript")}{" "}
               </button>
-              <ConnectDesktopButton deviceId={device.id} compact disabled={!online} disabledTitle={offlineTitle} isHeadless={device.isHeadless} desktopAccess={device.desktopAccess} remoteAccessPolicy={device.remoteAccessPolicy} />
+              <ConnectDesktopButton
+                deviceId={device.id}
+                compact
+                disabled={!online}
+                disabledTitle={offlineTitle}
+                isHeadless={device.isHeadless}
+                desktopAccess={device.desktopAccess}
+                remoteAccessPolicy={device.remoteAccessPolicy}
+              />
               <button
                 type="button"
-                onClick={() => handleAction('remote-tools')}
-                disabled={!online || device.remoteAccessPolicy?.remoteTools === false}
-                title={offlineTitle ?? (device.remoteAccessPolicy?.remoteTools === false ? `Remote tools disabled by policy${device.remoteAccessPolicy?.policyName ? ` "${device.remoteAccessPolicy.policyName}"` : ''}` : undefined)}
+                onClick={() => handleAction("remote-tools")}
+                disabled={
+                  !online || device.remoteAccessPolicy?.remoteTools === false
+                }
+                title={
+                  offlineTitle ??
+                  (device.remoteAccessPolicy?.remoteTools === false
+                    ? `Remote tools disabled by policy${device.remoteAccessPolicy?.policyName ? ` "${device.remoteAccessPolicy.policyName}"` : ""}`
+                    : undefined)
+                }
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Wrench className="h-4 w-4" />
-                Remote Tools
+                {t("deviceActions.remoteTools")}{" "}
               </button>
               <button
                 type="button"
-                onClick={() => handleAction('refresh')}
+                onClick={() => handleAction("refresh")}
                 disabled={!online}
-                title="Re-run agent inventory collectors so the UI sees fresh hardware/software/network data without waiting for the next heartbeat cycle"
+                title={t("deviceActions.reRunAgentInventoryCollectorsSo")}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <RefreshCw className="h-4 w-4" />
-                Refresh
+                {t("deviceActions.refresh")}{" "}
               </button>
               <button
                 type="button"
-                onClick={() => handleAction('reboot')}
+                onClick={() => handleAction("reboot")}
                 disabled={!online}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <RotateCcw className="h-4 w-4" />
-                Reboot
+                {t("deviceActions.reboot")}{" "}
               </button>
-              {device.status === 'offline' && (
+              {device.status === "offline" && (
                 <button
                   type="button"
-                  onClick={() => handleAction('wake')}
+                  onClick={() => handleAction("wake")}
                   className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
                 >
                   <Zap className="h-4 w-4" />
-                  Wake
+                  {t("deviceActions.wake")}{" "}
                 </button>
               )}
-              {device.os === 'windows' && (
+              {device.os === "windows" && (
                 <button
                   type="button"
-                  onClick={() => handleAction('reboot_safe_mode')}
+                  onClick={() => handleAction("reboot_safe_mode")}
                   disabled={!online}
                   className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-warning hover:bg-warning/10 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <Shield className="h-4 w-4" />
-                  Reboot to Safe Mode
+                  {t("deviceActions.rebootToSafeMode")}{" "}
                 </button>
               )}
               <button
                 type="button"
-                onClick={() => handleAction('deploy-software')}
+                onClick={() => handleAction("deploy-software")}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
               >
                 <Package className="h-4 w-4" />
-                Deploy Software
+                {t("deviceActions.deploySoftware")}{" "}
               </button>
               <button
                 type="button"
-                onClick={() => handleAction('clear-sessions')}
+                onClick={() => handleAction("clear-sessions")}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
               >
                 <XCircle className="h-4 w-4" />
-                Clear Sessions
+                {t("deviceActions.clearSessions")}{" "}
               </button>
               <hr className="my-1" />
               <button
                 type="button"
-                onClick={() => handleAction('change-site')}
+                onClick={() => handleAction("change-site")}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
               >
                 <MapPin className="h-4 w-4" />
-                Change Site
+                {t("deviceActions.changeSite")}{" "}
               </button>
               <button
                 type="button"
-                onClick={() => handleAction('maintenance')}
+                onClick={() => handleAction("maintenance")}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
               >
                 <Shield className="h-4 w-4" />
-                {device.status === 'maintenance' ? 'Exit Maintenance' : 'Enter Maintenance'}
+                {device.status === "maintenance"
+                  ? t("deviceActions.exitMaintenance")
+                  : t("deviceActions.enterMaintenance")}
               </button>
               <hr className="my-1" />
               <button
                 type="button"
-                onClick={() => handleAction('decommission')}
+                onClick={() => handleAction("decommission")}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
               >
                 <Trash2 className="h-4 w-4" />
-                Decommission
+                {t("deviceActions.decommission")}{" "}
               </button>
             </div>
           )}
@@ -320,43 +379,62 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
         {/* When the device is offline, Wake is the one action that matters —
             promote it to a primary header button instead of burying it in the
             Power dropdown, where every other action is disabled anyway. */}
-        {device.status === 'offline' && (
+        {device.status === "offline" && (
           <button
             type="button"
-            onClick={() => handleAction('wake')}
+            onClick={() => handleAction("wake")}
             disabled={loading}
-            title="Send a Wake-on-LAN packet via an online peer agent on the device's LAN"
+            title={t("deviceActions.sendAWakeOnLanPacket")}
             className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
           >
             <Zap className="h-4 w-4" />
-            Wake
+            {t("deviceActions.wake")}{" "}
           </button>
         )}
         <button
           type="button"
-          onClick={() => handleAction('run-script')}
+          onClick={() => handleAction("run-script")}
           disabled={!online || loading}
           title={offlineTitle}
           className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
         >
           <Play className="h-4 w-4" />
-          Run Script
+          {t("deviceActions.runScript")}{" "}
         </button>
-        <ConnectDesktopButton deviceId={device.id} disabled={!online} disabledTitle={offlineTitle} isHeadless={device.isHeadless} desktopAccess={device.desktopAccess} remoteAccessPolicy={device.remoteAccessPolicy} />
+        <ConnectDesktopButton
+          deviceId={device.id}
+          disabled={!online}
+          disabledTitle={offlineTitle}
+          isHeadless={device.isHeadless}
+          desktopAccess={device.desktopAccess}
+          remoteAccessPolicy={device.remoteAccessPolicy}
+        />
         <button
           type="button"
-          onClick={() => handleAction('remote-tools')}
-          disabled={!online || loading || device.remoteAccessPolicy?.remoteTools === false}
-          title={offlineTitle ?? (device.remoteAccessPolicy?.remoteTools === false ? `Remote tools disabled by policy${device.remoteAccessPolicy?.policyName ? ` "${device.remoteAccessPolicy.policyName}"` : ''}` : undefined)}
+          onClick={() => handleAction("remote-tools")}
+          disabled={
+            !online ||
+            loading ||
+            device.remoteAccessPolicy?.remoteTools === false
+          }
+          title={
+            offlineTitle ??
+            (device.remoteAccessPolicy?.remoteTools === false
+              ? `Remote tools disabled by policy${device.remoteAccessPolicy?.policyName ? ` "${device.remoteAccessPolicy.policyName}"` : ""}`
+              : undefined)
+          }
           className="flex items-center gap-2 rounded-md border bg-background px-4 py-2 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
         >
           <Wrench className="h-4 w-4" />
-          Remote Tools
+          {t("deviceActions.remoteTools")}{" "}
         </button>
         <div className="relative">
           <button
             type="button"
-            onClick={() => { setPowerMenuOpen(!powerMenuOpen); setMenuOpen(false); }}
+            onClick={() => {
+              setPowerMenuOpen(!powerMenuOpen);
+              setMenuOpen(false);
+            }}
             disabled={!online || loading}
             title={offlineTitle}
             aria-haspopup="true"
@@ -364,39 +442,39 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
             className="flex items-center gap-2 rounded-md border bg-background px-4 py-2 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
           >
             <Power className="h-4 w-4" />
-            Power
+            {t("deviceActions.power")}{" "}
             <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
           </button>
           {powerMenuOpen && (
             <div className="absolute right-0 top-full z-10 mt-1 w-48 rounded-md border bg-card shadow-lg">
               <button
                 type="button"
-                onClick={() => handleAction('reboot')}
+                onClick={() => handleAction("reboot")}
                 disabled={!online}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <RotateCcw className="h-4 w-4" />
-                Reboot
+                {t("deviceActions.reboot")}{" "}
               </button>
-              {device.os === 'windows' && (
+              {device.os === "windows" && (
                 <button
                   type="button"
-                  onClick={() => handleAction('reboot_safe_mode')}
+                  onClick={() => handleAction("reboot_safe_mode")}
                   disabled={!online}
                   className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-warning hover:bg-warning/10 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <Shield className="h-4 w-4" />
-                  Reboot to Safe Mode
+                  {t("deviceActions.rebootToSafeMode")}{" "}
                 </button>
               )}
               <button
                 type="button"
-                onClick={() => handleAction('shutdown')}
+                onClick={() => handleAction("shutdown")}
                 disabled={!online}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Power className="h-4 w-4" />
-                Shutdown
+                {t("deviceActions.shutdown")}{" "}
               </button>
             </div>
           )}
@@ -404,7 +482,10 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
         <div className="relative">
           <button
             type="button"
-            onClick={() => { setMenuOpen(!menuOpen); setPowerMenuOpen(false); }}
+            onClick={() => {
+              setMenuOpen(!menuOpen);
+              setPowerMenuOpen(false);
+            }}
             disabled={loading}
             className="flex h-10 w-10 items-center justify-center rounded-md border bg-background transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
           >
@@ -414,62 +495,64 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
             <div className="absolute right-0 top-full z-10 mt-1 w-48 rounded-md border bg-card shadow-lg">
               <button
                 type="button"
-                onClick={() => handleAction('refresh')}
+                onClick={() => handleAction("refresh")}
                 disabled={!online || loading}
-                title="Re-run agent inventory collectors so the UI sees fresh hardware/software/network data without waiting for the next heartbeat cycle"
+                title={t("deviceActions.reRunAgentInventoryCollectorsSo")}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <RefreshCw className="h-4 w-4" />
-                Refresh
+                {t("deviceActions.refresh")}{" "}
               </button>
               <button
                 type="button"
-                onClick={() => handleAction('maintenance')}
+                onClick={() => handleAction("maintenance")}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
               >
                 <Shield className="h-4 w-4" />
-                {device.status === 'maintenance' ? 'Exit Maintenance' : 'Enter Maintenance'}
+                {device.status === "maintenance"
+                  ? t("deviceActions.exitMaintenance")
+                  : t("deviceActions.enterMaintenance")}
               </button>
               <button
                 type="button"
-                onClick={() => handleAction('deploy-software')}
+                onClick={() => handleAction("deploy-software")}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
               >
                 <Package className="h-4 w-4" />
-                Deploy Software
+                {t("deviceActions.deploySoftware")}{" "}
               </button>
               <button
                 type="button"
-                onClick={() => handleAction('clear-sessions')}
+                onClick={() => handleAction("clear-sessions")}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
               >
                 <XCircle className="h-4 w-4" />
-                Clear Sessions
+                {t("deviceActions.clearSessions")}{" "}
               </button>
               <button
                 type="button"
-                onClick={() => handleAction('change-site')}
+                onClick={() => handleAction("change-site")}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
               >
                 <MapPin className="h-4 w-4" />
-                Change Site
+                {t("deviceActions.changeSite")}{" "}
               </button>
               <button
                 type="button"
-                onClick={() => handleAction('settings')}
+                onClick={() => handleAction("settings")}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
               >
                 <Settings className="h-4 w-4" />
-                Device Settings
+                {t("deviceActions.deviceSettings")}{" "}
               </button>
               <hr className="my-1" />
               <button
                 type="button"
-                onClick={() => handleAction('decommission')}
+                onClick={() => handleAction("decommission")}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
               >
                 <Trash2 className="h-4 w-4" />
-                Decommission
+                {t("deviceActions.decommission")}{" "}
               </button>
             </div>
           )}

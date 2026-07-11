@@ -12,6 +12,7 @@ import {
   Undo2,
   Ban,
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 
@@ -57,21 +58,21 @@ type DevicePlaybookHistoryProps = {
 };
 
 const statusConfig: Record<string, { label: string; icon: typeof CheckCircle; color: string }> = {
-  pending: { label: 'Pending', icon: Clock, color: 'text-gray-600' },
-  running: { label: 'Running', icon: Loader2, color: 'text-blue-600' },
-  waiting: { label: 'Waiting', icon: Clock, color: 'text-yellow-600' },
-  completed: { label: 'Completed', icon: CheckCircle, color: 'text-green-600' },
-  failed: { label: 'Failed', icon: XCircle, color: 'text-red-600' },
-  rolled_back: { label: 'Rolled Back', icon: Undo2, color: 'text-orange-600' },
-  cancelled: { label: 'Cancelled', icon: Ban, color: 'text-gray-500' },
+  pending: { label: 'devicePlaybookHistory.status.pending', icon: Clock, color: 'text-gray-600' },
+  running: { label: 'devicePlaybookHistory.status.running', icon: Loader2, color: 'text-blue-600' },
+  waiting: { label: 'devicePlaybookHistory.status.waiting', icon: Clock, color: 'text-yellow-600' },
+  completed: { label: 'devicePlaybookHistory.status.completed', icon: CheckCircle, color: 'text-green-600' },
+  failed: { label: 'devicePlaybookHistory.status.failed', icon: XCircle, color: 'text-red-600' },
+  rolled_back: { label: 'devicePlaybookHistory.status.rolledBack', icon: Undo2, color: 'text-orange-600' },
+  cancelled: { label: 'devicePlaybookHistory.status.cancelled', icon: Ban, color: 'text-gray-500' },
 };
 
 const stepStatusConfig: Record<string, { label: string; color: string; bg: string }> = {
-  pending: { label: 'Pending', color: 'text-gray-600', bg: 'bg-gray-100' },
-  running: { label: 'Running', color: 'text-blue-600', bg: 'bg-blue-50' },
-  completed: { label: 'Done', color: 'text-green-600', bg: 'bg-green-50' },
-  failed: { label: 'Failed', color: 'text-red-600', bg: 'bg-red-50' },
-  skipped: { label: 'Skipped', color: 'text-gray-400', bg: 'bg-gray-50' },
+  pending: { label: 'devicePlaybookHistory.stepStatus.pending', color: 'text-gray-600', bg: 'bg-gray-100' },
+  running: { label: 'devicePlaybookHistory.stepStatus.running', color: 'text-blue-600', bg: 'bg-blue-50' },
+  completed: { label: 'devicePlaybookHistory.stepStatus.completed', color: 'text-green-600', bg: 'bg-green-50' },
+  failed: { label: 'devicePlaybookHistory.stepStatus.failed', color: 'text-red-600', bg: 'bg-red-50' },
+  skipped: { label: 'devicePlaybookHistory.stepStatus.skipped', color: 'text-gray-400', bg: 'bg-gray-50' },
 };
 
 const categoryStyles: Record<string, string> = {
@@ -114,6 +115,7 @@ function ExecutionRow({
   exec: PlaybookExecution;
   timezone?: string;
 }) {
+  const { t } = useTranslation('devices');
   const [expanded, setExpanded] = useState(false);
   const { execution, playbook } = exec;
   const config = statusConfig[execution.status] ?? statusConfig.pending;
@@ -132,18 +134,18 @@ function ExecutionRow({
         />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <span className="font-medium truncate">{playbook?.name ?? 'Unknown Playbook'}</span>
+            <span className="font-medium truncate">{playbook?.name ?? t('devicePlaybookHistory.unknownPlaybook')}</span>
             <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium ${catStyle}`}>
               {playbook?.category ?? '—'}
             </span>
           </div>
           <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
             <span>{formatDateTime(execution.createdAt, timezone)}</span>
-            <span>Duration: {computeDuration(execution.startedAt, execution.completedAt)}</span>
-            <span>Triggered by: {execution.triggeredBy}</span>
+            <span>{t('devicePlaybookHistory.duration', { duration: computeDuration(execution.startedAt, execution.completedAt) })}</span>
+            <span>{t('devicePlaybookHistory.triggeredBy', { user: execution.triggeredBy })}</span>
           </div>
         </div>
-        <span className={`text-xs font-medium ${config.color}`}>{config.label}</span>
+        <span className={`text-xs font-medium ${config.color}`}>{t(config.label)}</span>
         {expanded ? (
           <ChevronUp className="h-4 w-4 shrink-0 text-muted-foreground" />
         ) : (
@@ -163,13 +165,13 @@ function ExecutionRow({
           {execution.rollbackExecuted && (
             <div className="flex items-center gap-2 rounded-md bg-orange-50 border border-orange-200 p-2 text-sm text-orange-700">
               <Undo2 className="h-4 w-4 shrink-0" />
-              Rollback was executed
+              {t('devicePlaybookHistory.rollbackExecuted')}
             </div>
           )}
 
           {execution.steps.length > 0 ? (
             <div className="space-y-1">
-              <p className="text-xs font-medium text-muted-foreground mb-2">Steps</p>
+              <p className="text-xs font-medium text-muted-foreground mb-2">{t('devicePlaybookHistory.steps')}</p>
               {execution.steps.map((step) => {
                 const sc = stepStatusConfig[step.status] ?? stepStatusConfig.pending;
                 return (
@@ -189,13 +191,13 @@ function ExecutionRow({
                     <span className="text-xs text-muted-foreground">
                       {formatDurationMs(step.durationMs)}
                     </span>
-                    <span className={`text-xs font-medium ${sc.color}`}>{sc.label}</span>
+                    <span className={`text-xs font-medium ${sc.color}`}>{t(sc.label)}</span>
                   </div>
                 );
               })}
             </div>
           ) : (
-            <p className="text-sm text-muted-foreground">No step results recorded.</p>
+            <p className="text-sm text-muted-foreground">{t('devicePlaybookHistory.noStepResults')}</p>
           )}
         </div>
       )}
@@ -204,6 +206,7 @@ function ExecutionRow({
 }
 
 export default function DevicePlaybookHistory({ deviceId, timezone }: DevicePlaybookHistoryProps) {
+  const { t } = useTranslation('devices');
   const [executions, setExecutions] = useState<PlaybookExecution[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -232,7 +235,7 @@ export default function DevicePlaybookHistory({ deviceId, timezone }: DevicePlay
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold flex items-center gap-2">
           <PlayCircle className="h-5 w-5" />
-          Playbook History
+          {t('devicePlaybookHistory.title')}
         </h2>
         <button
           type="button"
@@ -241,7 +244,7 @@ export default function DevicePlaybookHistory({ deviceId, timezone }: DevicePlay
           className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted transition disabled:opacity-50"
         >
           <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
-          Refresh
+          {t('common:actions.refresh')}
         </button>
       </div>
 
@@ -255,16 +258,16 @@ export default function DevicePlaybookHistory({ deviceId, timezone }: DevicePlay
       {loading && executions.length === 0 ? (
         <div className="flex items-center justify-center py-12 text-muted-foreground">
           <Loader2 className="h-5 w-5 animate-spin mr-2" />
-          Loading playbook history...
+          {t('devicePlaybookHistory.loading')}
         </div>
       ) : executions.length === 0 ? (
         <div className="rounded-lg border bg-card p-8 text-center">
           <PlayCircle className="mx-auto h-10 w-10 text-muted-foreground/40" />
           <p className="mt-3 text-sm text-muted-foreground">
-            No playbook executions found for this device.
+            {t('devicePlaybookHistory.empty')}
           </p>
           <p className="mt-1 text-xs text-muted-foreground/70">
-            Playbooks can be triggered via the AI assistant to automate remediation tasks.
+            {t('devicePlaybookHistory.emptyHelp')}
           </p>
         </div>
       ) : (

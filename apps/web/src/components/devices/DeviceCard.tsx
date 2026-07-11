@@ -1,9 +1,19 @@
-import { useEffect, useState } from 'react';
-import { Monitor, MoreVertical, Terminal, RotateCcw, FileCode, Settings, Trash2 } from 'lucide-react';
-import type { Device, DeviceStatus, OSType } from './DeviceList';
-import { fetchWithAuth } from '../../stores/auth';
-import { formatLastSeen } from '@/lib/formatTime';
-import { asRecord, toPercentNullable } from '@/lib/deviceUtils';
+import { useEffect, useState } from "react";
+import {
+  Monitor,
+  MoreVertical,
+  Terminal,
+  RotateCcw,
+  FileCode,
+  Settings,
+  Trash2,
+} from "lucide-react";
+import type { Device, DeviceStatus, OSType } from "./DeviceList";
+import { fetchWithAuth } from "../../stores/auth";
+import { formatLastSeen } from "@/lib/formatTime";
+import { asRecord, toPercentNullable } from "@/lib/deviceUtils";
+import { useTranslation } from "react-i18next";
+import "../../lib/i18n";
 
 type DeviceCardProps = {
   device: Device;
@@ -18,13 +28,13 @@ type MetricHistoryPoint = {
 };
 
 const statusColors: Record<DeviceStatus, string> = {
-  online: 'bg-success',
-  offline: 'bg-destructive',
-  maintenance: 'bg-warning',
-  decommissioned: 'bg-muted-foreground',
-  quarantined: 'bg-warning',
-  updating: 'bg-info',
-  pending: 'bg-muted-foreground'
+  online: "bg-success",
+  offline: "bg-destructive",
+  maintenance: "bg-warning",
+  decommissioned: "bg-muted-foreground",
+  quarantined: "bg-warning",
+  updating: "bg-info",
+  pending: "bg-muted-foreground",
 };
 
 const osIcons: Record<OSType, React.ReactNode> = {
@@ -42,20 +52,19 @@ const osIcons: Record<OSType, React.ReactNode> = {
     <svg className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
       <path d="M12.504 0c-.155 0-.315.008-.48.021-4.226.333-3.105 4.807-3.17 6.298-.076 1.092-.3 1.953-1.05 3.02-.885 1.051-2.127 2.75-2.716 4.521-.278.832-.41 1.684-.287 2.489a.424.424 0 00-.11.135c-.26.268-.45.6-.663.839-.199.199-.485.267-.797.4-.313.136-.658.269-.864.68-.09.189-.136.394-.132.602 0 .199.027.4.055.536.058.399.116.728.04.97-.249.68-.28 1.145-.106 1.484.174.334.535.47.94.601.81.2 1.91.135 2.774.6.926.466 1.866.67 2.616.47.526-.116.97-.464 1.208-.946.587-.003 1.23-.269 2.26-.334.699-.058 1.574.267 2.577.2.025.134.063.198.114.333l.003.003c.391.778 1.113 1.132 1.884 1.071.771-.06 1.592-.536 2.257-1.306.631-.765 1.683-1.084 2.378-1.503.348-.199.629-.469.649-.853.023-.4-.2-.811-.714-1.376v-.097l-.003-.003c-.17-.2-.25-.535-.338-.926-.085-.401-.182-.786-.492-1.046h-.003c-.059-.054-.123-.067-.188-.135a.357.357 0 00-.19-.064c.431-1.278.264-2.55-.173-3.694-.533-1.41-1.465-2.638-2.175-3.483-.796-1.005-1.576-1.957-1.56-3.368.026-2.152.236-6.133-3.544-6.139zm.529 3.405h.013c.213 0 .396.062.584.198.19.135.33.332.438.533.105.259.158.459.166.724 0-.02.006-.04.006-.06v.105a.086.086 0 01-.004-.021l-.004-.024a1.807 1.807 0 01-.15.706.953.953 0 01-.213.335.71.71 0 00-.088-.042c-.104-.045-.198-.064-.284-.133a1.312 1.312 0 00-.22-.066c.05-.06.146-.133.183-.198.053-.128.082-.264.088-.402v-.02a1.21 1.21 0 00-.061-.4c-.045-.134-.101-.2-.183-.333-.084-.066-.167-.132-.267-.132h-.016c-.093 0-.176.03-.262.132a.8.8 0 00-.205.334 1.18 1.18 0 00-.09.4v.019c.002.089.008.179.02.267-.193-.067-.438-.135-.607-.202a1.635 1.635 0 01-.018-.2v-.02a1.772 1.772 0 01.15-.768c.082-.22.232-.406.43-.533a.985.985 0 01.594-.2zm-2.962.059h.036c.142 0 .27.048.399.135.146.129.264.288.344.465.09.199.14.4.153.667v.004c.007.134.006.2-.002.266v.08c-.03.007-.056.018-.083.024-.152.055-.274.135-.393.2.012-.09.013-.18.003-.267v-.015c-.012-.133-.04-.2-.082-.333a.613.613 0 00-.166-.267.248.248 0 00-.183-.064h-.021c-.071.006-.13.04-.186.132a.552.552 0 00-.12.27.944.944 0 00-.023.33v.015c.012.135.037.2.08.334.046.134.098.2.166.268.01.009.02.018.034.024-.07.057-.117.07-.176.136a.304.304 0 01-.131.068 2.62 2.62 0 01-.275-.402 1.772 1.772 0 01-.155-.667 1.759 1.759 0 01.08-.668 1.43 1.43 0 01.283-.535c.128-.133.26-.2.418-.2zm1.37 1.706c.332 0 .733.065 1.216.399.293.2.523.269 1.052.468h.003c.255.136.405.266.478.399v-.131a.571.571 0 01.016.47c-.123.31-.516.643-1.063.842v.002c-.268.135-.501.333-.775.465-.276.135-.588.292-1.012.267a1.139 1.139 0 01-.448-.067 3.566 3.566 0 01-.322-.198c-.195-.135-.363-.332-.612-.465v-.005h-.005c-.4-.246-.616-.512-.686-.71-.07-.268-.005-.47.193-.6.224-.135.38-.271.483-.336.104-.074.143-.102.176-.131h.002v-.003c.169-.202.436-.47.839-.601.139-.036.294-.065.466-.065zm2.8 2.142c.358 1.417 1.196 3.475 1.735 4.473.286.534.855 1.659 1.102 3.024.156-.005.33.018.513.064.646-1.671-.546-3.467-1.089-3.966-.22-.2-.232-.335-.123-.335.59.534 1.365 1.572 1.646 2.757.13.535.16 1.104.021 1.67.067.028.135.06.205.067 1.032.534 1.413.938 1.23 1.537v-.025c-.06.21-.18.333-.402.398-.88.4-1.713.33-2.198-.467-.232-.4-.39-.868-.422-1.402-.04-.533.04-1.068.208-1.537.095-.134.18-.267.263-.399l-.008-.003c-.012-.133-.034-.266-.072-.466-.14-.465-.27-.867-.51-1.067-.106-.067-.241-.135-.392-.135-.282 0-.373.333-.478.535-.105.2-.18.667-.162.868.026.2.13.4.26.533.26.4.38.801.456 1.27.075.467.094.935-.013 1.334-.032.133-.06.267-.108.4-.154.467-.431.87-.804 1.136-.186.133-.4.2-.618.267a1.895 1.895 0 01-.765.065c-.667-.135-1.187-.6-1.12-1.329.066-.667.504-1.135.938-1.402.434-.268.932-.402 1.032-.668v-.003l.006-.003c-.066-.2-.133-.4-.2-.467-.133-.066-.267-.132-.4-.132h-.006c-.127 0-.193.066-.32.198-.127.135-.267.269-.454.4-.187.134-.4.2-.601.2-.533 0-.933-.467-1.067-.935a1.373 1.373 0 01-.009-.866c.094-.4.36-.8.53-1.067.181-.27.308-.467.332-.733.012-.133-.02-.267-.066-.4-.079-.133-.181-.333-.347-.533-.332-.4-.666-.866-.873-1.333-.326-.667-.44-1.206-.49-1.54-.04-.266-.033-.467-.003-.333l.003.003c.04.2.247.667.459 1.067.247.467.52.8.907 1.002.24.133.567.2.974.135.4-.067.866-.268 1.333-.6.467-.334.934-.733 1.467-1.003.533-.267 1.133-.467 1.8-.467.667 0 1.267.2 1.733.533z" />
     </svg>
-  )
+  ),
 };
 
 function parseMetricHistory(payload: unknown): MetricHistoryPoint[] {
   const rawPayload = asRecord(payload);
   const directData = rawPayload ? rawPayload.data : null;
-  const metricsArray: unknown[] =
-    Array.isArray(directData)
-      ? directData
-      : Array.isArray(rawPayload?.metrics)
-        ? rawPayload.metrics as unknown[]
-        : Array.isArray(asRecord(directData)?.metrics)
-          ? asRecord(directData)!.metrics as unknown[]
-          : [];
+  const metricsArray: unknown[] = Array.isArray(directData)
+    ? directData
+    : Array.isArray(rawPayload?.metrics)
+      ? (rawPayload.metrics as unknown[])
+      : Array.isArray(asRecord(directData)?.metrics)
+        ? (asRecord(directData)!.metrics as unknown[])
+        : [];
 
   const parsed: MetricHistoryPoint[] = [];
 
@@ -69,7 +78,7 @@ function parseMetricHistory(payload: unknown): MetricHistoryPoint[] {
 
     parsed.push({
       cpu: cpu ?? 0,
-      ram: ram ?? 0
+      ram: ram ?? 0,
     });
   }
 
@@ -77,6 +86,7 @@ function parseMetricHistory(payload: unknown): MetricHistoryPoint[] {
 }
 
 function MiniSparkline({ data, testId }: { data: number[]; testId: string }) {
+  const { t } = useTranslation("devices");
   const max = Math.max(...data, 100);
   const min = Math.min(...data, 0);
   const range = max - min || 1;
@@ -87,10 +97,15 @@ function MiniSparkline({ data, testId }: { data: number[]; testId: string }) {
       const y = 100 - ((value - min) / range) * 100;
       return `${x},${y}`;
     })
-    .join(' ');
+    .join(" ");
 
   return (
-    <svg data-testid={testId} className="h-8 w-full" viewBox="0 0 100 100" preserveAspectRatio="none">
+    <svg
+      data-testid={testId}
+      className="h-8 w-full"
+      viewBox="0 0 100 100"
+      preserveAspectRatio="none"
+    >
       <polyline
         fill="none"
         stroke="currentColor"
@@ -101,23 +116,34 @@ function MiniSparkline({ data, testId }: { data: number[]; testId: string }) {
   );
 }
 
-export default function DeviceCard({ device, timezone, onClick, onAction }: DeviceCardProps) {
+export default function DeviceCard({
+  device,
+  timezone,
+  onClick,
+  onAction,
+}: DeviceCardProps) {
+  const { t } = useTranslation("devices");
   const [menuOpen, setMenuOpen] = useState(false);
-  const [historyState, setHistoryState] = useState<'loading' | 'ready' | 'empty' | 'error'>('loading');
+  const [historyState, setHistoryState] = useState<
+    "loading" | "ready" | "empty" | "error"
+  >("loading");
   const [metricHistory, setMetricHistory] = useState<MetricHistoryPoint[]>([]);
 
   // Use provided timezone or browser default
-  const effectiveTimezone = timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const effectiveTimezone =
+    timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
 
   useEffect(() => {
     let isCancelled = false;
 
     const loadHistory = async () => {
-      setHistoryState('loading');
+      setHistoryState("loading");
       try {
-        const response = await fetchWithAuth(`/devices/${device.id}/metrics?range=1h`);
+        const response = await fetchWithAuth(
+          `/devices/${device.id}/metrics?range=1h`,
+        );
         if (!response.ok) {
-          throw new Error('Failed to fetch device metric history');
+          throw new Error("Failed to fetch device metric history");
         }
 
         const payload = await response.json();
@@ -126,16 +152,16 @@ export default function DeviceCard({ device, timezone, onClick, onAction }: Devi
 
         if (parsed.length === 0) {
           setMetricHistory([]);
-          setHistoryState('empty');
+          setHistoryState("empty");
           return;
         }
 
         setMetricHistory(parsed);
-        setHistoryState('ready');
+        setHistoryState("ready");
       } catch {
         if (isCancelled) return;
         setMetricHistory([]);
-        setHistoryState('error');
+        setHistoryState("error");
       }
     };
 
@@ -146,12 +172,10 @@ export default function DeviceCard({ device, timezone, onClick, onAction }: Devi
     };
   }, [device.id]);
 
-  const cpuHistory = historyState === 'ready'
-    ? metricHistory.map(point => point.cpu)
-    : [];
-  const ramHistory = historyState === 'ready'
-    ? metricHistory.map(point => point.ram)
-    : [];
+  const cpuHistory =
+    historyState === "ready" ? metricHistory.map((point) => point.cpu) : [];
+  const ramHistory =
+    historyState === "ready" ? metricHistory.map((point) => point.ram) : [];
 
   return (
     <div
@@ -166,8 +190,13 @@ export default function DeviceCard({ device, timezone, onClick, onAction }: Devi
           <div>
             <div className="flex items-center gap-2">
               <h3 className="font-medium">{device.hostname}</h3>
-              <span className={`h-2 w-2 rounded-full ${statusColors[device.status]}`} aria-hidden="true" />
-              <span className="sr-only">{device.status.charAt(0).toUpperCase() + device.status.slice(1)}</span>
+              <span
+                className={`h-2 w-2 rounded-full ${statusColors[device.status]}`}
+                aria-hidden="true"
+              />
+              <span className="sr-only">
+                {device.status.charAt(0).toUpperCase() + device.status.slice(1)}
+              </span>
             </div>
             <p className="text-xs text-muted-foreground">{device.osVersion}</p>
           </div>
@@ -175,7 +204,7 @@ export default function DeviceCard({ device, timezone, onClick, onAction }: Devi
         <div className="relative">
           <button
             type="button"
-            onClick={e => {
+            onClick={(e) => {
               e.stopPropagation();
               setMenuOpen(!menuOpen);
             }}
@@ -188,78 +217,78 @@ export default function DeviceCard({ device, timezone, onClick, onAction }: Devi
             <div className="absolute right-0 top-full z-10 mt-1 w-48 rounded-md border bg-card shadow-lg">
               <button
                 type="button"
-                onClick={e => {
+                onClick={(e) => {
                   e.stopPropagation();
-                  onAction?.('terminal', device);
+                  onAction?.("terminal", device);
                   setMenuOpen(false);
                 }}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
               >
                 <Terminal className="h-4 w-4" />
-                Remote Terminal
+                {t("deviceCard.remoteTerminal")}{" "}
               </button>
               <button
                 type="button"
-                onClick={e => {
+                onClick={(e) => {
                   e.stopPropagation();
-                  onAction?.('run-script', device);
+                  onAction?.("run-script", device);
                   setMenuOpen(false);
                 }}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
               >
                 <FileCode className="h-4 w-4" />
-                Run Script
+                {t("deviceCard.runScript")}{" "}
               </button>
               <button
                 type="button"
-                onClick={e => {
+                onClick={(e) => {
                   e.stopPropagation();
-                  onAction?.('reboot', device);
+                  onAction?.("reboot", device);
                   setMenuOpen(false);
                 }}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
               >
                 <RotateCcw className="h-4 w-4" />
-                Reboot
+                {t("deviceCard.reboot")}{" "}
               </button>
               <button
                 type="button"
-                onClick={e => {
+                onClick={(e) => {
                   e.stopPropagation();
-                  onAction?.('settings', device);
+                  onAction?.("settings", device);
                   setMenuOpen(false);
                 }}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
               >
                 <Settings className="h-4 w-4" />
-                Settings
+                {t("deviceCard.settings")}{" "}
               </button>
               <hr className="my-1" />
-              {device.status === 'decommissioned' ? (
+              {device.status === "decommissioned" ? (
                 <button
                   type="button"
-                  onClick={e => {
+                  onClick={(e) => {
                     e.stopPropagation();
-                    onAction?.('restore', device);
+                    onAction?.("restore", device);
                     setMenuOpen(false);
                   }}
                   className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-success hover:bg-success/10"
                 >
                   <RotateCcw className="h-4 w-4" />
-                  Restore
+                  {t("deviceCard.restore")}{" "}
                 </button>
               ) : (
                 <button
                   type="button"
-                  onClick={e => {
+                  onClick={(e) => {
                     e.stopPropagation();
-                    onAction?.('decommission', device);
+                    onAction?.("decommission", device);
                     setMenuOpen(false);
                   }}
                   className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
                 >
                   <Trash2 className="h-4 w-4" />
-                  Decommission
+                  {t("deviceCard.decommission")}{" "}
                 </button>
               )}
             </div>
@@ -273,8 +302,16 @@ export default function DeviceCard({ device, timezone, onClick, onAction }: Devi
             <span className="text-muted-foreground">CPU</span>
             <span className="font-medium">{device.cpuPercent}%</span>
           </div>
-          {historyState === 'ready' ? (
-            <div className={device.cpuPercent > 80 ? 'text-destructive' : device.cpuPercent > 60 ? 'text-warning' : 'text-success'}>
+          {historyState === "ready" ? (
+            <div
+              className={
+                device.cpuPercent > 80
+                  ? "text-destructive"
+                  : device.cpuPercent > 60
+                    ? "text-warning"
+                    : "text-success"
+              }
+            >
               <MiniSparkline
                 testId={`cpu-sparkline-${device.id}`}
                 data={cpuHistory}
@@ -282,7 +319,11 @@ export default function DeviceCard({ device, timezone, onClick, onAction }: Devi
             </div>
           ) : (
             <div className="flex h-8 items-center chart-legend-xs text-muted-foreground">
-              {historyState === 'loading' ? 'Loading trend...' : historyState === 'error' ? 'Trend unavailable' : 'No trend data'}
+              {historyState === "loading"
+                ? t("deviceCard.loadingTrend")
+                : historyState === "error"
+                  ? t("deviceCard.trendUnavailable")
+                  : t("deviceCard.noTrendData")}
             </div>
           )}
         </div>
@@ -291,8 +332,16 @@ export default function DeviceCard({ device, timezone, onClick, onAction }: Devi
             <span className="text-muted-foreground">RAM</span>
             <span className="font-medium">{device.ramPercent}%</span>
           </div>
-          {historyState === 'ready' ? (
-            <div className={device.ramPercent > 80 ? 'text-destructive' : device.ramPercent > 60 ? 'text-warning' : 'text-success'}>
+          {historyState === "ready" ? (
+            <div
+              className={
+                device.ramPercent > 80
+                  ? "text-destructive"
+                  : device.ramPercent > 60
+                    ? "text-warning"
+                    : "text-success"
+              }
+            >
               <MiniSparkline
                 testId={`ram-sparkline-${device.id}`}
                 data={ramHistory}
@@ -300,7 +349,11 @@ export default function DeviceCard({ device, timezone, onClick, onAction }: Devi
             </div>
           ) : (
             <div className="flex h-8 items-center chart-legend-xs text-muted-foreground">
-              {historyState === 'loading' ? 'Loading trend...' : historyState === 'error' ? 'Trend unavailable' : 'No trend data'}
+              {historyState === "loading"
+                ? t("deviceCard.loadingTrend")
+                : historyState === "error"
+                  ? t("deviceCard.trendUnavailable")
+                  : t("deviceCard.noTrendData")}
             </div>
           )}
         </div>
@@ -308,7 +361,10 @@ export default function DeviceCard({ device, timezone, onClick, onAction }: Devi
 
       <div className="mt-4 flex items-center justify-between text-xs text-muted-foreground">
         <span>{device.siteName}</span>
-        <span>Last seen {formatLastSeen(device.lastSeen, effectiveTimezone)}</span>
+        <span>
+          {t("deviceCard.lastSeen")}{" "}
+          {formatLastSeen(device.lastSeen, effectiveTimezone)}
+        </span>
       </div>
     </div>
   );

@@ -4,6 +4,7 @@
 // aria-pressed) and clicking again removes it.
 import type { FilterCondition, FilterConditionGroup } from '@breeze/shared';
 import { Check } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 export interface QuickAddChip {
   id: string;
@@ -46,6 +47,7 @@ export interface QuickAddChipsProps {
 }
 
 export function QuickAddChips({ value, onChange }: QuickAddChipsProps) {
+  const { t } = useTranslation('devices');
   const handleToggle = (chip: QuickAddChip) => {
     const base = value ?? { operator: 'AND' as const, conditions: [] };
     if (isAdded(base, chip.condition)) {
@@ -62,13 +64,13 @@ export function QuickAddChips({ value, onChange }: QuickAddChipsProps) {
       data-testid="quick-add-chips"
       className="flex items-center gap-2 overflow-x-auto pb-1"
       role="toolbar"
-      aria-label="Quick-add filters"
+      aria-label={t('quickAddChips.ariaLabel')}
     >
       {/* Leading label so this strip reads as one-click toggles, distinct from
           the "+ Add filter" builder below it. The chips toggle a filter on/off
           (Check when active), so they deliberately drop the "+" glyph — "+"
           means *create* elsewhere on this page (Add filter / Add Device). */}
-      <span className="shrink-0 text-xs font-medium text-muted-foreground">Quick filters</span>
+      <span className="shrink-0 text-xs font-medium text-muted-foreground">{t('quickAddChips.label')}</span>
       {QUICK_ADD_CHIPS.map(chip => {
         const added = isAdded(value, chip.condition);
         return (
@@ -83,7 +85,7 @@ export function QuickAddChips({ value, onChange }: QuickAddChipsProps) {
             }`}
           >
             {added && <Check className="h-3 w-3" />}
-            {chip.label}
+            {t(`quickAddChips.chips.${chip.id}`, { defaultValue: chip.label })}
           </button>
         );
       })}

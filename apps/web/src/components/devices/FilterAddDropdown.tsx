@@ -3,6 +3,7 @@
 import type { ReactNode } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Search, Plus } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import type { FilterFieldDefinition } from '@breeze/shared';
 import { V2_FILTER_FIELDS, fieldCategoryLabel } from './filterFields';
 import { useClickOutside } from '../../hooks/useClickOutside';
@@ -26,6 +27,7 @@ export interface FilterAddDropdownProps {
 }
 
 export function FilterAddDropdown({ onSelect, renderTrigger, align = 'left', onCreateGroup }: FilterAddDropdownProps) {
+  const { t } = useTranslation('devices');
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
@@ -65,7 +67,7 @@ export function FilterAddDropdown({ onSelect, renderTrigger, align = 'left', onC
           className="inline-flex items-center gap-1.5 rounded-full border border-dashed px-3 py-1 text-sm text-muted-foreground hover:bg-muted"
         >
           <Plus className="h-3.5 w-3.5" />
-          Add filter
+          {t('filterAddDropdown.addFilter')}
         </button>
       )}
 
@@ -77,7 +79,7 @@ export function FilterAddDropdown({ onSelect, renderTrigger, align = 'left', onC
               ref={inputRef}
               type="text"
               data-testid="filter-add-search"
-              placeholder="Search fields..."
+              placeholder={t('filterAddDropdown.searchPlaceholder')}
               value={q}
               onChange={e => setQ(e.target.value)}
               className="flex-1 bg-transparent text-sm outline-hidden"
@@ -85,12 +87,12 @@ export function FilterAddDropdown({ onSelect, renderTrigger, align = 'left', onC
           </div>
           <div className="max-h-72 overflow-y-auto p-2">
             {groups.length === 0 && (
-              <div className="px-2 py-4 text-center text-sm text-muted-foreground">No matching fields</div>
+              <div className="px-2 py-4 text-center text-sm text-muted-foreground">{t('filterAddDropdown.noMatchingFields')}</div>
             )}
             {groups.map(([cat, fields]) => (
               <div key={cat} className="mb-2">
                 <div className="px-2 pb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  {fieldCategoryLabel(cat)}
+                  {t(`filterAddDropdown.categories.${cat}`, { defaultValue: fieldCategoryLabel(cat) })}
                 </div>
                 <ul>
                   {fields.map(f => (
@@ -105,7 +107,7 @@ export function FilterAddDropdown({ onSelect, renderTrigger, align = 'left', onC
                         }}
                         className="w-full rounded px-2 py-1 text-left text-sm hover:bg-muted"
                       >
-                        {f.label}
+                        {t(`filterAddDropdown.fields.${f.key}`, { defaultValue: f.label })}
                       </button>
                     </li>
                   ))}
@@ -125,7 +127,7 @@ export function FilterAddDropdown({ onSelect, renderTrigger, align = 'left', onC
               className="flex w-full items-center gap-2 border-t px-3 py-2 text-left text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
             >
               <Plus className="h-3.5 w-3.5 shrink-0" />
-              New group…
+              {t('filterAddDropdown.newGroup')}
             </button>
           )}
         </div>

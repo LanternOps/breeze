@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ArrowLeft, Globe, ExternalLink, Wifi, WifiOff } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction } from '../../lib/runAction';
 import { isManualLink } from '../discovery/networkTypes';
 import { navigateTo } from '@/lib/navigation';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import Breadcrumbs from '../layout/Breadcrumbs';
+import { formatNumber } from '@/lib/i18n/format';
 import {
   mapAsset,
   typeConfig,
@@ -45,7 +47,7 @@ function snmpFieldLabel(key: string): string {
 function formatPing(ms?: number | null): string {
   if (ms == null) return '—';
   if (ms < 1) return '<1 ms';
-  return `${ms.toFixed(1)} ms`;
+  return `${formatNumber(ms, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} ms`;
 }
 
 function formatTimestamp(value?: string | null): string {
@@ -92,6 +94,7 @@ function Field({ label, value }: { label: string; value: React.ReactNode }) {
 }
 
 export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetailPageProps) {
+  const { t } = useTranslation('devices');
   const [asset, setAsset] = useState<DiscoveredAsset | null>(null);
   const [extras, setExtras] = useState<AssetDetailExtras>({});
   const [loading, setLoading] = useState(true);
@@ -119,9 +122,9 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
       const response = await fetchWithAuth(`/discovery/assets/${assetId}`);
       if (!response.ok) {
         if (response.status === 404) {
-          throw new Error('Network device not found');
+          throw new Error(t('networkDeviceDetailPage.errors.notFound'));
         }
-        throw new Error('Failed to load network device');
+        throw new Error(t('networkDeviceDetailPage.errors.load'));
       }
 
       const body = await response.json();
@@ -131,7 +134,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
       // `mapAsset` (which never returns null) and render a blank "—" shell with
       // an `asset=undefined` deep-link. Treat a missing id as a load failure.
       if (!raw || typeof raw !== 'object' || typeof raw.id !== 'string') {
-        throw new Error('Network device response was malformed');
+        throw new Error(t('networkDeviceDetailPage.errors.malformed'));
       }
       setAsset(mapAsset(raw));
       setExtras({
@@ -143,11 +146,11 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
         networkMonitoringEnabled: raw.networkMonitoringEnabled ?? false,
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load network device');
+      setError(err instanceof Error ? err.message : t('networkDeviceDetailPage.errors.load'));
     } finally {
       setLoading(false);
     }
-  }, [assetId]);
+  }, [assetId, t]);
 
   useEffect(() => {
     void fetchAsset();
@@ -165,13 +168,13 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
   // that a link exists. runAction surfaces success/failure via toast.
   const handleUnlink = useCallback(async () => {
     if (!asset?.linkedDeviceId) return;
-    if (typeof window !== 'undefined' && !window.confirm('Unlink this device?')) return;
+    if (typeof window !== 'undefined' && !window.confirm(t('networkDeviceDetailPage.confirmUnlink'))) return;
     setUnlinking(true);
     try {
       await runAction({
         request: () => fetchWithAuth(`/discovery/assets/${asset.id}/link`, { method: 'DELETE' }),
-        successMessage: 'Device unlinked.',
-        errorFallback: 'Failed to unlink device.',
+        successMessage: t('networkDeviceDetailPage.toasts.unlinked'),
+        errorFallback: t('networkDeviceDetailPage.toasts.unlinkFailed'),
       });
       await fetchAsset();
     } catch {
@@ -179,7 +182,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
     } finally {
       setUnlinking(false);
     }
-  }, [asset, fetchAsset]);
+  }, [asset, fetchAsset, t]);
 
   // Manual override of the scan-detected device type. `reset` restores the
   // auto-detected classification; any other value pins the type as a manual
@@ -199,9 +202,13 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
                 next === 'reset' ? { resetTypeToAuto: true } : { assetType: next },
               ),
             }),
-          successMessage: next === 'reset' ? 'Type reset to auto-detected' : 'Device type updated',
+          successMessage: next === 'reset'
+            ? t('networkDeviceDetailPage.toasts.typeReset')
+            : t('networkDeviceDetailPage.toasts.typeUpdated'),
           errorFallback:
-            next === 'reset' ? 'Failed to reset device type.' : 'Failed to update device type.',
+            next === 'reset'
+              ? t('networkDeviceDetailPage.toasts.typeResetFailed')
+              : t('networkDeviceDetailPage.toasts.typeUpdateFailed'),
         });
         await fetchAsset();
       } catch {
@@ -210,7 +217,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
         setTypeSaving(false);
       }
     },
-    [asset, fetchAsset],
+    [asset, fetchAsset, t],
   );
 
   if (loading) {
@@ -218,7 +225,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
       <div className="flex items-center justify-center py-12" data-testid="network-device-detail-loading">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading network device...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('networkDeviceDetailPage.loading')}</p>
         </div>
       </div>
     );
@@ -233,16 +240,16 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
           className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
         >
           <ArrowLeft className="h-4 w-4" />
-          Back to devices
+          {t('networkDeviceDetailPage.backToDevices')}
         </button>
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
-          <p className="text-sm text-destructive">{error || 'Network device not found'}</p>
+          <p className="text-sm text-destructive">{error || t('networkDeviceDetailPage.errors.notFound')}</p>
           <button
             type="button"
             onClick={handleBack}
             className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
           >
-            Go back
+            {t('networkDeviceDetailPage.goBack')}
           </button>
         </div>
       </div>
@@ -264,8 +271,8 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
   return (
     <div className="space-y-6" data-testid="network-device-detail">
       <Breadcrumbs items={[
-        { label: 'Devices', href: '/devices' },
-        { label: displayName || 'Network Device' },
+        { label: t('devicesPage.title'), href: '/devices' },
+        { label: displayName || t('networkDeviceDetailPage.networkDevice') },
       ]} />
 
       {/* Header */}
@@ -297,14 +304,14 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
                 }`}
               >
                 {asset.isOnline ? <Wifi className="h-3 w-3" /> : <WifiOff className="h-3 w-3" />}
-                {asset.isOnline ? 'Online' : 'Offline'}
+                {asset.isOnline ? t('common:states.online') : t('common:states.offline')}
               </span>
             </div>
             <p className="mt-1 text-sm text-muted-foreground">
               {asset.ip}
               {asset.mac !== '—' && <> • {asset.mac}</>}
               {asset.manufacturer !== '—' && <> • {asset.manufacturer}</>}
-              {asset.lastSeen && <> • Last seen {formatTimestamp(asset.lastSeen)}</>}
+              {asset.lastSeen && <> • {t('networkDeviceDetailPage.lastSeen', { time: formatTimestamp(asset.lastSeen) })}</>}
             </p>
           </div>
         </div>
@@ -316,7 +323,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
           data-testid="network-detail-manage-discovery"
           className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium text-muted-foreground hover:text-foreground"
         >
-          Manage in Discovery
+          {t('networkDeviceDetailPage.manageInDiscovery')}
           <ExternalLink className="h-3.5 w-3.5" />
         </a>
       </div>
@@ -335,7 +342,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
                 : 'border-transparent text-muted-foreground hover:text-foreground'
             }`}
           >
-            {tab}
+            {t(`networkDeviceDetailPage.tabs.${tab}`)}
           </button>
         ))}
       </div>
@@ -343,16 +350,16 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
       {activeTab === 'overview' && (
         <div className="grid gap-5 lg:grid-cols-2" data-testid="network-detail-overview">
           <div className="space-y-5">
-            <Section title="Identity">
+            <Section title={t('networkDeviceDetailPage.sections.identity')}>
               <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
-                <Field label="Hostname" value={asset.hostname || '—'} />
-                <Field label="Display Name" value={asset.label || '—'} />
-                <Field label="IP Address" value={<span className="font-mono">{asset.ip}</span>} />
-                <Field label="MAC Address" value={<span className="font-mono">{asset.mac}</span>} />
-                <Field label="Manufacturer" value={asset.manufacturer} />
-                <Field label="Model" value={extras.model || '—'} />
+                <Field label={t('networkDeviceDetailPage.fields.hostname')} value={asset.hostname || '—'} />
+                <Field label={t('networkDeviceDetailPage.fields.displayName')} value={asset.label || '—'} />
+                <Field label={t('networkDeviceDetailPage.fields.ipAddress')} value={<span className="font-mono">{asset.ip}</span>} />
+                <Field label={t('networkDeviceDetailPage.fields.macAddress')} value={<span className="font-mono">{asset.mac}</span>} />
+                <Field label={t('networkDeviceDetailPage.fields.manufacturer')} value={asset.manufacturer} />
+                <Field label={t('networkDeviceDetailPage.fields.model')} value={extras.model || '—'} />
                 <div>
-                  <div className="text-xs font-medium text-muted-foreground">Asset Type</div>
+                  <div className="text-xs font-medium text-muted-foreground">{t('networkDeviceDetailPage.fields.assetType')}</div>
                   <div className="mt-1 flex items-center gap-2">
                     <select
                       data-testid="network-asset-type-select"
@@ -373,21 +380,23 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
                         disabled={typeSaving}
                         onClick={() => void changeType('reset')}
                       >
-                        Reset to auto-detected
+                        {t('networkDeviceDetailPage.resetToAutoDetected')}
                       </button>
                     )}
                   </div>
                   {asset.typeSource === 'manual' && (
                     <p className="mt-1 text-[11px] text-muted-foreground">
-                      Manually set{asset.detectedType ? ` · scan detected ${typeConfig[asset.detectedType].label}` : ''}
+                      {asset.detectedType
+                        ? t('networkDeviceDetailPage.manuallySetWithDetected', { type: typeConfig[asset.detectedType].label })
+                        : t('networkDeviceDetailPage.manuallySet')}
                     </p>
                   )}
                 </div>
-                {extras.netbiosName && <Field label="NetBIOS Name" value={extras.netbiosName} />}
+                {extras.netbiosName && <Field label={t('networkDeviceDetailPage.fields.netbiosName')} value={extras.netbiosName} />}
               </dl>
               {tags.length > 0 && (
                 <div className="mt-3 border-t pt-3">
-                  <p className="text-xs font-medium text-muted-foreground">Tags</p>
+                  <p className="text-xs font-medium text-muted-foreground">{t('networkDeviceDetailPage.fields.tags')}</p>
                   <div className="mt-2 flex flex-wrap gap-1.5">
                     {tags.map((tag) => (
                       <span key={tag} className="rounded-full border border-muted bg-background px-2 py-0.5 text-xs">
@@ -399,19 +408,17 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
               )}
               {asset.notes && (
                 <div className="mt-3 border-t pt-3">
-                  <p className="text-xs font-medium text-muted-foreground">Notes</p>
+                  <p className="text-xs font-medium text-muted-foreground">{t('networkDeviceDetailPage.fields.notes')}</p>
                   <p className="mt-1 text-sm whitespace-pre-wrap">{asset.notes}</p>
                 </div>
               )}
             </Section>
 
-            <Section title="SNMP Data" testId="network-detail-snmp">
+            <Section title={t('networkDeviceDetailPage.sections.snmpData')} testId="network-detail-snmp">
               <dl className="space-y-2 text-sm">
                 {Object.keys(snmpData).length === 0 ? (
                   <div className="text-xs text-muted-foreground">
-                    No SNMP data was collected — the device may not have responded, or SNMP was not
-                    probed. Check that the SNMP method is enabled and the community string is set on
-                    the discovery profile.
+                    {t('networkDeviceDetailPage.emptySnmp')}
                   </div>
                 ) : (
                   Object.entries(snmpData).map(([key, value]) => (
@@ -426,22 +433,22 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
           </div>
 
           <div className="space-y-5">
-            <Section title="Network & Reachability">
+            <Section title={t('networkDeviceDetailPage.sections.networkReachability')}>
               <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
-                <Field label="Status" value={asset.isOnline ? 'Online' : 'Offline'} />
+                <Field label={t('networkDeviceDetailPage.fields.status')} value={asset.isOnline ? t('common:states.online') : t('common:states.offline')} />
                 <Field
-                  label="Ping"
+                  label={t('networkDeviceDetailPage.fields.ping')}
                   value={<span className="font-mono" data-testid="network-detail-ping">{formatPing(asset.responseTimeMs)}</span>}
                 />
-                <Field label="OS Fingerprint" value={asset.osFingerprint || '—'} />
-                <Field label="Last Seen" value={formatTimestamp(asset.lastSeen)} />
-                <Field label="First Seen" value={formatTimestamp(extras.firstSeenAt)} />
+                <Field label={t('networkDeviceDetailPage.fields.osFingerprint')} value={asset.osFingerprint || '—'} />
+                <Field label={t('networkDeviceDetailPage.fields.lastSeen')} value={formatTimestamp(asset.lastSeen)} />
+                <Field label={t('networkDeviceDetailPage.fields.firstSeen')} value={formatTimestamp(extras.firstSeenAt)} />
               </dl>
             </Section>
 
-            <Section title="Open Ports" testId="network-detail-ports">
+            <Section title={t('networkDeviceDetailPage.sections.openPorts')} testId="network-detail-ports">
               {openPorts.length === 0 ? (
-                <p className="text-xs text-muted-foreground">No open ports detected.</p>
+                <p className="text-xs text-muted-foreground">{t('networkDeviceDetailPage.emptyPorts')}</p>
               ) : (
                 <div className="flex flex-wrap gap-1.5">
                   {openPorts.map((p) => (
@@ -461,30 +468,30 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
 
       {activeTab === 'monitoring' && (
         <div className="grid gap-5 lg:grid-cols-2" data-testid="network-detail-monitoring">
-          <Section title="Monitoring Status">
+          <Section title={t('networkDeviceDetailPage.sections.monitoringStatus')}>
             <dl className="space-y-3 text-sm">
               <div className="flex items-center justify-between gap-4">
-                <dt className="text-muted-foreground">SNMP Monitoring</dt>
-                <dd className="font-medium">{extras.snmpMonitoringEnabled ? 'Enabled' : 'Not configured'}</dd>
+                <dt className="text-muted-foreground">{t('networkDeviceDetailPage.fields.snmpMonitoring')}</dt>
+                <dd className="font-medium">{extras.snmpMonitoringEnabled ? t('common:states.enabled') : t('networkDeviceDetailPage.notConfigured')}</dd>
               </div>
               <div className="flex items-center justify-between gap-4">
-                <dt className="text-muted-foreground">Network Monitoring</dt>
-                <dd className="font-medium">{extras.networkMonitoringEnabled ? 'Enabled' : 'Not configured'}</dd>
+                <dt className="text-muted-foreground">{t('networkDeviceDetailPage.fields.networkMonitoring')}</dt>
+                <dd className="font-medium">{extras.networkMonitoringEnabled ? t('common:states.enabled') : t('networkDeviceDetailPage.notConfigured')}</dd>
               </div>
             </dl>
             <p className="mt-3 border-t pt-3 text-xs text-muted-foreground">
-              Configure SNMP polling and network monitors from the{' '}
+              {t('networkDeviceDetailPage.configurePrefix')}{' '}
               <a href={`/discovery?asset=${asset.id}#assets`} className="text-primary hover:underline">
-                Discovery asset view
+                {t('networkDeviceDetailPage.discoveryAssetView')}
               </a>
               .
             </p>
           </Section>
 
-          <Section title="Discovery">
+          <Section title={t('networkDeviceDetailPage.sections.discovery')}>
             <dl className="grid grid-cols-1 gap-y-3 text-sm">
               <Field
-                label="Linked Device"
+                label={t('networkDeviceDetailPage.fields.linkedDevice')}
                 value={
                   asset.linkedDeviceId ? (
                     <span className="inline-flex items-center gap-3">
@@ -493,7 +500,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
                         data-testid="network-detail-linked-device"
                         className="text-primary hover:underline"
                       >
-                        {asset.linkedDeviceName || 'View managed device'}
+                        {asset.linkedDeviceName || t('networkDeviceDetailPage.viewManagedDevice')}
                       </a>
                       {isManualLink(asset.linkSource) && (
                         <button
@@ -503,20 +510,20 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
                           disabled={unlinking}
                           className="text-xs text-destructive hover:underline disabled:opacity-50"
                         >
-                          {unlinking ? 'Unlinking…' : 'Unlink'}
+                          {unlinking ? t('networkDeviceDetailPage.unlinking') : t('networkDeviceDetailPage.unlink')}
                         </button>
                       )}
                     </span>
                   ) : (
-                    'Not linked'
+                    t('networkDeviceDetailPage.notLinked')
                   )
                 }
               />
               <Field
-                label="Discovery Methods"
+                label={t('networkDeviceDetailPage.fields.discoveryMethods')}
                 value={discoveryMethods.length > 0 ? discoveryMethods.join(', ') : '—'}
               />
-              <Field label="Discovery Profile" value={asset.profileName || '—'} />
+              <Field label={t('networkDeviceDetailPage.fields.discoveryProfile')} value={asset.profileName || '—'} />
             </dl>
           </Section>
         </div>

@@ -13,6 +13,7 @@
 // load, the default view auto-applies once.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Bookmark, Plus, Star, Trash2, Loader2, Check, ExternalLink } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import type { FilterConditionGroup, SavedFilter } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
@@ -70,6 +71,7 @@ export interface SavedViewsMenuProps {
 }
 
 export function SavedViewsMenu({ value, onApply }: SavedViewsMenuProps) {
+  const { t } = useTranslation('devices');
   const currentOrgId = useOrgStore(s => s.currentOrgId);
   const [open, setOpen] = useState(false);
   const [views, setViews] = useState<SavedFilter[]>([]);
@@ -154,15 +156,15 @@ export function SavedViewsMenu({ value, onApply }: SavedViewsMenuProps) {
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        showToast({ type: 'error', message: body.error ?? 'Could not save view' });
+        showToast({ type: 'error', message: body.error ?? t('savedViewsMenu.toasts.saveFailed') });
         return;
       }
-      showToast({ type: 'success', message: `Saved view "${trimmed}"` });
+      showToast({ type: 'success', message: t('savedViewsMenu.toasts.saved', { name: trimmed }) });
       setName('');
       setNaming(false);
       await fetchViews();
     } catch {
-      showToast({ type: 'error', message: 'Could not save view' });
+      showToast({ type: 'error', message: t('savedViewsMenu.toasts.saveFailed') });
     } finally {
       setSaving(false);
     }
@@ -172,17 +174,17 @@ export function SavedViewsMenu({ value, onApply }: SavedViewsMenuProps) {
     try {
       const res = await fetchWithAuth(`/filters/${view.id}`, { method: 'DELETE' });
       if (!res.ok) {
-        showToast({ type: 'error', message: 'Could not delete view' });
+        showToast({ type: 'error', message: t('savedViewsMenu.toasts.deleteFailed') });
         return;
       }
       if (defaultId === view.id) {
         writeDefaultViewId(null);
         setDefaultId(null);
       }
-      showToast({ type: 'success', message: `Deleted view "${view.name}"` });
+      showToast({ type: 'success', message: t('savedViewsMenu.toasts.deleted', { name: view.name }) });
       await fetchViews();
     } catch {
-      showToast({ type: 'error', message: 'Could not delete view' });
+      showToast({ type: 'error', message: t('savedViewsMenu.toasts.deleteFailed') });
     }
   };
 
@@ -203,10 +205,10 @@ export function SavedViewsMenu({ value, onApply }: SavedViewsMenuProps) {
         className={`inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium transition-colors ${
           open || activeView ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted hover:text-foreground'
         }`}
-        title="Saved views"
+        title={t('savedViewsMenu.title')}
       >
         <Bookmark className="h-3.5 w-3.5" />
-        <span className="max-w-40 truncate">{activeView ? activeView.name : 'Views'}</span>
+        <span className="max-w-40 truncate">{activeView ? activeView.name : t('savedViewsMenu.views')}</span>
       </button>
 
       {open && (
@@ -216,16 +218,16 @@ export function SavedViewsMenu({ value, onApply }: SavedViewsMenuProps) {
           className="absolute right-0 top-9 z-30 w-72 rounded-md border bg-popover p-1 shadow-lg"
         >
           <p className="px-2 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-            Saved views
+            {t('savedViewsMenu.title')}
           </p>
 
           {loading ? (
             <div className="flex items-center gap-2 px-2 py-3 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" /> Loading…
+              <Loader2 className="h-4 w-4 animate-spin" /> {t('common:states.loading')}
             </div>
           ) : views.length === 0 ? (
             <p className="px-2 py-3 text-sm text-muted-foreground">
-              No saved views yet. Build a filter, then save it as a view.
+              {t('savedViewsMenu.empty')}
             </p>
           ) : (
             <div className="max-h-64 overflow-y-auto">
@@ -244,7 +246,7 @@ export function SavedViewsMenu({ value, onApply }: SavedViewsMenuProps) {
                       type="button"
                       onClick={() => apply(view)}
                       className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                      title={`Apply "${view.name}"`}
+                      title={t('savedViewsMenu.applyTitle', { name: view.name })}
                     >
                       {isActive ? (
                         <Check className="h-3.5 w-3.5 shrink-0 text-primary" />
@@ -257,7 +259,7 @@ export function SavedViewsMenu({ value, onApply }: SavedViewsMenuProps) {
                       type="button"
                       data-testid={`saved-view-default-${view.id}`}
                       onClick={() => toggleDefault(view)}
-                      title={isDefault ? 'Default view — applied on load' : 'Set as default view'}
+                      title={isDefault ? t('savedViewsMenu.defaultAppliedTitle') : t('savedViewsMenu.setDefaultTitle')}
                       aria-pressed={isDefault}
                       className="shrink-0 rounded p-1 text-muted-foreground hover:bg-background hover:text-foreground"
                     >
@@ -267,7 +269,7 @@ export function SavedViewsMenu({ value, onApply }: SavedViewsMenuProps) {
                       type="button"
                       data-testid={`saved-view-delete-${view.id}`}
                       onClick={() => remove(view)}
-                      title={`Delete "${view.name}"`}
+                      title={t('savedViewsMenu.deleteTitle', { name: view.name })}
                       className="shrink-0 rounded p-1 text-muted-foreground hover:bg-background hover:text-destructive"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
@@ -286,7 +288,7 @@ export function SavedViewsMenu({ value, onApply }: SavedViewsMenuProps) {
                 ref={nameInputRef}
                 type="text"
                 data-testid="saved-view-name-input"
-                placeholder="View name…"
+                placeholder={t('savedViewsMenu.viewNamePlaceholder')}
                 value={name}
                 maxLength={200}
                 onChange={e => setName(e.target.value)}
@@ -303,7 +305,7 @@ export function SavedViewsMenu({ value, onApply }: SavedViewsMenuProps) {
                 disabled={!name.trim() || saving}
                 className="inline-flex h-8 shrink-0 items-center rounded bg-primary px-2.5 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
               >
-                {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : 'Save'}
+                {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : t('common:actions.save')}
               </button>
             </div>
           ) : (
@@ -313,10 +315,10 @@ export function SavedViewsMenu({ value, onApply }: SavedViewsMenuProps) {
               onClick={() => setNaming(true)}
               disabled={!hasFilter}
               className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:text-muted-foreground disabled:hover:bg-transparent"
-              title={hasFilter ? 'Save the current filter as a view' : 'Build a filter first'}
+              title={hasFilter ? t('savedViewsMenu.saveCurrentTitle') : t('savedViewsMenu.buildFilterFirst')}
             >
               <Plus className="h-3.5 w-3.5 shrink-0" />
-              Save current as view…
+              {t('savedViewsMenu.saveCurrent')}
             </button>
           )}
 
@@ -325,7 +327,7 @@ export function SavedViewsMenu({ value, onApply }: SavedViewsMenuProps) {
             className="flex items-center gap-2 rounded px-2 py-1.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
           >
             <ExternalLink className="h-3.5 w-3.5 shrink-0" />
-            Manage all views
+            {t('savedViewsMenu.manageAll')}
           </a>
         </div>
       )}

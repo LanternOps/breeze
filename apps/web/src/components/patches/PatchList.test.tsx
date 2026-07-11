@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
+import '@/lib/i18n';
 
 import PatchList, { type Patch } from './PatchList';
 

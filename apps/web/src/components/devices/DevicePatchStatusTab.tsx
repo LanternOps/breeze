@@ -13,6 +13,7 @@ import {
   Download,
   type LucideIcon
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import type { OSType } from './DeviceList';
 import PatchInstallHistory from '../patches/PatchInstallHistory';
@@ -151,48 +152,48 @@ function getPatchDisplayCopy(osType: OSType): PatchDisplayCopy {
     case 'windows':
       return {
         nativeIcon: Monitor,
-        pendingNativeTitle: 'Pending Windows Updates',
-        pendingNativeEmpty: 'No pending Windows updates.',
-        pendingNativePrimaryColumn: 'Update',
-        pendingThirdPartyTitle: 'Pending Third-Party Updates',
-        pendingThirdPartyEmpty: 'No pending third-party updates.',
-        pendingThirdPartyPrimaryColumn: 'Software',
-        pendingThirdPartySecondaryColumn: 'Category',
-        installedNativeTitle: 'Installed Windows Updates',
-        installedNativeEmpty: 'No Windows updates reported.',
-        installedNativePrimaryColumn: 'Update',
-        installedThirdPartyTitle: 'Installed Third-Party Updates'
+        pendingNativeTitle: 'copy.windows.pendingNativeTitle',
+        pendingNativeEmpty: 'copy.windows.pendingNativeEmpty',
+        pendingNativePrimaryColumn: 'copy.windows.pendingNativePrimaryColumn',
+        pendingThirdPartyTitle: 'copy.shared.pendingThirdPartyTitle',
+        pendingThirdPartyEmpty: 'copy.shared.pendingThirdPartyEmpty',
+        pendingThirdPartyPrimaryColumn: 'copy.shared.pendingThirdPartyPrimaryColumn',
+        pendingThirdPartySecondaryColumn: 'copy.shared.pendingThirdPartySecondaryColumn',
+        installedNativeTitle: 'copy.windows.installedNativeTitle',
+        installedNativeEmpty: 'copy.windows.installedNativeEmpty',
+        installedNativePrimaryColumn: 'copy.windows.installedNativePrimaryColumn',
+        installedThirdPartyTitle: 'copy.shared.installedThirdPartyTitle'
       };
     case 'linux':
       return {
         nativeIcon: Server,
-        pendingNativeTitle: 'Pending Linux Updates',
-        pendingNativeEmpty: 'No pending Linux updates.',
-        pendingNativePrimaryColumn: 'Package',
-        pendingThirdPartyTitle: 'Pending Third-Party Updates',
-        pendingThirdPartyEmpty: 'No pending third-party updates.',
-        pendingThirdPartyPrimaryColumn: 'Software',
-        pendingThirdPartySecondaryColumn: 'Category',
-        installedNativeTitle: 'Recently Installed Linux Updates',
-        installedNativeEmpty: 'No recent Linux update installs.',
-        installedNativePrimaryColumn: 'Package',
-        installedThirdPartyTitle: 'Installed Third-Party Updates'
+        pendingNativeTitle: 'copy.linux.pendingNativeTitle',
+        pendingNativeEmpty: 'copy.linux.pendingNativeEmpty',
+        pendingNativePrimaryColumn: 'copy.linux.pendingNativePrimaryColumn',
+        pendingThirdPartyTitle: 'copy.shared.pendingThirdPartyTitle',
+        pendingThirdPartyEmpty: 'copy.shared.pendingThirdPartyEmpty',
+        pendingThirdPartyPrimaryColumn: 'copy.shared.pendingThirdPartyPrimaryColumn',
+        pendingThirdPartySecondaryColumn: 'copy.shared.pendingThirdPartySecondaryColumn',
+        installedNativeTitle: 'copy.linux.installedNativeTitle',
+        installedNativeEmpty: 'copy.linux.installedNativeEmpty',
+        installedNativePrimaryColumn: 'copy.linux.installedNativePrimaryColumn',
+        installedThirdPartyTitle: 'copy.shared.installedThirdPartyTitle'
       };
     case 'macos':
     default:
       return {
         nativeIcon: Apple,
-        pendingNativeTitle: 'Pending Apple Updates',
-        pendingNativeEmpty: 'No pending Apple updates.',
-        pendingNativePrimaryColumn: 'Update',
-        pendingThirdPartyTitle: 'Pending Package Updates',
-        pendingThirdPartyEmpty: 'No pending package updates.',
-        pendingThirdPartyPrimaryColumn: 'Package',
-        pendingThirdPartySecondaryColumn: 'Type',
-        installedNativeTitle: 'Installed Apple Updates',
-        installedNativeEmpty: 'No Apple updates reported.',
-        installedNativePrimaryColumn: 'Update',
-        installedThirdPartyTitle: 'Installed Third-Party Updates'
+        pendingNativeTitle: 'copy.macos.pendingNativeTitle',
+        pendingNativeEmpty: 'copy.macos.pendingNativeEmpty',
+        pendingNativePrimaryColumn: 'copy.macos.pendingNativePrimaryColumn',
+        pendingThirdPartyTitle: 'copy.macos.pendingThirdPartyTitle',
+        pendingThirdPartyEmpty: 'copy.macos.pendingThirdPartyEmpty',
+        pendingThirdPartyPrimaryColumn: 'copy.macos.pendingThirdPartyPrimaryColumn',
+        pendingThirdPartySecondaryColumn: 'copy.macos.pendingThirdPartySecondaryColumn',
+        installedNativeTitle: 'copy.macos.installedNativeTitle',
+        installedNativeEmpty: 'copy.macos.installedNativeEmpty',
+        installedNativePrimaryColumn: 'copy.macos.installedNativePrimaryColumn',
+        installedThirdPartyTitle: 'copy.shared.installedThirdPartyTitle'
       };
   }
 }
@@ -611,6 +612,7 @@ const RECENT_LINUX_INSTALL_HISTORY_LIMIT = 100;
 const RECENT_LINUX_INSTALL_WINDOW_MS = RECENT_LINUX_INSTALL_DAYS * 24 * 60 * 60 * 1000;
 
 export default function DevicePatchStatusTab({ deviceId, timezone, osType }: DevicePatchStatusTabProps) {
+  const { t } = useTranslation('devices');
   const [payload, setPayload] = useState<PatchPayload | null>(null);
   const [recentLinuxInstalls, setRecentLinuxInstalls] = useState<PatchItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -805,7 +807,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
     priorPendingCountRef.current = initialPendingCount;
     pollStartRef.current = Date.now();
     setIsPolling(true);
-    setControlNotice({ kind: 'info', message: 'Installing patches... Polling for updates.' });
+    setControlNotice({ kind: 'info', message: t('devicePatchStatusTab.notices.installingPolling') });
 
     pollTimerRef.current = setInterval(async () => {
       const elapsed = Date.now() - pollStartRef.current;
@@ -817,7 +819,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
         }
         setIsPolling(false);
         setInstallingPatchIds(new Set());
-        setControlNotice({ kind: 'info', message: 'Install is taking longer than expected. macOS updates can take 30+ minutes. Refresh the page later to check status.' });
+        setControlNotice({ kind: 'info', message: t('devicePatchStatusTab.notices.installLongerThanExpected') });
         await refreshPatchView(true);
         return;
       }
@@ -840,7 +842,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
         await fetchRecentLinuxInstalls(false);
         setControlNotice({
           kind: 'success',
-          message: `${installed} patch${installed !== 1 ? 'es' : ''} installed successfully. ${currentPendingCount} still pending.`
+          message: t('devicePatchStatusTab.notices.installedSuccessfully', { installed, pending: currentPendingCount })
         });
       }
     }, INSTALL_POLL_INTERVAL_MS);
@@ -863,8 +865,8 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
             method: 'POST',
             body: JSON.stringify({ deviceIds: [deviceId], source }),
           }),
-        errorFallback: `Failed to queue ${label.toLowerCase()}`,
-        successMessage: `${label} queued`,
+        errorFallback: t('devicePatchStatusTab.notices.queueFailed', { label: label.toLowerCase() }),
+        successMessage: t('devicePatchStatusTab.notices.queued', { label }),
       });
 
       const queuedCount = Array.isArray(body.queuedCommandIds) ? body.queuedCommandIds.length : 0;
@@ -874,14 +876,14 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
       const dispatchSuffix = dispatchedCount > 0 ? ` - ${dispatchedCount} dispatched now` : '';
       setControlNotice({
         kind: 'success',
-        message: `${label} queued${commandSuffix}${dispatchSuffix}${jobSuffix}.`
+        message: t('devicePatchStatusTab.notices.queuedDetail', { label, commandSuffix, dispatchSuffix, jobSuffix })
       });
     } catch (err) {
       // runAction already toasted the failure; mirror it inline. (No 401 redirect
       // wired here — the device page resolves auth before mounting this tab.)
       setControlNotice({
         kind: 'error',
-        message: err instanceof ActionError ? err.message : err instanceof Error ? err.message : `Failed to queue ${label.toLowerCase()}`
+        message: err instanceof ActionError ? err.message : err instanceof Error ? err.message : t('devicePatchStatusTab.notices.queueFailed', { label: label.toLowerCase() })
       });
     } finally {
       setControlAction(null);
@@ -896,7 +898,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
     if (patchIds.length === 0) {
       setControlNotice({
         kind: 'error',
-        message: `No pending patches available for ${label.toLowerCase()}.`
+        message: t('devicePatchStatusTab.notices.noPendingForLabel', { label: label.toLowerCase() })
       });
       return;
     }
@@ -915,8 +917,8 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
             method: 'POST',
             body: JSON.stringify({ patchIds }),
           }),
-        errorFallback: `Failed to queue ${label.toLowerCase()}`,
-        successMessage: `${label} queued`,
+        errorFallback: t('devicePatchStatusTab.notices.queueFailed', { label: label.toLowerCase() }),
+        successMessage: t('devicePatchStatusTab.notices.queued', { label }),
       });
 
       const commandSuffix = body.commandId ? ` (command ${body.commandId})` : '';
@@ -924,7 +926,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
       const dispatchSuffix = body.commandStatus === 'sent' ? ' and dispatched now' : '';
       setControlNotice({
         kind: 'success',
-        message: `${label} queued for ${patchCount} patches${commandSuffix}${dispatchSuffix}.`
+        message: t('devicePatchStatusTab.notices.installQueuedForPatches', { label, count: patchCount, commandSuffix, dispatchSuffix })
       });
 
       // Start polling for completion
@@ -932,9 +934,9 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
     } catch (err) {
       // runAction already toasted; the 409 "pending approval" detail in the JSON
       // body can't ride the toast, so add it to the inline notice when present.
-      let message = err instanceof ActionError ? err.message : err instanceof Error ? err.message : `Failed to queue ${label.toLowerCase()}`;
+      let message = err instanceof ActionError ? err.message : err instanceof Error ? err.message : t('devicePatchStatusTab.notices.queueFailed', { label: label.toLowerCase() });
       if (err instanceof ActionError && err.status === 409 && !/pending approval/i.test(message)) {
-        message += ' (some patches may still be pending approval - approve them first or refresh)';
+        message += t('devicePatchStatusTab.notices.pendingApprovalSuffix');
       }
       setControlNotice({ kind: 'error', message });
     } finally {
@@ -951,7 +953,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
     label: string
   ) => {
     if (patchIds.length === 0) {
-      setControlNotice({ kind: 'error', message: `No pending patches available for ${label.toLowerCase()}.` });
+      setControlNotice({ kind: 'error', message: t('devicePatchStatusTab.notices.noPendingForLabel', { label: label.toLowerCase() }) });
       return;
     }
     setPendingInstall({ action, patchIds, label });
@@ -971,14 +973,14 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
             method: 'POST',
             body: JSON.stringify({ patchIds: [patchId] }),
           }),
-        errorFallback: `Failed to install ${patchName}`,
-        successMessage: `Install queued for "${patchName}"`,
+        errorFallback: t('devicePatchStatusTab.notices.installPatchFailed', { name: patchName }),
+        successMessage: t('devicePatchStatusTab.notices.installPatchQueued', { name: patchName }),
       });
 
       const dispatchSuffix = body.commandStatus === 'sent' ? ' and dispatched' : '';
       setControlNotice({
         kind: 'success',
-        message: `Install queued for "${patchName}"${dispatchSuffix}.`
+        message: t('devicePatchStatusTab.notices.installPatchQueuedDetail', { name: patchName, dispatchSuffix })
       });
 
       // Start polling for completion
@@ -992,7 +994,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
       // runAction already toasted; mirror inline.
       setControlNotice({
         kind: 'error',
-        message: err instanceof ActionError ? err.message : err instanceof Error ? err.message : `Failed to install ${patchName}`
+        message: err instanceof ActionError ? err.message : err instanceof Error ? err.message : t('devicePatchStatusTab.notices.installPatchFailed', { name: patchName })
       });
     }
   }, [deviceId, pendingNative.length, pendingOther.length, startInstallPolling]);
@@ -1002,7 +1004,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
       <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-xs">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="mt-3 text-sm text-muted-foreground">Loading patch status...</p>
+          <p className="mt-3 text-sm text-muted-foreground">{t('devicePatchStatusTab.loading')}</p>
         </div>
       </div>
     );
@@ -1017,7 +1019,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
           onClick={() => refreshPatchView()}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Retry
+          {t('common:actions.retry')}
         </button>
       </div>
     );
@@ -1033,12 +1035,12 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
       <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <h3 className="text-lg font-semibold">Patch Controls</h3>
+            <h3 className="text-lg font-semibold">{t('devicePatchStatusTab.controls.title')}</h3>
             <p className="text-sm text-muted-foreground">
-              Queue scans and installs for this device
+              {t('devicePatchStatusTab.controls.description')}
               <span className="mx-2 hidden sm:inline">|</span>
               <span className="block sm:inline">
-                Last scan: {lastPatchScanLabel}
+                {t('devicePatchStatusTab.controls.lastScan', { label: lastPatchScanLabel })}
                 {lastPatchScanStatus && <span> ({lastPatchScanStatus})</span>}
               </span>
             </p>
@@ -1050,7 +1052,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
             className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
           >
             <RefreshCw className={`h-3.5 w-3.5 ${isPolling ? 'animate-spin' : ''}`} />
-            {isPolling ? 'Polling...' : 'Refresh patch data'}
+            {isPolling ? t('devicePatchStatusTab.controls.polling') : t('devicePatchStatusTab.controls.refreshPatchData')}
           </button>
         </div>
 
@@ -1062,10 +1064,10 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
             className="inline-flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
           >
             {controlAction === 'install-native' ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle className="h-4 w-4 text-green-500" />}
-            Install pending OS patches ({nativePendingIds.length})
+            {t('devicePatchStatusTab.controls.installOsPatches', { count: nativePendingIds.length })}
             {nativeAwaitingApproval > 0 && (
               <span className="text-xs font-normal text-muted-foreground">
-                ({nativeAwaitingApproval} pending approval)
+                {t('devicePatchStatusTab.controls.pendingApprovalCount', { count: nativeAwaitingApproval })}
               </span>
             )}
           </button>
@@ -1077,7 +1079,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
             className="inline-flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
           >
             {controlAction === 'scan-native' ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4 text-muted-foreground" />}
-            Run OS patch scan
+            {t('devicePatchStatusTab.controls.runOsPatchScan')}
           </button>
 
           <button
@@ -1087,7 +1089,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
             className="inline-flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
           >
             {controlAction === 'scan-third-party' ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4 text-muted-foreground" />}
-            Run 3rd-party scan
+            {t('devicePatchStatusTab.controls.runThirdPartyScan')}
           </button>
 
           <button
@@ -1097,10 +1099,10 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
             className="inline-flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
           >
             {controlAction === 'install-third-party' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Package className="h-4 w-4 text-blue-500" />}
-            Install 3rd-party patches ({thirdPartyPendingIds.length})
+            {t('devicePatchStatusTab.controls.installThirdPartyPatches', { count: thirdPartyPendingIds.length })}
             {thirdPartyAwaitingApproval > 0 && (
               <span className="text-xs font-normal text-muted-foreground">
-                ({thirdPartyAwaitingApproval} pending approval)
+                {t('devicePatchStatusTab.controls.pendingApprovalCount', { count: thirdPartyAwaitingApproval })}
               </span>
             )}
           </button>
@@ -1129,12 +1131,12 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
       <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h3 className="text-lg font-semibold">Patch Compliance</h3>
-            <p className="text-sm text-muted-foreground">Pending vs installed updates</p>
+            <h3 className="text-lg font-semibold">{t('devicePatchStatusTab.compliance.title')}</h3>
+            <p className="text-sm text-muted-foreground">{t('devicePatchStatusTab.compliance.description')}</p>
           </div>
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <CheckCircle className="h-4 w-4 text-green-500" />
-            {compliancePercent}% compliant
+            {t('devicePatchStatusTab.compliance.compliant', { percent: compliancePercent })}
           </div>
         </div>
         <div className="mt-4">
@@ -1142,8 +1144,8 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
             <div className={`h-full rounded-full bg-primary ${widthPercentClass(compliancePercent)}`} />
           </div>
           <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
-            <span>{pendingNative.length + pendingOther.length} pending</span>
-            <span>{displayedInstalledNative.length + installedThirdParty.length} installed</span>
+            <span>{t('devicePatchStatusTab.compliance.pending', { count: pendingNative.length + pendingOther.length })}</span>
+            <span>{t('devicePatchStatusTab.compliance.installed', { count: displayedInstalledNative.length + installedThirdParty.length })}</span>
           </div>
         </div>
       </div>
@@ -1155,7 +1157,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
         <div className="rounded-lg border bg-card p-6 shadow-xs">
           <div className="flex items-center gap-2">
             <NativeIcon className="h-4 w-4 text-gray-600" />
-            <h3 className="text-sm font-semibold">{displayCopy.pendingNativeTitle}</h3>
+            <h3 className="text-sm font-semibold">{t(`devicePatchStatusTab.${displayCopy.pendingNativeTitle}`)}</h3>
             {pendingNative.length > 0 && (
               <span className="inline-flex items-center rounded-full bg-yellow-100 px-2 py-0.5 text-xs font-medium text-yellow-700">
                 {pendingNative.length}
@@ -1167,11 +1169,11 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
               <table className="min-w-full divide-y">
                 <thead className="bg-muted/40 sticky top-0">
                   <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    <th className="px-4 py-3">{displayCopy.pendingNativePrimaryColumn}</th>
-                    {normalizedOsType === 'windows' && <th className="px-4 py-3">KB#</th>}
-                    <th className="px-4 py-3">Source</th>
-                    <th className="px-4 py-3">Category</th>
-                    <th className="px-4 py-3">Approval</th>
+                    <th className="px-4 py-3">{t(`devicePatchStatusTab.${displayCopy.pendingNativePrimaryColumn}`)}</th>
+                    {normalizedOsType === 'windows' && <th className="px-4 py-3">{t('devicePatchStatusTab.table.kb')}</th>}
+                    <th className="px-4 py-3">{t('devicePatchStatusTab.table.source')}</th>
+                    <th className="px-4 py-3">{t('devicePatchStatusTab.table.category')}</th>
+                    <th className="px-4 py-3">{t('devicePatchStatusTab.table.approval')}</th>
                     <th className="w-16 px-2 py-3" />
                   </tr>
                 </thead>
@@ -1179,7 +1181,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                   {pendingNative.length === 0 ? (
                     <tr>
                       <td colSpan={normalizedOsType === 'windows' ? 6 : 5} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                        {displayCopy.pendingNativeEmpty}
+                        {t(`devicePatchStatusTab.${displayCopy.pendingNativeEmpty}`)}
                       </td>
                     </tr>
                   ) : (
@@ -1196,8 +1198,8 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                       const isApproved = isPatchApprovedForInstall(patch);
                       const patchName = normalizePatchName(patch);
                       const installTitle = isApproved
-                        ? `Install ${patchName}`
-                        : `This org has not approved ${patchName}. Approve the patch before installing.`;
+                        ? t('devicePatchStatusTab.installPatchTitle', { name: patchName })
+                        : t('devicePatchStatusTab.installPatchNotApprovedTitle', { name: patchName });
 
                       return (
                         <tr key={patch.id ?? `${patch.name ?? patch.title ?? 'pending-native'}-${index}`} className="text-sm">
@@ -1206,7 +1208,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                               <div className="flex items-center gap-1.5">
                                 <p className="font-medium">{patchName}</p>
                                 {notDownloaded && (
-                                  <span title="Not yet downloaded -- install will take longer" className="inline-flex items-center text-muted-foreground">
+                                  <span title={t('devicePatchStatusTab.notDownloadedTitle')} className="inline-flex items-center text-muted-foreground">
                                     <CloudDownload className="h-3.5 w-3.5" />
                                   </span>
                                 )}
@@ -1227,7 +1229,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                                   {releaseLabel && <span>{releaseLabel}</span>}
                                   {patch.requiresReboot && (
                                     <span className="inline-flex items-center rounded-full bg-yellow-100 px-2 py-0.5 chart-legend-xs font-medium text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-200">
-                                      Reboot required
+                                      {t('devicePatchStatusTab.rebootRequired')}
                                     </span>
                                   )}
                                 </div>
@@ -1261,7 +1263,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                               </span>
                             ) : (
                               <span className="text-xs text-muted-foreground capitalize">
-                                {patch.category || 'Uncategorized'}
+                                {patch.category || t('devicePatchStatusTab.uncategorized')}
                               </span>
                             )}
                           </td>
@@ -1305,7 +1307,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
         <div className="rounded-lg border bg-card p-6 shadow-xs">
           <div className="flex items-center gap-2">
             <AlertTriangle className="h-4 w-4 text-yellow-500" />
-            <h3 className="text-sm font-semibold">{displayCopy.pendingThirdPartyTitle}</h3>
+            <h3 className="text-sm font-semibold">{t(`devicePatchStatusTab.${displayCopy.pendingThirdPartyTitle}`)}</h3>
             {pendingOther.length > 0 && (
               <span className="inline-flex items-center rounded-full bg-yellow-100 px-2 py-0.5 text-xs font-medium text-yellow-700">
                 {pendingOther.length}
@@ -1317,10 +1319,10 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
               <table className="min-w-full divide-y">
                 <thead className="bg-muted/40 sticky top-0">
                   <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    <th className="px-4 py-3">{displayCopy.pendingThirdPartyPrimaryColumn}</th>
-                    <th className="px-4 py-3">Source</th>
-                    <th className="px-4 py-3">{displayCopy.pendingThirdPartySecondaryColumn}</th>
-                    <th className="px-4 py-3">Approval</th>
+                    <th className="px-4 py-3">{t(`devicePatchStatusTab.${displayCopy.pendingThirdPartyPrimaryColumn}`)}</th>
+                    <th className="px-4 py-3">{t('devicePatchStatusTab.table.source')}</th>
+                    <th className="px-4 py-3">{t(`devicePatchStatusTab.${displayCopy.pendingThirdPartySecondaryColumn}`)}</th>
+                    <th className="px-4 py-3">{t('devicePatchStatusTab.table.approval')}</th>
                     <th className="w-16 px-2 py-3" />
                   </tr>
                 </thead>
@@ -1328,7 +1330,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                   {pendingOther.length === 0 ? (
                     <tr>
                       <td colSpan={5} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                        {displayCopy.pendingThirdPartyEmpty}
+                        {t(`devicePatchStatusTab.${displayCopy.pendingThirdPartyEmpty}`)}
                       </td>
                     </tr>
                   ) : (
@@ -1347,8 +1349,8 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                       const isApproved = isPatchApprovedForInstall(patch);
                       const patchName = normalizePatchName(patch);
                       const installTitle = isApproved
-                        ? `Install ${patchName}`
-                        : `This org has not approved ${patchName}. Approve the patch before installing.`;
+                        ? t('devicePatchStatusTab.installPatchTitle', { name: patchName })
+                        : t('devicePatchStatusTab.installPatchNotApprovedTitle', { name: patchName });
 
                       return (
                         <tr key={patch.id ?? `${patch.name ?? patch.title ?? 'pending-other'}-${index}`} className="text-sm">
@@ -1371,7 +1373,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                                   )}
                                 </div>
                                 {notDownloaded && (
-                                  <span title="Not yet downloaded -- install will take longer" className="inline-flex items-center text-muted-foreground">
+                                  <span title={t('devicePatchStatusTab.notDownloadedTitle')} className="inline-flex items-center text-muted-foreground">
                                     <CloudDownload className="h-3.5 w-3.5" />
                                   </span>
                                 )}
@@ -1391,7 +1393,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                                   {releaseLabel && <span>{releaseLabel}</span>}
                                   {patch.requiresReboot && (
                                     <span className="inline-flex items-center rounded-full bg-yellow-100 px-2 py-0.5 chart-legend-xs font-medium text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-200">
-                                      Reboot required
+                                      {t('devicePatchStatusTab.rebootRequired')}
                                     </span>
                                   )}
                                 </div>
@@ -1423,7 +1425,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                               </span>
                             ) : (
                               <span className="text-xs text-muted-foreground capitalize">
-                                {patch.category || 'Third-party'}
+                                {patch.category || t('devicePatchStatusTab.thirdParty')}
                               </span>
                             )}
                           </td>
@@ -1468,7 +1470,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
           <div className="flex items-center gap-2">
             <CheckCircle className="h-4 w-4 text-green-500" />
             <NativeIcon className="h-4 w-4 text-gray-600" />
-            <h3 className="text-sm font-semibold">{displayCopy.installedNativeTitle}</h3>
+            <h3 className="text-sm font-semibold">{t(`devicePatchStatusTab.${displayCopy.installedNativeTitle}`)}</h3>
             <span className="text-xs text-muted-foreground">({displayedInstalledNative.length})</span>
           </div>
           <div className="mt-4 overflow-hidden rounded-md border">
@@ -1476,17 +1478,17 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
               <table className="min-w-full divide-y">
                 <thead className="bg-muted/40 sticky top-0">
                   <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    <th className="px-4 py-3">{displayCopy.installedNativePrimaryColumn}</th>
-                    {normalizedOsType === 'windows' && <th className="px-4 py-3">KB#</th>}
-                    <th className="px-4 py-3">Category</th>
-                    <th className="px-4 py-3">Installed</th>
+                    <th className="px-4 py-3">{t(`devicePatchStatusTab.${displayCopy.installedNativePrimaryColumn}`)}</th>
+                    {normalizedOsType === 'windows' && <th className="px-4 py-3">{t('devicePatchStatusTab.table.kb')}</th>}
+                    <th className="px-4 py-3">{t('devicePatchStatusTab.table.category')}</th>
+                    <th className="px-4 py-3">{t('devicePatchStatusTab.table.installed')}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
                   {displayedInstalledNative.length === 0 ? (
                     <tr>
                       <td colSpan={normalizedOsType === 'windows' ? 4 : 3} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                        {displayCopy.installedNativeEmpty}
+                        {t(`devicePatchStatusTab.${displayCopy.installedNativeEmpty}`)}
                       </td>
                     </tr>
                   ) : (
@@ -1514,7 +1516,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                               </span>
                             ) : (
                               <span className="text-xs text-muted-foreground capitalize">
-                                {patch.category || 'Uncategorized'}
+                                {patch.category || t('devicePatchStatusTab.uncategorized')}
                               </span>
                             )}
                           </td>
@@ -1538,7 +1540,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
           <div className="flex items-center gap-2">
             <CheckCircle className="h-4 w-4 text-green-500" />
             <Package className="h-4 w-4 text-blue-500" />
-            <h3 className="text-sm font-semibold">{displayCopy.installedThirdPartyTitle}</h3>
+            <h3 className="text-sm font-semibold">{t(`devicePatchStatusTab.${displayCopy.installedThirdPartyTitle}`)}</h3>
             <span className="text-xs text-muted-foreground">({installedThirdParty.length})</span>
           </div>
           <div className="mt-4 overflow-hidden rounded-md border">
@@ -1546,9 +1548,9 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
               <table className="min-w-full divide-y">
                 <thead className="bg-muted/40 sticky top-0">
                   <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    <th className="px-4 py-3">Software</th>
-                    <th className="px-4 py-3">Source</th>
-                    <th className="px-4 py-3">Installed</th>
+                    <th className="px-4 py-3">{t('devicePatchStatusTab.table.software')}</th>
+                    <th className="px-4 py-3">{t('devicePatchStatusTab.table.source')}</th>
+                    <th className="px-4 py-3">{t('devicePatchStatusTab.table.installed')}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
@@ -1605,16 +1607,14 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
           setPendingInstall(null);
           void queuePatchInstall(action, patchIds, label);
         }}
-        title="Install pending patches"
+        title={t('devicePatchStatusTab.confirm.title')}
         variant="warning"
-        confirmLabel="Install"
+        confirmLabel={t('devicePatchStatusTab.confirm.install')}
         confirmTestId="confirm-install-patches"
         isLoading={controlAction !== null}
         message={
           pendingInstall
-            ? `Queue installation of ${pendingInstall.patchIds.length} ${
-                pendingInstall.patchIds.length === 1 ? 'patch' : 'patches'
-              } on this device? This may require a reboot.`
+            ? t('devicePatchStatusTab.confirm.message', { count: pendingInstall.patchIds.length })
             : ''
         }
       />

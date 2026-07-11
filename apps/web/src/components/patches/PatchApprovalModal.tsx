@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { CheckCircle, XCircle, Clock, Loader2 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import type { Patch } from './PatchList';
 import { Dialog } from '../shared/Dialog';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
-import { scopeConfirmMessage } from '@/lib/scopeConfirmMessage';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '@/lib/runAction';
@@ -27,22 +27,22 @@ type PatchApprovalModalProps = {
   loading?: boolean;
 };
 
-const actionConfig: Record<PatchApprovalAction, { label: string; description: string; color: string; icon: typeof CheckCircle }> = {
+const actionConfig: Record<PatchApprovalAction, { labelKey: string; descriptionKey: string; color: string; icon: typeof CheckCircle }> = {
   approve: {
-    label: 'Approve',
-    description: 'Allow this patch to be deployed automatically or in the next maintenance window.',
+    labelKey: 'patchApprovalModal.actions.approve.label',
+    descriptionKey: 'patchApprovalModal.actions.approve.description',
     color: 'border-success/30 bg-success/10 text-success',
     icon: CheckCircle
   },
   decline: {
-    label: 'Decline',
-    description: 'Block this patch from deploying until it is reviewed again.',
+    labelKey: 'patchApprovalModal.actions.decline.label',
+    descriptionKey: 'patchApprovalModal.actions.decline.description',
     color: 'border-destructive/30 bg-destructive/10 text-destructive',
     icon: XCircle
   },
   defer: {
-    label: 'Defer',
-    description: 'Postpone the decision and revisit later.',
+    labelKey: 'patchApprovalModal.actions.defer.label',
+    descriptionKey: 'patchApprovalModal.actions.defer.description',
     color: 'border-warning/30 bg-warning/10 text-warning',
     icon: Clock
   }
@@ -66,6 +66,7 @@ export default function PatchApprovalModal({
   onSubmit,
   loading
 }: PatchApprovalModalProps) {
+  const { t } = useTranslation('patches');
   const [action, setAction] = useState<PatchApprovalAction>('approve');
   const [notes, setNotes] = useState('');
   const [deferUntil, setDeferUntil] = useState(getDefaultDeferUntil());
@@ -102,7 +103,7 @@ export default function PatchApprovalModal({
     // before opening the approve confirm dialog.
     const { scope } = getJwtClaims();
     if (scope === 'organization') {
-      setSubmitError('Patch approvals are managed at the partner level');
+      setSubmitError(t('patchApprovalModal.errors.partnerLevel'));
       return;
     }
     // Gate approve behind a scope-naming confirm dialog.
@@ -127,13 +128,17 @@ export default function PatchApprovalModal({
       // Ring-scoped: the API resolves the org from the ring.
       if (action === 'defer') {
         if (!deferUntil.trim()) {
-          throw new Error('Choose when the patch should be deferred until');
+          throw new Error(t('patchApprovalModal.errors.chooseDeferUntil'));
         }
         body.deferUntil = new Date(deferUntil).toISOString();
       }
 
       const successMessage =
-        action === 'approve' ? 'Patch approved' : action === 'decline' ? 'Patch declined' : 'Patch deferred';
+        action === 'approve'
+          ? t('patchApprovalModal.toast.approved')
+          : action === 'decline'
+            ? t('patchApprovalModal.toast.declined')
+            : t('patchApprovalModal.toast.deferred');
 
       // Surface success/failure via runAction (toast + HTTP-200 {success:false}
       // handling). Keep the inline submitError too so the message stays visible
@@ -144,7 +149,7 @@ export default function PatchApprovalModal({
             method: 'POST',
             body: JSON.stringify(body),
           }),
-        errorFallback: 'Failed to update patch approval',
+        errorFallback: t('patchApprovalModal.errors.updateFailed'),
         successMessage,
         onUnauthorized: () => void navigateTo('/login', { replace: true }),
       });
@@ -155,7 +160,7 @@ export default function PatchApprovalModal({
       // mirror it inline so it's visible in the modal. A pre-request throw (e.g.
       // the defer-date guard) lands here as a plain Error.
       if (err instanceof ActionError && err.status === 401) return;
-      setSubmitError(err instanceof Error ? err.message : 'Failed to update patch approval');
+      setSubmitError(err instanceof Error ? err.message : t('patchApprovalModal.errors.updateFailed'));
     } finally {
       setSubmitting(false);
     }
@@ -163,10 +168,10 @@ export default function PatchApprovalModal({
 
   return (
     <>
-    <Dialog open={open} onClose={onClose} title="Review Patch" className="p-6">
+    <Dialog open={open} onClose={onClose} title={t('patchApprovalModal.title')} className="p-6">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h2 className="text-lg font-semibold">Review Patch</h2>
+            <h2 className="text-lg font-semibold">{t('patchApprovalModal.title')}</h2>
             <p className="mt-1 text-sm text-muted-foreground">{patch.title}</p>
           </div>
           <button
@@ -175,7 +180,7 @@ export default function PatchApprovalModal({
             className="rounded-md border px-2 py-1 text-xs font-medium text-muted-foreground hover:text-foreground"
             disabled={isSubmitting}
           >
-            Close
+            {t('patchApprovalModal.close')}
           </button>
         </div>
 
@@ -197,8 +202,8 @@ export default function PatchApprovalModal({
               >
                 <Icon className="mt-0.5 h-4 w-4" />
                 <div>
-                  <div className="text-sm font-medium">{config.label}</div>
-                  <div className="text-xs text-muted-foreground">{config.description}</div>
+                  <div className="text-sm font-medium">{t(config.labelKey)}</div>
+                  <div className="text-xs text-muted-foreground">{t(config.descriptionKey)}</div>
                 </div>
               </button>
             );
@@ -206,11 +211,11 @@ export default function PatchApprovalModal({
         </div>
 
         <div className="mt-6">
-          <label className="text-sm font-medium">Notes</label>
+          <label className="text-sm font-medium">{t('patchApprovalModal.notes.label')}</label>
           <textarea
             value={notes}
             onChange={event => setNotes(event.target.value)}
-            placeholder="Add context or a reason for the decision..."
+            placeholder={t('patchApprovalModal.notes.placeholder')}
             className="mt-2 h-24 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             disabled={isSubmitting}
           />
@@ -219,7 +224,7 @@ export default function PatchApprovalModal({
         {action === 'defer' && (
           <div className="mt-6">
             <label htmlFor="patch-defer-until" className="text-sm font-medium">
-              Defer Until
+              {t('patchApprovalModal.deferUntil')}
             </label>
             <input
               id="patch-defer-until"
@@ -234,7 +239,7 @@ export default function PatchApprovalModal({
 
         {isOrgScope && !submitError && (
           <div className="mt-4 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning-foreground">
-            Patch approvals are managed at the partner level.
+            {t('patchApprovalModal.errors.partnerLevel')}
           </div>
         )}
 
@@ -251,18 +256,18 @@ export default function PatchApprovalModal({
             className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
             disabled={isSubmitting}
           >
-            Cancel
+            {t('patchApprovalModal.cancel')}
           </button>
           <button
             type="button"
             onClick={handleSubmit}
             disabled={!canSubmit}
-            title={isOrgScope ? 'Patch approvals are managed at the partner level' : undefined}
+            title={isOrgScope ? t('patchApprovalModal.errors.partnerLevel') : undefined}
             className="h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <span className="inline-flex items-center gap-2">
               {isSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}
-              {actionConfig[action].label}
+              {t(actionConfig[action].labelKey)}
             </span>
           </button>
         </div>
@@ -275,15 +280,19 @@ export default function PatchApprovalModal({
         setApproveConfirmOpen(false);
         void doSubmit();
       }}
-      title="Confirm patch approval"
+      title={t('patchApprovalModal.confirm.title')}
       variant="warning"
-      confirmLabel="Approve"
+      confirmLabel={t('patchApprovalModal.actions.approve.label')}
       confirmTestId="confirm-fleet-action"
-      message={scopeConfirmMessage({
-        action: 'Approve patch',
-        deviceCount: ringDeviceCount ?? 1,
-        orgNames: orgName ? [orgName] : ['the selected organization'],
-      })}
+      message={t(
+        (ringDeviceCount ?? 1) === 1
+          ? 'patchApprovalModal.confirm.messageOne'
+          : 'patchApprovalModal.confirm.messageMany',
+        {
+          count: ringDeviceCount ?? 1,
+          org: orgName ?? t('patchApprovalModal.confirm.selectedOrganization'),
+        }
+      )}
     />
     </>
   );

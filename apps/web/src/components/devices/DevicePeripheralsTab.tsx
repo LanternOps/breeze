@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Usb, ShieldAlert, Activity, Shield } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 
@@ -50,6 +51,7 @@ function formatDateTime(value?: string, timezone?: string) {
 }
 
 export default function DevicePeripheralsTab({ deviceId, timezone }: DevicePeripheralsTabProps) {
+  const { t } = useTranslation('devices');
   const [events, setEvents] = useState<PeripheralEvent[]>([]);
   const [policies, setPolicies] = useState<PeripheralPolicy[]>([]);
   const [loadingEvents, setLoadingEvents] = useState(true);
@@ -116,28 +118,28 @@ export default function DevicePeripheralsTab({ deviceId, timezone }: DevicePerip
         <div className="rounded-lg border bg-card p-4 shadow-xs">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Activity className="h-4 w-4" />
-            Events (24h)
+            {t('devicePeripheralsTab.summary.events24h')}
           </div>
           <p className="mt-2 text-2xl font-bold">{loadingEvents ? '—' : totalEvents24h}</p>
         </div>
         <div className="rounded-lg border bg-card p-4 shadow-xs">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <ShieldAlert className="h-4 w-4" />
-            Blocked (24h)
+            {t('devicePeripheralsTab.summary.blocked24h')}
           </div>
           <p className="mt-2 text-2xl font-bold">{loadingEvents ? '—' : blockedEvents24h}</p>
         </div>
         <div className="rounded-lg border bg-card p-4 shadow-xs">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Usb className="h-4 w-4" />
-            Connected (24h)
+            {t('devicePeripheralsTab.summary.connected24h')}
           </div>
           <p className="mt-2 text-2xl font-bold">{loadingEvents ? '—' : connectedCount}</p>
         </div>
         <div className="rounded-lg border bg-card p-4 shadow-xs">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Shield className="h-4 w-4" />
-            Active Policies
+            {t('devicePeripheralsTab.summary.activePolicies')}
           </div>
           <p className="mt-2 text-2xl font-bold">{loadingPolicies ? '—' : policies.length}</p>
         </div>
@@ -146,7 +148,7 @@ export default function DevicePeripheralsTab({ deviceId, timezone }: DevicePerip
       {/* Recent events */}
       <div className="rounded-lg border bg-card shadow-xs">
         <div className="border-b px-4 py-3">
-          <h3 className="text-sm font-semibold">Recent Events</h3>
+          <h3 className="text-sm font-semibold">{t('devicePeripheralsTab.recentEvents')}</h3>
         </div>
         {loadingEvents ? (
           <div className="flex items-center justify-center py-8">
@@ -154,19 +156,19 @@ export default function DevicePeripheralsTab({ deviceId, timezone }: DevicePerip
           </div>
         ) : events.length === 0 ? (
           <div className="py-8 text-center text-sm text-muted-foreground">
-            No peripheral events recorded for this device.
+            {t('devicePeripheralsTab.emptyEvents')}
           </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y">
               <thead className="bg-muted/40">
                 <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  <th className="px-4 py-3">Occurred At</th>
-                  <th className="px-4 py-3">Event</th>
-                  <th className="px-4 py-3">Type</th>
-                  <th className="px-4 py-3">Vendor</th>
-                  <th className="px-4 py-3">Product</th>
-                  <th className="px-4 py-3">Serial</th>
+                  <th className="px-4 py-3">{t('devicePeripheralsTab.table.occurredAt')}</th>
+                  <th className="px-4 py-3">{t('devicePeripheralsTab.table.event')}</th>
+                  <th className="px-4 py-3">{t('devicePeripheralsTab.table.type')}</th>
+                  <th className="px-4 py-3">{t('devicePeripheralsTab.table.vendor')}</th>
+                  <th className="px-4 py-3">{t('devicePeripheralsTab.table.product')}</th>
+                  <th className="px-4 py-3">{t('devicePeripheralsTab.table.serial')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
@@ -177,7 +179,7 @@ export default function DevicePeripheralsTab({ deviceId, timezone }: DevicePerip
                     </td>
                     <td className="px-4 py-3">
                       <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${eventTypeBadge[event.eventType] ?? 'bg-muted text-muted-foreground'}`}>
-                        {event.eventType.replace('_', ' ')}
+                        {t(`devicePeripheralsTab.eventTypes.${event.eventType}`, { defaultValue: event.eventType.replace('_', ' ') })}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-muted-foreground">{event.peripheralType}</td>
@@ -195,7 +197,7 @@ export default function DevicePeripheralsTab({ deviceId, timezone }: DevicePerip
       {/* Applied policies */}
       <div className="rounded-lg border bg-card shadow-xs">
         <div className="border-b px-4 py-3">
-          <h3 className="text-sm font-semibold">Active Policies</h3>
+          <h3 className="text-sm font-semibold">{t('devicePeripheralsTab.activePolicies')}</h3>
         </div>
         {loadingPolicies ? (
           <div className="flex items-center justify-center py-8">
@@ -203,17 +205,17 @@ export default function DevicePeripheralsTab({ deviceId, timezone }: DevicePerip
           </div>
         ) : policies.length === 0 ? (
           <div className="py-8 text-center text-sm text-muted-foreground">
-            No active peripheral policies.
+            {t('devicePeripheralsTab.emptyPolicies')}
           </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y">
               <thead className="bg-muted/40">
                 <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  <th className="px-4 py-3">Name</th>
-                  <th className="px-4 py-3">Device Class</th>
-                  <th className="px-4 py-3">Action</th>
-                  <th className="px-4 py-3">Target</th>
+                  <th className="px-4 py-3">{t('devicePeripheralsTab.table.name')}</th>
+                  <th className="px-4 py-3">{t('devicePeripheralsTab.table.deviceClass')}</th>
+                  <th className="px-4 py-3">{t('devicePeripheralsTab.table.action')}</th>
+                  <th className="px-4 py-3">{t('devicePeripheralsTab.table.target')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
@@ -227,7 +229,7 @@ export default function DevicePeripheralsTab({ deviceId, timezone }: DevicePerip
                     </td>
                     <td className="px-4 py-3">
                       <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${actionBadge[p.action] ?? 'bg-muted text-muted-foreground'}`}>
-                        {p.action.replace('_', ' ')}
+                        {t(`devicePeripheralsTab.actions.${p.action}`, { defaultValue: p.action.replace('_', ' ') })}
                       </span>
                     </td>
                     <td className="px-4 py-3 capitalize text-muted-foreground">{p.targetType}</td>

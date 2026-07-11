@@ -11,6 +11,7 @@
 // discoverability — Apply is a no-op confirmation, Reset clears the builder,
 // Save calls onSaveRequested with the current group.
 import { Plus, Trash2 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import type {
   FilterCondition,
   FilterConditionGroup,
@@ -62,6 +63,7 @@ const EMPTY_GROUP: FilterConditionGroup = { operator: 'AND', conditions: [] };
 export function FilterSentenceBuilder({
   value, onChange, orgs, sites, softwareOptions, softwareOptionCounts, onSoftwareSearch, onSaveRequested
 }: FilterSentenceBuilderProps) {
+  const { t } = useTranslation('devices');
   const hasConditions = value.conditions.length > 0;
   return (
     <div
@@ -88,7 +90,7 @@ export function FilterSentenceBuilder({
             disabled={!hasConditions}
             className="rounded border px-3 py-1 text-xs hover:bg-muted disabled:opacity-40"
           >
-            Reset
+            {t('filterSentenceBuilder.reset')}
           </button>
           {onSaveRequested && (
             <button
@@ -98,7 +100,7 @@ export function FilterSentenceBuilder({
               disabled={!hasConditions}
               className="rounded border px-3 py-1 text-xs hover:bg-muted disabled:opacity-40"
             >
-              Save
+              {t('common:actions.save')}
             </button>
           )}
           <button
@@ -107,7 +109,7 @@ export function FilterSentenceBuilder({
             onClick={() => onChange({ ...value })}
             className="rounded bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:opacity-90"
           >
-            Apply
+            {t('common:actions.apply')}
           </button>
         </div>
       </div>
@@ -126,6 +128,7 @@ interface GroupEditorProps {
   depth: number;
 }
 function GroupEditor({ group, onChange, orgs, sites, softwareOptions, softwareOptionCounts, onSoftwareSearch, depth }: GroupEditorProps) {
+  const { t } = useTranslation('devices');
   const toggleOp = () => onChange({ ...group, operator: group.operator === 'AND' ? 'OR' : 'AND' });
   const addCondition = () => {
     const def = V2_FILTER_FIELDS[0]; // pick a stable default; user changes it via dropdown
@@ -161,11 +164,15 @@ function GroupEditor({ group, onChange, orgs, sites, softwareOptions, softwareOp
         >
           {group.operator}
         </button>
-        <span className="text-xs text-muted-foreground">match {group.operator === 'AND' ? 'all' : 'any'} of</span>
+        <span className="text-xs text-muted-foreground">
+          {group.operator === 'AND'
+            ? t('filterSentenceBuilder.matchAllOf')
+            : t('filterSentenceBuilder.matchAnyOf')}
+        </span>
       </div>
       <div className="flex flex-col gap-2">
         {group.conditions.length === 0 && (
-          <div className="text-xs text-muted-foreground">No conditions yet.</div>
+          <div className="text-xs text-muted-foreground">{t('filterSentenceBuilder.noConditions')}</div>
         )}
         {group.conditions.map((item, i) => {
           if ('conditions' in item) {
@@ -184,7 +191,7 @@ function GroupEditor({ group, onChange, orgs, sites, softwareOptions, softwareOp
                 <button
                   type="button"
                   onClick={() => removeAt(i)}
-                  aria-label="Remove group"
+                  aria-label={t('filterSentenceBuilder.removeGroup')}
                   data-testid={`sentence-remove-${depth}-${i}`}
                   className="absolute right-0 top-0 text-muted-foreground hover:text-destructive"
                 >
@@ -216,7 +223,7 @@ function GroupEditor({ group, onChange, orgs, sites, softwareOptions, softwareOp
           data-testid={`sentence-add-condition-${depth}`}
           className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-xs hover:bg-muted"
         >
-          <Plus className="h-3 w-3" /> Add condition
+          <Plus className="h-3 w-3" /> {t('filterSentenceBuilder.addCondition')}
         </button>
         <button
           type="button"
@@ -224,7 +231,7 @@ function GroupEditor({ group, onChange, orgs, sites, softwareOptions, softwareOp
           data-testid={`sentence-add-group-${depth}`}
           className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-xs hover:bg-muted"
         >
-          <Plus className="h-3 w-3" /> Add group
+          <Plus className="h-3 w-3" /> {t('filterSentenceBuilder.addGroup')}
         </button>
       </div>
     </div>
@@ -243,6 +250,7 @@ interface ConditionRowProps {
   rowId: string;
 }
 function ConditionRow({ condition, onChange, onRemove, orgs, sites, softwareOptions, softwareOptionCounts, onSoftwareSearch, rowId }: ConditionRowProps) {
+  const { t } = useTranslation('devices');
   const field = getFieldDef(condition.field) ?? V2_FILTER_FIELDS[0];
   const setField = (key: string) => {
     const def = getFieldDef(key);
@@ -261,7 +269,7 @@ function ConditionRow({ condition, onChange, onRemove, orgs, sites, softwareOpti
         className="rounded border bg-background px-1 py-0.5 text-xs"
       >
         {V2_FILTER_FIELDS.map(f => (
-          <option key={f.key} value={f.key}>{f.label}</option>
+          <option key={f.key} value={f.key}>{t(`filterSentenceBuilder.fields.${f.key}`, { defaultValue: f.label })}</option>
         ))}
       </select>
       {/* operator label preview — actual operator picker lives inside the value editor */}
@@ -281,7 +289,7 @@ function ConditionRow({ condition, onChange, onRemove, orgs, sites, softwareOpti
       <button
         type="button"
         onClick={onRemove}
-        aria-label="Remove condition"
+        aria-label={t('filterSentenceBuilder.removeCondition')}
         data-testid={`sentence-remove-${rowId}`}
         className="text-muted-foreground hover:text-destructive"
       >

@@ -7,6 +7,8 @@ import {
   Trash2,
   Layers,
 } from 'lucide-react';
+import type { TFunction } from 'i18next';
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 
 export type UpdateRingStatus = 'active' | 'disabled';
@@ -50,15 +52,15 @@ type UpdateRingListProps = {
   pageSize?: number;
 };
 
-function formatDate(dateString?: string): string {
-  if (!dateString) return '\u2014';
+function formatDate(dateString: string | undefined, t: TFunction<'patches'>): string {
+  if (!dateString) return t('updateRingList.emptyValue');
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
   return date.toLocaleDateString();
 }
 
-function ComplianceBadge({ percent }: { percent?: number }) {
-  if (percent === undefined) return <span className="text-muted-foreground">{"\u2014"}</span>;
+function ComplianceBadge({ percent, t }: { percent?: number; t: TFunction<'patches'> }) {
+  if (percent === undefined) return <span className="text-muted-foreground">{t('updateRingList.emptyValue')}</span>;
 
   const color =
     percent >= 90
@@ -86,6 +88,7 @@ export default function UpdateRingList({
   onSelect,
   pageSize = 8,
 }: UpdateRingListProps) {
+  const { t } = useTranslation('patches');
   const [query, setQuery] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
 
@@ -110,9 +113,9 @@ export default function UpdateRingList({
         <div className="flex items-center gap-2">
           <Layers className="h-5 w-5 text-primary" />
           <div>
-            <h2 className="text-lg font-semibold">Update Rings</h2>
+            <h2 className="text-lg font-semibold">{t('updateRingList.title')}</h2>
             <p className="text-sm text-muted-foreground">
-              {filteredRings.length} of {rings.length} rings
+              {t('updateRingList.summary', { shown: filteredRings.length, total: rings.length })}
             </p>
           </div>
         </div>
@@ -120,7 +123,7 @@ export default function UpdateRingList({
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <input
             type="search"
-            placeholder="Search rings..."
+            placeholder={t('updateRingList.searchPlaceholder')}
             value={query}
             onChange={(e) => {
               setQuery(e.target.value);
@@ -135,14 +138,14 @@ export default function UpdateRingList({
         <table className="min-w-full divide-y">
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <th className="px-4 py-3">Order</th>
-              <th className="px-4 py-3">Ring</th>
-              <th className="px-4 py-3">Deferral</th>
-              <th className="px-4 py-3">Deadline</th>
-              <th className="px-4 py-3">Devices</th>
-              <th className="px-4 py-3">Compliance</th>
-              <th className="px-4 py-3">Updated</th>
-              <th className="px-4 py-3 text-right">Actions</th>
+              <th className="px-4 py-3">{t('updateRingList.table.order')}</th>
+              <th className="px-4 py-3">{t('updateRingList.table.ring')}</th>
+              <th className="px-4 py-3">{t('updateRingList.table.deferral')}</th>
+              <th className="px-4 py-3">{t('updateRingList.table.deadline')}</th>
+              <th className="px-4 py-3">{t('updateRingList.table.devices')}</th>
+              <th className="px-4 py-3">{t('updateRingList.table.compliance')}</th>
+              <th className="px-4 py-3">{t('updateRingList.table.updated')}</th>
+              <th className="px-4 py-3 text-right">{t('updateRingList.table.actions')}</th>
             </tr>
           </thead>
           <tbody className="divide-y">
@@ -152,7 +155,7 @@ export default function UpdateRingList({
                   colSpan={8}
                   className="px-4 py-6 text-center text-sm text-muted-foreground"
                 >
-                  No update rings found.
+                  {t('updateRingList.empty')}
                 </td>
               </tr>
             ) : (
@@ -180,25 +183,30 @@ export default function UpdateRingList({
                     </button>
                   </td>
                   <td className="px-4 py-3 text-muted-foreground">
-                    {ring.deferralDays === 0 ? 'None' : `${ring.deferralDays} days`}
+                    {ring.deferralDays === 0
+                      ? t('updateRingList.none')
+                      : t('updateRingList.days', { count: ring.deferralDays })}
                   </td>
                   <td className="px-4 py-3 text-muted-foreground">
-                    {ring.deadlineDays == null ? 'None' : `${ring.deadlineDays} days`}
+                    {ring.deadlineDays == null
+                      ? t('updateRingList.none')
+                      : t('updateRingList.days', { count: ring.deadlineDays })}
                   </td>
                   <td className="px-4 py-3 text-muted-foreground">
-                    {ring.deviceCount ?? '\u2014'}
+                    {ring.deviceCount ?? t('updateRingList.emptyValue')}
                   </td>
                   <td className="px-4 py-3">
-                    <ComplianceBadge percent={ring.compliancePercent} />
+                    <ComplianceBadge percent={ring.compliancePercent} t={t} />
                   </td>
                   <td className="px-4 py-3 text-muted-foreground">
-                    {formatDate(ring.updatedAt)}
+                    {formatDate(ring.updatedAt, t)}
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center justify-end gap-2">
                       <button
                         type="button"
                         onClick={() => onEdit?.(ring)}
+                        aria-label={t('updateRingList.editRing', { name: ring.name })}
                         className="inline-flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted"
                       >
                         <Pencil className="h-4 w-4" />
@@ -206,6 +214,7 @@ export default function UpdateRingList({
                       <button
                         type="button"
                         onClick={() => onDelete?.(ring)}
+                        aria-label={t('updateRingList.deleteRing', { name: ring.name })}
                         className="inline-flex h-8 w-8 items-center justify-center rounded-md border text-destructive hover:bg-destructive/10"
                       >
                         <Trash2 className="h-4 w-4" />
@@ -222,7 +231,7 @@ export default function UpdateRingList({
       {totalPages > 1 && (
         <div className="mt-4 flex items-center justify-between text-sm text-muted-foreground">
           <span>
-            Page {currentPage} of {totalPages}
+            {t('updateRingList.pageStatus', { current: currentPage, total: totalPages })}
           </span>
           <div className="flex items-center gap-2">
             <button

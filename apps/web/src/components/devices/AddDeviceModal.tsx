@@ -1,20 +1,25 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Download, Copy, Loader2, Check, Link } from 'lucide-react';
-import { Dialog } from '../shared/Dialog';
-import { showToast } from '../shared/Toast';
-import { fetchWithAuth } from '../../stores/auth';
-import { useOrgStore } from '../../stores/orgStore';
-import { formatDateTime } from '@/lib/dateTimeFormat';
-import { fallbackInstallerFilename, filenameFromContentDisposition } from '@/lib/downloadFilename';
-import { buildInstallCommands } from '@/lib/installCommands';
-import { navigateTo } from '@/lib/navigation';
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { Download, Copy, Loader2, Check, Link } from "lucide-react";
+import { Dialog } from "../shared/Dialog";
+import { showToast } from "../shared/Toast";
+import { fetchWithAuth } from "../../stores/auth";
+import { useOrgStore } from "../../stores/orgStore";
+import { formatDateTime } from "@/lib/dateTimeFormat";
+import {
+  fallbackInstallerFilename,
+  filenameFromContentDisposition,
+} from "@/lib/downloadFilename";
+import { buildInstallCommands } from "@/lib/installCommands";
+import { navigateTo } from "@/lib/navigation";
+import { useTranslation } from "react-i18next";
+import "../../lib/i18n";
 
-function detectUserOS(): 'windows' | 'macos' | 'linux' {
-  if (typeof navigator === 'undefined') return 'linux';
+function detectUserOS(): "windows" | "macos" | "linux" {
+  if (typeof navigator === "undefined") return "linux";
   const ua = navigator.userAgent.toLowerCase();
-  if (ua.includes('win')) return 'windows';
-  if (ua.includes('mac')) return 'macos';
-  return 'linux';
+  if (ua.includes("win")) return "windows";
+  if (ua.includes("mac")) return "macos";
+  return "linux";
 }
 
 /**
@@ -27,17 +32,25 @@ function detectUserOS(): 'windows' | 'macos' | 'linux' {
  * lost — see PR #739 review.
  */
 function extractApiError(body: unknown): string {
-  if (!body || typeof body !== 'object') return '';
+  if (!body || typeof body !== "object") return "";
   const b = body as { message?: unknown; error?: unknown };
-  if (typeof b.message === 'string' && b.message) return b.message;
-  if (typeof b.error === 'string' && b.error) return b.error;
+  if (typeof b.message === "string" && b.message) return b.message;
+  if (typeof b.error === "string" && b.error) return b.error;
   const errObj = b.error as
-    | { issues?: Array<{ message?: unknown }>; name?: unknown; message?: unknown }
+    | {
+        issues?: Array<{ message?: unknown }>;
+        name?: unknown;
+        message?: unknown;
+      }
     | undefined;
   let issues = errObj?.issues;
   // zod v4: ZodError.issues is non-enumerable, so JSON.stringify buries the
   // issues array inside error.message — recover it.
-  if (!issues && errObj?.name === 'ZodError' && typeof errObj.message === 'string') {
+  if (
+    !issues &&
+    errObj?.name === "ZodError" &&
+    typeof errObj.message === "string"
+  ) {
     try {
       const parsed = JSON.parse(errObj.message);
       if (Array.isArray(parsed)) issues = parsed;
@@ -46,8 +59,8 @@ function extractApiError(body: unknown): string {
     }
   }
   const zodIssue = issues?.[0]?.message;
-  if (typeof zodIssue === 'string' && zodIssue) return zodIssue;
-  return '';
+  if (typeof zodIssue === "string" && zodIssue) return zodIssue;
+  return "";
 }
 
 /**
@@ -57,12 +70,14 @@ function extractApiError(body: unknown): string {
  */
 function formatTokenExpiry(iso: string): string {
   const expiresMs = new Date(iso).getTime();
-  if (!Number.isFinite(expiresMs)) return 'after a short period';
+  if (!Number.isFinite(expiresMs)) return "after a short period";
   const diffMinutes = Math.round((expiresMs - Date.now()) / 60000);
-  if (diffMinutes <= 0) return 'shortly';
-  if (diffMinutes < 60) return `in about ${diffMinutes} minute${diffMinutes === 1 ? '' : 's'}`;
+  if (diffMinutes <= 0) return "shortly";
+  if (diffMinutes < 60)
+    return `in about ${diffMinutes} minute${diffMinutes === 1 ? "" : "s"}`;
   const diffHours = Math.round(diffMinutes / 60);
-  if (diffHours < 48) return `in about ${diffHours} hour${diffHours === 1 ? '' : 's'}`;
+  if (diffHours < 48)
+    return `in about ${diffHours} hour${diffHours === 1 ? "" : "s"}`;
   return `on ${formatDateTime(expiresMs)}`;
 }
 
@@ -71,7 +86,11 @@ interface AddDeviceModalProps {
   onClose: () => void;
 }
 
-export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps) {
+export default function AddDeviceModal({
+  isOpen,
+  onClose,
+}: AddDeviceModalProps) {
+  const { t } = useTranslation("devices");
   const userOS = detectUserOS();
   const { currentOrgId, currentSiteId, sites } = useOrgStore();
   const orgSites = useMemo(
@@ -80,15 +99,15 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
   );
 
   // Tab state
-  const [activeTab, setActiveTab] = useState<'installer' | 'cli'>(
-    userOS === 'linux' ? 'cli' : 'installer',
+  const [activeTab, setActiveTab] = useState<"installer" | "cli">(
+    userOS === "linux" ? "cli" : "installer",
   );
 
   // Installer tab state
-  const [selectedPlatform, setSelectedPlatform] = useState<'windows' | 'macos'>(
-    userOS === 'macos' ? 'macos' : 'windows',
+  const [selectedPlatform, setSelectedPlatform] = useState<"windows" | "macos">(
+    userOS === "macos" ? "macos" : "windows",
   );
-  const [selectedSiteId, setSelectedSiteId] = useState('');
+  const [selectedSiteId, setSelectedSiteId] = useState("");
   const [deviceCount, setDeviceCount] = useState(1);
   // Lifetime of the installer / shared link the admin distributes. Sent to
   // the child-key mint routes (installer download + installer-link), where
@@ -104,15 +123,15 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
   const [downloadSuccess, setDownloadSuccess] = useState(false);
 
   // Generate link state
-  const [generatedLink, setGeneratedLink] = useState('');
+  const [generatedLink, setGeneratedLink] = useState("");
   const [linkLoading, setLinkLoading] = useState(false);
   const [linkError, setLinkError] = useState<string>();
   const [linkCopied, setLinkCopied] = useState(false);
 
   // CLI tab state (lazy-loaded)
   const [cliInitialized, setCliInitialized] = useState(false);
-  const [onboardingToken, setOnboardingToken] = useState('');
-  const [enrollmentSecret, setEnrollmentSecret] = useState('');
+  const [onboardingToken, setOnboardingToken] = useState("");
+  const [enrollmentSecret, setEnrollmentSecret] = useState("");
   const [tokenLoading, setTokenLoading] = useState(false);
   const [tokenError, setTokenError] = useState<string>();
   const [tokenCopied, setTokenCopied] = useState(false);
@@ -122,23 +141,25 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
   const [cliDeviceCount, setCliDeviceCount] = useState(1);
   const [tokenMaxUsage, setTokenMaxUsage] = useState<number | null>(null);
   const [tokenExpiresAt, setTokenExpiresAt] = useState<string | null>(null);
-  const [selectedOS, setSelectedOS] = useState<'windows' | 'macos' | 'linux'>(userOS);
+  const [selectedOS, setSelectedOS] = useState<"windows" | "macos" | "linux">(
+    userOS,
+  );
   const [sha256s, setSha256s] = useState<Record<string, string>>({});
 
   // Fetch published SHA256SUMS so users can verify uninstall scripts before running
   useEffect(() => {
-    fetch('/scripts/SHA256SUMS')
+    fetch("/scripts/SHA256SUMS")
       .then((r) => r.text())
       .then((t) => {
         const map: Record<string, string> = {};
-        for (const line of t.trim().split('\n')) {
+        for (const line of t.trim().split("\n")) {
           const [hash, name] = line.split(/\s+/, 2);
           if (hash && name) map[name] = hash;
         }
         setSha256s(map);
       })
       .catch((err) => {
-        console.warn('[AddDeviceModal] Failed to load SHA256SUMS:', err);
+        console.warn("[AddDeviceModal] Failed to load SHA256SUMS:", err);
       });
   }, []);
 
@@ -160,12 +181,12 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
       setDeviceCount(1);
       setTtlMinutes(1440);
       setCliInitialized(false);
-      setOnboardingToken('');
+      setOnboardingToken("");
       setTokenError(undefined);
       setCliDeviceCount(1);
       setTokenMaxUsage(null);
       setTokenExpiresAt(null);
-      setGeneratedLink('');
+      setGeneratedLink("");
       setLinkError(undefined);
       setLinkCopied(false);
     }
@@ -187,37 +208,41 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
     cliFetchInFlight.current = true;
     setCliInitialized(true);
     setTokenLoading(true);
-    setOnboardingToken('');
-    setEnrollmentSecret('');
+    setOnboardingToken("");
+    setEnrollmentSecret("");
     setTokenError(undefined);
     setTokenMaxUsage(null);
     setTokenExpiresAt(null);
 
     try {
-      const response = await fetchWithAuth('/devices/onboarding-token', {
-        method: 'POST',
+      const response = await fetchWithAuth("/devices/onboarding-token", {
+        method: "POST",
         body: JSON.stringify({ count }),
       });
 
       if (!response.ok) {
         if (response.status === 401) {
-          void navigateTo('/login', { replace: true });
+          void navigateTo("/login", { replace: true });
           return;
         }
-        let errorMessage = 'Failed to generate installation token';
+        let errorMessage = "Failed to generate installation token";
         try {
           const errorData = await response.json();
-          const rawMessage = errorData.message || errorData.error || '';
-          if (response.status === 403 && rawMessage.toLowerCase().includes('mfa required')) {
-            errorMessage = 'MFA_REQUIRED';
+          const rawMessage = errorData.message || errorData.error || "";
+          if (
+            response.status === 403 &&
+            rawMessage.toLowerCase().includes("mfa required")
+          ) {
+            errorMessage = "MFA_REQUIRED";
           } else {
             errorMessage = rawMessage || errorMessage;
           }
         } catch {
           if (response.status === 404) {
-            errorMessage = 'Token generation service not available. Please contact support.';
+            errorMessage =
+              "Token generation service not available. Please contact support.";
           } else if (response.status >= 500) {
-            errorMessage = 'Server error. Please try again later.';
+            errorMessage = "Server error. Please try again later.";
           }
         }
         setTokenError(errorMessage);
@@ -226,14 +251,16 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
 
       const data = await response.json();
       if (!data.token) {
-        setTokenError('Server returned an unexpected response. Please try again.');
+        setTokenError(
+          "Server returned an unexpected response. Please try again.",
+        );
         return;
       }
       setOnboardingToken(data.token);
-      if (typeof data.maxUsage === 'number') {
+      if (typeof data.maxUsage === "number") {
         setTokenMaxUsage(data.maxUsage);
       }
-      if (typeof data.expiresAt === 'string') {
+      if (typeof data.expiresAt === "string") {
         setTokenExpiresAt(data.expiresAt);
       }
       if (data.enrollmentSecret) {
@@ -241,7 +268,9 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
       }
     } catch (err) {
       setTokenError(
-        err instanceof Error ? err.message : 'Network error. Please check your connection.',
+        err instanceof Error
+          ? err.message
+          : t("addDeviceModal.networkErrorPleaseCheckYourConnection"),
       );
     } finally {
       setTokenLoading(false);
@@ -251,21 +280,31 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
 
   // Re-mint the CLI token, e.g. after the operator bumps the device count or
   // wants a fresh one mid-session (#1108).
-  const regenerateCliToken = useCallback((count: number) => {
-    setTokenCopied(false);
-    void initializeCli(count);
-  }, [initializeCli]);
+  const regenerateCliToken = useCallback(
+    (count: number) => {
+      setTokenCopied(false);
+      void initializeCli(count);
+    },
+    [initializeCli],
+  );
 
   // Exchange a raw enrollment key token for a short-lived one-time handle, then
   // navigate to the public-download URL. This keeps the raw token out of browser
   // history, server logs, and referrer headers.
-  async function downloadInstaller(keyId: string, rawToken: string, platform: 'windows' | 'macos') {
-    const res = await fetchWithAuth(`/enrollment-keys/${keyId}/download-handle`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ rawToken }),
-    });
-    if (!res.ok) throw new Error('Failed to prepare download');
+  async function downloadInstaller(
+    keyId: string,
+    rawToken: string,
+    platform: "windows" | "macos",
+  ) {
+    const res = await fetchWithAuth(
+      `/enrollment-keys/${keyId}/download-handle`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ rawToken }),
+      },
+    );
+    if (!res.ok) throw new Error("Failed to prepare download");
     const { handle } = (await res.json()) as { handle: string };
     window.location.href = `/api/v1/enrollment-keys/public-download/${platform}?h=${encodeURIComponent(handle)}`;
   }
@@ -274,12 +313,12 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
   // minted one yet. This single effect covers both an explicit tab click and
   // the Linux default where the CLI tab is already active on open (#1108).
   useEffect(() => {
-    if (isOpen && activeTab === 'cli' && !cliInitialized) {
+    if (isOpen && activeTab === "cli" && !cliInitialized) {
       void initializeCli(cliDeviceCount);
     }
   }, [isOpen, activeTab, cliInitialized, cliDeviceCount, initializeCli]);
 
-  const handleTabChange = (tab: 'installer' | 'cli') => {
+  const handleTabChange = (tab: "installer" | "cli") => {
     setActiveTab(tab);
   };
 
@@ -294,9 +333,9 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
 
     try {
       // Step 1: Create parent enrollment key (template — child key handles actual enrollment count)
-      const keyRes = await fetchWithAuth('/enrollment-keys', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const keyRes = await fetchWithAuth("/enrollment-keys", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: `Add device installer (${new Date().toISOString().slice(0, 10)})`,
           siteId: selectedSiteId,
@@ -305,12 +344,21 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
       });
 
       if (!keyRes.ok) {
-        const body = await keyRes.json().catch(() => ({ error: 'Failed to create enrollment key' }));
+        const body = await keyRes
+          .json()
+          .catch(() => ({
+            error: t("addDeviceModal.failedToCreateEnrollmentKey"),
+          }));
         const rawMessage = extractApiError(body);
-        if (keyRes.status === 403 && rawMessage.toLowerCase().includes('mfa required')) {
-          setDownloadError('MFA_REQUIRED');
+        if (
+          keyRes.status === 403 &&
+          rawMessage.toLowerCase().includes("mfa required")
+        ) {
+          setDownloadError("MFA_REQUIRED");
         } else {
-          setDownloadError(rawMessage || `Failed to create enrollment key (${keyRes.status})`);
+          setDownloadError(
+            rawMessage || `Failed to create enrollment key (${keyRes.status})`,
+          );
         }
         return;
       }
@@ -332,17 +380,22 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
       }
 
       if (!dlRes.ok) {
-        const body = await dlRes.json().catch(() => ({ error: 'Download failed' }));
-        setDownloadError(extractApiError(body) || `Download failed (${dlRes.status})`);
+        const body = await dlRes
+          .json()
+          .catch(() => ({ error: t("addDeviceModal.downloadFailed") }));
+        setDownloadError(
+          extractApiError(body) || `Download failed (${dlRes.status})`,
+        );
         return;
       }
 
       const blob = await dlRes.blob();
       const filename =
-        filenameFromContentDisposition(dlRes.headers.get('Content-Disposition'))
-        ?? fallbackInstallerFilename(selectedPlatform);
+        filenameFromContentDisposition(
+          dlRes.headers.get("Content-Disposition"),
+        ) ?? fallbackInstallerFilename(selectedPlatform);
       const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
+      const a = document.createElement("a");
       a.href = url;
       a.download = filename;
       document.body.appendChild(a);
@@ -352,10 +405,13 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
 
       setDownloadSuccess(true);
     } catch (err) {
-      if (err instanceof DOMException && err.name === 'AbortError') {
-        setDownloadError('Download timed out. Please check your connection and try again.');
+      if (err instanceof DOMException && err.name === "AbortError") {
+        setDownloadError(
+          "Download timed out. Please check your connection and try again.",
+        );
       } else {
-        const message = err instanceof Error ? err.message : 'Unknown error';
+        const message =
+          err instanceof Error ? err.message : t("addDeviceModal.unknownError");
         setDownloadError(`Failed to download installer: ${message}`);
       }
     } finally {
@@ -368,13 +424,13 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
     if (linkLoading || !selectedSiteId) return;
     setLinkLoading(true);
     setLinkError(undefined);
-    setGeneratedLink('');
+    setGeneratedLink("");
 
     try {
       // Step 1: Create parent enrollment key
-      const keyRes = await fetchWithAuth('/enrollment-keys', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const keyRes = await fetchWithAuth("/enrollment-keys", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: `Add device link (${new Date().toISOString().slice(0, 10)})`,
           siteId: selectedSiteId,
@@ -383,12 +439,21 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
       });
 
       if (!keyRes.ok) {
-        const body = await keyRes.json().catch(() => ({ error: 'Failed to create enrollment key' }));
+        const body = await keyRes
+          .json()
+          .catch(() => ({
+            error: t("addDeviceModal.failedToCreateEnrollmentKey"),
+          }));
         const rawMessage = extractApiError(body);
-        if (keyRes.status === 403 && rawMessage.toLowerCase().includes('mfa required')) {
-          setLinkError('MFA_REQUIRED');
+        if (
+          keyRes.status === 403 &&
+          rawMessage.toLowerCase().includes("mfa required")
+        ) {
+          setLinkError("MFA_REQUIRED");
         } else {
-          setLinkError(rawMessage || `Failed to create enrollment key (${keyRes.status})`);
+          setLinkError(
+            rawMessage || `Failed to create enrollment key (${keyRes.status})`,
+          );
         }
         return;
       }
@@ -396,22 +461,35 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
       const keyData = await keyRes.json();
 
       // Step 2: Generate public link
-      const linkRes = await fetchWithAuth(`/enrollment-keys/${keyData.id}/installer-link`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ platform: selectedPlatform, count: deviceCount, ttlMinutes }),
-      });
+      const linkRes = await fetchWithAuth(
+        `/enrollment-keys/${keyData.id}/installer-link`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            platform: selectedPlatform,
+            count: deviceCount,
+            ttlMinutes,
+          }),
+        },
+      );
 
       if (!linkRes.ok) {
-        const body = await linkRes.json().catch(() => ({ error: 'Failed to generate link' }));
-        setLinkError(extractApiError(body) || `Failed to generate link (${linkRes.status})`);
+        const body = await linkRes
+          .json()
+          .catch(() => ({ error: t("addDeviceModal.failedToGenerateLink") }));
+        setLinkError(
+          extractApiError(body) ||
+            `Failed to generate link (${linkRes.status})`,
+        );
         return;
       }
 
       const linkData = await linkRes.json();
       setGeneratedLink(linkData.shortUrl ?? linkData.url);
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unknown error';
+      const message =
+        err instanceof Error ? err.message : t("addDeviceModal.unknownError");
       setLinkError(`Failed to generate link: ${message}`);
     } finally {
       setLinkLoading(false);
@@ -424,9 +502,15 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
       await navigator.clipboard.writeText(generatedLink);
       setLinkCopied(true);
       setTimeout(() => setLinkCopied(false), 2000);
-      showToast({ type: 'success', message: 'Link copied to clipboard' });
+      showToast({
+        type: "success",
+        message: t("addDeviceModal.linkCopiedToClipboard"),
+      });
     } catch {
-      showToast({ type: 'error', message: 'Failed to copy link' });
+      showToast({
+        type: "error",
+        message: t("addDeviceModal.failedToCopyLink"),
+      });
     }
   };
 
@@ -438,59 +522,83 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
       setTokenCopied(true);
       setTimeout(() => setTokenCopied(false), 2000);
     } catch {
-      showToast({ type: 'error', message: 'Failed to copy token' });
+      showToast({
+        type: "error",
+        message: t("addDeviceModal.failedToCopyToken"),
+      });
     }
   };
 
   const handleCopyCommand = async (command: string) => {
     try {
       await navigator.clipboard.writeText(command);
-      showToast({ type: 'success', message: 'Command copied to clipboard' });
+      showToast({
+        type: "success",
+        message: t("addDeviceModal.commandCopiedToClipboard"),
+      });
     } catch {
-      showToast({ type: 'error', message: 'Failed to copy command' });
+      showToast({
+        type: "error",
+        message: t("addDeviceModal.failedToCopyCommand"),
+      });
     }
   };
 
   return (
-    <Dialog open={isOpen} onClose={onClose} title="Add New Device" maxWidth="2xl">
+    <Dialog
+      open={isOpen}
+      onClose={onClose}
+      title={t("addDeviceModal.addNewDevice")}
+      maxWidth="2xl"
+    >
       <div className="p-6">
-        <h2 className="text-lg font-semibold mb-4">Add New Device</h2>
+        <h2 className="text-lg font-semibold mb-4">
+          {t("addDeviceModal.addNewDevice")}
+        </h2>
 
         {/* Tab bar */}
         <div className="flex gap-1 mb-6 border-b">
-          {(['installer', 'cli'] as const).map((tab) => (
+          {(["installer", "cli"] as const).map((tab) => (
             <button
               key={tab}
               type="button"
               onClick={() => handleTabChange(tab)}
               className={`px-4 py-2 text-sm font-medium border-b-2 transition ${
                 activeTab === tab
-                  ? 'border-primary text-primary'
-                  : 'border-transparent text-muted-foreground hover:text-foreground'
+                  ? "border-primary text-primary"
+                  : "border-transparent text-muted-foreground hover:text-foreground"
               }`}
             >
-              {tab === 'installer' ? 'Download Installer' : 'CLI Commands'}
+              {tab === "installer"
+                ? t("addDeviceModal.downloadInstaller")
+                : t("addDeviceModal.cliCommands")}
             </button>
           ))}
         </div>
 
         {/* Installer tab */}
-        {activeTab === 'installer' && (
+        {activeTab === "installer" && (
           <div className="space-y-5">
             {orgSites.length === 0 ? (
               <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-700">
-                No sites available. Please{' '}
-                <a href="/settings/organizations" className="font-medium underline hover:no-underline">
-                  create a site
-                </a>{' '}
-                first.
+                {t("addDeviceModal.noSitesAvailablePlease")}{" "}
+                <a
+                  href="/settings/organizations"
+                  className="font-medium underline hover:no-underline"
+                >
+                  {t("addDeviceModal.createASite")}{" "}
+                </a>{" "}
+                {t("addDeviceModal.first")}{" "}
               </div>
             ) : (
               <>
                 {/* Site selector */}
                 <div>
-                  <label htmlFor="installer-site" className="block text-sm font-medium mb-1.5">
-                    Site
+                  <label
+                    htmlFor="installer-site"
+                    className="block text-sm font-medium mb-1.5"
+                  >
+                    {t("addDeviceModal.site")}{" "}
                   </label>
                   <select
                     id="installer-site"
@@ -508,51 +616,68 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
 
                 {/* Platform selector */}
                 <div>
-                  <label className="block text-sm font-medium mb-1.5">Platform</label>
+                  <label className="block text-sm font-medium mb-1.5">
+                    {t("addDeviceModal.platform")}
+                  </label>
                   <div className="flex gap-2">
-                    {(['windows', 'macos'] as const).map((p) => (
+                    {(["windows", "macos"] as const).map((p) => (
                       <button
                         key={p}
                         type="button"
                         onClick={() => setSelectedPlatform(p)}
                         className={`flex-1 rounded-md px-4 py-2.5 text-sm font-medium transition border ${
                           selectedPlatform === p
-                            ? 'bg-primary text-primary-foreground border-primary'
-                            : 'text-muted-foreground hover:bg-muted hover:text-foreground border-border'
+                            ? "bg-primary text-primary-foreground border-primary"
+                            : "text-muted-foreground hover:bg-muted hover:text-foreground border-border"
                         }`}
                       >
-                        {p === 'windows' ? 'Windows (.msi)' : 'macOS (.zip)'}
+                        {p === "windows"
+                          ? t("addDeviceModal.windowsMsi")
+                          : t("addDeviceModal.macosZip")}
                       </button>
                     ))}
                   </div>
                   <p className="mt-1.5 text-xs text-muted-foreground">
-                    For Linux, use the CLI Commands tab.
+                    {t("addDeviceModal.forLinuxUseTheCliCommands")}{" "}
                   </p>
                 </div>
 
                 {/* Device count */}
                 <div>
-                  <label htmlFor="device-count" className="block text-sm font-medium mb-1.5">
-                    Number of devices
+                  <label
+                    htmlFor="device-count"
+                    className="block text-sm font-medium mb-1.5"
+                  >
+                    {t("addDeviceModal.numberOfDevices")}{" "}
                   </label>
                   <input
                     id="device-count"
                     type="number"
                     value={deviceCount}
-                    onChange={(e) => setDeviceCount(Math.min(1000, Math.max(1, Number(e.target.value) || 1)))}
+                    onChange={(e) =>
+                      setDeviceCount(
+                        Math.min(
+                          1000,
+                          Math.max(1, Number(e.target.value) || 1),
+                        ),
+                      )
+                    }
                     min={1}
                     max={1000}
                     className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                   <p className="mt-1 text-xs text-muted-foreground">
-                    How many devices will use this installer.
+                    {t("addDeviceModal.howManyDevicesWillUseThis")}{" "}
                   </p>
                 </div>
 
                 {/* Link expiry */}
                 <div>
-                  <label htmlFor="link-ttl" className="block text-sm font-medium mb-1.5">
-                    Link expires in
+                  <label
+                    htmlFor="link-ttl"
+                    className="block text-sm font-medium mb-1.5"
+                  >
+                    {t("addDeviceModal.linkExpiresIn")}{" "}
                   </label>
                   <select
                     id="link-ttl"
@@ -564,15 +689,19 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
                     className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     data-testid="link-ttl"
                   >
-                    <option value={60}>1 hour</option>
-                    <option value={1440}>24 hours</option>
-                    <option value={10080}>7 days</option>
-                    <option value={43200}>30 days</option>
-                    <option value={129600}>90 days</option>
-                    <option value={525600}>1 year</option>
+                    <option value={60}>{t("addDeviceModal.n1Hour")}</option>
+                    <option value={1440}>{t("addDeviceModal.n24Hours")}</option>
+                    <option value={10080}>{t("addDeviceModal.n7Days")}</option>
+                    <option value={43200}>{t("addDeviceModal.n30Days")}</option>
+                    <option value={129600}>
+                      {t("addDeviceModal.n90Days")}
+                    </option>
+                    <option value={525600}>{t("addDeviceModal.n1Year")}</option>
                   </select>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    After this window, the downloaded installer and shared link stop accepting new enrollments. Devices already enrolled stay connected.
+                    {t(
+                      "addDeviceModal.afterThisWindowTheDownloadedInstaller",
+                    )}{" "}
                   </p>
                 </div>
 
@@ -586,17 +715,17 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
                   {downloading ? (
                     <>
                       <Loader2 className="h-4 w-4 animate-spin" />
-                      Generating installer...
+                      {t("addDeviceModal.generatingInstaller")}{" "}
                     </>
                   ) : downloadSuccess ? (
                     <>
                       <Check className="h-4 w-4" />
-                      Downloaded
+                      {t("addDeviceModal.downloaded")}{" "}
                     </>
                   ) : (
                     <>
                       <Download className="h-4 w-4" />
-                      Download Installer
+                      {t("addDeviceModal.downloadInstaller")}{" "}
                     </>
                   )}
                 </button>
@@ -611,12 +740,12 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
                   {linkLoading ? (
                     <>
                       <Loader2 className="h-4 w-4 animate-spin" />
-                      Generating link...
+                      {t("addDeviceModal.generatingLink")}{" "}
                     </>
                   ) : (
                     <>
                       <Link className="h-4 w-4" />
-                      Generate Link
+                      {t("addDeviceModal.generateLink")}{" "}
                     </>
                   )}
                 </button>
@@ -625,7 +754,7 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
                 {generatedLink && (
                   <div className="rounded-md border border-green-500/40 bg-green-500/10 p-3 space-y-2">
                     <p className="text-xs font-medium text-green-700">
-                      Share this link to download the installer from any computer:
+                      {t("addDeviceModal.shareThisLinkToDownloadThe")}{" "}
                     </p>
                     <div className="flex items-center gap-2">
                       <input
@@ -640,32 +769,41 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
                         onClick={handleCopyLink}
                         className="h-9 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:opacity-90 flex items-center gap-1.5"
                       >
-                        {linkCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-                        {linkCopied ? 'Copied' : 'Copy'}
+                        {linkCopied ? (
+                          <Check className="h-3.5 w-3.5" />
+                        ) : (
+                          <Copy className="h-3.5 w-3.5" />
+                        )}
+                        {linkCopied
+                          ? t("addDeviceModal.copied")
+                          : t("addDeviceModal.copy")}
                       </button>
                     </div>
                     <p className="text-xs text-muted-foreground">
-                      Valid for {deviceCount > 1 ? `${deviceCount} downloads` : '1 download'}.
-                      No login required.
+                      {t("addDeviceModal.validFor")}{" "}
+                      {deviceCount > 1
+                        ? `${deviceCount} downloads`
+                        : t("addDeviceModal.n1Download")}
+                      {t("addDeviceModal.noLoginRequired")}{" "}
                     </p>
                   </div>
                 )}
 
                 {/* Link errors */}
-                {linkError === 'MFA_REQUIRED' && (
+                {linkError === "MFA_REQUIRED" && (
                   <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-700">
-                    Multi-factor authentication is required to generate links.{' '}
+                    {t("addDeviceModal.multiFactorAuthenticationIsRequiredTo")}{" "}
                     <a
                       href="/settings/profile"
                       className="font-medium underline hover:no-underline"
                     >
-                      Set up MFA in your profile settings
-                    </a>{' '}
-                    and sign in again, then retry.
+                      {t("addDeviceModal.setUpMfaInYourProfile")}{" "}
+                    </a>{" "}
+                    {t("addDeviceModal.andSignInAgainThenRetry")}{" "}
                   </div>
                 )}
 
-                {linkError && linkError !== 'MFA_REQUIRED' && (
+                {linkError && linkError !== "MFA_REQUIRED" && (
                   <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
                     {linkError}
                     <button
@@ -673,27 +811,27 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
                       onClick={handleGenerateLink}
                       className="ml-2 underline hover:no-underline"
                     >
-                      Retry
+                      {t("addDeviceModal.retry")}{" "}
                     </button>
                   </div>
                 )}
 
                 {/* MFA error */}
-                {downloadError === 'MFA_REQUIRED' && (
+                {downloadError === "MFA_REQUIRED" && (
                   <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-700">
-                    Multi-factor authentication is required to generate installers.{' '}
+                    {t("addDeviceModal.multiFactorAuthenticationIsRequiredTo2")}{" "}
                     <a
                       href="/settings/profile"
                       className="font-medium underline hover:no-underline"
                     >
-                      Set up MFA in your profile settings
-                    </a>{' '}
-                    and sign in again, then retry.
+                      {t("addDeviceModal.setUpMfaInYourProfile")}{" "}
+                    </a>{" "}
+                    {t("addDeviceModal.andSignInAgainThenRetry")}{" "}
                   </div>
                 )}
 
                 {/* Other errors */}
-                {downloadError && downloadError !== 'MFA_REQUIRED' && (
+                {downloadError && downloadError !== "MFA_REQUIRED" && (
                   <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
                     {downloadError}
                     <button
@@ -701,7 +839,7 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
                       onClick={handleDownload}
                       className="ml-2 underline hover:no-underline"
                     >
-                      Retry
+                      {t("addDeviceModal.retry")}{" "}
                     </button>
                   </div>
                 )}
@@ -709,11 +847,11 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
                 {/* Success message */}
                 {downloadSuccess && (
                   <div className="rounded-md border border-green-500/40 bg-green-500/10 p-3 text-sm text-green-700">
-                    Installer downloaded. Run it on{' '}
+                    {t("addDeviceModal.installerDownloadedRunItOn")}{" "}
                     {deviceCount > 1
                       ? `up to ${deviceCount} devices`
-                      : 'the target device'}{' '}
-                    to enroll.
+                      : t("addDeviceModal.theTargetDevice")}{" "}
+                    {t("addDeviceModal.toEnroll")}{" "}
                   </div>
                 )}
               </>
@@ -722,21 +860,22 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
         )}
 
         {/* CLI Commands tab */}
-        {activeTab === 'cli' && (
+        {activeTab === "cli" && (
           <div className="space-y-6">
             <p className="text-sm text-muted-foreground">
-              Install the Breeze agent on your device using the command line. Use the installation
-              token and commands below.
+              {t("addDeviceModal.installTheBreezeAgentOnYour")}{" "}
             </p>
 
             {/* Token section */}
             <div>
               <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">
-                Step 1 — Copy your installation token
+                {t("addDeviceModal.step1CopyYourInstallationToken")}{" "}
               </p>
               <div className="rounded-lg border bg-muted/30 p-4">
                 <div className="flex items-center justify-between mb-2">
-                  <label className="text-sm font-medium">Installation Token</label>
+                  <label className="text-sm font-medium">
+                    {t("addDeviceModal.installationToken")}
+                  </label>
                   <button
                     type="button"
                     onClick={handleCopyToken}
@@ -744,39 +883,45 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
                     className="inline-flex items-center gap-1 text-xs text-primary hover:underline disabled:opacity-50"
                   >
                     <Copy className="h-3 w-3" />
-                    {tokenCopied ? 'Copied!' : 'Copy'}
+                    {tokenCopied
+                      ? t("addDeviceModal.copied2")
+                      : t("addDeviceModal.copy")}
                   </button>
                 </div>
                 {tokenLoading ? (
                   <div className="flex items-center gap-2 py-2">
                     <Loader2 className="h-4 w-4 animate-spin" />
-                    <span className="text-sm text-muted-foreground">Generating token...</span>
+                    <span className="text-sm text-muted-foreground">
+                      {t("addDeviceModal.generatingToken")}
+                    </span>
                   </div>
-                ) : tokenError === 'MFA_REQUIRED' ? (
+                ) : tokenError === "MFA_REQUIRED" ? (
                   <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-700">
-                    Multi-factor authentication is required to generate installation tokens.{' '}
+                    {t("addDeviceModal.multiFactorAuthenticationIsRequiredTo3")}{" "}
                     <a
                       href="/settings/profile"
                       className="font-medium underline hover:no-underline"
                     >
-                      Set up MFA in your profile settings
-                    </a>{' '}
-                    and sign in again, then retry.
+                      {t("addDeviceModal.setUpMfaInYourProfile")}{" "}
+                    </a>{" "}
+                    {t("addDeviceModal.andSignInAgainThenRetry")}{" "}
                   </div>
                 ) : tokenError ? (
                   <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
                     {tokenError}
                     <button
                       type="button"
-                      onClick={() => { void initializeCli(cliDeviceCount); }}
+                      onClick={() => {
+                        void initializeCli(cliDeviceCount);
+                      }}
                       className="ml-2 underline hover:no-underline"
                     >
-                      Retry
+                      {t("addDeviceModal.retry")}{" "}
                     </button>
                   </div>
                 ) : (
                   <code className="block rounded-md bg-background p-3 text-sm font-mono break-all">
-                    {onboardingToken || 'No token available'}
+                    {onboardingToken || "No token available"}
                   </code>
                 )}
 
@@ -790,7 +935,7 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
                           htmlFor="cli-device-count"
                           className="block text-xs font-medium text-muted-foreground mb-1"
                         >
-                          Number of devices
+                          {t("addDeviceModal.numberOfDevices")}{" "}
                         </label>
                         <input
                           id="cli-device-count"
@@ -799,7 +944,12 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
                           max={1000}
                           value={cliDeviceCount}
                           onChange={(e) =>
-                            setCliDeviceCount(Math.min(1000, Math.max(1, Number(e.target.value) || 1)))
+                            setCliDeviceCount(
+                              Math.min(
+                                1000,
+                                Math.max(1, Number(e.target.value) || 1),
+                              ),
+                            )
                           }
                           className="w-24 rounded-md border bg-background px-2 py-1 text-sm"
                         />
@@ -809,13 +959,13 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
                         onClick={() => regenerateCliToken(cliDeviceCount)}
                         className="inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
                       >
-                        Generate new token
+                        {t("addDeviceModal.generateNewToken")}{" "}
                       </button>
                     </div>
                     {onboardingToken && (
                       <p className="text-xs text-muted-foreground">
                         {tokenMaxUsage === 1
-                          ? 'Single-use — valid for one device. Generate a new token for each additional machine.'
+                          ? t("addDeviceModal.singleUseValidForOneDevice")
                           : `Valid for ${tokenMaxUsage ?? cliDeviceCount} device enrollments.`}
                       </p>
                     )}
@@ -827,24 +977,26 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
             {/* Commands section */}
             {(() => {
               const commands = buildInstallCommands({
-                apiUrl: import.meta.env.PUBLIC_API_URL || window.location.origin,
+                apiUrl:
+                  import.meta.env.PUBLIC_API_URL || window.location.origin,
                 ghBase:
                   import.meta.env.PUBLIC_AGENT_DOWNLOAD_URL ||
-                  'https://github.com/lanternops/breeze/releases/latest/download',
-                token: onboardingToken || '<TOKEN>',
+                  "https://github.com/lanternops/breeze/releases/latest/download",
+                token: onboardingToken || "<TOKEN>",
                 enrollmentSecret: enrollmentSecret || undefined,
               });
-              const commandPlatform = selectedOS === 'windows' ? 'windows' : 'linux';
+              const commandPlatform =
+                selectedOS === "windows" ? "windows" : "linux";
               const command = commands[commandPlatform];
               const commandOptions = [
-                { platform: 'windows', label: 'Windows' },
-                { platform: 'linux', label: 'Linux/macOS' },
+                { platform: "windows", label: t("addDeviceModal.windows2") },
+                { platform: "linux", label: t("addDeviceModal.linuxMacos") },
               ] as const;
 
               return (
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">
-                    Step 2 — Run the install command
+                    {t("addDeviceModal.step2RunTheInstallCommand")}{" "}
                   </p>
                   <div className="flex gap-1 mb-3">
                     {commandOptions.map(({ platform, label }) => (
@@ -854,8 +1006,8 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
                         onClick={() => setSelectedOS(platform)}
                         className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
                           commandPlatform === platform
-                            ? 'bg-primary text-primary-foreground'
-                            : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                            ? "bg-primary text-primary-foreground"
+                            : "text-muted-foreground hover:bg-muted hover:text-foreground"
                         }`}
                       >
                         {label}
@@ -877,7 +1029,9 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
                     </div>
                   </div>
                   <p className="mt-2 text-xs text-muted-foreground">
-                    {commandPlatform === 'windows' ? 'Run as Administrator in PowerShell' : 'Run in Terminal'}
+                    {commandPlatform === "windows"
+                      ? t("addDeviceModal.runAsAdministratorInPowershell")
+                      : t("addDeviceModal.runInTerminal")}
                   </p>
                 </div>
               );
@@ -886,14 +1040,16 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
             {/* Wait for connection */}
             <div>
               <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">
-                Step 3 — Wait for connection
+                {t("addDeviceModal.step3WaitForConnection")}{" "}
               </p>
               <div className="rounded-md border border-blue-500/40 bg-blue-500/10 p-4 text-sm">
                 <p className="text-blue-600 text-xs">
                   {tokenExpiresAt
                     ? `The installation token expires ${formatTokenExpiry(tokenExpiresAt)}.`
-                    : 'The installation token expires after a short period.'}{' '}
-                  Your device will appear in the list once the agent connects.
+                    : t(
+                        "addDeviceModal.theInstallationTokenExpiresAfterA",
+                      )}{" "}
+                  {t("addDeviceModal.yourDeviceWillAppearInThe")}{" "}
                 </p>
               </div>
             </div>
@@ -904,22 +1060,23 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
         <div className="mt-6 flex items-start justify-between gap-4">
           <div className="text-xs text-muted-foreground">
             <p>
-              Need to uninstall?{' '}
+              {t("addDeviceModal.needToUninstall")}{" "}
               <a
                 href="/api/v1/agents/uninstall.sh"
                 download="uninstall.sh"
                 className="underline hover:text-foreground"
               >
-                Linux/macOS
+                {t("addDeviceModal.linuxMacos")}{" "}
               </a>
             </p>
-            {sha256s['uninstall.sh'] && (
+            {sha256s["uninstall.sh"] && (
               <p className="mt-1 font-mono text-[10px] leading-tight">
-                SHA256: {sha256s['uninstall.sh']}
+                SHA256: {sha256s["uninstall.sh"]}
                 <br />
-                macOS: <code>shasum -a 256 uninstall.sh</code>
+                {t("addDeviceModal.macos2")}{" "}
+                <code>shasum -a 256 uninstall.sh</code>
                 <br />
-                Linux: <code>sha256sum uninstall.sh</code>
+                {t("addDeviceModal.linux2")} <code>sha256sum uninstall.sh</code>
               </p>
             )}
           </div>
@@ -928,7 +1085,7 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
             onClick={onClose}
             className="h-10 shrink-0 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
           >
-            Done
+            {t("addDeviceModal.done")}{" "}
           </button>
         </div>
       </div>

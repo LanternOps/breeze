@@ -15,20 +15,27 @@
 //  - everything else → the FilterConditionGroup (`value`/`onChange`), resolved
 //    server-side upstream via useAdvancedFilterIds. Status/OS/Role/Org/Site/
 //    Group are NO LONGER inline client state — they are group conditions/chips.
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Search, Check, Plus, SlidersHorizontal } from 'lucide-react';
-import type { FilterCondition, FilterConditionGroup } from '@breeze/shared';
-import { type NamedRef } from './FilterValueEditor';
-import { FilterSentenceBuilder } from './FilterSentenceBuilder';
-import { FilterAddDropdown } from './FilterAddDropdown';
-import { Chip, defaultConditionForField } from './FilterChipBar';
-import { QUICK_ADD_CHIPS } from './QuickAddChips';
-import { SavedViewsMenu } from './SavedViewsMenu';
-import type { ListFilters } from './deviceListFilters';
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Search, Check, Plus, SlidersHorizontal } from "lucide-react";
+import type { FilterCondition, FilterConditionGroup } from "@breeze/shared";
+import { type NamedRef } from "./FilterValueEditor";
+import { FilterSentenceBuilder } from "./FilterSentenceBuilder";
+import { FilterAddDropdown } from "./FilterAddDropdown";
+import { Chip, defaultConditionForField } from "./FilterChipBar";
+import { QUICK_ADD_CHIPS } from "./QuickAddChips";
+import { SavedViewsMenu } from "./SavedViewsMenu";
+import type { ListFilters } from "./deviceListFilters";
+import { useTranslation } from "react-i18next";
+import "../../lib/i18n";
 
 type Org = { id: string; name: string };
 type Site = { id: string; name: string };
-type Group = { id: string; name: string; type: 'static' | 'dynamic'; deviceCount: number };
+type Group = {
+  id: string;
+  name: string;
+  type: "static" | "dynamic";
+  deviceCount: number;
+};
 
 export interface DeviceFilterToolbarProps {
   // The server-resolved group (quick chips + More-added chips + Advanced drawer).
@@ -48,18 +55,23 @@ export interface DeviceFilterToolbarProps {
   onCreateGroup?: () => void;
 }
 
-const EMPTY_GROUP: FilterConditionGroup = { operator: 'AND', conditions: [] };
+const EMPTY_GROUP: FilterConditionGroup = { operator: "AND", conditions: [] };
 
 function chipMatches(c: FilterCondition, target: FilterCondition): boolean {
-  return c.field === target.field
-    && c.operator === target.operator
-    && JSON.stringify(c.value) === JSON.stringify(target.value);
+  return (
+    c.field === target.field &&
+    c.operator === target.operator &&
+    JSON.stringify(c.value) === JSON.stringify(target.value)
+  );
 }
 
-function groupHasCondition(group: FilterConditionGroup | null, target: FilterCondition): boolean {
+function groupHasCondition(
+  group: FilterConditionGroup | null,
+  target: FilterCondition,
+): boolean {
   if (!group) return false;
   for (const c of group.conditions) {
-    if ('conditions' in c) continue;
+    if ("conditions" in c) continue;
     if (chipMatches(c, target)) return true;
   }
   return false;
@@ -73,13 +85,17 @@ function sameValue(a: unknown, b: unknown): boolean {
 // `equals` on the same field would AND to empty (a device can't be both online
 // AND offline), so we model multi-select as ONE condition — OR within a field,
 // AND across fields. This reads them back out for toggling/active state.
-function fieldEqualsValues(group: FilterConditionGroup | null, field: string): unknown[] {
+function fieldEqualsValues(
+  group: FilterConditionGroup | null,
+  field: string,
+): unknown[] {
   const vals: unknown[] = [];
   for (const c of group?.conditions ?? []) {
-    if ('conditions' in c) continue;
+    if ("conditions" in c) continue;
     if (c.field !== field) continue;
-    if (c.operator === 'equals') vals.push(c.value);
-    else if (c.operator === 'in' && Array.isArray(c.value)) vals.push(...c.value);
+    if (c.operator === "equals") vals.push(c.value);
+    else if (c.operator === "in" && Array.isArray(c.value))
+      vals.push(...c.value);
   }
   return vals;
 }
@@ -98,13 +114,15 @@ function setFieldEqualsValues(
     values.length === 0
       ? null
       : values.length === 1
-        ? ({ field, operator: 'equals', value: values[0] } as FilterCondition)
-        : ({ field, operator: 'in', value: values } as FilterCondition);
+        ? ({ field, operator: "equals", value: values[0] } as FilterCondition)
+        : ({ field, operator: "in", value: values } as FilterCondition);
   let placed = false;
-  const next: FilterConditionGroup['conditions'] = [];
+  const next: FilterConditionGroup["conditions"] = [];
   for (const c of base.conditions) {
     const isTargetEnum =
-      !('conditions' in c) && c.field === field && (c.operator === 'equals' || c.operator === 'in');
+      !("conditions" in c) &&
+      c.field === field &&
+      (c.operator === "equals" || c.operator === "in");
     if (isTargetEnum) {
       if (merged && !placed) {
         next.push(merged);
@@ -115,7 +133,7 @@ function setFieldEqualsValues(
     next.push(c);
   }
   if (merged && !placed) next.push(merged);
-  return next.length === 0 ? null : { operator: 'AND', conditions: next };
+  return next.length === 0 ? null : { operator: "AND", conditions: next };
 }
 
 // Top-level chip conditions, with their absolute index in group.conditions so
@@ -127,7 +145,7 @@ function topLevelConditions(
   if (!group) return [];
   const out: Array<{ condition: FilterCondition; index: number }> = [];
   group.conditions.forEach((c, index) => {
-    if (!('conditions' in c)) out.push({ condition: c, index });
+    if (!("conditions" in c)) out.push({ condition: c, index });
   });
   return out;
 }
@@ -136,7 +154,7 @@ function topLevelConditions(
 // "incomplete" (a half-built Advanced-drawer row) and must NOT trigger merging,
 // or the drawer can't hold two in-progress rows on the same default field.
 function isConcrete(v: unknown): boolean {
-  if (v === '' || v === null || v === undefined) return false;
+  if (v === "" || v === null || v === undefined) return false;
   if (Array.isArray(v)) return v.length > 0;
   return true;
 }
@@ -151,12 +169,17 @@ function isConcrete(v: unknown): boolean {
 // and range filters (gt/lt, different operators) are never touched. OR / nested
 // groups (operator !== 'AND') are left untouched so a deliberately-built
 // advanced sentence keeps its meaning.
-function normalizeGroup(group: FilterConditionGroup | null): FilterConditionGroup | null {
-  if (!group || group.operator !== 'AND') return group;
+function normalizeGroup(
+  group: FilterConditionGroup | null,
+): FilterConditionGroup | null {
+  if (!group || group.operator !== "AND") return group;
   const concreteCount = new Map<string, number>();
   for (const c of group.conditions) {
-    if ('conditions' in c) continue;
-    if ((c.operator === 'equals' || c.operator === 'in') && isConcrete(c.value)) {
+    if ("conditions" in c) continue;
+    if (
+      (c.operator === "equals" || c.operator === "in") &&
+      isConcrete(c.value)
+    ) {
       concreteCount.set(c.field, (concreteCount.get(c.field) ?? 0) + 1);
     }
   }
@@ -165,7 +188,7 @@ function normalizeGroup(group: FilterConditionGroup | null): FilterConditionGrou
     if (count < 2) continue; // single value (plus any blank rows) → leave as-is
     const vals: unknown[] = [];
     for (const v of fieldEqualsValues(acc, field)) {
-      if (isConcrete(v) && !vals.some(x => sameValue(x, v))) vals.push(v);
+      if (isConcrete(v) && !vals.some((x) => sameValue(x, v))) vals.push(v);
     }
     acc = setFieldEqualsValues(acc, field, vals);
   }
@@ -184,6 +207,7 @@ export function DeviceFilterToolbar({
   onSoftwareSearch,
   onCreateGroup,
 }: DeviceFilterToolbarProps) {
+  const { t } = useTranslation("devices");
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
   // Scroll-edge state for the chip row: with the scrollbar hidden, a right/left
@@ -196,32 +220,36 @@ export function DeviceFilterToolbar({
     if (!el) return;
     const left = el.scrollLeft > 1;
     const right = el.scrollLeft + el.clientWidth < el.scrollWidth - 1;
-    setEdges(prev => (prev.left === left && prev.right === right ? prev : { left, right }));
+    setEdges((prev) =>
+      prev.left === left && prev.right === right ? prev : { left, right },
+    );
   }, []);
   useEffect(() => {
     updateEdges();
     const el = chipsRef.current;
     if (!el) return;
-    el.addEventListener('scroll', updateEdges, { passive: true });
+    el.addEventListener("scroll", updateEdges, { passive: true });
     let ro: ResizeObserver | undefined;
-    if (typeof ResizeObserver !== 'undefined') {
+    if (typeof ResizeObserver !== "undefined") {
       ro = new ResizeObserver(updateEdges);
       ro.observe(el);
     }
-    window.addEventListener('resize', updateEdges);
+    window.addEventListener("resize", updateEdges);
     return () => {
-      el.removeEventListener('scroll', updateEdges);
+      el.removeEventListener("scroll", updateEdges);
       ro?.disconnect();
-      window.removeEventListener('resize', updateEdges);
+      window.removeEventListener("resize", updateEdges);
     };
   }, [updateEdges]);
 
   // Every group mutation flows through here so the merge invariant holds for all
   // entry points (preset toggle already produces merged output; chip edit and
   // the Advanced drawer would not without this).
-  const onChange = (next: FilterConditionGroup | null) => rawOnChange(normalizeGroup(next));
+  const onChange = (next: FilterConditionGroup | null) =>
+    rawOnChange(normalizeGroup(next));
 
-  const patch = (next: Partial<ListFilters>) => onListFiltersChange({ ...listFilters, ...next });
+  const patch = (next: Partial<ListFilters>) =>
+    onListFiltersChange({ ...listFilters, ...next });
 
   // --- GROUP helpers (all structured filters live here) ---
   const addCondition = (cond: FilterCondition) => {
@@ -229,26 +257,28 @@ export function DeviceFilterToolbar({
     // status / OS / role, so picking a value REPLACES any existing value for
     // that field (mirrors the old single-select dropdowns). This also makes a
     // contradictory status=online AND status=offline impossible by construction.
-    if (cond.operator === 'equals') {
+    if (cond.operator === "equals") {
       onChange(setFieldEqualsValues(value, cond.field, [cond.value]));
       return;
     }
     const base = value ?? EMPTY_GROUP;
-    onChange({ operator: 'AND', conditions: [...base.conditions, cond] });
+    onChange({ operator: "AND", conditions: [...base.conditions, cond] });
   };
   const removeConditionAt = (index: number) => {
     if (!value) return;
     const next = value.conditions.filter((_, i) => i !== index);
-    onChange(next.length === 0 ? null : { operator: 'AND', conditions: next });
+    onChange(next.length === 0 ? null : { operator: "AND", conditions: next });
   };
   const updateConditionAt = (index: number, cond: FilterCondition) => {
     if (!value) return;
     const next = value.conditions.map((c, i) => (i === index ? cond : c));
-    onChange({ operator: 'AND', conditions: next });
+    onChange({ operator: "AND", conditions: next });
   };
   const toggleCondition = (cond: FilterCondition) => {
     if (groupHasCondition(value, cond)) {
-      const idx = value!.conditions.findIndex(c => !('conditions' in c) && chipMatches(c, cond));
+      const idx = value!.conditions.findIndex(
+        (c) => !("conditions" in c) && chipMatches(c, cond),
+      );
       if (idx !== -1) removeConditionAt(idx);
     } else {
       addCondition(cond);
@@ -259,8 +289,10 @@ export function DeviceFilterToolbar({
   // (stored as `equals`, or part of an `in` built in the Advanced drawer).
   // Non-equals presets (greaterThan / isEmpty / boolean) match exactly.
   const presetActive = (cond: FilterCondition): boolean =>
-    cond.operator === 'equals'
-      ? fieldEqualsValues(value, cond.field).some(v => sameValue(v, cond.value))
+    cond.operator === "equals"
+      ? fieldEqualsValues(value, cond.field).some((v) =>
+          sameValue(v, cond.value),
+        )
       : groupHasCondition(value, cond);
 
   // `equals` presets are single-select within their field: clicking Offline
@@ -268,13 +300,16 @@ export function DeviceFilterToolbar({
   // exclusive, like the old status dropdown). Clicking the already-active value
   // clears it. Other operators (greaterThan / isEmpty / boolean) toggle on/off.
   const togglePreset = (cond: FilterCondition) => {
-    if (cond.operator !== 'equals') {
+    if (cond.operator !== "equals") {
       toggleCondition(cond);
       return;
     }
     const current = fieldEqualsValues(value, cond.field);
-    const isSoleActive = current.length === 1 && sameValue(current[0], cond.value);
-    onChange(setFieldEqualsValues(value, cond.field, isSoleActive ? [] : [cond.value]));
+    const isSoleActive =
+      current.length === 1 && sameValue(current[0], cond.value);
+    onChange(
+      setFieldEqualsValues(value, cond.field, isSoleActive ? [] : [cond.value]),
+    );
   };
 
   const activeConditions = topLevelConditions(value);
@@ -283,7 +318,7 @@ export function DeviceFilterToolbar({
   const hasAnyActive = hasChips || hasSearch;
 
   const clearAll = () => {
-    onListFiltersChange({ ...listFilters, search: '' });
+    onListFiltersChange({ ...listFilters, search: "" });
     onChange(null);
   };
 
@@ -299,10 +334,10 @@ export function DeviceFilterToolbar({
           <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
           <input
             type="text"
-            placeholder="Search devices"
-            aria-label="Search devices"
+            placeholder={t("deviceFilterToolbar.searchDevices")}
+            aria-label={t("deviceFilterToolbar.searchDevices")}
             value={listFilters.search}
-            onChange={e => patch({ search: e.target.value })}
+            onChange={(e) => patch({ search: e.target.value })}
             className="w-full appearance-none border-0 bg-transparent p-0 text-sm placeholder:text-muted-foreground focus:outline-hidden focus:ring-0"
           />
         </div>
@@ -319,9 +354,9 @@ export function DeviceFilterToolbar({
             data-testid="quick-add-chips"
             className="no-scrollbar flex w-full items-center gap-1.5 overflow-x-auto"
             role="group"
-            aria-label="Quick filters"
+            aria-label={t("deviceFilterToolbar.quickFilters")}
           >
-            {QUICK_ADD_CHIPS.map(chip => {
+            {QUICK_ADD_CHIPS.map((chip) => {
               const active = presetActive(chip.condition);
               return (
                 <button
@@ -331,7 +366,9 @@ export function DeviceFilterToolbar({
                   aria-pressed={active}
                   onClick={() => togglePreset(chip.condition)}
                   className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs transition-colors ${
-                    active ? 'border-primary bg-primary text-primary-foreground hover:bg-primary/90' : 'hover:bg-muted'
+                    active
+                      ? "border-primary bg-primary text-primary-foreground hover:bg-primary/90"
+                      : "hover:bg-muted"
                   }`}
                 >
                   {active && <Check className="h-3 w-3" />}
@@ -341,10 +378,16 @@ export function DeviceFilterToolbar({
             })}
           </div>
           {edges.left && (
-            <div className="pointer-events-none absolute inset-y-0 left-0 w-6 bg-linear-to-r from-background to-transparent" aria-hidden="true" />
+            <div
+              className="pointer-events-none absolute inset-y-0 left-0 w-6 bg-linear-to-r from-background to-transparent"
+              aria-hidden="true"
+            />
           )}
           {edges.right && (
-            <div className="pointer-events-none absolute inset-y-0 right-0 w-6 bg-linear-to-l from-background to-transparent" aria-hidden="true" />
+            <div
+              className="pointer-events-none absolute inset-y-0 right-0 w-6 bg-linear-to-l from-background to-transparent"
+              aria-hidden="true"
+            />
           )}
         </div>
 
@@ -363,11 +406,13 @@ export function DeviceFilterToolbar({
               aria-expanded={open}
               onClick={toggle}
               className={`inline-flex shrink-0 items-center gap-1 rounded-full border border-dashed px-2.5 py-0.5 text-xs transition-colors hover:border-solid hover:bg-muted hover:text-foreground ${
-                open ? 'border-solid bg-muted text-foreground' : 'text-muted-foreground'
+                open
+                  ? "border-solid bg-muted text-foreground"
+                  : "text-muted-foreground"
               }`}
             >
               <Plus className="h-3 w-3" />
-              Add filter
+              {t("deviceFilterToolbar.addFilter")}{" "}
             </button>
           )}
         />
@@ -382,24 +427,29 @@ export function DeviceFilterToolbar({
           type="button"
           data-testid="filter-advanced-toggle"
           aria-expanded={advancedOpen}
-          onClick={() => setAdvancedOpen(o => !o)}
+          onClick={() => setAdvancedOpen((o) => !o)}
           className={`inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium transition-colors ${
-            advancedOpen ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+            advancedOpen
+              ? "bg-muted text-foreground"
+              : "text-muted-foreground hover:bg-muted hover:text-foreground"
           }`}
         >
           <SlidersHorizontal className="h-3.5 w-3.5" />
-          Advanced
+          {t("deviceFilterToolbar.advanced")}{" "}
         </button>
       </div>
 
       {/* Active editable-chip row — only when the group has chips. */}
       {hasChips && (
-        <div data-testid="active-filter-chips" className="flex flex-wrap items-center gap-2">
+        <div
+          data-testid="active-filter-chips"
+          className="flex flex-wrap items-center gap-2"
+        >
           {activeConditions.map(({ condition, index }) => (
             <Chip
               key={index}
               condition={condition}
-              onChange={next => updateConditionAt(index, next)}
+              onChange={(next) => updateConditionAt(index, next)}
               onRemove={() => removeConditionAt(index)}
               orgs={orgs as NamedRef[]}
               sites={sites as NamedRef[]}
@@ -414,7 +464,7 @@ export function DeviceFilterToolbar({
               onClick={clearAll}
               className="ml-auto text-xs font-medium text-muted-foreground hover:text-foreground"
             >
-              Clear
+              {t("deviceFilterToolbar.clear")}{" "}
             </button>
           )}
         </div>
@@ -429,7 +479,7 @@ export function DeviceFilterToolbar({
             onClick={clearAll}
             className="ml-auto text-xs font-medium text-muted-foreground hover:text-foreground"
           >
-            Clear
+            {t("deviceFilterToolbar.clear")}{" "}
           </button>
         </div>
       )}

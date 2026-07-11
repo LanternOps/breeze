@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Terminal, RefreshCw, Eye, X, ChevronDown, ChevronUp, Copy, Check, CheckCircle, XCircle, Loader2, AlertTriangle, Clock, AlertOctagon } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
@@ -38,12 +39,12 @@ const statusStyles: Record<string, string> = {
 };
 
 const statusConfig: Record<string, { label: string; color: string; bgColor: string; icon: typeof CheckCircle }> = {
-  pending: { label: 'Pending', color: 'text-gray-700', bgColor: 'bg-gray-500/10', icon: Clock },
-  running: { label: 'Running', color: 'text-blue-700', bgColor: 'bg-blue-500/10', icon: Loader2 },
-  completed: { label: 'Completed', color: 'text-green-700', bgColor: 'bg-green-500/10', icon: CheckCircle },
-  failed: { label: 'Failed', color: 'text-red-700', bgColor: 'bg-red-500/10', icon: XCircle },
-  timeout: { label: 'Timeout', color: 'text-yellow-700', bgColor: 'bg-yellow-500/10', icon: AlertTriangle },
-  cancelled: { label: 'Cancelled', color: 'text-gray-700', bgColor: 'bg-gray-500/10', icon: XCircle },
+  pending: { label: 'deviceScriptHistory.status.pending', color: 'text-gray-700', bgColor: 'bg-gray-500/10', icon: Clock },
+  running: { label: 'deviceScriptHistory.status.running', color: 'text-blue-700', bgColor: 'bg-blue-500/10', icon: Loader2 },
+  completed: { label: 'deviceScriptHistory.status.completed', color: 'text-green-700', bgColor: 'bg-green-500/10', icon: CheckCircle },
+  failed: { label: 'deviceScriptHistory.status.failed', color: 'text-red-700', bgColor: 'bg-red-500/10', icon: XCircle },
+  timeout: { label: 'deviceScriptHistory.status.timeout', color: 'text-yellow-700', bgColor: 'bg-yellow-500/10', icon: AlertTriangle },
+  cancelled: { label: 'deviceScriptHistory.status.cancelled', color: 'text-gray-700', bgColor: 'bg-gray-500/10', icon: XCircle },
 };
 
 function formatDateTime(value?: string, timezone?: string) {
@@ -70,13 +71,13 @@ function computeDurationSeconds(startedAt?: string, completedAt?: string): numbe
   return Math.max(0, Math.round((end - start) / 1000));
 }
 
-function getStatusDescription(status: string, errorMessage?: string): string {
+function getStatusDescription(status: string, errorMessage: string | undefined, t: (key: string) => string): string {
   switch (status) {
-    case 'running': return 'Script is currently executing...';
-    case 'completed': return 'Script completed successfully';
+    case 'running': return t('deviceScriptHistory.statusDescriptions.running');
+    case 'completed': return t('deviceScriptHistory.statusDescriptions.completed');
     case 'failed': return errorMessage || 'Script execution failed';
-    case 'timeout': return 'Script execution timed out';
-    default: return 'Script is waiting to be executed';
+    case 'timeout': return t('deviceScriptHistory.statusDescriptions.timeout');
+    default: return t('deviceScriptHistory.statusDescriptions.pending');
   }
 }
 
@@ -104,6 +105,7 @@ function OutputSection({
   defaultOpen?: boolean;
   variant?: 'default' | 'error';
 }) {
+  const { t } = useTranslation('devices');
   const [isOpen, setIsOpen] = useState(defaultOpen);
   const [copied, setCopied] = useState(false);
   const normalized = content ? normalizeOutput(content) : content;
@@ -149,7 +151,7 @@ function OutputSection({
             {title}
           </span>
           {isEmpty && (
-            <span className="text-xs text-muted-foreground">(empty)</span>
+            <span className="text-xs text-muted-foreground">{t('deviceScriptHistory.emptyOutputBadge')}</span>
           )}
         </div>
         <div className="flex items-center gap-2">
@@ -161,7 +163,7 @@ function OutputSection({
                 handleCopy();
               }}
               className="flex h-7 w-7 items-center justify-center rounded hover:bg-muted"
-              title="Copy to clipboard"
+              title={t('deviceScriptHistory.copyToClipboard')}
             >
               {copied ? (
                 <Check className="h-4 w-4 text-green-600" />
@@ -180,7 +182,7 @@ function OutputSection({
       {isOpen && (
         <div className="p-4">
           {isEmpty ? (
-            <p className="text-sm text-muted-foreground italic">No output</p>
+            <p className="text-sm text-muted-foreground italic">{t('deviceScriptHistory.noOutput')}</p>
           ) : (
             <pre className={cn(
               'max-h-80 overflow-auto rounded-md p-4 text-sm font-mono whitespace-pre-wrap wrap-break-word',
@@ -196,6 +198,7 @@ function OutputSection({
 }
 
 export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScriptHistoryProps) {
+  const { t } = useTranslation('devices');
   const [executions, setExecutions] = useState<ScriptExecution[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -236,7 +239,7 @@ export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScript
       const duration = computeDurationSeconds(item.startedAt ?? item.createdAt, item.completedAt);
       return {
         id: item.id ?? `${item.scriptName ?? item.name ?? 'script'}-${index}`,
-        name: item.scriptName ?? item.name ?? 'Unnamed script',
+        name: item.scriptName ?? item.name ?? t('deviceScriptHistory.unnamedScript'),
         status,
         startedAt: formatDateTime(item.startedAt ?? item.createdAt, effectiveTimezone),
         completedAt: formatDateTime(item.completedAt, effectiveTimezone),
@@ -251,7 +254,7 @@ export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScript
       <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-xs">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="mt-3 text-sm text-muted-foreground">Loading script history...</p>
+          <p className="mt-3 text-sm text-muted-foreground">{t('deviceScriptHistory.loading')}</p>
         </div>
       </div>
     );
@@ -268,7 +271,7 @@ export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScript
           }}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Retry
+          {t('common:actions.retry')}
         </button>
       </div>
     );
@@ -280,7 +283,7 @@ export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScript
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Terminal className="h-4 w-4 text-muted-foreground" />
-            <h3 className="text-lg font-semibold">Script Execution History</h3>
+            <h3 className="text-lg font-semibold">{t('deviceScriptHistory.title')}</h3>
           </div>
           <button
             type="button"
@@ -293,18 +296,18 @@ export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScript
             className="flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition disabled:opacity-50"
           >
             <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? 'animate-spin' : ''}`} />
-            {refreshing ? 'Refreshing...' : 'Refresh'}
+            {refreshing ? t('deviceScriptHistory.refreshing') : t('common:actions.refresh')}
           </button>
         </div>
         <div className="mt-4 overflow-hidden rounded-md border">
           <table className="min-w-full divide-y">
             <thead className="bg-muted/40">
               <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                <th className="px-4 py-3">Script</th>
-                <th className="px-4 py-3">Status</th>
-                <th className="px-4 py-3">Started</th>
-                <th className="px-4 py-3">Completed</th>
-                <th className="px-4 py-3">Duration</th>
+                <th className="px-4 py-3">{t('deviceScriptHistory.table.script')}</th>
+                <th className="px-4 py-3">{t('deviceScriptHistory.table.status')}</th>
+                <th className="px-4 py-3">{t('deviceScriptHistory.table.started')}</th>
+                <th className="px-4 py-3">{t('deviceScriptHistory.table.completed')}</th>
+                <th className="px-4 py-3">{t('deviceScriptHistory.table.duration')}</th>
                 <th className="px-4 py-3 w-10" />
               </tr>
             </thead>
@@ -312,7 +315,7 @@ export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScript
               {rows.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                    No script executions reported.
+                    {t('deviceScriptHistory.empty')}
                   </td>
                 </tr>
               ) : (
@@ -353,8 +356,8 @@ export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScript
             {/* Header */}
             <div className="flex items-center justify-between border-b px-6 py-4">
               <div>
-                <h2 className="text-lg font-semibold">Execution Details</h2>
-                <p className="text-sm text-muted-foreground">{selectedExecution.scriptName ?? selectedExecution.name ?? 'Script'}</p>
+                <h2 className="text-lg font-semibold">{t('deviceScriptHistory.detailsTitle')}</h2>
+                <p className="text-sm text-muted-foreground">{selectedExecution.scriptName ?? selectedExecution.name ?? t('deviceScriptHistory.scriptFallback')}</p>
               </div>
               <button
                 type="button"
@@ -377,10 +380,10 @@ export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScript
                   )} />
                   <div>
                     <p className={cn('text-lg font-semibold', config.color)}>
-                      {config.label}
+                      {t(config.label)}
                     </p>
                     <p className="text-sm text-muted-foreground">
-                      {getStatusDescription(selectedStatus, selectedExecution.errorMessage)}
+                      {getStatusDescription(selectedStatus, selectedExecution.errorMessage, t)}
                     </p>
                   </div>
                 </div>
@@ -389,24 +392,24 @@ export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScript
               {/* Metadata Grid */}
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <div className="rounded-md border bg-muted/20 p-4">
-                  <p className="text-xs font-medium text-muted-foreground">Started At</p>
+                  <p className="text-xs font-medium text-muted-foreground">{t('deviceScriptHistory.metadata.startedAt')}</p>
                   <p className="text-sm font-medium mt-1">
                     {formatDateTime(selectedExecution.startedAt ?? selectedExecution.createdAt, effectiveTimezone)}
                   </p>
                 </div>
                 <div className="rounded-md border bg-muted/20 p-4">
-                  <p className="text-xs font-medium text-muted-foreground">Completed At</p>
+                  <p className="text-xs font-medium text-muted-foreground">{t('deviceScriptHistory.metadata.completedAt')}</p>
                   <p className="text-sm font-medium mt-1">
                     {formatDateTime(selectedExecution.completedAt, effectiveTimezone)}
                   </p>
                 </div>
                 <div className="rounded-md border bg-muted/20 p-4">
-                  <p className="text-xs font-medium text-muted-foreground">Duration</p>
+                  <p className="text-xs font-medium text-muted-foreground">{t('deviceScriptHistory.metadata.duration')}</p>
                   <p className="text-sm font-medium mt-1">
                     {selectedStatus === 'running' ? (
                       <span className="flex items-center gap-1">
                         <Loader2 className="h-3 w-3 animate-spin" />
-                        Running...
+                        {t('deviceScriptHistory.running')}
                       </span>
                     ) : (
                       formatDuration(
@@ -417,7 +420,7 @@ export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScript
                   </p>
                 </div>
                 <div className="rounded-md border bg-muted/20 p-4">
-                  <p className="text-xs font-medium text-muted-foreground">Exit Code</p>
+                  <p className="text-xs font-medium text-muted-foreground">{t('deviceScriptHistory.metadata.exitCode')}</p>
                   <p className="text-sm font-medium mt-1">
                     {selectedExecution.exitCode !== undefined && selectedExecution.exitCode !== null ? (
                       <span className={cn(
@@ -437,15 +440,15 @@ export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScript
 
               {/* Output Sections */}
               <div className="space-y-4">
-                <h3 className="text-sm font-semibold">Output</h3>
+                <h3 className="text-sm font-semibold">{t('deviceScriptHistory.output')}</h3>
                 <OutputSection
-                  title="Standard Output (stdout)"
+                  title={t('deviceScriptHistory.stdout')}
                   content={selectedExecution.stdout}
                   icon={Terminal}
                   defaultOpen={true}
                 />
                 <OutputSection
-                  title="Standard Error (stderr)"
+                  title={t('deviceScriptHistory.stderr')}
                   content={selectedExecution.stderr}
                   icon={AlertOctagon}
                   defaultOpen={!!selectedExecution.stderr}
@@ -461,7 +464,7 @@ export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScript
                 onClick={() => setSelectedExecution(null)}
                 className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
               >
-                Close
+                {t('common:actions.close')}
               </button>
             </div>
           </div>

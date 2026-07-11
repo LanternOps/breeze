@@ -1,0 +1,463 @@
+{
+  "patchApprovalModal": {
+    "title": "Review Patch",
+    "close": "Close",
+    "cancel": "Cancel",
+    "deferUntil": "Defer Until",
+    "actions": {
+      "approve": {
+        "label": "Approve",
+        "description": "Allow this patch to be deployed automatically or in the next maintenance window."
+      },
+      "decline": {
+        "label": "Decline",
+        "description": "Block this patch from deploying until it is reviewed again."
+      },
+      "defer": {
+        "label": "Defer",
+        "description": "Postpone the decision and revisit later."
+      }
+    },
+    "notes": {
+      "label": "Notes",
+      "placeholder": "Add context or a reason for the decision..."
+    },
+    "errors": {
+      "partnerLevel": "Patch approvals are managed at the partner level",
+      "chooseDeferUntil": "Choose when the patch should be deferred until",
+      "updateFailed": "Failed to update patch approval"
+    },
+    "toast": {
+      "approved": "Patch approved",
+      "declined": "Patch declined",
+      "deferred": "Patch deferred"
+    },
+    "confirm": {
+      "title": "Confirm patch approval",
+      "selectedOrganization": "the selected organization",
+      "messageOne": "Approve patch on {{count}} device in {{org}}?",
+      "messageMany": "Approve patch on {{count}} devices in {{org}}?"
+    }
+  },
+  "patchComplianceView": {
+    "unknownDevice": "Unknown",
+    "emptyValue": "—",
+    "searchPlaceholder": "Search devices...",
+    "showing": "Showing {{shown}} of {{total}}",
+    "empty": "No devices found.",
+    "emptyFiltered": "No devices match your filters.",
+    "errors": {
+      "fetchData": "Failed to fetch patch data",
+      "loadPendingPatches": "Failed to load pending patches for device {{deviceId}}"
+    },
+    "actions": {
+      "tryAgain": "Try again",
+      "export": "Export",
+      "refreshCompliance": "Refresh compliance data",
+      "clear": "Clear",
+      "scan": "Scan",
+      "install": "Install",
+      "installCount": "Install ({{count}})",
+      "view": "View"
+    },
+    "export": {
+      "selectOrganization": "Select an organization to export a compliance report",
+      "generateFailed": "Failed to generate report",
+      "queued": "Compliance report {{reportId}} queued. Preparing download...",
+      "ready": "Compliance report {{reportId}} is ready. Starting download...",
+      "failed": "Compliance report {{reportId}} failed",
+      "checkFailed": "Failed to check report status",
+      "noReportId": "Report was queued but no report ID was returned"
+    },
+    "summary": {
+      "compliantPercent": "{{percent}}% compliant",
+      "devices": "{{compliant}} of {{total}} devices",
+      "pendingDevices": "{{count}} have pending patches",
+      "approved": "{{count}} approved",
+      "pendingApproval": "{{count}} pending approval",
+      "critical": "{{count}} critical",
+      "reboot": "{{count}} reboot"
+    },
+    "filters": {
+      "allDevices": "All Devices ({{count}})",
+      "pendingPatches": "Pending Patches ({{count}})",
+      "critical": "Critical ({{count}})",
+      "pendingReboot": "Pending Reboot ({{count}})",
+      "thirdPartyPending": "3rd-Party Pending ({{count}})",
+      "compliant": "Compliant ({{count}})"
+    },
+    "selection": {
+      "selected": "{{count}} selected",
+      "selectAll": "Select all",
+      "deselectAll": "Deselect all",
+      "selectDevice": "Select {{name}}",
+      "deselectDevice": "Deselect {{name}}"
+    },
+    "table": {
+      "device": "Device",
+      "status": "Status",
+      "approved": "Approved",
+      "approvedTitle": "Outstanding patches approved for installation",
+      "pendingApproval": "Pending Approval",
+      "pendingApprovalTitle": "Outstanding patches still awaiting approval",
+      "osPatches": "OS Patches",
+      "osPatchesTitle": "Outstanding updates from Windows Update, Apple, or Linux package managers",
+      "thirdParty": "3rd-Party",
+      "thirdPartyTitle": "Outstanding updates from third-party or custom sources",
+      "critical": "Critical",
+      "criticalTitle": "Outstanding patches rated critical severity",
+      "lastActivity": "Last Activity",
+      "lastActivityTitle": "Most recent patch install or scan activity",
+      "reboot": "Reboot",
+      "rebootTitle": "OS reports a pending reboot — any cause (Windows updates, CBS, pending file renames); reported by the agent. For offline devices this reflects the state at their last check-in.",
+      "actions": "Actions"
+    },
+    "status": {
+      "ok": "OK",
+      "outstanding": "{{count}} outstanding"
+    },
+    "reboot": {
+      "offlineTitle": "Device is offline — this reflects the OS state at its last check-in and may be stale.",
+      "yes": "Yes",
+      "yesAsOf": "Yes · as of {{time}}"
+    },
+    "relative": {
+      "justNow": "just now",
+      "minutesAgo": "{{count}}m ago",
+      "hoursAgo": "{{count}}h ago",
+      "daysAgo": "{{count}}d ago"
+    },
+    "activity": {
+      "noActivity": "No activity recorded",
+      "installed": "Installed {{time}}",
+      "scanned": "Scanned {{time}}",
+      "lastScanned": "Last scanned {{time}}",
+      "lastInstalled": "Last installed {{time}}",
+      "noScan": "No scan recorded",
+      "noInstall": "No install recorded"
+    },
+    "confirm": {
+      "title": "Confirm fleet action",
+      "selectedOrganization": "the selected organization",
+      "scanAction": "Scan for patches",
+      "installAction": "Install patches",
+      "messageOne": "{{action}} on {{count}} device in {{org}}?",
+      "messageMany": "{{action}} on {{count}} devices in {{org}}?",
+      "messageMultiOrg": "{{action}} on {{count}} devices across {{orgCount}} organizations ({{orgNames}})?"
+    }
+  },
+  "patchInstallHistory": {
+    "title": "Patch Operation History",
+    "loading": "Loading patch history...",
+    "empty": "No patch operations found.",
+    "emptyValue": "--",
+    "unknownPatch": "Unknown patch",
+    "operationCountOne": "{{count}} operation",
+    "operationCountMany": "{{count}} operations",
+    "errors": {
+      "fetchHistory": "Failed to fetch patch history"
+    },
+    "actions": {
+      "retry": "Retry",
+      "refresh": "Refresh",
+      "refreshing": "Refreshing...",
+      "clearFilters": "Clear filters"
+    },
+    "filters": {
+      "allTypes": "All Types",
+      "allStatus": "All Status"
+    },
+    "operationTypes": {
+      "install": "Install",
+      "scan": "Scan",
+      "rollback": "Rollback",
+      "download": "Download"
+    },
+    "status": {
+      "completed": "Completed",
+      "failed": "Failed",
+      "pending": "Pending",
+      "running": "Running",
+      "timeout": "Timeout",
+      "unknown": "Unknown"
+    },
+    "table": {
+      "operation": "Operation",
+      "status": "Status",
+      "patches": "Patches",
+      "duration": "Duration",
+      "date": "Date"
+    },
+    "pagination": {
+      "showing": "Showing {{start}} to {{end}} of {{total}}",
+      "pageStatus": "Page {{current}} of {{total}}"
+    },
+    "duration": {
+      "lessThanSecond": "<1s",
+      "seconds": "{{count}}s",
+      "minutesSeconds": "{{minutes}}m {{seconds}}s"
+    },
+    "relative": {
+      "justNow": "Just now",
+      "minutesAgo": "{{count}}m ago",
+      "hoursAgo": "{{count}}h ago",
+      "daysAgo": "{{count}}d ago"
+    },
+    "detail": {
+      "installed": "Installed",
+      "failed": "Failed",
+      "pending": "Pending",
+      "scanned": "Scanned",
+      "rebootRequired": "Reboot Required",
+      "yes": "Yes",
+      "started": "Started",
+      "completed": "Completed",
+      "error": "Error",
+      "patchResults": "Patch Results",
+      "reboot": "Reboot",
+      "empty": "No detailed patch results available.",
+      "table": {
+        "patch": "Patch",
+        "kb": "KB",
+        "status": "Status",
+        "error": "Error"
+      }
+    }
+  },
+  "patchList": {
+    "title": "Patches",
+    "summary": "{{shown}} of {{total}} patches",
+    "searchPlaceholder": "Search patches...",
+    "loading": "Loading patches...",
+    "empty": "No patches found. Try adjusting your search or filters.",
+    "vendorBy": "by {{vendor}}",
+    "moreCves": "+{{count}} more",
+    "sortBy": "Sort by {{label}}",
+    "errors": {
+      "approvePatches": "Failed to approve patches",
+      "declinePatches": "Failed to decline patches"
+    },
+    "severity": {
+      "critical": "Critical",
+      "important": "Important",
+      "moderate": "Moderate",
+      "low": "Low"
+    },
+    "approval": {
+      "pending": "Pending",
+      "approved": "Approved",
+      "declined": "Declined",
+      "deferred": "Deferred"
+    },
+    "filters": {
+      "allSeverities": "All Severities",
+      "allStatus": "All Status",
+      "moreFilters": "More filters",
+      "lessFilters": "Less filters",
+      "allSources": "All Sources",
+      "allOs": "All OS"
+    },
+    "actions": {
+      "deploy": "Deploy",
+      "review": "Review",
+      "details": "Details",
+      "approveCount": "Approve {{count}}",
+      "declineCount": "Decline {{count}}",
+      "deployCount": "Deploy {{count}}",
+      "clearSelection": "Clear selection",
+      "tryAgain": "Try again"
+    },
+    "selection": {
+      "selected": "{{count}} selected",
+      "selectAll": "Select all",
+      "deselectAll": "Deselect all",
+      "selectAllPatches": "Select all patches",
+      "deselectAllPatches": "Deselect all patches",
+      "selectPatch": "Select {{title}}",
+      "deselectPatch": "Deselect {{title}}"
+    },
+    "table": {
+      "patch": "Patch",
+      "severity": "Severity",
+      "source": "Source",
+      "os": "OS",
+      "release": "Release",
+      "approval": "Approval",
+      "actions": "Actions"
+    },
+    "pagination": {
+      "rowsPerPage": "Rows per page",
+      "pageStatus": "Page {{current}} of {{total}}"
+    }
+  },
+  "patchesPage": {
+    "title": "Patch Management",
+    "description": "Manage update rings, approvals, compliance, and patch deployments.",
+    "ringScopeHint": "Update rings are managed at the partner level",
+    "loadingRings": "Loading update rings...",
+    "tabs": {
+      "compliance": "Compliance",
+      "patches": "Patches",
+      "updateRings": "Update Rings"
+    },
+    "actions": {
+      "runScan": "Run Scan",
+      "scanning": "Scanning...",
+      "newRing": "New Ring",
+      "tryAgain": "Try again",
+      "scan": "Scan",
+      "close": "Close",
+      "saving": "Saving...",
+      "creating": "Creating...",
+      "saveChanges": "Save Changes",
+      "createRing": "Create Ring"
+    },
+    "errors": {
+      "fetchRings": "Failed to fetch update rings",
+      "fetchPatches": "Failed to fetch patches",
+      "partnerLevel": "Patch approvals are managed at the partner level",
+      "approvePatches": "Failed to approve patches",
+      "approveCountOne": "Failed to approve {{count}} patch",
+      "approveCountMany": "Failed to approve {{count}} patches",
+      "declineCount": "Failed to decline {{count}} patches",
+      "loadDevicesForScan": "Failed to load devices for scan",
+      "noDevicesForScan": "No devices available for scanning",
+      "updateRing": "Failed to update ring",
+      "createRing": "Failed to create update ring",
+      "deleteRing": "Failed to delete ring"
+    },
+    "toast": {
+      "ringSaved": "Update ring saved",
+      "ringCreated": "Update ring created",
+      "ringDeleted": "Update ring deleted",
+      "chooseDevicesForInstall": "Choose the devices to install this patch on from the Compliance tab."
+    },
+    "scan": {
+      "confirmTitle": "Confirm patch scan",
+      "selectedOrganization": "the selected organization",
+      "confirmMessageOne": "Scan for patches on {{count}} device in {{org}}?",
+      "confirmMessageMany": "Scan for patches on {{count}} devices in {{org}}?",
+      "confirmMessageMultiOrg": "Scan for patches on {{count}} devices across {{orgCount}} organizations ({{orgNames}})?",
+      "failedFallback": "Patch scan failed",
+      "deviceOne": "device",
+      "deviceMany": "devices",
+      "failedToQueue": "{{count}} failed to queue",
+      "skipped": "{{count}} skipped (no access / not found)",
+      "failedZero": "Patch scan failed: 0 of {{requested}} {{noun}} queued.",
+      "failedZeroWithShortfall": "Patch scan failed: 0 of {{requested}} {{noun}} queued ({{shortfall}}).",
+      "queuedPartial": "Patch scan queued for {{queued}} of {{requested}} {{noun}} — {{shortfall}}.",
+      "dispatchedSuffix": ", {{count}} dispatched immediately",
+      "queuedSuccess": "Patch scan queued for {{queued}} {{noun}}{{dispatchSuffix}}."
+    },
+    "ringModal": {
+      "editTitle": "Edit update ring",
+      "createTitle": "Create update ring"
+    }
+  },
+  "ringSelector": {
+    "label": "Update Ring:",
+    "allRings": "All Rings",
+    "ringOption": "{{name}} (Order {{order}}, +{{days}}d)"
+  },
+  "sourceFilterChips": {
+    "sources": {
+      "all": "All",
+      "microsoft": "Microsoft",
+      "apple": "Apple",
+      "linux": "Linux",
+      "thirdParty": "Third-party"
+    }
+  },
+  "updateRingForm": {
+    "validation": {
+      "selectCategory": "Select a category",
+      "selectSeverity": "Select at least one severity for auto-approval.",
+      "nameRequired": "Ring name is required"
+    },
+    "categories": {
+      "security": "Security Updates",
+      "feature": "Feature Updates",
+      "firmware": "Firmware",
+      "driver": "Drivers",
+      "thirdPartyApp": "Third-Party Apps",
+      "definitions": "Definition Updates"
+    },
+    "severities": {
+      "critical": "Critical",
+      "important": "Important",
+      "moderate": "Moderate",
+      "low": "Low"
+    },
+    "approveToggle": {
+      "ariaLabel": "Auto-approve patches",
+      "autoApprove": "Auto-approve",
+      "manual": "Manual"
+    },
+    "holdAfterRelease": "Hold after release",
+    "days": "days",
+    "fields": {
+      "name": "Name",
+      "rolloutOrder": "Rollout order",
+      "description": "Description",
+      "deadlineDays": "Deadline (days)",
+      "rebootGraceHours": "Reboot grace (hours)",
+      "autoApproveSeverities": "Auto-approve severities",
+      "category": "Category"
+    },
+    "placeholders": {
+      "name": "e.g. Pilot, Broad",
+      "description": "Optional — what this ring is for",
+      "noDeadline": "No deadline"
+    },
+    "help": {
+      "rolloutOrder": "Lower numbers roll out first."
+    },
+    "installEnforcement": {
+      "title": "Install enforcement",
+      "description": "How long devices have to install approved patches, and how long a user can defer the reboot. Reboot behavior itself is set per policy on the Patch tab."
+    },
+    "approvalPolicy": {
+      "title": "Approval policy",
+      "description": "What auto-approves in this ring, and how long to hold a patch after its vendor release. The default applies to every category; add an override to treat one differently.",
+      "allCategories": "All categories",
+      "default": "Default",
+      "severityNote": "Severities apply to OS updates. Third-party app updates (winget, Homebrew) have no vendor severity — when a policy enables other-software sources, they auto-approve on this ring's cadence regardless of the severities selected here.",
+      "manualDefault": "Every patch in this ring needs manual approval.",
+      "manualCategory": "Patches in this category need manual approval.",
+      "noOverrides": "All categories follow the default. Add an override to treat one differently."
+    },
+    "usage": {
+      "messageOne": "This ring applies to {{count}} device. Changes take effect on its next check-in.",
+      "messageMany": "This ring applies to {{count}} devices. Changes take effect on their next check-in."
+    },
+    "actions": {
+      "addOverride": "Add override",
+      "removeOverride": "Remove override",
+      "cancel": "Cancel",
+      "saving": "Saving...",
+      "saveRing": "Save Ring"
+    }
+  },
+  "updateRingList": {
+    "title": "Update Rings",
+    "summary": "{{shown}} of {{total}} rings",
+    "searchPlaceholder": "Search rings...",
+    "empty": "No update rings found.",
+    "emptyValue": "—",
+    "none": "None",
+    "days": "{{count}} days",
+    "editRing": "Edit {{name}}",
+    "deleteRing": "Delete {{name}}",
+    "pageStatus": "Page {{current}} of {{total}}",
+    "table": {
+      "order": "Order",
+      "ring": "Ring",
+      "deferral": "Deferral",
+      "deadline": "Deadline",
+      "devices": "Devices",
+      "compliance": "Compliance",
+      "updated": "Updated",
+      "actions": "Actions"
+    }
+  }
+}

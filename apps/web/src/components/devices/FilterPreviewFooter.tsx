@@ -6,6 +6,7 @@
 // leave a TODO and skip"). TODO: drop the 404 fallback once the backend
 // preview endpoint is live everywhere.
 import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { FilterConditionGroup } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 
@@ -17,6 +18,7 @@ export interface FilterPreviewFooterProps {
 }
 
 export function FilterPreviewFooter({ group }: FilterPreviewFooterProps) {
+  const { t } = useTranslation('devices');
   const [count, setCount] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [skipped, setSkipped] = useState(false);
@@ -62,14 +64,14 @@ export function FilterPreviewFooter({ group }: FilterPreviewFooterProps) {
   if (skipped) {
     return (
       <span className="text-[10px] text-muted-foreground" data-testid="filter-preview-skipped">
-        preview unavailable
+        {t('filterPreviewFooter.unavailable')}
       </span>
     );
   }
   if (!group || group.conditions.length === 0) return null;
   return (
     <span data-testid="filter-preview-count" className="text-xs text-muted-foreground">
-      {loading ? '…counting' : count === null ? '' : `~${count} devices match`}
+      {loading ? t('filterPreviewFooter.counting') : count === null ? '' : t('filterPreviewFooter.matches', { count })}
     </span>
   );
 }

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, AlertTriangle, ChevronDown, Cpu, RefreshCw, Settings, ShieldCheck, Sparkles, Wrench } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 import type { AiPageContext } from '@breeze/shared';
 import { formatDateTime } from '@/lib/dateTimeFormat';
@@ -7,6 +8,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
 import { useAiStore } from '../../stores/aiStore';
 import HelpTooltip from '../shared/HelpTooltip';
+import { formatNumber, formatPercent } from '@/lib/i18n/format';
 
 type ReliabilityTopIssue = {
   type: 'crashes' | 'hangs' | 'services' | 'hardware' | 'uptime';
@@ -88,11 +90,11 @@ type DeviceReliabilityPanelProps = {
 };
 
 const issueLabels: Record<ReliabilityTopIssue['type'], string> = {
-  crashes: 'Crashes',
-  hangs: 'Application hangs',
-  services: 'Service failures',
-  hardware: 'Hardware errors',
-  uptime: 'Uptime',
+  crashes: 'crashes',
+  hangs: 'hangs',
+  services: 'services',
+  hardware: 'hardware',
+  uptime: 'uptime',
 };
 
 function scoreClass(score: number): string {
@@ -116,16 +118,6 @@ function scoreBandLabel(score: number): string {
   return 'good';
 }
 
-// The factor most responsible for dragging the score down — the first driver
-// (already ordered by lost points) or, when no drivers exist, the first top
-// issue. Used by the "At risk" explainer tooltip.
-function topDragLabel(snapshot: ReliabilitySnapshot): string | null {
-  const driver = (snapshot.drivers ?? [])[0];
-  if (driver) return driver.label;
-  const issue = snapshot.topIssues[0];
-  return issue ? issueLabels[issue.type] : null;
-}
-
 // 30-day raw count backing a fault factor, for the "Biggest drag" headline stat.
 // Uptime has no count (it's a percentage) and unknown factors return null.
 function factorCount30d(snapshot: ReliabilitySnapshot, factor: string): number | null {
@@ -146,7 +138,7 @@ function buildReliabilitySeedPrompt(snapshot: ReliabilitySnapshot, drivers: Reli
   return [
     `Review this device's reliability and recommend what to do.`,
     `Score ${snapshot.reliabilityScore}/100 (${scoreBandLabel(snapshot.reliabilityScore)}), trend ${snapshot.trendDirection}.`,
-    `30-day uptime ${snapshot.uptime30d.toFixed(1)}%, MTBF ${mtbf}.`,
+    `30-day uptime ${formatPercent(snapshot.uptime30d / 100, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}, MTBF ${mtbf}.`,
     `Top factors dragging the score: ${driverText}.`,
     `What are the likely root causes, and what remediation — scripts, checks, or a ticket — do you recommend?`,
   ].join(' ');
@@ -223,10 +215,10 @@ function factorEvidenceText(
       const uptime90 = pick('uptime90d');
       const uptime30 = pick('uptime30d') ?? snapshot.uptime30d;
       if (uptime90 !== null) {
-        parts.push(`${uptime90.toFixed(1)}% in 90d (scored window)`);
-        if (uptime90 !== uptime30) parts.push(`${uptime30.toFixed(1)}% ${windowPhrase}`);
+        parts.push(`${formatPercent(uptime90 / 100, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} in 90d (scored window)`);
+        if (uptime90 !== uptime30) parts.push(`${formatPercent(uptime30 / 100, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} ${windowPhrase}`);
       } else {
-        parts.push(`${uptime30.toFixed(1)}% ${windowPhrase}`);
+        parts.push(`${formatPercent(uptime30 / 100, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} ${windowPhrase}`);
       }
       break;
     }
@@ -293,6 +285,7 @@ function OffenderGroup({
 }
 
 export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPanelProps) {
+  const { t } = useTranslation('devices');
   const mlFlags = useMlFeatureFlags();
   const [snapshot, setSnapshot] = useState<ReliabilitySnapshot | null>(null);
   const [loading, setLoading] = useState(true);
@@ -308,15 +301,15 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
         setSnapshot(null);
         return;
       }
-      if (!response.ok) throw new Error('Failed to load reliability score');
+      if (!response.ok) throw new Error(t('deviceReliabilityPanel.errors.loadScore'));
       const json = await response.json();
       setSnapshot(json?.snapshot ?? null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load reliability score');
+      setError(err instanceof Error ? err.message : t('deviceReliabilityPanel.errors.loadScore'));
     } finally {
       setLoading(false);
     }
-  }, [deviceId]);
+  }, [deviceId, t]);
 
   useEffect(() => {
     if (!mlFlags.loaded) return;
@@ -373,13 +366,13 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
     setOffendersError(undefined);
     try {
       const response = await fetchWithAuth(`/reliability/${deviceId}/offenders`);
-      if (!response.ok) throw new Error('Failed to load reliability detail');
+      if (!response.ok) throw new Error(t('deviceReliabilityPanel.errors.loadDetail'));
       const json = await response.json();
       // A 200 with a missing/malformed body must not render a blank, retry-less
       // panel — treat it as a failure so the existing error+retry path handles it.
       const data = json?.offenders;
       if (!data || typeof data !== 'object') {
-        throw new Error('Reliability detail response was malformed');
+        throw new Error(t('deviceReliabilityPanel.errors.malformedDetail'));
       }
       setOffenders({
         services: Array.isArray(data.services) ? data.services : [],
@@ -388,11 +381,11 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
       });
     } catch (err) {
       offendersFetchedRef.current = false; // allow a retry on next expand
-      setOffendersError(err instanceof Error ? err.message : 'Failed to load reliability detail');
+      setOffendersError(err instanceof Error ? err.message : t('deviceReliabilityPanel.errors.loadDetail'));
     } finally {
       setOffendersLoading(false);
     }
-  }, [deviceId]);
+  }, [deviceId, t]);
 
   // Reset the drill-down when the panel is pointed at a different device, so a
   // stale offender list (and the fetched-once guard) can't bleed across devices.
@@ -438,7 +431,7 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
             className="inline-flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted"
           >
             <RefreshCw className="h-4 w-4" />
-            Retry
+            {t('common:actions.retry')}
           </button>
         </div>
       </div>
@@ -451,8 +444,8 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
         <div className="flex items-center gap-3">
           <ShieldCheck className="h-5 w-5 text-muted-foreground" />
           <div>
-            <h3 className="text-base font-semibold">Reliability</h3>
-            <p className="text-sm text-muted-foreground">Reliability scoring is disabled for this organization.</p>
+            <h3 className="text-base font-semibold">{t('deviceReliabilityPanel.title')}</h3>
+            <p className="text-sm text-muted-foreground">{t('deviceReliabilityPanel.disabled')}</p>
           </div>
         </div>
       </div>
@@ -465,8 +458,8 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
         <div className="flex items-center gap-3">
           <ShieldCheck className="h-5 w-5 text-muted-foreground" />
           <div>
-            <h3 className="text-base font-semibold">Reliability</h3>
-            <p className="text-sm text-muted-foreground">No reliability snapshot available yet.</p>
+            <h3 className="text-base font-semibold">{t('deviceReliabilityPanel.title')}</h3>
+            <p className="text-sm text-muted-foreground">{t('deviceReliabilityPanel.empty')}</p>
           </div>
         </div>
       </div>
@@ -482,8 +475,13 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
   const uptimeDriver = (snapshot.drivers ?? []).find((driver) => driver.factor === 'uptime');
   const topDrag = (snapshot.drivers ?? [])[0];
   const topDragCount = topDrag ? factorCount30d(snapshot, topDrag.factor) : null;
+  const atRiskDragLabel = topDrag?.label ?? (
+    snapshot.topIssues[0]
+      ? t(`deviceReliabilityPanel.issueLabels.${issueLabels[snapshot.topIssues[0].type]}`)
+      : null
+  );
   const showTopDragStat = uptimeDriver?.weight === 0 && topDrag !== undefined && topDrag.lostPoints > 0;
-  const offenderWindowText = `last ${OFFENDER_WINDOW_DAYS} days`;
+  const offenderWindowText = t('deviceReliabilityPanel.lastDays', { count: OFFENDER_WINDOW_DAYS });
   // Short form for inline evidence: "24 in 30d".
   const windowPhrase = `in ${OFFENDER_WINDOW_DAYS}d`;
   // Young devices haven't lived a full window yet; a tooltip carries that
@@ -498,18 +496,18 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <ShieldCheck className="h-5 w-5 text-muted-foreground" />
-            <h3 className="text-base font-semibold">Reliability</h3>
+            <h3 className="text-base font-semibold">{t('deviceReliabilityPanel.title')}</h3>
             {snapshot.reliabilityScore <= 70 && (
               <span className="inline-flex items-center gap-1" data-testid="reliability-atrisk-help">
                 <span className="inline-flex items-center gap-1 rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning">
                   <AlertTriangle className="h-3.5 w-3.5" />
-                  At risk
+                  {t('deviceReliabilityPanel.atRisk')}
                 </span>
                 <HelpTooltip
                   text={
-                    topDragLabel(snapshot)
-                      ? `Shown when the reliability score is ≤ 70. Biggest drag: ${topDragLabel(snapshot)}.`
-                      : 'Shown when the reliability score is ≤ 70.'
+                    atRiskDragLabel
+                      ? t('deviceReliabilityPanel.atRiskTooltipWithDrag', { drag: atRiskDragLabel })
+                      : t('deviceReliabilityPanel.atRiskTooltip')
                   }
                 />
               </span>
@@ -518,9 +516,12 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
           <div className="mt-3 flex flex-wrap items-end gap-x-5 gap-y-2">
             <div>
               <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                Score
+                {t('deviceReliabilityPanel.score')}
                 <HelpTooltip
-                  text={`Reliability score ${snapshot.reliabilityScore}/100 — ${scoreBandLabel(snapshot.reliabilityScore)}. Bands: ≤50 critical, ≤70 poor, ≤85 fair, else good.`}
+                  text={t('deviceReliabilityPanel.scoreTooltip', {
+                    score: snapshot.reliabilityScore,
+                    band: t(`deviceReliabilityPanel.scoreBands.${scoreBandLabel(snapshot.reliabilityScore)}`),
+                  })}
                 />
               </div>
               <div className={`text-3xl font-semibold tabular-nums ${scoreClass(snapshot.reliabilityScore)}`}>
@@ -528,15 +529,19 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
               </div>
             </div>
             <div>
-              <div className="text-xs text-muted-foreground">Trend</div>
-              <div className="text-sm font-medium capitalize">{snapshot.trendDirection}</div>
+              <div className="text-xs text-muted-foreground">{t('deviceReliabilityPanel.trend')}</div>
+              <div className="text-sm font-medium capitalize">{t(`deviceReliabilityPanel.trends.${snapshot.trendDirection}`)}</div>
             </div>
             {showTopDragStat && topDrag ? (
               <div>
                 <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                  <span data-testid="reliability-top-drag">Biggest drag</span>
+                  <span data-testid="reliability-top-drag">{t('deviceReliabilityPanel.biggestDrag')}</span>
                   <HelpTooltip
-                    text={`Uptime isn't scored for this device type (workstations sleep and reboot by design), so the factor costing the most points is shown instead. ${topDrag.label}: health ${topDrag.score}/100, ${topDrag.weight}% of the score.`}
+                    text={t('deviceReliabilityPanel.biggestDragTooltip', {
+                      label: topDrag.label,
+                      score: topDrag.score,
+                      weight: topDrag.weight,
+                    })}
                   />
                 </div>
                 <div className="text-sm font-medium">
@@ -549,18 +554,18 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
             ) : (
               <div>
                 <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                  <span data-testid="reliability-uptime-window">{OFFENDER_WINDOW_DAYS}d uptime</span>
+                  <span data-testid="reliability-uptime-window">{t('deviceReliabilityPanel.uptimeWindow', { days: OFFENDER_WINDOW_DAYS })}</span>
                   {youngDevice && (
                     <HelpTooltip
-                      text={`This device enrolled ${ageDays} day${ageDays === 1 ? '' : 's'} ago, so the ${OFFENDER_WINDOW_DAYS}-day windows only span its lifetime so far.`}
+                      text={t('deviceReliabilityPanel.youngDeviceTooltip', { age: ageDays, days: OFFENDER_WINDOW_DAYS })}
                     />
                   )}
                 </div>
-                <div className="text-sm font-medium tabular-nums">{snapshot.uptime30d.toFixed(1)}%</div>
+                <div className="text-sm font-medium tabular-nums">{formatPercent(snapshot.uptime30d / 100, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</div>
               </div>
             )}
             <div>
-              <div className="text-xs text-muted-foreground">MTBF</div>
+              <div className="text-xs text-muted-foreground">{t('deviceReliabilityPanel.mtbf')}</div>
               <div className="text-sm font-medium tabular-nums">
                 {snapshot.mtbfHours === null ? '—' : `${Math.round(snapshot.mtbfHours)}h`}
               </div>
@@ -574,9 +579,15 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
             <div
               data-testid="reliability-score-bar-segmented"
               role="img"
-              aria-label={`Score breakdown: ${scoredFactors
-                .map((driver) => `${driver.label} ${Math.round(earnedPoints(driver))} of ${Math.round(driver.weight)} points`)
-                .join(', ')}`}
+              aria-label={t('deviceReliabilityPanel.scoreBreakdownAria', {
+                items: scoredFactors
+                  .map((driver) => t('deviceReliabilityPanel.scoreBreakdownItem', {
+                    label: driver.label,
+                    earned: Math.round(earnedPoints(driver)),
+                    weight: Math.round(driver.weight),
+                  }))
+                  .join(', '),
+              })}
               className="mt-3 flex h-2 gap-px overflow-hidden rounded-full"
             >
               {scoredFactors.map((driver) => (
@@ -584,7 +595,12 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
                   key={driver.factor}
                   className="h-2 bg-muted"
                   style={{ width: `${driver.weight}%` }}
-                  title={`${driver.label} — ${Math.round(earnedPoints(driver))} of ${Math.round(driver.weight)} pts (health ${driver.score}/100)`}
+                  title={t('deviceReliabilityPanel.factorTitle', {
+                    label: driver.label,
+                    earned: Math.round(earnedPoints(driver)),
+                    weight: Math.round(driver.weight),
+                    score: driver.score,
+                  })}
                 >
                   <div className={`h-2 ${scoreBarClass(driver.score)}`} style={{ width: `${driver.score}%` }} />
                 </div>
@@ -598,7 +614,7 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
               />
             </div>
           )}
-          <p className="mt-2 text-xs text-muted-foreground">Updated {formatDate(snapshot.computedAt)}</p>
+          <p className="mt-2 text-xs text-muted-foreground">{t('deviceReliabilityPanel.updated', { date: formatDate(snapshot.computedAt) })}</p>
         </div>
 
         <div className="flex flex-col items-start gap-2 xl:items-end">
@@ -609,7 +625,7 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
             className="inline-flex items-center justify-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
           >
             <Sparkles className="h-4 w-4" />
-            Ask AI about reliability
+            {t('deviceReliabilityPanel.askAi')}
           </button>
           {/* Outcome-feedback UI removed for now: the labels only feed a
               precision evaluation endpoint no UI consumes, and there is no
@@ -621,9 +637,9 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
       {factorRows.length > 0 ? (
         <div className="mt-5" data-testid="reliability-factors">
           <div className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
-            Score factors
+            {t('deviceReliabilityPanel.scoreFactors')}
             <HelpTooltip
-              text={`Each factor's health (0–100) × its weight contributes points; the points add up to the ${snapshot.reliabilityScore} score. Values are rounded for display — hover a row for exact figures.`}
+              text={t('deviceReliabilityPanel.scoreFactorsTooltip', { score: snapshot.reliabilityScore })}
             />
           </div>
           <div className="mt-1 divide-y divide-border/60">
@@ -640,8 +656,13 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
                   className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 py-2"
                   title={
                     unweighted
-                      ? `${driver.label} — not scored for this device type`
-                      : `${driver.label} — health ${driver.score}/100, earns ${earnedPoints(driver).toFixed(1)} of ${driver.weight} points`
+                      ? t('deviceReliabilityPanel.notScoredTitle', { label: driver.label })
+                      : t('deviceReliabilityPanel.scoredTitle', {
+                          label: driver.label,
+                          score: driver.score,
+                          earned: formatNumber(earnedPoints(driver), { minimumFractionDigits: 1, maximumFractionDigits: 1 }),
+                          weight: driver.weight,
+                        })
                   }
                 >
                   <span className={`w-36 shrink-0 text-sm font-medium ${problem ? '' : 'text-muted-foreground'}`}>
@@ -649,7 +670,7 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
                   </span>
                   <span className="min-w-0 flex-1 text-xs text-muted-foreground">
                     {unweighted ? (
-                      <>Not scored for this device type{evidenceText ? ` — ${evidenceText}` : ''}</>
+                      <>{t('deviceReliabilityPanel.notScoredForType')}{evidenceText ? ` — ${evidenceText}` : ''}</>
                     ) : problem ? (
                       <>
                         {evidenceText}
@@ -660,14 +681,14 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
                             onClick={expandOffenders}
                             className="ml-2 underline decoration-dotted underline-offset-2 hover:text-foreground"
                           >
-                            details
+                            {t('deviceReliabilityPanel.details')}
                           </button>
                         )}
                       </>
                     ) : driver.factor === 'uptime' ? (
                       evidenceText
                     ) : (
-                      `None ${windowPhrase}`
+                      t('deviceReliabilityPanel.noneInWindow', { window: windowPhrase })
                     )}
                   </span>
                   <span
@@ -675,7 +696,12 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
                       unweighted ? 'text-muted-foreground/70' : problem ? scoreClass(driver.score) : 'text-muted-foreground'
                     }`}
                   >
-                    {unweighted ? '—' : `${Math.round(earnedPoints(driver))} / ${Math.round(driver.weight)} pts`}
+                    {unweighted
+                      ? '—'
+                      : t('deviceReliabilityPanel.points', {
+                          earned: Math.round(earnedPoints(driver)),
+                          weight: Math.round(driver.weight),
+                        })}
                   </span>
                 </div>
               );
@@ -686,8 +712,8 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
         <div className="mt-5 grid gap-3 lg:grid-cols-3">
           {snapshot.topIssues.slice(0, 3).map((issue) => (
             <div key={issue.type} className="rounded-md border p-3">
-              <p className="text-sm font-medium">{issueLabels[issue.type]}</p>
-              <p className="mt-1 text-xs capitalize text-muted-foreground">{issue.severity}</p>
+              <p className="text-sm font-medium">{t(`deviceReliabilityPanel.issueLabels.${issueLabels[issue.type]}`)}</p>
+              <p className="mt-1 text-xs capitalize text-muted-foreground">{t(`deviceReliabilityPanel.severity.${issue.severity}`)}</p>
               <p className="mt-3 text-lg font-semibold tabular-nums" title={issue.count.toLocaleString()}>
                 {formatCount(issue.count)}
               </p>
@@ -706,7 +732,9 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
             className="inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground"
           >
             <ChevronDown className={`h-4 w-4 transition-transform ${offendersOpen ? 'rotate-180' : ''}`} />
-            {offendersOpen ? 'Hide' : 'Show'} offending services &amp; components
+            {offendersOpen
+              ? t('deviceReliabilityPanel.hideOffenders')
+              : t('deviceReliabilityPanel.showOffenders')}
           </button>
 
           {offendersOpen && (
@@ -714,7 +742,7 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
               {offendersLoading && (
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
                   <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-                  Loading detail…
+                  {t('deviceReliabilityPanel.loadingDetail')}
                 </div>
               )}
               {offendersError && (
@@ -726,7 +754,7 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
                     className="inline-flex items-center gap-1.5 self-start rounded-md border px-2.5 py-1.5 text-xs font-medium hover:bg-muted"
                   >
                     <RefreshCw className="h-3.5 w-3.5" />
-                    Retry
+                    {t('common:actions.retry')}
                   </button>
                 </div>
               )}
@@ -735,29 +763,29 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
                   <>
                     <OffenderGroup
                       testId="reliability-offenders-services"
-                      title="Top services"
+                      title={t('deviceReliabilityPanel.offenders.topServices')}
                       Icon={Settings}
                       offenders={offenders.services}
                     />
                     <OffenderGroup
                       testId="reliability-offenders-hardware"
-                      title="Top hardware components"
+                      title={t('deviceReliabilityPanel.offenders.topHardware')}
                       Icon={Cpu}
                       offenders={offenders.hardware}
                     />
                     <OffenderGroup
                       testId="reliability-offenders-hangs"
-                      title="Top processes"
+                      title={t('deviceReliabilityPanel.offenders.topProcesses')}
                       Icon={Activity}
                       offenders={offenders.hangs}
                     />
                     <p className="text-xs text-muted-foreground">
-                      Distinct events from the {offenderWindowText}.
+                      {t('deviceReliabilityPanel.distinctEvents', { window: offenderWindowText })}
                     </p>
                   </>
                 ) : (
                   <p className="text-sm text-muted-foreground">
-                    No offending services or components recorded in the {offenderWindowText}.
+                    {t('deviceReliabilityPanel.noOffenders', { window: offenderWindowText })}
                   </p>
                 )
               )}
