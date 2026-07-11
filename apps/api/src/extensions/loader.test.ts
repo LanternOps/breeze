@@ -104,6 +104,18 @@ describe('mountExtensions', () => {
     vi.unstubAllEnvs();
   });
 
+  it('prefers the dist build over a coexisting TS entry in production', async () => {
+    scaffoldRuntimeExtension(root);
+    addStaleCjsBuild(root);
+    vi.stubEnv('NODE_ENV', 'production');
+    const app = new Hono();
+    await mountExtensions(app, root);
+    const res = await app.request('/api/v1/demo/health');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, ext: 'stale-dist' });
+    vi.unstubAllEnvs();
+  });
+
   it('respects BREEZE_EXTENSIONS_ENABLED=false', async () => {
     scaffoldRuntimeExtension(root);
     vi.stubEnv('BREEZE_EXTENSIONS_ENABLED', 'false');
