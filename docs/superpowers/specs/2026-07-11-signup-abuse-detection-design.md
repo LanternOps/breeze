@@ -106,6 +106,8 @@ LLM involvement is confined to layer 4. Layers 1–3 are deterministic SQL + ari
 
 **Dedup:** state-based. Notification on first firing or severity escalation only; hourly re-computation updates evidence without re-alerting. `delivered_at` set only on successful send, so failed deliveries retry next sweep.
 
+**Scope boundary:** heuristic signals only cover partners that are young (< 90 days old), recently enrolling (device enrolled in the last 2 hours), or currently flagged (have an open signal row, so they stay evaluated to real resolution). Steady-state resource abuse by older accounts with no recent enrollment activity — e.g. a partner past the 90-day window running an established fleet abnormally hard — falls outside the sweep's scope in this phase. That gap is covered by the Prometheus/Grafana stack and the scheduled-analyst layer (Layer 4), not by this hourly job. This is a deliberate boundary, not an oversight; revisit it alongside the geo PR when `rmm.geo_spread`/`rmm.signup_device_mismatch` land and the scope question gets re-examined anyway.
+
 ## Layer 3: Ops alerting
 
 **New `opsAlerts` service** — the platform-operator channel (all existing notification paths are tenant-facing). Env-only config, no infrastructure details in code:

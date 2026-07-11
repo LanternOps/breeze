@@ -148,6 +148,13 @@ services:
       MSI_SIGNING_URL: ${MSI_SIGNING_URL:-}
       MSI_SIGNING_CF_ACCESS_ID: ${MSI_SIGNING_CF_ACCESS_ID:-}
       MSI_SIGNING_CF_ACCESS_SECRET: ${MSI_SIGNING_CF_ACCESS_SECRET:-}
+      # Signup-abuse-detection sweep (docs/superpowers/specs/2026-07-11-signup-abuse-detection-design.md).
+      # Optional — empty/unmapped means ops alerting stays dark and per-signal
+      # thresholds fall back to config.ts defaults.
+      OPS_ALERT_WEBHOOK_URL: ${OPS_ALERT_WEBHOOK_URL:-}
+      OPS_ALERT_EMAIL: ${OPS_ALERT_EMAIL:-}
+      OPS_ALERT_LABEL: ${OPS_ALERT_LABEL:-}
+      ABUSE_SIGNAL_OVERRIDES: ${ABUSE_SIGNAL_OVERRIDES:-}
     volumes:
       - api_data:/data
       - binaries:/data/binaries:ro

@@ -40,6 +40,15 @@ export async function loadPartnerAggregates(): Promise<PartnerAggregates[]> {
             SELECT 1 FROM organizations o JOIN devices d ON d.org_id = o.id
             WHERE o.partner_id = p.id AND d.enrolled_at > now() - interval '2 hours'
           )
+          -- Flagged partners keep being re-evaluated every sweep so open
+          -- signals resolve on real evidence (score drops back below
+          -- threshold), not merely because the partner aged out of the
+          -- young/recently-enrolling scope — and per-row acknowledgments
+          -- survive since the row is never stale-resolved out from under them.
+          OR EXISTS (
+            SELECT 1 FROM partner_abuse_signals pas
+            WHERE pas.partner_id = p.id AND pas.resolved_at IS NULL
+          )
         )
     ),
     dev AS (
@@ -64,10 +73,31 @@ export async function loadPartnerAggregates(): Promise<PartnerAggregates[]> {
       GROUP BY o.partner_id
     ),
     logins AS (
-      SELECT o.partner_id, COUNT(*) AS failed_24h
-      FROM audit_logs al JOIN organizations o ON o.id = al.org_id
-      WHERE al.action = 'user.login.failed' AND al."timestamp" > now() - interval '24 hours'
-      GROUP BY o.partner_id
+      -- Fresh partners have ONLY a partnerUsers link (createPartner never
+      -- creates an organizationUsers row) — their partner-admin logins carry
+      -- org_id NULL on audit_logs, so an org_id-only join never sees the
+      -- failed logins for exactly the accounts this signal targets. Attribute
+      -- across both axes: org-member failures via org_id -> organizations,
+      -- and org_id-NULL failures via the audit row's actor_id -> users.id
+      -- (actor_id is populated with the real users.id on every
+      -- auditUserLoginFailure call site — apps/api/src/routes/auth/login.ts
+      -- resolves the user row by email before auditing — so it's a more
+      -- robust join key than actor_email, which isn't guaranteed unique/stable).
+      SELECT pid AS partner_id, SUM(cnt) AS failed_24h FROM (
+        -- org-attributable failed logins (org members)
+        SELECT o.partner_id AS pid, COUNT(*) AS cnt
+        FROM audit_logs al JOIN organizations o ON o.id = al.org_id
+        WHERE al.action = 'user.login.failed' AND al."timestamp" > now() - interval '24 hours'
+        GROUP BY o.partner_id
+        UNION ALL
+        -- partner-admin failed logins land with org_id NULL; attribute via
+        -- the target user's partner_id (audit actor_id -> users.id)
+        SELECT u.partner_id AS pid, COUNT(*) AS cnt
+        FROM audit_logs al JOIN users u ON u.id = al.actor_id
+        WHERE al.action = 'user.login.failed' AND al.org_id IS NULL
+          AND al."timestamp" > now() - interval '24 hours' AND u.partner_id IS NOT NULL
+        GROUP BY u.partner_id
+      ) x GROUP BY pid
     ),
     denied AS (
       -- Counts org-attributable enrollment denials (expired/exhausted keys,

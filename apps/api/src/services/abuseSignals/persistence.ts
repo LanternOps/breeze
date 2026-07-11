@@ -10,10 +10,20 @@ const key = (partnerId: string, signalKey: string) => `${partnerId}|${signalKey}
  * dedup: notify on first alert firing or on escalation-to-alert, never on
  * hourly recomputation of an already-delivered alert. MUST run inside a
  * system DB context.
+ *
+ * Stale-resolution rule (state-machine rule 3): an open row is auto-resolved
+ * as stale ONLY when (a) its signalKey is an `invariant.*` row — those are
+ * computed fleet-wide every sweep, so absence this sweep is real evidence
+ * the condition cleared — OR (b) its partnerId is in `evaluatedPartnerIds`,
+ * i.e. this sweep actually scored that partner and it simply didn't fire.
+ * Rows belonging to a partner the `scoped` CTE excluded this sweep (aged out
+ * of the young/recently-enrolling window) are left untouched — resolving
+ * them would be resolving on scope exit, not on evidence the abuse cleared.
  */
 export async function persistSignals(
   computed: ComputedSignal[],
   now: Date,
+  evaluatedPartnerIds: ReadonlySet<string>,
 ): Promise<{ toNotify: Array<ComputedSignal & { rowId: string }> }> {
   // Defensive: one entry per (partner, signal) — the open-row unique index
   // would reject a duplicate INSERT mid-loop. Last write wins.
@@ -64,6 +74,7 @@ export async function persistSignals(
 
   const staleIds = openRows
     .filter((r) => !firedKeys.has(key(r.partnerId, r.signalKey)))
+    .filter((r) => r.signalKey.startsWith('invariant.') || evaluatedPartnerIds.has(r.partnerId))
     .map((r) => r.id);
   if (staleIds.length > 0) {
     await db

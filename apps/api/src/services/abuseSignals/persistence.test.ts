@@ -49,6 +49,7 @@ describe('persistSignals', () => {
     const { toNotify } = await persistSignals(
       [signal({}), signal({ signalKey: 'rmm.enrollment_velocity', score: 45, severity: 'watch' })],
       now,
+      new Set(['p1']),
     );
     expect(inserted).toHaveLength(2);
     expect(toNotify).toHaveLength(1);
@@ -57,7 +58,7 @@ describe('persistSignals', () => {
 
   it('updates an existing open row without re-notifying a delivered alert', async () => {
     mockOpenRows([{ id: 'row1', partnerId: 'p1', signalKey: 'rmm.consumer_devices', severity: 'alert', acknowledgedAt: null, deliveredAt: new Date() }]);
-    const { toNotify } = await persistSignals([signal({})], now);
+    const { toNotify } = await persistSignals([signal({})], now, new Set(['p1']));
     expect(inserted).toHaveLength(0);
     expect(updates.length).toBeGreaterThan(0);
     expect(toNotify).toHaveLength(0);
@@ -67,20 +68,20 @@ describe('persistSignals', () => {
 
   it('notifies on escalation to alert (open watch row, never delivered)', async () => {
     mockOpenRows([{ id: 'row1', partnerId: 'p1', signalKey: 'rmm.consumer_devices', severity: 'watch', acknowledgedAt: null, deliveredAt: null }]);
-    const { toNotify } = await persistSignals([signal({ severity: 'alert' })], now);
+    const { toNotify } = await persistSignals([signal({ severity: 'alert' })], now, new Set(['p1']));
     expect(toNotify).toHaveLength(1);
     expect(toNotify[0]!.rowId).toBe('row1');
   });
 
   it('never notifies acknowledged rows', async () => {
     mockOpenRows([{ id: 'row1', partnerId: 'p1', signalKey: 'rmm.consumer_devices', severity: 'alert', acknowledgedAt: new Date(), deliveredAt: null }]);
-    const { toNotify } = await persistSignals([signal({})], now);
+    const { toNotify } = await persistSignals([signal({})], now, new Set(['p1']));
     expect(toNotify).toHaveLength(0);
   });
 
-  it('resolves open rows that did not fire this sweep', async () => {
+  it('resolves open rows that did not fire this sweep, for an evaluated partner', async () => {
     mockOpenRows([{ id: 'stale', partnerId: 'p9', signalKey: 'rmm.enrollment_velocity', severity: 'watch', acknowledgedAt: null, deliveredAt: null }]);
-    await persistSignals([], now);
+    await persistSignals([], now, new Set(['p9']));
     expect(updates.some((u) => u.set.resolvedAt instanceof Date)).toBe(true);
   });
 
@@ -89,10 +90,23 @@ describe('persistSignals', () => {
     const { toNotify } = await persistSignals(
       [signal({ score: 50, severity: 'watch' }), signal({ score: 90, severity: 'alert' })],
       now,
+      new Set(['p1']),
     );
     expect(inserted).toHaveLength(1);
     expect((inserted[0] as { score: number }).score).toBe(90);
     expect(toNotify).toHaveLength(1);
+  });
+
+  it('leaves an open heuristic row untouched when its partner was NOT evaluated this sweep (scope exit, not evidence)', async () => {
+    mockOpenRows([{ id: 'stale', partnerId: 'p9', signalKey: 'rmm.enrollment_velocity', severity: 'watch', acknowledgedAt: null, deliveredAt: null }]);
+    await persistSignals([], now, new Set(['p1']));
+    expect(updates.some((u) => u.set.resolvedAt instanceof Date)).toBe(false);
+  });
+
+  it('resolves an open invariant.* row that did not fire this sweep even when its partner is not in the evaluated set', async () => {
+    mockOpenRows([{ id: 'stale-invariant', partnerId: 'p9', signalKey: 'invariant.something', severity: 'watch', acknowledgedAt: null, deliveredAt: null }]);
+    await persistSignals([], now, new Set(['p1']));
+    expect(updates.some((u) => u.set.resolvedAt instanceof Date)).toBe(true);
   });
 });
 

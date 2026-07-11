@@ -43,7 +43,8 @@ export async function runAbuseSweep(): Promise<{ fired: number; notified: number
   }));
 
   const computed = [...invariants, ...computeHeuristicSignals(aggregates, cfg, now)];
-  const { toNotify } = await runSystemDbCompute(() => persistSignals(computed, now));
+  const evaluatedPartnerIds = new Set(aggregates.map((a) => a.partnerId));
+  const { toNotify } = await runSystemDbCompute(() => persistSignals(computed, now, evaluatedPartnerIds));
 
   for (const s of computed) recordAbuseSignalFired(s.severity);
 
@@ -71,11 +72,11 @@ export async function runAbuseDigest(): Promise<void> {
       GROUP BY severity
     `)) as unknown as Array<{ severity: string; count: string }>;
     const watchRows = (await db.execute(sql`
-      SELECT s.signal_key, s.score, s.evidence, p.name
+      SELECT s.signal_key, s.score, p.name
       FROM partner_abuse_signals s JOIN partners p ON p.id = s.partner_id
       WHERE s.resolved_at IS NULL AND s.acknowledged_at IS NULL AND s.severity = 'watch'
       ORDER BY s.score DESC LIMIT 20
-    `)) as unknown as Array<{ signal_key: string; score: number; evidence: Record<string, unknown>; name: string }>;
+    `)) as unknown as Array<{ signal_key: string; score: number; name: string }>;
     const newPartners = (await db.execute(sql`
       SELECT COUNT(*) AS count FROM partners WHERE created_at > now() - interval '7 days' AND deleted_at IS NULL
     `)) as unknown as Array<{ count: string }>;
