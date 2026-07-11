@@ -202,4 +202,96 @@ describe('ticket_forms partner RLS', () => {
       )
     ).rejects.toMatchObject({ cause: { code: '23505' } });
   });
+
+  // Deferred from Task 1's review: the two existing link-write assertions only
+  // prove the DENY side (cross-partner forge → 42501). This proves the ALLOW
+  // side of the same WITH CHECK clause — the owning partner's own context can
+  // actually insert a link on its own form, exercising the
+  // breeze_has_partner_access(tf.partner_id) branch positively, not just its
+  // negation.
+  it('the owning partner context can insert a link on its own partner-wide form', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+
+    const [form] = await withDbAccessContext(systemContext(), () =>
+      db.insert(ticketForms).values({ ...baseForm, partnerId: partner.id, orgId: null }).returning()
+    );
+    if (!form) throw new Error('insert returned no row');
+    created.push(form.id);
+
+    const [link] = await withDbAccessContext(partnerContext(partner.id, [org.id]), () =>
+      db.insert(ticketFormOrgLinks).values({ formId: form.id, orgId: org.id }).returning()
+    );
+    expect(link).toMatchObject({ formId: form.id, orgId: org.id });
+  });
+
+  describe('allowlist resolution (Task 2: listTicketFormsForOrg)', () => {
+    it('allowlist: partner-wide form with links is visible ONLY to linked orgs; an unlinked partner-wide form stays visible to all', async () => {
+      const partner = await createPartner();
+      const orgA = await createOrganization({ partnerId: partner.id });
+      const orgB = await createOrganization({ partnerId: partner.id });
+
+      const [formP] = await withDbAccessContext(systemContext(), () =>
+        db.insert(ticketForms).values({ ...baseForm, name: 'P — allowlisted', partnerId: partner.id, orgId: null }).returning()
+      );
+      const [formQ] = await withDbAccessContext(systemContext(), () =>
+        db.insert(ticketForms).values({ ...baseForm, name: 'Q — unlinked', partnerId: partner.id, orgId: null }).returning()
+      );
+      if (!formP || !formQ) throw new Error('insert returned no row');
+      created.push(formP.id, formQ.id);
+
+      await withDbAccessContext(systemContext(), () =>
+        db.insert(ticketFormOrgLinks).values({ formId: formP.id, orgId: orgA.id }).returning()
+      );
+
+      const forOrgA = await listTicketFormsForOrg({ id: orgA.id, partnerId: partner.id });
+      expect(forOrgA.map((f) => f.name).sort()).toEqual(['P — allowlisted', 'Q — unlinked']);
+
+      const forOrgB = await listTicketFormsForOrg({ id: orgB.id, partnerId: partner.id });
+      expect(forOrgB.map((f) => f.name)).toEqual(['Q — unlinked']);
+    });
+
+    it('portalOnly filters out showInPortal=false rows', async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+
+      const rows = await withDbAccessContext(systemContext(), () =>
+        db
+          .insert(ticketForms)
+          .values([
+            { ...baseForm, name: 'Visible in portal', orgId: org.id, partnerId: null, showInPortal: true },
+            { ...baseForm, name: 'Internal only', orgId: org.id, partnerId: null, showInPortal: false }
+          ])
+          .returning()
+      );
+      created.push(...rows.map((r) => r.id));
+
+      const all = await listTicketFormsForOrg({ id: org.id, partnerId: partner.id });
+      expect(all.map((f) => f.name).sort()).toEqual(['Internal only', 'Visible in portal']);
+
+      const portalOnly = await listTicketFormsForOrg({ id: org.id, partnerId: partner.id }, { portalOnly: true });
+      expect(portalOnly.map((f) => f.name)).toEqual(['Visible in portal']);
+    });
+
+    it('orders by sortOrder then name — exact order, no .sort() masking', async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+
+      const rows = await withDbAccessContext(systemContext(), () =>
+        db
+          .insert(ticketForms)
+          .values([
+            { ...baseForm, name: 'Zebra', orgId: org.id, partnerId: null, sortOrder: 1 },
+            { ...baseForm, name: 'Alpha', orgId: org.id, partnerId: null, sortOrder: 1 },
+            { ...baseForm, name: 'Middle', orgId: org.id, partnerId: null, sortOrder: 2 }
+          ])
+          .returning()
+      );
+      created.push(...rows.map((r) => r.id));
+
+      const forOrg = await listTicketFormsForOrg({ id: org.id, partnerId: partner.id });
+      // sortOrder 1 group ordered by name (Alpha before Zebra), then sortOrder 2.
+      expect(forOrg.map((f) => f.name)).toEqual(['Alpha', 'Zebra', 'Middle']);
+    });
+  });
 });

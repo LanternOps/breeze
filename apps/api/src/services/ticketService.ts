@@ -270,7 +270,11 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
   let intake: ReturnType<typeof applyIntakeForm> | null = null;
   if (input.formId) {
     try {
-      const form = await getTicketFormForOrg(input.formId, { id: org.id, partnerId: org.partnerId });
+      const form = await getTicketFormForOrg(
+        input.formId,
+        { id: org.id, partnerId: org.partnerId },
+        { requirePortalVisible: input.source === 'portal' }
+      );
       intake = applyIntakeForm(form, input.formResponses ?? {});
     } catch (err) {
       if (err instanceof TicketFormError) throw new TicketServiceError(err.message, err.status);

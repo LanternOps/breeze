@@ -106,6 +106,47 @@ describe('createTicketFormSchema / updateTicketFormSchema', () => {
       expect('orgId' in r.data).toBe(false);
     }
   });
+
+  describe('visibleOrgIds (Phase 2 allowlist)', () => {
+    const orgA = '3f2f1d8e-1111-4222-8333-444455556666';
+    const orgB = '3f2f1d8e-2222-4222-8333-444455556666';
+
+    it('create accepts an array of guids, null, or absence', () => {
+      expect(createTicketFormSchema.safeParse({ name: 'n', fields, visibleOrgIds: [orgA, orgB] }).success).toBe(true);
+      expect(createTicketFormSchema.safeParse({ name: 'n', fields, visibleOrgIds: null }).success).toBe(true);
+      const r = createTicketFormSchema.safeParse({ name: 'n', fields });
+      expect(r.success).toBe(true);
+      if (r.success) expect('visibleOrgIds' in r.data).toBe(false);
+    });
+
+    it('update accepts an array of guids, null, or absence', () => {
+      expect(updateTicketFormSchema.safeParse({ visibleOrgIds: [orgA] }).success).toBe(true);
+      expect(updateTicketFormSchema.safeParse({ visibleOrgIds: null }).success).toBe(true);
+      const r = updateTicketFormSchema.parse({ name: 'x' });
+      expect('visibleOrgIds' in r).toBe(false);
+    });
+
+    it('rejects non-guid entries', () => {
+      expect(createTicketFormSchema.safeParse({ name: 'n', fields, visibleOrgIds: ['not-a-guid'] }).success).toBe(false);
+      expect(updateTicketFormSchema.safeParse({ visibleOrgIds: ['not-a-guid'] }).success).toBe(false);
+    });
+
+    it('rejects more than 500 entries', () => {
+      const many = Array.from({ length: 501 }, (_, i) => `3f2f1d8e-0000-4222-8333-${String(i).padStart(12, '0')}`);
+      expect(createTicketFormSchema.safeParse({ name: 'n', fields, visibleOrgIds: many }).success).toBe(false);
+      expect(updateTicketFormSchema.safeParse({ visibleOrgIds: many }).success).toBe(false);
+    });
+
+    it('accepts exactly 500 entries', () => {
+      const exactly500 = Array.from({ length: 500 }, (_, i) => `3f2f1d8e-0000-4222-8333-${String(i).padStart(12, '0')}`);
+      expect(createTicketFormSchema.safeParse({ name: 'n', fields, visibleOrgIds: exactly500 }).success).toBe(true);
+    });
+
+    it('does not disturb base/extend construction: a partial update of only { name } still yields only { name }', () => {
+      const r = updateTicketFormSchema.parse({ name: 'x' });
+      expect(Object.keys(r)).toEqual(['name']);
+    });
+  });
 });
 
 describe('buildResponseValidator', () => {

@@ -515,7 +515,11 @@ describe('createTicket — intake form (formId)', () => {
       actor
     );
 
-    expect(formMocks.getTicketFormForOrg).toHaveBeenCalledWith('form-1', { id: 'o-1', partnerId: 'p-1' });
+    expect(formMocks.getTicketFormForOrg).toHaveBeenCalledWith(
+      'form-1',
+      { id: 'o-1', partnerId: 'p-1' },
+      { requirePortalVisible: false }
+    );
     expect(formMocks.applyIntakeForm).toHaveBeenCalledWith(
       { id: 'form-1', name: 'Intake', version: 1 },
       { affected_user: 'jdoe' }
@@ -601,6 +605,57 @@ describe('createTicket — intake form (formId)', () => {
     expect(err.status).toBe(400);
     expect(err.message).toMatch(/not available for this organization/i);
     expect(valuesMock).not.toHaveBeenCalled();
+  });
+
+  it('portal source passes requirePortalVisible:true; a showInPortal-guard rejection maps to TicketServiceError 400 and writes nothing', async () => {
+    dbMocks.selectResult.mockResolvedValue([{ id: 'o-1', partnerId: 'p-1' }]);
+    const { TicketFormError } = await vi.importActual<typeof import('./ticketFormService')>('./ticketFormService');
+    formMocks.getTicketFormForOrg.mockRejectedValue(new TicketFormError('Ticket form is not available in the portal', 400));
+
+    const err = await createTicket(
+      {
+        orgId: 'o-1',
+        source: 'portal',
+        submittedBy: 'user-1',
+        submitterEmail: 'client@client.example',
+        formId: 'form-internal',
+        formResponses: {}
+      },
+      actor
+    ).catch((e) => e);
+
+    expect(formMocks.getTicketFormForOrg).toHaveBeenCalledWith(
+      'form-internal',
+      { id: 'o-1', partnerId: 'p-1' },
+      { requirePortalVisible: true }
+    );
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(400);
+    expect(err.message).toMatch(/not available in the portal/i);
+    expect(valuesMock).not.toHaveBeenCalled();
+  });
+
+  it('non-portal source (e.g. manual/api/alert) does not require portal visibility', async () => {
+    dbMocks.selectResult.mockResolvedValue([{ id: 'o-1', partnerId: 'p-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-form-4', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
+    formMocks.getTicketFormForOrg.mockResolvedValue({ id: 'form-1', name: 'Intake', version: 1 });
+    formMocks.applyIntakeForm.mockReturnValue({
+      responses: {},
+      subjectFromForm: 'Form subject',
+      descriptionBlock: 'form block',
+      categoryId: null,
+      defaultPriority: null,
+      defaultTags: [],
+      intakeSnapshot: { intakeForm: { formId: 'form-1', formName: 'Intake', formVersion: 1, responses: {} } }
+    });
+
+    await createTicket({ orgId: 'o-1', source: 'api', formId: 'form-1', formResponses: {} }, actor);
+
+    expect(formMocks.getTicketFormForOrg).toHaveBeenCalledWith(
+      'form-1',
+      { id: 'o-1', partnerId: 'p-1' },
+      { requirePortalVisible: false }
+    );
   });
 });
 
