@@ -1,12 +1,24 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
-import { X, MessageSquare, Plus, History, Search, ArrowLeft, Loader2, Flag, Building2 } from 'lucide-react';
-import { useAiStore } from '@/stores/aiStore';
-import AiChatMessages from './AiChatMessages';
-import AiChatInput from './AiChatInput';
-import AiContextBadge from './AiContextBadge';
-import AiCostIndicator from './AiCostIndicator';
+import { useEffect, useState, useCallback, useRef } from "react";
+import {
+  X,
+  MessageSquare,
+  Plus,
+  History,
+  Search,
+  ArrowLeft,
+  Loader2,
+  Flag,
+  Building2,
+} from "lucide-react";
+import { useAiStore } from "@/stores/aiStore";
+import AiChatMessages from "./AiChatMessages";
+import AiChatInput from "./AiChatInput";
+import AiContextBadge from "./AiContextBadge";
+import AiCostIndicator from "./AiCostIndicator";
+import { useTranslation } from "react-i18next";
 
 export default function AiChatSidebar() {
+  const { t } = useTranslation("ai");
   const {
     isOpen,
     toggle,
@@ -48,22 +60,22 @@ export default function AiChatSidebar() {
     selectedM365ConnectionId,
     boundM365ConnectionId,
     loadM365Connections,
-    setSelectedM365Connection
+    setSelectedM365Connection,
   } = useAiStore();
 
-  const [searchQuery, setSearchQuery] = useState('');
+  const [searchQuery, setSearchQuery] = useState("");
   const restoredSessionIdRef = useRef<string | null>(null);
 
   // Keyboard shortcut: Cmd+Shift+A to toggle
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === 'a') {
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "a") {
         e.preventDefault();
         toggle();
       }
     };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
   }, [toggle]);
 
   // Restore session history when sidebar opens with a persisted sessionId
@@ -75,7 +87,11 @@ export default function AiChatSidebar() {
 
     // Prevent fetch loops when a valid session has no messages yet.
     // Load persisted session content at most once per open/session pair.
-    if (messages.length === 0 && !isLoading && restoredSessionIdRef.current !== sessionId) {
+    if (
+      messages.length === 0 &&
+      !isLoading &&
+      restoredSessionIdRef.current !== sessionId
+    ) {
       restoredSessionIdRef.current = sessionId;
       void loadSession(sessionId);
     }
@@ -119,7 +135,7 @@ export default function AiChatSidebar() {
         // control drops out of the focus/hit-test order (#1419).
         inert={!isOpen}
         className={`fixed right-0 top-0 z-40 flex h-full w-[400px] flex-col border-l bg-card shadow-2xl transition-transform duration-300 ${
-          isOpen ? 'translate-x-0' : 'translate-x-full pointer-events-none'
+          isOpen ? "translate-x-0" : "translate-x-full pointer-events-none"
         }`}
       >
         {/* Header — one flat surface with the panel (no stacked card-on-card
@@ -137,7 +153,9 @@ export default function AiChatSidebar() {
               <MessageSquare className="h-4 w-4 text-primary" />
             )}
             <span className="text-sm font-semibold text-foreground">
-              {showHistory ? 'History' : 'Breeze AI'}
+              {showHistory
+                ? t("aiChatSidebar.history")
+                : t("aiChatSidebar.title")}
             </span>
           </div>
 
@@ -146,7 +164,7 @@ export default function AiChatSidebar() {
               <button
                 onClick={toggleHistory}
                 className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                title="Conversation history"
+                title={t("aiChatSidebar.conversationHistory")}
               >
                 <History className="h-4 w-4" />
               </button>
@@ -155,28 +173,35 @@ export default function AiChatSidebar() {
               <button
                 onClick={handleNewConversation}
                 className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                title="New conversation"
+                title={t("aiChatSidebar.newConversation")}
               >
                 <Plus className="h-4 w-4" />
               </button>
             )}
             {!showHistory && sessionId && (
               <button
-                onClick={() => isFlagged ? unflagSession() : flagSession()}
+                onClick={() => (isFlagged ? unflagSession() : flagSession())}
                 className={`rounded p-1.5 transition-colors ${
                   isFlagged
-                    ? 'text-amber-400 hover:bg-muted hover:text-amber-300'
-                    : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                    ? "text-amber-400 hover:bg-muted hover:text-amber-300"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
                 }`}
-                title={isFlagged ? 'Unflag conversation' : 'Flag conversation for review'}
+                title={
+                  isFlagged
+                    ? t("aiChatSidebar.unflagConversation")
+                    : t("aiChatSidebar.flagConversation")
+                }
               >
-                <Flag className="h-4 w-4" fill={isFlagged ? 'currentColor' : 'none'} />
+                <Flag
+                  className="h-4 w-4"
+                  fill={isFlagged ? "currentColor" : "none"}
+                />
               </button>
             )}
             <button
               onClick={close}
               className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              title="Close (Cmd+Shift+A)"
+              title={t("aiChatSidebar.closeShortcut")}
             >
               <X className="h-4 w-4" />
             </button>
@@ -194,7 +219,7 @@ export default function AiChatSidebar() {
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search conversations..."
+                  placeholder={t("aiChatSidebar.searchPlaceholder")}
                   className="w-full rounded-md border bg-muted py-1.5 pl-8 pr-3 text-xs text-foreground placeholder-muted-foreground outline-hidden focus:border-primary"
                 />
               </div>
@@ -208,33 +233,47 @@ export default function AiChatSidebar() {
                 </div>
               )}
 
-              {searchQuery.length >= 2 && !isSearching && searchResults.length === 0 && (
-                <p className="px-4 py-6 text-center text-xs text-muted-foreground">No results found</p>
+              {searchQuery.length >= 2 &&
+                !isSearching &&
+                searchResults.length === 0 && (
+                  <p className="px-4 py-6 text-center text-xs text-muted-foreground">
+                    {t("aiChatSidebar.noResults")}
+                  </p>
+                )}
+
+              {(searchQuery.length >= 2 ? searchResults : sessions).map(
+                (item) => (
+                  <button
+                    key={item.id}
+                    onClick={() => switchSession(item.id)}
+                    className={`w-full border-b px-4 py-3 text-left transition-colors hover:bg-muted ${
+                      item.id === sessionId
+                        ? "bg-muted border-l-2 border-l-primary"
+                        : ""
+                    }`}
+                  >
+                    <p className="text-xs font-medium text-foreground truncate">
+                      {item.title || t("aiChatSidebar.untitledConversation")}
+                    </p>
+                    {"matchedContent" in item && item.matchedContent && (
+                      <p className="mt-0.5 text-[10px] text-muted-foreground truncate">
+                        {item.matchedContent}
+                      </p>
+                    )}
+                    <p className="mt-0.5 text-[10px] text-muted-foreground/60">
+                      {new Date(item.createdAt).toLocaleDateString()}
+                    </p>
+                  </button>
+                ),
               )}
 
-              {(searchQuery.length >= 2 ? searchResults : sessions).map((item) => (
-                <button
-                  key={item.id}
-                  onClick={() => switchSession(item.id)}
-                  className={`w-full border-b px-4 py-3 text-left transition-colors hover:bg-muted ${
-                    item.id === sessionId ? 'bg-muted border-l-2 border-l-primary' : ''
-                  }`}
-                >
-                  <p className="text-xs font-medium text-foreground truncate">
-                    {item.title || 'Untitled conversation'}
+              {searchQuery.length < 2 &&
+                sessions.length === 0 &&
+                !isSearching && (
+                  <p className="px-4 py-6 text-center text-xs text-muted-foreground">
+                    {t("aiChatSidebar.noConversations")}
                   </p>
-                  {'matchedContent' in item && item.matchedContent && (
-                    <p className="mt-0.5 text-[10px] text-muted-foreground truncate">{item.matchedContent}</p>
-                  )}
-                  <p className="mt-0.5 text-[10px] text-muted-foreground/60">
-                    {new Date(item.createdAt).toLocaleDateString()}
-                  </p>
-                </button>
-              ))}
-
-              {searchQuery.length < 2 && sessions.length === 0 && !isSearching && (
-                <p className="px-4 py-6 text-center text-xs text-muted-foreground">No conversations yet</p>
-              )}
+                )}
             </div>
           </div>
         ) : (
@@ -248,12 +287,14 @@ export default function AiChatSidebar() {
               <div className="flex items-center gap-2 border-b px-4 py-2">
                 <Building2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 <select
-                  value={selectedM365ConnectionId ?? ''}
-                  onChange={(e) => setSelectedM365Connection(e.target.value || null)}
+                  value={selectedM365ConnectionId ?? ""}
+                  onChange={(e) =>
+                    setSelectedM365Connection(e.target.value || null)
+                  }
                   className="w-full rounded-md border bg-muted px-2 py-1 text-xs text-foreground outline-hidden focus:border-primary"
-                  aria-label="M365 customer"
+                  aria-label={t("aiChatSidebar.m365Customer")}
                 >
-                  <option value="">No M365 customer</option>
+                  <option value="">{t("aiChatSidebar.noM365Customer")}</option>
                   {m365Connections.map((conn) => (
                     <option key={conn.id} value={conn.id}>
                       {conn.customerDisplayName}
@@ -288,7 +329,7 @@ export default function AiChatSidebar() {
                   onClick={clearError}
                   className="text-xs text-red-400 hover:text-red-300"
                 >
-                  Dismiss
+                  {t("aiChatSidebar.dismiss")}
                 </button>
               </div>
             )}

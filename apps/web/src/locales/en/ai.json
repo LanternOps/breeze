@@ -1,0 +1,419 @@
+{
+  "aiApprovalDialog": {
+    "idleFor": "idle {{duration}}",
+    "justNow": "just now",
+    "offlineFor": "offline {{duration}}",
+    "sessionStates": {
+      "active": "active",
+      "idle": "idle",
+      "locked": "locked",
+      "away": "away",
+      "disconnected": "disconnected",
+      "unknown": "unknown"
+    },
+    "ariaLabel": "Tool approval required: {{toolName}}",
+    "title": "Approval Required",
+    "timeRemaining": "{{minutes}} minutes {{seconds}} seconds remaining",
+    "urgentWarning": "Less than 30 seconds remaining. This request will be auto-rejected.",
+    "progressLabel": "Time remaining before auto-rejection",
+    "showParameters": "Show parameters",
+    "approve": "Approve",
+    "reject": "Reject"
+  },
+  "aiChatInput": {
+    "waiting": "Waiting for response...",
+    "placeholder": "Ask about your devices...",
+    "stopResponse": "Stop response",
+    "thinking": "AI is thinking... click stop to cancel",
+    "sendShortcut": "Cmd+Enter to send"
+  },
+  "aiChatMessages": {
+    "title": "Breeze AI Assistant",
+    "description": "Ask about your devices, alerts, metrics, or troubleshoot issues.",
+    "unknownTool": "Unknown tool",
+    "toolResult": "Tool result",
+    "pauseAi": "Pause AI",
+    "quickActions": {
+      "serverHealth": {
+        "label": "Check server health",
+        "prompt": "Check the health status of all Windows servers — show CPU, RAM, disk usage and any alerts"
+      },
+      "criticalAlerts": {
+        "label": "Show critical alerts",
+        "prompt": "List all critical and high severity alerts from the last 24 hours with device details"
+      },
+      "offlineDevices": {
+        "label": "Find offline devices",
+        "prompt": "Show me all devices that are currently offline and when they were last seen"
+      },
+      "securityOverview": {
+        "label": "Security overview",
+        "prompt": "Give me a security overview — any active threats, recent scans, and devices needing attention"
+      },
+      "diskSpace": {
+        "label": "Disk space report",
+        "prompt": "Which devices are running low on disk space? Show devices with over 80% disk usage"
+      },
+      "recentActivity": {
+        "label": "Recent activity",
+        "prompt": "Show me the most recent audit log entries — what actions were taken in the last few hours?"
+      }
+    }
+  },
+  "aiChatSidebar": {
+    "history": "History",
+    "title": "Breeze AI",
+    "conversationHistory": "Conversation history",
+    "newConversation": "New conversation",
+    "unflagConversation": "Unflag conversation",
+    "flagConversation": "Flag conversation for review",
+    "closeShortcut": "Close (Cmd+Shift+A)",
+    "searchPlaceholder": "Search conversations...",
+    "noResults": "No results found",
+    "untitledConversation": "Untitled conversation",
+    "noConversations": "No conversations yet",
+    "m365Customer": "M365 customer",
+    "noM365Customer": "No M365 customer",
+    "dismiss": "Dismiss"
+  },
+  "aiContextBadge": { "context": "Context", "dashboard": "Dashboard" },
+  "aiCostIndicator": {
+    "messageCount_one": "{{count}} msg",
+    "messageCount_other": "{{count}} msgs"
+  },
+  "aiPlanProgressBar": {
+    "completed": "Plan completed ({{completed}}/{{total}})",
+    "aborted": "Plan aborted at step {{step}}",
+    "executing": "Executing: Step {{step}} of {{total}}",
+    "stop": "Stop",
+    "stepTitle": "Step {{step}}: {{name}}"
+  },
+  "aiPlanReviewCard": {
+    "title": "Action Plan",
+    "stepCount_one": "{{count}} step",
+    "stepCount_other": "{{count}} steps",
+    "approveAll": "Approve All",
+    "reject": "Reject"
+  },
+  "aiToolCallCard": {
+    "running": "Running...",
+    "input": "Input:",
+    "error": "Error:",
+    "output": "Output:"
+  },
+  "aiForOfficePage": {
+    "title": "AI for Office",
+    "description": "Governed AI assistant in your clients' Excel — provisioning, policy, audit, usage and templates",
+    "tabs": {
+      "orgs": "Organizations",
+      "sessions": "Sessions",
+      "usage": "Usage",
+      "templates": "Templates"
+    }
+  },
+  "orgsTab": {
+    "status": {
+      "active": "Active",
+      "consentPending": "Consent pending",
+      "notProvisioned": "Not provisioned"
+    },
+    "errors": {
+      "removeMapping": "Failed to remove tenant mapping",
+      "loadStatus": "Failed to load organization status.",
+      "saveMapping": "Failed to save tenant mapping",
+      "copyConsent": "Could not copy — select the URL manually",
+      "enableAi": "Failed to enable AI for Office",
+      "loadConsent": "Failed to load the consent URL. Close and retry."
+    },
+    "messages": {
+      "mappingRemoved": "Tenant mapping removed for {{orgName}}",
+      "mappingSaved": "Tenant mapping saved",
+      "consentCopied": "Consent URL copied",
+      "aiEnabled": "AI for Office enabled for {{orgName}}"
+    },
+    "notEnabled": {
+      "title": "Breeze AI for Office is not enabled on this instance.",
+      "description": "Set <code>CLIENT_AI_ENTRA_CLIENT_ID</code> (the Entra add-in app registration) on the API and reload."
+    },
+    "title": "Client organizations",
+    "description": "Provision the Excel AI assistant per client org: map the Entra tenant, grant admin consent, enable the policy, deploy the add-in.",
+    "columns": {
+      "aiEnabled": "AI enabled",
+      "entraTenant": "Entra tenant",
+      "costMtd": "Cost (MTD)",
+      "messagesMtd": "Messages (MTD)"
+    },
+    "manage": "Manage",
+    "setUp": "Set up",
+    "policy": "Policy",
+    "unmap": "Unmap",
+    "noOrganizations": "No organizations",
+    "removeMapping": {
+      "title": "Remove tenant mapping",
+      "message": "Users in {{orgName}}'s Entra tenant will no longer be able to sign in to the Excel assistant. The org policy and usage history are kept.",
+      "confirm": "Remove mapping"
+    },
+    "wizard": {
+      "steps": {
+        "tenant": "Tenant",
+        "consent": "Consent",
+        "enable": "Enable",
+        "deploy": "Deploy"
+      },
+      "title": "Set up AI for Office — {{orgName}}",
+      "mapDescription": "Map this org to its Microsoft Entra tenant (Directory ID). The mapping is the tenant-isolation linchpin — every Excel sign-in from this tenant lands in this org.",
+      "prefilled": " Pre-filled from the org’s existing Microsoft 365 connection.",
+      "entraTenantId": "Entra tenant ID",
+      "guidError": "Must be a GUID (Entra admin center → Overview → Tenant ID).",
+      "saveContinue": "Save & continue",
+      "consentDescription": "A Microsoft 365 admin of the client tenant must grant admin consent to the Breeze AI for Office app. Send them this link (or open it yourself if you hold Global Admin in the client tenant):",
+      "loadingConsent": "Loading consent URL…",
+      "copyUrl": "Copy URL",
+      "openNewTab": "Open in new tab",
+      "afterConsent": "After granting, Microsoft redirects to a Breeze confirmation page. Consent shows as granted here once the first user signs in from Excel — there is no live poll against Microsoft (Plan-4 decision 1).",
+      "consentGranted": "I've granted consent",
+      "enableDescription": "Enable the assistant for this org. This writes <code>enabled: true</code> to the org policy with safe defaults (all users, read/write with end-user approval, DLP redaction for financial/credential types). Tune everything in the policy editor afterwards.",
+      "enabling": "Enabling…",
+      "alreadyEnabled": "Already enabled — continue",
+      "enableAi": "Enable AI for Office",
+      "deployTitle": "Deploy the Excel add-in via Microsoft 365 centralized deployment",
+      "deploySteps": {
+        "signIn": "Sign in to the client tenant's <strong>Microsoft 365 admin center</strong> → Settings → Integrated apps.",
+        "upload": "Choose <strong>Upload custom apps</strong> → Office add-in → provide the Breeze AI for Office manifest URL from your Breeze instance.",
+        "assign": "Assign the add-in to everyone or to the user groups covered by this org's access policy.",
+        "wait": "Deployment can take up to 24h to appear in users' Excel ribbon (Home → Add-ins).",
+        "signInAutomatically": "Users sign in automatically with their Microsoft work account — no extra credentials."
+      },
+      "openPolicyEditor": "Open policy editor"
+    }
+  },
+  "policyEditor": {
+    "errors": {
+      "ruleNameRequired": "Every custom DLP rule needs a name",
+      "invalidPattern": "DLP rule \"{{ruleName}}\" has an invalid pattern — fix it before saving",
+      "save": "Failed to save policy",
+      "load": "Failed to load the org policy."
+    },
+    "messages": { "saved": "Policy saved" },
+    "organizations": "Organizations",
+    "title": "Org policy",
+    "description": "Everything this client org's Excel assistant is allowed to do.",
+    "sections": {
+      "general": "General",
+      "userAccess": "User access",
+      "budgets": "Budgets & rate limits",
+      "branding": "Branding",
+      "dlp": "Data loss prevention"
+    },
+    "assistant": "Assistant",
+    "workbookAccess": "Workbook access",
+    "workbookAccessOptions": {
+      "readWrite": "Read & write (writes approval-gated by the end user)",
+      "readOnly": "Read only (write tools removed from the model)"
+    },
+    "workbookWrites": "Workbook writes",
+    "writeOptions": {
+      "ask": "Ask every time (end user approves each write)",
+      "allowAuto": "Allow auto-apply (end user may opt into auto)"
+    },
+    "autoApplyHint": "Auto-apply is off by default and only possible when allowed here.",
+    "allowedModels": "Allowed models",
+    "allModelsHint": "No selection = all available models.",
+    "whoCanUse": "Who can use the assistant",
+    "userAccessOptions": {
+      "all": "All users in the mapped tenant",
+      "selected": "Only selected users"
+    },
+    "noUsersHint": "No users have signed in from Excel yet — users appear here after their first sign-in. Until then, leave access on \"All users\".",
+    "dailyBudget": "Daily budget ($)",
+    "monthlyBudget": "Monthly budget ($)",
+    "noLimit": "No limit",
+    "messagesPerMinute": "Messages/min per user",
+    "messagesPerHour": "Messages/hour per org",
+    "retentionDays": "Transcript retention (days)",
+    "keepForever": "Keep forever",
+    "brandingDescription": "Shown in the add-in footer: \"Governed by your IT provider\" — the white-label hook (spec §11).",
+    "displayName": "Display name",
+    "mspNamePlaceholder": "Your MSP name",
+    "logoUrl": "Logo URL",
+    "dlpDescription": "Every payload leaving Breeze for the model is scanned (spec §6). Redacted values are stored redacted — the audit trail never keeps the sensitive form.",
+    "builtins": {
+      "creditCard": "Credit card numbers (Luhn-validated)",
+      "ssn": "SSN / national IDs",
+      "iban": "IBAN account numbers",
+      "apiKey": "API keys & tokens",
+      "email": "Email addresses",
+      "phone": "Phone numbers"
+    },
+    "actions": {
+      "redact": "Redact",
+      "block": "Block request",
+      "log": "Log only",
+      "off": "Off"
+    },
+    "customRules": "Custom rules",
+    "addRule": "Add rule",
+    "testSample": "Test sample (paste representative cell data — evaluated locally, never sent anywhere)",
+    "ruleName": "Rule name",
+    "regexPlaceholder": "Regular expression, e.g. PRJ-\\d{4}",
+    "removeRule": "Remove rule",
+    "matchCount_one": "{{count}} match in the sample",
+    "matchCount_other": "{{count}} matches in the sample",
+    "patternCompiles": "Pattern compiles — add a test sample above to see matches",
+    "patternError": "Pattern error: {{error}}",
+    "savePolicy": "Save policy"
+  },
+  "sessionsTab": {
+    "toolStatus": {
+      "pending": "pending",
+      "approved": "approved",
+      "rejected": "rejected",
+      "completed": "completed",
+      "failed": "failed"
+    },
+    "errors": {
+      "flag": "Failed to flag session",
+      "unflag": "Failed to unflag session",
+      "load": "Failed to load sessions.",
+      "loadTranscript": "Failed to load the session transcript."
+    },
+    "messages": {
+      "flagged": "Session flagged",
+      "unflagged": "Session unflagged"
+    },
+    "allOrganizations": "All organizations",
+    "allUsers": "All users",
+    "from": "From",
+    "to": "To",
+    "flaggedOnly": "Flagged only",
+    "columns": {
+      "started": "Started",
+      "title": "Title",
+      "turns": "Turns",
+      "cost": "Cost",
+      "flagged": "Flagged"
+    },
+    "untitled": "Untitled",
+    "flagged": "Flagged",
+    "empty": "No client AI sessions match the filters",
+    "pagination": "{{from}}–{{to}} of {{total}}",
+    "prev": "Prev",
+    "transcriptTitle": "Session transcript",
+    "untitledSession": "Untitled session",
+    "flagReason": "Flag reason: {{reason}}",
+    "unflag": "Unflag",
+    "flag": "Flag",
+    "redacted": "redacted: {{type}} ×{{count}}",
+    "noMessages": "No messages stored for this session.",
+    "approvalTrail": "Tool approval trail",
+    "tokenCounts": "{{input}} in / {{output}} out",
+    "requestedAt": "requested {{time}}",
+    "approvedAt": "approved {{time}}",
+    "rejectedAt": "rejected {{time}}",
+    "appliedAt": "applied {{time}}",
+    "flagDialog": {
+      "title": "Flag session",
+      "description": "Flagging marks the session for follow-up and is recorded in the audit log.",
+      "reason": "Reason (optional)",
+      "flagging": "Flagging…"
+    },
+    "unflagDialog": {
+      "title": "Unflag session",
+      "message": "Remove the flag from this session? The flag/unflag history stays in the audit log."
+    }
+  },
+  "templatesTab": {
+    "allApps": "All apps",
+    "allOrgs": "All orgs",
+    "org": "Org",
+    "errors": {
+      "delete": "Failed to delete template",
+      "load": "Failed to load templates.",
+      "update": "Failed to update template",
+      "create": "Failed to create template"
+    },
+    "messages": {
+      "deleted": "Template \"{{name}}\" deleted",
+      "updated": "Template updated",
+      "created": "Template created"
+    },
+    "title": "Prompt templates",
+    "description": "Shown in the add-in's empty-chat picker. \"All orgs\" templates reach every client org; org templates only theirs.",
+    "newTemplate": "New template",
+    "columns": {
+      "scope": "Scope",
+      "apps": "Apps",
+      "category": "Category",
+      "updated": "Updated"
+    },
+    "empty": "No templates yet — create the first one",
+    "deleteDialog": {
+      "title": "Delete template",
+      "message": "Delete \"{{name}}\"? It disappears from the add-in's template picker immediately."
+    },
+    "editTemplate": "Edit template",
+    "categoryPlaceholder": "e.g. finance",
+    "promptBody": "Prompt body",
+    "partnerWide": "All organizations (partner-wide)",
+    "scopeImmutable": "Scope can't change after creation — delete and recreate to move it.",
+    "appsHint": "Leave all unchecked to show this template in every app.",
+    "saveChanges": "Save changes",
+    "createTemplate": "Create template"
+  },
+  "usageTab": {
+    "errors": {
+      "export": "Export failed",
+      "load": "Failed to load the usage report."
+    },
+    "fromMonth": "From month",
+    "toMonth": "To month",
+    "allOrganizations": "All organizations",
+    "exporting": "Exporting…",
+    "exportCsv": "Export CSV",
+    "rangeError": "From month must be ≤ to month",
+    "columns": {
+      "orgUser": "Organization / user",
+      "month": "Month",
+      "messages": "Messages",
+      "sessions": "Sessions",
+      "tokens": "Tokens (in/out)",
+      "cost": "Cost"
+    },
+    "rowCount_one": "{{count}} row",
+    "rowCount_other": "{{count}} rows",
+    "empty": "No usage recorded in this range",
+    "total": "Total"
+  },
+  "workspaceChatPanel": {
+    "errors": {
+      "autoDraft": "Couldn't auto-draft from this conversation — you can fill in the ticket manually.",
+      "createTicket": "Could not create the ticket."
+    },
+    "createTicket": "Create Ticket",
+    "dismiss": "Dismiss"
+  },
+  "workspaceEmptyState": {
+    "title": "AI Workspace",
+    "description": "Run multiple AI conversations simultaneously. Investigate a device issue in one tab while configuring a policy in another.",
+    "newConversation": "New Conversation",
+    "limit": "Up to 5 concurrent conversations"
+  },
+  "workspaceTab": { "approvalPending": "Approval pending" },
+  "workspaceTabBar": {
+    "newTabShortcut": "New tab (Cmd+Shift+N)",
+    "new": "New"
+  },
+  "createTicketFromChatModal": {
+    "title": "Create ticket from conversation",
+    "subject": "Subject",
+    "problem": "Problem",
+    "open": "Open",
+    "resolved": "Resolved",
+    "resolution": "Resolution",
+    "resolutionRequired": "A resolution note is required to resolve.",
+    "timeMinutes": "Time (min)",
+    "timeMinutesAria": "Time (minutes)",
+    "billable": "Billable",
+    "createTicket": "Create ticket"
+  }
+}

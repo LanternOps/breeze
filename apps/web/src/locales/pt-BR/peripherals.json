@@ -1,0 +1,101 @@
+{
+  "peripheralPage": {
+    "title": "Controle de periféricos",
+    "tabs": { "policies": "Políticas", "activity": "Log de atividades" }
+  },
+  "peripheralActivityLog": {
+    "errors": {
+      "fetch": "Falha ao buscar atividades",
+      "generic": "Ocorreu um erro"
+    },
+    "allEvents": "Todos os eventos",
+    "events": {
+      "connected": "Conectado",
+      "disconnected": "Desconectado",
+      "blocked": "Bloqueado",
+      "mounted_read_only": "Somente leitura",
+      "policy_override": "Substituição da política"
+    },
+    "peripheralType": "Tipo de periférico",
+    "vendor": "Fabricante",
+    "empty": "Nenhuma atividade de periférico encontrada.",
+    "columns": {
+      "occurredAt": "Ocorrido em",
+      "eventType": "Tipo de evento",
+      "product": "Produto",
+      "serialNumber": "Número de série",
+      "device": "Dispositivo",
+      "policy": "Política"
+    },
+    "pagination": "Exibindo {{from}}–{{to}} de {{total}}",
+    "prev": "Anterior"
+  },
+  "peripheralPoliciesList": {
+    "errors": {
+      "fetch": "Falha ao buscar políticas",
+      "generic": "Ocorreu um erro"
+    },
+    "allClasses": "Todas as classes",
+    "classes": {
+      "storage": "Armazenamento",
+      "all_usb": "Todos os USB",
+      "bluetooth": "Bluetooth",
+      "thunderbolt": "Thunderbolt"
+    },
+    "allActions": "Todas as ações",
+    "actions": {
+      "allow": "Permitir",
+      "block": "Bloquear",
+      "read_only": "Somente leitura",
+      "alert": "Alertar"
+    },
+    "allStatus": "Todos os status",
+    "createPolicy": "Criar política",
+    "empty": "Nenhuma política de periféricos encontrada. Crie uma para começar.",
+    "columns": {
+      "deviceClass": "Classe do dispositivo",
+      "action": "Ação",
+      "exceptions": "Exceções",
+      "created": "Criada"
+    },
+    "partnerWideTitle": "Política de todo o parceiro — aplicada aos dispositivos de todas as organizações",
+    "allOrgs": "Todas as organizações"
+  },
+  "peripheralPolicyForm": {
+    "errors": {
+      "save": "Falha ao salvar a política",
+      "generic": "Ocorreu um erro"
+    },
+    "editTitle": "Editar política de periféricos",
+    "createTitle": "Criar política de periféricos",
+    "scope": "Escopo",
+    "allOrganizations": "Todas as organizações",
+    "partnerWide": "(política de todo o parceiro)",
+    "thisOrganization": "Somente esta organização",
+    "deviceClass": "Classe do dispositivo",
+    "classes": {
+      "storage": "Armazenamento",
+      "all_usb": "Todos os USB",
+      "bluetooth": "Bluetooth",
+      "thunderbolt": "Thunderbolt"
+    },
+    "action": "Ação",
+    "actions": {
+      "allow": "Permitir",
+      "block": "Bloquear",
+      "read_only": "Somente leitura",
+      "alert": "Alertar"
+    },
+    "exceptions": "Exceções",
+    "addException": "Adicionar exceção",
+    "noExceptions": "Nenhuma exceção configurada.",
+    "exceptionNumber": "Exceção {{number}}",
+    "vendor": "Fabricante",
+    "product": "Produto",
+    "serialNumber": "Número de série",
+    "allow": "Permitir:",
+    "reason": "Motivo",
+    "updatePolicy": "Atualizar política",
+    "createPolicy": "Criar política"
+  }
+}

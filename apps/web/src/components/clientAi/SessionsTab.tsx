@@ -1,12 +1,20 @@
-import { useCallback, useEffect, useState } from 'react';
-import { ChevronLeft, ChevronRight, Flag, FlagOff, Loader2 } from 'lucide-react';
-import { fetchWithAuth } from '../../stores/auth';
-import { Dialog } from '../shared/Dialog';
-import { ConfirmDialog } from '../shared/ConfirmDialog';
-import { runAction, handleActionError } from '@/lib/runAction';
-import { navigateTo } from '@/lib/navigation';
-import { formatDateTime } from '@/lib/dateTimeFormat';
-import { formatCurrency } from '@/lib/i18n/format';
+import { useCallback, useEffect, useState } from "react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  Flag,
+  FlagOff,
+  Loader2,
+} from "lucide-react";
+import { fetchWithAuth } from "../../stores/auth";
+import { Dialog } from "../shared/Dialog";
+import { ConfirmDialog } from "../shared/ConfirmDialog";
+import { runAction, handleActionError } from "@/lib/runAction";
+import { navigateTo } from "@/lib/navigation";
+import { formatDateTime } from "@/lib/dateTimeFormat";
+import { formatCurrency } from "@/lib/i18n/format";
+import { useTranslation } from "react-i18next";
+import "@/lib/i18n";
 
 /**
  * AI for Office — client-session audit viewer (spec §9.3). excel_client
@@ -97,41 +105,45 @@ function workbookChips(m: TranscriptMessage): string[] {
   const chips: string[] = [];
   if (m.toolName) chips.push(m.toolName);
   const input = m.toolInput as Record<string, unknown> | null;
-  if (input && typeof input.range === 'string') chips.push(input.range);
-  if (input && typeof input.sheet === 'string') chips.push(`Sheet: ${input.sheet}`);
+  if (input && typeof input.range === "string") chips.push(input.range);
+  if (input && typeof input.sheet === "string")
+    chips.push(`Sheet: ${input.sheet}`);
   return chips;
 }
 
 function ToolStatusBadge({ status }: { status: string }) {
+  const { t } = useTranslation("ai");
   const styles: Record<string, string> = {
     completed:
-      'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-400',
+      "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-400",
     approved:
-      'border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-400',
+      "border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-400",
     pending:
-      'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400',
+      "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400",
     rejected:
-      'border-red-200 bg-red-50 text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-400',
+      "border-red-200 bg-red-50 text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-400",
     failed:
-      'border-red-200 bg-red-50 text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-400',
+      "border-red-200 bg-red-50 text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-400",
   };
   return (
     <span
-      className={`rounded-full border px-2 py-0.5 text-xs ${styles[status] ?? 'border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-500/30 dark:bg-slate-500/10 dark:text-slate-400'}`}
+      className={`rounded-full border px-2 py-0.5 text-xs ${styles[status] ?? "border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-500/30 dark:bg-slate-500/10 dark:text-slate-400"}`}
     >
-      {status}
+      {t(`sessionsTab.toolStatus.${status}`, { defaultValue: status })}{" "}
+      {/* i18n-dynamic */}
     </span>
   );
 }
 
 export default function SessionsTab() {
+  const { t } = useTranslation("ai");
   // Filters
   const [orgs, setOrgs] = useState<{ orgId: string; orgName: string }[]>([]);
   const [orgUsers, setOrgUsers] = useState<{ id: string; email: string }[]>([]);
-  const [orgFilter, setOrgFilter] = useState('');
-  const [userFilter, setUserFilter] = useState('');
-  const [fromDate, setFromDate] = useState('');
-  const [toDate, setToDate] = useState('');
+  const [orgFilter, setOrgFilter] = useState("");
+  const [userFilter, setUserFilter] = useState("");
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
   const [flaggedOnly, setFlaggedOnly] = useState(false);
   const [offset, setOffset] = useState(0);
   // List
@@ -145,16 +157,23 @@ export default function SessionsTab() {
   const [detailLoading, setDetailLoading] = useState(false);
   // Flag/unflag
   const [flagOpen, setFlagOpen] = useState(false);
-  const [flagReason, setFlagReason] = useState('');
+  const [flagReason, setFlagReason] = useState("");
   const [unflagOpen, setUnflagOpen] = useState(false);
   const [mutating, setMutating] = useState(false);
 
   // Org names for the filter select (the Task-2 status endpoint already has them).
   useEffect(() => {
-    void fetchWithAuth('/client-ai/admin/orgs')
-      .then((r) => (r.ok ? (r.json() as Promise<{ data?: { orgId: string; orgName: string }[] }>) : null))
+    void fetchWithAuth("/client-ai/admin/orgs")
+      .then((r) =>
+        r.ok
+          ? (r.json() as Promise<{
+              data?: { orgId: string; orgName: string }[];
+            }>)
+          : null,
+      )
       .then((b) => {
-        if (b?.data) setOrgs(b.data.map(({ orgId, orgName }) => ({ orgId, orgName })));
+        if (b?.data)
+          setOrgs(b.data.map(({ orgId, orgName }) => ({ orgId, orgName })));
       })
       .catch(() => {});
   }, []);
@@ -163,11 +182,15 @@ export default function SessionsTab() {
   // the API filter is clientUserId, a portal_users UUID, so free-text won't do).
   useEffect(() => {
     setOrgUsers([]);
-    setUserFilter('');
+    setUserFilter("");
     if (!orgFilter) return;
     let cancelled = false;
     void fetchWithAuth(`/client-ai/admin/orgs/${orgFilter}/users`)
-      .then((r) => (r.ok ? (r.json() as Promise<{ data?: { id: string; email: string }[] }>) : null))
+      .then((r) =>
+        r.ok
+          ? (r.json() as Promise<{ data?: { id: string; email: string }[] }>)
+          : null,
+      )
       .then((b) => {
         if (!cancelled && b?.data) setOrgUsers(b.data);
       })
@@ -181,15 +204,20 @@ export default function SessionsTab() {
     try {
       setLoading(true);
       setLoadError(false);
-      const qs = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset) });
-      if (orgFilter) qs.set('orgId', orgFilter);
-      if (userFilter) qs.set('clientUserId', userFilter);
-      if (fromDate) qs.set('from', fromDate);
-      if (toDate) qs.set('to', `${toDate}T23:59:59.999Z`); // include the whole end day
-      if (flaggedOnly) qs.set('flagged', 'true');
-      const res = await fetchWithAuth(`/client-ai/admin/sessions?${qs.toString()}`);
+      const qs = new URLSearchParams({
+        limit: String(PAGE_SIZE),
+        offset: String(offset),
+      });
+      if (orgFilter) qs.set("orgId", orgFilter);
+      if (userFilter) qs.set("clientUserId", userFilter);
+      if (fromDate) qs.set("from", fromDate);
+      if (toDate) qs.set("to", `${toDate}T23:59:59.999Z`); // include the whole end day
+      if (flaggedOnly) qs.set("flagged", "true");
+      const res = await fetchWithAuth(
+        `/client-ai/admin/sessions?${qs.toString()}`,
+      );
       if (res.status === 401) {
-        void navigateTo('/login', { replace: true });
+        void navigateTo("/login", { replace: true });
         return;
       }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -240,19 +268,21 @@ export default function SessionsTab() {
       await runAction({
         request: () =>
           fetchWithAuth(`/client-ai/admin/sessions/${detailId}/flag`, {
-            method: 'POST',
+            method: "POST",
             // flagSessionSchema: reason is string-or-absent (null is rejected).
-            body: JSON.stringify(flagReason.trim() ? { reason: flagReason.trim() } : {}),
+            body: JSON.stringify(
+              flagReason.trim() ? { reason: flagReason.trim() } : {},
+            ),
           }),
-        errorFallback: 'Failed to flag session',
-        successMessage: 'Session flagged',
-        onUnauthorized: () => void navigateTo('/login', { replace: true }),
+        errorFallback: t("sessionsTab.errors.flag"),
+        successMessage: t("sessionsTab.messages.flagged"),
+        onUnauthorized: () => void navigateTo("/login", { replace: true }),
       });
       setFlagOpen(false);
-      setFlagReason('');
+      setFlagReason("");
       await Promise.all([loadDetail(detailId), loadSessions()]);
     } catch (err) {
-      handleActionError(err, 'Failed to flag session');
+      handleActionError(err, t("sessionsTab.errors.flag"));
     } finally {
       setMutating(false);
     }
@@ -264,15 +294,17 @@ export default function SessionsTab() {
     try {
       await runAction({
         request: () =>
-          fetchWithAuth(`/client-ai/admin/sessions/${detailId}/flag`, { method: 'DELETE' }),
-        errorFallback: 'Failed to unflag session',
-        successMessage: 'Session unflagged',
-        onUnauthorized: () => void navigateTo('/login', { replace: true }),
+          fetchWithAuth(`/client-ai/admin/sessions/${detailId}/flag`, {
+            method: "DELETE",
+          }),
+        errorFallback: t("sessionsTab.errors.unflag"),
+        successMessage: t("sessionsTab.messages.unflagged"),
+        onUnauthorized: () => void navigateTo("/login", { replace: true }),
       });
       setUnflagOpen(false);
       await Promise.all([loadDetail(detailId), loadSessions()]);
     } catch (err) {
-      handleActionError(err, 'Failed to unflag session');
+      handleActionError(err, t("sessionsTab.errors.unflag"));
     } finally {
       setMutating(false);
     }
@@ -283,7 +315,7 @@ export default function SessionsTab() {
       {/* Filter bar */}
       <div className="flex flex-wrap items-end gap-2">
         <label className="text-xs">
-          Organization
+          {t("common:labels.organization")}
           <select
             value={orgFilter}
             onChange={(e) => {
@@ -293,7 +325,7 @@ export default function SessionsTab() {
             className="mt-0.5 block rounded-md border bg-background px-2 py-1.5 text-sm"
             data-testid="ai-office-sessions-org"
           >
-            <option value="">All organizations</option>
+            <option value="">{t("sessionsTab.allOrganizations")}</option>
             {orgs.map((o) => (
               <option key={o.orgId} value={o.orgId}>
                 {o.orgName}
@@ -302,7 +334,7 @@ export default function SessionsTab() {
           </select>
         </label>
         <label className="text-xs">
-          User
+          {t("common:labels.user")}
           <select
             value={userFilter}
             onChange={(e) => {
@@ -313,7 +345,7 @@ export default function SessionsTab() {
             className="mt-0.5 block rounded-md border bg-background px-2 py-1.5 text-sm disabled:opacity-50"
             data-testid="ai-office-sessions-user"
           >
-            <option value="">All users</option>
+            <option value="">{t("sessionsTab.allUsers")}</option>
             {orgUsers.map((u) => (
               <option key={u.id} value={u.id}>
                 {u.email}
@@ -322,7 +354,7 @@ export default function SessionsTab() {
           </select>
         </label>
         <label className="text-xs">
-          From
+          {t("sessionsTab.from")}
           <input
             type="date"
             value={fromDate}
@@ -335,7 +367,7 @@ export default function SessionsTab() {
           />
         </label>
         <label className="text-xs">
-          To
+          {t("sessionsTab.to")}
           <input
             type="date"
             value={toDate}
@@ -358,7 +390,7 @@ export default function SessionsTab() {
             className="rounded border-border"
             data-testid="ai-office-sessions-flagged"
           />
-          Flagged only
+          {t("sessionsTab.flaggedOnly")}
         </label>
       </div>
 
@@ -369,10 +401,17 @@ export default function SessionsTab() {
             <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
           </div>
         ) : loadError ? (
-          <div className="p-6 text-sm text-muted-foreground" data-testid="ai-office-sessions-load-error">
-            Failed to load sessions.{' '}
-            <button type="button" className="text-primary underline" onClick={() => void loadSessions()}>
-              Retry
+          <div
+            className="p-6 text-sm text-muted-foreground"
+            data-testid="ai-office-sessions-load-error"
+          >
+            {t("sessionsTab.errors.load")}{" "}
+            <button
+              type="button"
+              className="text-primary underline"
+              onClick={() => void loadSessions()}
+            >
+              {t("common:actions.retry")}
             </button>
           </div>
         ) : (
@@ -380,13 +419,25 @@ export default function SessionsTab() {
             <table className="w-full text-sm">
               <thead className="bg-muted/40">
                 <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  <th className="px-4 py-2">Started</th>
-                  <th className="px-4 py-2">Organization</th>
-                  <th className="px-4 py-2">User</th>
-                  <th className="px-4 py-2">Title</th>
-                  <th className="px-4 py-2 text-right">Turns</th>
-                  <th className="px-4 py-2 text-right">Cost</th>
-                  <th className="px-4 py-2">Flagged</th>
+                  <th className="px-4 py-2">
+                    {t("sessionsTab.columns.started")}
+                  </th>
+                  <th className="px-4 py-2">
+                    {t("common:labels.organization")}
+                  </th>
+                  <th className="px-4 py-2">{t("common:labels.user")}</th>
+                  <th className="px-4 py-2">
+                    {t("sessionsTab.columns.title")}
+                  </th>
+                  <th className="px-4 py-2 text-right">
+                    {t("sessionsTab.columns.turns")}
+                  </th>
+                  <th className="px-4 py-2 text-right">
+                    {t("sessionsTab.columns.cost")}
+                  </th>
+                  <th className="px-4 py-2">
+                    {t("sessionsTab.columns.flagged")}
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -394,22 +445,29 @@ export default function SessionsTab() {
                   <tr
                     key={s.id}
                     onClick={() => openDetail(s.id)}
-                    className={`cursor-pointer border-b last:border-0 hover:bg-muted/20 ${s.flaggedAt ? 'border-l-2 border-l-amber-500' : ''}`}
+                    className={`cursor-pointer border-b last:border-0 hover:bg-muted/20 ${s.flaggedAt ? "border-l-2 border-l-amber-500" : ""}`}
                     data-testid={`ai-office-session-row-${s.id}`}
                   >
-                    <td className="px-4 py-2.5 text-xs text-muted-foreground">{formatTime(s.startedAt)}</td>
-                    <td className="px-4 py-2.5">{s.orgName ?? '—'}</td>
-                    <td className="px-4 py-2.5">{s.userEmail ?? '—'}</td>
-                    <td className="max-w-[220px] truncate px-4 py-2.5">{s.title || 'Untitled'}</td>
+                    <td className="px-4 py-2.5 text-xs text-muted-foreground">
+                      {formatTime(s.startedAt)}
+                    </td>
+                    <td className="px-4 py-2.5">{s.orgName ?? "—"}</td>
+                    <td className="px-4 py-2.5">{s.userEmail ?? "—"}</td>
+                    <td className="max-w-[220px] truncate px-4 py-2.5">
+                      {s.title || t("sessionsTab.untitled")}
+                    </td>
                     <td className="px-4 py-2.5 text-right">{s.turnCount}</td>
-                    <td className="px-4 py-2.5 text-right">{formatCost(s.totalCostCents)}</td>
+                    <td className="px-4 py-2.5 text-right">
+                      {formatCost(s.totalCostCents)}
+                    </td>
                     <td className="px-4 py-2.5">
                       {s.flaggedAt ? (
                         <span
                           className="inline-flex items-center gap-1 rounded-full bg-amber-500/20 px-2 py-0.5 text-xs text-amber-700 dark:text-amber-400"
-                          title={s.flagReason || 'Flagged'}
+                          title={s.flagReason || t("sessionsTab.flagged")}
                         >
-                          <Flag className="h-3 w-3" /> Flagged
+                          <Flag className="h-3 w-3" />{" "}
+                          {t("sessionsTab.flagged")}
                         </span>
                       ) : null}
                     </td>
@@ -417,8 +475,11 @@ export default function SessionsTab() {
                 ))}
                 {rows.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">
-                      No client AI sessions match the filters
+                    <td
+                      colSpan={7}
+                      className="px-4 py-8 text-center text-muted-foreground"
+                    >
+                      {t("sessionsTab.empty")}
                     </td>
                   </tr>
                 )}
@@ -430,7 +491,11 @@ export default function SessionsTab() {
         {!loading && !loadError && total > 0 && (
           <div className="flex items-center justify-between border-t px-4 py-2 text-xs text-muted-foreground">
             <span>
-              {offset + 1}–{Math.min(offset + PAGE_SIZE, total)} of {total}
+              {t("sessionsTab.pagination", {
+                from: offset + 1,
+                to: Math.min(offset + PAGE_SIZE, total),
+                total,
+              })}
             </span>
             <div className="flex gap-2">
               <button
@@ -440,7 +505,7 @@ export default function SessionsTab() {
                 className="inline-flex items-center gap-1 rounded-md border px-2 py-1 hover:bg-muted disabled:opacity-50"
                 data-testid="ai-office-sessions-prev"
               >
-                <ChevronLeft className="h-3.5 w-3.5" /> Prev
+                <ChevronLeft className="h-3.5 w-3.5" /> {t("sessionsTab.prev")}
               </button>
               <button
                 type="button"
@@ -449,7 +514,8 @@ export default function SessionsTab() {
                 className="inline-flex items-center gap-1 rounded-md border px-2 py-1 hover:bg-muted disabled:opacity-50"
                 data-testid="ai-office-sessions-next"
               >
-                Next <ChevronRight className="h-3.5 w-3.5" />
+                {t("common:actions.next")}{" "}
+                <ChevronRight className="h-3.5 w-3.5" />
               </button>
             </div>
           </div>
@@ -461,7 +527,7 @@ export default function SessionsTab() {
         <Dialog
           open
           onClose={closeDetail}
-          title="Session transcript"
+          title={t("sessionsTab.transcriptTitle")}
           maxWidth="4xl"
           alignTop
           className="flex max-h-[90vh] flex-col p-6"
@@ -472,23 +538,37 @@ export default function SessionsTab() {
             </div>
           )}
           {!detailLoading && !detail && (
-            <p className="text-sm text-muted-foreground" data-testid="ai-office-session-detail-error">
-              Failed to load the session transcript.
+            <p
+              className="text-sm text-muted-foreground"
+              data-testid="ai-office-session-detail-error"
+            >
+              {t("sessionsTab.errors.loadTranscript")}
             </p>
           )}
           {detail && (
             <>
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                  <h2 className="text-lg font-semibold">{detail.session.title || 'Untitled session'}</h2>
+                  <h2 className="text-lg font-semibold">
+                    {detail.session.title || t("sessionsTab.untitledSession")}
+                  </h2>
                   <p className="text-sm text-muted-foreground">
-                    {detail.session.orgName ?? '—'} · {detail.session.userEmail ?? '—'} ·{' '}
-                    {detail.session.model} · {formatCost(detail.session.totalCostCents)} ·{' '}
-                    {detail.session.totalInputTokens} in / {detail.session.totalOutputTokens} out
+                    {detail.session.orgName ?? "—"} ·{" "}
+                    {detail.session.userEmail ?? "—"} · {detail.session.model} ·{" "}
+                    {formatCost(detail.session.totalCostCents)} ·{" "}
+                    {t("sessionsTab.tokenCounts", {
+                      input: detail.session.totalInputTokens,
+                      output: detail.session.totalOutputTokens,
+                    })}
                   </p>
                   {detail.session.flagReason && (
-                    <p className="mt-1 text-sm text-amber-700 dark:text-amber-400" data-testid="ai-office-session-flag-reason">
-                      Flag reason: {detail.session.flagReason}
+                    <p
+                      className="mt-1 text-sm text-amber-700 dark:text-amber-400"
+                      data-testid="ai-office-session-flag-reason"
+                    >
+                      {t("sessionsTab.flagReason", {
+                        reason: detail.session.flagReason,
+                      })}
                     </p>
                   )}
                 </div>
@@ -500,7 +580,7 @@ export default function SessionsTab() {
                       className="inline-flex items-center gap-1 rounded-md border px-2 py-1.5 text-sm hover:bg-muted"
                       data-testid="ai-office-session-unflag"
                     >
-                      <FlagOff className="h-4 w-4" /> Unflag
+                      <FlagOff className="h-4 w-4" /> {t("sessionsTab.unflag")}
                     </button>
                   ) : (
                     <button
@@ -509,7 +589,7 @@ export default function SessionsTab() {
                       className="inline-flex items-center gap-1 rounded-md border border-amber-500/50 px-2 py-1.5 text-sm text-amber-700 hover:bg-amber-500/10 dark:text-amber-400"
                       data-testid="ai-office-session-flag"
                     >
-                      <Flag className="h-4 w-4" /> Flag
+                      <Flag className="h-4 w-4" /> {t("sessionsTab.flag")}
                     </button>
                   )}
                 </div>
@@ -524,10 +604,12 @@ export default function SessionsTab() {
                     return (
                       <div
                         key={m.id}
-                        className={`rounded-md border p-3 ${m.role === 'user' ? 'bg-muted/30' : 'bg-card'}`}
+                        className={`rounded-md border p-3 ${m.role === "user" ? "bg-muted/30" : "bg-card"}`}
                       >
                         <div className="mb-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                          <span className="font-semibold uppercase tracking-wide">{m.role}</span>
+                          <span className="font-semibold uppercase tracking-wide">
+                            {m.role}
+                          </span>
                           <span>{formatTime(m.createdAt)}</span>
                           {chips.map((chip) => (
                             <span
@@ -543,44 +625,64 @@ export default function SessionsTab() {
                               className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400"
                               data-testid={`ai-office-redaction-${type}`}
                             >
-                              redacted: {type} ×{count}
+                              {t("sessionsTab.redacted", { type, count })}
                             </span>
                           ))}
                         </div>
-                        {m.content && <p className="whitespace-pre-wrap text-sm">{m.content}</p>}
+                        {m.content && (
+                          <p className="whitespace-pre-wrap text-sm">
+                            {m.content}
+                          </p>
+                        )}
                       </div>
                     );
                   })}
                   {detail.messages.length === 0 && (
-                    <p className="text-sm text-muted-foreground">No messages stored for this session.</p>
+                    <p className="text-sm text-muted-foreground">
+                      {t("sessionsTab.noMessages")}
+                    </p>
                   )}
                 </div>
 
                 {/* Tool approval trail */}
                 {detail.toolExecutions.length > 0 && (
                   <div>
-                    <h4 className="mb-2 text-sm font-semibold">Tool approval trail</h4>
+                    <h4 className="mb-2 text-sm font-semibold">
+                      {t("sessionsTab.approvalTrail")}
+                    </h4>
                     <div className="space-y-2">
-                      {detail.toolExecutions.map((t) => (
-                        <div key={t.id} className="rounded-md border p-3 text-sm" data-testid={`ai-office-tool-exec-${t.id}`}>
+                      {detail.toolExecutions.map((execution) => (
+                        <div
+                          key={execution.id}
+                          className="rounded-md border p-3 text-sm"
+                          data-testid={`ai-office-tool-exec-${execution.id}`}
+                        >
                           <div className="flex flex-wrap items-center gap-2">
-                            <span className="font-mono text-xs">{t.toolName}</span>
-                            <ToolStatusBadge status={t.status} />
-                            {typeof (t.toolInput as { range?: unknown } | null)?.range === 'string' && (
+                            <span className="font-mono text-xs">
+                              {execution.toolName}
+                            </span>
+                            <ToolStatusBadge status={execution.status} />
+                            {typeof (execution.toolInput as { range?: unknown } | null)
+                              ?.range === "string" && (
                               <span className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground">
-                                {(t.toolInput as { range: string }).range}
+                                {(execution.toolInput as { range: string }).range}
                               </span>
                             )}
                           </div>
                           <p className="mt-1 text-xs text-muted-foreground">
-                            requested {formatTime(t.createdAt)}
-                            {t.approvedAt && ` · approved ${formatTime(t.approvedAt)}`}
-                            {t.completedAt &&
-                              ` · ${t.status === 'rejected' ? 'rejected' : 'applied'} ${formatTime(t.completedAt)}`}
-                            {t.durationMs != null && ` · ${t.durationMs}ms`}
+                            {t("sessionsTab.requestedAt", {
+                              time: formatTime(execution.createdAt),
+                            })}
+                            {execution.approvedAt &&
+                              ` · ${t("sessionsTab.approvedAt", { time: formatTime(execution.approvedAt) })}`}
+                            {execution.completedAt &&
+                              ` · ${execution.status === "rejected" ? t("sessionsTab.rejectedAt", { time: formatTime(execution.completedAt) }) : t("sessionsTab.appliedAt", { time: formatTime(execution.completedAt) })}`}
+                            {execution.durationMs != null && ` · ${execution.durationMs}ms`}
                           </p>
-                          {t.errorMessage && (
-                            <p className="mt-1 text-xs text-destructive">{t.errorMessage}</p>
+                          {execution.errorMessage && (
+                            <p className="mt-1 text-xs text-destructive">
+                              {execution.errorMessage}
+                            </p>
                           )}
                         </div>
                       ))}
@@ -594,13 +696,23 @@ export default function SessionsTab() {
       )}
 
       {/* Flag dialog (reason prompt) */}
-      <Dialog open={flagOpen} onClose={() => setFlagOpen(false)} title="Flag session" maxWidth="md" className="p-6">
-        <h3 className="text-lg font-semibold">Flag session</h3>
+      <Dialog
+        open={flagOpen}
+        onClose={() => setFlagOpen(false)}
+        title={t("sessionsTab.flagDialog.title")}
+        maxWidth="md"
+        className="p-6"
+      >
+        <h3 className="text-lg font-semibold">
+          {t("sessionsTab.flagDialog.title")}
+        </h3>
         <p className="mt-1 text-sm text-muted-foreground">
-          Flagging marks the session for follow-up and is recorded in the audit log.
+          {t("sessionsTab.flagDialog.description")}
         </p>
         <label className="mt-3 block text-sm">
-          <span className="text-muted-foreground">Reason (optional)</span>
+          <span className="text-muted-foreground">
+            {t("sessionsTab.flagDialog.reason")}
+          </span>
           <textarea
             value={flagReason}
             onChange={(e) => setFlagReason(e.target.value)}
@@ -616,7 +728,7 @@ export default function SessionsTab() {
             onClick={() => setFlagOpen(false)}
             className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted"
           >
-            Cancel
+            {t("common:actions.cancel")}
           </button>
           <button
             type="button"
@@ -625,7 +737,9 @@ export default function SessionsTab() {
             className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50"
             data-testid="ai-office-flag-confirm"
           >
-            {mutating ? 'Flagging…' : 'Flag session'}
+            {mutating
+              ? t("sessionsTab.flagDialog.flagging")
+              : t("sessionsTab.flagDialog.title")}
           </button>
         </div>
       </Dialog>
@@ -635,9 +749,9 @@ export default function SessionsTab() {
         open={unflagOpen}
         onClose={() => setUnflagOpen(false)}
         onConfirm={() => void unflagSession()}
-        title="Unflag session"
-        message="Remove the flag from this session? The flag/unflag history stays in the audit log."
-        confirmLabel="Unflag"
+        title={t("sessionsTab.unflagDialog.title")}
+        message={t("sessionsTab.unflagDialog.message")}
+        confirmLabel={t("sessionsTab.unflag")}
         variant="warning"
         isLoading={mutating}
         confirmTestId="ai-office-unflag-confirm"
