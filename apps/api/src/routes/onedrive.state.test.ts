@@ -23,6 +23,10 @@ let authState: {
   user?: { id: string } | null;
 };
 
+// Site-scope permissions context, set per-test. null allowedSiteIds =
+// unrestricted (the common case); the site-restriction tests narrow it.
+let permsState: { allowedSiteIds: string[] | null };
+
 // Mock only authMiddleware + requirePermission (thin passthrough); requireScope
 // and resolveScopedOrgId (./c2c/helpers) are left as the REAL implementations so
 // the cross-tenant test exercises actual org-access enforcement, not a stub.
@@ -34,7 +38,13 @@ vi.mock('../middleware/auth', async (importOriginal) => {
       c.set('auth', authState);
       return next();
     }),
-    requirePermission: vi.fn(() => (_c: any, next: any) => next()),
+    // The real requirePermission populates c.get('permissions'), which the
+    // canonical site-scope gate (getDeviceWithOrgAndSiteCheck) requires and
+    // fails loud (500) without — mirror that here.
+    requirePermission: vi.fn(() => (c: any, next: any) => {
+      c.set('permissions', permsState);
+      return next();
+    }),
   };
 });
 
@@ -44,6 +54,7 @@ import { onedriveRoutes } from './onedrive';
 describe('GET /onedrive/devices/:deviceId/state', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    permsState = { allowedSiteIds: null };
     authState = {
       scope: 'organization',
       orgId: ORG_A,
@@ -125,11 +136,27 @@ describe('GET /onedrive/devices/:deviceId/state', () => {
     expect(res.status).toBe(404);
     expect(db.select).toHaveBeenCalledTimes(1); // no second (state) query
   });
+
+  it('403s for a site-restricted tech when the device is in another site', async () => {
+    permsState = { allowedSiteIds: ['site-allowed'] };
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ id: DEVICE_1, orgId: ORG_A, siteId: 'site-other' }]),
+        }),
+      }),
+    } as any);
+
+    const res = await onedriveRoutes.request(`/devices/${DEVICE_1}/state`);
+    expect(res.status).toBe(403);
+    expect(db.select).toHaveBeenCalledTimes(1); // no second (state) query
+  });
 });
 
 describe('GET /onedrive/state', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    permsState = { allowedSiteIds: null };
     authState = {
       scope: 'organization',
       orgId: ORG_A,
@@ -178,6 +205,51 @@ describe('GET /onedrive/state', () => {
     const body = await res.json();
     expect(body.devices).toHaveLength(2);
     expect(body.stats).toEqual({ total: 2, signedIn: 1, kfmProtected: 1, withDrift: 1 });
+  });
+
+  it('narrows the rollup to the allowed sites for a site-restricted tech (stats follow)', async () => {
+    permsState = { allowedSiteIds: ['site-allowed'] };
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([
+            {
+              deviceId: 'device-1',
+              hostname: 'host-1',
+              siteId: 'site-allowed',
+              signedIn: true,
+              filesOnDemandOn: true,
+              oneDriveVersion: '24.100',
+              kfmFolderStates: {},
+              mountedLibraries: [],
+              entitledLibraries: [],
+              driftEntries: [],
+              lastReportedAt: new Date('2026-07-01T00:00:00Z'),
+            },
+            {
+              deviceId: 'device-2',
+              hostname: 'host-2',
+              siteId: 'site-other',
+              signedIn: true,
+              filesOnDemandOn: false,
+              oneDriveVersion: null,
+              kfmFolderStates: {},
+              mountedLibraries: [],
+              entitledLibraries: [],
+              driftEntries: [],
+              lastReportedAt: new Date('2026-07-01T00:00:00Z'),
+            },
+          ]),
+        }),
+      }),
+    } as any);
+
+    const res = await onedriveRoutes.request(`/state?orgId=${ORG_A}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.devices).toHaveLength(1);
+    expect(body.devices[0].deviceId).toBe('device-1');
+    expect(body.stats.total).toBe(1); // stats computed AFTER narrowing
   });
 
   it('400s when an explicitly-requested org is inaccessible', async () => {
