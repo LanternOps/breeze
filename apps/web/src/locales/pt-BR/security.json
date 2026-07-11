@@ -173,7 +173,7 @@
     "endpointDetectionAndAmpResponse": "Detecção e resposta de endpoint",
     "huntressIncidents": "Incidentes do Huntress",
     "sentineloneThreats": "Ameaças do SentinelOne",
-    "threatsAndIncidentsAcrossYourFleetFrom": "Ameaças e incidentes em sua frota vindos do SentinelOne e do Huntress."
+    "threatsAndIncidentsAcrossYourFleetFrom": "Ameaças e incidentes em seus dispositivos vindos do SentinelOne e do Huntress."
   },
   "securityEdrSummaryPanel": {
     "endpointDetectionAndAmpResponse": "Detecção e resposta de endpoint",
@@ -264,7 +264,7 @@
     "huntressIncidents": "Incidentes do Huntress",
     "inProgress": "Em andamento",
     "incidentsMatchYourFilters": "{{count}} incidentes correspondem aos filtros",
-    "loadingFleetIncidents": "Carregando incidentes da frota...",
+    "loadingFleetIncidents": "Carregando incidentes dos dispositivos...",
     "loadingHuntressIncidents": "Carregando incidentes do Huntress...",
     "low": "Baixa",
     "medium": "Média",
@@ -386,7 +386,7 @@
     "failedToCreateIncident": "Falha ao criar incidente",
     "high": "Alta",
     "inProgress": "Em andamento",
-    "loadingFleetThreats": "Carregando ameaças da frota...",
+    "loadingFleetThreats": "Carregando ameaças dos dispositivos...",
     "loadingSentinelOneThreats": "Carregando ameaças do SentinelOne...",
     "low": "Baixa",
     "medium": "Média",
@@ -794,7 +794,7 @@
   },
   "pamPamPage": {
     "heading": "Acesso Privilegiado",
-    "description": "Solicitações de elevação, regras de aprovação e histórico de auditoria em toda a frota.",
+    "description": "Solicitações de elevação, regras de aprovação e histórico de auditoria em todos os dispositivos.",
     "liveStatus": {
       "live": "Ao vivo",
       "offline": "Offline"
