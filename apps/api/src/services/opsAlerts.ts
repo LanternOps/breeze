@@ -12,7 +12,7 @@ const WEBHOOK_TIMEOUT_MS = 10_000;
 let warnedUnconfigured = false;
 
 export function isOpsAlertingConfigured(): boolean {
-  return Boolean(process.env.OPS_ALERT_WEBHOOK_URL || process.env.OPS_ALERT_EMAIL);
+  return Boolean(process.env.OPS_ALERT_WEBHOOK_URL?.trim() || process.env.OPS_ALERT_EMAIL?.trim());
 }
 
 function formatContent(msg: OpsAlertMessage): string {
@@ -22,9 +22,9 @@ function formatContent(msg: OpsAlertMessage): string {
 }
 
 async function sendWebhook(url: string, msg: OpsAlertMessage): Promise<boolean> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), WEBHOOK_TIMEOUT_MS);
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), WEBHOOK_TIMEOUT_MS);
     const response = await safeFetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'User-Agent': 'Breeze-RMM/1.0' },
@@ -32,7 +32,6 @@ async function sendWebhook(url: string, msg: OpsAlertMessage): Promise<boolean> 
       signal: controller.signal,
       redirect: 'error',
     });
-    clearTimeout(timeoutId);
     if (!response.ok) {
       console.error(`[OpsAlerts] Webhook responded ${response.status}`);
       return false;
@@ -42,6 +41,8 @@ async function sendWebhook(url: string, msg: OpsAlertMessage): Promise<boolean> 
     console.error('[OpsAlerts] Webhook delivery failed:', error instanceof Error ? error.message : error);
     captureException(error);
     return false;
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
@@ -56,7 +57,7 @@ async function sendOpsEmail(to: string, msg: OpsAlertMessage): Promise<boolean> 
       to,
       subject: `[Breeze ops] ${msg.title}`,
       text: msg.body,
-      html: `<pre>${msg.body.replace(/</g, '&lt;')}</pre>`,
+      html: `<pre>${msg.body.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>`,
     });
     return true;
   } catch (error) {

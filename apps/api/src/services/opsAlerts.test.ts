@@ -74,6 +74,11 @@ describe('isOpsAlertingConfigured', () => {
     delete process.env.OPS_ALERT_WEBHOOK_URL;
     expect(isOpsAlertingConfigured()).toBe(false);
   });
+
+  it('treats whitespace-only values as unconfigured', () => {
+    process.env.OPS_ALERT_WEBHOOK_URL = '   ';
+    expect(isOpsAlertingConfigured()).toBe(false);
+  });
 });
 
 describe('sendOpsAlert unconfigured warning latch', () => {
