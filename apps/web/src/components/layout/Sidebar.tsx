@@ -1,4 +1,5 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   LayoutDashboard,
   Monitor,
@@ -61,6 +62,7 @@ import { semverCompare } from '@breeze/shared';
 import { getJwtClaims } from '../../lib/authScope';
 import BrandHeader from './BrandHeader';
 import { ENABLE_EDR_INTEGRATIONS } from '../../lib/featureFlags';
+import '../../lib/i18n';
 
 interface SidebarProps {
   currentPath?: string;
@@ -132,6 +134,7 @@ function useSidebarScrollPersist(): React.RefObject<HTMLElement | null> {
 // ---------------------------------------------------------------------------
 type NavItem = {
   name: string;
+  labelKey?: string;
   href: string;
   icon: React.ComponentType<{ className?: string }>;
   badgeKind?: 'deletion-requests';
@@ -161,16 +164,16 @@ type NavItem = {
 // grant keeps a permission-scoped role (e.g. "Partner Billing", which holds only
 // catalog/invoices/quotes/contracts) from seeing items it has no access to.
 // Dashboard is ungated — it's the always-available landing page.
-const topLevelNav: NavItem[] = [
-  { name: 'Dashboard', href: '/', icon: LayoutDashboard },
-  { name: 'Devices', href: '/devices', icon: Monitor, requiredPermission: { resource: 'devices', action: 'read' } },
-  { name: 'Alerts', href: '/alerts', icon: Bell, requiredPermission: { resource: 'alerts', action: 'read' } },
-  { name: 'Tickets', href: '/tickets', icon: Ticket, requiredPermission: { resource: 'tickets', action: 'read' } },
-  { name: 'Incidents', href: '/incidents', icon: ShieldAlert, requiredPermission: { resource: 'alerts', action: 'read' } },
-  { name: 'Remote Access', href: '/remote', icon: Terminal, requiredPermission: { resource: 'remote', action: 'access' } },
-  { name: 'Scripts', href: '/scripts', icon: FileCode, requiredPermission: { resource: 'scripts', action: 'read' } },
-  { name: 'Patches', href: '/patches', icon: Download, requiredPermission: { resource: 'devices', action: 'read' } },
-  { name: 'Vulnerabilities', href: '/vulnerabilities', icon: Bug, requiredPermission: { resource: 'devices', action: 'read' } },
+export const topLevelNav: NavItem[] = [
+  { name: 'Dashboard', labelKey: 'nav.dashboard', href: '/', icon: LayoutDashboard },
+  { name: 'Devices', labelKey: 'nav.devices', href: '/devices', icon: Monitor, requiredPermission: { resource: 'devices', action: 'read' } },
+  { name: 'Alerts', labelKey: 'nav.alerts', href: '/alerts', icon: Bell, requiredPermission: { resource: 'alerts', action: 'read' } },
+  { name: 'Tickets', labelKey: 'nav.tickets', href: '/tickets', icon: Ticket, requiredPermission: { resource: 'tickets', action: 'read' } },
+  { name: 'Incidents', labelKey: 'nav.incidents', href: '/incidents', icon: ShieldAlert, requiredPermission: { resource: 'alerts', action: 'read' } },
+  { name: 'Remote Access', labelKey: 'nav.remoteAccess', href: '/remote', icon: Terminal, requiredPermission: { resource: 'remote', action: 'access' } },
+  { name: 'Scripts', labelKey: 'nav.scripts', href: '/scripts', icon: FileCode, requiredPermission: { resource: 'scripts', action: 'read' } },
+  { name: 'Patches', labelKey: 'nav.patches', href: '/patches', icon: Download, requiredPermission: { resource: 'devices', action: 'read' } },
+  { name: 'Vulnerabilities', labelKey: 'nav.vulnerabilities', href: '/vulnerabilities', icon: Bug, requiredPermission: { resource: 'devices', action: 'read' } },
 ];
 
 // ---------------------------------------------------------------------------
@@ -179,6 +182,7 @@ const topLevelNav: NavItem[] = [
 interface NavSection {
   id: string;
   label: string;
+  labelKey?: string;
   icon: React.ComponentType<{ className?: string }>;
   items: NavItem[];
 }
@@ -188,6 +192,7 @@ export const navSections: NavSection[] = [
   {
     id: 'ai-fleet',
     label: 'AI & Fleet',
+    labelKey: 'nav.sectionAiFleet',
     icon: BrainCircuit,
     items: [
       { name: 'Fleet', href: '/fleet', icon: BrainCircuit },
@@ -198,6 +203,7 @@ export const navSections: NavSection[] = [
   {
     id: 'monitoring',
     label: 'Monitoring',
+    labelKey: 'nav.sectionMonitoring',
     icon: Activity,
     // Both surfaces read device/network state, gated on devices:read server-side.
     items: [
@@ -208,6 +214,7 @@ export const navSections: NavSection[] = [
   {
     id: 'security',
     label: 'Security',
+    labelKey: 'nav.sectionSecurity',
     icon: ShieldCheck,
     // The security suite is built on device posture/scan data (devices:read).
     // A billing-only role has no devices:read grant, so the whole section hides.
@@ -229,6 +236,7 @@ export const navSections: NavSection[] = [
   {
     id: 'operations',
     label: 'Operations',
+    labelKey: 'nav.sectionOperations',
     icon: Layers,
     items: [
       { name: 'Quotes', href: '/billing/quotes', icon: FileText, partnerScopeOnly: true, requiredPermission: { resource: 'quotes', action: 'read' } },
@@ -245,6 +253,7 @@ export const navSections: NavSection[] = [
   {
     id: 'backup',
     label: 'Backup',
+    labelKey: 'nav.sectionBackup',
     icon: HardDrive,
     // Backup/recovery surfaces are gated on the backup:read grant.
     items: [
@@ -256,6 +265,7 @@ export const navSections: NavSection[] = [
   {
     id: 'reporting',
     label: 'Reporting',
+    labelKey: 'nav.sectionReporting',
     icon: BarChart3,
     items: [
       { name: 'Reports', href: '/reports', icon: FileText, requiredPermission: { resource: 'reports', action: 'read' } },
@@ -267,6 +277,7 @@ export const navSections: NavSection[] = [
   {
     id: 'settings',
     label: 'Settings',
+    labelKey: 'nav.sectionSettings',
     icon: Building,
     items: [
       { name: 'Partner', href: '/settings/partner', icon: Building, partnerScopeOnly: true },
@@ -370,6 +381,7 @@ function useDeletionRequestsBadge(enabled: boolean): number | undefined {
 }
 
 export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps) {
+  const { t } = useTranslation();
   const [mode, setMode] = useState<SidebarMode>(readSavedMode);
   const [hovered, setHovered] = useState(false);
   const currentPath = useCurrentPath(initialPath);
@@ -569,11 +581,12 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     const narrow = forMobileOverlay ? false : isNarrow;
     const badgeCount = item.badgeKind === 'deletion-requests' ? deletionRequestsCount : undefined;
     const showBadge = typeof badgeCount === 'number' && badgeCount > 0;
+    const label = item.labelKey ? t(item.labelKey, { defaultValue: item.name }) : item.name;
     return (
       <a
         key={item.name}
         href={item.href}
-        title={narrow && !hovered ? item.name : undefined}
+        title={narrow && !hovered ? label : undefined}
         onClick={forMobileOverlay ? () => closeMobileMenu() : undefined}
         className={cn(
           'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
@@ -583,7 +596,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
         )}
       >
         <item.icon className="h-5 w-5 shrink-0" />
-        {labels && <span className="truncate flex-1">{item.name}</span>}
+        {labels && <span className="truncate flex-1">{label}</span>}
         {labels && showBadge && (
           <span
             className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-500/20 px-1.5 chart-legend-xs font-semibold text-amber-800 dark:bg-amber-500/30 dark:text-amber-200"
@@ -620,7 +633,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
             className="flex items-center justify-between w-full px-2 py-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground/70 hover:text-muted-foreground cursor-pointer transition-colors"
             style={{ fontSize: '12px' }}
           >
-            <span>{section.label}</span>
+            <span>{section.labelKey ? t(section.labelKey, { defaultValue: section.label }) : section.label}</span>
             <ChevronDown
               className={cn(
                 'h-3.5 w-3.5 transition-transform duration-200',
