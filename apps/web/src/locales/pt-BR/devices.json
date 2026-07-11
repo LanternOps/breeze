@@ -146,7 +146,7 @@
       },
       "decommission": {
         "title": "Desativar dispositivo",
-        "message": "Tem certeza de que deseja desativar {{hostname}}? Isso removerá permanentemente o dispositivo da sua frota. O agente deixará de enviar dados e o dispositivo não será mais monitorado.",
+        "message": "Tem certeza de que deseja desativar {{hostname}}? Isso removerá permanentemente este dispositivo da sua lista de dispositivos. O agente deixará de enviar dados e o dispositivo não será mais monitorado.",
         "confirm": "Desativar"
       },
       "clearSessions": {
@@ -306,7 +306,7 @@
     "failedToLoadDeviceDetails": "Falha ao carregar os detalhes do dispositivo",
     "loadingDevices": "Carregando dispositivos...",
     "deviceComparison": "Comparação de dispositivos",
-    "compareHardwareSoftwarePatchesAndConfiguration": "Compare hardware, software, patches e configurações em toda a sua frota.",
+    "compareHardwareSoftwarePatchesAndConfiguration": "Compare hardware, software, patches e configurações em todos os seus dispositivos.",
     "exportPdf": "Exportar PDF",
     "exportCsv": "Exportar CSV",
     "linkCopied": "Link copiado",
@@ -1476,7 +1476,7 @@
     "addTagPlaceholder": "Adicionar uma tag...",
     "dangerZone": "Zona de perigo",
     "decommissionDevice": "Desativar dispositivo",
-    "decommissionWarning": "A desativação removerá este dispositivo da sua frota ativa.",
+    "decommissionWarning": "A desativação removerá este dispositivo da sua lista de dispositivos ativos.",
     "decommissionedDescription": "Este dispositivo está desativado. Você pode restaurá-lo ou excluí-lo permanentemente.",
     "decommissionedTitle": "Dispositivo desativado",
     "displayName": "Nome de exibição",
@@ -1668,7 +1668,7 @@
     "confirmRunAction": "Executar {{script}}",
     "confirmScriptRun": "Confirmar execução do script",
     "emptyDescription": "Comece adicionando seu primeiro dispositivo. O instalador e a chave de registro são gerados automaticamente.",
-    "emptyTitle": "Sua frota está vazia",
+    "emptyTitle": "Você ainda não tem dispositivos",
     "gridView": "Visualização em grade",
     "listView": "Visualização em lista",
     "maintenanceVerb": {
@@ -1680,7 +1680,7 @@
       "enablingMaintenance": "Ativando o modo de manutenção"
     },
     "selectedOrganization": "a organização selecionada",
-    "subtitle": "Gerencie e monitore sua frota.",
+    "subtitle": "Gerencie e monitore seus dispositivos.",
     "title": "Dispositivos",
     "toasts": {
       "actionFailed": "Falha na ação",
