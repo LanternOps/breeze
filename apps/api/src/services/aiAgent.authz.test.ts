@@ -65,7 +65,7 @@ function stubSelectOnce(rows: unknown[]) {
 }
 
 function ownerCondFrom(whereSpy: ReturnType<typeof vi.fn>): Cond | undefined {
-  const arg = whereSpy.mock.calls[0][0] as Cond;
+  const arg = whereSpy.mock.calls[0]![0] as Cond;
   return arg.conds?.find((c) => c.op === 'eq' && c.col === 'aiSessions.userId');
 }
 
