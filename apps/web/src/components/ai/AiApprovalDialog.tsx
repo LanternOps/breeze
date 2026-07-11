@@ -1,12 +1,13 @@
-import { useState, useEffect } from 'react';
-import { ShieldAlert, Check, X, Clock, Monitor } from 'lucide-react';
-import { cn, widthPercentClass } from '@/lib/utils';
+import { useState, useEffect } from "react";
+import { ShieldAlert, Check, X, Clock, Monitor } from "lucide-react";
+import { cn, widthPercentClass } from "@/lib/utils";
+import { useTranslation } from "react-i18next";
 
 // Must be <= server-side waitForApproval timeout (300s). Plan approvals use 10-min timeout.
 const AUTO_DENY_MS = 5 * 60 * 1000;
 
 /** Keys that are internal identifiers — not useful to show the user */
-const HIDDEN_INPUT_KEYS = new Set(['deviceId', 'orgId', 'siteId', 'sessionId']);
+const HIDDEN_INPUT_KEYS = new Set(["deviceId", "orgId", "siteId", "sessionId"]);
 
 interface ActiveSessionInfo {
   username: string;
@@ -40,8 +41,8 @@ function filterInput(input: Record<string, unknown>): Record<string, unknown> {
   return filtered;
 }
 
-function formatIdle(minutes: number): string {
-  if (minutes < 1) return 'just now';
+function formatIdle(minutes: number, justNow: string): string {
+  if (minutes < 1) return justNow;
   if (minutes < 60) return `${minutes}m`;
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `${hours}h`;
@@ -60,36 +61,50 @@ function formatDeviceIdle(lastSeenAt: string | undefined): string | null {
 }
 
 function UserSessionBadge({ session }: { session: ActiveSessionInfo }) {
-  const state = session.activityState ?? 'unknown';
-  const isActive = state === 'active';
-  const idleText = !isActive && session.idleMinutes != null && session.idleMinutes > 0
-    ? `idle ${formatIdle(session.idleMinutes)}`
-    : null;
+  const { t } = useTranslation("ai");
+  const state = session.activityState ?? "unknown";
+  const isActive = state === "active";
+  const idleText =
+    !isActive && session.idleMinutes != null && session.idleMinutes > 0
+      ? t("aiApprovalDialog.idleFor", {
+          duration: formatIdle(
+            session.idleMinutes,
+            t("aiApprovalDialog.justNow"),
+          ),
+        })
+      : null;
 
   const stateColors: Record<string, string> = {
-    active: 'text-green-400',
-    idle: 'text-yellow-400',
-    locked: 'text-amber-400',
-    away: 'text-gray-400',
-    disconnected: 'text-gray-500',
+    active: "text-green-400",
+    idle: "text-yellow-400",
+    locked: "text-amber-400",
+    away: "text-gray-400",
+    disconnected: "text-gray-500",
   };
 
-  const stateLabel = idleText ?? state;
+  const stateLabel =
+    idleText ??
+    t(/* i18n-dynamic */ `aiApprovalDialog.sessionStates.${state}`, { defaultValue: state });
 
   return (
     <span className="inline-flex items-center gap-1.5 text-xs">
       <span className="text-gray-300">{session.username}</span>
-      {session.sessionType !== 'console' && (
-        <span className="text-gray-600 uppercase text-[10px]">{session.sessionType}</span>
+      {session.sessionType !== "console" && (
+        <span className="text-gray-600 uppercase text-[10px]">
+          {session.sessionType}
+        </span>
       )}
-      <span className={stateColors[state] ?? 'text-gray-500'}>{stateLabel}</span>
+      <span className={stateColors[state] ?? "text-gray-500"}>
+        {stateLabel}
+      </span>
     </span>
   );
 }
 
 function DeviceBadge({ ctx }: { ctx: DeviceContext }) {
+  const { t } = useTranslation("ai");
   const name = ctx.displayName || ctx.hostname;
-  const isOnline = ctx.status === 'online';
+  const isOnline = ctx.status === "online";
   const sessions = ctx.activeSessions ?? [];
   const deviceIdleText = !isOnline ? formatDeviceIdle(ctx.lastSeenAt) : null;
 
@@ -97,10 +112,16 @@ function DeviceBadge({ ctx }: { ctx: DeviceContext }) {
     <div className="mt-2 rounded-md bg-gray-100/60 px-2.5 py-1.5 text-xs dark:bg-gray-800/60">
       <div className="flex items-center gap-2">
         <Monitor className="h-3.5 w-3.5 text-gray-400 shrink-0" />
-        <span className="font-medium text-gray-900 truncate dark:text-gray-200">{name}</span>
+        <span className="font-medium text-gray-900 truncate dark:text-gray-200">
+          {name}
+        </span>
         <span className="text-gray-600">&middot;</span>
-        <span className={isOnline ? 'text-green-400' : 'text-gray-500'}>
-          {isOnline ? 'online' : (deviceIdleText ? `offline ${deviceIdleText}` : 'offline')}
+        <span className={isOnline ? "text-green-400" : "text-gray-500"}>
+          {isOnline
+            ? t("common:states.online")
+            : deviceIdleText
+              ? t("aiApprovalDialog.offlineFor", { duration: deviceIdleText })
+              : t("common:states.offline")}
         </span>
       </div>
       {sessions.length > 0 && (
@@ -114,7 +135,15 @@ function DeviceBadge({ ctx }: { ctx: DeviceContext }) {
   );
 }
 
-export default function AiApprovalDialog({ toolName, description, input, deviceContext, onApprove, onReject }: AiApprovalDialogProps) {
+export default function AiApprovalDialog({
+  toolName,
+  description,
+  input,
+  deviceContext,
+  onApprove,
+  onReject,
+}: AiApprovalDialogProps) {
+  const { t } = useTranslation("ai");
   const [remainingMs, setRemainingMs] = useState(AUTO_DENY_MS);
 
   useEffect(() => {
@@ -133,7 +162,7 @@ export default function AiApprovalDialog({ toolName, description, input, deviceC
 
   const minutes = Math.floor(remainingMs / 60000);
   const seconds = Math.floor((remainingMs % 60000) / 1000);
-  const countdown = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+  const countdown = `${minutes}:${seconds.toString().padStart(2, "0")}`;
   const progressPct = (remainingMs / AUTO_DENY_MS) * 100;
 
   const visibleInput = filterInput(input);
@@ -144,22 +173,28 @@ export default function AiApprovalDialog({ toolName, description, input, deviceC
   return (
     <div
       role="alertdialog"
-      aria-label={`Tool approval required: ${toolName}`}
+      aria-label={t("aiApprovalDialog.ariaLabel", { toolName })}
       className="my-2 rounded-lg border border-amber-600/50 bg-amber-100/30 p-3 dark:bg-amber-950/30"
     >
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <ShieldAlert className="h-4 w-4 text-amber-400" />
-          <span className="text-sm font-medium text-amber-700 dark:text-amber-300">Approval Required</span>
+          <span className="text-sm font-medium text-amber-700 dark:text-amber-300">
+            {t("aiApprovalDialog.title")}
+          </span>
         </div>
-        <div className="flex items-center gap-1.5 text-xs text-gray-500" role="timer" aria-label={`${minutes} minutes ${seconds} seconds remaining`}>
+        <div
+          className="flex items-center gap-1.5 text-xs text-gray-500"
+          role="timer"
+          aria-label={t("aiApprovalDialog.timeRemaining", { minutes, seconds })}
+        >
           <Clock className="h-3 w-3" />
           <span>{countdown}</span>
         </div>
       </div>
       {isUrgent && (
         <span className="sr-only" role="alert">
-          Less than 30 seconds remaining. This request will be auto-rejected.
+          {t("aiApprovalDialog.urgentWarning")}
         </span>
       )}
 
@@ -170,24 +205,26 @@ export default function AiApprovalDialog({ toolName, description, input, deviceC
         aria-valuenow={Math.round(progressPct)}
         aria-valuemin={0}
         aria-valuemax={100}
-        aria-label="Time remaining before auto-rejection"
+        aria-label={t("aiApprovalDialog.progressLabel")}
       >
         <div
           className={cn(
-            'h-full rounded-full bg-amber-500/60 transition-all duration-1000 ease-linear',
-            widthPercentClass(progressPct)
+            "h-full rounded-full bg-amber-500/60 transition-all duration-1000 ease-linear",
+            widthPercentClass(progressPct),
           )}
         />
       </div>
 
-      <p className="mt-2 text-sm text-gray-700 dark:text-gray-300">{description}</p>
+      <p className="mt-2 text-sm text-gray-700 dark:text-gray-300">
+        {description}
+      </p>
 
       {deviceContext && <DeviceBadge ctx={deviceContext} />}
 
       {hasVisibleInput && (
         <details className="mt-2 group">
           <summary className="cursor-pointer text-xs text-gray-500 hover:text-gray-400 select-none">
-            Show parameters
+            {t("aiApprovalDialog.showParameters")}
           </summary>
           <pre className="mt-1 max-h-24 overflow-auto rounded bg-gray-100 px-3 py-2 text-xs text-gray-500 dark:bg-gray-900 dark:text-gray-400">
             {JSON.stringify(visibleInput, null, 2)}
@@ -202,7 +239,7 @@ export default function AiApprovalDialog({ toolName, description, input, deviceC
           className="flex items-center gap-1.5 rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-green-500"
         >
           <Check className="h-3.5 w-3.5" />
-          Approve
+          {t("aiApprovalDialog.approve")}
         </button>
         <button
           type="button"
@@ -210,7 +247,7 @@ export default function AiApprovalDialog({ toolName, description, input, deviceC
           className="flex items-center gap-1.5 rounded-md bg-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
         >
           <X className="h-3.5 w-3.5" />
-          Reject
+          {t("aiApprovalDialog.reject")}
         </button>
       </div>
     </div>

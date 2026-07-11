@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { AlertTriangle, CheckCircle, X, Undo2, XCircle } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 interface ToastData {
   id: string;
@@ -37,6 +38,7 @@ export function _resetToastQueueForTests() {
 }
 
 export default function ToastContainer() {
+  const { t } = useTranslation('common');
   const [toasts, setToasts] = useState<ToastData[]>([]);
 
   const addToast = useCallback((toast: Omit<ToastData, 'id'>) => {
@@ -103,13 +105,13 @@ export default function ToastContainer() {
                 className="flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-primary hover:bg-muted transition-colors"
               >
                 <Undo2 className="h-3 w-3" />
-                Undo
+                {t('shared.toast.undo')}
               </button>
             )}
             <button
               type="button"
               onClick={() => dismiss(toast.id)}
-              aria-label="Dismiss"
+              aria-label={t('shared.toast.dismiss')}
               className={`rounded p-0.5 transition-colors ${
                 isError
                   ? 'text-destructive-foreground/70 hover:text-destructive-foreground'

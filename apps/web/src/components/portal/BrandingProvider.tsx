@@ -1,4 +1,5 @@
 import { createContext, useContext, useMemo, type ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 
 export type PortalBranding = {
   name: string;
@@ -27,11 +28,12 @@ export default function BrandingProvider({ branding, children }: BrandingProvide
 }
 
 export function usePortalBranding(): PortalBranding {
+  const { t } = useTranslation('portal');
   const context = useContext(BrandingContext);
 
   if (!context) {
     return {
-      name: 'Breeze Portal'
+      name: t('branding.defaultName')
     };
   }
 

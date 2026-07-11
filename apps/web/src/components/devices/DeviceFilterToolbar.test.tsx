@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
+import { applyLocale } from '@/lib/i18n';
 import { DeviceFilterToolbar } from './DeviceFilterToolbar';
 
 vi.mock('../../stores/auth', () => ({
@@ -47,5 +48,31 @@ describe('DeviceFilterToolbar — device search', () => {
     fireEvent.change(input, { target: { value: 'Reception' } });
 
     expect(onListFiltersChange).toHaveBeenCalledWith({ search: 'Reception' });
+  });
+
+  it('localizes the live quick-filter toolbar without changing canonical filters', async () => {
+    await applyLocale('pt-BR');
+    const onChange = vi.fn();
+
+    render(
+      <DeviceFilterToolbar
+        value={null}
+        onChange={onChange}
+        listFilters={{ search: '' }}
+        onListFiltersChange={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText('Servidores')).toBeInTheDocument();
+    expect(screen.getByText('Precisa de patches')).toBeInTheDocument();
+    expect(screen.getByText('Reinicialização necessária')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('Servidores'));
+    expect(onChange).toHaveBeenCalledWith({
+      operator: 'AND',
+      conditions: [{ field: 'deviceRole', operator: 'equals', value: 'server' }],
+    });
+
+    await applyLocale('en');
   });
 });

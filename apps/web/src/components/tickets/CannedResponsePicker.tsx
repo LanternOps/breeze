@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import '@/lib/i18n';
+import { useTranslation } from 'react-i18next';
 import { renderTemplate, type TicketTemplateVars } from '@breeze/shared';
 import type { CannedResponse } from '../../lib/ticketResponseTemplatesApi';
 
@@ -14,6 +16,7 @@ interface Props {
  *  from the current ticket) into the reply composer. Self-hides when the partner
  *  has no templates so the toolbar stays clean. */
 export default function CannedResponsePicker({ templates, vars, onInsert, disabled }: Props) {
+  const { t } = useTranslation('tickets');
   const [open, setOpen] = useState(false);
   if (templates.length === 0) return null;
   return (
@@ -25,7 +28,7 @@ export default function CannedResponsePicker({ templates, vars, onInsert, disabl
         data-testid="canned-picker-button"
         className="rounded-md px-2.5 py-1 text-xs font-medium text-muted-foreground hover:text-foreground disabled:opacity-50"
       >
-        Canned response
+        {t('cannedResponsePicker.button')}
       </button>
       {open && (
         <div

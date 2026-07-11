@@ -1,5 +1,7 @@
+import '@/lib/i18n';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Activity, Inbox, ListChecks, ScrollText, ShieldCheck } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { useEventStream } from '../../hooks/useEventStream';
 import PamOverviewTab from './PamOverviewTab';
 import PamRequestsTab from './PamRequestsTab';
@@ -27,6 +29,7 @@ function readTabFromHash(): Tab {
 }
 
 export default function PamPage() {
+  const { t } = useTranslation('security');
   const [activeTab, setActiveTab] = useState<Tab>(readTabFromHash);
   // Bumped on every elevation.* event (debounced); tabs refetch when it changes.
   const [liveTick, setLiveTick] = useState(0);
@@ -65,10 +68,12 @@ export default function PamPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold" data-testid="pam-heading">
-            Privileged Access
+            {t('pamPamPage.heading', { defaultValue: 'Privileged Access' })}
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Elevation requests, approval rules, and audit history across the fleet.
+            {t('pamPamPage.description', {
+              defaultValue: 'Elevation requests, approval rules, and audit history across the fleet.',
+            })}
           </p>
         </div>
         <span
@@ -82,7 +87,9 @@ export default function PamPage() {
           <span
             className={`h-1.5 w-1.5 rounded-full ${connected ? 'bg-green-500' : 'bg-muted-foreground'}`}
           />
-          {connected ? 'Live' : 'Offline'}
+          {connected
+            ? t('pamPamPage.liveStatus.live', { defaultValue: 'Live' })
+            : t('pamPamPage.liveStatus.offline', { defaultValue: 'Offline' })}
         </span>
       </div>
 
@@ -93,7 +100,7 @@ export default function PamPage() {
           icon={<Activity className="h-4 w-4" />}
           testId="pam-tab-overview"
         >
-          Overview
+          {t('pamPamPage.tabs.overview', { defaultValue: 'Overview' })}
         </TabButton>
         <TabButton
           active={activeTab === 'requests'}
@@ -101,7 +108,7 @@ export default function PamPage() {
           icon={<Inbox className="h-4 w-4" />}
           testId="pam-tab-requests"
         >
-          Requests
+          {t('pamPamPage.tabs.requests', { defaultValue: 'Requests' })}
         </TabButton>
         <TabButton
           active={activeTab === 'rules'}
@@ -109,7 +116,7 @@ export default function PamPage() {
           icon={<ListChecks className="h-4 w-4" />}
           testId="pam-tab-rules"
         >
-          Rules
+          {t('pamPamPage.tabs.rules', { defaultValue: 'Rules' })}
         </TabButton>
         <TabButton
           active={activeTab === 'signer-groups'}
@@ -117,7 +124,7 @@ export default function PamPage() {
           icon={<ShieldCheck className="h-4 w-4" />}
           testId="pam-tab-signer-groups"
         >
-          Signer Groups
+          {t('pamPamPage.tabs.signerGroups', { defaultValue: 'Signer Groups' })}
         </TabButton>
         <TabButton
           active={activeTab === 'audit'}
@@ -125,7 +132,7 @@ export default function PamPage() {
           icon={<ScrollText className="h-4 w-4" />}
           testId="pam-tab-audit"
         >
-          Audit
+          {t('pamPamPage.tabs.audit', { defaultValue: 'Audit' })}
         </TabButton>
       </div>
 

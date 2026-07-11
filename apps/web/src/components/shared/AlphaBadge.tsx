@@ -1,4 +1,5 @@
 import { cn } from '../../lib/utils';
+import { useTranslation } from 'react-i18next';
 
 type AlphaBadgeProps = {
   /** Short label shown in the badge. Default: "Alpha" */
@@ -10,20 +11,20 @@ type AlphaBadgeProps = {
   className?: string;
 };
 
-const defaultDisclaimer =
-  'This feature is in early access. Functionality may change, and some operations may not work as expected. Not recommended for production use without testing.';
-
 /**
  * Alpha badge / banner for features that are functional but not yet
  * production-hardened. Use on enterprise backup features (MSSQL, Hyper-V,
  * C2C, DR, Vault, SLA, Instant Boot, VM Restore).
  */
 export default function AlphaBadge({
-  label = 'Alpha',
+  label,
   disclaimer,
   variant = 'badge',
   className,
 }: AlphaBadgeProps) {
+  const { t } = useTranslation('common');
+  const resolvedLabel = label ?? t('shared.alpha.label');
+  const resolvedDisclaimer = disclaimer ?? t('shared.alpha.disclaimer');
   if (variant === 'banner') {
     return (
       <div
@@ -33,10 +34,10 @@ export default function AlphaBadge({
         )}
       >
         <span className="mt-0.5 inline-flex shrink-0 items-center rounded-md bg-warning/15 px-2 py-0.5 text-xs font-semibold uppercase tracking-wider text-warning">
-          {label}
+          {resolvedLabel}
         </span>
         <p className="text-sm leading-relaxed text-muted-foreground">
-          {disclaimer ?? defaultDisclaimer}
+          {resolvedDisclaimer}
         </p>
       </div>
     );
@@ -48,9 +49,9 @@ export default function AlphaBadge({
         'inline-flex items-center rounded-md bg-warning/15 px-2 py-0.5 text-xs font-semibold uppercase tracking-wider text-warning',
         className,
       )}
-      title={disclaimer ?? defaultDisclaimer}
+      title={resolvedDisclaimer}
     >
-      {label}
+      {resolvedLabel}
     </span>
   );
 }

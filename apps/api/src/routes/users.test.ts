@@ -135,6 +135,7 @@ vi.mock('../db/schema', () => ({
   roles: {},
   permissions: {},
   rolePermissions: {},
+  partners: { id: { __column: 'partners.id' }, settings: { __column: 'partners.settings' } },
   organizations: {},
   patchPolicies: {},
   alertRules: {},
@@ -147,6 +148,14 @@ vi.mock('../db/schema', () => ({
   peripheralPolicies: {},
   discoveredAssetTypeEnum: { enumValues: ['workstation', 'server', 'printer', 'unknown'] },
 }));
+
+vi.mock('drizzle-orm', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('drizzle-orm')>();
+  return {
+    ...actual,
+    eq: vi.fn(actual.eq),
+  };
+});
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
@@ -211,6 +220,7 @@ vi.mock('../services/remoteSessionTeardown', () => ({
 }));
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { eq } from 'drizzle-orm';
 import { clearPermissionCache, getUserPermissions } from '../services/permissions';
 import { authMiddleware } from '../middleware/auth';
 import { revokeAllUserTokens } from '../services/tokenRevocation';
@@ -557,6 +567,181 @@ describe('user routes', () => {
       // Mocked getUserPermissions returns the admin wildcard grant.
       expect(body.permissions).toEqual([{ resource: '*', action: '*' }]);
     });
+
+    it('returns the authenticated partner default locale', async () => {
+      const user = {
+        id: 'user-123',
+        email: 'admin@example.com',
+        name: 'Admin',
+        avatarUrl: null,
+        status: 'active',
+        mfaEnabled: false,
+        isPlatformAdmin: false,
+        createdAt: new Date(),
+        lastLoginAt: new Date(),
+        setupCompletedAt: new Date(),
+        passwordChangedAt: new Date(),
+        preferences: {},
+      };
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([user]),
+            }),
+          }),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ settings: { language: 'pt-BR' } }]),
+            }),
+          }),
+        } as any);
+
+      // A client-supplied selector must not influence which partner is read.
+      const res = await app.request('/users/me?partnerId=other-partner', {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ partnerDefaultLocale: 'pt-BR' });
+      expect(vi.mocked(db.select).mock.calls[1]?.[0]).toEqual({
+        settings: { __column: 'partners.settings' },
+      });
+      expect(eq).toHaveBeenCalledWith({ __column: 'partners.id' }, 'partner-123');
+      expect(eq).not.toHaveBeenCalledWith({ __column: 'partners.id' }, 'other-partner');
+    });
+
+    it.each([
+      ['missing partner row', []],
+      ['missing language', [{ settings: {} }]],
+      ['unsupported stored language', [{ settings: { language: 'fr' } }]],
+    ])('normalizes partner default locale to null for %s', async (_case, partnerRows) => {
+      const user = {
+        id: 'user-123',
+        email: 'admin@example.com',
+        name: 'Admin',
+        avatarUrl: null,
+        status: 'active',
+        mfaEnabled: false,
+        isPlatformAdmin: false,
+        createdAt: new Date(),
+        lastLoginAt: new Date(),
+        setupCompletedAt: new Date(),
+        passwordChangedAt: new Date(),
+        preferences: {},
+      };
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([user]),
+            }),
+          }),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue(partnerRows),
+            }),
+          }),
+        } as any);
+
+      const res = await app.request('/users/me', {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ partnerDefaultLocale: null });
+    });
+
+    it('does not query partner settings when the authenticated context has no partner', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'organization',
+          partnerId: null,
+          orgId: 'org-1',
+          user: { id: 'user-123', email: 'admin@example.com' },
+        });
+        return next();
+      });
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'user-123',
+              email: 'admin@example.com',
+              preferences: {},
+            }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/users/me?partnerId=other-partner');
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ partnerDefaultLocale: null });
+      expect(db.select).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns the partner default locale for an org-scoped session via a system DB context', async () => {
+      // Regression test: org-scoped sessions get accessiblePartnerIds = []
+      // (computeAccessiblePartnerIds in middleware/auth.ts), so reading
+      // `partners` under the ambient (org-scoped) request context would be
+      // filtered to zero rows by RLS. The handler must escalate to a system
+      // context via runOutsideDbContext + withSystemDbAccessContext, exactly
+      // like removeMembershipForScope elsewhere in this file.
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'organization',
+          partnerId: 'partner-123',
+          orgId: 'org-1',
+          user: { id: 'user-123', email: 'admin@example.com' },
+        });
+        return next();
+      });
+
+      const user = {
+        id: 'user-123',
+        email: 'admin@example.com',
+        name: 'Admin',
+        avatarUrl: null,
+        status: 'active',
+        mfaEnabled: false,
+        isPlatformAdmin: false,
+        createdAt: new Date(),
+        lastLoginAt: new Date(),
+        setupCompletedAt: new Date(),
+        passwordChangedAt: new Date(),
+        preferences: {},
+      };
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([user]),
+            }),
+          }),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ settings: { language: 'pt-BR' } }]),
+            }),
+          }),
+        } as any);
+
+      const res = await app.request('/users/me', {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ partnerDefaultLocale: 'pt-BR' });
+      expect(eq).toHaveBeenCalledWith({ __column: 'partners.id' }, 'partner-123');
+      expect(runOutsideDbContext).toHaveBeenCalled();
+      expect(withSystemDbAccessContext).toHaveBeenCalled();
+    });
   });
 
   describe('PATCH /users/me validation', () => {
@@ -625,6 +810,61 @@ describe('user routes', () => {
       expect(res.status).toBe(400);
       const body = await res.json();
       expect(body.error).toMatch(message);
+    });
+
+    it('rejects an invalid locale preference', async () => {
+      const res = await app.request('/users/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ preferences: { locale: 'klingon' } })
+      });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toBe('Invalid locale value. Must be en or pt-BR.');
+    });
+
+    it('accepts and merges a valid locale preference', async () => {
+      const existingPreferences = { theme: 'dark' };
+      const mergedPreferences = { ...existingPreferences, locale: 'pt-BR' };
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              email: 'test@example.com',
+              passwordHash: 'hash',
+              preferences: existingPreferences
+            }])
+          })
+        })
+      } as any);
+
+      const setMock = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{
+            id: 'user-123',
+            email: 'test@example.com',
+            name: 'Test User',
+            avatarUrl: null,
+            status: 'active',
+            mfaEnabled: false,
+            preferences: mergedPreferences
+          }])
+        })
+      });
+      vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
+
+      const res = await app.request('/users/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ preferences: { locale: 'pt-BR' } })
+      });
+
+      expect(res.status).toBe(200);
+      expect(setMock).toHaveBeenCalledWith(expect.objectContaining({
+        preferences: mergedPreferences
+      }));
+      const body = await res.json();
+      expect(body.preferences).toMatchObject({ locale: 'pt-BR' });
     });
 
     it('merges partial preference updates instead of clobbering existing keys', async () => {

@@ -1,0 +1,1166 @@
+{
+  "automationEditPage": {
+    "errors": {
+      "fetch": "Failed to fetch automation",
+      "generic": "An error occurred",
+      "save": "Failed to save automation"
+    },
+    "loading": "Loading automation...",
+    "breadcrumb": {
+      "automations": "Automations",
+      "new": "New Automation",
+      "edit": "Edit Automation"
+    },
+    "title": {
+      "create": "Create Automation",
+      "edit": "Edit Automation"
+    },
+    "description": {
+      "create": "Build an automated workflow with triggers, conditions, and actions.",
+      "edit": "Modify the automation configuration."
+    },
+    "actions": {
+      "create": "Create Automation",
+      "saveChanges": "Save Changes"
+    }
+  },
+  "automationForm": {
+    "cron": {
+      "invalid": "Invalid cron expression",
+      "everyHourAtMinuteZero": "Every hour at minute 0",
+      "everyFiveMinutes": "Every 5 minutes",
+      "everyFifteenMinutes": "Every 15 minutes",
+      "everyThirtyMinutes": "Every 30 minutes",
+      "everyDayAtMidnight": "Every day at midnight",
+      "everyDayAtNine": "Every day at 9:00 AM",
+      "weekdaysAtNine": "Weekdays at 9:00 AM",
+      "everySundayAtMidnight": "Every Sunday at midnight",
+      "firstDayEveryMonth": "First day of every month at midnight",
+      "everyMinute": "Every minute",
+      "everyNMinutes": "Every {{count}} minutes",
+      "everyHourAtMinute": "Every hour at minute {{minute}}",
+      "quickPresets": "Quick presets:",
+      "presets": {
+        "everyFifteenMin": "Every 15 min",
+        "everyHour": "Every hour",
+        "dailyNine": "Daily 9 AM",
+        "weekdaysNine": "Weekdays 9 AM",
+        "weeklySunday": "Weekly Sunday"
+      }
+    },
+    "validation": {
+      "valueRequired": "Value is required",
+      "nameRequired": "Automation name is required",
+      "actionRequired": "At least one action is required"
+    },
+    "triggerTypes": {
+      "schedule": {
+        "label": "Schedule",
+        "description": "Run on a cron schedule"
+      },
+      "event": {
+        "label": "Event",
+        "description": "Run when an event occurs"
+      },
+      "webhook": {
+        "label": "Webhook",
+        "description": "Run via HTTP webhook"
+      },
+      "manual": {
+        "label": "Manual",
+        "description": "Run manually only"
+      }
+    },
+    "eventTypes": {
+      "deviceOnline": "Device Online",
+      "deviceOffline": "Device Offline",
+      "alertTriggered": "Alert Triggered",
+      "alertResolved": "Alert Resolved",
+      "scriptCompleted": "Script Completed",
+      "scriptFailed": "Script Failed",
+      "policyViolation": "Policy Violation",
+      "huntressIncidentCreated": "Huntress Incident Created",
+      "huntressIncidentUpdated": "Huntress Incident Updated",
+      "huntressAgentOffline": "Huntress Agent Offline",
+      "sentinelOneThreatDetected": "SentinelOne Threat Detected",
+      "sentinelOneDeviceIsolated": "SentinelOne Device Isolated",
+      "sentinelOneThreatActionCompleted": "SentinelOne Threat Action Completed"
+    },
+    "conditionTypes": {
+      "group": "Group",
+      "operatingSystem": "Operating System",
+      "tag": "Tag"
+    },
+    "operators": {
+      "is": "Is",
+      "isNot": "Is not",
+      "contains": "Contains",
+      "doesNotContain": "Does not contain"
+    },
+    "actionTypes": {
+      "runScript": "Run Script",
+      "sendNotification": "Send Notification",
+      "createAlert": "Create Alert",
+      "executeCommand": "Execute Command",
+      "deploySoftware": "Deploy Software"
+    },
+    "severity": {
+      "critical": "Critical",
+      "high": "High",
+      "medium": "Medium",
+      "low": "Low",
+      "info": "Info"
+    },
+    "failure": {
+      "stop": {
+        "label": "Stop Execution",
+        "description": "Stop all remaining actions"
+      },
+      "continue": {
+        "label": "Continue",
+        "description": "Continue with remaining actions"
+      },
+      "notify": {
+        "label": "Notify & Continue",
+        "description": "Send notification and continue"
+      }
+    },
+    "actions": {
+      "saveAutomation": "Save automation",
+      "copyUrl": "Copy URL",
+      "addCondition": "Add Condition",
+      "addAction": "Add Action"
+    },
+    "scope": {
+      "title": "Scope",
+      "allOrganizations": "All organizations",
+      "partnerWide": "(partner-wide automation)",
+      "organizationOnly": "This organization only"
+    },
+    "fields": {
+      "name": "Automation name",
+      "cronExpression": "Cron Expression",
+      "eventType": "Event Type",
+      "webhookUrl": "Webhook URL",
+      "webhookSecret": "Webhook Secret (optional)",
+      "mode": "Mode",
+      "script": "Script",
+      "notificationChannel": "Notification Channel",
+      "severity": "Severity",
+      "message": "Message",
+      "command": "Command",
+      "software": "Software",
+      "failureNotificationChannel": "Failure Notification Channel"
+    },
+    "placeholders": {
+      "name": "Daily maintenance check",
+      "description": "Describe what this automation does...",
+      "webhookSecret": "Leave blank to auto-generate",
+      "value": "Value",
+      "selectScript": "Select a script...",
+      "selectChannel": "Select a channel...",
+      "alertMessage": "Alert Message",
+      "selectSoftware": "Select software..."
+    },
+    "sections": {
+      "trigger": "Trigger",
+      "deviceTargeting": "Device Targeting (Optional)",
+      "deviceTargetingDescription": "Filter which devices this automation applies to",
+      "actions": "Actions",
+      "actionsDescription": "Define what happens when this automation runs",
+      "onFailure": "On Failure Behavior"
+    },
+    "webhook": {
+      "generatedAfterSaving": "A webhook URL will be generated after saving.",
+      "postHint": "Send a POST request to this URL to trigger the automation"
+    },
+    "manual": {
+      "hint": "This automation will only run when triggered manually from the UI or API."
+    },
+    "modes": {
+      "simple": "Simple",
+      "advanced": "Advanced"
+    },
+    "software": {
+      "installLatestHint": "Installs the latest version of the selected software; skips devices that already have it."
+    },
+    "empty": {
+      "noActions": "No actions defined. Click \"Add Action\" to create one."
+    }
+  },
+  "automationList": {
+    "relativeTime": {
+      "justNow": "Just now",
+      "minutesAgo": "{{count}}m ago",
+      "hoursAgo": "{{count}}h ago",
+      "daysAgo": "{{count}}d ago"
+    },
+    "title": "Automations",
+    "summary": "{{shown}} of {{total}} automations",
+    "searchPlaceholder": "Search automations...",
+    "filters": {
+      "allTriggers": "All Triggers",
+      "allStatus": "All Status"
+    },
+    "trigger": {
+      "schedule": "Schedule",
+      "event": "Event",
+      "webhook": "Webhook",
+      "manual": "Manual"
+    },
+    "headers": {
+      "trigger": "Trigger",
+      "lastRun": "Last Run"
+    },
+    "empty": "No automations found. Try adjusting your search or filters.",
+    "partnerWideTitle": "Partner-wide automation — applies to every organization",
+    "allOrgs": "All orgs",
+    "never": "Never",
+    "actions": {
+      "viewHistory": "View history",
+      "runNow": "Run now",
+      "runHistory": "Run History"
+    },
+    "pagination": {
+      "showing": "Showing {{start}} to {{end}} of {{total}}",
+      "page": "Page {{page}} of {{total}}"
+    },
+    "status": {
+      "idle": "Idle",
+      "running": "Running",
+      "success": "Success",
+      "failed": "Failed",
+      "partial": "Partial"
+    }
+  },
+  "automationRunHistory": {
+    "relativeTime": {
+      "justNow": "Just now",
+      "minutesAgo": "{{count}}m ago",
+      "hoursAgo": "{{count}}h ago",
+      "daysAgo": "{{count}}d ago"
+    },
+    "deviceCount": "{{count}} devices",
+    "resultCount": {
+      "passed": "{{count}} passed",
+      "failed": "{{count}} failed",
+      "skipped": "{{count}} skipped"
+    },
+    "duration": "Duration: {{duration}}",
+    "progress": {
+      "finished": "{{finished}} of {{total}} devices finished"
+    },
+    "deviceResults": {
+      "title": "Device Results",
+      "loading": "Loading device results…",
+      "error": "Couldn't load device results. Try reopening the run.",
+      "empty": "No per-device results recorded for this run."
+    },
+    "actions": {
+      "hideLogs": "Hide Logs",
+      "viewLogs": "View Logs"
+    },
+    "timestamps": {
+      "started": "Started: {{date}}",
+      "completed": "Completed: {{date}}"
+    },
+    "title": "Run History",
+    "summary": "{{shown}} of {{total}} runs",
+    "filters": {
+      "allStatus": "All Status"
+    },
+    "status": {
+      "success": "Success",
+      "failed": "Failed",
+      "partial": "Partial",
+      "running": "Running",
+      "pending": "Pending",
+      "skipped": "Skipped"
+    },
+    "empty": "No run history available.",
+    "triggeredBy": {
+      "scheduled": "Scheduled",
+      "event": "Event Triggered",
+      "webhook": "Webhook",
+      "manual": "Manual",
+      "api": "API Call"
+    }
+  },
+  "automationsPage": {
+    "fallback": {
+      "untitled": "Untitled Automation"
+    },
+    "errors": {
+      "fetch": "Failed to fetch automations",
+      "generic": "An error occurred",
+      "run": "Failed to run automation",
+      "enable": "Failed to enable automation",
+      "disable": "Failed to disable automation",
+      "delete": "Failed to delete automation"
+    },
+    "loading": "Loading automations...",
+    "title": "Automations",
+    "description": "Create and manage automated workflows.",
+    "actions": {
+      "new": "New Automation",
+      "deleting": "Deleting..."
+    },
+    "deleteDialog": {
+      "title": "Delete Automation",
+      "confirmPrefix": "Are you sure you want to delete",
+      "confirmSuffix": "This action cannot be undone."
+    }
+  },
+  "complianceDashboard": {
+    "relativeTime": {
+      "justNow": "Just now",
+      "minutesAgo": "{{count}}m ago",
+      "hoursAgo": "{{count}}h ago",
+      "daysAgo": "{{count}}d ago"
+    },
+    "noData": "No data",
+    "status": {
+      "compliant": "Compliant",
+      "nonCompliant": "Non-Compliant",
+      "unknown": "Unknown"
+    },
+    "trend": {
+      "notEnoughData": "Not enough data for trend",
+      "noChange": "No change",
+      "vsLastPeriod": "vs last period"
+    },
+    "overview": {
+      "overall": "Overall Compliance",
+      "deviceRatio": "{{compliant}} of {{total}} devices",
+      "passingAllPolicies": "devices passing all policies",
+      "withViolations": "devices with violations",
+      "pendingEvaluation": "devices pending evaluation"
+    },
+    "sections": {
+      "byStatus": "Compliance by Status",
+      "trend": "Compliance Trend",
+      "policyBreakdown": "Policy Breakdown",
+      "nonCompliantDevices": "Non-Compliant Devices"
+    },
+    "legend": {
+      "compliant": "Compliant ({{count}})",
+      "nonCompliant": "Non-Compliant ({{count}})",
+      "unknown": "Unknown ({{count}})"
+    },
+    "empty": {
+      "noPolicies": "No policies configured",
+      "allCompliant": "All devices are compliant!",
+      "noMatchingDevices": "No matching devices found."
+    },
+    "policyComplianceRatio": "{{compliant}} / {{total}} compliant",
+    "searchDevices": "Search devices...",
+    "violationCount": "{{count}} violation",
+    "moreViolations": "+{{count}} more violations",
+    "lastChecked": "Last checked: {{date}}",
+    "pagination": {
+      "showing": "Showing {{start}} to {{end}} of {{total}}",
+      "page": "Page {{page}} of {{total}}"
+    }
+  },
+  "compliancePage": {
+    "errors": {
+      "fetch": "Failed to fetch compliance data",
+      "generic": "An error occurred"
+    },
+    "loading": "Loading compliance data...",
+    "policyTitle": "Compliance: {{policy}}",
+    "policyFallback": "Policy",
+    "title": "Compliance Dashboard",
+    "description": {
+      "policy": "View compliance status for this policy.",
+      "overview": "Overview of policy compliance across all devices."
+    }
+  },
+  "policiesPage": {
+    "errors": {
+      "fetch": "Failed to fetch policies",
+      "generic": "An error occurred",
+      "enable": "Failed to enable policy",
+      "disable": "Failed to disable policy",
+      "delete": "Failed to delete policy"
+    },
+    "loading": "Loading policies...",
+    "title": "Policies",
+    "description": "Define and enforce compliance policies across your devices.",
+    "actions": {
+      "complianceDashboard": "Compliance Dashboard",
+      "new": "New Policy",
+      "deleting": "Deleting..."
+    },
+    "stats": {
+      "activePolicies": "Active Policies",
+      "overallCompliance": "Overall Compliance",
+      "devicesMonitored": "Devices Monitored"
+    },
+    "deleteDialog": {
+      "title": "Delete Policy",
+      "confirmPrefix": "Are you sure you want to delete",
+      "confirmSuffix": "This action cannot be undone."
+    }
+  },
+  "policyEditPage": {
+    "errors": {
+      "fetch": "Failed to fetch policy",
+      "generic": "An error occurred",
+      "save": "Failed to save policy"
+    },
+    "loading": "Loading policy...",
+    "breadcrumb": {
+      "policies": "Policies",
+      "new": "New Policy",
+      "edit": "Edit Policy"
+    },
+    "title": {
+      "create": "Create Policy",
+      "edit": "Edit Policy"
+    },
+    "description": {
+      "create": "Define compliance rules and enforcement behavior.",
+      "edit": "Modify the policy configuration."
+    },
+    "actions": {
+      "create": "Create Policy",
+      "saveChanges": "Save Changes"
+    }
+  },
+  "policyForm": {
+    "validation": {
+      "softwareNameRequired": "Software name is required",
+      "versionRequired": "Version is required for exact/minimum/maximum operators",
+      "diskSpacePositive": "Minimum free space must be greater than 0",
+      "registryPathRequired": "Registry path is required",
+      "registryValueRequired": "Registry value name is required",
+      "configPathRequired": "Config file path is required",
+      "configKeyRequired": "Config key is required",
+      "nameRequired": "Policy name is required",
+      "ruleRequired": "At least one rule is required",
+      "minimumInterval": "Minimum interval is 5 minutes",
+      "maximumInterval": "Maximum interval is 24 hours"
+    },
+    "enforcement": {
+      "monitor": {
+        "label": "Monitor",
+        "description": "Track compliance status without taking action. Ideal for initial policy rollout."
+      },
+      "warn": {
+        "label": "Warn",
+        "description": "Generate alerts when violations are detected. Notifies admins but does not auto-remediate."
+      },
+      "enforce": {
+        "label": "Enforce",
+        "description": "Automatically run remediation scripts when violations are detected. Use with caution."
+      }
+    },
+    "ruleTypes": {
+      "requiredSoftware": "Required Software",
+      "prohibitedSoftware": "Prohibited Software",
+      "minimumDiskSpace": "Minimum Disk Space",
+      "osVersion": "OS Version Requirement",
+      "registryCheck": "Registry Check (Windows)",
+      "configFileCheck": "Config File Check"
+    },
+    "targetTypes": {
+      "allDevices": "All Devices",
+      "specificSites": "Specific Sites",
+      "specificGroups": "Specific Groups",
+      "specificTags": "Specific Tags"
+    },
+    "versionOperators": {
+      "any": "Any version",
+      "exact": "Exact version",
+      "minimum": "Minimum version",
+      "maximum": "Maximum version"
+    },
+    "osTypes": {
+      "any": "Any OS",
+      "windows": "Windows",
+      "macos": "macOS",
+      "linux": "Linux"
+    },
+    "actions": {
+      "savePolicy": "Save policy",
+      "addRule": "Add Rule"
+    },
+    "fields": {
+      "name": "Policy name",
+      "targetType": "Target Type",
+      "softwareName": "Software Name",
+      "versionCheck": "Version Check",
+      "version": "Version",
+      "minimumFreeSpace": "Minimum Free Space (GB)",
+      "diskPath": "Disk/Path (optional)",
+      "operatingSystem": "Operating System",
+      "minimumVersion": "Minimum Version",
+      "registryPath": "Registry Path",
+      "valueName": "Value Name",
+      "expectedValue": "Expected Value",
+      "configFilePath": "Config File Path",
+      "configKey": "Config Key",
+      "remediationScript": "Remediation Script",
+      "evaluateEvery": "Evaluate Every"
+    },
+    "placeholders": {
+      "name": "Security baseline policy",
+      "description": "Describe what this policy enforces...",
+      "softwareNameRequired": "e.g., Google Chrome",
+      "version": "Version",
+      "softwareNameProhibited": "e.g., BitTorrent",
+      "diskPath": "C: or /home",
+      "minimumVersion": "e.g., 10.0 or 22.04",
+      "registryPath": "HKLM\\SOFTWARE\\Policies\\...",
+      "remediationScript": "Select a remediation script..."
+    },
+    "sections": {
+      "targetDevices": "Target Devices",
+      "targetDevicesDescription": "Select which devices this policy applies to",
+      "rules": "Policy Rules",
+      "rulesDescription": "Define what this policy checks",
+      "enforcement": "Enforcement Level",
+      "enforcementDescription": "Choose how violations should be handled",
+      "checkInterval": "Check Interval"
+    },
+    "selectTargets": "Select {{target}}",
+    "targetLabels": {
+      "sites": "Sites",
+      "groups": "Groups",
+      "tags": "Tags",
+      "sitesLower": "sites",
+      "groupsLower": "groups",
+      "tagsLower": "tags"
+    },
+    "empty": {
+      "noTargets": "No {{target}} available.",
+      "noRules": "No rules defined. Click \"Add Rule\" to create one."
+    },
+    "hints": {
+      "prohibitedSoftware": "Violation if this software is found installed",
+      "checkInterval": "How often devices should be checked for compliance"
+    },
+    "remediation": {
+      "title": "Automatic Remediation",
+      "description": "When enforcement is enabled, a remediation script will run automatically on non-compliant devices."
+    }
+  },
+  "policyList": {
+    "relativeTime": {
+      "justNow": "Just now",
+      "minutesAgo": "{{count}}m ago",
+      "hoursAgo": "{{count}}h ago",
+      "daysAgo": "{{count}}d ago"
+    },
+    "notAvailable": "N/A",
+    "title": "Policies",
+    "summary": "{{shown}} of {{total}} policies",
+    "searchPlaceholder": "Search policies...",
+    "filters": {
+      "allEnforcement": "All Enforcement",
+      "allStatus": "All Status"
+    },
+    "enforcement": {
+      "monitor": {
+        "label": "Monitor"
+      },
+      "warn": {
+        "label": "Warn"
+      },
+      "enforce": {
+        "label": "Enforce"
+      }
+    },
+    "headers": {
+      "enforcement": "Enforcement",
+      "compliance": "Compliance",
+      "lastEvaluated": "Last Evaluated"
+    },
+    "empty": "No policies found. Try adjusting your search or filters.",
+    "partnerWideTitle": "Partner-wide policy — evaluates devices in every organization",
+    "allOrgs": "All orgs",
+    "ruleCount": "{{count}} rule",
+    "moreTargets": " +{{count}} more",
+    "actions": {
+      "viewDetails": "View details",
+      "viewCompliance": "View compliance"
+    },
+    "never": "Never",
+    "pagination": {
+      "showing": "Showing {{start}} to {{end}} of {{total}}",
+      "page": "Page {{page}} of {{total}}"
+    }
+  },
+  "executionDetails": {
+    "output": {
+      "emptyMarker": "(empty)",
+      "noOutput": "No output",
+      "title": "Output",
+      "stdout": "Standard Output (stdout)",
+      "stderr": "Standard Error (stderr)"
+    },
+    "actions": {
+      "copyToClipboard": "Copy to clipboard"
+    },
+    "title": "Execution Details",
+    "statusDescription": {
+      "running": "Script is currently executing...",
+      "completed": "Script completed successfully",
+      "failed": "Script execution failed",
+      "timeout": "Script execution timed out",
+      "pending": "Script is waiting to be executed"
+    },
+    "fields": {
+      "startedAt": "Started At",
+      "duration": "Duration",
+      "exitCode": "Exit Code",
+      "completedAt": "Completed At"
+    },
+    "status": {
+      "running": "Running...",
+      "pending": "Pending",
+      "completed": "Completed",
+      "failed": "Failed",
+      "timeout": "Timeout"
+    }
+  },
+  "executionHistory": {
+    "relativeTime": {
+      "yesterday": "Yesterday {{time}}"
+    },
+    "searchPlaceholder": "Search...",
+    "filters": {
+      "allStatus": "All Status",
+      "allTime": "All Time",
+      "lastHour": "Last Hour",
+      "lastDay": "Last 24 Hours",
+      "lastWeek": "Last 7 Days",
+      "lastMonth": "Last 30 Days"
+    },
+    "status": {
+      "pending": "Pending",
+      "running": "Running...",
+      "completed": "Completed",
+      "failed": "Failed",
+      "timeout": "Timeout"
+    },
+    "summary": "{{shown}} of {{total}}",
+    "headers": {
+      "script": "Script",
+      "started": "Started",
+      "duration": "Duration",
+      "exitCode": "Exit Code"
+    },
+    "empty": "No executions found. Try adjusting your filters.",
+    "actions": {
+      "viewDetails": "View details"
+    },
+    "pagination": {
+      "showing": "Showing {{start}} to {{end}} of {{total}}",
+      "page": "Page {{page}} of {{total}}"
+    }
+  },
+  "scriptAiInput": {
+    "placeholder": {
+      "ready": "Describe the script you need...",
+      "opening": "Opening AI assistant..."
+    },
+    "actions": {
+      "stopGenerating": "Stop generating",
+      "sendMessage": "Send message"
+    }
+  },
+  "scriptAiMessages": {
+    "tool": {
+      "applyFailed": "Could not apply to editor",
+      "applied": "Applied to editor",
+      "call": "Tool call"
+    },
+    "approval": {
+      "title": "Approval Required",
+      "approve": "Approve",
+      "reject": "Reject"
+    },
+    "empty": {
+      "title": "Script AI Assistant",
+      "description": "Describe what you need and I'll write the script for you."
+    }
+  },
+  "scriptAiPanel": {
+    "title": "AI Script Assistant",
+    "actions": {
+      "redoTitle": "Re-apply AI change",
+      "redo": "Redo",
+      "revertTitle": "Revert last AI change",
+      "revert": "Revert",
+      "dismiss": "Dismiss"
+    }
+  },
+  "scriptCategoryTree": {
+    "errors": {
+      "fetch": "Failed to fetch scripts",
+      "generic": "An error occurred",
+      "rename": "Failed to rename category"
+    },
+    "allScripts": "All Scripts",
+    "selectedCategory": "Selected Category",
+    "loading": "Loading categories...",
+    "title": "Script Categories",
+    "description": "Organize scripts into nested folders.",
+    "actions": {
+      "newCategory": "New Category",
+      "rename": "Rename",
+      "addSubcategory": "Add Subcategory"
+    },
+    "empty": {
+      "categories": "No categories found. Create one to get started.",
+      "scripts": "No scripts found."
+    },
+    "highlightDescription": "Scripts tagged under {{category}} and its subcategories",
+    "selectDescription": "Select a category to highlight its scripts.",
+    "idLabel": "ID: {{id}}",
+    "renameDialog": {
+      "title": "Rename Category",
+      "description": "Update the category title."
+    },
+    "newDialog": {
+      "title": "New Category",
+      "subcategoryTitle": "Add Subcategory",
+      "description": "Create a new top-level category.",
+      "subcategoryDescription": "Name the new subcategory."
+    },
+    "deleteDialog": {
+      "title": "Delete Category",
+      "description": "This will remove the category and its subcategories. Scripts will remain but become uncategorized."
+    },
+    "status": {
+      "active": "Active",
+      "draft": "Draft",
+      "archived": "Archived"
+    }
+  },
+  "scriptEditPage": {
+    "errors": {
+      "fetch": "Failed to fetch script",
+      "generic": "An error occurred",
+      "save": "Failed to save script"
+    },
+    "toast": {
+      "created": "Script created",
+      "saved": "Script saved"
+    },
+    "loading": "Loading script...",
+    "actions": {
+      "backToScripts": "Back to Scripts",
+      "executionHistory": "Execution History",
+      "create": "Create Script",
+      "saveChanges": "Save Changes"
+    },
+    "breadcrumb": {
+      "scripts": "Scripts",
+      "new": "New Script",
+      "edit": "Edit Script"
+    },
+    "title": {
+      "new": "New Script",
+      "edit": "Edit Script"
+    }
+  },
+  "scriptExecutionModal": {
+    "errors": {
+      "selectDevice": "Please select at least one device",
+      "executionFailed": "Execution failed"
+    },
+    "title": "Execute Script",
+    "fields": {
+      "language": "Language",
+      "category": "Category",
+      "targetOs": "Target OS",
+      "runAs": "Run As"
+    },
+    "runAs": {
+      "system": "System",
+      "user": "Logged-in user",
+      "systemDescription": "Runs in the agent service context.",
+      "userDescription": "Runs in the currently logged-in user context when a user helper is connected."
+    },
+    "sections": {
+      "selectDevices": "Select Devices"
+    },
+    "actions": {
+      "selectAllOnline": "Select all online",
+      "clear": "Clear ({{count}})",
+      "advancedFilters": "Advanced Filters",
+      "executing": "Executing...",
+      "started": "Started!",
+      "confirmExecute": "Confirm Execute",
+      "execute": "Execute"
+    },
+    "searchPlaceholder": "Search by hostname...",
+    "filters": {
+      "allSites": "All Sites",
+      "allStatus": "All Status"
+    },
+    "status": {
+      "maintenance": "Maintenance"
+    },
+    "matchCount": "{{count}} match",
+    "empty": {
+      "noCompatibleDevices": "No compatible devices found. This script requires {{os}}."
+    },
+    "orSeparator": " or ",
+    "progress": {
+      "submitting": "Submitting to {{count}} devices...",
+      "submitted": "Submitted to {{count}} devices"
+    },
+    "confirm": {
+      "title": "Confirm Execution",
+      "description": "Run “{{name}}” on {{count}} device(s) as {{runAs}}. Scripts are queued and begin executing immediately."
+    },
+    "selectedCount": "{{count}} device(s) selected",
+    "languages": {
+      "powershell": "PowerShell",
+      "bash": "Bash",
+      "python": "Python",
+      "cmd": "CMD"
+    },
+    "os": {
+      "windows": "Windows",
+      "macos": "macOS",
+      "linux": "Linux"
+    }
+  },
+  "scriptExecutionsPage": {
+    "errors": {
+      "fetchScript": "Failed to fetch script",
+      "generic": "An error occurred",
+      "fetchExecutions": "Failed to fetch executions",
+      "execute": "Failed to execute script"
+    },
+    "loading": "Loading executions...",
+    "actions": {
+      "backToScripts": "Back to Scripts",
+      "runScript": "Run Script"
+    },
+    "breadcrumb": {
+      "scripts": "Scripts",
+      "script": "Script",
+      "executions": "Executions"
+    },
+    "title": "Execution History",
+    "fields": {
+      "language": "Language",
+      "category": "Category",
+      "targetOs": "Target OS"
+    },
+    "languages": {
+      "powershell": "PowerShell",
+      "bash": "Bash",
+      "python": "Python",
+      "cmd": "CMD"
+    },
+    "os": {
+      "windows": "Windows",
+      "macos": "macOS",
+      "linux": "Linux"
+    },
+    "status": {
+      "active": "Active",
+      "draft": "Draft",
+      "archived": "Archived"
+    }
+  },
+  "scriptForm": {
+    "editor": {
+      "loadError": "Failed to load the code editor. Try refreshing the page.",
+      "refreshPage": "Refresh page",
+      "loading": "Loading editor..."
+    },
+    "unsavedConfirm": "You have unsaved changes. Leave this page?",
+    "actions": {
+      "saveScript": "Save script",
+      "removeParameter": "Remove parameter",
+      "addParameter": "Add parameter",
+      "removeMapping": "Remove mapping",
+      "addExitCode": "Add exit code"
+    },
+    "availability": {
+      "title": "Available to",
+      "description": "Change which organizations can see and run this script. “All my organizations” makes it partner-wide.",
+      "partner": "All my organizations",
+      "organization": "A specific organization",
+      "selectOrganization": "Select an organization"
+    },
+    "fields": {
+      "name": "Script name",
+      "category": "Category",
+      "language": "Language",
+      "targetOs": "Target OS",
+      "defaultValue": "Default Value",
+      "options": "Options",
+      "timeoutSeconds": "Timeout (seconds)",
+      "runAs": "Run As",
+      "exitCode": "Exit code",
+      "severity": "Severity"
+    },
+    "placeholders": {
+      "name": "Clear Temp Files",
+      "description": "Describe what this script does...",
+      "parameterName": "paramName",
+      "defaultValue": "Default",
+      "options": "option1, option2, option3",
+      "exitCode": "e.g. 1"
+    },
+    "sections": {
+      "content": "Script Content",
+      "parameters": "Parameters",
+      "executionSettings": "Execution Settings",
+      "exitCodeSeverity": "Exit Code Severity"
+    },
+    "ai": {
+      "toggleTitle": "Toggle AI Script Assistant (⌘⇧I)",
+      "button": "AI Assistant"
+    },
+    "parameters": {
+      "emptyPrefix": "No parameters yet. Parameters let users supply values at runtime — reference them in your script as",
+      "emptyMiddle": "(PowerShell/Bash) or",
+      "emptySuffix": "(Python)."
+    },
+    "execution": {
+      "timeoutHint": "Script is killed after this duration. Default 300s (5 min) is suitable for most tasks.",
+      "elevatedHint": "Uses sudo on macOS/Linux, runas on Windows."
+    },
+    "exitCodeSeverity": {
+      "emptyPrefix": "Map specific exit codes to alert severities. When the script returns one of these codes, an alert is raised at the configured severity. Choose",
+      "suppressAlert": "Suppress alert",
+      "emptySuffix": "to mark a code as informational (no incident raised). Exit codes you don't list here use the default outcome handling.",
+      "suppressHint": "Suppress alert — exit code is treated as informational, no incident raised."
+    },
+    "keyboardSave": "{{shortcut}} to save",
+    "languages": {
+      "powershell": "PowerShell",
+      "bash": "Bash",
+      "python": "Python",
+      "cmd": "CMD (Batch)"
+    },
+    "runAs": {
+      "system": {
+        "label": "System",
+        "description": "Run as the system/root account"
+      },
+      "user": {
+        "label": "Current User",
+        "description": "Run as the logged-in user"
+      },
+      "elevated": {
+        "label": "Elevated",
+        "description": "Run with administrator privileges"
+      }
+    },
+    "parameterTypes": {
+      "string": "Text",
+      "number": "Number",
+      "boolean": "Boolean",
+      "select": "Select"
+    },
+    "severity": {
+      "critical": "Critical",
+      "high": "High",
+      "medium": "Medium",
+      "low": "Low",
+      "info": "Info",
+      "__suppress__": "Suppress alert"
+    },
+    "os": {
+      "windows": "Windows",
+      "macos": "macOS",
+      "linux": "Linux"
+    }
+  },
+  "scriptList": {
+    "never": "Never",
+    "relativeTime": {
+      "justNow": "Just now",
+      "minutesAgo": "{{count}}m ago",
+      "hoursAgo": "{{count}}h ago",
+      "daysAgo": "{{count}}d ago"
+    },
+    "searchPlaceholder": "Search scripts...",
+    "filters": {
+      "allCategories": "All Categories",
+      "allLanguages": "All Languages",
+      "allOs": "All OS"
+    },
+    "languages": {
+      "powershell": "PowerShell",
+      "bash": "Bash",
+      "python": "Python",
+      "cmd": "CMD"
+    },
+    "os": {
+      "windows": "Windows",
+      "macos": "macOS",
+      "linux": "Linux"
+    },
+    "summary": "{{shown}} of {{total}}",
+    "headers": {
+      "language": "Language",
+      "category": "Category",
+      "os": "OS",
+      "lastRun": "Last Run"
+    },
+    "empty": "No scripts found. Try adjusting your search or filters.",
+    "actions": {
+      "runTitle": "Run script",
+      "editTitle": "Edit script",
+      "deleteTitle": "Delete script"
+    },
+    "pagination": {
+      "showing": "Showing {{start}} to {{end}} of {{total}}",
+      "page": "Page {{page}} of {{total}}"
+    },
+    "status": {
+      "active": "Active",
+      "draft": "Draft",
+      "archived": "Archived"
+    }
+  },
+  "scriptParametersForm": {
+    "validation": {
+      "required": "Parameter \"{{name}}\" is required",
+      "number": "Parameter \"{{name}}\" must be a valid number"
+    },
+    "title": "Parameters",
+    "selectPlaceholder": "Select..."
+  },
+  "scriptTagManager": {
+    "errors": {
+      "fetch": "Failed to fetch scripts",
+      "generic": "An error occurred",
+      "add": "Failed to add tag",
+      "delete": "Failed to delete tag",
+      "assign": "Failed to assign tags"
+    },
+    "loading": "Loading tags...",
+    "title": "Script Tags",
+    "summary": "{{tagCount}} tags across {{scriptCount}} scripts",
+    "description": "Manage reusable labels",
+    "sections": {
+      "allTags": "All Tags",
+      "addNew": "Add New Tag",
+      "bulkAssign": "Bulk Assign Tags"
+    },
+    "empty": {
+      "tags": "No tags found. Create one below.",
+      "scripts": "No scripts found."
+    },
+    "usedOn": "Used on {{count}} scripts",
+    "actions": {
+      "deleteTag": "Delete tag",
+      "applyTags": "Apply tags to selected scripts"
+    },
+    "placeholders": {
+      "tagName": "Tag name"
+    },
+    "bulkDescription": "Select scripts, then choose tags to apply.",
+    "deleteDialog": {
+      "title": "Delete Tag",
+      "confirmPrefix": "Delete the",
+      "confirmSuffix": "tag? This will remove it from all scripts."
+    }
+  },
+  "scriptTemplateGallery": {
+    "errors": {
+      "fetch": "Failed to fetch templates",
+      "load": "Failed to load templates"
+    },
+    "title": "Template Gallery",
+    "description": "Browse reusable script templates.",
+    "searchPlaceholder": "Search templates",
+    "languages": {
+      "powershell": "PowerShell",
+      "bash": "Bash",
+      "python": "Python",
+      "cmd": "CMD"
+    },
+    "empty": "No templates found matching your criteria.",
+    "downloadCount": "{{count}} downloads",
+    "actions": {
+      "useTemplate": "Use Template"
+    }
+  },
+  "scriptVersionHistory": {
+    "errors": {
+      "fetch": "Failed to fetch script versions",
+      "generic": "An error occurred",
+      "rollback": "Failed to rollback script",
+      "rollbackFailed": "Rollback failed"
+    },
+    "currentVersion": "Current version",
+    "loading": "Loading version history...",
+    "title": "Version History",
+    "description": "Track script revisions and compare changes.",
+    "activeVersion": "Active version:",
+    "empty": "No version history available.",
+    "actions": {
+      "rollback": "Rollback",
+      "rollingBack": "Rolling back...",
+      "confirmRollback": "Confirm Rollback"
+    },
+    "compare": {
+      "title": "Compare Versions",
+      "onlyOne": "Only one version available. Make changes to see diffs.",
+      "selectTwo": "Select two versions to view a diff."
+    },
+    "rollbackDialog": {
+      "title": "Rollback Script",
+      "confirmPrefix": "Roll back to version",
+      "confirmSuffix": "This will make it the active revision."
+    }
+  },
+  "scriptsPage": {
+    "errors": {
+      "fetch": "Failed to fetch scripts",
+      "generic": "An error occurred",
+      "execute": "Failed to execute script",
+      "delete": "Failed to delete script",
+      "deleteTryAgain": "Failed to delete script. Please try again.",
+      "alreadyInLibrary": "\"{{name}}\" is already in your library",
+      "import": "Failed to import script"
+    },
+    "toast": {
+      "deleting": "Deleting \"{{name}}\"...",
+      "deleteCancelled": "Script deletion cancelled",
+      "deleted": "\"{{name}}\" deleted"
+    },
+    "loading": "Loading scripts...",
+    "title": "Script Library",
+    "description": "Manage and execute scripts across your devices.",
+    "actions": {
+      "importFromLibrary": "Import from Library",
+      "newScript": "New Script",
+      "createScript": "Create script",
+      "deleting": "Deleting..."
+    },
+    "empty": {
+      "title": "No scripts yet",
+      "description": "Create your first script to automate tasks across your fleet."
+    },
+    "deleteDialog": {
+      "title": "Delete Script",
+      "confirmPrefix": "Are you sure you want to delete",
+      "confirmSuffix": "This action cannot be undone."
+    },
+    "library": {
+      "title": "System Script Library",
+      "description": "Import scripts into your organization",
+      "searchPlaceholder": "Search system scripts...",
+      "empty": "No system scripts available",
+      "noMatches": "No scripts match your search",
+      "imported": "Imported",
+      "import": "Import",
+      "availableCount": "{{count}} script(s) available"
+    }
+  }
+}

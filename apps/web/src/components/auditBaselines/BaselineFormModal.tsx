@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 import { X, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { extractApiError } from '@/lib/apiError';
@@ -26,18 +28,19 @@ type Props = {
 };
 
 const OS_OPTIONS = [
-  { value: 'windows', label: 'Windows' },
-  { value: 'macos', label: 'macOS' },
-  { value: 'linux', label: 'Linux' },
+  { value: 'windows', labelKey: 'windows' },
+  { value: 'macos', labelKey: 'macos' },
+  { value: 'linux', labelKey: 'linux' },
 ] as const;
 
 const PROFILE_OPTIONS = [
-  { value: 'cis_l1', label: 'CIS Level 1' },
-  { value: 'cis_l2', label: 'CIS Level 2' },
-  { value: 'custom', label: 'Custom' },
+  { value: 'cis_l1', labelKey: 'cisL1' },
+  { value: 'cis_l2', labelKey: 'cisL2' },
+  { value: 'custom', labelKey: 'custom' },
 ] as const;
 
 export default function BaselineFormModal({ baseline, onClose, onSaved }: Props) {
+  const { t } = useTranslation('security');
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
   const [name, setName] = useState(baseline?.name ?? '');
   const [osType, setOsType] = useState<Baseline['osType']>(baseline?.osType ?? 'windows');
@@ -58,14 +61,14 @@ export default function BaselineFormModal({ baseline, onClose, onSaved }: Props)
       try {
         settings = JSON.parse(settingsJson);
       } catch {
-        setError('Invalid JSON in settings');
+        setError(t('auditBaselinesBaselineFormModal.messages.invalidJson'));
         return;
       }
     } else if (settingsJson.trim()) {
       try {
         settings = JSON.parse(settingsJson);
       } catch {
-        setError('Invalid JSON in settings');
+        setError(t('auditBaselinesBaselineFormModal.messages.invalidJson'));
         return;
       }
     }
@@ -89,22 +92,29 @@ export default function BaselineFormModal({ baseline, onClose, onSaved }: Props)
 
       if (!response.ok) {
         const data = await response.json().catch(() => null);
-        throw new Error(extractApiError(data, 'Failed to save baseline'));
+        throw new Error(extractApiError(data, t('auditBaselinesBaselineFormModal.messages.saveFailed')));
       }
 
       onSaved();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('auditBaselinesBaselineFormModal.messages.genericError'));
     } finally {
       setSubmitting(false);
     }
   };
 
   return (
-    <Dialog open={true} onClose={onClose} title={baseline ? 'Edit Baseline' : 'New Baseline'} className="max-h-[90vh] overflow-y-auto p-6">
+    <Dialog
+      open={true}
+      onClose={onClose}
+      title={baseline ? t('auditBaselinesBaselineFormModal.title.edit') : t('auditBaselinesBaselineFormModal.title.new')}
+      className="max-h-[90vh] overflow-y-auto p-6"
+    >
         <div className="flex items-start justify-between gap-4">
           <h2 className="text-lg font-semibold">
-            {baseline ? 'Edit Baseline' : 'New Baseline'}
+            {baseline
+              ? t('auditBaselinesBaselineFormModal.title.edit')
+              : t('auditBaselinesBaselineFormModal.title.new')}
           </h2>
           <button
             type="button"
@@ -118,7 +128,7 @@ export default function BaselineFormModal({ baseline, onClose, onSaved }: Props)
         <form onSubmit={handleSubmit} className="mt-4 space-y-4">
           <div>
             <label className="text-sm font-medium" htmlFor="bl-name">
-              Name
+              {t('auditBaselinesBaselineFormModal.fields.name')}
             </label>
             <input
               id="bl-name"
@@ -128,14 +138,14 @@ export default function BaselineFormModal({ baseline, onClose, onSaved }: Props)
               value={name}
               onChange={(e) => setName(e.target.value)}
               className="mt-1 block w-full rounded-md border bg-background px-3 py-2 text-sm outline-hidden focus:ring-2 focus:ring-primary"
-              placeholder="e.g. Windows CIS L1 Baseline"
+              placeholder={t('auditBaselinesBaselineFormModal.placeholders.name')}
             />
           </div>
 
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="text-sm font-medium" htmlFor="bl-os">
-                OS Type
+                {t('auditBaselinesBaselineFormModal.fields.osType')}
               </label>
               <select
                 id="bl-os"
@@ -145,7 +155,7 @@ export default function BaselineFormModal({ baseline, onClose, onSaved }: Props)
               >
                 {OS_OPTIONS.map((opt) => (
                   <option key={opt.value} value={opt.value}>
-                    {opt.label}
+                    {t(/* i18n-dynamic */ `auditBaselinesBaselineFormModal.os.${opt.labelKey}`)}
                   </option>
                 ))}
               </select>
@@ -153,7 +163,7 @@ export default function BaselineFormModal({ baseline, onClose, onSaved }: Props)
 
             <div>
               <label className="text-sm font-medium" htmlFor="bl-profile">
-                Profile
+                {t('auditBaselinesBaselineFormModal.fields.profile')}
               </label>
               <select
                 id="bl-profile"
@@ -163,7 +173,7 @@ export default function BaselineFormModal({ baseline, onClose, onSaved }: Props)
               >
                 {PROFILE_OPTIONS.map((opt) => (
                   <option key={opt.value} value={opt.value}>
-                    {opt.label}
+                    {t(/* i18n-dynamic */ `auditBaselinesBaselineFormModal.profiles.${opt.labelKey}`)}
                   </option>
                 ))}
               </select>
@@ -179,21 +189,21 @@ export default function BaselineFormModal({ baseline, onClose, onSaved }: Props)
               className="h-4 w-4 rounded border"
             />
             <label className="text-sm font-medium" htmlFor="bl-active">
-              Active
+              {t('auditBaselinesBaselineFormModal.fields.active')}
             </label>
             <span className="text-xs text-muted-foreground">
-              (Only one baseline per OS type can be active)
+              {t('auditBaselinesBaselineFormModal.activeHelp')}
             </span>
           </div>
 
           <div>
             <div className="flex items-center justify-between">
               <label className="text-sm font-medium" htmlFor="bl-settings">
-                Settings (JSON)
+                {t('auditBaselinesBaselineFormModal.fields.settingsJson')}
               </label>
               {profile !== 'custom' && (
                 <span className="text-xs text-muted-foreground">
-                  Leave empty to use template defaults
+                  {t('auditBaselinesBaselineFormModal.templateDefaultsHelp')}
                 </span>
               )}
             </div>
@@ -203,7 +213,9 @@ export default function BaselineFormModal({ baseline, onClose, onSaved }: Props)
               value={settingsJson}
               onChange={(e) => setSettingsJson(e.target.value)}
               className="mt-1 block w-full rounded-md border bg-background px-3 py-2 font-mono text-sm outline-hidden focus:ring-2 focus:ring-primary"
-              placeholder={profile === 'custom' ? '{\n  "key": "value"\n}' : 'Optional — template defaults will be used'}
+              placeholder={profile === 'custom'
+                ? t('auditBaselinesBaselineFormModal.placeholders.customSettings')
+                : t('auditBaselinesBaselineFormModal.placeholders.templateSettings')}
             />
           </div>
 
@@ -219,7 +231,7 @@ export default function BaselineFormModal({ baseline, onClose, onSaved }: Props)
               onClick={onClose}
               className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
             >
-              Cancel
+              {t('auditBaselinesBaselineFormModal.actions.cancel')}
             </button>
             <button
               type="submit"
@@ -230,7 +242,9 @@ export default function BaselineFormModal({ baseline, onClose, onSaved }: Props)
               )}
             >
               {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
-              {baseline ? 'Update' : 'Create'}
+              {baseline
+                ? t('auditBaselinesBaselineFormModal.actions.update')
+                : t('auditBaselinesBaselineFormModal.actions.create')}
             </button>
           </div>
         </form>

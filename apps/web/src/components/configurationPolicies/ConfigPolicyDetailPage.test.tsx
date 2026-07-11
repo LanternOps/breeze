@@ -17,6 +17,7 @@ vi.mock('./AssignmentsTab', () => ({ default: () => <div data-testid="assignment
 
 import ConfigPolicyDetailPage from './ConfigPolicyDetailPage';
 import { fetchWithAuth } from '../../stores/auth';
+import { i18n, loadLocale } from '../../lib/i18n';
 
 const fetchMock = vi.mocked(fetchWithAuth);
 
@@ -66,8 +67,23 @@ function openFeatureTab(label: string) {
 }
 
 describe('ConfigPolicyDetailPage — org-only feature gating on partner-wide policies (#2101)', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
+    await i18n.changeLanguage('en');
+  });
+
+  it('keeps the breadcrumb route literal while translating its label in pt-BR', async () => {
+    await loadLocale('pt-BR');
+    await i18n.changeLanguage('pt-BR');
+    mockPolicy({ orgId: 'org-1', partnerId: null });
+
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+
+    await screen.findByRole('heading', { name: 'Test Policy' });
+    expect(screen.getByRole('link', { name: 'Políticas de configuração' })).toHaveAttribute(
+      'href',
+      '/configuration-policies'
+    );
   });
 
   it('gates the Backup tab (org-scoped-only) with an inline hint on a partner-wide policy, instead of the editor', async () => {

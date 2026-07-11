@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import { useEffect, useMemo, useState } from 'react';
 import { cn } from '@/lib/utils';
 import TicketCategoriesPage from './TicketCategoriesPage';
@@ -18,11 +19,11 @@ type Tab = (typeof VALID_TABS)[number];
 // capability on the client, so gate the tab on partner scope — any partner user
 // can use the settings; the card's own 403 handler is the defense-in-depth
 // backstop that hides the queue for non-admins reached directly via hash.
-const BASE_TABS: Array<{ id: Tab; label: string }> = [
-  { id: 'statuses', label: 'Statuses' },
-  { id: 'priorities', label: 'Priorities & SLAs' },
-  { id: 'categories', label: 'Categories' },
-  { id: 'export', label: 'Export' }
+const BASE_TABS: Array<{ id: Tab; labelKey: string }> = [
+  { id: 'statuses', labelKey: 'ticketingSettingsTabs.statuses' },
+  { id: 'priorities', labelKey: 'ticketingSettingsTabs.prioritiesSLAs' },
+  { id: 'categories', labelKey: 'ticketingSettingsTabs.categories' },
+  { id: 'export', labelKey: 'ticketingSettingsTabs.export' }
 ];
 
 function parseHash(): Tab {
@@ -63,6 +64,7 @@ export default function TicketingSettingsTabs({
   syncHash?: boolean;
   initialTab?: Tab;
 }) {
+  const { t } = useTranslation('settings');
   // `initialTab` seeds the sub-tab deterministically for the embedded (syncHash=false)
   // case — used by the M365 consent deep-link (`?ticketMailbox=…`) so this group opens
   // on Inbound regardless of when it mounts. The parent captures that signal once (it
@@ -85,13 +87,13 @@ export default function TicketingSettingsTabs({
     () =>
       canManageInbound
         ? [
-            ...BASE_TABS,
-            { id: 'forms' as Tab, label: 'Intake Forms' },
-            { id: 'inbound' as Tab, label: 'Inbound Email' },
-            { id: 'canned' as Tab, label: 'Canned responses' }
+            ...BASE_TABS.map((tab) => ({ ...tab, label: t(/* i18n-dynamic */ tab.labelKey) })),
+            { id: 'forms' as Tab, labelKey: 'ticketingSettingsTabs.intakeForms', label: t('ticketingSettingsTabs.intakeForms') },
+            { id: 'inbound' as Tab, labelKey: 'ticketingSettingsTabs.inboundEmail', label: t('ticketingSettingsTabs.inboundEmail') },
+            { id: 'canned' as Tab, labelKey: 'ticketingSettingsTabs.cannedResponses', label: t('ticketingSettingsTabs.cannedResponses') }
           ]
-        : BASE_TABS,
-    [canManageInbound]
+        : BASE_TABS.map((tab) => ({ ...tab, label: t(/* i18n-dynamic */ tab.labelKey) })),
+    [canManageInbound, t]
   );
 
   const switchTab = (tab: Tab) => {
@@ -110,22 +112,22 @@ export default function TicketingSettingsTabs({
   return (
     <div className="space-y-6">
       <div role="tablist" className="flex gap-1 border-b" data-testid="ticketing-settings-tabs">
-        {TABS.map((t) => (
+        {TABS.map((tab) => (
           <button
-            key={t.id}
+            key={tab.id}
             type="button"
             role="tab"
-            aria-selected={activeTab === t.id}
-            onClick={() => switchTab(t.id)}
-            data-testid={`ticketing-tab-${t.id}`}
+            aria-selected={activeTab === tab.id}
+            onClick={() => switchTab(tab.id)}
+            data-testid={`ticketing-tab-${tab.id}`}
             className={cn(
               'border-b-2 px-4 py-2 text-sm font-medium transition-colors -mb-px',
-              activeTab === t.id
+              activeTab === tab.id
                 ? 'border-primary text-foreground'
                 : 'border-transparent text-muted-foreground hover:text-foreground'
             )}
           >
-            {t.label}
+            {tab.label}
           </button>
         ))}
       </div>

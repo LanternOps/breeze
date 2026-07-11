@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import RoleManager, { PermissionMatrix, RoleFormModal, type PermissionCatalog, type Permission, type Role } from './RoleManager';
+import RoleManager, { DeleteRoleModal, PermissionMatrix, RoleFormModal, type PermissionCatalog, type Permission, type Role } from './RoleManager';
 import { fetchWithAuth } from '../../stores/auth';
 
 vi.mock('../../stores/auth', () => ({
@@ -68,6 +68,33 @@ describe('RoleManager — catalog-driven matrix (issue #801)', () => {
     await waitFor(() => {
       expect(fetchWithAuthMock).toHaveBeenCalledWith('/permissions/catalog');
     });
+  });
+});
+
+describe('DeleteRoleModal translations', () => {
+  const role: Role = {
+    id: 'custom-1',
+    name: 'Technician',
+    description: null,
+    scope: 'partner',
+    isSystem: false,
+    userCount: 2,
+    createdAt: '2026-05-21T00:00:00Z',
+    updatedAt: '2026-05-21T00:00:00Z'
+  };
+
+  it('renders complete interpolated delete and assigned-user sentences', () => {
+    render(
+      <DeleteRoleModal
+        isOpen
+        role={role}
+        onConfirm={() => {}}
+        onCancel={() => {}}
+      />
+    );
+
+    expect(screen.getByText('Are you sure you want to delete the role Technician? This action cannot be undone.')).toBeTruthy();
+    expect(screen.getByText('This role has 2 assigned users and cannot be deleted.')).toBeTruthy();
   });
 });
 

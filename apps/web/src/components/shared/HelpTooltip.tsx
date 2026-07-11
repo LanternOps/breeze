@@ -1,5 +1,6 @@
 import { HelpCircle } from 'lucide-react';
 import { useState, useRef, useEffect, useId } from 'react';
+import { useTranslation } from 'react-i18next';
 
 interface HelpTooltipProps {
   text: string;
@@ -15,7 +16,8 @@ interface HelpTooltipProps {
   side?: 'top' | 'bottom';
 }
 
-export default function HelpTooltip({ text, className = '', ariaLabel = 'Help', side = 'top' }: HelpTooltipProps) {
+export default function HelpTooltip({ text, className = '', ariaLabel, side = 'top' }: HelpTooltipProps) {
+  const { t } = useTranslation('common');
   const [show, setShow] = useState(false);
   // Viewport coords for the side='bottom' fixed-position strategy, measured
   // from the trigger at open time (a hover tooltip closes before scroll
@@ -64,7 +66,7 @@ export default function HelpTooltip({ text, className = '', ariaLabel = 'Help', 
           if (e.key === 'Escape') setShow(false);
         }}
         className="rounded-full p-0.5 text-muted-foreground/50 hover:text-muted-foreground transition-colors"
-        aria-label={ariaLabel}
+        aria-label={ariaLabel ?? t('shared.help')}
         aria-describedby={show ? tooltipId : undefined}
       >
         <HelpCircle className="h-3.5 w-3.5" />

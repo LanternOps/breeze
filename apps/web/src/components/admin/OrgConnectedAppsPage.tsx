@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Plug, Loader2, ShieldAlert, AlertTriangle, X, RefreshCw, Ban, Undo2 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
@@ -36,6 +37,7 @@ interface UnblockDialogState {
 }
 
 export default function OrgConnectedAppsPage() {
+  const { t } = useTranslation('admin');
   const orgId = useOrgStore((s) => s.currentOrgId);
   const orgs = useOrgStore((s) => s.organizations);
   const orgName = useMemo(
@@ -62,15 +64,15 @@ export default function OrgConnectedAppsPage() {
       }
       if (!res.ok) {
         const body = (await res.json().catch(() => ({}))) as { error?: string };
-        setState({ kind: 'error', message: body.error ?? `Request failed (${res.status})` });
+        setState({ kind: 'error', message: body.error ?? t('admin.orgConnectedAppsPage.errors.requestFailed', { status: res.status }) });
         return;
       }
       const body = (await res.json()) as { clients: OrgClient[] };
       setState({ kind: 'ready', clients: body.clients ?? [] });
     } catch (err) {
-      setState({ kind: 'error', message: err instanceof Error ? err.message : 'Network error' });
+      setState({ kind: 'error', message: err instanceof Error ? err.message : t('admin.orgConnectedAppsPage.errors.network') });
     }
-  }, [orgId]);
+  }, [orgId, t]);
 
   useEffect(() => {
     void load();
@@ -79,7 +81,7 @@ export default function OrgConnectedAppsPage() {
   const handleBlock = async () => {
     if (!blockDialog || !orgId) return;
     if (blockDialog.reason.trim().length === 0) {
-      showToast({ type: 'error', message: 'Reason is required.' });
+      showToast({ type: 'error', message: t('admin.orgConnectedAppsPage.toast.reasonRequired') });
       return;
     }
     setSubmitting(true);
@@ -93,17 +95,17 @@ export default function OrgConnectedAppsPage() {
       );
       if (!res.ok) {
         const body = (await res.json().catch(() => ({}))) as { error?: string };
-        showToast({ type: 'error', message: body.error ?? `Block failed (${res.status})` });
+        showToast({ type: 'error', message: body.error ?? t('admin.orgConnectedAppsPage.toast.blockFailed', { status: res.status }) });
         return;
       }
       showToast({
         type: 'success',
-        message: `${blockDialog.client.displayName} blocked for the organization. Users will sign out within their token TTL (≤15 min).`,
+        message: t('admin.orgConnectedAppsPage.toast.blocked', { name: blockDialog.client.displayName }),
       });
       setBlockDialog(null);
       await load();
     } catch (err) {
-      showToast({ type: 'error', message: err instanceof Error ? err.message : 'Network error' });
+      showToast({ type: 'error', message: err instanceof Error ? err.message : t('admin.orgConnectedAppsPage.errors.network') });
     } finally {
       setSubmitting(false);
     }
@@ -119,17 +121,17 @@ export default function OrgConnectedAppsPage() {
       );
       if (res.status !== 204 && !res.ok) {
         const body = (await res.json().catch(() => ({}))) as { error?: string };
-        showToast({ type: 'error', message: body.error ?? `Unblock failed (${res.status})` });
+        showToast({ type: 'error', message: body.error ?? t('admin.orgConnectedAppsPage.toast.unblockFailed', { status: res.status }) });
         return;
       }
       showToast({
         type: 'success',
-        message: `${unblockDialog.client.displayName} unblocked. Users must re-authorize before tokens are issued again.`,
+        message: t('admin.orgConnectedAppsPage.toast.unblocked', { name: unblockDialog.client.displayName }),
       });
       setUnblockDialog(null);
       await load();
     } catch (err) {
-      showToast({ type: 'error', message: err instanceof Error ? err.message : 'Network error' });
+      showToast({ type: 'error', message: err instanceof Error ? err.message : t('admin.orgConnectedAppsPage.errors.network') });
     } finally {
       setSubmitting(false);
     }
@@ -139,11 +141,11 @@ export default function OrgConnectedAppsPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Connected apps (org-wide)</h1>
+          <h1 className="text-xl font-semibold tracking-tight">{t('admin.orgConnectedAppsPage.title')}</h1>
           <p className="text-sm text-muted-foreground">
-            AI assistants and other MCP clients that users in
-            {orgName ? <> <span className="font-medium text-foreground">{orgName}</span></> : ' your organization'}
-            {' '}have authorized. Block any client to immediately revoke every active grant.
+            {t('admin.orgConnectedAppsPage.description.prefix')}
+            {orgName ? <> <span className="font-medium text-foreground">{orgName}</span></> : ` ${t('admin.orgConnectedAppsPage.description.yourOrganization')}`}
+            {' '}{t('admin.orgConnectedAppsPage.description.suffix')}
           </p>
         </div>
         <button
@@ -153,13 +155,13 @@ export default function OrgConnectedAppsPage() {
           className="inline-flex h-10 items-center justify-center gap-2 rounded-md border bg-background px-4 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
         >
           <RefreshCw className={`h-4 w-4 ${state.kind === 'loading' ? 'animate-spin' : ''}`} />
-          Refresh
+          {t('admin.orgConnectedAppsPage.refresh')}
         </button>
       </div>
 
       {state.kind === 'no-org' && (
         <div className="rounded-lg border border-dashed bg-muted/30 p-8 text-center text-sm text-muted-foreground">
-          Pick an organization from the org switcher to view its connected apps.
+          {t('admin.orgConnectedAppsPage.noOrg')}
         </div>
       )}
 
@@ -171,10 +173,10 @@ export default function OrgConnectedAppsPage() {
 
       {state.kind === 'unauthorized' && (
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6">
-          <h2 className="font-semibold text-destructive">Not allowed</h2>
+          <h2 className="font-semibold text-destructive">{t('admin.orgConnectedAppsPage.unauthorized.title')}</h2>
           <p className="mt-1 text-sm text-destructive">
-            You don't have the <code>users:write</code> permission required to manage org-wide
-            connected app blocks.
+            {t('admin.orgConnectedAppsPage.unauthorized.prefix')} <code>users:write</code>{' '}
+            {t('admin.orgConnectedAppsPage.unauthorized.suffix')}
           </p>
         </div>
       )}
@@ -192,7 +194,7 @@ export default function OrgConnectedAppsPage() {
               onClick={() => void load()}
               className="rounded-md border border-destructive/40 px-3 py-1 text-xs font-medium hover:bg-destructive/5"
             >
-              Try again
+              {t('admin.orgConnectedAppsPage.retry')}
             </button>
           </div>
         </div>
@@ -201,9 +203,9 @@ export default function OrgConnectedAppsPage() {
       {state.kind === 'ready' && state.clients.length === 0 && (
         <div className="rounded-lg border border-dashed bg-muted/30 p-8 text-center">
           <Plug className="mx-auto h-10 w-10 text-muted-foreground/40" aria-hidden />
-          <h2 className="mt-4 text-base font-semibold">No authorized clients yet</h2>
+          <h2 className="mt-4 text-base font-semibold">{t('admin.orgConnectedAppsPage.empty.title')}</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            When a user in this org authorizes an MCP client, it'll show up here.
+            {t('admin.orgConnectedAppsPage.empty.description')}
           </p>
         </div>
       )}
@@ -213,11 +215,11 @@ export default function OrgConnectedAppsPage() {
           <table className="w-full text-left text-sm">
             <thead className="bg-muted/40">
               <tr className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                <th className="px-4 py-3">App</th>
-                <th className="px-4 py-3">Active users</th>
-                <th className="px-4 py-3">Last used</th>
-                <th className="px-4 py-3">Status</th>
-                <th className="px-4 py-3 text-right">Actions</th>
+                <th className="px-4 py-3">{t('admin.orgConnectedAppsPage.table.app')}</th>
+                <th className="px-4 py-3">{t('admin.orgConnectedAppsPage.table.activeUsers')}</th>
+                <th className="px-4 py-3">{t('admin.orgConnectedAppsPage.table.lastUsed')}</th>
+                <th className="px-4 py-3">{t('admin.orgConnectedAppsPage.table.status')}</th>
+                <th className="px-4 py-3 text-right">{t('admin.orgConnectedAppsPage.table.actions')}</th>
               </tr>
             </thead>
             <tbody className="divide-y">
@@ -237,7 +239,7 @@ export default function OrgConnectedAppsPage() {
                       {client.totalUserCount > client.activeUserCount && (
                         <span className="text-xs text-muted-foreground">
                           {' '}
-                          / {client.totalUserCount} ever
+                          / {t('admin.orgConnectedAppsPage.everUsers', { count: client.totalUserCount })}
                         </span>
                       )}
                     </td>
@@ -250,18 +252,18 @@ export default function OrgConnectedAppsPage() {
                           className="inline-flex items-center gap-1 rounded-full bg-destructive/10 px-2 py-0.5 text-xs font-medium text-destructive"
                           title={
                             client.block?.blockedReason
-                              ? `Reason: ${client.block.blockedReason}`
+                              ? t('admin.orgConnectedAppsPage.blockReasonTitle', { reason: client.block.blockedReason })
                               : undefined
                           }
                         >
-                          <Ban className="h-3 w-3" aria-hidden /> Blocked
+                          <Ban className="h-3 w-3" aria-hidden /> {t('admin.orgConnectedAppsPage.status.blocked')}
                           {client.block?.blockedUntil && (
-                            <> · until {formatRelative(client.block.blockedUntil)}</>
+                            <> · {t('admin.orgConnectedAppsPage.status.until', { time: formatRelative(client.block.blockedUntil) })}</>
                           )}
                         </span>
                       ) : (
                         <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:text-emerald-400">
-                          Allowed
+                          {t('admin.orgConnectedAppsPage.status.allowed')}
                         </span>
                       )}
                     </td>
@@ -272,7 +274,7 @@ export default function OrgConnectedAppsPage() {
                           onClick={() => setUnblockDialog({ client })}
                           className="inline-flex h-9 items-center gap-1 rounded-md border border-emerald-500/40 px-3 text-sm font-medium text-emerald-700 transition hover:bg-emerald-500/10 dark:text-emerald-400"
                         >
-                          <Undo2 className="h-3.5 w-3.5" /> Unblock
+                          <Undo2 className="h-3.5 w-3.5" /> {t('admin.orgConnectedAppsPage.actions.unblock')}
                         </button>
                       ) : (
                         <button
@@ -280,7 +282,7 @@ export default function OrgConnectedAppsPage() {
                           onClick={() => setBlockDialog({ client, reason: '' })}
                           className="inline-flex h-9 items-center gap-1 rounded-md border border-destructive/40 px-3 text-sm font-medium text-destructive transition hover:bg-destructive/10"
                         >
-                          <Ban className="h-3.5 w-3.5" /> Block org-wide
+                          <Ban className="h-3.5 w-3.5" /> {t('admin.orgConnectedAppsPage.actions.blockOrgWide')}
                         </button>
                       )}
                     </td>
@@ -296,7 +298,7 @@ export default function OrgConnectedAppsPage() {
         <BlockOrgWideDialog
           state={blockDialog}
           submitting={submitting}
-          orgLabel={orgName ?? 'this organization'}
+          orgLabel={orgName ?? t('admin.orgConnectedAppsPage.thisOrganization')}
           onChange={(reason) => setBlockDialog({ ...blockDialog, reason })}
           onCancel={() => (submitting ? null : setBlockDialog(null))}
           onConfirm={handleBlock}
@@ -330,6 +332,7 @@ function BlockOrgWideDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const { t } = useTranslation('admin');
   const reasonValid = state.reason.trim().length > 0;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
@@ -339,14 +342,14 @@ function BlockOrgWideDialog({
             <div className="flex h-10 w-10 items-center justify-center rounded-full bg-destructive/10">
               <AlertTriangle className="h-5 w-5 text-destructive" aria-hidden />
             </div>
-            <h2 className="text-lg font-semibold">Block {state.client.displayName}?</h2>
+            <h2 className="text-lg font-semibold">{t('admin.orgConnectedAppsPage.blockDialog.title', { name: state.client.displayName })}</h2>
           </div>
           <button
             type="button"
             onClick={onCancel}
             disabled={submitting}
             className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted disabled:cursor-not-allowed"
-            aria-label="Close"
+            aria-label={t('admin.orgConnectedAppsPage.blockDialog.close')}
           >
             <X className="h-4 w-4" aria-hidden />
           </button>
@@ -354,23 +357,25 @@ function BlockOrgWideDialog({
 
         <div className="mt-4 space-y-3 text-sm">
           <p className="text-muted-foreground">
-            This blocks <span className="font-medium text-foreground">{state.client.displayName}</span>{' '}
-            for every user in <span className="font-medium text-foreground">{orgLabel}</span>. All
-            active grants and refresh tokens are revoked immediately. Users will see a sign-out
-            within their access-token TTL (~15 min). They cannot re-authorize until you unblock.
+            {t('admin.orgConnectedAppsPage.blockDialog.descriptionPrefix')}{' '}
+            <span className="font-medium text-foreground">{state.client.displayName}</span>{' '}
+            {t('admin.orgConnectedAppsPage.blockDialog.descriptionMiddle')}{' '}
+            <span className="font-medium text-foreground">{orgLabel}</span>.{' '}
+            {t('admin.orgConnectedAppsPage.blockDialog.descriptionSuffix')}
           </p>
           {state.client.activeUserCount > 0 && (
             <div className="flex gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-amber-900 dark:text-amber-200">
               <AlertTriangle className="mt-0.5 h-4 w-4 flex-none" aria-hidden />
               <p>
                 <strong>{state.client.activeUserCount}</strong>{' '}
-                user{state.client.activeUserCount === 1 ? '' : 's'} currently authorized — they'll
-                lose access in this app.
+                {t('admin.orgConnectedAppsPage.blockDialog.authorizedUsers', {
+                  count: state.client.activeUserCount,
+                })}
               </p>
             </div>
           )}
           <label htmlFor="org-block-reason" className="block text-sm font-medium">
-            Reason <span className="text-destructive">*</span>
+            {t('admin.orgConnectedAppsPage.blockDialog.reason')} <span className="text-destructive">*</span>
           </label>
           <textarea
             id="org-block-reason"
@@ -378,7 +383,7 @@ function BlockOrgWideDialog({
             value={state.reason}
             onChange={(e) => onChange(e.target.value)}
             maxLength={500}
-            placeholder="Vendor risk review, suspected compromise, policy change…"
+            placeholder={t('admin.orgConnectedAppsPage.blockDialog.reasonPlaceholder')}
             className="w-full rounded-md border bg-background p-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             required
           />
@@ -391,7 +396,7 @@ function BlockOrgWideDialog({
             disabled={submitting}
             className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
           >
-            Cancel
+            {t('admin.orgConnectedAppsPage.blockDialog.cancel')}
           </button>
           <button
             type="button"
@@ -402,10 +407,10 @@ function BlockOrgWideDialog({
             {submitting ? (
               <>
                 <span className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
-                Blocking…
+                {t('admin.orgConnectedAppsPage.blockDialog.blocking')}
               </>
             ) : (
-              'Block org-wide'
+              t('admin.orgConnectedAppsPage.blockDialog.blockOrgWide')
             )}
           </button>
         </div>
@@ -425,6 +430,7 @@ function UnblockDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const { t } = useTranslation('admin');
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
       <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-lg">
@@ -433,23 +439,23 @@ function UnblockDialog({
             <div className="flex h-10 w-10 items-center justify-center rounded-full bg-emerald-500/10">
               <Undo2 className="h-5 w-5 text-emerald-700 dark:text-emerald-400" aria-hidden />
             </div>
-            <h2 className="text-lg font-semibold">Unblock {state.client.displayName}?</h2>
+            <h2 className="text-lg font-semibold">{t('admin.orgConnectedAppsPage.unblockDialog.title', { name: state.client.displayName })}</h2>
           </div>
           <button
             type="button"
             onClick={onCancel}
             disabled={submitting}
             className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted disabled:cursor-not-allowed"
-            aria-label="Close"
+            aria-label={t('admin.orgConnectedAppsPage.unblockDialog.close')}
           >
             <X className="h-4 w-4" aria-hidden />
           </button>
         </div>
 
         <p className="mt-4 text-sm text-muted-foreground">
-          Users in this organization will be able to authorize{' '}
-          <span className="font-medium text-foreground">{state.client.displayName}</span> again.
-          Existing grants stay revoked — every user must sign in fresh through the OAuth flow.
+          {t('admin.orgConnectedAppsPage.unblockDialog.descriptionPrefix')}{' '}
+          <span className="font-medium text-foreground">{state.client.displayName}</span>{' '}
+          {t('admin.orgConnectedAppsPage.unblockDialog.descriptionSuffix')}
         </p>
 
         <div className="mt-6 flex justify-end gap-3">
@@ -459,7 +465,7 @@ function UnblockDialog({
             disabled={submitting}
             className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
           >
-            Cancel
+            {t('admin.orgConnectedAppsPage.unblockDialog.cancel')}
           </button>
           <button
             type="button"
@@ -470,10 +476,10 @@ function UnblockDialog({
             {submitting ? (
               <>
                 <span className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
-                Unblocking…
+                {t('admin.orgConnectedAppsPage.unblockDialog.unblocking')}
               </>
             ) : (
-              'Unblock'
+              t('admin.orgConnectedAppsPage.unblockDialog.unblock')
             )}
           </button>
         </div>

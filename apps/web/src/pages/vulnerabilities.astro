@@ -1,16 +1,8 @@
 ---
 import DashboardLayout from '../layouts/DashboardLayout.astro';
-import VulnerabilityFleetPage from '../components/vulnerabilities/VulnerabilityFleetPage';
+import VulnerabilityLandingPage from '../components/vulnerabilities/VulnerabilityLandingPage';
 ---
 
 <DashboardLayout title="Vulnerabilities">
-  <div class="space-y-6">
-    <div>
-      <h1 class="text-2xl font-semibold">Vulnerabilities</h1>
-      <p class="max-w-prose text-sm text-muted-foreground">
-        Fleet CVE exposure grouped for triage — remediate, accept risk, or ticket.
-      </p>
-    </div>
-    <VulnerabilityFleetPage client:load />
-  </div>
+  <VulnerabilityLandingPage client:load />
 </DashboardLayout>

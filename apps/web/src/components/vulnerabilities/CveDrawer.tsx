@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 import { Drawer } from '../shared/Drawer';
+import '@/lib/i18n';
 import { SeverityBadge } from './SeverityBadge';
 import { KevBadge } from './KevBadge';
 import { CVSS_EXPLANATION, EPSS_EXPLANATION } from './vulnExplanations';
@@ -9,7 +11,7 @@ import { VulnBulkActionModal } from './VulnBulkActionModal';
 import { CreateVulnTicketModal } from './CreateVulnTicketModal';
 import { usePermissions } from '../../lib/permissions';
 import { handleActionError } from '../../lib/runAction';
-import { plural } from '../../lib/utils';
+import { formatPercent } from '@/lib/i18n/format';
 import {
   bulkAcceptVulnRisk,
   bulkMitigateVulns,
@@ -24,7 +26,7 @@ const ACTION_BTN =
   'inline-flex items-center rounded-md border px-3 py-1.5 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50';
 
 function fmtEpss(value: number | null): string {
-  return value === null ? '—' : `${(value * 100).toFixed(1)}%`;
+  return value === null ? '—' : formatPercent(value, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 }
 
 // The catalog stores `references` as source-dependent jsonb — normalize defensively.
@@ -51,6 +53,7 @@ export function CveDrawer({
   onClose: () => void;
   onActionComplete: () => void;
 }) {
+  const { t } = useTranslation('vulnerabilities');
   const [payload, setPayload] = useState<CveDevicesPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -79,9 +82,9 @@ export function CveDrawer({
       setSelected(new Set(p.findings.filter((f) => f.status === 'open').map((f) => f.deviceVulnerabilityId)));
     } catch (err) {
       setPayload(null);
-      setError(err instanceof Error ? err.message : 'Failed to load CVE');
+      setError(err instanceof Error ? err.message : t('cveDrawer.errors.load'));
     }
-  }, [cveId]);
+  }, [cveId, t]);
 
   useEffect(() => {
     void load();
@@ -140,13 +143,13 @@ export function CveDrawer({
         await load();
         onActionComplete();
       } catch (err) {
-        handleActionError(err, 'Failed to reopen finding');
+        handleActionError(err, t('cveDrawer.errors.reopen'));
       } finally {
         busyRef.current = false;
         setBusy(null);
       }
     },
-    [busy, load, onActionComplete],
+    [busy, load, onActionComplete, t],
   );
 
   const title = payload ? (
@@ -168,7 +171,7 @@ export function CveDrawer({
           >
             <p>{error}</p>
             <button type="button" data-testid="vuln-drawer-retry" className="mt-2 text-sm font-medium underline" onClick={() => void load()}>
-              Retry
+              {t('common:actions.retry')}
             </button>
           </div>
         )}
@@ -178,17 +181,19 @@ export function CveDrawer({
             <section data-testid="vuln-cve-meta" className="space-y-2 text-sm">
               <p>{payload.cve.description}</p>
               <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-                <dt className="text-muted-foreground" title={CVSS_EXPLANATION}>CVSS {payload.cve.cvssVersion ?? ''}</dt>
+                <dt className="text-muted-foreground" title={CVSS_EXPLANATION}>
+                  {t('cveDrawer.meta.cvss', { version: payload.cve.cvssVersion ?? '' })}
+                </dt>
                 <dd className="tabular-nums">{payload.cve.cvssScore ?? '—'}</dd>
-                <dt className="text-muted-foreground">Vector</dt>
+                <dt className="text-muted-foreground">{t('cveDrawer.meta.vector')}</dt>
                 <dd className="break-all">{payload.cve.cvssVector ?? '—'}</dd>
-                <dt className="text-muted-foreground" title={EPSS_EXPLANATION}>EPSS</dt>
+                <dt className="text-muted-foreground" title={EPSS_EXPLANATION}>{t('cveDrawer.meta.epss')}</dt>
                 <dd className="tabular-nums">{fmtEpss(payload.cve.epssScore)}</dd>
-                <dt className="text-muted-foreground">Known exploited</dt>
-                <dd>{payload.cve.knownExploited ? <KevBadge /> : 'No'}</dd>
-                <dt className="text-muted-foreground">Published</dt>
+                <dt className="text-muted-foreground">{t('cveDrawer.meta.knownExploited')}</dt>
+                <dd>{payload.cve.knownExploited ? <KevBadge /> : t('common:labels.no')}</dd>
+                <dt className="text-muted-foreground">{t('cveDrawer.meta.published')}</dt>
                 <dd>{payload.cve.publishedAt ? new Date(payload.cve.publishedAt).toLocaleDateString() : '—'}</dd>
-                <dt className="text-muted-foreground">Modified</dt>
+                <dt className="text-muted-foreground">{t('cveDrawer.meta.modified')}</dt>
                 <dd>{payload.cve.modifiedAt ? new Date(payload.cve.modifiedAt).toLocaleDateString() : '—'}</dd>
               </dl>
               {referenceUrls(payload.cve.references).length > 0 && (
@@ -213,14 +218,14 @@ export function CveDrawer({
             <section>
               <div className="flex items-center justify-between gap-2">
                 <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  Devices ({plural(payload.findings.length, 'finding')})
+                  {t('cveDrawer.sections.devices', { count: payload.findings.length })}
                 </h3>
                 {payload.findings.length > 0 && (
                   <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground">
                     <input
                       type="checkbox"
                       data-testid="vuln-select-all"
-                      aria-label={allSelected ? 'Deselect all findings' : 'Select all findings'}
+                      aria-label={allSelected ? t('cveDrawer.selection.deselectAllAria') : t('cveDrawer.selection.selectAllAria')}
                       checked={allSelected}
                       // Native indeterminate has no attribute form — set it via ref.
                       ref={(el) => {
@@ -229,7 +234,7 @@ export function CveDrawer({
                       onChange={toggleAll}
                       className="h-4 w-4 rounded border"
                     />
-                    Select all
+                    {t('cveDrawer.selection.selectAll')}
                   </label>
                 )}
               </div>
@@ -240,7 +245,7 @@ export function CveDrawer({
                   data-testid="vuln-drawer-no-findings"
                   className="mt-2 rounded-md border border-dashed px-3 py-4 text-center text-xs text-muted-foreground"
                 >
-                  No devices in your fleet are affected by this CVE right now — nothing to act on.
+                  {t('cveDrawer.empty.noFindings')}
                 </p>
               ) : (
               <ul className="mt-2 divide-y rounded-md border">
@@ -249,7 +254,7 @@ export function CveDrawer({
                     <input
                       type="checkbox"
                       data-testid={`vuln-finding-check-${f.deviceVulnerabilityId}`}
-                      aria-label={`Select finding on ${f.deviceName}`}
+                      aria-label={t('cveDrawer.selection.selectFindingAria', { deviceName: f.deviceName })}
                       checked={selected.has(f.deviceVulnerabilityId)}
                       onChange={() => toggle(f.deviceVulnerabilityId)}
                       className="h-4 w-4 rounded border"
@@ -259,14 +264,14 @@ export function CveDrawer({
                       <span className="block truncate text-xs text-muted-foreground">{f.orgName ?? ''}</span>
                     </span>
                     <FindingStatus status={f.status} acceptedUntil={f.acceptedUntil} />
-                    <span className="text-xs">{f.patchAvailable ? 'Patch' : '—'}</span>
+                    <span className="text-xs">{f.patchAvailable ? t('cveDrawer.findings.patch') : '—'}</span>
                     {f.ticketId && (
                       <a
                         href={`/tickets#${f.ticketNumber ?? f.ticketId}`}
                         data-testid={`vuln-finding-ticket-${f.deviceVulnerabilityId}`}
                         className="text-xs underline"
                       >
-                        {f.ticketNumber ?? 'Ticket'}
+                        {f.ticketNumber ?? t('cveDrawer.findings.ticket')}
                       </a>
                     )}
                     {canAcceptRisk && (f.status === 'accepted' || f.status === 'mitigated') && (
@@ -277,7 +282,7 @@ export function CveDrawer({
                         disabled={busy !== null}
                         onClick={() => void onReopen(f.deviceVulnerabilityId)}
                       >
-                        Reopen
+                        {t('cveDrawer.actions.reopen')}
                       </button>
                     )}
                   </li>
@@ -291,7 +296,7 @@ export function CveDrawer({
 
       {payload && (
         <div className="flex flex-wrap items-center gap-2 border-t px-5 py-3">
-          <span className="mr-auto text-xs text-muted-foreground">{selectedIds.length} selected</span>
+          <span className="mr-auto text-xs text-muted-foreground">{t('cveDrawer.selection.selected', { count: selectedIds.length })}</span>
           {canRemediate && (
             <button
               type="button"
@@ -303,7 +308,7 @@ export function CveDrawer({
                 setModal('remediate');
               }}
             >
-              Remediate
+              {t('cveDrawer.actions.remediate')}
             </button>
           )}
           {canAcceptRisk && (
@@ -317,7 +322,7 @@ export function CveDrawer({
                 setModal('accept');
               }}
             >
-              Accept risk
+              {t('cveDrawer.actions.acceptRisk')}
             </button>
           )}
           {canMitigate && (
@@ -331,7 +336,7 @@ export function CveDrawer({
                 setModal('mitigate');
               }}
             >
-              Mitigate
+              {t('cveDrawer.actions.mitigate')}
             </button>
           )}
           {canCreateTicket && (
@@ -342,7 +347,7 @@ export function CveDrawer({
               disabled={busy !== null || selectedIds.length === 0}
               onClick={() => setTicketModal(true)}
             >
-              Create ticket
+              {t('cveDrawer.actions.createTicket')}
             </button>
           )}
         </div>
@@ -365,15 +370,15 @@ export function CveDrawer({
           onSubmit={(bulkPayload) => {
             setModalError(null);
             if (modal === 'remediate') {
-              void runBulk('remediate', () => remediateVuln(selectedIds), 'Failed to schedule remediation');
+              void runBulk('remediate', () => remediateVuln(selectedIds), t('cveDrawer.errors.scheduleRemediation'));
             } else if (modal === 'accept') {
               void runBulk(
                 'accept',
                 () => bulkAcceptVulnRisk(selectedIds, { reason: bulkPayload.reason ?? '', acceptedUntil: bulkPayload.acceptedUntil ?? '' }),
-                'Failed to accept risk',
+                t('cveDrawer.errors.acceptRisk'),
               );
             } else {
-              void runBulk('mitigate', () => bulkMitigateVulns(selectedIds, { note: bulkPayload.note ?? '' }), 'Failed to mitigate');
+              void runBulk('mitigate', () => bulkMitigateVulns(selectedIds, { note: bulkPayload.note ?? '' }), t('cveDrawer.errors.mitigate'));
             }
           }}
         />
@@ -382,12 +387,12 @@ export function CveDrawer({
       {ticketModal && payload && (
         <CreateVulnTicketModal
           findings={payload.findings.filter((f) => selected.has(f.deviceVulnerabilityId))}
-          defaultTitle={`Remediate ${cveId}`}
+          defaultTitle={t('cveDrawer.ticket.defaultTitle', { cveId })}
           busy={busy !== null}
           onCancel={() => setTicketModal(false)}
           onSubmit={(ticketPayload) => {
             setTicketModal(false);
-            void runBulk('ticket', () => createVulnTicket(selectedIds, ticketPayload), 'Failed to create ticket');
+            void runBulk('ticket', () => createVulnTicket(selectedIds, ticketPayload), t('cveDrawer.errors.createTicket'));
           }}
         />
       )}

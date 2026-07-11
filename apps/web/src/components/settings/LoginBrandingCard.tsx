@@ -6,6 +6,8 @@ import { runAction, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { sanitizeImageSrc } from '../../lib/safeImageSrc';
 import { navigateTo } from '@/lib/navigation';
+import { Trans, useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 
 // Fallback swatch when no accent has been set yet, so the color picker and the
 // preview have something sensible to render. Not persisted unless the user saves.
@@ -26,6 +28,7 @@ const inputClass = 'h-10 w-full rounded-md border bg-background px-3 text-sm';
  * omitted field is not treated as "unchanged" — it is nulled server-side.
  */
 export default function LoginBrandingCard() {
+  const { t } = useTranslation('settings');
   const [logoUrl, setLogoUrl] = useState('');
   const [accentColor, setAccentColor] = useState('');
   const [headline, setHeadline] = useState('');
@@ -88,8 +91,8 @@ export default function LoginBrandingCard() {
               headline: headline.trim() || null,
             }),
           }),
-        successMessage: 'Login branding saved',
-        errorFallback: 'Failed to save login branding',
+        successMessage: t('loginBranding.saved'),
+        errorFallback: t('loginBranding.saveFailed'),
         onUnauthorized: () => {
           void navigateTo('/login', { replace: true });
         },
@@ -99,7 +102,7 @@ export default function LoginBrandingCard() {
       // toasted by runAction; anything else is unexpected → surface it.
       if (err instanceof ActionError && err.status === 401) return;
       if (!(err instanceof ActionError)) {
-        showToast({ message: 'Failed to save login branding', type: 'error' });
+        showToast({ message: t('loginBranding.saveFailed'), type: 'error' });
       }
     } finally {
       setSaving(false);
@@ -124,11 +127,10 @@ export default function LoginBrandingCard() {
       <div className="mb-6">
         <div className="flex items-center gap-2">
           <Palette className="h-5 w-5 text-muted-foreground" />
-          <h2 className="text-lg font-semibold">Login Branding</h2>
+          <h2 className="text-lg font-semibold">{t('loginBranding.title')}</h2>
         </div>
         <p className="mt-1 text-sm text-muted-foreground">
-          Brand the technician login screen. Shown automatically when this deployment resolves to a
-          single partner (typical self-hosted setup).
+          {t('loginBranding.description')}
         </p>
       </div>
 
@@ -137,8 +139,7 @@ export default function LoginBrandingCard() {
           role="alert"
           className="mb-6 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
         >
-          Couldn't load your current branding — reload the page before saving, or you may overwrite
-          existing settings.
+          {t('loginBranding.loadFailed')}
         </div>
       )}
 
@@ -147,7 +148,7 @@ export default function LoginBrandingCard() {
         <div className="space-y-4">
           <div className="space-y-2">
             <label htmlFor="login-branding-logo-url" className="text-sm font-medium">
-              Logo URL
+              {t('loginBranding.logoUrl')}
             </label>
             <input
               id="login-branding-logo-url"
@@ -155,21 +156,21 @@ export default function LoginBrandingCard() {
               type="url"
               value={logoUrl}
               onChange={(e) => setLogoUrl(e.target.value)}
-              placeholder="https://cdn.example.com/logo.png"
+              placeholder={t('loginBranding.logoPlaceholder')}
               className={inputClass}
             />
             <p className="text-xs text-muted-foreground">
-              An <code>https://</code> URL to your logo. Leave blank for no logo.
+              <Trans i18nKey="loginBranding.logoHelp" t={t} components={{ code: <code /> }} />
             </p>
           </div>
 
           <div className="space-y-2">
             <label htmlFor="login-branding-accent-hex" className="text-sm font-medium">
-              Accent color
+              {t('loginBranding.accentColor')}
             </label>
             <div className="flex items-center gap-3">
               <input
-                aria-label="Accent color picker"
+                aria-label={t('loginBranding.colorPicker')}
                 data-testid="login-branding-accent-color"
                 type="color"
                 value={/^#[0-9a-fA-F]{6}$/.test(accentColor) ? accentColor : DEFAULT_ACCENT}
@@ -187,12 +188,12 @@ export default function LoginBrandingCard() {
                 className={inputClass}
               />
             </div>
-            <p className="text-xs text-muted-foreground">A <code>#rrggbb</code> hex color.</p>
+            <p className="text-xs text-muted-foreground"><Trans i18nKey="loginBranding.colorHelp" t={t} components={{ code: <code /> }} /></p>
           </div>
 
           <div className="space-y-2">
             <label htmlFor="login-branding-headline" className="text-sm font-medium">
-              Headline
+              {t('loginBranding.headline')}
             </label>
             <input
               id="login-branding-headline"
@@ -200,19 +201,19 @@ export default function LoginBrandingCard() {
               type="text"
               value={headline}
               onChange={(e) => setHeadline(e.target.value)}
-              placeholder="Sign in to Acme IT"
+              placeholder={t('loginBranding.headlinePlaceholder')}
               maxLength={HEADLINE_MAX}
               className={inputClass}
             />
             <p className="text-xs text-muted-foreground">
-              {headline.length}/{HEADLINE_MAX} characters.
+              {t('loginBranding.characterCount', { current: headline.length, max: HEADLINE_MAX })}
             </p>
           </div>
         </div>
 
         {/* Live preview */}
         <div className="space-y-2">
-          <span className="text-sm font-medium">Preview</span>
+          <span className="text-sm font-medium">{t('loginBranding.preview')}</span>
           <div
             data-testid="login-branding-preview"
             className="flex min-h-40 flex-col items-center justify-center gap-4 rounded-lg border p-6 text-center"
@@ -221,18 +222,18 @@ export default function LoginBrandingCard() {
             {previewLogo && (
               <img
                 src={previewLogo}
-                alt="Login logo preview"
+                alt={t('loginBranding.logoPreview')}
                 className="max-h-16 max-w-[70%] object-contain"
               />
             )}
             <div className="rounded-md bg-white/90 px-4 py-3 shadow-sm">
               <p className="text-base font-semibold text-gray-900">
-                {headline.trim() || 'Sign in to your account'}
+                {headline.trim() || t('loginBranding.previewHeadline')}
               </p>
             </div>
           </div>
           <p className="text-xs text-muted-foreground">
-            Approximate preview of the technician login screen.
+            {t('loginBranding.previewDescription')}
           </p>
         </div>
       </div>
@@ -246,7 +247,7 @@ export default function LoginBrandingCard() {
           className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
         >
           {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-          {saving ? 'Saving...' : 'Save branding'}
+          {saving ? t('common:states.saving') : t('loginBranding.save')}
         </button>
       </div>
     </section>

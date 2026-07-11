@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Loader2 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import CreateMonitorForm from '../monitors/CreateMonitorForm';
 
@@ -23,6 +24,7 @@ export default function EnableMonitoringForm({
   onEnabled,
   onCancel
 }: EnableMonitoringFormProps) {
+  const { t } = useTranslation('discovery');
   const [snmpVersion, setSnmpVersion] = useState<'v1' | 'v2c' | 'v3'>('v2c');
   const [community, setCommunity] = useState('public');
   const [username, setUsername] = useState('');
@@ -45,24 +47,24 @@ export default function EnableMonitoringForm({
           const data = await res.json();
           setTemplates(data.data ?? data.templates ?? data ?? []);
         } else {
-          setTemplateError('Failed to load templates');
+          setTemplateError(t('enableMonitoringForm.errors.loadTemplates'));
         }
       })
       .catch(() => {
-        setTemplateError('Failed to load templates');
+        setTemplateError(t('enableMonitoringForm.errors.loadTemplates'));
       });
-  }, []);
+  }, [t]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(undefined);
 
     if ((snmpVersion === 'v1' || snmpVersion === 'v2c') && !community.trim()) {
-      setError('Community string is required for SNMP v1/v2c');
+      setError(t('enableMonitoringForm.errors.communityRequired'));
       return;
     }
     if (snmpVersion === 'v3' && !username.trim()) {
-      setError('Username is required for SNMP v3');
+      setError(t('enableMonitoringForm.errors.usernameRequired'));
       return;
     }
 
@@ -95,12 +97,12 @@ export default function EnableMonitoringForm({
 
       if (!response.ok) {
         const data = await response.json().catch(() => null);
-        throw new Error(data?.error ?? 'Failed to enable monitoring');
+        throw new Error(data?.error ?? t('enableMonitoringForm.errors.enable'));
       }
 
       onEnabled();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('enableMonitoringForm.errors.generic'));
     } finally {
       setSaving(false);
     }
@@ -110,15 +112,15 @@ export default function EnableMonitoringForm({
     <div className="space-y-4">
       <div className="rounded-md border bg-muted/20 p-3">
         <p className="text-xs text-muted-foreground">
-          Monitoring supports SNMP polling and network checks (Ping/TCP/HTTP/DNS). You can configure either or both.
+          {t('enableMonitoringForm.description')}
         </p>
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-4 rounded-md border p-4">
-        <h4 className="text-sm font-semibold">SNMP Device Monitoring</h4>
+        <h4 className="text-sm font-semibold">{t('enableMonitoringForm.snmpTitle')}</h4>
 
         <div>
-          <label className="block text-xs font-medium text-muted-foreground mb-1">SNMP Version</label>
+          <label className="block text-xs font-medium text-muted-foreground mb-1">{t('enableMonitoringForm.fields.snmpVersion')}</label>
           <select
             value={snmpVersion}
             onChange={(e) => setSnmpVersion(e.target.value as 'v1' | 'v2c' | 'v3')}
@@ -132,13 +134,13 @@ export default function EnableMonitoringForm({
 
         {(snmpVersion === 'v1' || snmpVersion === 'v2c') && (
           <div>
-            <label className="block text-xs font-medium text-muted-foreground mb-1">Community String</label>
+            <label className="block text-xs font-medium text-muted-foreground mb-1">{t('enableMonitoringForm.fields.community')}</label>
             <input
               type="text"
               value={community}
               onChange={(e) => setCommunity(e.target.value)}
               className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-              placeholder="public"
+              placeholder={t('enableMonitoringForm.placeholders.community')}
             />
           </div>
         )}
@@ -146,7 +148,7 @@ export default function EnableMonitoringForm({
         {snmpVersion === 'v3' && (
           <>
             <div>
-              <label className="block text-xs font-medium text-muted-foreground mb-1">Username</label>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">{t('enableMonitoringForm.fields.username')}</label>
               <input
                 type="text"
                 value={username}
@@ -156,7 +158,7 @@ export default function EnableMonitoringForm({
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block text-xs font-medium text-muted-foreground mb-1">Auth Protocol</label>
+                <label className="block text-xs font-medium text-muted-foreground mb-1">{t('enableMonitoringForm.fields.authProtocol')}</label>
                 <select
                   value={authProtocol}
                   onChange={(e) => setAuthProtocol(e.target.value)}
@@ -168,7 +170,7 @@ export default function EnableMonitoringForm({
                 </select>
               </div>
               <div>
-                <label className="block text-xs font-medium text-muted-foreground mb-1">Auth Password</label>
+                <label className="block text-xs font-medium text-muted-foreground mb-1">{t('enableMonitoringForm.fields.authPassword')}</label>
                 <input
                   type="password"
                   value={authPassword}
@@ -179,7 +181,7 @@ export default function EnableMonitoringForm({
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block text-xs font-medium text-muted-foreground mb-1">Privacy Protocol</label>
+                <label className="block text-xs font-medium text-muted-foreground mb-1">{t('enableMonitoringForm.fields.privacyProtocol')}</label>
                 <select
                   value={privProtocol}
                   onChange={(e) => setPrivProtocol(e.target.value)}
@@ -191,7 +193,7 @@ export default function EnableMonitoringForm({
                 </select>
               </div>
               <div>
-                <label className="block text-xs font-medium text-muted-foreground mb-1">Privacy Password</label>
+                <label className="block text-xs font-medium text-muted-foreground mb-1">{t('enableMonitoringForm.fields.privacyPassword')}</label>
                 <input
                   type="password"
                   value={privPassword}
@@ -204,7 +206,7 @@ export default function EnableMonitoringForm({
         )}
 
         <div>
-          <label className="block text-xs font-medium text-muted-foreground mb-1">Template</label>
+          <label className="block text-xs font-medium text-muted-foreground mb-1">{t('enableMonitoringForm.fields.template')}</label>
           {templateError ? (
             <p className="text-xs text-yellow-600">{templateError}</p>
           ) : (
@@ -213,7 +215,7 @@ export default function EnableMonitoringForm({
               onChange={(e) => setTemplateId(e.target.value)}
               className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
-              <option value="">No template</option>
+              <option value="">{t('enableMonitoringForm.noTemplate')}</option>
               {templates.map((t) => (
                 <option key={t.id} value={t.id}>
                   {t.name}{t.vendor ? ` (${t.vendor})` : ''}
@@ -224,7 +226,7 @@ export default function EnableMonitoringForm({
         </div>
 
         <div>
-          <label className="block text-xs font-medium text-muted-foreground mb-1">Polling Interval (seconds)</label>
+          <label className="block text-xs font-medium text-muted-foreground mb-1">{t('enableMonitoringForm.fields.pollingInterval')}</label>
           <input
             type="number"
             value={pollingInterval}
@@ -248,29 +250,29 @@ export default function EnableMonitoringForm({
             className="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-70 flex items-center gap-2"
           >
             {saving && <Loader2 className="h-3 w-3 animate-spin" />}
-            {saving ? 'Enabling...' : 'Enable SNMP Monitoring'}
+            {saving ? t('enableMonitoringForm.actions.enabling') : t('enableMonitoringForm.actions.enableSnmp')}
           </button>
           <button
             type="button"
             onClick={onCancel}
             className="h-9 rounded-md border px-4 text-sm font-medium text-muted-foreground hover:text-foreground"
           >
-            Cancel
+            {t('common:actions.cancel')}
           </button>
         </div>
       </form>
 
       <div className="rounded-md border p-4">
-        <h4 className="text-sm font-semibold">Network Checks</h4>
+        <h4 className="text-sm font-semibold">{t('enableMonitoringForm.networkChecksTitle')}</h4>
         <p className="mt-1 text-xs text-muted-foreground">
-          Add ping, TCP, HTTP, or DNS monitors for this asset.
+          {t('enableMonitoringForm.networkChecksDescription')}
         </p>
         <button
           type="button"
           onClick={() => setShowNetworkMonitorForm(true)}
           className="mt-3 h-9 rounded-md border px-4 text-sm font-medium hover:bg-muted"
         >
-          Add Network Monitor
+          {t('enableMonitoringForm.actions.addNetworkMonitor')}
         </button>
       </div>
 

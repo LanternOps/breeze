@@ -1,10 +1,20 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ChevronLeft, ChevronRight, Clock3, Network, RefreshCw, Search, X } from 'lucide-react';
-import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
-import { fetchWithAuth } from '../../stores/auth';
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  Clock3,
+  Network,
+  RefreshCw,
+  Search,
+  X,
+} from "lucide-react";
+import { formatDateTime as formatUserDateTime } from "@/lib/dateTimeFormat";
+import { fetchWithAuth } from "../../stores/auth";
+import { useTranslation } from "react-i18next";
+import "../../lib/i18n";
 
-type IPAssignmentType = 'dhcp' | 'static' | 'vpn' | 'link-local' | 'unknown';
-type IPType = 'ipv4' | 'ipv6';
+type IPAssignmentType = "dhcp" | "static" | "vpn" | "link-local" | "unknown";
+type IPType = "ipv4" | "ipv6";
 
 type DeviceIpHistoryEntry = {
   id?: string;
@@ -32,60 +42,72 @@ type DeviceIpHistoryTabProps = {
   deviceId: string;
 };
 
-const ASSIGNMENT_TYPES: Array<'all' | IPAssignmentType> = ['all', 'dhcp', 'static', 'vpn', 'link-local', 'unknown'];
+const ASSIGNMENT_TYPES: Array<"all" | IPAssignmentType> = [
+  "all",
+  "dhcp",
+  "static",
+  "vpn",
+  "link-local",
+  "unknown",
+];
 const PAGE_SIZE = 25;
 const MAX_FETCH_LIMIT = 500;
 
 function formatDateTime(value?: string | null): string {
-  if (!value) return '—';
+  if (!value) return "—";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return formatUserDateTime(date, {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
   });
 }
 
 function formatAssignment(value?: string): string {
-  if (!value) return 'Unknown';
-  if (value === 'dhcp') return 'DHCP';
-  if (value === 'vpn') return 'VPN';
-  if (value === 'link-local') return 'Link-local';
-  if (value === 'static') return 'Static';
-  return 'Unknown';
+  if (!value) return "Unknown";
+  if (value === "dhcp") return "DHCP";
+  if (value === "vpn") return "VPN";
+  if (value === "link-local") return "Link-local";
+  if (value === "static") return "Static";
+  return "Unknown";
 }
 
 function badgeClassForAssignment(value?: string): string {
   switch (value) {
-    case 'dhcp':
-      return 'bg-blue-500/10 text-blue-600';
-    case 'static':
-      return 'bg-emerald-500/10 text-emerald-600';
-    case 'vpn':
-      return 'bg-violet-500/10 text-violet-600';
-    case 'link-local':
-      return 'bg-amber-500/10 text-amber-700';
+    case "dhcp":
+      return "bg-blue-500/10 text-blue-600";
+    case "static":
+      return "bg-emerald-500/10 text-emerald-600";
+    case "vpn":
+      return "bg-violet-500/10 text-violet-600";
+    case "link-local":
+      return "bg-amber-500/10 text-amber-700";
     default:
-      return 'bg-muted text-muted-foreground';
+      return "bg-muted text-muted-foreground";
   }
 }
 
-export default function DeviceIpHistoryTab({ deviceId }: DeviceIpHistoryTabProps) {
+export default function DeviceIpHistoryTab({
+  deviceId,
+}: DeviceIpHistoryTabProps) {
+  const { t } = useTranslation("devices");
   const [entries, setEntries] = useState<DeviceIpHistoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [fetchedCount, setFetchedCount] = useState(0);
 
-  const [search, setSearch] = useState('');
-  const [assignmentFilter, setAssignmentFilter] = useState<'all' | IPAssignmentType>('all');
-  const [interfaceFilter, setInterfaceFilter] = useState<string>('all');
-  const [ipTypeFilter, setIpTypeFilter] = useState<'all' | IPType>('all');
+  const [search, setSearch] = useState("");
+  const [assignmentFilter, setAssignmentFilter] = useState<
+    "all" | IPAssignmentType
+  >("all");
+  const [interfaceFilter, setInterfaceFilter] = useState<string>("all");
+  const [ipTypeFilter, setIpTypeFilter] = useState<"all" | IPType>("all");
   const [activeOnly, setActiveOnly] = useState(false);
-  const [sinceDate, setSinceDate] = useState('');
-  const [untilDate, setUntilDate] = useState('');
+  const [sinceDate, setSinceDate] = useState("");
+  const [untilDate, setUntilDate] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
 
   const fetchIpHistory = useCallback(async () => {
@@ -94,26 +116,38 @@ export default function DeviceIpHistoryTab({ deviceId }: DeviceIpHistoryTabProps
     try {
       const params = new URLSearchParams({
         limit: String(MAX_FETCH_LIMIT),
-        offset: '0',
-        active_only: activeOnly ? 'true' : 'false',
+        offset: "0",
+        active_only: activeOnly ? "true" : "false",
       });
-      const response = await fetchWithAuth(`/devices/${deviceId}/ip-history?${params.toString()}`);
+      const response = await fetchWithAuth(
+        `/devices/${deviceId}/ip-history?${params.toString()}`,
+      );
       if (!response.ok) {
         if (response.status === 404) {
-          setError('IP history tracking is not available for this device');
+          setError("IP history tracking is not available for this device");
         } else if (response.status === 403) {
-          setError('You do not have permission to view IP history');
+          setError("You do not have permission to view IP history");
         } else {
           setError(`Failed to load IP history (HTTP ${response.status})`);
         }
         return;
       }
-      const json = await response.json() as DeviceIpHistoryResponse;
+      const json = (await response.json()) as DeviceIpHistoryResponse;
       const payload = json.data ?? [];
       setEntries(Array.isArray(payload) ? payload : []);
-      setFetchedCount(typeof json.count === 'number' ? json.count : Array.isArray(payload) ? payload.length : 0);
+      setFetchedCount(
+        typeof json.count === "number"
+          ? json.count
+          : Array.isArray(payload)
+            ? payload.length
+            : 0,
+      );
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to fetch IP history');
+      setError(
+        err instanceof Error
+          ? err.message
+          : t("deviceIpHistoryTab.failedToFetchIpHistory"),
+      );
     } finally {
       setLoading(false);
     }
@@ -138,14 +172,16 @@ export default function DeviceIpHistoryTab({ deviceId }: DeviceIpHistoryTabProps
     const until = untilDate ? new Date(`${untilDate}T23:59:59`) : null;
 
     return entries.filter((row) => {
-      const interfaceName = row.interfaceName ?? '';
-      const ipAddress = row.ipAddress ?? '';
-      const ipType = row.ipType ?? 'ipv4';
-      const assignment = row.assignmentType ?? 'unknown';
+      const interfaceName = row.interfaceName ?? "";
+      const ipAddress = row.ipAddress ?? "";
+      const ipType = row.ipType ?? "ipv4";
+      const assignment = row.assignmentType ?? "unknown";
 
-      if (assignmentFilter !== 'all' && assignment !== assignmentFilter) return false;
-      if (interfaceFilter !== 'all' && interfaceName !== interfaceFilter) return false;
-      if (ipTypeFilter !== 'all' && ipType !== ipTypeFilter) return false;
+      if (assignmentFilter !== "all" && assignment !== assignmentFilter)
+        return false;
+      if (interfaceFilter !== "all" && interfaceName !== interfaceFilter)
+        return false;
+      if (ipTypeFilter !== "all" && ipType !== ipTypeFilter) return false;
 
       if (since) {
         const rowLastSeen = row.lastSeen ? new Date(row.lastSeen) : null;
@@ -163,17 +199,27 @@ export default function DeviceIpHistoryTab({ deviceId }: DeviceIpHistoryTabProps
           ipAddress,
           ipType,
           assignment,
-          row.macAddress ?? '',
-          row.gateway ?? '',
-          row.subnetMask ?? '',
+          row.macAddress ?? "",
+          row.gateway ?? "",
+          row.subnetMask ?? "",
           ...(row.dnsServers ?? []),
-        ].join(' ').toLowerCase();
+        ]
+          .join(" ")
+          .toLowerCase();
         if (!haystack.includes(searchLower)) return false;
       }
 
       return true;
     });
-  }, [entries, assignmentFilter, interfaceFilter, ipTypeFilter, sinceDate, untilDate, search]);
+  }, [
+    entries,
+    assignmentFilter,
+    interfaceFilter,
+    ipTypeFilter,
+    sinceDate,
+    untilDate,
+    search,
+  ]);
 
   const totalPages = Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE));
   const startIndex = (currentPage - 1) * PAGE_SIZE;
@@ -181,7 +227,15 @@ export default function DeviceIpHistoryTab({ deviceId }: DeviceIpHistoryTabProps
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [assignmentFilter, interfaceFilter, ipTypeFilter, sinceDate, untilDate, search, activeOnly]);
+  }, [
+    assignmentFilter,
+    interfaceFilter,
+    ipTypeFilter,
+    sinceDate,
+    untilDate,
+    search,
+    activeOnly,
+  ]);
 
   useEffect(() => {
     if (currentPage > totalPages) {
@@ -190,22 +244,22 @@ export default function DeviceIpHistoryTab({ deviceId }: DeviceIpHistoryTabProps
   }, [currentPage, totalPages]);
 
   const clearFilters = () => {
-    setSearch('');
-    setAssignmentFilter('all');
-    setInterfaceFilter('all');
-    setIpTypeFilter('all');
-    setSinceDate('');
-    setUntilDate('');
+    setSearch("");
+    setAssignmentFilter("all");
+    setInterfaceFilter("all");
+    setIpTypeFilter("all");
+    setSinceDate("");
+    setUntilDate("");
     setCurrentPage(1);
   };
 
   const hasFilters = Boolean(
     search ||
-    assignmentFilter !== 'all' ||
-    interfaceFilter !== 'all' ||
-    ipTypeFilter !== 'all' ||
+    assignmentFilter !== "all" ||
+    interfaceFilter !== "all" ||
+    ipTypeFilter !== "all" ||
     sinceDate ||
-    untilDate
+    untilDate,
   );
 
   if (loading) {
@@ -213,7 +267,9 @@ export default function DeviceIpHistoryTab({ deviceId }: DeviceIpHistoryTabProps
       <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-xs">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="mt-3 text-sm text-muted-foreground">Loading IP history...</p>
+          <p className="mt-3 text-sm text-muted-foreground">
+            {t("deviceIpHistoryTab.loadingIpHistory")}
+          </p>
         </div>
       </div>
     );
@@ -228,7 +284,7 @@ export default function DeviceIpHistoryTab({ deviceId }: DeviceIpHistoryTabProps
           onClick={fetchIpHistory}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Retry
+          {t("deviceIpHistoryTab.retry")}{" "}
         </button>
       </div>
     );
@@ -239,9 +295,13 @@ export default function DeviceIpHistoryTab({ deviceId }: DeviceIpHistoryTabProps
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <Network className="h-4 w-4 text-muted-foreground" />
-          <h3 className="text-lg font-semibold">IP Assignment History</h3>
+          <h3 className="text-lg font-semibold">
+            {t("deviceIpHistoryTab.ipAssignmentHistory")}
+          </h3>
           <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-            {filteredRows.length === fetchedCount ? fetchedCount : `${filteredRows.length} / ${fetchedCount}`}
+            {filteredRows.length === fetchedCount
+              ? fetchedCount
+              : `${filteredRows.length} / ${fetchedCount}`}
           </span>
         </div>
         <button
@@ -250,7 +310,7 @@ export default function DeviceIpHistoryTab({ deviceId }: DeviceIpHistoryTabProps
           className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
         >
           <RefreshCw className="h-3.5 w-3.5" />
-          Refresh
+          {t("deviceIpHistoryTab.refresh")}{" "}
         </button>
       </div>
 
@@ -259,7 +319,7 @@ export default function DeviceIpHistoryTab({ deviceId }: DeviceIpHistoryTabProps
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <input
             type="text"
-            placeholder="Search IP, interface, gateway, DNS..."
+            placeholder={t("deviceIpHistoryTab.searchIpInterfaceGatewayDns")}
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             className="w-full rounded-md border bg-background py-2 pl-9 pr-3 text-sm placeholder:text-muted-foreground focus:outline-hidden focus:ring-2 focus:ring-primary/20"
@@ -268,12 +328,16 @@ export default function DeviceIpHistoryTab({ deviceId }: DeviceIpHistoryTabProps
 
         <select
           value={assignmentFilter}
-          onChange={(event) => setAssignmentFilter(event.target.value as 'all' | IPAssignmentType)}
+          onChange={(event) =>
+            setAssignmentFilter(event.target.value as "all" | IPAssignmentType)
+          }
           className="rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary/20"
         >
           {ASSIGNMENT_TYPES.map((value) => (
             <option key={value} value={value}>
-              {value === 'all' ? 'All Assignments' : formatAssignment(value)}
+              {value === "all"
+                ? t("deviceIpHistoryTab.allAssignments")
+                : formatAssignment(value)}
             </option>
           ))}
         </select>
@@ -283,7 +347,7 @@ export default function DeviceIpHistoryTab({ deviceId }: DeviceIpHistoryTabProps
           onChange={(event) => setInterfaceFilter(event.target.value)}
           className="rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary/20"
         >
-          <option value="all">All Interfaces</option>
+          <option value="all">{t("deviceIpHistoryTab.allInterfaces")}</option>
           {interfaceNames.map((name) => (
             <option key={name} value={name}>
               {name}
@@ -293,12 +357,14 @@ export default function DeviceIpHistoryTab({ deviceId }: DeviceIpHistoryTabProps
 
         <select
           value={ipTypeFilter}
-          onChange={(event) => setIpTypeFilter(event.target.value as 'all' | IPType)}
+          onChange={(event) =>
+            setIpTypeFilter(event.target.value as "all" | IPType)
+          }
           className="rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary/20"
         >
-          <option value="all">All IP Types</option>
-          <option value="ipv4">IPv4</option>
-          <option value="ipv6">IPv6</option>
+          <option value="all">{t("deviceIpHistoryTab.allIpTypes")}</option>
+          <option value="ipv4">{t("deviceIpHistoryTab.ipv4")}</option>
+          <option value="ipv6">{t("deviceIpHistoryTab.ipv6")}</option>
         </select>
 
         <label className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm text-muted-foreground">
@@ -308,14 +374,14 @@ export default function DeviceIpHistoryTab({ deviceId }: DeviceIpHistoryTabProps
             checked={activeOnly}
             onChange={(event) => setActiveOnly(event.target.checked)}
           />
-          Active only
+          {t("deviceIpHistoryTab.activeOnly")}{" "}
         </label>
       </div>
 
       <div className="mt-3 flex flex-wrap items-center gap-3">
         <label className="inline-flex items-center gap-2 text-sm text-muted-foreground">
           <Clock3 className="h-4 w-4" />
-          Since
+          {t("deviceIpHistoryTab.since")}{" "}
           <input
             type="date"
             value={sinceDate}
@@ -324,7 +390,7 @@ export default function DeviceIpHistoryTab({ deviceId }: DeviceIpHistoryTabProps
           />
         </label>
         <label className="inline-flex items-center gap-2 text-sm text-muted-foreground">
-          Until
+          {t("deviceIpHistoryTab.until")}{" "}
           <input
             type="date"
             value={untilDate}
@@ -339,7 +405,7 @@ export default function DeviceIpHistoryTab({ deviceId }: DeviceIpHistoryTabProps
             className="inline-flex items-center gap-1.5 rounded-md border border-dashed px-3 py-2 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
           >
             <X className="h-3.5 w-3.5" />
-            Clear filters
+            {t("deviceIpHistoryTab.clearFilters")}{" "}
           </button>
         )}
       </div>
@@ -349,44 +415,81 @@ export default function DeviceIpHistoryTab({ deviceId }: DeviceIpHistoryTabProps
           <table className="min-w-full divide-y">
             <thead className="sticky top-0 bg-muted/40">
               <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                <th className="px-4 py-3">Interface</th>
-                <th className="px-4 py-3">IP Address</th>
-                <th className="px-4 py-3">Type</th>
-                <th className="px-4 py-3">Assignment</th>
-                <th className="px-4 py-3">First Seen</th>
-                <th className="px-4 py-3">Last Seen</th>
-                <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3">
+                  {t("deviceIpHistoryTab.interface")}
+                </th>
+                <th className="px-4 py-3">
+                  {t("deviceIpHistoryTab.ipAddress")}
+                </th>
+                <th className="px-4 py-3">{t("deviceIpHistoryTab.type")}</th>
+                <th className="px-4 py-3">
+                  {t("deviceIpHistoryTab.assignment")}
+                </th>
+                <th className="px-4 py-3">
+                  {t("deviceIpHistoryTab.firstSeen")}
+                </th>
+                <th className="px-4 py-3">
+                  {t("deviceIpHistoryTab.lastSeen")}
+                </th>
+                <th className="px-4 py-3">{t("deviceIpHistoryTab.status")}</th>
               </tr>
             </thead>
             <tbody className="divide-y">
               {paginatedRows.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                    {hasFilters ? 'No IP assignments match your filters.' : 'No IP history reported yet.'}
+                  <td
+                    colSpan={7}
+                    className="px-4 py-6 text-center text-sm text-muted-foreground"
+                  >
+                    {hasFilters
+                      ? t("deviceIpHistoryTab.noIpAssignmentsMatchYourFilters")
+                      : t("deviceIpHistoryTab.noIpHistoryReportedYet")}
                   </td>
                 </tr>
               ) : (
                 paginatedRows.map((row, index) => (
-                  <tr key={row.id ?? `${row.interfaceName ?? 'iface'}-${row.ipAddress ?? 'ip'}-${index}`} className="text-sm hover:bg-muted/30">
-                    <td className="px-4 py-3 font-medium">{row.interfaceName ?? '—'}</td>
-                    <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{row.ipAddress ?? '—'}</td>
+                  <tr
+                    key={
+                      row.id ??
+                      `${row.interfaceName ?? "iface"}-${row.ipAddress ?? "ip"}-${index}`
+                    }
+                    className="text-sm hover:bg-muted/30"
+                  >
+                    <td className="px-4 py-3 font-medium">
+                      {row.interfaceName ?? "—"}
+                    </td>
+                    <td className="px-4 py-3 font-mono text-xs text-muted-foreground">
+                      {row.ipAddress ?? "—"}
+                    </td>
                     <td className="px-4 py-3">
                       <span className="inline-flex rounded px-1.5 py-0.5 text-xs font-medium bg-muted text-muted-foreground">
-                        {(row.ipType ?? 'ipv4').toUpperCase()}
+                        {(row.ipType ?? "ipv4").toUpperCase()}
                       </span>
                     </td>
                     <td className="px-4 py-3">
-                      <span className={`inline-flex rounded px-1.5 py-0.5 text-xs font-medium ${badgeClassForAssignment(row.assignmentType)}`}>
+                      <span
+                        className={`inline-flex rounded px-1.5 py-0.5 text-xs font-medium ${badgeClassForAssignment(row.assignmentType)}`}
+                      >
                         {formatAssignment(row.assignmentType)}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-muted-foreground">{formatDateTime(row.firstSeen)}</td>
-                    <td className="px-4 py-3 text-muted-foreground">{formatDateTime(row.lastSeen)}</td>
+                    <td className="px-4 py-3 text-muted-foreground">
+                      {formatDateTime(row.firstSeen)}
+                    </td>
+                    <td className="px-4 py-3 text-muted-foreground">
+                      {formatDateTime(row.lastSeen)}
+                    </td>
                     <td className="px-4 py-3">
-                      <span className={`inline-flex rounded px-1.5 py-0.5 text-xs font-medium ${
-                        row.isActive ? 'bg-green-500/10 text-green-600' : 'bg-muted text-muted-foreground'
-                      }`}>
-                        {row.isActive ? 'Active' : 'Inactive'}
+                      <span
+                        className={`inline-flex rounded px-1.5 py-0.5 text-xs font-medium ${
+                          row.isActive
+                            ? "bg-green-500/10 text-green-600"
+                            : "bg-muted text-muted-foreground"
+                        }`}
+                      >
+                        {row.isActive
+                          ? t("deviceIpHistoryTab.active")
+                          : t("deviceIpHistoryTab.inactive")}
                       </span>
                     </td>
                   </tr>
@@ -400,7 +503,9 @@ export default function DeviceIpHistoryTab({ deviceId }: DeviceIpHistoryTabProps
       {totalPages > 1 && (
         <div className="mt-4 flex items-center justify-between">
           <p className="text-sm text-muted-foreground">
-            Showing {startIndex + 1} - {Math.min(startIndex + PAGE_SIZE, filteredRows.length)} of {filteredRows.length}
+            {t("deviceIpHistoryTab.showing")} {startIndex + 1} -{" "}
+            {Math.min(startIndex + PAGE_SIZE, filteredRows.length)}{" "}
+            {t("deviceIpHistoryTab.of")} {filteredRows.length}
           </p>
           <div className="flex items-center gap-2">
             <button
@@ -409,7 +514,7 @@ export default function DeviceIpHistoryTab({ deviceId }: DeviceIpHistoryTabProps
               disabled={currentPage === 1}
               className="rounded-md border px-2 py-1 text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
             >
-              First
+              {t("deviceIpHistoryTab.first")}{" "}
             </button>
             <button
               type="button"
@@ -420,11 +525,14 @@ export default function DeviceIpHistoryTab({ deviceId }: DeviceIpHistoryTabProps
               <ChevronLeft className="h-4 w-4" />
             </button>
             <span className="min-w-[100px] text-center text-sm">
-              Page {currentPage} of {totalPages}
+              {t("deviceIpHistoryTab.page")} {currentPage}{" "}
+              {t("deviceIpHistoryTab.of")} {totalPages}
             </span>
             <button
               type="button"
-              onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
+              onClick={() =>
+                setCurrentPage((page) => Math.min(totalPages, page + 1))
+              }
               disabled={currentPage === totalPages}
               className="flex h-9 w-9 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
             >
@@ -436,7 +544,7 @@ export default function DeviceIpHistoryTab({ deviceId }: DeviceIpHistoryTabProps
               disabled={currentPage === totalPages}
               className="rounded-md border px-2 py-1 text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
             >
-              Last
+              {t("deviceIpHistoryTab.last")}{" "}
             </button>
           </div>
         </div>
@@ -444,7 +552,10 @@ export default function DeviceIpHistoryTab({ deviceId }: DeviceIpHistoryTabProps
 
       {fetchedCount >= MAX_FETCH_LIMIT && (
         <p className="mt-3 text-xs text-muted-foreground">
-          Showing the most recent {MAX_FETCH_LIMIT} assignments. Narrow filters to inspect specific ranges.
+          {t("deviceIpHistoryTab.showingTheMostRecent")} {MAX_FETCH_LIMIT}{" "}
+          {t(
+            "deviceIpHistoryTab.assignmentsNarrowFiltersToInspectSpecific",
+          )}{" "}
         </p>
       )}
     </div>

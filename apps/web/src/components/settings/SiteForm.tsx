@@ -1,4 +1,6 @@
 import { useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -7,8 +9,8 @@ import { zodResolver } from '@hookform/resolvers/zod';
 // The empty-string branch on contactEmail is load-bearing: react-hook-form
 // sends `''` for unfilled inputs, so `z.string().email().optional()` alone
 // would block submit on a name-only form.
-const siteSchema = z.object({
-  name: z.string().min(1, 'Site name is required'),
+const createSiteSchema = (t: (key: string) => string) => z.object({
+  name: z.string().min(1, t('siteForm.validation.nameRequired')),
   timezone: z.string().optional(),
   addressLine1: z.string().optional(),
   addressLine2: z.string().optional(),
@@ -17,11 +19,11 @@ const siteSchema = z.object({
   postalCode: z.string().optional(),
   country: z.string().optional(),
   contactName: z.string().optional(),
-  contactEmail: z.union([z.string().email('Enter a valid email address'), z.literal('')]).optional(),
+  contactEmail: z.union([z.string().email(t('siteForm.validation.email')), z.literal('')]).optional(),
   contactPhone: z.string().optional()
 });
 
-type SiteFormValues = z.infer<typeof siteSchema>;
+type SiteFormValues = z.infer<ReturnType<typeof createSiteSchema>>;
 
 type SiteFormProps = {
   onSubmit?: (values: SiteFormValues) => void | Promise<void>;
@@ -48,9 +50,11 @@ export default function SiteForm({
   onSubmit,
   onCancel,
   defaultValues,
-  submitLabel = 'Save site',
+  submitLabel,
   loading
 }: SiteFormProps) {
+  const { t } = useTranslation('settings');
+  const siteSchema = useMemo(() => createSiteSchema(t), [t]);
   const {
     register,
     handleSubmit,
@@ -74,6 +78,7 @@ export default function SiteForm({
   });
 
   const isLoading = useMemo(() => loading ?? isSubmitting, [loading, isSubmitting]);
+  const resolvedSubmitLabel = submitLabel ?? t('siteForm.actions.save');
 
   // Ensure the selected/default timezone is always a real <option>, otherwise a
   // native select silently falls back to its first option (e.g. a partner tz
@@ -93,16 +98,16 @@ export default function SiteForm({
       className="space-y-6 rounded-lg border bg-card p-6 shadow-xs"
     >
       <p className="text-sm text-muted-foreground">
-        Only the site name is required. Address and contact are optional — you can fill these in later.
+        {t('siteForm.description')}
       </p>
       <div className="grid gap-6 md:grid-cols-2">
         <div className="space-y-2">
           <label htmlFor="site-name" className="text-sm font-medium">
-            Site name
+            {t('siteForm.fields.name')}
           </label>
           <input
             id="site-name"
-            placeholder="Headquarters"
+            placeholder={t('siteForm.placeholders.name')}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('name')}
           />
@@ -111,7 +116,7 @@ export default function SiteForm({
 
         <div className="space-y-2">
           <label htmlFor="site-timezone" className="text-sm font-medium">
-            Timezone
+            {t('siteForm.fields.timezone')}
           </label>
           <select
             id="site-timezone"
@@ -131,11 +136,11 @@ export default function SiteForm({
 
         <div className="space-y-2 md:col-span-2">
           <label htmlFor="address-line-1" className="text-sm font-medium">
-            Address line 1
+            {t('siteForm.fields.addressLine1')}
           </label>
           <input
             id="address-line-1"
-            placeholder="123 Market Street"
+            placeholder={t('siteForm.placeholders.addressLine1')}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('addressLine1')}
           />
@@ -146,11 +151,11 @@ export default function SiteForm({
 
         <div className="space-y-2 md:col-span-2">
           <label htmlFor="address-line-2" className="text-sm font-medium">
-            Address line 2
+            {t('siteForm.fields.addressLine2')}
           </label>
           <input
             id="address-line-2"
-            placeholder="Suite 500"
+            placeholder={t('siteForm.placeholders.addressLine2')}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('addressLine2')}
           />
@@ -158,11 +163,11 @@ export default function SiteForm({
 
         <div className="space-y-2">
           <label htmlFor="city" className="text-sm font-medium">
-            City
+            {t('siteForm.fields.city')}
           </label>
           <input
             id="city"
-            placeholder="San Francisco"
+            placeholder={t('siteForm.placeholders.city')}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('city')}
           />
@@ -171,11 +176,11 @@ export default function SiteForm({
 
         <div className="space-y-2">
           <label htmlFor="state" className="text-sm font-medium">
-            State/Region
+            {t('siteForm.fields.state')}
           </label>
           <input
             id="state"
-            placeholder="CA"
+            placeholder={t('siteForm.placeholders.state')}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('state')}
           />
@@ -184,11 +189,11 @@ export default function SiteForm({
 
         <div className="space-y-2">
           <label htmlFor="postal-code" className="text-sm font-medium">
-            Postal code
+            {t('siteForm.fields.postalCode')}
           </label>
           <input
             id="postal-code"
-            placeholder="94107"
+            placeholder={t('siteForm.placeholders.postalCode')}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('postalCode')}
           />
@@ -199,11 +204,11 @@ export default function SiteForm({
 
         <div className="space-y-2">
           <label htmlFor="country" className="text-sm font-medium">
-            Country
+            {t('siteForm.fields.country')}
           </label>
           <input
             id="country"
-            placeholder="United States"
+            placeholder={t('siteForm.placeholders.country')}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('country')}
           />
@@ -214,15 +219,15 @@ export default function SiteForm({
       </div>
 
       <div className="rounded-md border bg-muted/20 p-4">
-        <h3 className="text-sm font-semibold">Primary contact</h3>
+        <h3 className="text-sm font-semibold">{t('siteForm.primaryContact')}</h3>
         <div className="mt-4 grid gap-4 md:grid-cols-3">
           <div className="space-y-2">
             <label htmlFor="contact-name" className="text-sm font-medium">
-              Name
+              {t('common:labels.name')}
             </label>
             <input
               id="contact-name"
-              placeholder="Alex Morgan"
+              placeholder={t('siteForm.placeholders.contactName')}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('contactName')}
             />
@@ -233,12 +238,12 @@ export default function SiteForm({
 
           <div className="space-y-2">
             <label htmlFor="contact-email" className="text-sm font-medium">
-              Email
+              {t('siteForm.fields.email')}
             </label>
             <input
               id="contact-email"
               type="email"
-              placeholder="alex@company.com"
+              placeholder={t('siteForm.placeholders.contactEmail')}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('contactEmail')}
             />
@@ -249,11 +254,11 @@ export default function SiteForm({
 
           <div className="space-y-2">
             <label htmlFor="contact-phone" className="text-sm font-medium">
-              Phone
+              {t('siteForm.fields.phone')}
             </label>
             <input
               id="contact-phone"
-              placeholder="+1 (555) 123-4567"
+              placeholder={t('siteForm.placeholders.contactPhone')}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('contactPhone')}
             />
@@ -270,14 +275,14 @@ export default function SiteForm({
           onClick={onCancel}
           className="h-11 w-full rounded-md border bg-background text-sm font-medium text-foreground transition hover:bg-muted sm:w-auto sm:px-6"
         >
-          Cancel
+          {t('common:actions.cancel')}
         </button>
         <button
           type="submit"
           disabled={isLoading}
           className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto sm:px-6"
         >
-          {isLoading ? 'Saving...' : submitLabel}
+          {isLoading ? t('common:states.saving') : resolvedSubmitLabel}
         </button>
       </div>
     </form>

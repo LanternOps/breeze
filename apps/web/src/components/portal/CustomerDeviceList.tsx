@@ -1,4 +1,5 @@
 import { Monitor } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import type { CustomerDevice, CustomerDeviceStatus } from './DeviceStatusCard';
 
@@ -14,13 +15,15 @@ const statusBadge: Record<CustomerDeviceStatus, string> = {
 };
 
 export default function CustomerDeviceList({ devices, onSelect }: CustomerDeviceListProps) {
+  const { t } = useTranslation('portal');
+
   return (
     <div className="overflow-hidden rounded-lg border bg-card shadow-xs">
       <div className="flex items-center justify-between border-b px-4 py-3">
         <div>
-          <h2 className="text-sm font-semibold text-foreground">My Devices</h2>
+          <h2 className="text-sm font-semibold text-foreground">{t('customerDeviceList.title')}</h2>
           <p className="text-xs text-muted-foreground">
-            {devices.length} devices linked to your account
+            {t('customerDeviceList.deviceCount', { count: devices.length })}
           </p>
         </div>
       </div>
@@ -47,7 +50,7 @@ export default function CustomerDeviceList({ devices, onSelect }: CustomerDevice
                 statusBadge[device.status]
               )}
             >
-              {device.status}
+              {t(/* i18n-dynamic */ `deviceStatus.status.${device.status}`)}
             </span>
           </button>
         ))}

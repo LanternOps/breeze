@@ -1,4 +1,6 @@
 import { useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 import { AlertTriangle, TrendingUp, TrendingDown, Minus } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { severityConfig, severityOrder, type AlertSeverity } from './alertConfig';
@@ -30,6 +32,7 @@ export default function AlertsSummary({
   onFilterBySeverity,
   className
 }: AlertsSummaryProps) {
+  const { t } = useTranslation('alerts');
   const sortedAlerts = useMemo(() => {
     const alertMap = new Map(alerts.map(a => [a.severity, a]));
     return severityOrder.map(severity => {
@@ -62,7 +65,7 @@ export default function AlertsSummary({
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
           <AlertTriangle className="h-4 w-4 text-muted-foreground" />
-          <span className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Active Alerts</span>
+          <span className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">{t('alertsSummary.activeAlerts')}</span>
         </div>
         <div className="flex items-center gap-2">
           <span className="text-3xl font-bold tracking-tight">{totalActive}</span>
@@ -108,7 +111,7 @@ export default function AlertsSummary({
                 alert.severity === 'high' && hasAlerts && 'ring-orange-500/30',
                 'cursor-pointer'
               )}
-              title={`View ${config.label.toLowerCase()} alerts`}
+              title={t('alertsSummary.viewSeverityAlerts', { severity: t(/* i18n-dynamic */ `alertsSummary.severity.${alert.severity}`).toLowerCase() })}
             >
               <span className={cn(
                 'font-bold tabular-nums',
@@ -121,7 +124,7 @@ export default function AlertsSummary({
                 'chart-legend-xs mt-0.5',
                 hasAlerts ? 'text-muted-foreground font-medium' : 'text-muted-foreground/50'
               )}>
-                {config.label}
+                {t(/* i18n-dynamic */ `alertsSummary.severity.${alert.severity}`)}
               </span>
               {trend.direction !== 'stable' && (
                 <div
@@ -151,7 +154,7 @@ export default function AlertsSummary({
 
       {totalPrevious !== undefined && (
         <p className="chart-legend-xs text-muted-foreground/70 text-center mt-3">
-          vs. yesterday: {totalPrevious} total
+          {t('alertsSummary.vsYesterday')} {totalPrevious} {t('alertsSummary.total')}
         </p>
       )}
     </div>
@@ -164,6 +167,7 @@ export function AlertsSummaryCompact({
   onFilterBySeverity,
   className
 }: AlertsSummaryProps) {
+  const { t } = useTranslation('alerts');
   const sortedAlerts = useMemo(() => {
     const alertMap = new Map(alerts.map(a => [a.severity, a]));
     return severityOrder.map(severity => {
@@ -185,7 +189,7 @@ export function AlertsSummaryCompact({
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <AlertTriangle className="h-4 w-4 text-muted-foreground" />
-          <span className="text-sm font-medium">Alerts</span>
+          <span className="text-sm font-medium">{t('alertsSummary.alerts')}</span>
         </div>
         <span className="text-lg font-bold">{totalActive}</span>
       </div>
@@ -207,14 +211,14 @@ export function AlertsSummaryCompact({
                 config.color,
                 'cursor-pointer'
               )}
-              title={`${alert.count} ${config.label.toLowerCase()} alerts`}
+              title={t('alertsSummary.severityAlertCount', { count: alert.count, severity: t(/* i18n-dynamic */ `alertsSummary.severity.${alert.severity}`).toLowerCase() })}
             >
               {alert.count}
             </button>
           );
         })}
         {totalActive === 0 && (
-          <span className="text-xs text-muted-foreground">No active alerts</span>
+          <span className="text-xs text-muted-foreground">{t('alertsSummary.noActiveAlerts')}</span>
         )}
       </div>
     </div>

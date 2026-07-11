@@ -1,4 +1,6 @@
 import { Activity, AlertTriangle, ClipboardCheck, Layers } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 import { cn } from '@/lib/utils';
 import type { CisSummary } from './types';
 import HelpTooltip from '../shared/HelpTooltip';
@@ -10,6 +12,7 @@ interface CisSummaryCardsProps {
 }
 
 export default function CisSummaryCards({ summary, baselinesCount, pendingRemediations }: CisSummaryCardsProps) {
+  const { t } = useTranslation('security');
   const score = summary?.averageScore ?? 0;
   const scoreColor = score >= 80 ? 'text-emerald-600' : score >= 60 ? 'text-amber-600' : 'text-red-600';
   const barColor = score >= 80 ? 'bg-emerald-500' : score >= 60 ? 'bg-amber-500' : 'bg-red-500';
@@ -24,8 +27,8 @@ export default function CisSummaryCards({ summary, baselinesCount, pendingRemedi
           </div>
           <div className="min-w-0">
             <p className="text-xs text-muted-foreground">
-              Average Score
-              <HelpTooltip text="Percentage of passing checks across all devices and baselines. Higher is better." />
+              {t('cisHardeningCisSummaryCards.averageScore')}
+              <HelpTooltip text={t('cisHardeningCisSummaryCards.averageScoreTooltip')} />
             </p>
             <p className={cn('text-xl font-semibold', scoreColor)}>{Math.round(score)}%</p>
           </div>
@@ -41,7 +44,7 @@ export default function CisSummaryCards({ summary, baselinesCount, pendingRemedi
             <AlertTriangle className="h-4 w-4 text-muted-foreground" />
           </div>
           <div className="min-w-0">
-            <p className="text-xs text-muted-foreground">Failing Devices</p>
+            <p className="text-xs text-muted-foreground">{t('cisHardeningCisSummaryCards.failingDevices')}</p>
             <p className={cn('text-xl font-semibold', failingDevices > 0 ? 'text-red-600' : 'text-foreground')}>
               {failingDevices}
             </p>
@@ -55,7 +58,7 @@ export default function CisSummaryCards({ summary, baselinesCount, pendingRemedi
             <Layers className="h-4 w-4 text-muted-foreground" />
           </div>
           <div className="min-w-0">
-            <p className="text-xs text-muted-foreground">Active Baselines</p>
+            <p className="text-xs text-muted-foreground">{t('cisHardeningCisSummaryCards.activeBaselines')}</p>
             <p className="text-xl font-semibold">{baselinesCount}</p>
           </div>
         </div>
@@ -68,8 +71,8 @@ export default function CisSummaryCards({ summary, baselinesCount, pendingRemedi
           </div>
           <div className="min-w-0">
             <p className="text-xs text-muted-foreground">
-              Pending Remediations
-              <HelpTooltip text="Automated fixes awaiting approval. Review before applying -- some changes may affect system behavior." />
+              {t('cisHardeningCisSummaryCards.pendingRemediations')}
+              <HelpTooltip text={t('cisHardeningCisSummaryCards.pendingRemediationsTooltip')} />
             </p>
             <p className={cn('text-xl font-semibold', pendingRemediations > 0 ? 'text-amber-600' : 'text-foreground')}>
               {pendingRemediations}

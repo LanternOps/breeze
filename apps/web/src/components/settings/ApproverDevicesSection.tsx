@@ -1,3 +1,5 @@
+import { i18n } from '@/lib/i18n';
+import { useTranslation } from 'react-i18next';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, Loader2, ShieldCheck, X } from 'lucide-react';
 import {
@@ -36,6 +38,7 @@ function deviceTitle(d: ApproverDevice): string {
 const OK_RESPONSE = { ok: true, status: 200, json: async () => ({ success: true }) } as Response;
 
 export default function ApproverDevicesSection() {
+  const { t } = useTranslation('settings');
   const [devices, setDevices] = useState<ApproverDevice[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | undefined>();
@@ -53,7 +56,7 @@ export default function ApproverDevicesSection() {
       const result = await listApproverDevices();
       setDevices(result.filter((d) => !d.disabledAt));
     } catch (err) {
-      setLoadError(err instanceof Error ? err.message : 'Failed to load approver devices');
+      setLoadError(err instanceof Error ? err.message : t('approverDevicesSection.failedToLoadApproverDevices'));
     } finally {
       setIsLoading(false);
     }
@@ -79,14 +82,14 @@ export default function ApproverDevicesSection() {
           await registerApproverDevice(trimmed);
           return OK_RESPONSE;
         },
-        errorFallback: 'Failed to register this device',
-        successMessage: 'This device can now approve requests',
+        errorFallback: t('approverDevicesSection.failedToRegisterThisDevice'),
+        successMessage: t('approverDevicesSection.thisDeviceCanNowApproveRequests'),
       });
       setLabel('');
       await load();
     } catch (err) {
       if (err instanceof ActionError) return; // already toasted by runAction
-      showToast({ type: 'error', message: err instanceof Error ? err.message : 'Failed to register this device' });
+      showToast({ type: 'error', message: err instanceof Error ? err.message : t('approverDevicesSection.failedToRegisterThisDevice') });
     } finally {
       setIsRegistering(false);
     }
@@ -99,14 +102,14 @@ export default function ApproverDevicesSection() {
     try {
       await runAction({
         request: () => revokeApproverDevice(id),
-        errorFallback: 'Failed to revoke device',
-        successMessage: 'Device revoked',
+        errorFallback: t('approverDevicesSection.failedToRevokeDevice'),
+        successMessage: t('approverDevicesSection.deviceRevoked'),
       });
       setConfirm(null);
       await load();
     } catch (err) {
       if (!(err instanceof ActionError)) {
-        showToast({ type: 'error', message: err instanceof Error ? err.message : 'Failed to revoke device' });
+        showToast({ type: 'error', message: err instanceof Error ? err.message : t('approverDevicesSection.failedToRevokeDevice') });
       }
     } finally {
       setMutatingId(null);
@@ -120,15 +123,15 @@ export default function ApproverDevicesSection() {
     try {
       await runAction({
         request: () => renameApproverDevice(id, next),
-        errorFallback: 'Failed to rename device',
-        successMessage: 'Device renamed',
+        errorFallback: t('approverDevicesSection.failedToRenameDevice'),
+        successMessage: t('approverDevicesSection.deviceRenamed'),
       });
       setDevices((prev) => prev.map((d) => (d.id === id ? { ...d, label: next } : d)));
       setEditingId(null);
       setEditingLabel('');
     } catch (err) {
       if (!(err instanceof ActionError)) {
-        showToast({ type: 'error', message: err instanceof Error ? err.message : 'Failed to rename device' });
+        showToast({ type: 'error', message: err instanceof Error ? err.message : t('approverDevicesSection.failedToRenameDevice') });
       }
     } finally {
       setMutatingId(null);
@@ -138,21 +141,16 @@ export default function ApproverDevicesSection() {
   return (
     <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs" data-testid="approver-devices-section">
       <div className="space-y-1">
-        <h2 className="text-lg font-semibold">Approval security</h2>
+        <h2 className="text-lg font-semibold">{t('approverDevicesSection.approvalSecurity')}</h2>
         <p className="text-sm text-muted-foreground">
-          These devices can confirm high-risk approvals (privileged access, AI actions) with a
-          biometric. Your phone registers itself automatically when you sign in to the Breeze mobile
-          app; you can also register this browser with Windows Hello or Touch ID. All of this is
-          optional — approvals still work without it.
-        </p>
+          {t('approverDevicesSection.theseDevicesCanConfirmHighRiskApprovalsPrivilegedAccessA')}</p>
       </div>
 
       <div className="space-y-3">
         {isLoading ? (
           <div className="flex items-center gap-2 rounded-md border bg-muted/30 p-4 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-            Loading approver devices…
-          </div>
+            {t('approverDevicesSection.loadingApproverDevices')}</div>
         ) : loadError ? (
           <div
             role="alert"
@@ -164,17 +162,14 @@ export default function ApproverDevicesSection() {
               onClick={() => void load()}
               className="rounded-md border border-destructive/40 px-2 py-1 text-xs font-medium hover:bg-destructive/5"
             >
-              Try again
-            </button>
+              {t('approverDevicesSection.tryAgain')}</button>
           </div>
         ) : activeDevices.length === 0 ? (
           <div
             data-testid="approver-devices-empty"
             className="rounded-md border bg-muted/30 p-4 text-sm text-muted-foreground"
           >
-            No approver devices registered yet. Sign in to the Breeze mobile app on your phone and it
-            appears here automatically, or register this browser below to approve with a biometric.
-          </div>
+            {t('approverDevicesSection.noApproverDevicesRegisteredYetSignInToTheBreezeMobileApp')}</div>
         ) : (
           activeDevices.map((device) => {
             const isEditing = editingId === device.id;
@@ -212,14 +207,13 @@ export default function ApproverDevicesSection() {
                           data-testid={`approver-device-platform-badge-${device.id}`}
                           className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
                         >
-                          Platform-bound
-                        </span>
+                          {t('approverDevicesSection.platformBound')}</span>
                       )}
                     </div>
                     <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
-                      <dt>Registered</dt>
+                      <dt>{t('approverDevicesSection.registered')}</dt>
                       <dd title={formatAbsolute(device.createdAt)}>{formatRelative(device.createdAt)}</dd>
-                      <dt>Last used</dt>
+                      <dt>{t('approverDevicesSection.lastUsed')}</dt>
                       <dd title={formatAbsolute(device.lastUsedAt)}>{formatRelative(device.lastUsedAt)}</dd>
                     </dl>
                   </div>
@@ -233,7 +227,7 @@ export default function ApproverDevicesSection() {
                           data-testid={`approver-device-rename-save-${device.id}`}
                           className="h-9 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
                         >
-                          {isMutating ? 'Saving…' : 'Save'}
+                          {isMutating ? t('approverDevicesSection.saving') : t('approverDevicesSection.save')}
                         </button>
                         <button
                           type="button"
@@ -244,8 +238,7 @@ export default function ApproverDevicesSection() {
                           disabled={isMutating}
                           className="h-9 rounded-md border px-3 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
                         >
-                          Cancel
-                        </button>
+                          {t('approverDevicesSection.cancel')}</button>
                       </>
                     ) : (
                       <>
@@ -259,8 +252,7 @@ export default function ApproverDevicesSection() {
                           data-testid={`approver-device-rename-${device.id}`}
                           className="h-9 rounded-md border px-3 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
                         >
-                          Rename
-                        </button>
+                          {t('approverDevicesSection.rename')}</button>
                         <button
                           type="button"
                           onClick={() => setConfirm({ device })}
@@ -268,8 +260,7 @@ export default function ApproverDevicesSection() {
                           data-testid={`approver-device-revoke-${device.id}`}
                           className="h-9 rounded-md border border-destructive/40 px-3 text-sm font-medium text-destructive transition hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-60"
                         >
-                          Revoke
-                        </button>
+                          {t('approverDevicesSection.revoke')}</button>
                       </>
                     )}
                   </div>
@@ -282,23 +273,19 @@ export default function ApproverDevicesSection() {
 
       <div className="space-y-4 rounded-md border p-4">
         <div className="space-y-1">
-          <h3 className="text-sm font-medium">Register this browser</h3>
+          <h3 className="text-sm font-medium">{t('approverDevicesSection.registerThisBrowser')}</h3>
           <p className="text-xs text-muted-foreground">
-            Optional — your phone is already an approver once you sign in to the mobile app. Register
-            this browser too and you'll be prompted for Windows Hello, Touch ID, or your device's
-            biometric.
-          </p>
+            {t('approverDevicesSection.optionalYourPhoneIsAlreadyAnApproverOnceYouSignInToTheMo')}</p>
         </div>
         <div className="space-y-2">
           <label className="text-sm font-medium" htmlFor="approver-device-label">
-            Device name
-          </label>
+            {t('approverDevicesSection.deviceName')}</label>
           <input
             id="approver-device-label"
             type="text"
             value={label}
             onChange={(e) => setLabel(e.target.value)}
-            placeholder="Front-desk laptop"
+            placeholder={t('approverDevicesSection.frontDeskLaptop')}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm"
             disabled={isRegistering}
             data-testid="approver-device-label-input"
@@ -311,7 +298,7 @@ export default function ApproverDevicesSection() {
           data-testid="approver-device-register"
           className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          {isRegistering ? 'Registering…' : 'Register this device'}
+          {isRegistering ? t('approverDevicesSection.registering') : t('approverDevicesSection.registerThisDevice')}
         </button>
       </div>
 
@@ -346,23 +333,21 @@ function RevokeConfirmDialog({
             <div className="flex h-10 w-10 items-center justify-center rounded-full bg-destructive/10">
               <AlertTriangle className="h-5 w-5 text-destructive" aria-hidden />
             </div>
-            <h2 className="text-lg font-semibold">Revoke {deviceTitle(device)}?</h2>
+            <h2 className="text-lg font-semibold">{i18n.t('settings:approverDevicesSection.revoke')}{deviceTitle(device)}?</h2>
           </div>
           <button
             type="button"
             onClick={onCancel}
             disabled={revoking}
             className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted disabled:cursor-not-allowed"
-            aria-label="Close"
+            aria-label={i18n.t('settings:approverDevicesSection.close')}
           >
             <X className="h-4 w-4" aria-hidden />
           </button>
         </div>
 
         <p className="mt-4 text-sm text-muted-foreground">
-          This device can no longer approve requests with a biometric. You can re-register it at any
-          time.
-        </p>
+          {i18n.t('settings:approverDevicesSection.thisDeviceCanNoLongerApproveRequestsWithABiometricYouCan')}</p>
 
         <div className="mt-6 flex justify-end gap-3">
           <button
@@ -371,8 +356,7 @@ function RevokeConfirmDialog({
             disabled={revoking}
             className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
           >
-            Cancel
-          </button>
+            {i18n.t('settings:approverDevicesSection.cancel')}</button>
           <button
             type="button"
             onClick={onConfirm}
@@ -380,7 +364,7 @@ function RevokeConfirmDialog({
             data-testid="approver-device-revoke-confirm"
             className="inline-flex h-10 items-center justify-center rounded-md bg-destructive px-4 text-sm font-medium text-destructive-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {revoking ? 'Revoking…' : 'Revoke device'}
+            {revoking ? i18n.t('settings:approverDevicesSection.revoking') : i18n.t('settings:approverDevicesSection.revokeDevice')}
           </button>
         </div>
       </div>

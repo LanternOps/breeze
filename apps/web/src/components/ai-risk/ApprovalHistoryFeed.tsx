@@ -1,57 +1,83 @@
-import { useState } from 'react';
-import { CheckCircle, XCircle, Clock, ChevronDown, ChevronRight } from 'lucide-react';
-import { formatRelativeTime, formatToolName } from '../../lib/utils';
-import type { ToolExecution } from './AiRiskDashboard';
-
+import { useTranslation } from "react-i18next";
+import "@/lib/i18n";
+import { useState } from "react";
+import {
+  CheckCircle,
+  XCircle,
+  Clock,
+  ChevronDown,
+  ChevronRight,
+} from "lucide-react";
+import { formatRelativeTime, formatToolName } from "../../lib/utils";
+import type { ToolExecution } from "./AiRiskDashboard";
 interface Props {
   executions: ToolExecution[];
   loading: boolean;
 }
-
-type FilterStatus = 'all' | 'pending' | 'approved' | 'rejected';
-
+type FilterStatus = "all" | "pending" | "approved" | "rejected";
 const TIER3_TOOLS = new Set([
-  'execute_command',
-  'run_script',
-  'manage_services',
-  'security_scan',
-  'file_operations',
-  'disk_cleanup',
-  'create_automation',
-  'network_discovery',
+  "execute_command",
+  "run_script",
+  "manage_services",
+  "security_scan",
+  "file_operations",
+  "disk_cleanup",
+  "create_automation",
+  "network_discovery",
 ]);
-
-const STATUS_BADGE: Record<string, { icon: typeof CheckCircle; className: string }> = {
-  approved: { icon: CheckCircle, className: 'bg-green-500/15 text-green-700 border-green-500/30' },
-  completed: { icon: CheckCircle, className: 'bg-green-500/15 text-green-700 border-green-500/30' },
-  rejected: { icon: XCircle, className: 'bg-red-500/15 text-red-700 border-red-500/30' },
-  pending: { icon: Clock, className: 'bg-amber-500/15 text-amber-700 border-amber-500/30' },
+const STATUS_BADGE: Record<
+  string,
+  {
+    icon: typeof CheckCircle;
+    className: string;
+  }
+> = {
+  approved: {
+    icon: CheckCircle,
+    className: "bg-green-500/15 text-green-700 border-green-500/30",
+  },
+  completed: {
+    icon: CheckCircle,
+    className: "bg-green-500/15 text-green-700 border-green-500/30",
+  },
+  rejected: {
+    icon: XCircle,
+    className: "bg-red-500/15 text-red-700 border-red-500/30",
+  },
+  pending: {
+    icon: Clock,
+    className: "bg-amber-500/15 text-amber-700 border-amber-500/30",
+  },
 };
-
 export function ApprovalHistoryFeed({ executions, loading }: Props) {
-  const [filter, setFilter] = useState<FilterStatus>('all');
+  const { t } = useTranslation("security");
+  const [filter, setFilter] = useState<FilterStatus>("all");
   const [expandedId, setExpandedId] = useState<string | null>(null);
-
   // Filter to Tier 3 tools only
   const tier3Execs = executions.filter((e) => TIER3_TOOLS.has(e.toolName));
-  const filtered = filter === 'all'
-    ? tier3Execs
-    : tier3Execs.filter((e) => {
-        if (filter === 'approved') return e.status === 'approved' || e.status === 'completed';
-        return e.status === filter;
-      });
-
-  const filters: { label: string; value: FilterStatus }[] = [
-    { label: 'All', value: 'all' },
-    { label: 'Pending', value: 'pending' },
-    { label: 'Approved', value: 'approved' },
-    { label: 'Rejected', value: 'rejected' },
+  const filtered =
+    filter === "all"
+      ? tier3Execs
+      : tier3Execs.filter((e) => {
+          if (filter === "approved")
+            return e.status === "approved" || e.status === "completed";
+          return e.status === filter;
+        });
+  const filters: {
+    label: string;
+    value: FilterStatus;
+  }[] = [
+    { label: t("aiRiskApprovalHistoryFeed.all2"), value: "all" },
+    { label: t("aiRiskApprovalHistoryFeed.pending"), value: "pending" },
+    { label: t("aiRiskApprovalHistoryFeed.approved"), value: "approved" },
+    { label: t("aiRiskApprovalHistoryFeed.rejected"), value: "rejected" },
   ];
-
   return (
     <div>
       <div className="mb-4 flex items-center justify-between">
-        <h2 className="text-lg font-semibold">Tier 3 Approval History</h2>
+        <h2 className="text-lg font-semibold">
+          {t("aiRiskApprovalHistoryFeed.tier3ApprovalHistory")}
+        </h2>
         <div className="flex gap-1">
           {filters.map((f) => (
             <button
@@ -59,8 +85,8 @@ export function ApprovalHistoryFeed({ executions, loading }: Props) {
               onClick={() => setFilter(f.value)}
               className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
                 filter === f.value
-                  ? 'border-primary bg-primary text-primary-foreground'
-                  : 'text-muted-foreground hover:bg-muted'
+                  ? "border-primary bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:bg-muted"
               }`}
             >
               {f.label}
@@ -72,12 +98,15 @@ export function ApprovalHistoryFeed({ executions, loading }: Props) {
       {loading ? (
         <div className="space-y-3">
           {[1, 2, 3].map((i) => (
-            <div key={i} className="h-16 animate-pulse rounded-lg border bg-muted/30" />
+            <div
+              key={i}
+              className="h-16 animate-pulse rounded-lg border bg-muted/30"
+            />
           ))}
         </div>
       ) : filtered.length === 0 ? (
         <div className="rounded-lg border bg-card p-6 text-center text-sm text-muted-foreground shadow-xs">
-          No Tier 3 tool executions found.
+          {t("aiRiskApprovalHistoryFeed.noTier3ToolExecutionsFound")}
         </div>
       ) : (
         <div className="space-y-2">
@@ -87,9 +116,9 @@ export function ApprovalHistoryFeed({ executions, loading }: Props) {
             const isExpanded = expandedId === exec.id;
             const waitMs =
               exec.approvedAt && exec.createdAt
-                ? new Date(exec.approvedAt).getTime() - new Date(exec.createdAt).getTime()
+                ? new Date(exec.approvedAt).getTime() -
+                  new Date(exec.createdAt).getTime()
                 : null;
-
             return (
               <div
                 key={exec.id}
@@ -120,12 +149,20 @@ export function ApprovalHistoryFeed({ executions, loading }: Props) {
                       </span>
                     </div>
                     <div className="mt-0.5 flex items-center gap-3 text-xs text-muted-foreground">
-                      <span>{formatRelativeTime(new Date(exec.createdAt))}</span>
+                      <span>
+                        {formatRelativeTime(new Date(exec.createdAt))}
+                      </span>
                       {waitMs !== null && (
-                        <span>Wait: {formatDuration(waitMs)}</span>
+                        <span>
+                          {t("aiRiskApprovalHistoryFeed.wait")}
+                          {formatDuration(waitMs)}
+                        </span>
                       )}
                       {exec.durationMs !== null && (
-                        <span>Exec: {exec.durationMs}ms</span>
+                        <span>
+                          {t("aiRiskApprovalHistoryFeed.exec")}
+                          {exec.durationMs}ms
+                        </span>
                       )}
                     </div>
                   </div>
@@ -134,19 +171,24 @@ export function ApprovalHistoryFeed({ executions, loading }: Props) {
                 {isExpanded && (
                   <div className="border-t px-4 pb-4 pt-3">
                     <p className="mb-1 text-xs font-medium text-muted-foreground">
-                      Tool Input
+                      {t("aiRiskApprovalHistoryFeed.toolInput")}
                     </p>
                     <pre className="max-h-40 overflow-auto rounded bg-muted/30 p-2 text-xs">
                       {JSON.stringify(exec.toolInput, null, 2)}
                     </pre>
                     {exec.errorMessage && (
                       <div className="mt-2">
-                        <p className="mb-1 text-xs font-medium text-red-600">Error</p>
-                        <p className="text-xs text-red-600">{exec.errorMessage}</p>
+                        <p className="mb-1 text-xs font-medium text-red-600">
+                          {t("aiRiskApprovalHistoryFeed.error")}
+                        </p>
+                        <p className="text-xs text-red-600">
+                          {exec.errorMessage}
+                        </p>
                       </div>
                     )}
                     <p className="mt-2 text-xs text-muted-foreground">
-                      Session: {exec.sessionId}
+                      {t("aiRiskApprovalHistoryFeed.session")}
+                      {exec.sessionId}
                     </p>
                   </div>
                 )}
@@ -158,7 +200,6 @@ export function ApprovalHistoryFeed({ executions, loading }: Props) {
     </div>
   );
 }
-
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   const sec = Math.round(ms / 1000);

@@ -1,6 +1,23 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const localStorageStub = vi.hoisted(() => {
+  const store = new Map<string, string>();
+  const stub = {
+    getItem: vi.fn((key: string) => store.get(key) ?? null),
+    setItem: vi.fn((key: string, value: string) => { store.set(key, value); }),
+    removeItem: vi.fn((key: string) => { store.delete(key); }),
+    clear: vi.fn(() => { store.clear(); }),
+    key: vi.fn((index: number) => Array.from(store.keys())[index] ?? null),
+    get length() { return store.size; },
+  };
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: stub,
+  });
+  return stub;
+});
+
 import CorrelatedAlertGroups from './CorrelatedAlertGroups';
 import AlertsTabStrip from './AlertsTabStrip';
 import { fetchWithAuth } from '../../stores/auth';
@@ -246,6 +263,7 @@ function mockGroupsResponse(options: { rcaEnabled?: boolean; alertCorrelationEna
 describe('CorrelatedAlertGroups', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    localStorageStub.clear();
     // useMlFeatureFlags only fetches when an org is active; seed one so the
     // flag-driven (enabled/disabled) branches resolve under test.
     useOrgStore.setState({ currentOrgId: 'org-1' });

@@ -1,5 +1,7 @@
+import '@/lib/i18n';
 import { useState, useEffect } from 'react';
 import { ShieldAlert, AlertTriangle, CheckCircle, Activity } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { RISK_CHART_COLORS, DATA_TYPE_CHART_COLORS } from './constants';
 
@@ -28,6 +30,7 @@ function StatCard({ label, value, icon, accent }: { label: string; value: number
 }
 
 function BarChart({ data, colorMap, title }: { data: Record<string, number>; colorMap: Record<string, string>; title: string }) {
+  const { t } = useTranslation('security');
   const entries = Object.entries(data);
   const max = Math.max(...entries.map(([, v]) => v), 1);
 
@@ -35,7 +38,11 @@ function BarChart({ data, colorMap, title }: { data: Record<string, number>; col
     <div className="rounded-lg border bg-card p-5 shadow-xs">
       <h3 className="text-sm font-semibold">{title}</h3>
       <div className="mt-4 space-y-3">
-        {entries.length === 0 && <p className="text-sm text-muted-foreground">No data yet</p>}
+        {entries.length === 0 && (
+          <p className="text-sm text-muted-foreground">
+            {t('sensitiveDataDashboardTab.empty.noDataYet', { defaultValue: 'No data yet' })}
+          </p>
+        )}
         {entries.map(([key, count]) => (
           <div key={key}>
             <div className="flex items-center justify-between text-sm">
@@ -59,6 +66,7 @@ function BarChart({ data, colorMap, title }: { data: Record<string, number>; col
 }
 
 function PieChart({ data, colorMap, title }: { data: Record<string, number>; colorMap: Record<string, string>; title: string }) {
+  const { t } = useTranslation('security');
   const entries = Object.entries(data);
   const total = entries.reduce((sum, [, v]) => sum + v, 0);
 
@@ -94,7 +102,11 @@ function PieChart({ data, colorMap, title }: { data: Record<string, number>; col
               <span className="text-muted-foreground">({s.count})</span>
             </div>
           ))}
-          {total === 0 && <p className="text-sm text-muted-foreground">No data yet</p>}
+          {total === 0 && (
+            <p className="text-sm text-muted-foreground">
+              {t('sensitiveDataDashboardTab.empty.noDataYet', { defaultValue: 'No data yet' })}
+            </p>
+          )}
         </div>
       </div>
     </div>
@@ -102,6 +114,7 @@ function PieChart({ data, colorMap, title }: { data: Record<string, number>; col
 }
 
 export default function DashboardTab() {
+  const { t } = useTranslation('security');
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -112,18 +125,30 @@ export default function DashboardTab() {
       try {
         setLoading(true);
         const res = await fetchWithAuth('/sensitive-data/dashboard');
-        if (!res.ok) throw new Error('Failed to fetch dashboard');
+        if (!res.ok) {
+          throw new Error(
+            t('sensitiveDataDashboardTab.errors.fetchDashboard', {
+              defaultValue: 'Failed to fetch dashboard',
+            }),
+          );
+        }
         const json = await res.json();
         if (!cancelled) setData(json.data);
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : 'An error occurred');
+        if (!cancelled) {
+          setError(
+            err instanceof Error
+              ? err.message
+              : t('sensitiveDataDashboardTab.errors.generic', { defaultValue: 'An error occurred' }),
+          );
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
     }
     fetch();
     return () => { cancelled = true; };
-  }, []);
+  }, [t]);
 
   if (loading) {
     return (
@@ -146,15 +171,15 @@ export default function DashboardTab() {
   return (
     <div className="space-y-6">
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard label="Total Findings" value={data.totals.findings} icon={<ShieldAlert className="h-5 w-5" />} />
-        <StatCard label="Critical Open" value={data.totals.criticalOpen} icon={<AlertTriangle className="h-5 w-5" />} accent="text-red-500" />
-        <StatCard label="Remediated (24h)" value={data.totals.remediated24h} icon={<CheckCircle className="h-5 w-5" />} accent="text-green-500" />
-        <StatCard label="Open Findings" value={data.totals.open} icon={<Activity className="h-5 w-5" />} accent="text-yellow-500" />
+        <StatCard label={t('sensitiveDataDashboardTab.stats.totalFindings', { defaultValue: 'Total Findings' })} value={data.totals.findings} icon={<ShieldAlert className="h-5 w-5" />} />
+        <StatCard label={t('sensitiveDataDashboardTab.stats.criticalOpen', { defaultValue: 'Critical Open' })} value={data.totals.criticalOpen} icon={<AlertTriangle className="h-5 w-5" />} accent="text-red-500" />
+        <StatCard label={t('sensitiveDataDashboardTab.stats.remediated24h', { defaultValue: 'Remediated (24h)' })} value={data.totals.remediated24h} icon={<CheckCircle className="h-5 w-5" />} accent="text-green-500" />
+        <StatCard label={t('sensitiveDataDashboardTab.stats.openFindings', { defaultValue: 'Open Findings' })} value={data.totals.open} icon={<Activity className="h-5 w-5" />} accent="text-yellow-500" />
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
-        <BarChart data={data.byDataType} colorMap={DATA_TYPE_CHART_COLORS} title="Findings by Data Type" />
-        <PieChart data={data.byRisk} colorMap={RISK_CHART_COLORS} title="Risk Distribution" />
+        <BarChart data={data.byDataType} colorMap={DATA_TYPE_CHART_COLORS} title={t('sensitiveDataDashboardTab.charts.findingsByDataType', { defaultValue: 'Findings by Data Type' })} />
+        <PieChart data={data.byRisk} colorMap={RISK_CHART_COLORS} title={t('sensitiveDataDashboardTab.charts.riskDistribution', { defaultValue: 'Risk Distribution' })} />
       </div>
     </div>
   );

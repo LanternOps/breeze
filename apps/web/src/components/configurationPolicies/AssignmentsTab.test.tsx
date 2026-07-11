@@ -1,5 +1,6 @@
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { applyLocale, i18n } from '@/lib/i18n';
 
 const fetchWithAuth = vi.fn();
 
@@ -25,10 +26,15 @@ const findPost = () =>
       (c[1] as RequestInit | undefined)?.method === 'POST'
   );
 
-beforeEach(() => {
+beforeEach(async () => {
+  await i18n.changeLanguage('en');
   fetchWithAuth.mockReset();
   // Default: assignments list is empty; any target list returns empty.
   fetchWithAuth.mockResolvedValue(jsonResponse({ data: [] }));
+});
+
+afterEach(async () => {
+  await i18n.changeLanguage('en');
 });
 
 describe('AssignmentsTab — partner-OWNED policy (all organizations library, #2280)', () => {
@@ -74,6 +80,17 @@ describe('AssignmentsTab — partner-OWNED policy (all organizations library, #2
 });
 
 describe('AssignmentsTab — org-owned policy', () => {
+  it('updates mounted level options when the locale changes', async () => {
+    render(<AssignmentsTab policyId={POLICY_ID} orgId={ORG_ID} partnerId={null} />);
+    expect(await screen.findByRole('option', { name: 'Device Group' })).toBeInTheDocument();
+
+    await act(async () => {
+      await applyLocale('pt-BR');
+    });
+
+    expect(screen.getByRole('option', { name: 'Grupo de Dispositivos' })).toBeInTheDocument();
+  });
+
   it('does not offer the Partner-Wide level (it is a footgun for org-owned policies)', async () => {
     render(<AssignmentsTab policyId={POLICY_ID} orgId={ORG_ID} partnerId={null} />);
     await waitFor(() => expect(fetchWithAuth).toHaveBeenCalled());

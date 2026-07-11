@@ -50,3 +50,4 @@ describe('DiscoveryProfileList', () => {
     expect(onRun).toHaveBeenCalledWith(profiles[0]);
   });
 });
+import '@/lib/i18n';

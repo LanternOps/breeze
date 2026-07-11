@@ -1,4 +1,5 @@
 import { useMemo, useState, type ReactElement } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Download, FileJson2, FileSpreadsheet, Info, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
@@ -28,23 +29,17 @@ type AuditExportColumn =
 
 type ColumnOption = {
   id: string;
-  label: string;
   apiColumns: AuditExportColumn[];
 };
 
 const columnOptions = [
-  { id: 'timestamp', label: 'Timestamp', apiColumns: ['timestamp'] },
-  { id: 'user', label: 'User', apiColumns: ['actorName', 'actorEmail'] },
-  { id: 'action', label: 'Action', apiColumns: ['action', 'category', 'result'] },
-  { id: 'resource', label: 'Resource', apiColumns: ['resourceType', 'resourceId', 'resourceName'] },
-  { id: 'details', label: 'Details', apiColumns: ['details'] },
-  { id: 'ipAddress', label: 'IP Address', apiColumns: ['ipAddress'] }
+  { id: 'timestamp', apiColumns: ['timestamp'] },
+  { id: 'user', apiColumns: ['actorName', 'actorEmail'] },
+  { id: 'action', apiColumns: ['action', 'category', 'result'] },
+  { id: 'resource', apiColumns: ['resourceType', 'resourceId', 'resourceName'] },
+  { id: 'details', apiColumns: ['details'] },
+  { id: 'ipAddress', apiColumns: ['ipAddress'] }
 ] satisfies ColumnOption[];
-
-const formatLabels: Record<'csv' | 'json', string> = {
-  csv: 'CSV',
-  json: 'JSON'
-};
 
 const formatIcons: Record<'csv' | 'json', ReactElement> = {
   csv: <FileSpreadsheet className="h-4 w-4" />,
@@ -61,7 +56,8 @@ const downloadFile = (content: string, filename: string, type: string) => {
   URL.revokeObjectURL(url);
 };
 
-export default function AuditExport({ rangeLabel = 'Last 30 days', dateRange, filters, onExport }: AuditExportProps) {
+export default function AuditExport({ rangeLabel, dateRange, filters, onExport }: AuditExportProps) {
+  const { t } = useTranslation('admin');
   const [format, setFormat] = useState<'csv' | 'json'>('csv');
   const [selectedColumns, setSelectedColumns] = useState<string[]>(
     columnOptions.map(option => option.id)
@@ -108,7 +104,7 @@ export default function AuditExport({ rangeLabel = 'Last 30 days', dateRange, fi
       });
 
       if (!response.ok) {
-        throw new Error(`${response.status} ${response.statusText}`);
+        throw new Error(t('audit.auditExport.errors.status', { status: response.status, statusText: response.statusText }));
       }
 
       if (format === 'csv') {
@@ -122,7 +118,7 @@ export default function AuditExport({ rangeLabel = 'Last 30 days', dateRange, fi
 
       onExport?.(format);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to export audit logs');
+      setError(err instanceof Error ? err.message : t('audit.auditExport.errors.export'));
     } finally {
       setExporting(false);
     }
@@ -131,24 +127,24 @@ export default function AuditExport({ rangeLabel = 'Last 30 days', dateRange, fi
   return (
     <div className="space-y-6 rounded-lg border bg-card p-6">
       <div>
-        <h2 className="text-lg font-semibold">Export Audit Logs</h2>
+        <h2 className="text-lg font-semibold">{t('audit.auditExport.title')}</h2>
         <p className="text-sm text-muted-foreground">
-          Download entries using the current filters and columns.
+          {t('audit.auditExport.description')}
         </p>
       </div>
 
       <div className="rounded-md border bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
         <div className="flex items-center gap-2 font-medium text-foreground">
           <Info className="h-4 w-4 text-muted-foreground" />
-          Date Range
+          {t('audit.auditExport.dateRange')}
         </div>
-        <p className="mt-1 text-sm">{rangeLabel}</p>
+        <p className="mt-1 text-sm">{rangeLabel ?? t('audit.auditExport.defaultRange')}</p>
       </div>
 
       <div className="space-y-3">
-        <h3 className="text-sm font-semibold">Format</h3>
+        <h3 className="text-sm font-semibold">{t('audit.auditExport.format')}</h3>
         <div className="flex flex-wrap gap-2">
-          {(Object.keys(formatLabels) as Array<'csv' | 'json'>).map(option => (
+          {(Object.keys(formatIcons) as Array<'csv' | 'json'>).map(option => (
             <button
               key={option}
               type="button"
@@ -161,7 +157,7 @@ export default function AuditExport({ rangeLabel = 'Last 30 days', dateRange, fi
               )}
             >
               {formatIcons[option]}
-              {formatLabels[option]}
+              {option === 'csv' ? t('audit.auditExport.formats.csv') : t('audit.auditExport.formats.json')}
             </button>
           ))}
         </div>
@@ -169,7 +165,7 @@ export default function AuditExport({ rangeLabel = 'Last 30 days', dateRange, fi
 
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold">Columns</h3>
+          <h3 className="text-sm font-semibold">{t('audit.auditExport.columns')}</h3>
           <label className="flex items-center gap-2 text-sm text-muted-foreground">
             <input
               type="checkbox"
@@ -177,7 +173,7 @@ export default function AuditExport({ rangeLabel = 'Last 30 days', dateRange, fi
               onChange={event => setIncludeDetails(event.target.checked)}
               className="h-4 w-4 rounded border-muted text-primary"
             />
-            Include details & changes
+            {t('audit.auditExport.includeDetails')}
           </label>
         </div>
         <div className="grid gap-2 sm:grid-cols-2">
@@ -189,7 +185,16 @@ export default function AuditExport({ rangeLabel = 'Last 30 days', dateRange, fi
                 !includeDetails && column.id === 'details' && 'opacity-50'
               )}
             >
-              <span>{column.label}</span>
+              <span>
+                {{
+                  timestamp: t('audit.auditExport.columnLabels.timestamp'),
+                  user: t('audit.auditExport.columnLabels.user'),
+                  action: t('audit.auditExport.columnLabels.action'),
+                  resource: t('audit.auditExport.columnLabels.resource'),
+                  details: t('audit.auditExport.columnLabels.details'),
+                  ipAddress: t('audit.auditExport.columnLabels.ipAddress'),
+                }[column.id]}
+              </span>
               <input
                 type="checkbox"
                 checked={selectedColumns.includes(column.id)}
@@ -215,7 +220,7 @@ export default function AuditExport({ rangeLabel = 'Last 30 days', dateRange, fi
         className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
       >
         {exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-        {exporting ? 'Exporting...' : `Export ${format.toUpperCase()}`}
+        {exporting ? t('audit.auditExport.exporting') : t('audit.auditExport.exportFormat', { format: format.toUpperCase() })}
       </button>
     </div>
   );

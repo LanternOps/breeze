@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react';
+import { Trans, useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 import { Bell, Layers, RefreshCcw, Save, ShieldCheck, Sparkles } from 'lucide-react';
 import AgentVersionPinSelectors, {
   type PinnableVersions,
@@ -90,18 +92,32 @@ const defaultValues: DefaultsData = {
 };
 
 const policyOptions = [
-  { value: 'strict', label: 'Strict' },
-  { value: 'balanced', label: 'Balanced' },
-  { value: 'standard', label: 'Standard' },
-  { value: 'lenient', label: 'Lenient' }
+  { value: 'strict', labelKey: 'orgDefaultsEditor.policies.options.strict' },
+  { value: 'balanced', labelKey: 'orgDefaultsEditor.policies.options.balanced' },
+  { value: 'standard', labelKey: 'orgDefaultsEditor.policies.options.standard' },
+  { value: 'lenient', labelKey: 'orgDefaultsEditor.policies.options.lenient' },
 ];
 
-const groupOptions = ['All Managed Devices', 'Critical Infrastructure', 'Remote Staff', 'Contractors'];
-const alertThresholds = [
-  { value: 'critical', label: 'Critical only' },
-  { value: 'high', label: 'High and critical' },
-  { value: 'medium', label: 'Medium and above' }
+const groupOptions = [
+  { value: 'All Managed Devices', labelKey: 'orgDefaultsEditor.deviceGroup.options.allManagedDevices' },
+  { value: 'Critical Infrastructure', labelKey: 'orgDefaultsEditor.deviceGroup.options.criticalInfrastructure' },
+  { value: 'Remote Staff', labelKey: 'orgDefaultsEditor.deviceGroup.options.remoteStaff' },
+  { value: 'Contractors', labelKey: 'orgDefaultsEditor.deviceGroup.options.contractors' },
 ];
+const alertThresholds = [
+  { value: 'critical', labelKey: 'orgDefaultsEditor.alertSeverity.options.critical' },
+  { value: 'high', labelKey: 'orgDefaultsEditor.alertSeverity.options.high' },
+  { value: 'medium', labelKey: 'orgDefaultsEditor.alertSeverity.options.medium' },
+];
+const policyFields = [
+  { id: 'deviceCompliance', labelKey: 'orgDefaultsEditor.policies.fields.deviceCompliance' },
+  { id: 'dataProtection', labelKey: 'orgDefaultsEditor.policies.fields.dataProtection' },
+  { id: 'accessControl', labelKey: 'orgDefaultsEditor.policies.fields.accessControl' },
+];
+const maintenanceDays = MAINTENANCE_DAYS.map(day => ({
+  value: day,
+  labelKey: `orgDefaultsEditor.maintenance.days.${day.toLowerCase()}`,
+}));
 
 export default function OrgDefaultsEditor({
   organizationName,
@@ -111,6 +127,7 @@ export default function OrgDefaultsEditor({
   pinnableVersions,
   partnerPins,
 }: OrgDefaultsEditorProps) {
+  const { t } = useTranslation('settings');
   const initialData = { ...defaultValues, ...defaults };
   // Version pins are inherit-with-override (issue #2124): the org can always set
   // its own, which overrides the partner default. No lock.
@@ -149,7 +166,7 @@ export default function OrgDefaultsEditor({
       : formatMaintenanceWindow(windowDay || null, windowStart, windowEnd);
   const windowError =
     windowMode === 'window' && !builtWindow
-      ? 'Enter a valid window — start and end times must differ.'
+      ? t('orgDefaultsEditor.maintenance.errors.invalidWindow')
       : null;
 
   const markDirty = () => {
@@ -182,9 +199,9 @@ export default function OrgDefaultsEditor({
     <section className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h2 className="text-lg font-semibold">Default settings</h2>
+          <h2 className="text-lg font-semibold">{t('orgDefaultsEditor.title')}</h2>
           <p className="text-sm text-muted-foreground">
-            Tune the default policies and enrollment behavior for {organizationName}.
+            {t('orgDefaultsEditor.description', { organization: organizationName })}
           </p>
         </div>
         <button
@@ -195,23 +212,19 @@ export default function OrgDefaultsEditor({
           className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
         >
           <Save className="h-4 w-4" />
-          Save defaults
+          {t('orgDefaultsEditor.save')}
         </button>
       </div>
 
       <div className="space-y-4">
         <div className="flex items-center gap-2 text-sm font-medium">
           <ShieldCheck className="h-4 w-4" />
-          Default policies
+          {t('orgDefaultsEditor.policies.title')}
         </div>
         <div className="grid gap-4 md:grid-cols-3">
-          {[
-            { id: 'deviceCompliance', label: 'Device compliance' },
-            { id: 'dataProtection', label: 'Data protection' },
-            { id: 'accessControl', label: 'Access control' }
-          ].map(policy => (
+          {policyFields.map(policy => (
             <label key={policy.id} className="space-y-2 rounded-lg border bg-muted/40 p-4 text-sm">
-              <span className="font-medium">{policy.label}</span>
+              <span className="font-medium">{t(/* i18n-dynamic */ policy.labelKey)}</span>
               <select
                 value={policyDefaults[policy.id as keyof typeof policyDefaults]}
                 onChange={event => {
@@ -225,7 +238,7 @@ export default function OrgDefaultsEditor({
               >
                 {policyOptions.map(option => (
                   <option key={option.value} value={option.value}>
-                    {option.label}
+                    {t(/* i18n-dynamic */ option.labelKey)}
                   </option>
                 ))}
               </select>
@@ -238,7 +251,7 @@ export default function OrgDefaultsEditor({
         <div className="space-y-4">
           <div className="flex items-center gap-2 text-sm font-medium">
             <Layers className="h-4 w-4" />
-            Default device group
+            {t('orgDefaultsEditor.deviceGroup.title')}
           </div>
           <select
             value={deviceGroup}
@@ -249,20 +262,20 @@ export default function OrgDefaultsEditor({
             className="h-10 w-full rounded-md border bg-background px-3 text-sm"
           >
             {groupOptions.map(option => (
-              <option key={option} value={option}>
-                {option}
+              <option key={option.value} value={option.value}>
+                {t(/* i18n-dynamic */ option.labelKey)}
               </option>
             ))}
           </select>
           <p className="text-xs text-muted-foreground">
-            Newly enrolled devices are added to this group automatically.
+            {t('orgDefaultsEditor.deviceGroup.description')}
           </p>
         </div>
 
         <div className="space-y-4">
           <div className="flex items-center gap-2 text-sm font-medium">
             <Bell className="h-4 w-4" />
-            Default alert severity
+            {t('orgDefaultsEditor.alertSeverity.title')}
           </div>
           <select
             value={alertThreshold}
@@ -274,12 +287,12 @@ export default function OrgDefaultsEditor({
           >
             {alertThresholds.map(option => (
               <option key={option.value} value={option.value}>
-                {option.label}
+                {t(/* i18n-dynamic */ option.labelKey)}
               </option>
             ))}
           </select>
           <p className="text-xs text-muted-foreground">
-            Alerts below this severity are delivered to the summary feed only.
+            {t('orgDefaultsEditor.alertSeverity.description')}
           </p>
         </div>
       </div>
@@ -288,10 +301,10 @@ export default function OrgDefaultsEditor({
         <div className="space-y-4 rounded-lg border bg-muted/40 p-4">
           <div className="flex items-center gap-2 text-sm font-medium">
             <Sparkles className="h-4 w-4" />
-            Auto-enrollment
+            {t('orgDefaultsEditor.autoEnrollment.title')}
           </div>
           <label className="flex items-center justify-between gap-4 text-sm">
-            <span>Enable automatic enrollment</span>
+            <span>{t('orgDefaultsEditor.autoEnrollment.enable')}</span>
             <input
               type="checkbox"
               checked={autoEnrollment.enabled}
@@ -303,7 +316,7 @@ export default function OrgDefaultsEditor({
             />
           </label>
           <label className="flex items-center justify-between gap-4 text-sm">
-            <span>Require admin approval</span>
+            <span>{t('orgDefaultsEditor.autoEnrollment.requireApproval')}</span>
             <input
               type="checkbox"
               checked={autoEnrollment.requireApproval}
@@ -315,7 +328,7 @@ export default function OrgDefaultsEditor({
             />
           </label>
           <label className="flex items-center justify-between gap-4 text-sm">
-            <span>Send welcome message</span>
+            <span>{t('orgDefaultsEditor.autoEnrollment.sendWelcome')}</span>
             <input
               type="checkbox"
               checked={autoEnrollment.sendWelcome}
@@ -331,7 +344,7 @@ export default function OrgDefaultsEditor({
         <div className="space-y-4 rounded-lg border bg-muted/40 p-4">
           <div className="flex items-center gap-2 text-sm font-medium">
             <RefreshCcw className="h-4 w-4" />
-            Agent update policy
+            {t('orgDefaultsEditor.agentUpdates.title')}
           </div>
           <select
             value={agentUpdatePolicy}
@@ -341,22 +354,23 @@ export default function OrgDefaultsEditor({
             }}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm"
           >
-            <option value="auto">Automatic</option>
-            <option value="manual">Manual (block automatic updates)</option>
+            <option value="auto">{t('orgDefaultsEditor.agentUpdates.automatic')}</option>
+            <option value="manual">{t('orgDefaultsEditor.agentUpdates.manual')}</option>
           </select>
           <p className="text-xs text-muted-foreground">
-            <strong>Automatic</strong> installs agent updates during the maintenance window below
-            (or at any time when set to 24/7). <strong>Manual</strong> blocks automatic updates
-            entirely — agents stay on their current version until you update them yourself.
+            <Trans
+              i18nKey="orgDefaultsEditor.agentUpdates.description"
+              ns="settings"
+              components={{ strong: <strong /> }}
+            />
           </p>
           <div className="space-y-3">
             <span className="text-xs font-medium uppercase text-muted-foreground">
-              Maintenance window
+              {t('orgDefaultsEditor.maintenance.title')}
             </span>
             {storedWindowInvalid && (
               <p data-testid="maintenance-stored-invalid" className="text-xs text-destructive">
-                Your saved maintenance window was invalid and is being ignored, so agents may
-                currently update at any time. Choose a valid setting below and save to fix it.
+                {t('orgDefaultsEditor.maintenance.errors.storedInvalid')}
               </p>
             )}
             <div className="space-y-2">
@@ -373,7 +387,7 @@ export default function OrgDefaultsEditor({
                   data-testid="maintenance-mode-always"
                   className="h-4 w-4"
                 />
-                <span>Always — agents may update anytime (24/7)</span>
+                <span>{t('orgDefaultsEditor.maintenance.always')}</span>
               </label>
               <label className="flex items-center gap-2 text-sm">
                 <input
@@ -388,7 +402,7 @@ export default function OrgDefaultsEditor({
                   data-testid="maintenance-mode-window"
                   className="h-4 w-4"
                 />
-                <span>Only during a maintenance window</span>
+                <span>{t('orgDefaultsEditor.maintenance.windowOnly')}</span>
               </label>
             </div>
 
@@ -396,7 +410,7 @@ export default function OrgDefaultsEditor({
               <div className="space-y-2 rounded-md border bg-background/60 p-3">
                 <div className="grid grid-cols-3 gap-2">
                   <label className="space-y-1 text-xs">
-                    <span className="text-muted-foreground">Day</span>
+                    <span className="text-muted-foreground">{t('orgDefaultsEditor.maintenance.day')}</span>
                     <select
                       value={windowDay}
                       onChange={event => {
@@ -406,16 +420,16 @@ export default function OrgDefaultsEditor({
                       data-testid="maintenance-day"
                       className="h-9 w-full rounded-md border bg-background px-2 text-sm"
                     >
-                      <option value="">Every day</option>
-                      {MAINTENANCE_DAYS.map(day => (
-                        <option key={day} value={day}>
-                          {day}
+                      <option value="">{t('orgDefaultsEditor.maintenance.everyDay')}</option>
+                      {maintenanceDays.map(day => (
+                        <option key={day.value} value={day.value}>
+                          {t(/* i18n-dynamic */ day.labelKey)}
                         </option>
                       ))}
                     </select>
                   </label>
                   <label className="space-y-1 text-xs">
-                    <span className="text-muted-foreground">Start (UTC)</span>
+                    <span className="text-muted-foreground">{t('orgDefaultsEditor.maintenance.startUtc')}</span>
                     <input
                       type="time"
                       value={windowStart}
@@ -428,7 +442,7 @@ export default function OrgDefaultsEditor({
                     />
                   </label>
                   <label className="space-y-1 text-xs">
-                    <span className="text-muted-foreground">End (UTC)</span>
+                    <span className="text-muted-foreground">{t('orgDefaultsEditor.maintenance.endUtc')}</span>
                     <input
                       type="time"
                       value={windowEnd}
@@ -451,8 +465,8 @@ export default function OrgDefaultsEditor({
 
             <p className="text-xs text-muted-foreground">
               {windowMode === 'always'
-                ? 'Agents may install updates at any time, subject to the update policy above.'
-                : 'Agents install updates only inside this window. Times are evaluated in UTC. A window may span midnight (e.g. 22:00–02:00).'}
+                ? t('orgDefaultsEditor.maintenance.alwaysDescription')
+                : t('orgDefaultsEditor.maintenance.windowDescription')}
             </p>
           </div>
         </div>

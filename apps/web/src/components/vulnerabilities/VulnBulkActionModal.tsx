@@ -1,7 +1,8 @@
 import { useId, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 import { Dialog } from '../shared/Dialog';
-import { plural } from '../../lib/utils';
+import '@/lib/i18n';
 
 const BTN =
   'inline-flex items-center rounded-md border px-3 py-1.5 text-sm font-medium transition focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed disabled:opacity-50';
@@ -17,10 +18,10 @@ export function localEndOfDayIso(dateStr: string): string {
   return new Date(y!, m! - 1, d!, 23, 59, 59, 999).toISOString();
 }
 
-const HEADINGS: Record<'remediate' | 'accept' | 'mitigate', string> = {
-  remediate: 'Remediate findings',
-  accept: 'Accept risk',
-  mitigate: 'Mark mitigated',
+const ACTION_KEYS: Record<'remediate' | 'accept' | 'mitigate', string> = {
+  remediate: 'remediate',
+  accept: 'accept',
+  mitigate: 'mitigate',
 };
 
 /** One entry per selected finding, for the "which devices" summary line. */
@@ -35,17 +36,14 @@ export interface SelectionPreviewItem {
 // "WS-01 (CVE-2026-0001), WS-02, WS-03 and 4 more" — the first three findings
 // by device name, so the user can see WHAT they selected behind the overlay
 // without the modal becoming a wall.
-export function formatSelectionPreview(items: SelectionPreviewItem[]): string {
+export function formatSelectionPreview(
+  items: SelectionPreviewItem[],
+  moreLabel: (count: number) => string = (count) => `and ${count} more`,
+): string {
   const shown = items.slice(0, 3).map((i) => (i.cveId ? `${i.deviceName} (${i.cveId})` : i.deviceName));
   const rest = items.length - shown.length;
-  return rest > 0 ? `${shown.join(', ')} and ${rest} more` : shown.join(', ');
+  return rest > 0 ? `${shown.join(', ')} ${moreLabel(rest)}` : shown.join(', ');
 }
-
-const CONFIRM_LABELS: Record<'remediate' | 'accept' | 'mitigate', string> = {
-  remediate: 'Remediate',
-  accept: 'Accept risk',
-  mitigate: 'Mark mitigated',
-};
 
 export function VulnBulkActionModal({
   kind,
@@ -72,6 +70,7 @@ export function VulnBulkActionModal({
   onCancel: () => void;
   onSubmit: (payload: { reason?: string; acceptedUntil?: string; note?: string }) => void;
 }) {
+  const { t } = useTranslation('vulnerabilities');
   const [text, setText] = useState('');
   const [until, setUntil] = useState('');
   const titleId = useId();
@@ -85,11 +84,12 @@ export function VulnBulkActionModal({
   // hides findings until the expiry date but NOTHING auto-reopens them (they
   // surface via the "Accepted, expiring soon" card); mitigate only records the
   // note as a compensating control.
-  const consequence = isRemediate
-    ? `Installs the approved patch for each CVE on ${plural(deviceCount, 'device')} (${plural(count, 'finding')}). Findings without an approved, applicable patch are skipped.`
-    : isAccept
-      ? `Hides ${plural(count, 'finding')} on ${plural(deviceCount, 'device')} from the open queue until the date you set. They do not reopen automatically — expiring acceptances surface in the “Accepted, expiring soon” card.`
-      : `Marks ${plural(count, 'finding')} on ${plural(deviceCount, 'device')} mitigated, with your note recorded as the compensating control. Breeze does not change the devices.`;
+  const consequence = t(/* i18n-dynamic */ `vulnBulkActionModal.consequence.${ACTION_KEYS[kind]}`, {
+    count,
+    deviceText: t('vulnBulkActionModal.counts.devices', { count: deviceCount }),
+    findingText: t('vulnBulkActionModal.counts.findings', { count }),
+  });
+  const heading = t(/* i18n-dynamic */ `vulnBulkActionModal.headings.${ACTION_KEYS[kind]}`);
 
   return (
     <Dialog
@@ -97,18 +97,18 @@ export function VulnBulkActionModal({
       onClose={() => {
         if (!busy) onCancel();
       }}
-      title={HEADINGS[kind]}
+      title={heading}
       labelledBy={titleId}
       maxWidth="md"
       className="p-5"
     >
       <div data-testid="vuln-bulk-modal">
         <h3 id={titleId} className="text-base font-semibold">
-          {HEADINGS[kind]} — {plural(count, 'finding')}
+          {t('vulnBulkActionModal.headingWithCount', { heading, count })}
         </h3>
         {selection && selection.length > 0 && (
           <p data-testid="vuln-bulk-selection" className="mt-2 text-sm">
-            {formatSelectionPreview(selection)}
+            {formatSelectionPreview(selection, (rest) => t('vulnBulkActionModal.selection.more', { count: rest }))}
           </p>
         )}
         <p data-testid="vuln-bulk-consequence" className="mt-2 text-sm text-muted-foreground">
@@ -117,7 +117,9 @@ export function VulnBulkActionModal({
         {!isRemediate && (
           <div className="mt-4 space-y-3">
             <label className="block text-sm">
-              <span className="text-muted-foreground">{isAccept ? 'Reason' : 'Mitigation note'}</span>
+              <span className="text-muted-foreground">
+                {isAccept ? t('vulnBulkActionModal.fields.reason') : t('vulnBulkActionModal.fields.mitigationNote')}
+              </span>
               <textarea
                 data-testid="vuln-bulk-text"
                 value={text}
@@ -128,7 +130,7 @@ export function VulnBulkActionModal({
             </label>
             {isAccept && (
               <label className="block text-sm">
-                <span className="text-muted-foreground">Accepted until</span>
+                <span className="text-muted-foreground">{t('vulnBulkActionModal.fields.acceptedUntil')}</span>
                 <input
                   type="date"
                   data-testid="vuln-bulk-until"
@@ -155,7 +157,7 @@ export function VulnBulkActionModal({
         )}
         <div className="mt-5 flex justify-end gap-2">
           <button type="button" data-testid="vuln-bulk-cancel" className={`${BTN} hover:bg-muted`} onClick={onCancel} disabled={busy}>
-            Cancel
+            {t('common:actions.cancel')}
           </button>
           <button
             type="button"
@@ -172,7 +174,7 @@ export function VulnBulkActionModal({
               )
             }
           >
-            {busy ? 'Working…' : CONFIRM_LABELS[kind]}
+            {busy ? t('vulnBulkActionModal.actions.working') : t(/* i18n-dynamic */ `vulnBulkActionModal.actions.${ACTION_KEYS[kind]}`)/* i18n-dynamic */}
           </button>
         </div>
       </div>

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Activity, ArrowDown, ArrowUp, HardDrive } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import {
   AreaChart,
   Area,
@@ -15,6 +16,7 @@ import {
 import { formatDate, formatDateTime, formatTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import ProcessDrilldownPanel from './ProcessDrilldownPanel';
+import { formatNumber } from '@/lib/i18n/format';
 
 type TimeRange = '24h' | '7d' | '30d';
 
@@ -33,16 +35,16 @@ type MetricPoint = {
 };
 
 function formatBandwidth(bps: number): string {
-  if (bps >= 1_000_000_000) return `${(bps / 1_000_000_000).toFixed(1)} Gbps`;
-  if (bps >= 1_000_000) return `${(bps / 1_000_000).toFixed(1)} Mbps`;
-  if (bps >= 1_000) return `${(bps / 1_000).toFixed(1)} Kbps`;
+  if (bps >= 1_000_000_000) return `${formatNumber(bps / 1_000_000_000, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} Gbps`;
+  if (bps >= 1_000_000) return `${formatNumber(bps / 1_000_000, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} Mbps`;
+  if (bps >= 1_000) return `${formatNumber(bps / 1_000, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} Kbps`;
   return `${Math.round(bps)} bps`;
 }
 
 function formatBytesPerSec(bps: number): string {
-  if (bps >= 1_000_000_000) return `${(bps / 1_000_000_000).toFixed(1)} GB/s`;
-  if (bps >= 1_000_000) return `${(bps / 1_000_000).toFixed(1)} MB/s`;
-  if (bps >= 1_000) return `${(bps / 1_000).toFixed(1)} KB/s`;
+  if (bps >= 1_000_000_000) return `${formatNumber(bps / 1_000_000_000, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} GB/s`;
+  if (bps >= 1_000_000) return `${formatNumber(bps / 1_000_000, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} MB/s`;
+  if (bps >= 1_000) return `${formatNumber(bps / 1_000, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} KB/s`;
   return `${Math.round(bps)} B/s`;
 }
 
@@ -87,6 +89,7 @@ function formatTimestamp(value: string, range: TimeRange) {
 }
 
 export default function DevicePerformanceGraphs({ deviceId, compact = false }: DevicePerformanceGraphsProps) {
+  const { t } = useTranslation('devices');
   const [timeRange, setTimeRange] = useState<TimeRange>('24h');
   const [data, setData] = useState<MetricPoint[]>([]);
   const [loading, setLoading] = useState(true);
@@ -174,9 +177,9 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
   }, [data, hasDiskActivity]);
 
   function formatBandwidthTick(value: number): string {
-    if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(0)}G`;
-    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(0)}M`;
-    if (value >= 1_000) return `${(value / 1_000).toFixed(0)}K`;
+    if (value >= 1_000_000_000) return `${formatNumber(value / 1_000_000_000, { maximumFractionDigits: 0 })}G`;
+    if (value >= 1_000_000) return `${formatNumber(value / 1_000_000, { maximumFractionDigits: 0 })}M`;
+    if (value >= 1_000) return `${formatNumber(value / 1_000, { maximumFractionDigits: 0 })}K`;
     return `${value}`;
   }
 
@@ -185,7 +188,7 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
       <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-xs">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="mt-3 text-sm text-muted-foreground">Loading performance graphs...</p>
+          <p className="mt-3 text-sm text-muted-foreground">{t('devicePerformanceGraphs.loading')}</p>
         </div>
       </div>
     );
@@ -200,7 +203,7 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
           onClick={fetchMetrics}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Retry
+          {t('common:actions.retry')}
         </button>
       </div>
     );
@@ -212,9 +215,9 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
         <div className="flex items-center gap-2">
           <Activity className="h-4 w-4 text-muted-foreground" />
           <div>
-            <h3 className="text-lg font-semibold">Performance Graphs</h3>
+            <h3 className="text-lg font-semibold">{t('devicePerformanceGraphs.title')}</h3>
             {!compact && (
-              <p className="text-sm text-muted-foreground">CPU, RAM, disk usage and network bandwidth over time</p>
+              <p className="text-sm text-muted-foreground">{t('devicePerformanceGraphs.description')}</p>
             )}
           </div>
         </div>
@@ -260,9 +263,9 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
               formatter={(value: number, name: string) => [`${value}%`, name]}
             />
             {!compact && <Legend />}
-            <Line type="monotone" dataKey="cpu" stroke="#3b82f6" strokeWidth={2} dot={false} name="CPU" />
-            <Line type="monotone" dataKey="ram" stroke="#22c55e" strokeWidth={2} dot={false} name="RAM" />
-            <Line type="monotone" dataKey="disk" stroke="#a855f7" strokeWidth={2} dot={false} name="Disk" />
+            <Line type="monotone" dataKey="cpu" stroke="#3b82f6" strokeWidth={2} dot={false} name={t('devicePerformanceGraphs.metrics.cpu')} />
+            <Line type="monotone" dataKey="ram" stroke="#22c55e" strokeWidth={2} dot={false} name={t('devicePerformanceGraphs.metrics.ram')} />
+            <Line type="monotone" dataKey="disk" stroke="#a855f7" strokeWidth={2} dot={false} name={t('devicePerformanceGraphs.metrics.disk')} />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -270,15 +273,15 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
       {!compact && latest && (
         <div className="mt-6 grid gap-4 sm:grid-cols-3">
           <div className="rounded-md border p-4">
-            <div className="text-xs text-muted-foreground">CPU (latest)</div>
+            <div className="text-xs text-muted-foreground">{t('devicePerformanceGraphs.latest.cpu')}</div>
             <div className="mt-1 text-2xl font-bold">{Math.round(latest.cpu)}%</div>
           </div>
           <div className="rounded-md border p-4">
-            <div className="text-xs text-muted-foreground">RAM (latest)</div>
+            <div className="text-xs text-muted-foreground">{t('devicePerformanceGraphs.latest.ram')}</div>
             <div className="mt-1 text-2xl font-bold">{Math.round(latest.ram)}%</div>
           </div>
           <div className="rounded-md border p-4">
-            <div className="text-xs text-muted-foreground">Disk (latest)</div>
+            <div className="text-xs text-muted-foreground">{t('devicePerformanceGraphs.latest.disk')}</div>
             <div className="mt-1 text-2xl font-bold">{Math.round(latest.disk)}%</div>
           </div>
         </div>
@@ -288,7 +291,7 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
       {hasBandwidth && (
         <>
           <div className={compact ? 'mt-4' : 'mt-8'}>
-            <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Network Bandwidth</h4>
+            <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">{t('devicePerformanceGraphs.networkBandwidth')}</h4>
           </div>
           <div className={compact ? 'mt-2 h-40' : 'mt-3 h-64'}>
             <ResponsiveContainer width="100%" height="100%">
@@ -330,7 +333,7 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
                   stroke="#06b6d4"
                   strokeWidth={2}
                   fill="url(#bandwidthInGrad)"
-                  name="Download"
+                  name={t('devicePerformanceGraphs.metrics.download')}
                 />
                 <Area
                   type="monotone"
@@ -338,7 +341,7 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
                   stroke="#f97316"
                   strokeWidth={2}
                   fill="url(#bandwidthOutGrad)"
-                  name="Upload"
+                  name={t('devicePerformanceGraphs.metrics.upload')}
                 />
               </AreaChart>
             </ResponsiveContainer>
@@ -349,14 +352,14 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
               <div className="rounded-md border p-4">
                 <div className="flex items-center gap-2">
                   <ArrowDown className="h-3.5 w-3.5 text-cyan-500" />
-                  <span className="text-sm font-medium">Download (latest)</span>
+                  <span className="text-sm font-medium">{t('devicePerformanceGraphs.latest.download')}</span>
                 </div>
                 <div className="mt-1 text-2xl font-bold">{formatBandwidth(latest.bandwidthInBps)}</div>
               </div>
               <div className="rounded-md border p-4">
                 <div className="flex items-center gap-2">
                   <ArrowUp className="h-3.5 w-3.5 text-orange-500" />
-                  <span className="text-sm font-medium">Upload (latest)</span>
+                  <span className="text-sm font-medium">{t('devicePerformanceGraphs.latest.upload')}</span>
                 </div>
                 <div className="mt-1 text-2xl font-bold">{formatBandwidth(latest.bandwidthOutBps)}</div>
               </div>
@@ -369,7 +372,7 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
       {hasDiskActivity && (
         <>
           <div className={compact ? 'mt-4' : 'mt-8'}>
-            <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Disk Activity</h4>
+            <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">{t('devicePerformanceGraphs.diskActivity')}</h4>
           </div>
           <div className={compact ? 'mt-2 h-40' : 'mt-3 h-64'}>
             <ResponsiveContainer width="100%" height="100%">
@@ -411,7 +414,7 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
                   stroke="#16a34a"
                   strokeWidth={2}
                   fill="url(#diskReadGrad)"
-                  name="Read throughput"
+                  name={t('devicePerformanceGraphs.metrics.readThroughput')}
                 />
                 <Area
                   type="monotone"
@@ -419,7 +422,7 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
                   stroke="#0ea5e9"
                   strokeWidth={2}
                   fill="url(#diskWriteGrad)"
-                  name="Write throughput"
+                  name={t('devicePerformanceGraphs.metrics.writeThroughput')}
                 />
               </AreaChart>
             </ResponsiveContainer>
@@ -430,23 +433,23 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
               <div className="rounded-md border p-4">
                 <div className="flex items-center gap-2">
                   <HardDrive className="h-3.5 w-3.5 text-emerald-600" />
-                  <span className="text-sm font-medium">Read throughput</span>
+                  <span className="text-sm font-medium">{t('devicePerformanceGraphs.metrics.readThroughput')}</span>
                 </div>
                 <div className="mt-1 text-2xl font-bold">{formatBytesPerSec(latest.diskReadBps)}</div>
               </div>
               <div className="rounded-md border p-4">
                 <div className="flex items-center gap-2">
                   <HardDrive className="h-3.5 w-3.5 text-sky-600" />
-                  <span className="text-sm font-medium">Write throughput</span>
+                  <span className="text-sm font-medium">{t('devicePerformanceGraphs.metrics.writeThroughput')}</span>
                 </div>
                 <div className="mt-1 text-2xl font-bold">{formatBytesPerSec(latest.diskWriteBps)}</div>
               </div>
               <div className="rounded-md border p-4">
-                <div className="text-xs text-muted-foreground">Read ops (latest)</div>
+                <div className="text-xs text-muted-foreground">{t('devicePerformanceGraphs.latest.readOps')}</div>
                 <div className="mt-1 text-2xl font-bold">{Math.round(latest.diskReadOps)}</div>
               </div>
               <div className="rounded-md border p-4">
-                <div className="text-xs text-muted-foreground">Write ops (latest)</div>
+                <div className="text-xs text-muted-foreground">{t('devicePerformanceGraphs.latest.writeOps')}</div>
                 <div className="mt-1 text-2xl font-bold">{Math.round(latest.diskWriteOps)}</div>
               </div>
             </div>

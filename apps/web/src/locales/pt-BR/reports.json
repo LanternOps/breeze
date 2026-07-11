@@ -1,0 +1,868 @@
+{
+  "analytics": {
+    "analyticsPage": {
+      "actions": {
+        "refresh": "Atualizar",
+        "retry": "Tentar novamente"
+      },
+      "alertSeverity": {
+        "acknowledged": "Reconhecidos",
+        "critical": "Críticos",
+        "high": "Altos",
+        "low": "Baixos",
+        "medium": "Médios"
+      },
+      "dashboardOptions": {
+        "capacity": "Planejamento de capacidade",
+        "operations": "Visão geral de operações",
+        "sla": "Conformidade de SLA"
+      },
+      "dateRanges": {
+        "customRange": "Intervalo personalizado",
+        "last24Hours": "Últimas 24 horas",
+        "last30Days": "Últimos 30 dias",
+        "last7Days": "Últimos 7 dias"
+      },
+      "errors": {
+        "failedToLoadAnalytics": "Falha ao carregar dados de analytics",
+        "unableToLoad": "Não foi possível carregar: {{sources}}"
+      },
+      "lastUpdated": "Atualizado {{time}}",
+      "subtitle": "Insights sobre sua frota e seus serviços",
+      "title": "Análises",
+      "trend": {
+        "operationalHealth": "Saúde operacional"
+      },
+      "widgets": {
+        "alertTable": {
+          "count": "Contagem",
+          "severity": "Severidade",
+          "title": "Estatísticas de alertas"
+        },
+        "capacity": {
+          "title": "Previsão de capacidade"
+        },
+        "complianceGauge": {
+          "policiesEvaluated": "{{count}} políticas avaliadas",
+          "title": "Conformidade de políticas"
+        },
+        "osBreakdown": {
+          "subtitle": "Participação dos dispositivos gerenciados",
+          "title": "Distribuição de SO"
+        },
+        "performance": {
+          "cpu": "CPU",
+          "memory": "Memória",
+          "subtitle": "Utilização de CPU e memória",
+          "title": "Tendência de desempenho"
+        },
+        "remoteSessions": {
+          "label": "Sessões no intervalo",
+          "title": "Sessões remotas"
+        },
+        "uptime": {
+          "label": "Disponibilidade da frota",
+          "title": "Disponibilidade"
+        }
+      }
+    },
+    "capacityForecast": {
+      "actual": "Real",
+      "critical": "Crítico",
+      "criticalValue": "Crítico {{value}}{{unit}}",
+      "current": "Atual",
+      "description": "Projeção de capacidade com base no uso recente",
+      "trend": "Tendência",
+      "warnValue": "Aviso {{value}}{{unit}}",
+      "warning": "Aviso"
+    },
+    "chartWidget": {
+      "noData": "Nenhum dado disponível"
+    },
+    "dashboardGrid": {
+      "drag": "Arrastar",
+      "errors": {
+        "failedToLoadDashboard": "Falha ao carregar painel"
+      },
+      "retry": "Tentar novamente"
+    },
+    "executiveSummary": {
+      "alertSummary": "Resumo de alertas",
+      "critical": "Críticos",
+      "criticalAndWarningAlerts": "Alertas críticos e de aviso",
+      "deviceOverview": "Visão geral dos dispositivos",
+      "fleetAvailabilitySummary": "Resumo de disponibilidade da frota",
+      "last12Weeks": "Últimas 12 semanas",
+      "offline": "Offline",
+      "online": "Online",
+      "operationalHealth": "Saúde operacional",
+      "totalDevices": "Total de dispositivos",
+      "uptime": "Disponibilidade",
+      "warnings": "Avisos",
+      "weeklyTrend": "Tendência semanal"
+    },
+    "gaugeWidget": {
+      "criticalValue": "Crítico {{value}}",
+      "warnValue": "Aviso {{value}}"
+    },
+    "queryBuilder": {
+      "aggregations": {
+        "average": "Média",
+        "maximum": "Máximo",
+        "minimum": "Mínimo",
+        "p95": "P95",
+        "sum": "Soma"
+      },
+      "description": "Configure métricas e agregação para o seu painel",
+      "errors": {
+        "failedToExecuteQuery": "Falha ao executar consulta",
+        "noDevicesSelected": "Nenhum dispositivo selecionado para a consulta"
+      },
+      "labels": {
+        "aggregation": "Agregação",
+        "endDate": "Data final",
+        "metricName": "Nome da métrica",
+        "metricType": "Tipo de métrica",
+        "startDate": "Data inicial",
+        "timeRange": "Intervalo de tempo"
+      },
+      "metricNames": {
+        "activeDevices": "Dispositivos ativos",
+        "automationRuns": "Execuções de automação",
+        "cpuUtilization": "Utilização de CPU",
+        "diskUsage": "Uso de disco",
+        "incidentCount": "Contagem de incidentes",
+        "loginVolume": "Volume de logins",
+        "memoryUtilization": "Utilização de memória",
+        "mfaAdoption": "Adoção de MFA",
+        "networkThroughput": "Throughput de rede",
+        "patchCompliance": "Conformidade de patches",
+        "remoteSessions": "Sessões remotas",
+        "responseTime": "Tempo de resposta",
+        "slaCompliance": "Conformidade de SLA",
+        "threatAlerts": "Alertas de ameaças",
+        "uptime": "Disponibilidade",
+        "vulnerabilityScore": "Pontuação de vulnerabilidade"
+      },
+      "metricTypes": {
+        "availability": "Disponibilidade",
+        "performance": "Desempenho",
+        "security": "Segurança",
+        "usage": "Uso"
+      },
+      "runQuery": "Executar consulta",
+      "running": "Executando...",
+      "timeRanges": {
+        "customRange": "Intervalo personalizado",
+        "last1Hour": "Última 1 hora",
+        "last24Hours": "Últimas 24 horas",
+        "last30Days": "Últimos 30 dias",
+        "last7Days": "Últimos 7 dias"
+      },
+      "title": "Construtor de consultas"
+    },
+    "slaComplianceCard": {
+      "defaultPeriodLabel": "Últimos 30 dias",
+      "downtime": "Indisponibilidade {{value}}",
+      "incidents": "{{count}} incidentes",
+      "status": {
+        "atRisk": "Em risco",
+        "breach": "Violação",
+        "compliant": "Em conformidade"
+      },
+      "targetUptime": "Meta de {{target}}% de disponibilidade",
+      "title": "Conformidade de SLA"
+    },
+    "tableWidget": {
+      "filterPlaceholder": "Filtrar",
+      "noMatchingRecords": "Nenhum registro correspondente"
+    },
+    "widgetRenderer": {
+      "unsupportedWidget": "Widget sem suporte"
+    }
+  },
+  "reports": {
+    "dashboardWidgets": {
+      "accessDenied": "Voce não tem permissao para ver estes dados do painel.",
+      "activeAlerts": "Alertas Ativos",
+      "averages": "Medias",
+      "complianceScore": "Pontuacao de Conformidade",
+      "cpu": "CPU",
+      "criticalCount": "{{count}} critico",
+      "disk": "Disco",
+      "errors": {
+        "loadDashboardData": "Falha ao carregar dados do painel"
+      },
+      "issueCount": "{{count}} problema",
+      "issueCount_one": "{{count}} problema",
+      "issueCount_other": "{{count}} problemas",
+      "lastUpdated": "Ultima atualizacao: {{time}}",
+      "memory": "Memoria",
+      "onlinePercent": "{{percent}} online",
+      "refresh": "Atualizar",
+      "retry": "Tentar novamente",
+      "topCpuUsage": "Maior Uso de CPU",
+      "topDiskUsage": "Maior Uso de Disco",
+      "topMemoryUsage": "Maior Uso de Memoria",
+      "totalDevices": "Total de Dispositivos"
+    },
+    "reportBuilderPage": {
+      "configurationTitle": "Configuracao do Relatório",
+      "description": "Gere um relatório unico sem salva-lo.",
+      "errors": {
+        "exportFailed": "Falha na exportacao. Tente novamente.",
+        "generatePreview": "Falha ao gerar pre-visualização",
+        "generateReportPreview": "Falha ao gerar pre-visualização do relatório"
+      },
+      "title": "Construtor de Relatório Avulso"
+    },
+    "reportEditPage": {
+      "backToReports": "Voltar para Relatórios",
+      "description": "Atualize a configuração de \"{{name}}\".",
+      "errors": {
+        "fetchReport": "Falha ao buscar relatório",
+        "generic": "Ocorreu um erro"
+      },
+      "loading": "Carregando relatório...",
+      "notFound": "Relatório não encontrado",
+      "reportsBreadcrumb": "Relatórios",
+      "title": "Editar Relatório"
+    },
+    "reportPreview": {
+      "charts": {
+        "alertsBySeverity": "Alertas por Severidade",
+        "avgCpu": "Media de CPU",
+        "avgDisk": "Media de Disco",
+        "avgMemory": "Media de Memoria",
+        "complianceIssues": "Problemas de Conformidade",
+        "complianceScore": "Pontuacao de Conformidade",
+        "offline": "Offline",
+        "online": "Online",
+        "topAlertingRules": "Principais Regras de Alerta",
+        "topCpuConsumers": "Maiores Consumidores de CPU",
+        "totalDevices": "Total de Dispositivos"
+      },
+      "emptyDescription": "Configure as opcoes do relatório e clique em Pre-visualizar para ver os dados.",
+      "emptyTitle": "Nenhuma pre-visualização disponivel",
+      "formats": {
+        "csv": "CSV",
+        "excel": "Excel",
+        "pdf": "PDF"
+      },
+      "generated": "Gerado em {{date}}",
+      "generatedWithRecords": "Gerado em {{date}} - {{count}} registros",
+      "generating": "Gerando pre-visualização do relatório...",
+      "noDataMatches": "Nenhum dado corresponde aos filtros atuais.",
+      "pagination": {
+        "page": "Pagina {{current}} de {{total}}",
+        "showing": "Mostrando {{start}} a {{end}} de {{total}} registros"
+      },
+      "refresh": "Atualizar",
+      "reportTypes": {
+        "alert_summary": "Resumo de Alertas",
+        "compliance": "Relatório de Conformidade",
+        "device_inventory": "Inventario de Dispositivos",
+        "executive_summary": "Resumo Executivo",
+        "performance": "Relatório de Desempenho",
+        "security_compliance_posture": "Postura de Seguranca e Conformidade",
+        "software_inventory": "Inventario de Software"
+      },
+      "tryAgain": "Tentar novamente",
+      "values": {
+        "no": "Não",
+        "yes": "Sim"
+      },
+      "viewModes": {
+        "chart": "Grafico",
+        "table": "Tabela"
+      }
+    },
+    "reportsList": {
+      "actions": {
+        "delete": "Excluir",
+        "edit": "Editar",
+        "generateNow": "Gerar agora"
+      },
+      "adhocReport": "Relatório avulso",
+      "confirmDelete": "Tem certeza de que deseja excluir \"{{name}}\"?",
+      "createReport": "Criar Relatório",
+      "description": "Gere e agende relatórios para sua infraestrutura.",
+      "download": "Baixar",
+      "emailRecipients": "Destinatarios de e-mail",
+      "emptyReportsDescription": "Crie seu primeiro relatório para começar.",
+      "emptyReportsTitle": "Ainda não há relatórios",
+      "emptyRunsDescription": "Gere um relatório para ve-lo aqui.",
+      "emptyRunsTitle": "Nenhuma execução recente",
+      "errors": {
+        "deleteReport": "Falha ao excluir relatório",
+        "downloadFailed": "Falha no download",
+        "fetchReports": "Falha ao buscar relatórios",
+        "generateReport": "Falha ao gerar relatório",
+        "generic": "Ocorreu um erro"
+      },
+      "formats": {
+        "csv": "CSV",
+        "excel": "Excel",
+        "pdf": "PDF"
+      },
+      "loading": "Carregando relatórios...",
+      "never": "Nunca",
+      "newReport": "Novo Relatório",
+      "nextOccurrence": "Proximo: {{next}}",
+      "reportTypes": {
+        "alert_summary": "Resumo de Alertas",
+        "compliance": "Relatório de Conformidade",
+        "device_inventory": "Inventario de Dispositivos",
+        "executive_summary": "Resumo Executivo",
+        "performance": "Relatório de Desempenho",
+        "security_compliance_posture": "Postura de Seguranca e Conformidade",
+        "software_inventory": "Inventario de Software"
+      },
+      "runsTable": {
+        "actions": "Acoes",
+        "completed": "Concluido",
+        "report": "Relatório",
+        "started": "Iniciado",
+        "status": "Status"
+      },
+      "schedules": {
+        "daily": "Diario",
+        "monthly": "Mensal",
+        "one_time": "Unico",
+        "weekly": "Semanal"
+      },
+      "status": {
+        "completed": "concluido",
+        "failed": "falhou",
+        "pending": "pendente",
+        "running": "em execução"
+      },
+      "table": {
+        "actions": "Acoes",
+        "format": "Formato",
+        "lastGenerated": "Ultima Geracao",
+        "name": "Nome",
+        "schedule": "Agenda",
+        "type": "Tipo"
+      },
+      "tabs": {
+        "recentRuns": "Execuções Recentes",
+        "savedReports": "Relatórios Salvos"
+      },
+      "templates": "Modelos",
+      "title": "Relatórios",
+      "tryAgain": "Tentar novamente",
+      "unknownReport": "Relatório Desconhecido"
+    },
+    "reportBuilder": {
+      "actions": {
+        "cancel": "Cancelar",
+        "generateReport": "Gerar relatório",
+        "preview": "Pre-visualizar",
+        "saveReport": "Salvar relatório",
+        "updateReport": "Atualizar relatório"
+      },
+      "addCondition": "Adicionar condição",
+      "addRecipient": "Adicionar destinatario",
+      "aggregation": "Agregacao",
+      "aggregationField": "Campo de agregação",
+      "aggregationOptions": {
+        "avg": "Media",
+        "count": "Contagem",
+        "sum": "Soma"
+      },
+      "availableFields": "Campos disponiveis",
+      "chart": {
+        "notEnoughData": "Dados insuficientes para gerar gráfico.",
+        "pieChartPreview": "Pre-visualização de gráfico de pizza"
+      },
+      "chartTypes": {
+        "bar": "Barras",
+        "line": "Linha",
+        "pie": "Pizza",
+        "table": "Tabela"
+      },
+      "dataSource": {
+        "activity": {
+          "includeSystem": {
+            "label": "Incluir contas do sistema"
+          },
+          "region": {
+            "label": "Regiao",
+            "options": {
+              "all": "Todas as regioes",
+              "apac": "APAC",
+              "emea": "EMEA",
+              "na": "America do Norte"
+            }
+          },
+          "source": {
+            "label": "Fonte de atividade",
+            "options": {
+              "admin": "Acoes administrativas",
+              "api": "Atividade de API",
+              "auth": "Autenticacao",
+              "system": "Eventos do sistema"
+            }
+          },
+          "timeWindow": {
+            "label": "Janela de tempo",
+            "options": {
+              "last_24h": "Ultimas 24 horas",
+              "last_30d": "Ultimos 30 dias",
+              "last_7d": "Ultimos 7 dias"
+            }
+          }
+        },
+        "alerts": {
+          "severity": {
+            "label": "Severidade",
+            "options": {
+              "all": "Todas as severidades",
+              "critical": "Critica",
+              "high": "Alta",
+              "low": "Baixa",
+              "medium": "Media"
+            }
+          },
+          "source": {
+            "label": "Fonte do alerta",
+            "options": {
+              "all": "Todas as fontes",
+              "monitoring": "Monitoramento",
+              "operations": "Operacoes",
+              "security": "Seguranca"
+            }
+          },
+          "status": {
+            "label": "Status do alerta",
+            "options": {
+              "acknowledged": "Reconhecido",
+              "all": "Todos os status",
+              "open": "Aberto",
+              "resolved": "Resolvido"
+            }
+          },
+          "timeWindow": {
+            "label": "Janela de tempo",
+            "options": {
+              "last_24h": "Ultimas 24 horas",
+              "last_30d": "Ultimos 30 dias",
+              "last_7d": "Ultimos 7 dias"
+            }
+          }
+        },
+        "compliance": {
+          "includeExceptions": {
+            "label": "Incluir excecoes"
+          },
+          "policySet": {
+            "label": "Conjunto de políticas",
+            "options": {
+              "cis": "Benchmarks CIS",
+              "custom": "Politicas personalizadas",
+              "hipaa": "HIPAA",
+              "iso27001": "ISO 27001"
+            }
+          },
+          "scope": {
+            "label": "Escopo de cobertura",
+            "options": {
+              "all_devices": "Todos os dispositivos",
+              "by_group": "Por grupo de dispositivos",
+              "by_site": "Por site"
+            }
+          },
+          "scoring": {
+            "label": "Metodo de pontuação",
+            "options": {
+              "pass_fail": "Aprovado / reprovado",
+              "weighted": "Pontuacao ponderada"
+            }
+          }
+        },
+        "devices": {
+          "includeInactive": {
+            "label": "Incluir dispositivos inativos"
+          },
+          "inventorySource": {
+            "label": "Fonte do inventario",
+            "options": {
+              "agent": "Relatado pelo agente",
+              "cmdb": "Importacao de CMDB",
+              "combined": "Fontes combinadas"
+            }
+          },
+          "ownership": {
+            "label": "Propriedade",
+            "options": {
+              "all": "Todos os dispositivos",
+              "managed": "Dispositivos gerenciados",
+              "unmanaged": "Dispositivos não gerenciados"
+            }
+          },
+          "platform": {
+            "label": "Plataforma",
+            "options": {
+              "all": "Todas as plataformas",
+              "linux": "Linux",
+              "macos": "macOS",
+              "windows": "Windows"
+            }
+          },
+          "scope": {
+            "label": "Escopo de dispositivos",
+            "options": {
+              "all_devices": "Todos os dispositivos",
+              "by_site": "Por site",
+              "by_tag": "Por tag"
+            }
+          }
+        },
+        "patches": {
+          "approval": {
+            "label": "Estado de aprovacao",
+            "options": {
+              "approved": "Aprovado",
+              "deployed": "Implantado",
+              "pending": "Aguardando aprovacao"
+            }
+          },
+          "catalog": {
+            "label": "Catalogo de patches",
+            "options": {
+              "firmware": "Firmware e BIOS",
+              "os_updates": "Atualizacoes do SO",
+              "third_party": "Apps de terceiros"
+            }
+          },
+          "priority": {
+            "label": "Prioridade",
+            "options": {
+              "critical": "Critica",
+              "important": "Importante",
+              "routine": "Rotina"
+            }
+          },
+          "vendor": {
+            "label": "Fornecedor",
+            "options": {
+              "all": "Todos os fornecedores",
+              "apple": "Apple",
+              "linux": "Linux",
+              "microsoft": "Microsoft"
+            }
+          }
+        }
+      },
+      "dataSourceSummary": "{{label}}: {{value}}",
+      "dayOfMonth": "Dia do mes",
+      "dayOfWeek": "Dia da semana",
+      "deviceFilterDescription": "Restrinja este relatório a dispositivos que correspondam ao filtro abaixo.",
+      "emailDistributionList": "Lista de distribuicao de e-mail",
+      "errors": {
+        "generatePreview": "Falha ao gerar pre-visualização",
+        "generic": "Ocorreu um erro",
+        "loadLivePreview": "Falha ao carregar pre-visualização ao vivo",
+        "reportNameRequired": "O nome do relatório e obrigatorio.",
+        "saveReport": "Falha ao salvar relatório",
+        "selectExportFormat": "Selecione pelo menos um formato de exportacao.",
+        "templateNameRequired": "O nome do modelo e obrigatorio.",
+        "validEmail": "Insira um endereço de e-mail válido."
+      },
+      "exportFormats": {
+        "csv": {
+          "description": "Valores separados por virgula",
+          "label": "CSV"
+        },
+        "excel": {
+          "description": "Pasta de trabalho de planilha",
+          "label": "Excel"
+        },
+        "pdf": {
+          "description": "Documento formatado",
+          "label": "PDF"
+        }
+      },
+      "exportFormatsTitle": "Formatos de exportacao",
+      "fields": {
+        "activity": {
+          "action": "Acao",
+          "duration_seconds": "Duracao (seg)",
+          "ip_address": "Endereço IP",
+          "location": "Localizacao",
+          "resource": "Recurso",
+          "result": "Resultado",
+          "target": "Destino",
+          "timestamp": "Carimbo de data/hora",
+          "user": "Usuario"
+        },
+        "alerts": {
+          "alert_id": "ID do Alerta",
+          "device": "Dispositivo",
+          "duration_minutes": "Duracao (min)",
+          "resolved_at": "Resolvido em",
+          "rule": "Regra",
+          "severity": "Severidade",
+          "source": "Fonte",
+          "status": "Status",
+          "triggered_at": "Acionado em"
+        },
+        "compliance": {
+          "control_family": "Familia de controles",
+          "device_count": "Dispositivos",
+          "exception_count": "Excecoes",
+          "last_audit": "Ultima auditoria",
+          "policy": "Politica",
+          "score": "Pontuacao",
+          "status": "Status"
+        },
+        "devices": {
+          "cpu": "Uso de CPU",
+          "disk_usage": "Uso de disco",
+          "hostname": "Nome do host",
+          "last_seen": "Visto por ultimo",
+          "memory": "Uso de memória",
+          "os": "SO",
+          "owner": "Proprietario",
+          "patch_level": "Nivel de patch",
+          "serial": "Número de série",
+          "site": "Site",
+          "status": "Status"
+        },
+        "patches": {
+          "approved_at": "Aprovado em",
+          "device_count": "Dispositivos",
+          "missing_count": "Ausentes",
+          "patch_id": "ID do Patch",
+          "release_date": "Data de lancamento",
+          "severity": "Severidade",
+          "status": "Status",
+          "title": "Título",
+          "vendor": "Fornecedor"
+        }
+      },
+      "fieldsShared": {
+        "reportName": "Nome do relatório",
+        "saveAsTemplate": "Salvar como modelo",
+        "templateName": "Nome do modelo"
+      },
+      "filterModes": {
+        "deviceFilter": "Filtro de Dispositivo",
+        "recordFilters": "Filtros de Registros"
+      },
+      "filterOperators": {
+        "contains": "Contem",
+        "gt": "Maior que",
+        "is": "E",
+        "is_not": "Não e",
+        "lt": "Menor que"
+      },
+      "groupBy": "Agrupar por",
+      "groupedMetric": {
+        "avg": "Media de {{field}}",
+        "count": "Contagem",
+        "sum": "Soma de {{field}}",
+        "value": "Valor"
+      },
+      "livePreview": {
+        "description": "Atualiza conforme voce configura o relatório.",
+        "loading": "Carregando pre-visualização ao vivo...",
+        "noData": "Sem dados de pre-visualização para a configuração atual.",
+        "previewRows": "Linhas da pre-visualização",
+        "title": "Pre-visualização ao vivo",
+        "untitledReport": "Relatório sem título"
+      },
+      "logic": {
+        "and": "E",
+        "or": "OU"
+      },
+      "noFieldsSelected": "Nenhum campo selecionado ainda.",
+      "noFilters": "Ainda não ha filtros. Adicione sua primeira condição.",
+      "noGrouping": "Sem agrupamento",
+      "noNumericFields": "Nenhum campo numerico",
+      "placeholders": {
+        "email": "nome@empresa.com",
+        "reportName": "Visao Geral Mensal de Seguranca",
+        "templateName": "Pacote Trimestral de Conformidade",
+        "value": "Valor"
+      },
+      "previewTable": {
+        "selectFields": "Selecione campos para preencher a tabela de pre-visualização."
+      },
+      "reportTypes": {
+        "activity": {
+          "description": "Trilhas de atividade de usuario, administrador e sistema",
+          "label": "Atividade"
+        },
+        "alerts": {
+          "description": "Volume de alertas, severidade e desempenho de resposta",
+          "label": "Alertas"
+        },
+        "compliance": {
+          "description": "Prontidão para auditoria e visibilidade de alinhamento de políticas",
+          "label": "Conformidade"
+        },
+        "devices": {
+          "description": "Inventario e postura de saúde nos endpoints gerenciados",
+          "label": "Dispositivos"
+        },
+        "patches": {
+          "description": "Prontidão de patches, status de implantacao e exposicao",
+          "label": "Patches"
+        }
+      },
+      "runTime": "Horário de execução",
+      "schedule": "Agenda",
+      "scheduleDetail": {
+        "day": "Dia {{date}}",
+        "everyDay": "Todos os dias"
+      },
+      "scheduleOptions": {
+        "daily": {
+          "label": "Diario"
+        },
+        "monthly": {
+          "label": "Mensal"
+        },
+        "weekly": {
+          "label": "Semanal"
+        }
+      },
+      "sections": {
+        "chartType": {
+          "description": "Escolha como o relatório será visualizado.",
+          "title": "Tipo de gráfico"
+        },
+        "columns": {
+          "description": "Escolha campos e arraste para reordenar.",
+          "title": "Colunas e campos"
+        },
+        "dataSource": {
+          "description": "Configure o conjunto de dados para este tipo de relatório.",
+          "title": "Fonte de dados"
+        },
+        "delivery": {
+          "description": "Defina cadencia, formatos e destinatarios.",
+          "title": "Agenda e entrega"
+        },
+        "filters": {
+          "description": "Filtre os dados do relatório por registros ou propriedades de dispositivos.",
+          "title": "Filtros"
+        },
+        "grouping": {
+          "description": "Resuma dados com contagens, somas ou medias.",
+          "title": "Agrupamento e agregação"
+        },
+        "reportDetails": {
+          "description": "Nomeie o relatório e decida se ele vira um modelo.",
+          "title": "Detalhes do relatório"
+        },
+        "reportType": {
+          "description": "Escolha o tipo de relatório que voce esta criando.",
+          "title": "Tipo de relatório"
+        }
+      },
+      "selectedFields": "Campos selecionados",
+      "values": {
+        "enabled": "Habilitado",
+        "off": "Desligado",
+        "on": "Ligado"
+      },
+      "weekDays": {
+        "friday": "Sexta-feira",
+        "monday": "Segunda-feira",
+        "saturday": "Sabado",
+        "sunday": "Domingo",
+        "thursday": "Quinta-feira",
+        "tuesday": "Terca-feira",
+        "wednesday": "Quarta-feira"
+      },
+      "where": "Onde"
+    },
+    "reportTemplates": {
+      "blankConfigurationDescription": "Configure um relatório do zero ou comece com uma configuração em branco.",
+      "createCustomTemplate": "Criar Modelo Personalizado",
+      "custom": "Personalizado",
+      "description": "Comece com modelos selecionados e ajuste os detalhes antes de publicar.",
+      "errors": {
+        "createReport": "Falha ao criar relatório",
+        "fetchTemplates": "Falha ao buscar modelos de relatório",
+        "loadTemplates": "Não foi possível carregar modelos"
+      },
+      "formats": {
+        "csv": "CSV",
+        "excel": "Excel",
+        "pdf": "PDF"
+      },
+      "last30Days": "ultimos 30 dias",
+      "previewAlt": "Pre-visualização de {{name}}",
+      "reportTypes": {
+        "activity": "Atividade",
+        "alert_summary": "Resumo de Alertas",
+        "alerts": "Alertas",
+        "compliance": "Relatório de Conformidade",
+        "device_inventory": "Inventario de Dispositivos",
+        "devices": "Dispositivos",
+        "executive_summary": "Resumo Executivo",
+        "patches": "Patches",
+        "performance": "Relatório de Desempenho",
+        "security_compliance_posture": "Postura de Seguranca e Conformidade",
+        "software_inventory": "Inventario de Software"
+      },
+      "schedules": {
+        "daily": "Diario",
+        "monthly": "Mensal",
+        "one_time": "Unico",
+        "weekly": "Semanal"
+      },
+      "spec": {
+        "cadence": "Cadencia",
+        "defaultRange": "Intervalo padrão",
+        "format": "Formato"
+      },
+      "success": {
+        "created": "\"{{name}}\" criado. Gere-o na lista de Relatórios."
+      },
+      "syncing": "Sincronizando modelos...",
+      "template": "Modelo",
+      "templates": {
+        "alert_summary": {
+          "description": "Principais alertas, tendências de severidade e carga de resposta.",
+          "name": "Relatório de Resumo de Alertas"
+        },
+        "billing_usage": {
+          "description": "Utilizacao de licencas, faixas de uso e resumos de chargeback.",
+          "name": "Relatório de Cobrança/Uso"
+        },
+        "device_health": {
+          "description": "Tendências de CPU, memória e uptime com pontuação de saúde dos dispositivos.",
+          "name": "Relatório de Saude dos Dispositivos"
+        },
+        "executive_summary": {
+          "description": "KPIs de alto nivel, postura de risco e tendências estrategicas para lideranca.",
+          "name": "Resumo Executivo"
+        },
+        "patch_compliance": {
+          "description": "Cobertura de patches, atualizacoes atrasadas e status de remediacao.",
+          "name": "Relatório de Conformidade de Patches"
+        },
+        "security_compliance_posture": {
+          "description": "Evidências prontas para seguro/vetting: cobertura de EDR, criptografia, firewall, patches, vulnerabilidades, acesso privilegiado e integrações de segurança com consolidações percentuais de implementação.",
+          "name": "Postura de Seguranca e Conformidade (Seguro)"
+        },
+        "sla_compliance": {
+          "description": "Aderencia a SLA, risco de violacao e linhas do tempo de resposta.",
+          "name": "Relatório de Conformidade de SLA"
+        },
+        "technician_activity": {
+          "description": "Volume de tickets, interações com dispositivos e velocidade de resolução.",
+          "name": "Relatório de Atividade de Tecnicos"
+        }
+      },
+      "title": "Modelos de Relatório",
+      "useTemplate": "Usar modelo",
+      "useTemplateTitle": "Usar {{name}}"
+    }
+  }
+}

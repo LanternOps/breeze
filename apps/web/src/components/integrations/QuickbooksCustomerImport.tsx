@@ -1,8 +1,10 @@
-import { useState } from 'react';
-import { fetchWithAuth } from '../../stores/auth';
-import { runAction } from '../../lib/runAction';
-import { showToast } from '../shared/Toast';
-import { useBulkSelection } from '../billing/bulk/useBulkSelection';
+import { useState } from "react";
+import { fetchWithAuth } from "../../stores/auth";
+import { runAction } from "../../lib/runAction";
+import { showToast } from "../shared/Toast";
+import { useBulkSelection } from "../billing/bulk/useBulkSelection";
+import { useTranslation } from "react-i18next";
+import "@/lib/i18n";
 
 interface AnnotatedCustomer {
   id: string;
@@ -24,10 +26,11 @@ interface Props {
 }
 
 export default function QuickbooksCustomerImport({ onUnauthorized }: Props) {
+  const { t } = useTranslation("integrations");
   const [customers, setCustomers] = useState<AnnotatedCustomer[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [importing, setImporting] = useState(false);
-  const [failures, setFailures] = useState<ImportSummary['errors']>([]);
+  const [failures, setFailures] = useState<ImportSummary["errors"]>([]);
   const selection = useBulkSelection();
 
   const importable = (customers ?? []).filter((c) => !c.alreadyImported);
@@ -38,8 +41,10 @@ export default function QuickbooksCustomerImport({ onUnauthorized }: Props) {
     setFailures([]);
     try {
       const data = await runAction<{ data: AnnotatedCustomer[] }>({
-        request: () => fetchWithAuth('/accounting/quickbooks/customers'),
-        errorFallback: 'Failed to load QuickBooks customers.',
+        request: () => fetchWithAuth("/accounting/quickbooks/customers"),
+        errorFallback: t(
+          "quickbooksCustomerImport.failedToLoadQuickBooksCustomers",
+        ),
         onUnauthorized,
       });
       setCustomers(data.data);
@@ -59,28 +64,28 @@ export default function QuickbooksCustomerImport({ onUnauthorized }: Props) {
       // a feature), so runAction can't tell a total failure from a win — we own
       // the outcome toast here. No `successMessage`: it only emits green.
       const res = await runAction<{ data: ImportSummary }>({
-        request: () => fetchWithAuth('/accounting/quickbooks/customers/import', {
-          method: 'POST',
-          body: JSON.stringify({ customerIds }),
-        }),
-        errorFallback: 'Failed to import customers.',
+        request: () =>
+          fetchWithAuth("/accounting/quickbooks/customers/import", {
+            method: "POST",
+            body: JSON.stringify({ customerIds }),
+          }),
+        errorFallback: t("quickbooksCustomerImport.failedToImportCustomers"),
         onUnauthorized,
       });
       const s = res.data;
       const parts = [`${s.imported.length} imported`];
       if (s.skipped.length) parts.push(`${s.skipped.length} skipped`);
       if (s.errors.length) parts.push(`${s.errors.length} failed`);
-      const message = parts.join(', ');
+      const message = parts.join(", ");
       if (s.imported.length === 0 && s.errors.length > 0) {
-        showToast({ type: 'error', message: `Import failed — ${message}.` });
+        showToast({ type: "error", message: `Import failed — ${message}.` });
       } else if (s.errors.length > 0) {
-        showToast({ type: 'warning', message: `${message}.` });
+        showToast({ type: "warning", message: `${message}.` });
       } else {
-        showToast({ type: 'success', message: `${message}.` });
+        showToast({ type: "success", message: `${message}.` });
       }
       await load(); // refresh so imported rows flip to "already imported" (clears failures)
       setFailures(s.errors); // re-set after the refresh so they stay visible
-
     } catch {
       // runAction already toasted the request-level failure (non-200 / thrown).
     } finally {
@@ -97,9 +102,14 @@ export default function QuickbooksCustomerImport({ onUnauthorized }: Props) {
   }
 
   return (
-    <div data-testid="quickbooks-import-panel" className="mt-6 border-t border-gray-200 pt-6">
+    <div
+      data-testid="quickbooks-import-panel"
+      className="mt-6 border-t border-gray-200 pt-6"
+    >
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-gray-900">Import customers</h3>
+        <h3 className="text-sm font-semibold text-gray-900">
+          {t("quickbooksCustomerImport.importCustomers")}
+        </h3>
         <button
           type="button"
           data-testid="quickbooks-import-load"
@@ -107,36 +117,55 @@ export default function QuickbooksCustomerImport({ onUnauthorized }: Props) {
           disabled={loading}
           className="rounded-md bg-gray-100 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-200 disabled:opacity-50"
         >
-          {loading ? 'Loading…' : customers ? 'Refresh' : 'Load customers'}
+          {loading
+            ? t("quickbooksCustomerImport.loading")
+            : customers
+              ? t("common:actions.refresh")
+              : t("quickbooksCustomerImport.loadCustomers")}
         </button>
       </div>
 
       {customers && customers.length === 0 && (
-        <p className="mt-4 text-sm text-gray-500" data-testid="quickbooks-import-empty">No customers found in QuickBooks.</p>
+        <p
+          className="mt-4 text-sm text-gray-500"
+          data-testid="quickbooks-import-empty"
+        >
+          {t("quickbooksCustomerImport.noCustomersFoundInQuickBooks")}
+        </p>
       )}
 
       {customers && customers.length > 0 && (
         <>
-          <table className="mt-4 w-full text-sm" data-testid="quickbooks-import-table">
+          <table
+            className="mt-4 w-full text-sm"
+            data-testid="quickbooks-import-table"
+          >
             <thead>
               <tr className="text-left text-gray-500">
                 <th className="w-8">
                   <input
                     type="checkbox"
                     data-testid="quickbooks-import-select-all"
-                    aria-label="Select all"
-                    checked={importable.length > 0 && importable.every((c) => selection.has(c.id))}
+                    aria-label={t("quickbooksCustomerImport.selectAll")}
+                    checked={
+                      importable.length > 0 &&
+                      importable.every((c) => selection.has(c.id))
+                    }
                     onChange={toggleSelectAll}
                   />
                 </th>
-                <th>Name</th>
-                <th>Email</th>
+                <th>{t("common:labels.name")}</th>
+                <th>{t("quickbooksCustomerImport.email")}</th>
                 <th />
               </tr>
             </thead>
             <tbody>
               {customers.map((c) => (
-                <tr key={c.id} data-testid={`quickbooks-import-row-${c.id}`} className="border-t border-gray-100">
+                <tr
+                  key={c.id}
+                  data-testid={`quickbooks-import-row-${c.id}`}
+                  className="border-t border-gray-100"
+                >
                   <td>
                     <input
                       type="checkbox"
@@ -147,11 +176,14 @@ export default function QuickbooksCustomerImport({ onUnauthorized }: Props) {
                     />
                   </td>
                   <td className="py-1.5 text-gray-900">{c.displayName}</td>
-                  <td className="py-1.5 text-gray-500">{c.email ?? '—'}</td>
+                  <td className="py-1.5 text-gray-500">{c.email ?? "—"}</td>
                   <td className="py-1.5">
                     {c.alreadyImported && (
-                      <span data-testid={`quickbooks-import-badge-${c.id}`} className="rounded-full bg-green-100 px-2 py-0.5 text-xs text-green-700">
-                        Already imported
+                      <span
+                        data-testid={`quickbooks-import-badge-${c.id}`}
+                        className="rounded-full bg-green-100 px-2 py-0.5 text-xs text-green-700"
+                      >
+                        {t("quickbooksCustomerImport.alreadyImported")}
                       </span>
                     )}
                   </td>
@@ -168,17 +200,34 @@ export default function QuickbooksCustomerImport({ onUnauthorized }: Props) {
               disabled={importing || selection.size === 0}
               className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
             >
-              {importing ? 'Importing…' : `Import ${selection.size} selected`}
+              {importing
+                ? t("quickbooksCustomerImport.importing")
+                : t("quickbooksCustomerImport.importSelected", {
+                    count: selection.size,
+                  })}
             </button>
           </div>
 
           {failures.length > 0 && (
-            <div className="mt-4 rounded-md border border-red-200 bg-red-50 p-3" data-testid="quickbooks-import-failures">
-              <p className="text-sm font-medium text-red-800">{failures.length} customer{failures.length === 1 ? '' : 's'} failed to import</p>
+            <div
+              className="mt-4 rounded-md border border-red-200 bg-red-50 p-3"
+              data-testid="quickbooks-import-failures"
+            >
+              <p className="text-sm font-medium text-red-800">
+                {t("quickbooksCustomerImport.customerFailedCount", {
+                  count: failures.length,
+                })}
+              </p>
               <ul className="mt-2 space-y-1 text-xs text-red-700">
                 {failures.map((f) => (
-                  <li key={f.customerId} data-testid={`quickbooks-import-failure-${f.customerId}`}>
-                    <span className="font-medium">{f.displayName ?? f.customerId}</span>: {f.error}
+                  <li
+                    key={f.customerId}
+                    data-testid={`quickbooks-import-failure-${f.customerId}`}
+                  >
+                    <span className="font-medium">
+                      {f.displayName ?? f.customerId}
+                    </span>
+                    : {f.error}
                   </li>
                 ))}
               </ul>

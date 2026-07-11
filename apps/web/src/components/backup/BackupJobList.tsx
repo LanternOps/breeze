@@ -13,6 +13,9 @@ import {
 import { cn } from '@/lib/utils';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
+import { formatNumber } from '@/lib/i18n/format';
+import { useTranslation } from 'react-i18next';
+import { i18n } from '@/lib/i18n';
 
 type JobStatus = 'completed' | 'running' | 'failed' | 'queued' | 'cancelled';
 
@@ -105,7 +108,7 @@ function formatBytes(bytes: number): string {
     unitIndex += 1;
   }
   const precision = value >= 100 ? 0 : value >= 10 ? 1 : 2;
-  return `${value.toFixed(precision)} ${units[unitIndex]}`;
+  return `${formatNumber(value, { minimumFractionDigits: precision, maximumFractionDigits: precision })} ${units[unitIndex]}`;
 }
 
 function formatDuration(startedAt?: string | null, completedAt?: string | null): string {
@@ -154,12 +157,13 @@ function mapJob(raw: BackupJobRaw): BackupJob {
         ? `${raw.errorLog.slice(0, 57)}...`
         : raw.errorLog
       : raw.errorCount
-        ? `${raw.errorCount} error${raw.errorCount !== 1 ? 's' : ''}`
+        ? i18n.t('backup:backupJobList.errorCount', { count: raw.errorCount })
         : '-'
   };
 }
 
 export default function BackupJobList() {
+  const { t } = useTranslation('backup');
   const [jobs, setJobs] = useState<BackupJob[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -272,7 +276,7 @@ export default function BackupJobList() {
       <div className="flex items-center justify-center py-16">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading backup jobs...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('backupJobList.loadingBackupJobs')}</p>
         </div>
       </div>
     );
@@ -287,8 +291,7 @@ export default function BackupJobList() {
           onClick={fetchJobs}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Try again
-        </button>
+          {t('backupJobList.tryAgain')} </button>
       </div>
     );
   }
@@ -296,48 +299,48 @@ export default function BackupJobList() {
   return (
     <div className="space-y-5">
       <div>
-        <h2 className="text-xl font-semibold text-foreground">Backup Jobs</h2>
-        <p className="text-sm text-muted-foreground">Track job execution status and troubleshoot errors.</p>
+        <h2 className="text-xl font-semibold text-foreground">{t('backupJobList.backupJobs')}</h2>
+        <p className="text-sm text-muted-foreground">{t('backupJobList.trackJobExecutionStatusAndTroubleshootErrors')}</p>
       </div>
 
       <div className="grid gap-3 rounded-lg border bg-card p-4 shadow-xs md:grid-cols-3">
         <div className="flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm">
           <Search className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
-          <label htmlFor="job-search" className="sr-only">Search device</label>
+          <label htmlFor="job-search" className="sr-only">{t('backupJobList.searchDevice')}</label>
           <input
             id="job-search"
             className="w-full bg-transparent text-sm outline-hidden"
-            placeholder="Search device..."
+            placeholder={t('backupJobList.searchDevice2')}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
           />
         </div>
         <div className="flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm">
           <Filter className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
-          <label htmlFor="job-status-filter" className="sr-only">Filter by status</label>
+          <label htmlFor="job-status-filter" className="sr-only">{t('backupJobList.filterByStatus')}</label>
           <select
             id="job-status-filter"
             className="w-full appearance-none bg-transparent text-sm outline-hidden"
             value={statusFilter}
             onChange={(event) => setStatusFilter(event.target.value as JobStatus | 'all')}
           >
-            <option value="all">All status</option>
-            <option value="running">Running</option>
-            <option value="failed">Failed</option>
-            <option value="completed">Completed</option>
-            <option value="queued">Queued</option>
-            <option value="cancelled">Cancelled</option>
+            <option value="all">{t('backupJobList.allStatus')}</option>
+            <option value="running">{t('backupJobList.running')}</option>
+            <option value="failed">{t('backupJobList.failed')}</option>
+            <option value="completed">{t('backupJobList.completed')}</option>
+            <option value="queued">{t('backupJobList.queued')}</option>
+            <option value="cancelled">{t('backupJobList.cancelled')}</option>
           </select>
         </div>
         <div className="rounded-md border bg-background px-3 py-2 text-sm">
-          <label htmlFor="job-config-filter" className="sr-only">Filter by config</label>
+          <label htmlFor="job-config-filter" className="sr-only">{t('backupJobList.filterByConfig')}</label>
           <select
             id="job-config-filter"
             className="w-full appearance-none bg-transparent text-sm outline-hidden"
             value={configFilter}
             onChange={(event) => setConfigFilter(event.target.value)}
           >
-            <option value="all">All configs</option>
+            <option value="all">{t('backupJobList.allConfigs')}</option>
             {availableConfigs.map((config) => (
               <option key={config} value={config}>
                 {config}
@@ -357,23 +360,22 @@ export default function BackupJobList() {
         <table className="w-full min-w-[700px]">
           <thead className="bg-muted/40 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             <tr>
-              <th className="px-4 py-3">Device</th>
-              <th className="px-4 py-3">Config</th>
-              <th className="px-4 py-3">Type</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3">Started</th>
-              <th className="px-4 py-3">Duration</th>
-              <th className="px-4 py-3">Size</th>
-              <th className="px-4 py-3">Errors</th>
-              <th className="px-4 py-3 text-right">Actions</th>
+              <th className="px-4 py-3">{t('backupJobList.device')}</th>
+              <th className="px-4 py-3">{t('backupJobList.config')}</th>
+              <th className="px-4 py-3">{t('backupJobList.type')}</th>
+              <th className="px-4 py-3">{t('backupJobList.status')}</th>
+              <th className="px-4 py-3">{t('backupJobList.started')}</th>
+              <th className="px-4 py-3">{t('backupJobList.duration')}</th>
+              <th className="px-4 py-3">{t('backupJobList.size')}</th>
+              <th className="px-4 py-3">{t('backupJobList.errors')}</th>
+              <th className="px-4 py-3 text-right">{t('backupJobList.actions')}</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-border">
             {filteredJobs.length === 0 ? (
               <tr>
                 <td colSpan={9} className="px-4 py-8 text-center text-sm text-muted-foreground">
-                  No backup jobs match your filters.
-                </td>
+                  {t('backupJobList.noBackupJobsMatchYourFilters')} </td>
               </tr>
             ) : (
               filteredJobs.map((job) => {
@@ -430,8 +432,7 @@ export default function BackupJobList() {
                               ) : (
                                 <PauseCircle className="h-3.5 w-3.5" />
                               )}
-                              Cancel
-                            </button>
+                              {t('backupJobList.cancel')} </button>
                           )}
                           <button
                             type="button"
@@ -455,32 +456,32 @@ export default function BackupJobList() {
                         <td colSpan={9} className="px-4 py-4">
                           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                             <div>
-                              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Created</p>
+                              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('backupJobList.created')}</p>
                               <p className="mt-1 text-foreground">{formatTime(details.createdAt)}</p>
                             </div>
                             <div>
-                              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Updated</p>
+                              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('backupJobList.updated')}</p>
                               <p className="mt-1 text-foreground">{formatTime(details.updatedAt)}</p>
                             </div>
                             <div>
-                              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Files</p>
+                              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('backupJobList.files')}</p>
                               <p className="mt-1 text-foreground">{details.fileCount ?? 0}</p>
                             </div>
                             <div>
-                              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Snapshot ID</p>
+                              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('backupJobList.snapshotId')}</p>
                               <p className="mt-1 break-all text-foreground">{details.snapshotId ?? '--'}</p>
                             </div>
                             <div>
-                              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Policy ID</p>
+                              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('backupJobList.policyId')}</p>
                               <p className="mt-1 break-all text-foreground">{details.policyId ?? '--'}</p>
                             </div>
                             <div>
-                              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Feature Link ID</p>
+                              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('backupJobList.featureLinkId')}</p>
                               <p className="mt-1 break-all text-foreground">{details.featureLinkId ?? '--'}</p>
                             </div>
                           </div>
                           <div className="mt-4">
-                            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Error Log</p>
+                            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('backupJobList.errorLog')}</p>
                             <pre className="mt-1 whitespace-pre-wrap rounded-md border bg-background px-3 py-2 text-xs text-foreground">
                               {details.errorLog ?? 'No error log recorded.'}
                             </pre>

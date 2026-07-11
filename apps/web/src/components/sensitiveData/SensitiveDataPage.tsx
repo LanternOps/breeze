@@ -1,5 +1,7 @@
+import '@/lib/i18n';
 import { useState, useEffect } from 'react';
 import { ScanSearch } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import DashboardTab from './DashboardTab';
 import FindingsTab from './FindingsTab';
 import ScansTab from './ScansTab';
@@ -22,6 +24,7 @@ function getTabFromHash(): Tab {
 }
 
 export default function SensitiveDataPage() {
+  const { t } = useTranslation('security');
   const [activeTab, setActiveTab] = useState<Tab>(getTabFromHash);
 
   useEffect(() => {
@@ -35,11 +38,26 @@ export default function SensitiveDataPage() {
     setActiveTab(tab);
   };
 
+  const tabLabel = (tab: Tab) => {
+    switch (tab) {
+      case 'dashboard':
+        return t('sensitiveDataSensitiveDataPage.tabs.dashboard', { defaultValue: 'Dashboard' });
+      case 'findings':
+        return t('sensitiveDataSensitiveDataPage.tabs.findings', { defaultValue: 'Findings' });
+      case 'scans':
+        return t('sensitiveDataSensitiveDataPage.tabs.scans', { defaultValue: 'Scans' });
+      case 'policies':
+        return t('sensitiveDataSensitiveDataPage.tabs.policies', { defaultValue: 'Policies' });
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-3">
         <ScanSearch className="h-6 w-6 text-primary" />
-        <h1 className="text-xl font-semibold tracking-tight">Sensitive Data</h1>
+        <h1 className="text-xl font-semibold tracking-tight">
+          {t('sensitiveDataSensitiveDataPage.heading', { defaultValue: 'Sensitive Data' })}
+        </h1>
       </div>
 
       <div className="border-b">
@@ -55,7 +73,7 @@ export default function SensitiveDataPage() {
                   : 'border-transparent text-muted-foreground hover:border-muted-foreground hover:text-foreground'
               }`}
             >
-              {tab.label}
+              {tabLabel(tab.id)}
             </button>
           ))}
         </nav>

@@ -1,4 +1,4 @@
-import type { TimeFormat } from '@breeze/shared';
+import type { SupportedLocale, TimeFormat } from '@breeze/shared';
 
 export const THEME_OPTIONS = ['light', 'dark', 'system'] as const;
 export type ThemePreference = (typeof THEME_OPTIONS)[number];
@@ -11,6 +11,9 @@ export type FontPreference = (typeof FONT_OPTIONS)[number];
 
 export const TIME_FORMAT_OPTIONS = ['12h', '24h'] as const satisfies readonly TimeFormat[];
 export type TimeFormatPreference = TimeFormat;
+
+export const LOCALE_OPTIONS = ['en', 'pt-BR'] as const;
+export type LocalePreference = SupportedLocale;
 
 /**
  * Devices-list presentation of linked multi-boot profiles (#2138). 'on' =
@@ -27,6 +30,7 @@ export type AppearancePreferences = {
   density?: Density;
   font?: FontPreference;
   timeFormat?: TimeFormatPreference;
+  locale?: LocalePreference;
 };
 
 export const DEFAULT_THEME: ThemePreference = 'system';
@@ -38,6 +42,8 @@ export const THEME_STORAGE_KEY = 'theme';
 export const DENSITY_STORAGE_KEY = 'breeze.density';
 export const FONT_STORAGE_KEY = 'breeze.font';
 export const TIME_FORMAT_STORAGE_KEY = 'breeze.timeFormat';
+export const LOCALE_STORAGE_KEY = 'breeze.locale';
+export const PARTNER_LOCALE_STORAGE_KEY = 'breeze.partnerLocale';
 export const LINKED_PROFILE_COLLAPSE_STORAGE_KEY = 'breeze.collapseLinkedProfiles';
 
 export function isValidTheme(value: unknown): value is ThemePreference {
@@ -54,6 +60,10 @@ export function isValidFont(value: unknown): value is FontPreference {
 
 export function isValidTimeFormat(value: unknown): value is TimeFormatPreference {
   return typeof value === 'string' && (TIME_FORMAT_OPTIONS as readonly string[]).includes(value);
+}
+
+export function isValidLocale(value: unknown): value is LocalePreference {
+  return typeof value === 'string' && (LOCALE_OPTIONS as readonly string[]).includes(value);
 }
 
 export function isValidLinkedProfileCollapse(value: unknown): value is LinkedProfileCollapsePreference {
@@ -76,29 +86,44 @@ export function normalizeTimeFormat(value: unknown): TimeFormatPreference | unde
   return isValidTimeFormat(value) ? value : undefined;
 }
 
+export function normalizeLocale(value: unknown): LocalePreference | undefined {
+  return isValidLocale(value) ? value : undefined;
+}
+
 export function normalizeLinkedProfileCollapse(value: unknown): LinkedProfileCollapsePreference | undefined {
   return isValidLinkedProfileCollapse(value) ? value : undefined;
 }
 
 function readStorageValue(key: string): string | null {
-  if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') {
+  if (typeof window === 'undefined') {
     return null;
   }
   try {
-    return window.localStorage.getItem(key);
+    return window.localStorage?.getItem(key) ?? null;
   } catch {
     return null;
   }
 }
 
 function writeStorageValue(key: string, value: string): void {
-  if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') {
+  if (typeof window === 'undefined') {
     return;
   }
   try {
-    window.localStorage.setItem(key, value);
+    window.localStorage?.setItem(key, value);
   } catch {
     // Quota / SecurityError: ignore. The DOM-applied value still takes effect.
+  }
+}
+
+function removeStorageValue(key: string): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  try {
+    window.localStorage?.removeItem(key);
+  } catch {
+    // Storage unavailable: the runtime resolution still uses browser defaults.
   }
 }
 
@@ -116,6 +141,33 @@ export function readFontPreference(): FontPreference {
 
 export function readTimeFormatPreference(): TimeFormatPreference | undefined {
   return normalizeTimeFormat(readStorageValue(TIME_FORMAT_STORAGE_KEY));
+}
+
+// Warn at most once per storage key per session so a persistently corrupt
+// value (rather than a transient one-off) doesn't spam the console on every
+// read (readResolvedLocalePreference is called on most navigations).
+const warnedCorruptLocaleKeys = new Set<string>();
+
+function readLocaleStorageValue(key: string): LocalePreference | undefined {
+  const raw = readStorageValue(key);
+  if (raw === null || raw === '') return undefined;
+
+  const normalized = normalizeLocale(raw);
+  if (normalized === undefined && !warnedCorruptLocaleKeys.has(key)) {
+    warnedCorruptLocaleKeys.add(key);
+    console.warn(
+      `[appearance] Discarding unsupported locale value stored in localStorage["${key}"]: ${JSON.stringify(raw)}`
+    );
+  }
+  return normalized;
+}
+
+export function readLocalePreference(): LocalePreference | undefined {
+  return readLocaleStorageValue(LOCALE_STORAGE_KEY);
+}
+
+export function readPartnerLocalePreference(): LocalePreference | undefined {
+  return readLocaleStorageValue(PARTNER_LOCALE_STORAGE_KEY);
 }
 
 export function readLinkedProfileCollapsePreference(): LinkedProfileCollapsePreference {
@@ -138,6 +190,30 @@ export function detectBrowserTimeFormat(): TimeFormatPreference {
 
 export function readResolvedTimeFormatPreference(): TimeFormatPreference {
   return readTimeFormatPreference() ?? detectBrowserTimeFormat();
+}
+
+export function detectBrowserLocale(): LocalePreference {
+  if (typeof navigator === 'undefined') {
+    return 'en';
+  }
+  const candidates = [...(navigator.languages ?? []), navigator.language].filter(
+    (v): v is string => typeof v === 'string' && v.length > 0
+  );
+  for (const candidate of candidates) {
+    const match = LOCALE_OPTIONS.find(
+      (option) =>
+        option.toLowerCase() === candidate.toLowerCase() ||
+        option.split('-')[0].toLowerCase() === candidate.split('-')[0].toLowerCase()
+    );
+    if (match) {
+      return match;
+    }
+  }
+  return 'en';
+}
+
+export function readResolvedLocalePreference(): LocalePreference {
+  return readLocalePreference() ?? readPartnerLocalePreference() ?? detectBrowserLocale();
 }
 
 export function applyThemePreference(value: ThemePreference): void {
@@ -186,6 +262,49 @@ export function writeTimeFormatPreference(value: TimeFormatPreference): void {
   notifyTimeFormat(value);
 }
 
+export function writeLocalePreference(value: LocalePreference): void {
+  if (!isValidLocale(value)) return;
+  writeStorageValue(LOCALE_STORAGE_KEY, value);
+  notifyLocale(value);
+}
+
+/** Cache the current partner default without turning it into a user choice. */
+export function writePartnerLocalePreference(value: LocalePreference | undefined): void {
+  if (value === undefined) {
+    removeStorageValue(PARTNER_LOCALE_STORAGE_KEY);
+  } else if (isValidLocale(value)) {
+    writeStorageValue(PARTNER_LOCALE_STORAGE_KEY, value);
+  } else {
+    return;
+  }
+  notifyLocale(readResolvedLocalePreference());
+}
+
+/**
+ * Synchronize server-owned locale state after authentication.
+ *
+ * An absent user locale deliberately clears a previous account's cached user
+ * choice before resolving the partner default, preventing cross-account locale
+ * leakage on shared browsers.
+ */
+export function applyResolvedLocalePreferences(
+  userLocale: unknown,
+  partnerLocale: unknown,
+): LocalePreference {
+  const normalizedUser = normalizeLocale(userLocale);
+  const normalizedPartner = normalizeLocale(partnerLocale);
+
+  if (normalizedUser) writeStorageValue(LOCALE_STORAGE_KEY, normalizedUser);
+  else removeStorageValue(LOCALE_STORAGE_KEY);
+
+  if (normalizedPartner) writeStorageValue(PARTNER_LOCALE_STORAGE_KEY, normalizedPartner);
+  else removeStorageValue(PARTNER_LOCALE_STORAGE_KEY);
+
+  const resolved = normalizedUser ?? normalizedPartner ?? detectBrowserLocale();
+  notifyLocale(resolved);
+  return resolved;
+}
+
 export function writeLinkedProfileCollapsePreference(value: LinkedProfileCollapsePreference): void {
   if (!isValidLinkedProfileCollapse(value)) return;
   writeStorageValue(LINKED_PROFILE_COLLAPSE_STORAGE_KEY, value);
@@ -205,12 +324,16 @@ export function applyAppearancePreferences(preferences: AppearancePreferences): 
   if (preferences.timeFormat) {
     writeTimeFormatPreference(preferences.timeFormat);
   }
+  if (preferences.locale) {
+    writeLocalePreference(preferences.locale);
+  }
 }
 
 const themeSubscribers = new Set<(value: ThemePreference) => void>();
 const densitySubscribers = new Set<(value: Density) => void>();
 const fontSubscribers = new Set<(value: FontPreference) => void>();
 const timeFormatSubscribers = new Set<(value: TimeFormatPreference) => void>();
+const localeSubscribers = new Set<(value: LocalePreference) => void>();
 const linkedProfileCollapseSubscribers = new Set<(value: LinkedProfileCollapsePreference) => void>();
 
 function notifyTheme(value: ThemePreference): void {
@@ -245,6 +368,16 @@ function notifyFont(value: FontPreference): void {
 
 function notifyTimeFormat(value: TimeFormatPreference): void {
   for (const fn of timeFormatSubscribers) {
+    try {
+      fn(value);
+    } catch {
+      // Subscriber errors must not break setter.
+    }
+  }
+}
+
+function notifyLocale(value: LocalePreference): void {
+  for (const fn of localeSubscribers) {
     try {
       fn(value);
     } catch {
@@ -288,6 +421,13 @@ export function subscribeTimeFormat(fn: (value: TimeFormatPreference) => void): 
   timeFormatSubscribers.add(fn);
   return () => {
     timeFormatSubscribers.delete(fn);
+  };
+}
+
+export function subscribeLocale(fn: (value: LocalePreference) => void): () => void {
+  localeSubscribers.add(fn);
+  return () => {
+    localeSubscribers.delete(fn);
   };
 }
 

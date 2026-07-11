@@ -4,6 +4,7 @@ import { Loader2 } from 'lucide-react';
 import Sidebar from './Sidebar';
 import Header from './Header';
 import { navigateTo } from '../../lib/navigation';
+import { useTranslation } from 'react-i18next';
 
 interface DashboardWrapperProps {
   children: ReactNode;
@@ -11,6 +12,7 @@ interface DashboardWrapperProps {
 }
 
 export default function DashboardWrapper({ children, currentPath }: DashboardWrapperProps) {
+  const { t } = useTranslation('common');
   const { isAuthenticated, isLoading, tokens } = useAuthStore();
   const [isChecking, setIsChecking] = useState(true);
   const [isRecovering, setIsRecovering] = useState(false);
@@ -67,7 +69,7 @@ export default function DashboardWrapper({ children, currentPath }: DashboardWra
       <div className="flex h-screen items-center justify-center">
         <div className="text-center">
           <Loader2 className="mx-auto h-8 w-8 animate-spin text-primary" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('states.loading')}</p>
         </div>
       </div>
     );
@@ -79,7 +81,7 @@ export default function DashboardWrapper({ children, currentPath }: DashboardWra
       <div className="flex h-screen items-center justify-center">
         <div className="text-center">
           <Loader2 className="mx-auto h-8 w-8 animate-spin text-primary" />
-          <p className="mt-4 text-sm text-muted-foreground">Redirecting to login...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('layout.redirectingToLogin')}</p>
         </div>
       </div>
     );

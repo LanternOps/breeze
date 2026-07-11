@@ -18,6 +18,8 @@ import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatBytes, formatTime } from './backupDashboardHelpers';
 import AlphaBadge from '../shared/AlphaBadge';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -81,6 +83,7 @@ function normalizeInstanceStatus(status?: string): InstanceStatus {
 // ── Component ─────────────────────────────────────────────────────
 
 export default function MssqlDashboard() {
+  const { t } = useTranslation('backup');
   const [instances, setInstances] = useState<MssqlInstance[]>([]);
   const [chains, setChains] = useState<BackupChain[]>([]);
   const [discoveryTargets, setDiscoveryTargets] = useState<DeviceSummary[]>([]);
@@ -238,7 +241,7 @@ export default function MssqlDashboard() {
       <div className="flex items-center justify-center py-16">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading SQL Server instances...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('mssqlDashboard.loadingSqlServerInstances')}</p>
         </div>
       </div>
     );
@@ -253,8 +256,7 @@ export default function MssqlDashboard() {
           onClick={fetchData}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Try again
-        </button>
+          {t('mssqlDashboard.tryAgain')} </button>
       </div>
     );
   }
@@ -275,7 +277,7 @@ export default function MssqlDashboard() {
                 <div className="font-medium text-foreground">
                   {singleEligibleDiscoveryTarget.displayName ?? singleEligibleDiscoveryTarget.hostname ?? singleEligibleDiscoveryTarget.id}
                 </div>
-                <div className="text-xs text-muted-foreground">Protected Windows device</div>
+                <div className="text-xs text-muted-foreground">{t('mssqlDashboard.protectedWindowsDevice')}</div>
               </div>
             ) : (
               <select
@@ -283,7 +285,7 @@ export default function MssqlDashboard() {
                 value={emptyDiscoveryDeviceId}
                 onChange={(event) => setEmptyDiscoveryDeviceId(event.target.value)}
               >
-                <option value="">Select a protected Windows device</option>
+                <option value="">{t('mssqlDashboard.selectAProtectedWindowsDevice')}</option>
                 {discoveryTargets.map((device) => (
                   <option key={device.id} value={device.id}>
                     {`${device.displayName ?? device.hostname ?? device.id}${device.eligible ? '' : ' — offline'}`}
@@ -298,14 +300,12 @@ export default function MssqlDashboard() {
               className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
             >
               {discoveringDeviceId === emptyDiscoveryDeviceId ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-              Run discovery
-            </button>
+              {t('mssqlDashboard.runDiscovery')} </button>
           </div>
         )}
         {discoveryTargets.length > 0 && !eligibleDiscoveryTargets.length && (
           <p className="mt-3 text-xs text-muted-foreground">
-            A protected target exists, but discovery requires the device to be online.
-          </p>
+            {t('mssqlDashboard.aProtectedTargetExistsButDiscoveryRequiresThe')} </p>
         )}
       </div>
     );
@@ -316,10 +316,9 @@ export default function MssqlDashboard() {
       <AlphaBadge variant="banner" disclaimer="SQL Server backup is in early access. Discovery and backup chains are functional, but recovery workflows still require direct API or operator handling." />
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-xl font-semibold text-foreground">SQL Server Backup</h2>
+          <h2 className="text-xl font-semibold text-foreground">{t('mssqlDashboard.sqlServerBackup')}</h2>
           <p className="text-sm text-muted-foreground">
-            Manage MSSQL instances, databases, and backup chains.
-          </p>
+            {t('mssqlDashboard.manageMssqlInstancesDatabasesAndBackupChains')} </p>
         </div>
         <button
           type="button"
@@ -327,8 +326,7 @@ export default function MssqlDashboard() {
           className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted"
         >
           <RefreshCw className="h-3.5 w-3.5" />
-          Refresh
-        </button>
+          {t('mssqlDashboard.refresh')} </button>
       </div>
 
       {error && (
@@ -345,11 +343,11 @@ export default function MssqlDashboard() {
       {/* Search */}
       <div className="flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm">
         <Search className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
-        <label htmlFor="mssql-search" className="sr-only">Search instances</label>
+        <label htmlFor="mssql-search" className="sr-only">{t('mssqlDashboard.searchInstances')}</label>
         <input
           id="mssql-search"
           className="w-full bg-transparent text-sm outline-hidden"
-          placeholder="Search by instance name, version, or edition..."
+          placeholder={t('mssqlDashboard.searchByInstanceNameVersionOrEdition')}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
@@ -361,21 +359,20 @@ export default function MssqlDashboard() {
           <thead className="bg-muted/40 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             <tr>
               <th className="px-4 py-3 w-8" />
-              <th className="px-4 py-3">Instance</th>
-              <th className="px-4 py-3">Version</th>
-              <th className="px-4 py-3">Edition</th>
-              <th className="px-4 py-3">Port</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3">Databases</th>
-              <th className="px-4 py-3 text-right">Actions</th>
+              <th className="px-4 py-3">{t('mssqlDashboard.instance')}</th>
+              <th className="px-4 py-3">{t('mssqlDashboard.version')}</th>
+              <th className="px-4 py-3">{t('mssqlDashboard.edition')}</th>
+              <th className="px-4 py-3">{t('mssqlDashboard.port')}</th>
+              <th className="px-4 py-3">{t('mssqlDashboard.status')}</th>
+              <th className="px-4 py-3">{t('mssqlDashboard.databases')}</th>
+              <th className="px-4 py-3 text-right">{t('mssqlDashboard.actions')}</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-border">
             {filteredInstances.length === 0 ? (
               <tr>
                 <td colSpan={8} className="px-4 py-8 text-center text-sm text-muted-foreground">
-                  No instances match your search.
-                </td>
+                  {t('mssqlDashboard.noInstancesMatchYourSearch')} </td>
               </tr>
             ) : (
               filteredInstances.map((inst) => {
@@ -405,7 +402,7 @@ export default function MssqlDashboard() {
       {/* Backup Chains */}
       {chains.length > 0 && (
         <div className="rounded-lg border bg-card p-5 shadow-xs">
-          <h3 className="mb-4 font-semibold">Backup Chains</h3>
+          <h3 className="mb-4 font-semibold">{t('mssqlDashboard.backupChains')}</h3>
           <div className="space-y-4">
             {chains.map((chain) => (
               <div key={chain.id} className="rounded-md border bg-muted/20 p-4">
@@ -472,6 +469,7 @@ function InstanceRow({
   backingUpDb,
   instanceId,
 }: InstanceRowProps) {
+  const { t } = useTranslation('backup');
   return (
     <>
       <tr className="text-sm text-foreground">
@@ -522,8 +520,7 @@ function InstanceRow({
               ) : (
                 <RefreshCw className="h-3.5 w-3.5" />
               )}
-              Discover
-            </button>
+              {t('mssqlDashboard.discover')} </button>
           </div>
         </td>
       </tr>
@@ -533,11 +530,11 @@ function InstanceRow({
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b text-left text-xs text-muted-foreground">
-                  <th className="pb-2 pr-4 font-medium">Database</th>
-                  <th className="pb-2 pr-4 font-medium">Recovery Model</th>
-                  <th className="pb-2 pr-4 font-medium">Size</th>
-                  <th className="pb-2 pr-4 font-medium">TDE</th>
-                  <th className="pb-2 text-right font-medium">Actions</th>
+                  <th className="pb-2 pr-4 font-medium">{t('mssqlDashboard.database')}</th>
+                  <th className="pb-2 pr-4 font-medium">{t('mssqlDashboard.recoveryModel')}</th>
+                  <th className="pb-2 pr-4 font-medium">{t('mssqlDashboard.size')}</th>
+                  <th className="pb-2 pr-4 font-medium">{t('mssqlDashboard.tde')}</th>
+                  <th className="pb-2 text-right font-medium">{t('mssqlDashboard.actions')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -559,10 +556,9 @@ function InstanceRow({
                         {db.tdeEnabled ? (
                           <span className="inline-flex items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-xs font-medium text-success">
                             <ShieldCheck className="h-3 w-3" />
-                            Enabled
-                          </span>
+                            {t('mssqlDashboard.enabled')} </span>
                         ) : (
-                          <span className="text-xs text-muted-foreground">Off</span>
+                          <span className="text-xs text-muted-foreground">{t('mssqlDashboard.off')}</span>
                         )}
                       </td>
                       <td className="py-2 text-right">
@@ -577,8 +573,7 @@ function InstanceRow({
                           ) : (
                             <Play className="h-3.5 w-3.5" />
                           )}
-                          Backup Now
-                        </button>
+                          {t('mssqlDashboard.backupNow')} </button>
                       </td>
                     </tr>
                   );

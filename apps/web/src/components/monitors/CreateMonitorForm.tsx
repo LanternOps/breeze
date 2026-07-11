@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Loader2, X } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { useTranslation } from 'react-i18next';
 
 type CreateMonitorFormProps = {
   orgId?: string;
@@ -11,13 +12,14 @@ type CreateMonitorFormProps = {
 };
 
 const monitorTypes = [
-  { value: 'icmp_ping', label: 'ICMP Ping', description: 'Check if a host is reachable via ping' },
-  { value: 'tcp_port', label: 'TCP Port', description: 'Check if a TCP port is open and responding' },
-  { value: 'http_check', label: 'HTTP Check', description: 'Monitor HTTP/HTTPS endpoints' },
-  { value: 'dns_check', label: 'DNS Check', description: 'Verify DNS records resolve correctly' }
+  { value: 'icmp_ping', labelKey: 'longTail.monitors.CreateMonitorForm.monitorTypes.icmpPing.label', descriptionKey: 'longTail.monitors.CreateMonitorForm.monitorTypes.icmpPing.description' },
+  { value: 'tcp_port', labelKey: 'longTail.monitors.CreateMonitorForm.monitorTypes.tcpPort.label', descriptionKey: 'longTail.monitors.CreateMonitorForm.monitorTypes.tcpPort.description' },
+  { value: 'http_check', labelKey: 'longTail.monitors.CreateMonitorForm.monitorTypes.httpCheck.label', descriptionKey: 'longTail.monitors.CreateMonitorForm.monitorTypes.httpCheck.description' },
+  { value: 'dns_check', labelKey: 'longTail.monitors.CreateMonitorForm.monitorTypes.dnsCheck.label', descriptionKey: 'longTail.monitors.CreateMonitorForm.monitorTypes.dnsCheck.description' }
 ] as const;
 
 export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCreated, onCancel }: CreateMonitorFormProps) {
+  const { t } = useTranslation('common');
   const [monitorType, setMonitorType] = useState<string>('icmp_ping');
   const [name, setName] = useState('');
   const [target, setTarget] = useState(defaultTarget ?? '');
@@ -51,9 +53,9 @@ export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCre
     e.preventDefault();
     setError(undefined);
 
-    if (!name.trim()) { setError('Name is required'); return; }
+    if (!name.trim()) { setError(t('longTail.monitors.CreateMonitorForm.errors.nameRequired')); return; }
     if (!target.trim() && monitorType !== 'http_check' && monitorType !== 'dns_check') {
-      setError('Target is required');
+      setError(t('longTail.monitors.CreateMonitorForm.errors.targetRequired'));
       return;
     }
 
@@ -109,12 +111,12 @@ export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCre
 
       if (!response.ok) {
         const data = await response.json().catch(() => null);
-        throw new Error(data?.error ?? 'Failed to create monitor');
+        throw new Error(data?.error ?? t('longTail.monitors.CreateMonitorForm.errors.createMonitor'));
       }
 
       onCreated();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('longTail.monitors.CreateMonitorForm.errors.generic'));
     } finally {
       setSaving(false);
     }
@@ -125,9 +127,9 @@ export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCre
       <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h2 className="text-lg font-semibold">Create Network Monitor</h2>
+            <h2 className="text-lg font-semibold">{t('longTail.monitors.CreateMonitorForm.title')}</h2>
             <p className="mt-1 text-sm text-muted-foreground">
-              Set up a new monitoring check for a network target.
+              {t('longTail.monitors.CreateMonitorForm.subtitle')}
             </p>
           </div>
           <button
@@ -142,7 +144,7 @@ export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCre
         <form onSubmit={handleSubmit} className="mt-6 space-y-5">
           {/* Monitor Type */}
           <div>
-            <label className="block text-xs font-medium text-muted-foreground mb-2">Monitor Type</label>
+            <label className="block text-xs font-medium text-muted-foreground mb-2">{t('longTail.monitors.CreateMonitorForm.fields.monitorType')}</label>
             <div className="grid grid-cols-2 gap-2">
               {monitorTypes.map((type) => (
                 <button
@@ -155,8 +157,8 @@ export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCre
                       : 'hover:bg-muted/50'
                   }`}
                 >
-                  <p className="text-sm font-medium">{type.label}</p>
-                  <p className="text-xs text-muted-foreground">{type.description}</p>
+                  <p className="text-sm font-medium">{t(/* i18n-dynamic */ type.labelKey)}</p>
+                  <p className="text-xs text-muted-foreground">{t(/* i18n-dynamic */ type.descriptionKey)}</p>
                 </button>
               ))}
             </div>
@@ -165,24 +167,24 @@ export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCre
           {/* Common Fields */}
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
-              <label className="block text-xs font-medium text-muted-foreground mb-1">Name</label>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">{t('common:labels.name')}</label>
               <input
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                placeholder="e.g. Production Web Server"
+                placeholder={t('longTail.monitors.CreateMonitorForm.placeholders.name')}
               />
             </div>
             {monitorType !== 'http_check' && monitorType !== 'dns_check' && (
               <div>
-                <label className="block text-xs font-medium text-muted-foreground mb-1">Target (IP/Hostname)</label>
+                <label className="block text-xs font-medium text-muted-foreground mb-1">{t('longTail.monitors.CreateMonitorForm.fields.target')}</label>
                 <input
                   type="text"
                   value={target}
                   onChange={(e) => setTarget(e.target.value)}
                   className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                  placeholder="192.168.1.1 or server.example.com"
+                  placeholder={t('longTail.monitors.CreateMonitorForm.placeholders.target')}
                 />
               </div>
             )}
@@ -191,7 +193,7 @@ export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCre
           {/* Type-Specific Fields */}
           {monitorType === 'icmp_ping' && (
             <div>
-              <label className="block text-xs font-medium text-muted-foreground mb-1">Ping Count</label>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">{t('longTail.monitors.CreateMonitorForm.fields.pingCount')}</label>
               <input
                 type="number"
                 value={pingCount}
@@ -206,7 +208,7 @@ export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCre
           {monitorType === 'tcp_port' && (
             <div className="grid gap-4 sm:grid-cols-2">
               <div>
-                <label className="block text-xs font-medium text-muted-foreground mb-1">Port</label>
+                <label className="block text-xs font-medium text-muted-foreground mb-1">{t('longTail.monitors.CreateMonitorForm.fields.port')}</label>
                 <input
                   type="number"
                   value={tcpPort}
@@ -217,13 +219,13 @@ export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCre
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-muted-foreground mb-1">Expected Banner (optional)</label>
+                <label className="block text-xs font-medium text-muted-foreground mb-1">{t('longTail.monitors.CreateMonitorForm.fields.expectedBanner')}</label>
                 <input
                   type="text"
                   value={expectBanner}
                   onChange={(e) => setExpectBanner(e.target.value)}
                   className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                  placeholder="e.g. SSH-"
+                  placeholder={t('longTail.monitors.CreateMonitorForm.placeholders.expectedBanner')}
                 />
               </div>
             </div>
@@ -232,18 +234,18 @@ export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCre
           {monitorType === 'http_check' && (
             <>
               <div>
-                <label className="block text-xs font-medium text-muted-foreground mb-1">URL</label>
+                <label className="block text-xs font-medium text-muted-foreground mb-1">{t('longTail.monitors.CreateMonitorForm.fields.url')}</label>
                 <input
                   type="text"
                   value={httpUrl}
                   onChange={(e) => setHttpUrl(e.target.value)}
                   className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                  placeholder="https://example.com/health"
+                  placeholder={t('longTail.monitors.CreateMonitorForm.placeholders.url')}
                 />
               </div>
               <div className="grid gap-4 sm:grid-cols-3">
                 <div>
-                  <label className="block text-xs font-medium text-muted-foreground mb-1">Method</label>
+                  <label className="block text-xs font-medium text-muted-foreground mb-1">{t('longTail.monitors.CreateMonitorForm.fields.method')}</label>
                   <select
                     value={httpMethod}
                     onChange={(e) => setHttpMethod(e.target.value)}
@@ -255,7 +257,7 @@ export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCre
                   </select>
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-muted-foreground mb-1">Expected Status</label>
+                  <label className="block text-xs font-medium text-muted-foreground mb-1">{t('longTail.monitors.CreateMonitorForm.fields.expectedStatus')}</label>
                   <input
                     type="number"
                     value={expectedStatus}
@@ -273,7 +275,7 @@ export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCre
                       onChange={(e) => setVerifySsl(e.target.checked)}
                       className="rounded border"
                     />
-                    Verify SSL
+                    {t('longTail.monitors.CreateMonitorForm.fields.verifySsl')}
                   </label>
                   <label className="flex items-center gap-2 text-sm">
                     <input
@@ -282,18 +284,18 @@ export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCre
                       onChange={(e) => setFollowRedirects(e.target.checked)}
                       className="rounded border"
                     />
-                    Follow Redirects
+                    {t('longTail.monitors.CreateMonitorForm.fields.followRedirects')}
                   </label>
                 </div>
               </div>
               <div>
-                <label className="block text-xs font-medium text-muted-foreground mb-1">Expected Body Content (optional)</label>
+                <label className="block text-xs font-medium text-muted-foreground mb-1">{t('longTail.monitors.CreateMonitorForm.fields.expectedBody')}</label>
                 <input
                   type="text"
                   value={expectedBody}
                   onChange={(e) => setExpectedBody(e.target.value)}
                   className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                  placeholder='e.g. "status":"ok"'
+                  placeholder={t('longTail.monitors.CreateMonitorForm.placeholders.expectedBody')}
                 />
               </div>
             </>
@@ -303,17 +305,17 @@ export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCre
             <>
               <div className="grid gap-4 sm:grid-cols-2">
                 <div>
-                  <label className="block text-xs font-medium text-muted-foreground mb-1">Hostname to Resolve</label>
+                  <label className="block text-xs font-medium text-muted-foreground mb-1">{t('longTail.monitors.CreateMonitorForm.fields.hostname')}</label>
                   <input
                     type="text"
                     value={dnsHostname}
                     onChange={(e) => setDnsHostname(e.target.value)}
                     className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                    placeholder="example.com"
+                    placeholder={t('longTail.monitors.CreateMonitorForm.placeholders.hostname')}
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-muted-foreground mb-1">Record Type</label>
+                  <label className="block text-xs font-medium text-muted-foreground mb-1">{t('longTail.monitors.CreateMonitorForm.fields.recordType')}</label>
                   <select
                     value={recordType}
                     onChange={(e) => setRecordType(e.target.value)}
@@ -330,23 +332,23 @@ export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCre
               </div>
               <div className="grid gap-4 sm:grid-cols-2">
                 <div>
-                  <label className="block text-xs font-medium text-muted-foreground mb-1">Expected Value (optional)</label>
+                  <label className="block text-xs font-medium text-muted-foreground mb-1">{t('longTail.monitors.CreateMonitorForm.fields.expectedValue')}</label>
                   <input
                     type="text"
                     value={expectedValue}
                     onChange={(e) => setExpectedValue(e.target.value)}
                     className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                    placeholder="e.g. 93.184.216.34"
+                    placeholder={t('longTail.monitors.CreateMonitorForm.placeholders.expectedValue')}
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-muted-foreground mb-1">Custom Nameserver (optional)</label>
+                  <label className="block text-xs font-medium text-muted-foreground mb-1">{t('longTail.monitors.CreateMonitorForm.fields.nameserver')}</label>
                   <input
                     type="text"
                     value={nameserver}
                     onChange={(e) => setNameserver(e.target.value)}
                     className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                    placeholder="8.8.8.8"
+                    placeholder={t('longTail.monitors.CreateMonitorForm.placeholders.nameserver')}
                   />
                 </div>
               </div>
@@ -356,7 +358,7 @@ export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCre
           {/* Timing */}
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
-              <label className="block text-xs font-medium text-muted-foreground mb-1">Polling Interval (seconds)</label>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">{t('longTail.monitors.CreateMonitorForm.fields.pollingInterval')}</label>
               <input
                 type="number"
                 value={pollingInterval}
@@ -367,7 +369,7 @@ export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCre
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-muted-foreground mb-1">Timeout (seconds)</label>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">{t('longTail.monitors.CreateMonitorForm.fields.timeout')}</label>
               <input
                 type="number"
                 value={timeout}
@@ -392,14 +394,14 @@ export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCre
               className="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-70 flex items-center gap-2"
             >
               {saving && <Loader2 className="h-3 w-3 animate-spin" />}
-              {saving ? 'Creating...' : 'Create Monitor'}
+              {saving ? t('longTail.monitors.CreateMonitorForm.actions.creating') : t('longTail.monitors.CreateMonitorForm.actions.createMonitor')}
             </button>
             <button
               type="button"
               onClick={onCancel}
               className="h-9 rounded-md border px-4 text-sm font-medium text-muted-foreground hover:text-foreground"
             >
-              Cancel
+              {t('common:actions.cancel')}
             </button>
           </div>
         </form>

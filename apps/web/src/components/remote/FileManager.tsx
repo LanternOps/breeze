@@ -29,6 +29,7 @@ import {
   ChevronDown,
   ChevronUp
 } from 'lucide-react';
+import { formatNumber } from '@/lib/i18n/format';
 import { cn, leftPxClass, topPxClass, widthPercentClass } from '@/lib/utils';
 import { fetchWithAuth } from '@/stores/auth';
 import { buildBreadcrumbs, getParentPath, isPathRoot, joinRemotePath } from './filePathUtils';
@@ -46,6 +47,8 @@ import TrashView from './TrashView';
 import FileActivityPanel from './FileActivityPanel';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import type { FileActivity } from './FileActivityPanel';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 
 export type FileEntry = {
   name: string;
@@ -179,10 +182,10 @@ function formatSize(bytes?: number): string {
   if (bytes === undefined || bytes === null) return '-';
   if (bytes === 0) return '0 B';
   if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  if (bytes < 1024 * 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-  return `${(bytes / (1024 * 1024 * 1024 * 1024)).toFixed(2)} TB`;
+  if (bytes < 1024 * 1024) return `${formatNumber(bytes / 1024, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${formatNumber(bytes / (1024 * 1024), { minimumFractionDigits: 1, maximumFractionDigits: 1 })} MB`;
+  if (bytes < 1024 * 1024 * 1024 * 1024) return `${formatNumber(bytes / (1024 * 1024 * 1024), { minimumFractionDigits: 2, maximumFractionDigits: 2 })} GB`;
+  return `${formatNumber(bytes / (1024 * 1024 * 1024 * 1024), { minimumFractionDigits: 2, maximumFractionDigits: 2 })} TB`;
 }
 
 function normalizeHierarchyPath(path: string): string {
@@ -274,6 +277,7 @@ export default function FileManager({
   onError,
   className
 }: FileManagerProps) {
+  const { t } = useTranslation('remote');
   const [currentPath, setCurrentPath] = useState(initialPath);
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -317,8 +321,8 @@ export default function FileManager({
       const params = new URLSearchParams({ path });
       const response = await fetchWithAuth(`/system-tools/devices/${deviceId}/files?${params}`);
       if (!response.ok) {
-        const json = await response.json().catch(() => ({ error: 'Failed to load directory' }));
-        throw new Error(json.error || 'Failed to load directory');
+        const json = await response.json().catch(() => ({ error: t('fileManager.errors.loadDirectory') }));
+        throw new Error(json.error || t('fileManager.errors.loadDirectory'));
       }
       const json = await response.json();
       const entriesData = Array.isArray(json.data) ? json.data : [];
@@ -326,7 +330,7 @@ export default function FileManager({
       setCurrentPath(path);
       setError(null);
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to load directory';
+      const message = err instanceof Error ? err.message : t('fileManager.errors.loadDirectory');
       console.error('[FileManager] Failed to load directory:', err);
       onError?.(message);
       setError(message);
@@ -414,8 +418,8 @@ export default function FileManager({
       const params = new URLSearchParams({ path: entry.path });
       const response = await fetchWithAuth(`/system-tools/devices/${deviceId}/files/download?${params}`);
       if (!response.ok) {
-        const err = await response.json().catch(() => ({ error: 'Download failed' }));
-        throw new Error(err.error || 'Download failed');
+        const err = await response.json().catch(() => ({ error: t('fileManager.errors.download') }));
+        throw new Error(err.error || t('fileManager.errors.download'));
       }
 
       setTransfers(prev => prev.map(t =>
@@ -437,12 +441,12 @@ export default function FileManager({
       ));
     } catch (error) {
       console.error('[FileManager] Download failed:', error);
-      setTransfers(prev => prev.map(t =>
-        t.id === transferId ? {
-          ...t,
+      setTransfers(prev => prev.map(transfer =>
+        transfer.id === transferId ? {
+          ...transfer,
           status: 'failed',
-          error: error instanceof Error ? error.message : 'Download failed'
-        } : t
+          error: error instanceof Error ? error.message : t('fileManager.errors.download')
+        } : transfer
       ));
     }
   }, [deviceId]);
@@ -482,7 +486,7 @@ export default function FileManager({
             const base64 = result.split(',')[1] || '';
             resolve(base64);
           };
-          reader.onerror = () => reject(new Error('Failed to read file'));
+          reader.onerror = () => reject(new Error(t('fileManager.errors.readFile')));
           reader.readAsDataURL(file);
         });
 
@@ -514,7 +518,7 @@ export default function FileManager({
         fetchDirectory(currentPath);
       } catch (error) {
         console.error('[FileManager] Upload failed:', error);
-        const message = error instanceof Error ? error.message : 'Upload failed';
+        const message = error instanceof Error ? error.message : t('fileManager.errors.upload');
         const status: TransferItem['status'] =
           error instanceof UnverifiedOperationError ? 'unverified' : 'failed';
         setTransfers(prev => prev.map(t =>
@@ -627,7 +631,7 @@ export default function FileManager({
       fetchDirectory(currentPath);
       setSelectedItems(new Set());
     } catch (err) {
-      addActivity('copy', selectedPaths, 'failure', err instanceof Error ? err.message : 'Copy failed');
+      addActivity('copy', selectedPaths, 'failure', err instanceof Error ? err.message : t('fileManager.errors.copy'));
     } finally {
       setOperationLoading(false);
     }
@@ -649,7 +653,7 @@ export default function FileManager({
       fetchDirectory(currentPath);
       setSelectedItems(new Set());
     } catch (err) {
-      addActivity('move', selectedPaths, 'failure', err instanceof Error ? err.message : 'Move failed');
+      addActivity('move', selectedPaths, 'failure', err instanceof Error ? err.message : t('fileManager.errors.move'));
     } finally {
       setOperationLoading(false);
     }
@@ -667,7 +671,7 @@ export default function FileManager({
       fetchDirectory(currentPath);
       setSelectedItems(new Set());
     } catch (err) {
-      addActivity('delete', selectedPaths, 'failure', err instanceof Error ? err.message : 'Delete failed');
+      addActivity('delete', selectedPaths, 'failure', err instanceof Error ? err.message : t('fileManager.errors.delete'));
     } finally {
       setOperationLoading(false);
     }
@@ -942,7 +946,7 @@ export default function FileManager({
           <Folder className="h-5 w-5 text-muted-foreground" />
           <div>
             <h3 className="text-sm font-semibold">{deviceHostname}</h3>
-            <p className="text-xs text-muted-foreground">File Manager</p>
+            <p className="text-xs text-muted-foreground">{t('fileManager.title')}</p>
           </div>
         </div>
 
@@ -957,7 +961,7 @@ export default function FileManager({
 
           {selectedItems.size > 0 && (
             <>
-              <span className="text-xs text-muted-foreground">{selectedItems.size} selected</span>
+              <span className="text-xs text-muted-foreground">{t('fileManager.selectedCount', { count: selectedItems.size })}</span>
               <button
                 type="button"
                 onClick={() => { setFolderPickerMode('copy'); setShowFolderPicker(true); }}
@@ -965,7 +969,7 @@ export default function FileManager({
                 className="flex h-8 items-center gap-1.5 rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
               >
                 <Copy className="h-4 w-4" />
-                Copy to...
+                {t('fileManager.copyTo')}
               </button>
               <button
                 type="button"
@@ -974,7 +978,7 @@ export default function FileManager({
                 className="flex h-8 items-center gap-1.5 rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
               >
                 <Move className="h-4 w-4" />
-                Move to...
+                {t('fileManager.moveTo')}
               </button>
               <button
                 type="button"
@@ -983,7 +987,7 @@ export default function FileManager({
                 className="flex h-8 items-center gap-1.5 rounded-md border border-red-600/30 px-3 text-sm font-medium text-red-400 hover:bg-red-600/10 disabled:opacity-50"
               >
                 <Trash2 className="h-4 w-4" />
-                Delete
+                {t('common:actions.delete')}
               </button>
               <button
                 type="button"
@@ -992,7 +996,7 @@ export default function FileManager({
                 className="flex h-8 items-center gap-1.5 rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
               >
                 <Download className="h-4 w-4" />
-                Download
+                {t('common:actions.download')}
               </button>
               <div className="h-5 w-px bg-border" />
             </>
@@ -1003,7 +1007,7 @@ export default function FileManager({
             onClick={() => fetchDirectory(currentPath)}
             disabled={loading}
             className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted disabled:opacity-50"
-            title="Refresh"
+            title={t('common:actions.refresh')}
           >
             <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />
           </button>
@@ -1018,7 +1022,7 @@ export default function FileManager({
             )}
           >
             <Trash2 className="h-4 w-4" />
-            Trash
+            {t('fileManager.trash')}
           </button>
 
           <button
@@ -1027,7 +1031,7 @@ export default function FileManager({
             className="flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90"
           >
             <Upload className="h-4 w-4" />
-            Upload
+            {t('common:actions.upload')}
           </button>
         </div>
       </div>
@@ -1038,7 +1042,7 @@ export default function FileManager({
           type="button"
           onClick={goHome}
           className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
-          title="Home"
+          title={t('fileManager.home')}
         >
           <Home className="h-4 w-4" />
         </button>
@@ -1048,7 +1052,7 @@ export default function FileManager({
           onClick={goUp}
           disabled={isPathRoot(currentPath)}
           className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted disabled:opacity-50"
-          title="Go up"
+          title={t('fileManager.goUp')}
         >
           <ArrowUp className="h-4 w-4" />
         </button>
@@ -1071,7 +1075,7 @@ export default function FileManager({
                   title={[
                     drive.label || label,
                     drive.fileSystem,
-                    drive.totalBytes > 0 ? `${formatSize(drive.freeBytes)} free of ${formatSize(drive.totalBytes)}` : '',
+                    drive.totalBytes > 0 ? t('fileManager.freeOf', { free: formatSize(drive.freeBytes), total: formatSize(drive.totalBytes) }) : '',
                   ].filter(Boolean).join(' — ')}
                 >
                   <HardDrive className="h-3 w-3" />
@@ -1114,7 +1118,7 @@ export default function FileManager({
           )}
         >
           <History className="h-3.5 w-3.5" />
-          Activity{activities.length > 0 && ` (${activities.length})`}
+          {t('fileManager.activity')}{activities.length > 0 && ` (${activities.length})`}
         </button>
       </div>
 
@@ -1128,7 +1132,7 @@ export default function FileManager({
           <div className="flex items-center gap-2">
             <Sparkles className="h-4 w-4 text-violet-400" />
             {/* Solid brand color + weight (gradient text is banned — PRODUCT.md). */}
-            <span className="text-sm font-semibold text-primary">Disk Cleanup Intelligence</span>
+            <span className="text-sm font-semibold text-primary">{t('fileManager.disk.title')}</span>
           </div>
           {showDiskIntel ? <ChevronUp className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
         </button>
@@ -1136,7 +1140,7 @@ export default function FileManager({
         {showDiskIntel && (
           <div className="px-4 pb-3">
             <p className="mb-2 text-xs text-muted-foreground">
-              Fast scan and safe cleanup planning for {currentPath}
+              {t('fileManager.disk.description', { path: currentPath })}
             </p>
             <div className="flex flex-wrap items-center gap-2">
               <button
@@ -1146,7 +1150,7 @@ export default function FileManager({
                 className="flex h-8 items-center gap-1.5 rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
               >
                 {diskLoadingAction === 'scan' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-                Analyze
+                {t('fileManager.disk.analyze')}
               </button>
               <button
                 type="button"
@@ -1155,7 +1159,7 @@ export default function FileManager({
                 className="flex h-8 items-center gap-1.5 rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
               >
                 {diskLoadingAction === 'preview' ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-                Preview Cleanup
+                {t('fileManager.disk.previewCleanup')}
               </button>
               <button
                 type="button"
@@ -1164,7 +1168,7 @@ export default function FileManager({
                 className="flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
               >
                 {diskLoadingAction === 'execute' ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle className="h-4 w-4" />}
-                Execute ({selectedCleanupPaths.size})
+                {t('fileManager.disk.execute', { count: selectedCleanupPaths.size })}
               </button>
             </div>
 
@@ -1176,23 +1180,23 @@ export default function FileManager({
 
             {scanCommand && (
               <div className="mt-2 rounded-md border border-blue-300 bg-blue-50 px-3 py-2 text-xs text-blue-700">
-                Scan running ({scanCommand.status})
+                {t('fileManager.disk.scanRunning', { status: scanCommand.status })}
               </div>
             )}
 
             {diskSnapshot && (
               <div className="mt-3 space-y-2">
                 <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                  <span>Captured: {formatDate(diskSnapshot.capturedAt)}</span>
-                  <span>Trigger: {diskSnapshot.trigger === 'threshold' ? 'Threshold' : 'On demand'}</span>
-                  <span>Mode: {diskSnapshot.scanMode === 'incremental' ? 'Incremental' : 'Baseline'}</span>
-                  <span>Scanned: {diskSnapshot.summary.filesScanned.toLocaleString()} files</span>
-                  <span>Data: {formatSize(diskSnapshot.summary.bytesScanned)}</span>
-                  {diskSnapshot.partial && <span className="text-amber-600">Partial scan</span>}
+                  <span>{t('fileManager.disk.captured', { date: formatDate(diskSnapshot.capturedAt) })}</span>
+                  <span>{t('fileManager.disk.trigger', { value: diskSnapshot.trigger === 'threshold' ? t('fileManager.disk.threshold') : t('fileManager.disk.onDemand') })}</span>
+                  <span>{t('fileManager.disk.mode', { value: diskSnapshot.scanMode === 'incremental' ? t('fileManager.disk.incremental') : t('fileManager.disk.baseline') })}</span>
+                  <span>{t('fileManager.disk.scanned', { count: diskSnapshot.summary.filesScanned })}</span>
+                  <span>{t('fileManager.disk.data', { size: formatSize(diskSnapshot.summary.bytesScanned) })}</span>
+                  {diskSnapshot.partial && <span className="text-amber-600">{t('fileManager.disk.partialScan')}</span>}
                 </div>
                 <div className="grid gap-3 md:grid-cols-2">
                   <div className="rounded-md border bg-background p-2">
-                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Largest Files</p>
+                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('fileManager.disk.largestFiles')}</p>
                     <div className="mt-1 space-y-1">
                       {diskSnapshot.topLargestFiles.slice(0, 5).map((file) => (
                         <div key={file.path} className="flex items-center justify-between gap-2 text-xs">
@@ -1203,9 +1207,9 @@ export default function FileManager({
                     </div>
                   </div>
                   <div className="rounded-md border bg-background p-2">
-                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Largest Directories</p>
+                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('fileManager.disk.largestDirectories')}</p>
                     {diskSnapshot.topLargestDirectories.some((dir) => dir.estimated) && (
-                      <p className="mt-1 chart-legend-xs text-muted-foreground">{'>='} indicates lower-bound size.</p>
+                      <p className="mt-1 chart-legend-xs text-muted-foreground">{t('fileManager.disk.lowerBound')}</p>
                     )}
                     <div className="mt-1 space-y-1">
                       {collapsedTopDirectories.map((dir) => (
@@ -1223,12 +1227,12 @@ export default function FileManager({
             {cleanupPreview && (
               <div className="mt-3 rounded-md border bg-background p-2">
                 <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                  <span className="font-medium">Cleanup Preview</span>
+                  <span className="font-medium">{t('fileManager.disk.cleanupPreview')}</span>
                   <span className="text-muted-foreground">
-                    {cleanupPreview.candidateCount} candidates · {formatSize(cleanupPreview.estimatedBytes)} potential
+                    {t('fileManager.disk.candidates', { count: cleanupPreview.candidateCount, size: formatSize(cleanupPreview.estimatedBytes) })}
                   </span>
                   <span className="text-muted-foreground">
-                    Selected: {selectedCleanupPaths.size} · {formatSize(selectedCleanupBytes)}
+                    {t('fileManager.disk.selected', { count: selectedCleanupPaths.size, size: formatSize(selectedCleanupBytes) })}
                   </span>
                 </div>
                 <div className="mt-2 max-h-44 space-y-1 overflow-auto">
@@ -1243,7 +1247,7 @@ export default function FileManager({
                         <span className="truncate">{candidate.path}</span>
                       </span>
                       <span className="whitespace-nowrap text-muted-foreground">
-                        {cleanupCategoryLabels[candidate.category] ?? candidate.category} · {formatSize(candidate.sizeBytes)}
+                        {t(/* i18n-dynamic */ `fileManager.disk.categories.${candidate.category}`, { defaultValue: cleanupCategoryLabels[candidate.category] ?? candidate.category })} · {formatSize(candidate.sizeBytes)}
                       </span>
                     </label>
                   ))}
@@ -1253,8 +1257,7 @@ export default function FileManager({
 
             {cleanupResult && (
               <div className="mt-2 rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
-                Cleanup {cleanupResult.status}: reclaimed {formatSize(cleanupResult.bytesReclaimed)} from {cleanupResult.selectedCount} target(s)
-                {cleanupResult.failedCount > 0 ? `, ${cleanupResult.failedCount} failed` : ''}.
+                {t('fileManager.disk.cleanupResult', { status: cleanupResult.status, size: formatSize(cleanupResult.bytesReclaimed), count: cleanupResult.selectedCount, failed: cleanupResult.failedCount })}
               </div>
             )}
           </div>
@@ -1279,7 +1282,7 @@ export default function FileManager({
             <div className="absolute inset-0 flex items-center justify-center bg-primary/10 z-10">
               <div className="flex flex-col items-center gap-2 text-primary">
                 <Upload className="h-12 w-12" />
-                <p className="font-medium">Drop files to upload</p>
+                <p className="font-medium">{t('fileManager.dropFiles')}</p>
               </div>
             </div>
           )}
@@ -1313,7 +1316,7 @@ export default function FileManager({
                   className="px-4 py-3 cursor-pointer hover:text-foreground"
                   onClick={() => toggleSort('name')}
                 >
-                  Name
+                  {t('common:labels.name')}
                   {sortBy === 'name' && (
                     <span className="ml-1">{sortOrder === 'asc' ? '\u2191' : '\u2193'}</span>
                   )}
@@ -1322,7 +1325,7 @@ export default function FileManager({
                   className="px-4 py-3 cursor-pointer hover:text-foreground text-right"
                   onClick={() => toggleSort('size')}
                 >
-                  Size
+                  {t('fileManager.size')}
                   {sortBy === 'size' && (
                     <span className="ml-1">{sortOrder === 'asc' ? '\u2191' : '\u2193'}</span>
                   )}
@@ -1331,7 +1334,7 @@ export default function FileManager({
                   className="px-4 py-3 cursor-pointer hover:text-foreground"
                   onClick={() => toggleSort('modified')}
                 >
-                  Modified
+                  {t('fileManager.modified')}
                   {sortBy === 'modified' && (
                     <span className="ml-1">{sortOrder === 'asc' ? '\u2191' : '\u2193'}</span>
                   )}
@@ -1357,7 +1360,7 @@ export default function FileManager({
                         onClick={() => fetchDirectory(currentPath)}
                         className="text-xs text-primary hover:underline"
                       >
-                        Retry
+                        {t('common:actions.retry')}
                       </button>
                     </div>
                   </td>
@@ -1365,7 +1368,7 @@ export default function FileManager({
               ) : getSortedEntries().length === 0 ? (
                 <tr>
                   <td colSpan={5} className="px-4 py-8 text-center text-sm text-muted-foreground">
-                    This directory is empty
+                    {t('fileManager.emptyDirectory')}
                   </td>
                 </tr>
               ) : (
@@ -1431,7 +1434,7 @@ export default function FileManager({
                               initiateDownload(entry);
                             }}
                             className="flex h-7 w-7 items-center justify-center rounded-md hover:bg-muted"
-                            title="Download"
+                            title={t('common:actions.download')}
                           >
                             <Download className="h-4 w-4" />
                           </button>
@@ -1464,10 +1467,10 @@ export default function FileManager({
         <div className="border-t">
           <div className="px-4 py-2 bg-muted/40">
             <h4 className="text-sm font-medium">
-              Transfers
+              {t('fileManager.transfers')}
               {activeTransfers.length > 0 && (
                 <span className="ml-2 text-muted-foreground">
-                  ({activeTransfers.length} active)
+                  ({t('fileManager.activeCount', { count: activeTransfers.length })})
                 </span>
               )}
             </h4>
@@ -1523,7 +1526,7 @@ export default function FileManager({
                       type="button"
                       onClick={() => cancelTransfer(transfer.id)}
                       className="flex h-6 w-6 items-center justify-center rounded-md hover:bg-muted"
-                      title="Cancel"
+                      title={t('common:actions.cancel')}
                     >
                       <X className="h-3 w-3" />
                     </button>
@@ -1532,7 +1535,7 @@ export default function FileManager({
                       type="button"
                       onClick={() => dismissTransfer(transfer.id)}
                       className="flex h-6 w-6 items-center justify-center rounded-md hover:bg-muted"
-                      title="Dismiss"
+                      title={t('fileManager.dismiss')}
                     >
                       <X className="h-3 w-3" />
                     </button>
@@ -1554,18 +1557,18 @@ export default function FileManager({
           )}
         >
           <button type="button" onClick={contextCopyTo} className="w-full px-3 py-2 text-left text-sm text-gray-200 hover:bg-gray-700 flex items-center gap-2">
-            <Copy className="w-4 h-4" /> Copy to...
+            <Copy className="w-4 h-4" /> {t('fileManager.copyTo')}
           </button>
           <button type="button" onClick={contextMoveTo} className="w-full px-3 py-2 text-left text-sm text-gray-200 hover:bg-gray-700 flex items-center gap-2">
-            <Move className="w-4 h-4" /> Move to...
+            <Move className="w-4 h-4" /> {t('fileManager.moveTo')}
           </button>
           <div className="border-t border-gray-700 my-1" />
           <button type="button" onClick={contextDelete} className="w-full px-3 py-2 text-left text-sm text-red-400 hover:bg-gray-700 flex items-center gap-2">
-            <Trash2 className="w-4 h-4" /> Delete
+            <Trash2 className="w-4 h-4" /> {t('common:actions.delete')}
           </button>
           {contextMenu.entry.type === 'file' && (
             <button type="button" onClick={() => { initiateDownload(contextMenu.entry); setContextMenu(null); }} className="w-full px-3 py-2 text-left text-sm text-gray-200 hover:bg-gray-700 flex items-center gap-2">
-              <Download className="w-4 h-4" /> Download
+              <Download className="w-4 h-4" /> {t('common:actions.download')}
             </button>
           )}
         </div>
@@ -1574,7 +1577,7 @@ export default function FileManager({
       {/* Dialogs */}
       <FolderPickerDialog
         open={showFolderPicker}
-        title={folderPickerMode === 'copy' ? 'Copy to...' : 'Move to...'}
+        title={folderPickerMode === 'copy' ? t('fileManager.copyTo') : t('fileManager.moveTo')}
         deviceId={deviceId}
         initialPath={currentPath}
         onSelect={folderPickerMode === 'copy' ? handleCopyTo : handleMoveTo}
@@ -1590,9 +1593,9 @@ export default function FileManager({
         open={showCleanupConfirm}
         onClose={() => setShowCleanupConfirm(false)}
         onConfirm={handleConfirmCleanup}
-        title="Delete Cleanup Targets"
-        message={`Delete ${selectedCleanupPaths.size} selected cleanup target(s)? These files will be permanently removed from the device.`}
-        confirmLabel="Delete Files"
+        title={t('fileManager.disk.deleteTargets')}
+        message={t('fileManager.disk.deleteTargetsConfirm', { count: selectedCleanupPaths.size })}
+        confirmLabel={t('fileManager.disk.deleteFiles')}
         variant="destructive"
         isLoading={diskLoadingAction === 'execute'}
       />

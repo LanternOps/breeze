@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Clock, Square } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { fetchRunningTimer, stopTimerAction, onTimerChanged, type RunningTimer } from '../../lib/timerActions';
 import { ActionError } from '../../lib/runAction';
 import { formatElapsedSeconds } from '../../lib/timeFormat';
@@ -8,6 +9,7 @@ import { showToast } from '../shared/Toast';
 const POLL_MS = 60_000;
 
 export default function TimerWidget() {
+  const { t } = useTranslation('common');
   const [timer, setTimer] = useState<RunningTimer | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [popoverOpen, setPopoverOpen] = useState(false);
@@ -81,7 +83,7 @@ export default function TimerWidget() {
       setTimer(null);
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
-      if (!(err instanceof ActionError)) showToast({ type: 'error', message: 'Failed to stop timer.' });
+      if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('longTail.time.TimerWidget.errors.stopFailed') });
     } finally {
       setStopping(false);
     }
@@ -93,24 +95,24 @@ export default function TimerWidget() {
       <span className="font-mono text-xs tabular-nums" data-testid="timer-widget-elapsed">{formatElapsedSeconds(elapsed)}</span>
       {timer.ticketId && (
         <a href={`/tickets/${timer.ticketId}`} className="max-w-32 truncate text-xs text-primary hover:underline" data-testid="timer-widget-ticket" title={timer.ticketSubject ?? undefined}>
-          {timer.ticketNumber ?? 'ticket'}
+          {timer.ticketNumber ?? t('longTail.time.TimerWidget.ticketFallback')}
         </a>
       )}
-      <button type="button" ref={buttonRef} onClick={openStop} className="rounded p-0.5 text-muted-foreground hover:text-destructive" title="Stop timer" aria-label="Stop timer" aria-expanded={popoverOpen} aria-haspopup="dialog" data-testid="timer-widget-stop">
+      <button type="button" ref={buttonRef} onClick={openStop} className="rounded p-0.5 text-muted-foreground hover:text-destructive" title={t('longTail.time.TimerWidget.stopTimer')} aria-label={t('longTail.time.TimerWidget.stopTimer')} aria-expanded={popoverOpen} aria-haspopup="dialog" data-testid="timer-widget-stop">
         <Square className="h-3.5 w-3.5" aria-hidden />
       </button>
       {popoverOpen && (
-        <div ref={popoverRef} role="dialog" aria-label="Stop timer" className="absolute right-0 top-full z-50 mt-2 w-72 rounded-lg border bg-popover p-3 shadow-lg" data-testid="timer-stop-popover">
-          <p className="mb-2 text-sm font-medium">Stop timer</p>
-          <textarea ref={textareaRef} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What did you work on?" rows={2} aria-label="Description" className="mb-2 w-full rounded-md border bg-background px-2 py-1.5 text-sm" data-testid="timer-stop-description" />
+        <div ref={popoverRef} role="dialog" aria-label={t('longTail.time.TimerWidget.stopTimer')} className="absolute right-0 top-full z-50 mt-2 w-72 rounded-lg border bg-popover p-3 shadow-lg" data-testid="timer-stop-popover">
+          <p className="mb-2 text-sm font-medium">{t('longTail.time.TimerWidget.stopTimer')}</p>
+          <textarea ref={textareaRef} value={description} onChange={(e) => setDescription(e.target.value)} placeholder={t('longTail.time.TimerWidget.descriptionPlaceholder')} rows={2} aria-label={t('common:labels.description')} className="mb-2 w-full rounded-md border bg-background px-2 py-1.5 text-sm" data-testid="timer-stop-description" />
           <label className="mb-3 flex items-center gap-2 text-sm">
             <input type="checkbox" checked={billable} onChange={(e) => setBillable(e.target.checked)} data-testid="timer-stop-billable" />
-            Billable
+            {t('longTail.time.TimerWidget.billable')}
           </label>
           <div className="flex justify-end gap-2">
-            <button type="button" onClick={() => setPopoverOpen(false)} className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted" data-testid="timer-stop-cancel">Cancel</button>
+            <button type="button" onClick={() => setPopoverOpen(false)} className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted" data-testid="timer-stop-cancel">{t('common:actions.cancel')}</button>
             <button type="button" onClick={() => void submitStop()} disabled={stopping} className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50" data-testid="timer-stop-submit">
-              {stopping ? 'Saving…' : 'Stop & save'}
+              {stopping ? t('common:states.saving') : t('longTail.time.TimerWidget.stopAndSave')}
             </button>
           </div>
         </div>

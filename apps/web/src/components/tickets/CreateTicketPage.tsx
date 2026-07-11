@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import '@/lib/i18n';
+import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
@@ -19,6 +21,7 @@ interface AvailableTicketForm {
 const MANUAL_REQUESTER = '__manual__';
 
 export default function CreateTicketPage() {
+  const { t } = useTranslation('tickets');
   const [orgs, setOrgs] = useState<Option[]>([]);
   const [devices, setDevices] = useState<Option[]>([]);
   const [categories, setCategories] = useState<CategoryOption[]>([]);
@@ -217,8 +220,8 @@ export default function CreateTicketPage() {
             ...(selectedForm ? { formId: selectedForm.id, formResponses: responses } : {})
           })
         }),
-        errorFallback: 'Ticket creation failed. Retry.',
-        successMessage: (r) => `Ticket ${r.data.internalNumber ?? ''} created`,
+        errorFallback: t('createTicketPage.creationFailed'),
+        successMessage: (r) => t('createTicketPage.createdToast', { number: r.data.internalNumber ?? '' }),
         onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
       });
       void navigateTo(`/tickets#${created.data.internalNumber ?? created.data.id}`);
@@ -227,17 +230,17 @@ export default function CreateTicketPage() {
     } finally {
       setSaving(false);
     }
-  }, [orgId, subject, description, deviceId, categoryId, priority, requesterId, requesterName, requesterEmail, selectedForm, formValues]);
+  }, [orgId, subject, description, deviceId, categoryId, priority, requesterId, requesterName, requesterEmail, selectedForm, formValues, t]);
 
   const selectCls = 'w-full rounded-md border bg-background px-2.5 py-1.5 text-sm';
 
   if (loadError) {
     return (
       <div className="mx-auto max-w-2xl space-y-4">
-        <h1 className="text-xl font-semibold" data-testid="create-ticket-heading">Create ticket</h1>
+        <h1 className="text-xl font-semibold" data-testid="create-ticket-heading">{t('createTicketPage.title')}</h1>
         <div className="py-12 text-center" data-testid="create-ticket-load-error">
-          <p className="text-sm text-muted-foreground">Organizations failed to load.</p>
-          <button type="button" onClick={() => void loadOptions()} className="mt-2 rounded-md border px-3 py-1.5 text-sm hover:bg-muted" data-testid="create-ticket-load-retry">Retry</button>
+          <p className="text-sm text-muted-foreground">{t('createTicketPage.orgsLoadFailed')}</p>
+          <button type="button" onClick={() => void loadOptions()} className="mt-2 rounded-md border px-3 py-1.5 text-sm hover:bg-muted" data-testid="create-ticket-load-retry">{t('common:actions.retry')}</button>
         </div>
       </div>
     );
@@ -245,12 +248,12 @@ export default function CreateTicketPage() {
 
   return (
     <form onSubmit={submit} className="mx-auto max-w-2xl space-y-4" data-testid="create-ticket-form">
-      <h1 className="text-xl font-semibold" data-testid="create-ticket-heading">Create ticket</h1>
+      <h1 className="text-xl font-semibold" data-testid="create-ticket-heading">{t('createTicketPage.title')}</h1>
       {!orgLocked && (
         <div>
-          <label className="text-sm font-medium" htmlFor="ct-org">Organization</label>
+          <label className="text-sm font-medium" htmlFor="ct-org">{t('common:labels.organization')}</label>
           <select id="ct-org" value={orgId} onChange={(e) => setOrgId(e.target.value)} required className={selectCls} data-testid="create-ticket-org-input">
-            <option value="">Select organization</option>
+            <option value="">{t('createTicketPage.selectOrganization')}</option>
             {orgs.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
           </select>
         </div>
@@ -301,15 +304,15 @@ export default function CreateTicketPage() {
         </>
       )}
       <div>
-        <label className="text-sm font-medium" htmlFor="ct-subject">Subject</label>
+        <label className="text-sm font-medium" htmlFor="ct-subject">{t('createTicketPage.subject')}</label>
         <input id="ct-subject" value={subject} onChange={(e) => setSubject(e.target.value)} required={!selectedForm} maxLength={255} className={selectCls} data-testid="create-ticket-subject-input" />
       </div>
       <div>
-        <label className="text-sm font-medium" htmlFor="ct-desc">Description</label>
+        <label className="text-sm font-medium" htmlFor="ct-desc">{t('common:labels.description')}</label>
         <textarea id="ct-desc" value={description} onChange={(e) => setDescription(e.target.value)} rows={5} className={selectCls} data-testid="create-ticket-description-input" />
       </div>
       <div>
-        <label className="text-sm font-medium" htmlFor="ct-requester">Requester (optional)</label>
+        <label className="text-sm font-medium" htmlFor="ct-requester">{t('createTicketPage.requesterOptional')}</label>
         <select
           id="ct-requester"
           value={requesterId}
@@ -318,11 +321,11 @@ export default function CreateTicketPage() {
           className={selectCls}
           data-testid="create-ticket-requester-input"
         >
-          <option value="">Default (you)</option>
+          <option value="">{t('createTicketPage.defaultYou')}</option>
           {requesters.map((r) => (
             <option key={r.id} value={r.id}>{r.name ? `${r.name} (${r.email})` : r.email}</option>
           ))}
-          <option value={MANUAL_REQUESTER}>Someone else…</option>
+          <option value={MANUAL_REQUESTER}>{t('createTicketPage.someoneElse')}</option>
         </select>
         {requesterId === MANUAL_REQUESTER && (
           <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -330,8 +333,8 @@ export default function CreateTicketPage() {
               value={requesterName}
               onChange={(e) => setRequesterName(e.target.value)}
               maxLength={255}
-              placeholder="Name"
-              aria-label="Requester name"
+              placeholder={t('common:labels.name')}
+              aria-label={t('createTicketPage.requesterName')}
               className={selectCls}
               data-testid="create-ticket-requester-name-input"
             />
@@ -340,8 +343,8 @@ export default function CreateTicketPage() {
               value={requesterEmail}
               onChange={(e) => setRequesterEmail(e.target.value)}
               maxLength={255}
-              placeholder="Email (optional)"
-              aria-label="Requester email"
+              placeholder={t('createTicketPage.emailOptional')}
+              aria-label={t('createTicketPage.requesterEmail')}
               className={selectCls}
               data-testid="create-ticket-requester-email-input"
             />
@@ -350,30 +353,30 @@ export default function CreateTicketPage() {
       </div>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <div>
-          <label className="text-sm font-medium" htmlFor="ct-device">Device (optional)</label>
+          <label className="text-sm font-medium" htmlFor="ct-device">{t('createTicketPage.deviceOptional')}</label>
           <select id="ct-device" value={deviceId} onChange={(e) => setDeviceId(e.target.value)} disabled={!orgId} className={selectCls} data-testid="create-ticket-device-input">
-            <option value="">None</option>
+            <option value="">{t('common:labels.none')}</option>
             {devices.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
           </select>
         </div>
         <div>
-          <label className="text-sm font-medium" htmlFor="ct-cat">Category</label>
+          <label className="text-sm font-medium" htmlFor="ct-cat">{t('createTicketPage.category')}</label>
           <select id="ct-cat" value={categoryId} onChange={(e) => setCategoryId(e.target.value)} className={selectCls} data-testid="create-ticket-category-input">
-            <option value="">None</option>
+            <option value="">{t('common:labels.none')}</option>
             {categories.map((c) => <option key={c.id} value={c.id}>{categoryLabel(c)}</option>)}
           </select>
         </div>
         <div>
-          <label className="text-sm font-medium" htmlFor="ct-pri">Priority</label>
+          <label className="text-sm font-medium" htmlFor="ct-pri">{t('createTicketPage.priority')}</label>
           <select id="ct-pri" value={priority} onChange={(e) => setPriority(e.target.value as TicketPriority)} className={selectCls} data-testid="create-ticket-priority-input">
-            <option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option>
+            <option value="low">{t('createTicketPage.priorityOptions.low')}</option><option value="normal">{t('createTicketPage.priorityOptions.normal')}</option><option value="high">{t('createTicketPage.priorityOptions.high')}</option><option value="urgent">{t('createTicketPage.priorityOptions.urgent')}</option>
           </select>
         </div>
       </div>
       <div className="flex justify-end gap-2">
-        <a href="/tickets" className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted" data-testid="create-ticket-cancel">Cancel</a>
+        <a href="/tickets" className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted" data-testid="create-ticket-cancel">{t('common:actions.cancel')}</a>
         <button type="submit" disabled={saving || !orgId || (!subject.trim() && !selectedForm)} className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50" data-testid="create-ticket-submit">
-          {saving ? 'Creating' : 'Create ticket'}
+          {saving ? t('createTicketPage.creating') : t('createTicketPage.createTicket')}
         </button>
       </div>
     </form>

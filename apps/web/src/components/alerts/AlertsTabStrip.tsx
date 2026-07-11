@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
 
 const TABS = [
-  { href: '/alerts', label: 'Alerts' },
-  { href: '/alerts/correlations', label: 'Correlations' },
-  { href: '/alerts/rules', label: 'Rules' },
-  { href: '/alerts/channels', label: 'Channels' },
+  { href: '/alerts', labelKey: 'alerts' },
+  { href: '/alerts/correlations', labelKey: 'correlations' },
+  { href: '/alerts/rules', labelKey: 'rules' },
+  { href: '/alerts/channels', labelKey: 'channels' },
 ] as const;
 
 interface AlertsTabStripProps {
@@ -32,6 +34,7 @@ function useCurrentPath(initialPath: string): string {
 }
 
 export default function AlertsTabStrip({ currentPath = '/alerts' }: AlertsTabStripProps) {
+  const { t } = useTranslation('alerts');
   const mlFlags = useMlFeatureFlags();
   const alertCorrelationDisabled = mlFlags.isDisabled('ml.alert_correlation.enabled');
   const path = useCurrentPath(currentPath);
@@ -43,7 +46,7 @@ export default function AlertsTabStrip({ currentPath = '/alerts' }: AlertsTabStr
   }, [path]);
 
   return (
-    <nav className="flex gap-1 border-b text-sm" aria-label="Alerts sections">
+    <nav className="flex gap-1 border-b text-sm" aria-label={t('alertsTabStrip.alertsSections')}>
       {TABS.map((tab) => {
         const isActive = tab.href === activeHref;
         const isDisabled = tab.href === '/alerts/correlations' && alertCorrelationDisabled;
@@ -57,9 +60,9 @@ export default function AlertsTabStrip({ currentPath = '/alerts' }: AlertsTabStr
               }
               aria-current={isActive ? 'page' : undefined}
               aria-disabled="true"
-              title="Alert correlation is disabled for this organization"
+              title={t('alertsTabStrip.alertCorrelationIsDisabledForThisOrganization')}
             >
-              Correlations disabled
+              {t('alertsTabStrip.correlationsDisabled')}
             </span>
           );
         }
@@ -75,7 +78,7 @@ export default function AlertsTabStrip({ currentPath = '/alerts' }: AlertsTabStr
             }
             aria-current={isActive ? 'page' : undefined}
           >
-            {tab.label}
+            {t(/* i18n-dynamic */ `alertsTabStrip.tabs.${tab.labelKey}`)}
           </a>
         );
       })}

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 import { ResponsiveTable, DataCard, CardField } from '../shared/ResponsiveTable';
+import '@/lib/i18n';
 import HelpTooltip from '../shared/HelpTooltip';
 import { SeverityBadge } from './SeverityBadge';
 import { KevBadge } from './KevBadge';
@@ -34,10 +36,6 @@ function versionRange(versions: string[]): string {
   return `${versions[0]} – ${versions[versions.length - 1]}`;
 }
 
-function patchLabel(g: SoftwareGroup): string {
-  return g.patchReadyFindingCount > 0 ? `Ready · ${g.patchReadyDeviceCount}/${g.deviceCount} devices` : '—';
-}
-
 export function SoftwareGroupTable({
   filters,
   refreshKey,
@@ -54,6 +52,7 @@ export function SoftwareGroupTable({
   onSelectGroup: (groupKey: string) => void;
   onClearFilters: () => void;
 }) {
+  const { t } = useTranslation('vulnerabilities');
   const [items, setItems] = useState<SoftwareGroup[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -75,7 +74,7 @@ export function SoftwareGroupTable({
         setHasMore(res.hasMore);
       })
       .catch((err: unknown) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load software groups');
+        if (!cancelled) setError(err instanceof Error ? err.message : t('softwareGroupTable.errors.load'));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -83,30 +82,34 @@ export function SoftwareGroupTable({
     return () => {
       cancelled = true;
     };
-  }, [filters, refreshKey, retryKey]);
+  }, [filters, refreshKey, retryKey, t]);
 
   // Skeleton only on empty loads (first paint / after an error retry). A
   // filter-change refetch keeps the previous rows on screen instead of flashing.
   const showSkeleton = loading && items.length === 0;
+  const patchLabel = (g: SoftwareGroup): string =>
+    g.patchReadyFindingCount > 0
+      ? t('softwareGroupTable.patch.ready', { ready: g.patchReadyDeviceCount, total: g.deviceCount, count: g.patchReadyDeviceCount })
+      : '—';
 
   const table = useMemo(
     () => (
       <table className={`min-w-full divide-y ${densityTableClasses(density)}`}>
         <thead className="bg-muted/40">
           <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            <th className="px-4 py-3">Software</th>
-            <th className="px-4 py-3">Severity</th>
+            <th className="px-4 py-3">{t('softwareGroupTable.table.software')}</th>
+            <th className="px-4 py-3">{t('softwareGroupTable.table.severity')}</th>
             <th className="px-4 py-3">
               <span className="inline-flex items-center gap-1">
-                Risk
+                {t('softwareGroupTable.table.risk')}
                 {/* side="bottom": an upward bubble would clip against the
                     ResponsiveTable overflow-x-auto wrapper's top edge. */}
-                <HelpTooltip side="bottom" ariaLabel="About the risk score" text={RISK_EXPLANATION} />
+                <HelpTooltip side="bottom" ariaLabel={t('softwareGroupTable.help.riskAria')} text={RISK_EXPLANATION} />
               </span>
             </th>
-            <th className="px-4 py-3">CVEs</th>
-            <th className="px-4 py-3">Devices</th>
-            <th className="px-4 py-3">Patch</th>
+            <th className="px-4 py-3">{t('softwareGroupTable.table.cves')}</th>
+            <th className="px-4 py-3">{t('softwareGroupTable.table.devices')}</th>
+            <th className="px-4 py-3">{t('softwareGroupTable.table.patch')}</th>
           </tr>
         </thead>
         {showSkeleton ? (
@@ -138,7 +141,7 @@ export function SoftwareGroupTable({
                   <button
                     type="button"
                     data-testid={`software-group-open-${g.groupKey}`}
-                    aria-label={`Open ${g.name} vulnerability details`}
+                    aria-label={t('softwareGroupTable.actions.openDetailsAria', { name: g.name })}
                     className={ROW_BUTTON}
                     onClick={(e) => {
                       e.stopPropagation();
@@ -167,7 +170,7 @@ export function SoftwareGroupTable({
         )}
       </table>
     ),
-    [items, onSelectGroup, density, showSkeleton],
+    [items, onSelectGroup, density, showSkeleton, t],
   );
 
   const cards = useMemo(
@@ -189,7 +192,7 @@ export function SoftwareGroupTable({
               <div className="flex items-center justify-between gap-2">
                 <button
                   type="button"
-                  aria-label={`Open ${g.name} vulnerability details`}
+                  aria-label={t('softwareGroupTable.actions.openDetailsAria', { name: g.name })}
                   className={`${ROW_BUTTON} min-w-0 flex-1 truncate text-sm font-semibold`}
                   onClick={(e) => {
                     e.stopPropagation();
@@ -204,14 +207,14 @@ export function SoftwareGroupTable({
                 </span>
               </div>
               <div className="mt-3 space-y-2 border-t pt-3">
-                <CardField label="Risk"><span className="text-sm tabular-nums" title={RISK_EXPLANATION}>{fmtRisk(g.maxRiskScore)}</span></CardField>
-                <CardField label="CVEs"><span className="text-sm tabular-nums">{g.cveCount}</span></CardField>
-                <CardField label="Devices"><span className="text-sm tabular-nums">{g.deviceCount}</span></CardField>
-                <CardField label="Patch"><span className="text-sm">{patchLabel(g)}</span></CardField>
+                <CardField label={t('softwareGroupTable.table.risk')}><span className="text-sm tabular-nums" title={RISK_EXPLANATION}>{fmtRisk(g.maxRiskScore)}</span></CardField>
+                <CardField label={t('softwareGroupTable.table.cves')}><span className="text-sm tabular-nums">{g.cveCount}</span></CardField>
+                <CardField label={t('softwareGroupTable.table.devices')}><span className="text-sm tabular-nums">{g.deviceCount}</span></CardField>
+                <CardField label={t('softwareGroupTable.table.patch')}><span className="text-sm">{patchLabel(g)}</span></CardField>
               </div>
             </DataCard>
           )),
-    [items, onSelectGroup, showSkeleton],
+    [items, onSelectGroup, showSkeleton, t],
   );
 
   if (error) {
@@ -227,7 +230,7 @@ export function SoftwareGroupTable({
           className={RETRY_BTN}
           onClick={() => setRetryKey((k) => k + 1)}
         >
-          Retry
+          {t('common:actions.retry')}
         </button>
       </div>
     );
@@ -250,7 +253,7 @@ export function SoftwareGroupTable({
       <ResponsiveTable table={table} cards={cards} />
       {hasMore && (
         <p data-testid="software-group-has-more" className="text-xs text-muted-foreground">
-          Showing the top 500 groups by risk — narrow the filters to see the rest.
+          {t('softwareGroupTable.hasMore')}
         </p>
       )}
     </div>

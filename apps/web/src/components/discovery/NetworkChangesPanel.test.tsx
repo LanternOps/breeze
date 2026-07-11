@@ -324,3 +324,4 @@ describe('NetworkChangesPanel empty state', () => {
     expect(window.location.hash).toBe('#profiles');
   });
 });
+import '@/lib/i18n';

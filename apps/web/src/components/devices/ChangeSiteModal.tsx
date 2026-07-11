@@ -1,9 +1,11 @@
-import { useState, useEffect } from 'react';
-import { X, Loader2, MapPin } from 'lucide-react';
-import type { Device } from './DeviceList';
-import { Dialog } from '../shared/Dialog';
-import { fetchWithAuth } from '../../stores/auth';
-import { extractApiError } from '@/lib/apiError';
+import { useState, useEffect } from "react";
+import { X, Loader2, MapPin } from "lucide-react";
+import type { Device } from "./DeviceList";
+import { Dialog } from "../shared/Dialog";
+import { fetchWithAuth } from "../../stores/auth";
+import { extractApiError } from "@/lib/apiError";
+import { useTranslation } from "react-i18next";
+import "../../lib/i18n";
 
 type Site = {
   id: string;
@@ -18,7 +20,13 @@ type ChangeSiteModalProps = {
   onSaved: () => void;
 };
 
-export default function ChangeSiteModal({ device, isOpen, onClose, onSaved }: ChangeSiteModalProps) {
+export default function ChangeSiteModal({
+  device,
+  isOpen,
+  onClose,
+  onSaved,
+}: ChangeSiteModalProps) {
+  const { t } = useTranslation("devices");
   const [sites, setSites] = useState<Site[]>([]);
   const [siteId, setSiteId] = useState(device.siteId);
   const [loading, setLoading] = useState(false);
@@ -35,8 +43,10 @@ export default function ChangeSiteModal({ device, isOpen, onClose, onSaved }: Ch
     // Fetch only sites in the device's org — the API rejects cross-org moves,
     // so listing other orgs' sites would just create a dead-end choice.
     fetchWithAuth(`/orgs/sites?organizationId=${device.orgId}`)
-      .then(res => res.ok ? res.json() : Promise.reject(new Error('Failed to load sites')))
-      .then(data => {
+      .then((res) =>
+        res.ok ? res.json() : Promise.reject(new Error("Failed to load sites")),
+      )
+      .then((data) => {
         const list: Site[] = Array.isArray(data?.data)
           ? data.data
           : Array.isArray(data?.sites)
@@ -46,9 +56,13 @@ export default function ChangeSiteModal({ device, isOpen, onClose, onSaved }: Ch
               : [];
         setSites(list);
       })
-      .catch(err => {
+      .catch((err) => {
         setSites([]);
-        setError(err instanceof Error ? err.message : 'Failed to load sites');
+        setError(
+          err instanceof Error
+            ? err.message
+            : t("changeSiteModal.failedToLoadSites"),
+        );
       })
       .finally(() => setLoading(false));
   }, [isOpen, device.orgId, device.siteId]);
@@ -64,37 +78,50 @@ export default function ChangeSiteModal({ device, isOpen, onClose, onSaved }: Ch
 
     try {
       const res = await fetchWithAuth(`/devices/${device.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ siteId }),
       });
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(extractApiError(data, 'Failed to change site'));
+        throw new Error(extractApiError(data, "Failed to change site"));
       }
 
       onSaved();
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to change site');
+      setError(
+        err instanceof Error
+          ? err.message
+          : t("changeSiteModal.failedToChangeSite"),
+      );
     } finally {
       setSaving(false);
     }
   };
 
-  const currentSiteName = sites.find(s => s.id === device.siteId)?.name ?? device.siteName;
+  const currentSiteName =
+    sites.find((s) => s.id === device.siteId)?.name ?? device.siteName;
   const selectionChanged = siteId !== device.siteId;
   const onlyOneSite = sites.length === 1 && sites[0]?.id === device.siteId;
 
   return (
-    <Dialog open={isOpen} onClose={onClose} title="Change Site" className="p-6" maxWidth="md">
+    <Dialog
+      open={isOpen}
+      onClose={onClose}
+      title={t("changeSiteModal.changeSite")}
+      className="p-6"
+      maxWidth="md"
+    >
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-3">
           <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10">
             <MapPin className="h-4 w-4 text-primary" />
           </div>
-          <h2 className="text-lg font-semibold">Change Site</h2>
+          <h2 className="text-lg font-semibold">
+            {t("changeSiteModal.changeSite")}
+          </h2>
         </div>
         <button
           type="button"
@@ -107,41 +134,52 @@ export default function ChangeSiteModal({ device, isOpen, onClose, onSaved }: Ch
       </div>
 
       <p className="text-sm text-muted-foreground">
-        Move <span className="font-medium text-foreground">{device.displayName || device.hostname}</span>{' '}
-        to a different site within <span className="font-medium text-foreground">{device.orgName}</span>.
+        {t("changeSiteModal.move")}{" "}
+        <span className="font-medium text-foreground">
+          {device.displayName || device.hostname}
+        </span>{" "}
+        {t("changeSiteModal.toADifferentSiteWithin")}{" "}
+        <span className="font-medium text-foreground">{device.orgName}</span>.
       </p>
 
       <div className="mt-5 space-y-4">
         <div>
-          <label className="text-xs font-medium text-muted-foreground">Current site</label>
-          <p className="mt-1 text-sm">{currentSiteName || '—'}</p>
+          <label className="text-xs font-medium text-muted-foreground">
+            {t("changeSiteModal.currentSite")}
+          </label>
+          <p className="mt-1 text-sm">{currentSiteName || "—"}</p>
         </div>
 
         <div>
-          <label htmlFor="change-site-select" className="text-xs font-medium text-muted-foreground">
-            New site
+          <label
+            htmlFor="change-site-select"
+            className="text-xs font-medium text-muted-foreground"
+          >
+            {t("changeSiteModal.newSite")}{" "}
           </label>
           {loading ? (
             <div className="mt-1 flex items-center gap-2 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
-              Loading sites...
+              {t("changeSiteModal.loadingSites")}{" "}
             </div>
           ) : onlyOneSite ? (
             <p className="mt-1 text-sm text-muted-foreground">
-              This organization only has one site. Add more sites from Settings → Organizations to enable moves.
+              {t("changeSiteModal.thisOrganizationOnlyHasOneSite")}{" "}
             </p>
           ) : (
             <select
               id="change-site-select"
               value={siteId}
-              onChange={e => setSiteId(e.target.value)}
+              onChange={(e) => setSiteId(e.target.value)}
               disabled={saving || sites.length === 0}
               className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
-              {sites.map(site => (
+              {sites.map((site) => (
                 <option key={site.id} value={site.id}>
                   {site.name}
-                  {site.id === device.siteId ? ' (current)' : ''}
+                  {site.id === device.siteId
+                    ? t("changeSiteModal.current")
+                    : ""}
                 </option>
               ))}
             </select>
@@ -162,7 +200,7 @@ export default function ChangeSiteModal({ device, isOpen, onClose, onSaved }: Ch
           disabled={saving}
           className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
         >
-          Cancel
+          {t("changeSiteModal.cancel")}{" "}
         </button>
         <button
           type="button"
@@ -173,10 +211,10 @@ export default function ChangeSiteModal({ device, isOpen, onClose, onSaved }: Ch
           {saving ? (
             <>
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              Moving...
+              {t("changeSiteModal.moving")}{" "}
             </>
           ) : (
-            'Move device'
+            "Move device"
           )}
         </button>
       </div>

@@ -9,6 +9,7 @@
 // the UI into Advanced mode (sentence builder) per spec 4.3.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { X, ListTree, Boxes, Keyboard } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import type {
   FilterCondition,
   FilterConditionGroup,
@@ -56,6 +57,7 @@ export function defaultConditionForField(field: FilterFieldDefinition): FilterCo
 export function FilterChipBar({
   value, onChange, orgs, sites, softwareOptions, softwareOptionCounts, onSoftwareSearch, onSaveRequested
 }: FilterChipBarProps) {
+  const { t } = useTranslation('devices');
   const group = value ?? EMPTY_GROUP;
   const chips: FilterCondition[] = group.conditions.filter(
     (c): c is FilterCondition => !('conditions' in c)
@@ -179,10 +181,10 @@ export function FilterChipBar({
             data-testid="filter-mode-chip"
             onClick={() => setMode('chip')}
             disabled={!renderableNow}
-            title={renderableNow ? 'Chip mode' : 'Disabled — current filter has nested groups'}
+            title={renderableNow ? t('filterChipBar.chipMode') : t('filterChipBar.chipModeDisabled')}
             className={`flex items-center gap-1 px-2 py-0.5 ${mode === 'chip' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'} disabled:opacity-40`}
           >
-            <Boxes className="h-3 w-3" /> Chip
+            <Boxes className="h-3 w-3" /> {t('filterChipBar.chip')}
           </button>
           <button
             type="button"
@@ -190,13 +192,13 @@ export function FilterChipBar({
             onClick={() => setMode('advanced')}
             className={`flex items-center gap-1 px-2 py-0.5 ${mode === 'advanced' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}
           >
-            <ListTree className="h-3 w-3" /> Advanced
+            <ListTree className="h-3 w-3" /> {t('filterChipBar.advanced')}
           </button>
         </div>
         <button
           type="button"
           onClick={() => setHelpOpen(o => !o)}
-          aria-label="Show filter shortcuts"
+          aria-label={t('filterChipBar.showShortcuts')}
           data-testid="filter-help-toggle"
           className="rounded p-1 text-muted-foreground hover:text-foreground"
         >
@@ -230,7 +232,7 @@ export function FilterChipBar({
               onClick={handleClear}
               className="ml-auto text-xs text-muted-foreground hover:text-foreground"
             >
-              Clear all
+              {t('filterChipBar.clearAll')}
             </button>
           )}
         </div>
@@ -267,6 +269,7 @@ interface ChipProps {
 }
 
 export function Chip({ condition, onChange, onRemove, orgs, sites, softwareOptions, softwareOptionCounts, onSoftwareSearch, btnRef, onKeyDown, focused }: ChipProps) {
+  const { t } = useTranslation('devices');
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const field = getFieldDef(condition.field)
@@ -279,8 +282,8 @@ export function Chip({ condition, onChange, onRemove, orgs, sites, softwareOptio
   if (!field) {
     return (
       <span className="inline-flex items-center gap-1 rounded-full border bg-muted px-2 py-0.5 text-xs">
-        unknown: {condition.field}
-        <button type="button" onClick={onRemove} aria-label="Remove">
+        {t('filterChipBar.unknownField', { field: condition.field })}
+        <button type="button" onClick={onRemove} aria-label={t('common:actions.remove')}>
           <X className="h-3 w-3" />
         </button>
       </span>
@@ -307,7 +310,7 @@ export function Chip({ condition, onChange, onRemove, orgs, sites, softwareOptio
           type="button"
           data-testid={`filter-chip-remove-${field.key}`}
           onClick={onRemove}
-          aria-label={`Remove ${field.label}`}
+          aria-label={t('filterChipBar.removeField', { field: field.label })}
           className="hover:text-destructive"
         >
           <X className="h-3 w-3" />
@@ -316,7 +319,7 @@ export function Chip({ condition, onChange, onRemove, orgs, sites, softwareOptio
 
       {open && (
         <div className="absolute left-0 top-7 z-30 w-72 rounded-md border bg-popover p-3 shadow-lg" role="dialog">
-          <div className="mb-2 text-sm font-semibold">{field.label}</div>
+          <div className="mb-2 text-sm font-semibold">{t(/* i18n-dynamic */ `filterChipBar.fields.${field.key}`, { defaultValue: field.label })}</div>
           <FilterValueEditor
             field={field}
             condition={condition}
@@ -335,7 +338,7 @@ export function Chip({ condition, onChange, onRemove, orgs, sites, softwareOptio
               onClick={() => setOpen(false)}
               className="rounded bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:opacity-90"
             >
-              Apply
+              {t('common:actions.apply')}
             </button>
           </div>
         </div>

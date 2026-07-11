@@ -51,3 +51,4 @@ describe('DiscoveryProfileForm', () => {
     expect(screen.queryByTestId('discovery-snmp-settings')).not.toBeInTheDocument();
   });
 });
+import '@/lib/i18n';

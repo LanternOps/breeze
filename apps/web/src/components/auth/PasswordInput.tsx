@@ -1,4 +1,5 @@
 import { forwardRef, useState, type InputHTMLAttributes } from 'react';
+import { useTranslation } from 'react-i18next';
 
 type PasswordInputProps = Omit<InputHTMLAttributes<HTMLInputElement>, 'type'>;
 
@@ -6,6 +7,7 @@ const PasswordInput = forwardRef<HTMLInputElement, PasswordInputProps>(function 
   { className, ...rest },
   ref,
 ) {
+  const { t } = useTranslation('auth');
   const [visible, setVisible] = useState(false);
   return (
     <div className="relative">
@@ -22,7 +24,11 @@ const PasswordInput = forwardRef<HTMLInputElement, PasswordInputProps>(function 
         type="button"
         onClick={() => setVisible((v) => !v)}
         aria-pressed={visible}
-        aria-label={visible ? 'Hide password' : 'Show password'}
+        aria-label={
+          visible
+            ? t('passwordInput.hide', { defaultValue: 'Hide password' })
+            : t('passwordInput.show', { defaultValue: 'Show password' })
+        }
         tabIndex={-1}
         className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground transition hover:text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
       >

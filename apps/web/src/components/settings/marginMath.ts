@@ -5,6 +5,8 @@
 //   markup% = profit / cost   (drives the sell price from cost)
 //   margin% = profit / price  (share of revenue that is profit)
 
+import { formatNumber, formatPercent } from '@/lib/i18n/format';
+
 export interface MarginBreakdown {
   cost: number;
   price: number;
@@ -32,5 +34,5 @@ export function computeMarginBreakdown(cost: number | null, price: number | null
 /** Format a margin breakdown as a one-line summary, e.g.
  *  "Margin 22.6% · Markup 29.2% · Profit USD 30.00". */
 export function formatMarginSummary(b: MarginBreakdown, currency = 'USD'): string {
-  return `Margin ${b.marginPct.toFixed(1)}% · Markup ${b.markupPct.toFixed(1)}% · Profit ${currency} ${b.profit.toFixed(2)}`;
+  return `Margin ${formatPercent(b.marginPct / 100, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} · Markup ${formatPercent(b.markupPct / 100, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} · Profit ${currency} ${formatNumber(b.profit, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }

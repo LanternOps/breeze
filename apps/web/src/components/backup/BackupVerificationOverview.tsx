@@ -4,6 +4,8 @@ import { cn } from '@/lib/utils';
 import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import { friendlyFetchError } from '../../lib/utils';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 
 type RiskFactor = {
   code: string;
@@ -70,6 +72,7 @@ function formatTime(iso?: string | null): string {
 }
 
 export default function BackupVerificationOverview() {
+  const { t } = useTranslation('backup');
   const [health, setHealth] = useState<FleetHealth | null>(null);
   const [devices, setDevices] = useState<DeviceReadiness[]>([]);
   const [failures, setFailures] = useState<Verification[]>([]);
@@ -132,7 +135,7 @@ export default function BackupVerificationOverview() {
       <div className="flex items-center justify-center py-16">
         <div className="text-center">
           <Loader2 className="mx-auto h-8 w-8 animate-spin text-primary" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading verification overview...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('backupVerificationOverview.loadingVerificationOverview')}</p>
         </div>
       </div>
     );
@@ -147,8 +150,7 @@ export default function BackupVerificationOverview() {
           onClick={fetchData}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Try again
-        </button>
+          {t('backupVerificationOverview.tryAgain')} </button>
       </div>
     );
   }
@@ -166,8 +168,7 @@ export default function BackupVerificationOverview() {
         <div className="rounded-lg border bg-card px-5 py-4">
           <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
             <ShieldCheck className="h-4 w-4" />
-            Avg Readiness
-          </div>
+            {t('backupVerificationOverview.avgReadiness')} </div>
           <div className="mt-2">
             <span className={cn('text-2xl font-semibold', readinessColor(avgReadiness))}>
               {avgReadiness}
@@ -178,8 +179,7 @@ export default function BackupVerificationOverview() {
         <div className="rounded-lg border bg-card px-5 py-4">
           <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
             <CheckCircle2 className="h-4 w-4" />
-            High Readiness
-          </div>
+            {t('backupVerificationOverview.highReadiness')} </div>
           <div className="mt-2">
             <span className="text-2xl font-semibold text-success">{highReadiness}</span>
           </div>
@@ -187,8 +187,7 @@ export default function BackupVerificationOverview() {
         <div className="rounded-lg border bg-card px-5 py-4">
           <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
             <AlertTriangle className="h-4 w-4" />
-            Low Readiness
-          </div>
+            {t('backupVerificationOverview.lowReadiness')} </div>
           <div className="mt-2">
             <span className="text-2xl font-semibold text-warning">{lowReadiness}</span>
           </div>
@@ -196,8 +195,7 @@ export default function BackupVerificationOverview() {
         <div className="rounded-lg border bg-card px-5 py-4">
           <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
             <Clock className="h-4 w-4" />
-            Recent Failures
-          </div>
+            {t('backupVerificationOverview.recentFailures')} </div>
           <div className="mt-2">
             <span className="text-2xl font-semibold text-destructive">{recentFailures}</span>
           </div>
@@ -206,22 +204,21 @@ export default function BackupVerificationOverview() {
 
       {/* Recent failures table */}
       <div className="rounded-lg border bg-card p-5 shadow-xs">
-        <h3 className="text-base font-semibold text-foreground">Recent Failures</h3>
-        <p className="text-sm text-muted-foreground">Failed verification checks across all devices.</p>
+        <h3 className="text-base font-semibold text-foreground">{t('backupVerificationOverview.recentFailures')}</h3>
+        <p className="text-sm text-muted-foreground">{t('backupVerificationOverview.failedVerificationChecksAcrossAllDevices')}</p>
         {failures.length === 0 ? (
           <div className="mt-4 rounded-md border border-dashed p-4 text-sm text-muted-foreground">
-            No failed verifications. All checks passing.
-          </div>
+            {t('backupVerificationOverview.noFailedVerificationsAllChecksPassing')} </div>
         ) : (
           <div className="mt-4 overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b text-left text-xs font-medium text-muted-foreground">
-                  <th className="pb-2 pr-4">Device</th>
-                  <th className="pb-2 pr-4">Type</th>
-                  <th className="pb-2 pr-4">Started</th>
-                  <th className="pb-2 pr-4">Files OK</th>
-                  <th className="pb-2">Files Failed</th>
+                  <th className="pb-2 pr-4">{t('backupVerificationOverview.device')}</th>
+                  <th className="pb-2 pr-4">{t('backupVerificationOverview.type')}</th>
+                  <th className="pb-2 pr-4">{t('backupVerificationOverview.started')}</th>
+                  <th className="pb-2 pr-4">{t('backupVerificationOverview.filesOk')}</th>
+                  <th className="pb-2">{t('backupVerificationOverview.filesFailed')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -246,22 +243,21 @@ export default function BackupVerificationOverview() {
 
       {/* Low readiness devices table */}
       <div className="rounded-lg border bg-card p-5 shadow-xs">
-        <h3 className="text-base font-semibold text-foreground">Low Readiness Devices</h3>
-        <p className="text-sm text-muted-foreground">Devices scoring below the 85-point readiness threshold.</p>
+        <h3 className="text-base font-semibold text-foreground">{t('backupVerificationOverview.lowReadinessDevices')}</h3>
+        <p className="text-sm text-muted-foreground">{t('backupVerificationOverview.devicesScoringBelowThe85PointReadinessThreshold')}</p>
         {lowDevices.length === 0 ? (
           <div className="mt-4 rounded-md border border-dashed p-4 text-sm text-muted-foreground">
-            All devices meet the readiness threshold.
-          </div>
+            {t('backupVerificationOverview.allDevicesMeetTheReadinessThreshold')} </div>
         ) : (
           <div className="mt-4 overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b text-left text-xs font-medium text-muted-foreground">
-                  <th className="pb-2 pr-4">Device</th>
-                  <th className="pb-2 pr-4">Score</th>
-                  <th className="pb-2 pr-4">Est. RTO</th>
-                  <th className="pb-2 pr-4">Est. RPO</th>
-                  <th className="pb-2">Risk Factors</th>
+                  <th className="pb-2 pr-4">{t('backupVerificationOverview.device')}</th>
+                  <th className="pb-2 pr-4">{t('backupVerificationOverview.score')}</th>
+                  <th className="pb-2 pr-4">{t('backupVerificationOverview.estRto')}</th>
+                  <th className="pb-2 pr-4">{t('backupVerificationOverview.estRpo')}</th>
+                  <th className="pb-2">{t('backupVerificationOverview.riskFactors')}</th>
                 </tr>
               </thead>
               <tbody>

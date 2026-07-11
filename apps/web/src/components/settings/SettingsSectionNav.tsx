@@ -1,3 +1,5 @@
+import '@/lib/i18n';
+import { useTranslation } from 'react-i18next';
 import { type LucideIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -34,10 +36,11 @@ type SettingsSectionNavProps = {
  * the full rail would otherwise stack ~600px of nav above the content.
  */
 export default function SettingsSectionNav({ groups, activeKey, onNavigate, selectId }: SettingsSectionNavProps) {
+  const { t } = useTranslation('settings');
   return (
     <div>
       <div className="lg:hidden">
-        <label htmlFor={selectId} className="sr-only">Settings section</label>
+        <label htmlFor={selectId} className="sr-only">{t('settingsSectionNav.settingsSection')}</label>
         <select
           id={selectId}
           value={activeKey}
@@ -56,7 +59,7 @@ export default function SettingsSectionNav({ groups, activeKey, onNavigate, sele
         </select>
       </div>
 
-      <nav aria-label="Settings sections" className="hidden lg:block lg:sticky lg:top-6 space-y-4">
+      <nav aria-label={t('settingsSectionNav.settingsSections')} className="hidden lg:block lg:sticky lg:top-6 space-y-4">
         {groups.map(group => (
           <div key={group.label}>
             <p className="px-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -71,7 +74,7 @@ export default function SettingsSectionNav({ groups, activeKey, onNavigate, sele
                     <a
                       href={`#${item.hash}`}
                       aria-current={isActive ? 'page' : undefined}
-                      aria-label={item.dirty ? `${item.label} (unsaved changes)` : item.label}
+                      aria-label={item.dirty ? t('settingsSectionNav.unsavedChanges', { label: item.label }) : item.label}
                       onClick={e => {
                         // Let modified clicks do their native thing (new tab, etc.).
                         if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;

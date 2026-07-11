@@ -5,6 +5,8 @@ import { getInitialFilePath, type DeviceOs } from './filePathUtils';
 import { fetchWithAuth } from '@/stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import Breadcrumbs from '../layout/Breadcrumbs';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 
 type Device = {
   id: string;
@@ -20,6 +22,7 @@ type RemoteFilesPageProps = {
 };
 
 export default function RemoteFilesPage({ deviceId }: RemoteFilesPageProps) {
+  const { t } = useTranslation('remote');
   const [device, setDevice] = useState<Device | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -31,22 +34,22 @@ export default function RemoteFilesPage({ deviceId }: RemoteFilesPageProps) {
 
         if (!response.ok) {
           if (response.status === 404) {
-            throw new Error('Device not found');
+            throw new Error(t('remoteFilesPage.errors.deviceNotFound'));
           }
-          throw new Error('Failed to fetch device');
+          throw new Error(t('remoteFilesPage.errors.fetchDevice'));
         }
 
         const data = await response.json();
         setDevice(data);
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'An error occurred');
+        setError(err instanceof Error ? err.message : t('remoteFilesPage.errors.generic'));
       } finally {
         setLoading(false);
       }
     };
 
     fetchDevice();
-  }, [deviceId]);
+  }, [deviceId, t]);
 
   const handleBack = () => {
     // Always return to this device's detail page. This page can be opened from
@@ -80,7 +83,7 @@ export default function RemoteFilesPage({ deviceId }: RemoteFilesPageProps) {
     return (
       <div className="flex flex-col items-center justify-center u-min-h-px-400 gap-4">
         <AlertCircle className="h-12 w-12 text-red-500" />
-        <h2 className="text-lg font-semibold">Error</h2>
+        <h2 className="text-lg font-semibold">{t('remoteFilesPage.errorTitle')}</h2>
         <p className="text-muted-foreground">{error}</p>
         <button
           type="button"
@@ -88,7 +91,7 @@ export default function RemoteFilesPage({ deviceId }: RemoteFilesPageProps) {
           className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
           <ArrowLeft className="h-4 w-4" />
-          Go Back
+          {t('common:actions.back')}
         </button>
       </div>
     );
@@ -98,15 +101,15 @@ export default function RemoteFilesPage({ deviceId }: RemoteFilesPageProps) {
     return (
       <div className="flex flex-col items-center justify-center u-min-h-px-400 gap-4">
         <Monitor className="h-12 w-12 text-muted-foreground" />
-        <h2 className="text-lg font-semibold">Device Not Found</h2>
-        <p className="text-muted-foreground">The requested device could not be found.</p>
+        <h2 className="text-lg font-semibold">{t('remoteFilesPage.deviceNotFoundTitle')}</h2>
+        <p className="text-muted-foreground">{t('remoteFilesPage.deviceNotFoundDescription')}</p>
         <button
           type="button"
           onClick={handleBack}
           className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
           <ArrowLeft className="h-4 w-4" />
-          Go Back
+          {t('common:actions.back')}
         </button>
       </div>
     );
@@ -124,23 +127,23 @@ export default function RemoteFilesPage({ deviceId }: RemoteFilesPageProps) {
             <ArrowLeft className="h-5 w-5" />
           </button>
           <div>
-            <h1 className="text-xl font-semibold tracking-tight">Remote File Manager</h1>
+            <h1 className="text-xl font-semibold tracking-tight">{t('remoteFilesPage.title')}</h1>
             <p className="text-muted-foreground">{device.displayName || device.hostname}</p>
           </div>
         </div>
 
         <div className="flex flex-col items-center justify-center u-min-h-px-400 gap-4 rounded-lg border bg-card p-8">
           <AlertCircle className="h-12 w-12 text-yellow-500" />
-          <h2 className="text-lg font-semibold">Device Offline</h2>
+          <h2 className="text-lg font-semibold">{t('remoteFilesPage.deviceOfflineTitle')}</h2>
           <p className="text-muted-foreground text-center max-w-md">
-            The device is currently {device.status}. Remote file access is only available when the device is online.
+            {t('remoteFilesPage.deviceOfflineDescription', { status: device.status })}
           </p>
           <button
             type="button"
             onClick={() => window.location.reload()}
             className="flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
           >
-            Refresh Status
+            {t('remoteFilesPage.refreshStatus')}
           </button>
         </div>
       </div>
@@ -150,9 +153,9 @@ export default function RemoteFilesPage({ deviceId }: RemoteFilesPageProps) {
   return (
     <div className="space-y-6">
       <Breadcrumbs items={[
-        { label: 'Devices', href: '/devices' },
+        { label: t('remoteFilesPage.breadcrumbs.devices'), href: '/devices' },
         { label: device.displayName || device.hostname, href: `/devices/${deviceId}` },
-        { label: 'File Manager' }
+        { label: t('remoteFilesPage.breadcrumbs.fileManager') }
       ]} />
       <div className="flex items-center gap-4">
         <button
@@ -163,7 +166,7 @@ export default function RemoteFilesPage({ deviceId }: RemoteFilesPageProps) {
           <ArrowLeft className="h-5 w-5" />
         </button>
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Remote File Manager</h1>
+          <h1 className="text-xl font-semibold tracking-tight">{t('remoteFilesPage.title')}</h1>
           <p className="text-muted-foreground">
             {device.displayName || device.hostname} - {device.osType} {device.osVersion}
           </p>

@@ -1,4 +1,5 @@
 import { ChevronDown } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 
 export type UpdateRing = {
@@ -24,12 +25,13 @@ export default function RingSelector({
   loading,
   className,
 }: RingSelectorProps) {
+  const { t } = useTranslation('patches');
   const sorted = [...rings].sort((a, b) => a.ringOrder - b.ringOrder);
 
   return (
     <div className={cn('flex items-center gap-2', className)}>
       <label className="text-sm font-medium text-muted-foreground whitespace-nowrap">
-        Update Ring:
+        {t('ringSelector.label')}
       </label>
       <div className="relative">
         <select
@@ -38,10 +40,14 @@ export default function RingSelector({
           disabled={loading}
           className="h-9 w-full appearance-none rounded-md border bg-background pl-3 pr-8 text-sm font-medium focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-50 sm:w-52"
         >
-          <option value="">All Rings</option>
+          <option value="">{t('ringSelector.allRings')}</option>
           {sorted.map((ring) => (
             <option key={ring.id} value={ring.id}>
-              {ring.name} (Order {ring.ringOrder}, +{ring.deferralDays}d)
+              {t('ringSelector.ringOption', {
+                name: ring.name,
+                order: ring.ringOrder,
+                days: ring.deferralDays,
+              })}
             </option>
           ))}
         </select>

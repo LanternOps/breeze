@@ -1,4 +1,6 @@
 import { useId, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
@@ -20,59 +22,59 @@ type SupportedProvider =
   | 'adguard_home';
 
 interface ProviderFieldSpec {
-  label: string;
-  helpText: string;
-  apiKey: { label: string; placeholder: string };
-  apiSecret?: { label: string; placeholder: string };
+  labelKey: string;
+  helpTextKey: string;
+  apiKey: { labelKey: string; placeholderKey: string };
+  apiSecret?: { labelKey: string; placeholderKey: string };
   configFields?: Array<{
     key: 'organizationId' | 'accountId' | 'apiEndpoint';
-    label: string;
-    placeholder: string;
+    labelKey: string;
+    placeholderKey: string;
     type?: 'text' | 'url';
   }>;
 }
 
 const PROVIDERS: Record<SupportedProvider, ProviderFieldSpec> = {
   umbrella: {
-    label: 'Cisco Umbrella',
-    helpText: 'API key + secret from the Umbrella Reporting API; organizationId from your Umbrella dashboard URL.',
-    apiKey: { label: 'API key', placeholder: 'reporting-api-key' },
-    apiSecret: { label: 'API secret', placeholder: 'reporting-api-secret' },
+    labelKey: 'providers.umbrella.label',
+    helpTextKey: 'providers.umbrella.helpText',
+    apiKey: { labelKey: 'fields.apiKey', placeholderKey: 'providers.umbrella.apiKeyPlaceholder' },
+    apiSecret: { labelKey: 'fields.apiSecret', placeholderKey: 'providers.umbrella.apiSecretPlaceholder' },
     configFields: [
-      { key: 'organizationId', label: 'Organization ID', placeholder: '1234567' },
+      { key: 'organizationId', labelKey: 'fields.organizationId', placeholderKey: 'providers.umbrella.organizationIdPlaceholder' },
     ],
   },
   cloudflare: {
-    label: 'Cloudflare Gateway',
-    helpText: 'API token with Zero Trust → Gateway → Read scope.',
-    apiKey: { label: 'API token', placeholder: 'cf-api-token' },
+    labelKey: 'providers.cloudflare.label',
+    helpTextKey: 'providers.cloudflare.helpText',
+    apiKey: { labelKey: 'fields.apiToken', placeholderKey: 'providers.cloudflare.apiTokenPlaceholder' },
     configFields: [
-      { key: 'accountId', label: 'Account ID', placeholder: '32-char hex from the Cloudflare dashboard' },
+      { key: 'accountId', labelKey: 'fields.accountId', placeholderKey: 'providers.cloudflare.accountIdPlaceholder' },
     ],
   },
   dnsfilter: {
-    label: 'DNSFilter',
-    helpText: 'API key from your DNSFilter account settings; account ID required only for multi-tenant scopes.',
-    apiKey: { label: 'API key', placeholder: 'dnsfilter-api-key' },
+    labelKey: 'providers.dnsfilter.label',
+    helpTextKey: 'providers.dnsfilter.helpText',
+    apiKey: { labelKey: 'fields.apiKey', placeholderKey: 'providers.dnsfilter.apiKeyPlaceholder' },
     configFields: [
-      { key: 'accountId', label: 'Account ID (optional)', placeholder: 'leave blank for single-tenant' },
+      { key: 'accountId', labelKey: 'fields.accountIdOptional', placeholderKey: 'providers.dnsfilter.accountIdPlaceholder' },
     ],
   },
   pihole: {
-    label: 'Pi-hole',
-    helpText: 'Pi-hole API endpoint + API key. Use the LAN-routable hostname.',
-    apiKey: { label: 'API key', placeholder: 'pihole api key from /admin' },
+    labelKey: 'providers.pihole.label',
+    helpTextKey: 'providers.pihole.helpText',
+    apiKey: { labelKey: 'fields.apiKey', placeholderKey: 'providers.pihole.apiKeyPlaceholder' },
     configFields: [
-      { key: 'apiEndpoint', label: 'API endpoint', placeholder: 'http://pihole.local', type: 'url' },
+      { key: 'apiEndpoint', labelKey: 'fields.apiEndpoint', placeholderKey: 'providers.pihole.apiEndpointPlaceholder', type: 'url' },
     ],
   },
   adguard_home: {
-    label: 'AdGuard Home',
-    helpText: 'API endpoint + HTTP Basic auth username (apiKey) + password (apiSecret).',
-    apiKey: { label: 'HTTP Basic username', placeholder: 'admin' },
-    apiSecret: { label: 'HTTP Basic password', placeholder: 'password' },
+    labelKey: 'providers.adguardHome.label',
+    helpTextKey: 'providers.adguardHome.helpText',
+    apiKey: { labelKey: 'fields.httpBasicUsername', placeholderKey: 'providers.adguardHome.usernamePlaceholder' },
+    apiSecret: { labelKey: 'fields.httpBasicPassword', placeholderKey: 'providers.adguardHome.passwordPlaceholder' },
     configFields: [
-      { key: 'apiEndpoint', label: 'API endpoint', placeholder: 'https://adguard.client.local', type: 'url' },
+      { key: 'apiEndpoint', labelKey: 'fields.apiEndpoint', placeholderKey: 'providers.adguardHome.apiEndpointPlaceholder', type: 'url' },
     ],
   },
 };
@@ -89,6 +91,7 @@ interface AddDnsIntegrationModalProps {
 }
 
 export default function AddDnsIntegrationModal({ onClose, onCreated }: AddDnsIntegrationModalProps) {
+  const { t } = useTranslation('security');
   const [provider, setProvider] = useState<SupportedProvider>('cloudflare');
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -132,8 +135,11 @@ export default function AddDnsIntegrationModal({ onClose, onCreated }: AddDnsInt
             isActive: true,
           }),
         }),
-        errorFallback: 'Failed to create integration',
-        successMessage: `${spec.label} integration "${name}" added`,
+        errorFallback: t('dnsSecurityAddDnsIntegrationModal.messages.createFailed'),
+        successMessage: t('dnsSecurityAddDnsIntegrationModal.messages.createSuccess', {
+          provider: t(/* i18n-dynamic */ `dnsSecurityAddDnsIntegrationModal.${spec.labelKey}`),
+          name,
+        }),
         onUnauthorized: () => void navigateTo('/login', { replace: true }),
       });
       onCreated();
@@ -143,7 +149,7 @@ export default function AddDnsIntegrationModal({ onClose, onCreated }: AddDnsInt
         if (err.status === 401) return;
         setError(err.message);
       } else {
-        setError(err instanceof Error ? err.message : 'Network error');
+        setError(err instanceof Error ? err.message : t('dnsSecurityAddDnsIntegrationModal.messages.networkError'));
       }
     } finally {
       setSubmitting(false);
@@ -154,18 +160,18 @@ export default function AddDnsIntegrationModal({ onClose, onCreated }: AddDnsInt
     <Dialog
       open
       onClose={onClose}
-      title="Add DNS Integration"
+      title={t('dnsSecurityAddDnsIntegrationModal.title')}
       maxWidth="lg"
       className="p-6 max-h-[90vh] overflow-y-auto"
     >
       <div className="relative">
-        <h2 className="text-lg font-semibold">Add DNS Integration</h2>
+        <h2 className="text-lg font-semibold">{t('dnsSecurityAddDnsIntegrationModal.title')}</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Connect a DNS filtering provider to ingest query logs and threat events.
+          {t('dnsSecurityAddDnsIntegrationModal.description')}
         </p>
 
         <form onSubmit={handleSubmit} className="mt-4 space-y-4">
-          <Field label="Provider">
+          <Field label={t('dnsSecurityAddDnsIntegrationModal.fields.provider')}>
             {(id) => (
               <>
                 <select
@@ -180,17 +186,19 @@ export default function AddDnsIntegrationModal({ onClose, onCreated }: AddDnsInt
                   {(Object.entries(PROVIDERS) as Array<[SupportedProvider, ProviderFieldSpec]>).map(
                     ([key, p]) => (
                       <option key={key} value={key}>
-                        {p.label}
+                        {t(/* i18n-dynamic */ `dnsSecurityAddDnsIntegrationModal.${p.labelKey}`)}
                       </option>
                     ),
                   )}
                 </select>
-                <p className="mt-1 text-xs text-muted-foreground">{spec.helpText}</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {t(/* i18n-dynamic */ `dnsSecurityAddDnsIntegrationModal.${spec.helpTextKey}`)}
+                </p>
               </>
             )}
           </Field>
 
-          <Field label="Display name">
+          <Field label={t('dnsSecurityAddDnsIntegrationModal.fields.displayName')}>
             {(id) => (
               <input
                 id={id}
@@ -199,13 +207,13 @@ export default function AddDnsIntegrationModal({ onClose, onCreated }: AddDnsInt
                 onChange={(e) => setName(e.target.value)}
                 maxLength={200}
                 required
-                placeholder="e.g. Acme HQ Gateway"
+                placeholder={t('dnsSecurityAddDnsIntegrationModal.placeholders.displayName')}
                 className="h-9 w-full rounded-md border bg-background px-2 text-sm"
               />
             )}
           </Field>
 
-          <Field label="Description (optional)">
+          <Field label={t('dnsSecurityAddDnsIntegrationModal.fields.descriptionOptional')}>
             {(id) => (
               <textarea
                 id={id}
@@ -213,13 +221,13 @@ export default function AddDnsIntegrationModal({ onClose, onCreated }: AddDnsInt
                 onChange={(e) => setDescription(e.target.value)}
                 maxLength={2000}
                 rows={2}
-                placeholder="What this integration covers"
+                placeholder={t('dnsSecurityAddDnsIntegrationModal.placeholders.description')}
                 className="w-full rounded-md border bg-background px-2 py-1.5 text-sm"
               />
             )}
           </Field>
 
-          <Field label={spec.apiKey.label}>
+          <Field label={t(/* i18n-dynamic */ `dnsSecurityAddDnsIntegrationModal.${spec.apiKey.labelKey}`)}>
             {(id) => (
               <input
                 id={id}
@@ -228,14 +236,14 @@ export default function AddDnsIntegrationModal({ onClose, onCreated }: AddDnsInt
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
                 required
-                placeholder={spec.apiKey.placeholder}
+                placeholder={t(/* i18n-dynamic */ `dnsSecurityAddDnsIntegrationModal.${spec.apiKey.placeholderKey}`)}
                 className="h-9 w-full rounded-md border bg-background px-2 text-sm font-mono"
               />
             )}
           </Field>
 
           {spec.apiSecret && (
-            <Field label={spec.apiSecret.label}>
+            <Field label={t(/* i18n-dynamic */ `dnsSecurityAddDnsIntegrationModal.${spec.apiSecret.labelKey}`)}>
               {(id) => (
                 <input
                   id={id}
@@ -244,7 +252,7 @@ export default function AddDnsIntegrationModal({ onClose, onCreated }: AddDnsInt
                   value={apiSecret}
                   onChange={(e) => setApiSecret(e.target.value)}
                   required
-                  placeholder={spec.apiSecret!.placeholder}
+                  placeholder={t(/* i18n-dynamic */ `dnsSecurityAddDnsIntegrationModal.${spec.apiSecret!.placeholderKey}`)}
                   className="h-9 w-full rounded-md border bg-background px-2 text-sm font-mono"
                 />
               )}
@@ -252,14 +260,14 @@ export default function AddDnsIntegrationModal({ onClose, onCreated }: AddDnsInt
           )}
 
           {spec.configFields?.map((field) => (
-            <Field key={field.key} label={field.label}>
+            <Field key={field.key} label={t(/* i18n-dynamic */ `dnsSecurityAddDnsIntegrationModal.${field.labelKey}`)}>
               {(id) => (
                 <input
                   id={id}
                   type={field.type ?? 'text'}
                   value={config[field.key] ?? ''}
                   onChange={(e) => updateConfig(field.key, e.target.value)}
-                  placeholder={field.placeholder}
+                  placeholder={t(/* i18n-dynamic */ `dnsSecurityAddDnsIntegrationModal.${field.placeholderKey}`)}
                   className="h-9 w-full rounded-md border bg-background px-2 text-sm"
                 />
               )}
@@ -278,14 +286,16 @@ export default function AddDnsIntegrationModal({ onClose, onCreated }: AddDnsInt
               onClick={onClose}
               className="rounded-md border bg-background px-3 py-1.5 text-sm font-medium hover:bg-muted"
             >
-              Cancel
+              {t('dnsSecurityAddDnsIntegrationModal.actions.cancel')}
             </button>
             <button
               type="submit"
               disabled={submitting || !name.trim() || !apiKey.trim()}
               className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
             >
-              {submitting ? 'Adding…' : 'Add integration'}
+              {submitting
+                ? t('dnsSecurityAddDnsIntegrationModal.actions.adding')
+                : t('dnsSecurityAddDnsIntegrationModal.actions.addIntegration')}
             </button>
           </div>
         </form>

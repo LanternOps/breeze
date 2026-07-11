@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 import {
   ArrowLeft,
   Building2,
@@ -77,9 +79,9 @@ type AvailablePolicy = {
 type TabKey = 'details' | 'policies' | 'devices';
 
 const tabs = [
-  { id: 'details' as const, label: 'Details', icon: MapPin },
-  { id: 'policies' as const, label: 'Configuration Policies', icon: FileText },
-  { id: 'devices' as const, label: 'Devices', icon: Monitor },
+  { id: 'details' as const, labelKey: 'siteDetailPage.tabs.details', icon: MapPin },
+  { id: 'policies' as const, labelKey: 'siteDetailPage.tabs.policies', icon: FileText },
+  { id: 'devices' as const, labelKey: 'siteDetailPage.tabs.devices', icon: Monitor },
 ];
 
 const VALID_TABS: TabKey[] = tabs.map(t => t.id);
@@ -104,9 +106,9 @@ const timezoneOptions = [
   'Australia/Sydney',
 ];
 
-const statusBadge: Record<string, { label: string; className: string }> = {
-  active: { label: 'Active', className: 'bg-success/15 text-success border-success/30' },
-  inactive: { label: 'Inactive', className: 'bg-muted text-muted-foreground border-border' },
+const statusBadge: Record<string, { labelKey: string; className: string }> = {
+  active: { labelKey: 'common:states.active', className: 'bg-success/15 text-success border-success/30' },
+  inactive: { labelKey: 'common:states.inactive', className: 'bg-muted text-muted-foreground border-border' },
 };
 
 // Fixed reference time for SSR hydration consistency
@@ -118,6 +120,7 @@ const formatTime = (date: Date) =>
 // --- Component ---
 
 export default function SiteDetailPage({ siteId }: { siteId: string }) {
+  const { t } = useTranslation('settings');
   const [activeTab, setActiveTab] = useState<TabKey>(getTabFromHash);
 
   useEffect(() => {
@@ -181,7 +184,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
       setLoading(true);
       setError(undefined);
       const res = await fetchWithAuth(`/orgs/sites/${siteId}`);
-      if (!res.ok) throw new Error('Failed to fetch site');
+      if (!res.ok) throw new Error(t('siteDetailPage.errors.fetchSite'));
       const data = await res.json();
       setSite(data);
       populateForm(data);
@@ -199,11 +202,11 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
         }
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('siteDetailPage.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [siteId, populateForm]);
+  }, [siteId, populateForm, t]);
 
   const fetchAssignments = useCallback(async () => {
     try {
@@ -213,16 +216,16 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
       );
       if (!res.ok) {
         console.error('Failed to fetch policy assignments:', res.status);
-        setAssignmentsError('Could not load policy assignments');
+        setAssignmentsError(t('siteDetailPage.errors.loadAssignments'));
         return;
       }
       const data = await res.json();
       setAssignments(Array.isArray(data.data) ? data.data : []);
     } catch (err) {
       console.error('Failed to fetch policy assignments:', err);
-      setAssignmentsError('Could not load policy assignments');
+      setAssignmentsError(t('siteDetailPage.errors.loadAssignments'));
     }
-  }, [siteId]);
+  }, [siteId, t]);
 
   const fetchAvailablePolicies = useCallback(async () => {
     try {
@@ -281,14 +284,14 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || 'Failed to save site');
+        throw new Error(body.error || t('siteDetailPage.errors.saveSite'));
       }
       const updated = await res.json();
       setSite(updated);
       populateForm(updated);
       setSaveState({ hasUnsavedChanges: false, lastSavedAt: formatTime(new Date()) });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('siteDetailPage.errors.generic'));
     } finally {
       setSaving(false);
     }
@@ -312,13 +315,13 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
       );
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || 'Failed to assign policy');
+        throw new Error(body.error || t('siteDetailPage.errors.assignPolicy'));
       }
       setSelectedPolicyId('');
       setAssignPriority('0');
       await fetchAssignments();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('siteDetailPage.errors.generic'));
     } finally {
       setAssigning(false);
     }
@@ -331,10 +334,10 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
         `/configuration-policies/${a.assignment.configPolicyId}/assignments/${a.assignment.id}`,
         { method: 'DELETE' }
       );
-      if (!res.ok) throw new Error('Failed to remove assignment');
+      if (!res.ok) throw new Error(t('siteDetailPage.errors.removeAssignment'));
       await fetchAssignments();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('siteDetailPage.errors.generic'));
     }
   };
 
@@ -350,7 +353,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
       <div className="flex items-center justify-center py-12">
         <div className="text-center">
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading site...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('siteDetailPage.loading')}</p>
         </div>
       </div>
     );
@@ -364,7 +367,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
           href="/settings/organizations"
           className="mt-4 inline-block rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Back to organizations
+          {t('siteDetailPage.backToOrganizations')}
         </a>
       </div>
     );
@@ -373,12 +376,12 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
   if (!site) {
     return (
       <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
-        <p className="text-sm text-destructive">Site not found or could not be loaded.</p>
+        <p className="text-sm text-destructive">{t('siteDetailPage.errors.notFound')}</p>
         <a
           href="/settings/organizations"
           className="mt-4 inline-block rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Back to organizations
+          {t('siteDetailPage.backToOrganizations')}
         </a>
       </div>
     );
@@ -387,16 +390,16 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
   const badge = statusBadge[site.status] ?? statusBadge.active;
 
   const statusLabel = saveState.hasUnsavedChanges
-    ? 'Unsaved changes'
-    : `Saved at ${saveState.lastSavedAt}`;
+    ? t('siteDetailPage.saveStatus.unsaved')
+    : t('siteDetailPage.saveStatus.savedAt', { time: saveState.lastSavedAt });
 
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-6">
       {/* Breadcrumbs */}
       <Breadcrumbs
         items={[
-          { label: 'Settings', href: '/settings' },
-          { label: 'Organizations', href: '/settings/organizations' },
+          { label: t('siteDetailPage.breadcrumbs.settings'), href: '/settings' },
+          { label: t('siteDetailPage.breadcrumbs.organizations'), href: '/settings/organizations' },
           ...(org ? [{ label: org.name, href: `/settings/organizations#${org.id}` }] : []),
           { label: site.name },
         ]}
@@ -420,7 +423,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
                   badge.className
                 )}
               >
-                {badge.label}
+                {t(/* i18n-dynamic */ badge.labelKey)}
               </span>
             </div>
             {org && (
@@ -453,7 +456,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
       <div className="grid gap-6 lg:grid-cols-[240px_1fr]">
         <aside className="space-y-2 rounded-lg border bg-card p-4 shadow-xs">
           <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            Site Settings
+            {t('siteDetailPage.sidebar.title')}
           </p>
           <nav className="space-y-1">
             {tabs.map((tab) => {
@@ -471,7 +474,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
                   }`}
                 >
                   <Icon className="h-4 w-4" />
-                  <span>{tab.label}</span>
+                  <span>{t(/* i18n-dynamic */ tab.labelKey)}</span>
                 </button>
               );
             })}
@@ -483,10 +486,10 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
           {activeTab === 'details' && (
             <div className="space-y-6">
               <section className="rounded-lg border bg-card p-6 shadow-xs">
-                <h2 className="text-lg font-semibold">Site Information</h2>
+                <h2 className="text-lg font-semibold">{t('siteDetailPage.details.title')}</h2>
                 <div className="mt-4 grid gap-4 md:grid-cols-2">
                   <div className="space-y-2">
-                    <label className="text-sm font-medium">Site name</label>
+                    <label className="text-sm font-medium">{t('siteForm.fields.name')}</label>
                     <input
                       value={formName}
                       onChange={handleFieldChange(setFormName)}
@@ -494,7 +497,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
                     />
                   </div>
                   <div className="space-y-2">
-                    <label className="text-sm font-medium">Timezone</label>
+                    <label className="text-sm font-medium">{t('siteForm.fields.timezone')}</label>
                     <select
                       value={formTimezone}
                       onChange={handleFieldChange(setFormTimezone)}
@@ -511,59 +514,59 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
               </section>
 
               <section className="rounded-lg border bg-card p-6 shadow-xs">
-                <h2 className="text-lg font-semibold">Address</h2>
+                <h2 className="text-lg font-semibold">{t('siteDetailPage.address.title')}</h2>
                 <div className="mt-4 grid gap-4 md:grid-cols-2">
                   <div className="space-y-2 md:col-span-2">
-                    <label className="text-sm font-medium">Address line 1</label>
+                    <label className="text-sm font-medium">{t('siteForm.fields.addressLine1')}</label>
                     <input
                       value={formAddressLine1}
                       onChange={handleFieldChange(setFormAddressLine1)}
-                      placeholder="123 Market Street"
+                      placeholder={t('siteForm.placeholders.addressLine1')}
                       className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </div>
                   <div className="space-y-2 md:col-span-2">
-                    <label className="text-sm font-medium">Address line 2</label>
+                    <label className="text-sm font-medium">{t('siteForm.fields.addressLine2')}</label>
                     <input
                       value={formAddressLine2}
                       onChange={handleFieldChange(setFormAddressLine2)}
-                      placeholder="Suite 500"
+                      placeholder={t('siteForm.placeholders.addressLine2')}
                       className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </div>
                   <div className="space-y-2">
-                    <label className="text-sm font-medium">City</label>
+                    <label className="text-sm font-medium">{t('siteForm.fields.city')}</label>
                     <input
                       value={formCity}
                       onChange={handleFieldChange(setFormCity)}
-                      placeholder="San Francisco"
+                      placeholder={t('siteForm.placeholders.city')}
                       className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </div>
                   <div className="space-y-2">
-                    <label className="text-sm font-medium">State/Region</label>
+                    <label className="text-sm font-medium">{t('siteForm.fields.state')}</label>
                     <input
                       value={formState}
                       onChange={handleFieldChange(setFormState)}
-                      placeholder="CA"
+                      placeholder={t('siteForm.placeholders.state')}
                       className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </div>
                   <div className="space-y-2">
-                    <label className="text-sm font-medium">Postal code</label>
+                    <label className="text-sm font-medium">{t('siteForm.fields.postalCode')}</label>
                     <input
                       value={formPostalCode}
                       onChange={handleFieldChange(setFormPostalCode)}
-                      placeholder="94107"
+                      placeholder={t('siteForm.placeholders.postalCode')}
                       className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </div>
                   <div className="space-y-2">
-                    <label className="text-sm font-medium">Country</label>
+                    <label className="text-sm font-medium">{t('siteForm.fields.country')}</label>
                     <input
                       value={formCountry}
                       onChange={handleFieldChange(setFormCountry)}
-                      placeholder="United States"
+                      placeholder={t('siteForm.placeholders.country')}
                       className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </div>
@@ -571,33 +574,33 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
               </section>
 
               <section className="rounded-lg border bg-card p-6 shadow-xs">
-                <h2 className="text-lg font-semibold">Primary Contact</h2>
+                <h2 className="text-lg font-semibold">{t('siteForm.primaryContact')}</h2>
                 <div className="mt-4 grid gap-4 md:grid-cols-3">
                   <div className="space-y-2">
-                    <label className="text-sm font-medium">Name</label>
+                    <label className="text-sm font-medium">{t('common:labels.name')}</label>
                     <input
                       value={formContactName}
                       onChange={handleFieldChange(setFormContactName)}
-                      placeholder="Alex Morgan"
+                      placeholder={t('siteForm.placeholders.contactName')}
                       className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </div>
                   <div className="space-y-2">
-                    <label className="text-sm font-medium">Email</label>
+                    <label className="text-sm font-medium">{t('siteForm.fields.email')}</label>
                     <input
                       type="email"
                       value={formContactEmail}
                       onChange={handleFieldChange(setFormContactEmail)}
-                      placeholder="alex@company.com"
+                      placeholder={t('siteForm.placeholders.contactEmail')}
                       className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </div>
                   <div className="space-y-2">
-                    <label className="text-sm font-medium">Phone</label>
+                    <label className="text-sm font-medium">{t('siteForm.fields.phone')}</label>
                     <input
                       value={formContactPhone}
                       onChange={handleFieldChange(setFormContactPhone)}
-                      placeholder="+1 (555) 123-4567"
+                      placeholder={t('siteForm.placeholders.contactPhone')}
                       className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </div>
@@ -611,7 +614,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
                   disabled={saving}
                   className="h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
                 >
-                  {saving ? 'Saving...' : 'Save Changes'}
+                  {saving ? t('common:states.saving') : t('siteDetailPage.actions.saveChanges')}
                 </button>
               </div>
             </div>
@@ -629,20 +632,20 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
 
               {/* Assigned policies table */}
               <div className="rounded-lg border bg-card p-6 shadow-xs">
-                <h2 className="text-lg font-semibold">Assigned Policies</h2>
+                <h2 className="text-lg font-semibold">{t('siteDetailPage.policies.assignedTitle')}</h2>
                 {assignments.length === 0 && !assignmentsError ? (
                   <p className="mt-4 text-sm text-muted-foreground">
-                    No configuration policies assigned to this site yet.
+                    {t('siteDetailPage.policies.empty')}
                   </p>
                 ) : (
                   <div className="mt-4 overflow-x-auto rounded-md border">
                     <table className="min-w-full divide-y">
                       <thead className="bg-muted/40">
                         <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                          <th className="px-4 py-3">Policy Name</th>
-                          <th className="px-4 py-3">Status</th>
-                          <th className="px-4 py-3">Priority</th>
-                          <th className="px-4 py-3 text-right">Actions</th>
+                          <th className="px-4 py-3">{t('siteDetailPage.policies.policyName')}</th>
+                          <th className="px-4 py-3">{t('common:labels.status')}</th>
+                          <th className="px-4 py-3">{t('siteDetailPage.policies.priority')}</th>
+                          <th className="px-4 py-3 text-right">{t('common:labels.actions')}</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y">
@@ -665,7 +668,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
                                     : 'bg-muted text-muted-foreground border-border'
                                 )}
                               >
-                                {a.policyStatus === 'active' ? 'Active' : 'Inactive'}
+                                {a.policyStatus === 'active' ? t('common:states.active') : t('common:states.inactive')}
                               </span>
                             </td>
                             <td className="px-4 py-3 text-muted-foreground">
@@ -692,16 +695,16 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
 
               {/* Quick-assign form */}
               <div className="rounded-lg border bg-card p-6 shadow-xs">
-                <h2 className="text-lg font-semibold">Assign Policy</h2>
+                <h2 className="text-lg font-semibold">{t('siteDetailPage.policies.assignTitle')}</h2>
                 <div className="mt-4 grid gap-4 sm:grid-cols-3">
                   <div>
-                    <label className="text-sm font-medium">Policy</label>
+                    <label className="text-sm font-medium">{t('siteDetailPage.policies.policy')}</label>
                     <select
                       value={selectedPolicyId}
                       onChange={(e) => setSelectedPolicyId(e.target.value)}
                       className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     >
-                      <option value="">Select a policy...</option>
+                      <option value="">{t('siteDetailPage.policies.selectPolicy')}</option>
                       {unassignedPolicies.map((p) => (
                         <option key={p.id} value={p.id}>
                           {p.name}
@@ -710,7 +713,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
                     </select>
                   </div>
                   <div>
-                    <label className="text-sm font-medium">Priority</label>
+                    <label className="text-sm font-medium">{t('siteDetailPage.policies.priority')}</label>
                     <input
                       type="number"
                       min={0}
@@ -728,7 +731,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
                       className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
                     >
                       <Plus className="h-4 w-4" />
-                      {assigning ? 'Assigning...' : 'Assign Policy'}
+                      {assigning ? t('siteDetailPage.policies.assigning') : t('siteDetailPage.policies.assign')}
                     </button>
                   </div>
                 </div>
@@ -739,16 +742,16 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
           {/* Devices Tab */}
           {activeTab === 'devices' && (
             <div className="rounded-lg border bg-card p-6 shadow-xs">
-              <h3 className="text-base font-semibold">Devices</h3>
+              <h3 className="text-base font-semibold">{t('siteDetailPage.devices.title')}</h3>
               <p className="mt-2 text-3xl font-bold">{site.deviceCount ?? 0}</p>
               <p className="mt-1 text-sm text-muted-foreground">
-                devices assigned to this site
+                {t('siteDetailPage.devices.assigned')}
               </p>
               <a
                 href="/devices"
                 className="mt-4 inline-flex items-center gap-1.5 text-sm text-primary hover:underline"
               >
-                View all devices
+                {t('siteDetailPage.devices.viewAll')}
               </a>
             </div>
           )}

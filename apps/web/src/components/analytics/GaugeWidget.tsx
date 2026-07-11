@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 
 type GaugeThresholds = {
@@ -26,6 +27,7 @@ export default function GaugeWidget({
   thresholds,
   description
 }: GaugeWidgetProps) {
+  const { t } = useTranslation('reports');
   const normalized = clamp((value - min) / (max - min), 0, 1);
   const radius = 54;
   const circumference = 2 * Math.PI * radius;
@@ -81,8 +83,8 @@ export default function GaugeWidget({
       </div>
       {thresholds && (
         <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
-          <span>Warn {thresholds.warning ?? '-'}</span>
-          <span>Critical {thresholds.critical ?? '-'}</span>
+          <span>{t('analytics.gaugeWidget.warnValue', { value: thresholds.warning ?? '-' })}</span>
+          <span>{t('analytics.gaugeWidget.criticalValue', { value: thresholds.critical ?? '-' })}</span>
         </div>
       )}
     </div>

@@ -1,5 +1,6 @@
 import { type ClassValue, clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import { formatNumber as formatLocaleNumber } from './i18n/format';
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -27,7 +28,7 @@ export function formatBytes(bytes: number, decimals = 2): string {
 
   const i = Math.floor(Math.log(bytes) / Math.log(k));
 
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+  return formatLocaleNumber(bytes / Math.pow(k, i), { maximumFractionDigits: dm }) + ' ' + sizes[i];
 }
 
 export function formatSafeDate(value: string | null | undefined, fallback = '-'): string {

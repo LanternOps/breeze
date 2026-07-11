@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, XCircle } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import type { TCCPermissions } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 
@@ -21,6 +22,7 @@ type MacOSPermissionsBannerProps = {
  * after the user grants FDA in System Settings.
  */
 export default function MacOSPermissionsBanner({ deviceId, osType }: MacOSPermissionsBannerProps) {
+  const { t } = useTranslation('devices');
   const [tcc, setTcc] = useState<TCCPermissions | null>(null);
 
   const fetchTcc = useCallback(() => {
@@ -76,27 +78,31 @@ export default function MacOSPermissionsBanner({ deviceId, osType }: MacOSPermis
       <AlertTriangle className="h-5 w-5 mt-0.5 shrink-0 text-warning" />
       <div className="min-w-0">
         <p className="text-sm font-medium text-foreground">
-          {fdaMissing ? 'Full Disk Access Required' : remoteDesktopMissing ? 'Remote Desktop Permission Required' : 'Permissions Configuring'}
+          {fdaMissing
+            ? t('macOSPermissionsBanner.fullDiskAccessRequired')
+            : remoteDesktopMissing
+              ? t('macOSPermissionsBanner.remoteDesktopRequired')
+              : t('macOSPermissionsBanner.permissionsConfiguring')}
         </p>
         <p className="mt-1 text-sm text-muted-foreground">
           {fdaMissing
-            ? 'Full Disk Access is required. Grant it in System Settings > Privacy & Security > Full Disk Access. Screen Recording and Accessibility will be configured automatically.'
+            ? t('macOSPermissionsBanner.fullDiskAccessDescription')
             : remoteDesktopMissing
-              ? 'macOS Remote Desktop permission is missing. The login-window desktop path will stay unavailable until it is granted.'
-            : 'Screen Recording and Accessibility are being configured automatically. If this persists, check agent logs or restart the agent.'}
+              ? t('macOSPermissionsBanner.remoteDesktopDescription')
+            : t('macOSPermissionsBanner.configuringDescription')}
         </p>
         {(fdaMissing || remoteDesktopMissing) && (
           <div className="mt-2 flex flex-wrap gap-2">
             {fdaMissing && (
               <span className="inline-flex items-center gap-1 rounded-full border border-destructive/30 bg-destructive/15 px-2.5 py-0.5 text-xs font-medium text-destructive">
                 <XCircle className="h-3 w-3" />
-                Full Disk Access
+                {t('macOSPermissionsBanner.fullDiskAccess')}
               </span>
             )}
             {remoteDesktopMissing && (
               <span className="inline-flex items-center gap-1 rounded-full border border-destructive/30 bg-destructive/15 px-2.5 py-0.5 text-xs font-medium text-destructive">
                 <XCircle className="h-3 w-3" />
-                Remote Desktop
+                {t('macOSPermissionsBanner.remoteDesktop')}
               </span>
             )}
           </div>

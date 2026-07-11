@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
+import '@/lib/i18n';
+import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { startTimerAction, onTimerChanged, onBillingChanged, broadcastBillingChanged } from '../../lib/timerActions';
@@ -19,6 +21,7 @@ interface EntryRow {
 }
 
 export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
+  const { t } = useTranslation('tickets');
   const [summary, setSummary] = useState<BillingSummary | null>(null);
   const [entries, setEntries] = useState<EntryRow[]>([]);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
@@ -62,7 +65,7 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
     if (startingTimer) return;
     setStartingTimer(true);
     void startTimerAction({ ticketId })
-      .catch((err) => handleActionError(err, 'Failed to start timer.'))
+      .catch((err) => handleActionError(err, t('ticketTimeBilling.toast.startTimerFailed')))
       .finally(() => setStartingTimer(false));
   };
 
@@ -85,8 +88,8 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
               isBillable: billable,
             }),
           }),
-        errorFallback: 'Failed to log time',
-        successMessage: 'Time logged',
+        errorFallback: t('ticketTimeBilling.toast.logFailed'),
+        successMessage: t('ticketTimeBilling.toast.logged'),
       });
       setQuickAddOpen(false);
       setMinutes('');
@@ -97,7 +100,7 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
       // start/stop and parts-mutation paths.
       broadcastBillingChanged();
     } catch (err) {
-      handleActionError(err, 'Failed to log time.');
+      handleActionError(err, t('ticketTimeBilling.toast.logFailedSentence'));
     } finally {
       setBusy(false);
     }
@@ -105,24 +108,24 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
 
   return (
     <div className="mt-3 border-t pt-3" data-testid="ticket-time-billing">
-      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Time &amp; Billing</p>
+      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('ticketTimeBilling.title')}</p>
 
       {summary && (
         <dl className="mt-2 space-y-1">
           <div className="flex justify-between text-xs">
-            <dt className="text-muted-foreground">Total time</dt>
+            <dt className="text-muted-foreground">{t('ticketTimeBilling.totalTime')}</dt>
             <dd data-testid="ticket-billing-time-total">{formatMinutes(summary.time.totalMinutes)}</dd>
           </div>
           <div className="flex justify-between text-xs">
-            <dt className="text-muted-foreground">Billable</dt>
+            <dt className="text-muted-foreground">{t('ticketTimeBilling.billable')}</dt>
             <dd data-testid="ticket-billing-time-billable">{formatMinutes(summary.time.billableMinutes)}</dd>
           </div>
           <div className="flex justify-between text-xs">
-            <dt className="text-muted-foreground">Time amount</dt>
+            <dt className="text-muted-foreground">{t('ticketTimeBilling.timeAmount')}</dt>
             <dd data-testid="ticket-billing-amount">{formatMoney(summary.time.billableAmount)}</dd>
           </div>
           <div className="flex justify-between text-xs">
-            <dt className="text-muted-foreground">Parts ({summary.parts.partsCount})</dt>
+            <dt className="text-muted-foreground">{t('ticketTimeBilling.partsCount', { count: summary.parts.partsCount })}</dt>
             <dd data-testid="ticket-billing-parts-total">{formatMoney(summary.parts.billableTotal)}</dd>
           </div>
         </dl>
@@ -136,7 +139,7 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
           className="rounded-md border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
           data-testid="ticket-billing-start-timer"
         >
-          {startingTimer ? 'Starting…' : 'Start timer'}
+          {startingTimer ? t('ticketTimeBilling.starting') : t('ticketTimeBilling.startTimer')}
         </button>
         <button
           type="button"
@@ -144,7 +147,7 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
           className="rounded-md border px-2 py-1 text-xs hover:bg-muted"
           data-testid="ticket-billing-quick-add-toggle"
         >
-          Log time
+          {t('ticketTimeBilling.logTime')}
         </button>
       </div>
 
@@ -156,8 +159,8 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
             step={1}
             value={minutes}
             onChange={(e) => setMinutes(e.target.value)}
-            placeholder="Minutes"
-            aria-label="Minutes"
+            placeholder={t('ticketTimeBilling.minutes')}
+            aria-label={t('ticketTimeBilling.minutes')}
             className="w-full rounded-md border bg-background px-2 py-1 text-xs"
             data-testid="ticket-billing-quick-add-minutes"
           />
@@ -165,8 +168,8 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
             type="text"
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            placeholder="Description (optional)"
-            aria-label="Description"
+            placeholder={t('ticketTimeBilling.descriptionPlaceholder')}
+            aria-label={t('common:labels.description')}
             className="w-full rounded-md border bg-background px-2 py-1 text-xs"
             data-testid="ticket-billing-quick-add-description"
           />
@@ -177,7 +180,7 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
               onChange={(e) => setBillable(e.target.checked)}
               data-testid="ticket-billing-quick-add-billable"
             />
-            Billable
+            {t('ticketTimeBilling.billable')}
           </label>
           <button
             type="button"
@@ -186,7 +189,7 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
             className="w-full rounded-md bg-primary px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
             data-testid="ticket-billing-quick-add-submit"
           >
-            {busy ? 'Saving…' : 'Save'}
+            {busy ? t('common:states.saving') : t('common:actions.save')}
           </button>
         </div>
       )}
@@ -196,11 +199,11 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
           {entries.map((entry) => (
             <li key={entry.id} className="flex items-start justify-between gap-1 text-xs">
               <span className="min-w-0 truncate text-muted-foreground">
-                {entry.userName ?? 'Tech'}
+                {entry.userName ?? t('ticketTimeBilling.techFallback')}
                 {entry.description ? ` — ${entry.description}` : ''}
               </span>
               <span className="shrink-0">
-                {entry.endedAt == null ? 'running' : formatMinutes(entry.durationMinutes)}
+                {entry.endedAt == null ? t('ticketTimeBilling.running') : formatMinutes(entry.durationMinutes)}
               </span>
             </li>
           ))}

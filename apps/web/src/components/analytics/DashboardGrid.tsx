@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Grip, Loader2 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import {
   cn,
   gapPxClass,
@@ -57,6 +58,7 @@ export default function DashboardGrid({
   onDashboardLoad,
   renderItem
 }: DashboardGridProps) {
+  const { t } = useTranslation('reports');
   const [internalLayout, setInternalLayout] = useState<GridItem[]>(layout || []);
   const [dragId, setDragId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -92,11 +94,11 @@ export default function DashboardGrid({
         setInternalLayout(layoutItems);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load dashboard');
+      setError(err instanceof Error ? err.message : t('analytics.dashboardGrid.errors.failedToLoadDashboard'));
     } finally {
       setLoading(false);
     }
-  }, [dashboardId, onDashboardLoad]);
+  }, [dashboardId, onDashboardLoad, t]);
 
   useEffect(() => {
     if (dashboardId) {
@@ -158,7 +160,7 @@ export default function DashboardGrid({
             onClick={fetchDashboard}
             className="mt-2 text-sm text-primary hover:underline"
           >
-            Retry
+            {t('analytics.dashboardGrid.retry')}
           </button>
         )}
       </div>
@@ -205,7 +207,7 @@ export default function DashboardGrid({
             {draggable && (
               <div className="absolute right-2 top-2 flex items-center gap-1 rounded-md bg-background/80 px-2 py-1 text-[10px] text-muted-foreground opacity-0 shadow-xs transition group-hover:opacity-100">
                 <Grip className="h-3 w-3" />
-                Drag
+                {t('analytics.dashboardGrid.drag')}
               </div>
             )}
             <div className="h-full w-full">

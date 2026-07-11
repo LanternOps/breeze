@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 import { Plus, Trash2, ListChecks } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
@@ -31,6 +33,7 @@ interface Policy {
 }
 
 export default function DnsSecurityPoliciesTab() {
+  const { t } = useTranslation('security');
   const [policies, setPolicies] = useState<Policy[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -49,13 +52,13 @@ export default function DnsSecurityPoliciesTab() {
           void navigateTo('/login', { replace: true });
           return;
         }
-        throw new Error(`Failed to load policies (HTTP ${res.status})`);
+        throw new Error(t('dnsSecurityDnsSecurityPoliciesTab.messages.loadHttpError', { status: res.status }));
       }
       const body = await res.json();
       setPolicies((body.data ?? []) as Policy[]);
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') return;
-      setError(err instanceof Error ? err.message : 'Failed to load policies');
+      setError(err instanceof Error ? err.message : t('dnsSecurityDnsSecurityPoliciesTab.messages.loadFailed'));
     } finally {
       if (!signal?.aborted) setLoading(false);
     }
@@ -82,8 +85,8 @@ export default function DnsSecurityPoliciesTab() {
           method: 'PATCH',
           body: JSON.stringify(delta),
         }),
-        errorFallback: 'Failed to update domains',
-        successMessage: 'Domains updated',
+        errorFallback: t('dnsSecurityDnsSecurityPoliciesTab.messages.updateDomainsFailed'),
+        successMessage: t('dnsSecurityDnsSecurityPoliciesTab.messages.domainsUpdated'),
         onUnauthorized: () => void navigateTo('/login', { replace: true }),
       });
       await fetchPolicies();
@@ -125,14 +128,14 @@ export default function DnsSecurityPoliciesTab() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-medium">Block / Allow policies</h2>
+        <h2 className="text-lg font-medium">{t('dnsSecurityDnsSecurityPoliciesTab.title')}</h2>
         <button
           type="button"
           onClick={() => setShowAddModal(true)}
           className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90"
         >
           <Plus className="h-4 w-4" />
-          New policy
+          {t('dnsSecurityDnsSecurityPoliciesTab.actions.newPolicy')}
         </button>
       </div>
 
@@ -145,14 +148,14 @@ export default function DnsSecurityPoliciesTab() {
       {loading ? (
         <div className="flex items-center gap-2 rounded-md border bg-card px-4 py-6 text-sm text-muted-foreground">
           <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-          Loading policies…
+          {t('dnsSecurityDnsSecurityPoliciesTab.loading')}
         </div>
       ) : policies.length === 0 ? (
         <div className="rounded-md border border-dashed bg-card px-4 py-8 text-center">
           <ListChecks className="mx-auto h-8 w-8 text-muted-foreground" />
-          <p className="mt-2 text-sm font-medium">No DNS policies configured</p>
+          <p className="mt-2 text-sm font-medium">{t('dnsSecurityDnsSecurityPoliciesTab.empty.title')}</p>
           <p className="mt-1 text-xs text-muted-foreground">
-            Create a blocklist or allowlist tied to one of your DNS integrations.
+            {t('dnsSecurityDnsSecurityPoliciesTab.empty.description')}
           </p>
         </div>
       ) : (
@@ -179,23 +182,27 @@ export default function DnsSecurityPoliciesTab() {
                             : 'bg-success/15 text-success'
                         }`}
                       >
-                        {policy.type}
+                        {t(/* i18n-dynamic */ `dnsSecurityDnsSecurityPoliciesTab.policyTypes.${policy.type}`)}
                       </span>
                     </div>
                     <div className="text-xs text-muted-foreground">
-                      {policy.integrationName} · {policy.domains.length} domain
-                      {policy.domains.length === 1 ? '' : 's'}
+                      {t('dnsSecurityDnsSecurityPoliciesTab.domainCount', {
+                        integrationName: policy.integrationName,
+                        count: policy.domains.length,
+                      })}
                     </div>
                   </div>
                   <span className="text-xs text-muted-foreground">
-                    {isExpanded ? 'Hide' : 'Edit domains'}
+                    {isExpanded
+                      ? t('dnsSecurityDnsSecurityPoliciesTab.actions.hide')
+                      : t('dnsSecurityDnsSecurityPoliciesTab.actions.editDomains')}
                   </span>
                 </button>
 
                 {isExpanded && (
                   <div className="border-t px-4 py-3 space-y-3">
                     {policy.domains.length === 0 ? (
-                      <p className="text-xs text-muted-foreground italic">No domains yet.</p>
+                      <p className="text-xs text-muted-foreground italic">{t('dnsSecurityDnsSecurityPoliciesTab.noDomains')}</p>
                     ) : (
                       <ul className="space-y-1 max-h-64 overflow-y-auto rounded border bg-muted/20 p-2 text-sm">
                         {policy.domains.map((d) => (
@@ -206,7 +213,7 @@ export default function DnsSecurityPoliciesTab() {
                               onClick={() => handleRemoveDomain(policy, d.domain)}
                               disabled={busy}
                               className="inline-flex h-6 w-6 items-center justify-center rounded text-destructive hover:bg-destructive/10 disabled:opacity-50"
-                              aria-label={`Remove ${d.domain}`}
+                              aria-label={t('dnsSecurityDnsSecurityPoliciesTab.actions.removeDomain', { domain: d.domain })}
                             >
                               <Trash2 className="h-3.5 w-3.5" />
                             </button>
@@ -217,9 +224,9 @@ export default function DnsSecurityPoliciesTab() {
 
                     <div className="space-y-1">
                       <label className="block text-xs font-medium" htmlFor={`add-domains-${policy.id}`}>
-                        Add domains
+                        {t('dnsSecurityDnsSecurityPoliciesTab.fields.addDomains')}
                         <span className="ml-1 font-normal text-muted-foreground">
-                          (one per line, comma-separated, or paste a list)
+                          {t('dnsSecurityDnsSecurityPoliciesTab.addDomainsHelp')}
                         </span>
                       </label>
                       <textarea
@@ -227,7 +234,7 @@ export default function DnsSecurityPoliciesTab() {
                         rows={3}
                         value={domainDraft}
                         onChange={(e) => setDomainDraft(e.target.value)}
-                        placeholder={'malware.example.com\nphish.example.com'}
+                        placeholder={t('dnsSecurityDnsSecurityPoliciesTab.placeholders.domains')}
                         className="w-full rounded-md border bg-background px-2 py-1.5 font-mono text-xs"
                       />
                       <div className="flex justify-end">
@@ -238,7 +245,7 @@ export default function DnsSecurityPoliciesTab() {
                           className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                         >
                           <Plus className="h-3.5 w-3.5" />
-                          Add
+                          {t('dnsSecurityDnsSecurityPoliciesTab.actions.add')}
                         </button>
                       </div>
                     </div>

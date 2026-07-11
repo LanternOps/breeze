@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Network, Search, X, RefreshCw } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 
 type NetworkConnection = {
@@ -19,6 +20,7 @@ type DeviceNetworkConnectionsProps = {
 };
 
 export default function DeviceNetworkConnections({ deviceId }: DeviceNetworkConnectionsProps) {
+  const { t } = useTranslation('devices');
   const [connections, setConnections] = useState<NetworkConnection[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -123,7 +125,7 @@ export default function DeviceNetworkConnections({ deviceId }: DeviceNetworkConn
       <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-xs">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="mt-3 text-sm text-muted-foreground">Loading network connections...</p>
+          <p className="mt-3 text-sm text-muted-foreground">{t('deviceNetworkConnections.loading')}</p>
         </div>
       </div>
     );
@@ -138,7 +140,7 @@ export default function DeviceNetworkConnections({ deviceId }: DeviceNetworkConn
           onClick={fetchConnections}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Retry
+          {t('common:actions.retry')}
         </button>
       </div>
     );
@@ -149,7 +151,7 @@ export default function DeviceNetworkConnections({ deviceId }: DeviceNetworkConn
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Network className="h-4 w-4 text-muted-foreground" />
-          <h3 className="text-lg font-semibold">Active Network Connections</h3>
+          <h3 className="text-lg font-semibold">{t('deviceNetworkConnections.title')}</h3>
           <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
             {filteredRows.length === rows.length
               ? rows.length
@@ -162,7 +164,7 @@ export default function DeviceNetworkConnections({ deviceId }: DeviceNetworkConn
           className="flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
         >
           <RefreshCw className="h-3.5 w-3.5" />
-          Refresh
+          {t('common:actions.refresh')}
         </button>
       </div>
 
@@ -173,7 +175,7 @@ export default function DeviceNetworkConnections({ deviceId }: DeviceNetworkConn
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <input
             type="text"
-            placeholder="Search by process, address, port..."
+            placeholder={t('deviceNetworkConnections.searchPlaceholder')}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="w-full rounded-md border bg-background py-2 pl-9 pr-3 text-sm placeholder:text-muted-foreground focus:outline-hidden focus:ring-2 focus:ring-primary/20"
@@ -186,7 +188,7 @@ export default function DeviceNetworkConnections({ deviceId }: DeviceNetworkConn
           onChange={(e) => setProtocolFilter(e.target.value)}
           className="rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary/20"
         >
-          <option value="all">All Protocols</option>
+          <option value="all">{t('deviceNetworkConnections.allProtocols')}</option>
           {protocols.map(proto => (
             <option key={proto} value={proto}>{proto}</option>
           ))}
@@ -198,7 +200,7 @@ export default function DeviceNetworkConnections({ deviceId }: DeviceNetworkConn
           onChange={(e) => setStateFilter(e.target.value)}
           className="rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary/20"
         >
-          <option value="all">All States</option>
+          <option value="all">{t('deviceNetworkConnections.allStates')}</option>
           {states.map(state => (
             <option key={state} value={state}>{state}</option>
           ))}
@@ -212,7 +214,7 @@ export default function DeviceNetworkConnections({ deviceId }: DeviceNetworkConn
             className="flex items-center gap-1.5 rounded-md border border-dashed px-3 py-2 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
           >
             <X className="h-3.5 w-3.5" />
-            Clear
+            {t('common:actions.clear')}
           </button>
         )}
       </div>
@@ -223,12 +225,12 @@ export default function DeviceNetworkConnections({ deviceId }: DeviceNetworkConn
           <table className="min-w-full divide-y">
             <thead className="bg-muted/40 sticky top-0">
               <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                <th className="px-4 py-3">Protocol</th>
-                <th className="px-4 py-3">Local</th>
-                <th className="px-4 py-3">Remote</th>
-                <th className="px-4 py-3">State</th>
-                <th className="px-4 py-3">Process</th>
-                <th className="px-4 py-3">PID</th>
+                <th className="px-4 py-3">{t('deviceNetworkConnections.table.protocol')}</th>
+                <th className="px-4 py-3">{t('deviceNetworkConnections.table.local')}</th>
+                <th className="px-4 py-3">{t('deviceNetworkConnections.table.remote')}</th>
+                <th className="px-4 py-3">{t('deviceNetworkConnections.table.state')}</th>
+                <th className="px-4 py-3">{t('deviceNetworkConnections.table.process')}</th>
+                <th className="px-4 py-3">{t('deviceNetworkConnections.table.pid')}</th>
               </tr>
             </thead>
             <tbody className="divide-y">
@@ -236,8 +238,8 @@ export default function DeviceNetworkConnections({ deviceId }: DeviceNetworkConn
                 <tr>
                   <td colSpan={6} className="px-4 py-6 text-center text-sm text-muted-foreground">
                     {hasActiveFilters
-                      ? 'No connections match your filters.'
-                      : 'No active network connections reported.'}
+                      ? t('deviceNetworkConnections.emptyFiltered')
+                      : t('deviceNetworkConnections.empty')}
                   </td>
                 </tr>
               ) : (

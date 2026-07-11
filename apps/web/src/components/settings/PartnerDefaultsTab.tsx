@@ -1,6 +1,8 @@
 import type { InheritableDefaultSettings } from '@breeze/shared';
 import { isValidMaintenanceWindow } from '@breeze/shared';
 import AgentVersionPinSelectors, { type PinnableVersions } from './AgentVersionPinSelectors';
+import { Trans, useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 
 type Props = {
   data: InheritableDefaultSettings;
@@ -8,9 +10,8 @@ type Props = {
   pinnableVersions?: PinnableVersions | null;
 };
 
-const PLACEHOLDER = 'Not set — orgs configure individually';
-
 export default function PartnerDefaultsTab({ data, onChange, pinnableVersions }: Props) {
+  const { t } = useTranslation('settings');
   const set = (patch: Partial<InheritableDefaultSettings>) =>
     onChange({ ...data, ...patch });
 
@@ -23,7 +24,7 @@ export default function PartnerDefaultsTab({ data, onChange, pinnableVersions }:
     <div className="space-y-6">
       <div className="grid gap-6 sm:grid-cols-2">
         <div className="space-y-2">
-          <label className="text-sm font-medium">Agent Update Policy</label>
+          <label className="text-sm font-medium">{t('partnerDefaults.updatePolicy')}</label>
           <select
             // Fold the legacy 'staged' value into 'auto' for display — they are
             // behaviourally identical (both maintenance-window gated; no real
@@ -33,19 +34,19 @@ export default function PartnerDefaultsTab({ data, onChange, pinnableVersions }:
             onChange={e => set({ agentUpdatePolicy: e.target.value || undefined })}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm"
           >
-            <option value="">{PLACEHOLDER}</option>
-            <option value="auto">Automatic</option>
-            <option value="manual">Manual (block automatic updates)</option>
+            <option value="">{t('partnerDefaults.notSet')}</option>
+            <option value="auto">{t('partnerDefaults.automatic')}</option>
+            <option value="manual">{t('partnerDefaults.manual')}</option>
           </select>
         </div>
 
         <div className="space-y-2">
-          <label className="text-sm font-medium">Maintenance Window</label>
+          <label className="text-sm font-medium">{t('partnerDefaults.maintenanceWindow')}</label>
           <input
             type="text"
             value={maintenanceWindow}
             onChange={e => set({ maintenanceWindow: e.target.value || undefined })}
-            placeholder="e.g. Sun 02:00-06:00, 02:00-04:00, or 24/7"
+            placeholder={t('partnerDefaults.maintenancePlaceholder')}
             aria-invalid={maintenanceWindowInvalid}
             className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${
               maintenanceWindowInvalid ? 'border-destructive' : ''
@@ -53,13 +54,11 @@ export default function PartnerDefaultsTab({ data, onChange, pinnableVersions }:
           />
           {maintenanceWindowInvalid ? (
             <p className="text-xs text-destructive">
-              Use a UTC window like <code>Sun 02:00-04:00</code> or <code>02:00-04:00</code>, or{' '}
-              <code>24/7</code> for always-on. Leave empty to let orgs configure it.
+              <Trans i18nKey="partnerDefaults.maintenanceInvalid" t={t} components={{ first: <code />, second: <code />, always: <code /> }} />
             </p>
           ) : (
             <p className="text-xs text-muted-foreground">
-              Time window (UTC) for automatic updates and reboots. Use <code>24/7</code> for
-              always-on, or leave empty so orgs configure it individually.
+              <Trans i18nKey="partnerDefaults.maintenanceHelp" t={t} components={{ always: <code /> }} />
             </p>
           )}
         </div>
@@ -74,23 +73,23 @@ export default function PartnerDefaultsTab({ data, onChange, pinnableVersions }:
         </div>
 
         <div className="space-y-2">
-          <label className="text-sm font-medium">Default Device Group</label>
+          <label className="text-sm font-medium">{t('partnerDefaults.deviceGroup')}</label>
           <input
             type="text"
             value={data.deviceGroup ?? ''}
             onChange={e => set({ deviceGroup: e.target.value || undefined })}
-            placeholder={PLACEHOLDER}
+            placeholder={t('partnerDefaults.notSet')}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm"
           />
         </div>
 
         <div className="space-y-2">
-          <label className="text-sm font-medium">Default Alert Threshold</label>
+          <label className="text-sm font-medium">{t('partnerDefaults.alertThreshold')}</label>
           <input
             type="text"
             value={data.alertThreshold ?? ''}
             onChange={e => set({ alertThreshold: e.target.value || undefined })}
-            placeholder={PLACEHOLDER}
+            placeholder={t('partnerDefaults.notSet')}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm"
           />
         </div>
@@ -98,7 +97,7 @@ export default function PartnerDefaultsTab({ data, onChange, pinnableVersions }:
 
       {/* Auto-enrollment */}
       <div className="space-y-4 rounded-lg border bg-muted/40 p-4">
-        <p className="text-sm font-medium">Auto-Enrollment</p>
+        <p className="text-sm font-medium">{t('partnerDefaults.autoEnrollment.title')}</p>
         <div className="space-y-3">
           <div className="flex items-center gap-3">
             <input
@@ -109,7 +108,7 @@ export default function PartnerDefaultsTab({ data, onChange, pinnableVersions }:
               }
               className="h-4 w-4 rounded border"
             />
-            <label className="text-sm font-medium">Enable auto-enrollment for new devices</label>
+            <label className="text-sm font-medium">{t('partnerDefaults.autoEnrollment.enable')}</label>
           </div>
           <div className="flex items-center gap-3">
             <input
@@ -120,7 +119,7 @@ export default function PartnerDefaultsTab({ data, onChange, pinnableVersions }:
               }
               className="h-4 w-4 rounded border"
             />
-            <label className="text-sm font-medium">Require admin approval</label>
+            <label className="text-sm font-medium">{t('partnerDefaults.autoEnrollment.requireApproval')}</label>
           </div>
           <div className="flex items-center gap-3">
             <input
@@ -131,7 +130,7 @@ export default function PartnerDefaultsTab({ data, onChange, pinnableVersions }:
               }
               className="h-4 w-4 rounded border"
             />
-            <label className="text-sm font-medium">Send welcome notification</label>
+            <label className="text-sm font-medium">{t('partnerDefaults.autoEnrollment.sendWelcome')}</label>
           </div>
         </div>
       </div>

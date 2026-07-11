@@ -1,3 +1,5 @@
+import { i18n } from '@/lib/i18n';
+import { useTranslation } from 'react-i18next';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
@@ -57,6 +59,7 @@ export default function RoleManager({
   onCloneRole,
   onViewUsers
 }: RoleManagerProps) {
+  const { t } = useTranslation('settings');
   const [query, setQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState<'all' | 'system' | 'custom'>('all');
   const [expandedRoleId, setExpandedRoleId] = useState<string | null>(null);
@@ -84,7 +87,10 @@ export default function RoleManager({
             return;
           }
           if (!cancelled) {
-            setCatalogError(`Failed to load permissions (${res.status} ${res.statusText || 'error'})`);
+            setCatalogError(i18n.t('settings:roleManager.failedToLoadPermissionsStatus', {
+              status: res.status,
+              statusText: res.statusText || i18n.t('settings:roleManager.error')
+            }));
           }
           return;
         }
@@ -95,7 +101,7 @@ export default function RoleManager({
         }
       } catch (err) {
         if (!cancelled) {
-          setCatalogError(err instanceof Error ? err.message : 'Failed to load permissions');
+          setCatalogError(err instanceof Error ? err.message : t('roleManager.failedToLoadPermissions'));
         }
       }
     })();
@@ -155,12 +161,15 @@ export default function RoleManager({
         void navigateTo('/login', { replace: true });
         return;
       }
-      const message = `Failed to load permissions (${res.status} ${res.statusText || 'error'})`;
+      const message = i18n.t('settings:roleManager.failedToLoadPermissionsStatus', {
+        status: res.status,
+        statusText: res.statusText || i18n.t('settings:roleManager.error')
+      });
       console.error(`Role ${role.id}: ${message}`);
       setRolePermissionsError(prev => ({ ...prev, [role.id]: message }));
     } catch (err) {
       console.error(`Error fetching permissions for role ${role.id}:`, err);
-      const message = err instanceof Error ? err.message : 'Network error while loading permissions';
+      const message = err instanceof Error ? err.message : t('roleManager.networkErrorLoadingPermissions');
       setRolePermissionsError(prev => ({ ...prev, [role.id]: message }));
     }
   }, [normalizePermissions]);
@@ -205,15 +214,14 @@ export default function RoleManager({
     <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-lg font-semibold">Roles</h2>
+          <h2 className="text-lg font-semibold">{t('roleManager.roles')}</h2>
           <p className="text-sm text-muted-foreground">
-            {filteredRoles.length} of {roles.length} roles
-          </p>
+            {filteredRoles.length} {t('roleManager.of')}{roles.length} {t('roleManager.roles2')}</p>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <input
             type="search"
-            placeholder="Search roles"
+            placeholder={t('roleManager.searchRoles')}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-56"
@@ -223,17 +231,16 @@ export default function RoleManager({
             onChange={(event) => setTypeFilter(event.target.value as 'all' | 'system' | 'custom')}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-40"
           >
-            <option value="all">All types</option>
-            <option value="system">System roles</option>
-            <option value="custom">Custom roles</option>
+            <option value="all">{t('roleManager.allTypes')}</option>
+            <option value="system">{t('roleManager.systemRoles')}</option>
+            <option value="custom">{t('roleManager.customRoles')}</option>
           </select>
           <button
             type="button"
             onClick={() => onCreateRole?.()}
             className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
           >
-            Create Role
-          </button>
+            {t('roleManager.createRole')}</button>
         </div>
       </div>
 
@@ -241,20 +248,19 @@ export default function RoleManager({
         <table className="min-w-full divide-y">
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <th className="px-4 py-3">Name</th>
-              <th className="px-4 py-3">Type</th>
-              <th className="px-4 py-3">Inherits From</th>
-              <th className="px-4 py-3">Users</th>
-              <th className="px-4 py-3">Created</th>
-              <th className="px-4 py-3 text-right">Actions</th>
+              <th className="px-4 py-3">{t('roleManager.name')}</th>
+              <th className="px-4 py-3">{t('roleManager.type')}</th>
+              <th className="px-4 py-3">{t('roleManager.inheritsFrom')}</th>
+              <th className="px-4 py-3">{t('roleManager.users')}</th>
+              <th className="px-4 py-3">{t('roleManager.created')}</th>
+              <th className="px-4 py-3 text-right">{t('roleManager.actions')}</th>
             </tr>
           </thead>
           <tbody className="divide-y">
             {filteredRoles.length === 0 ? (
               <tr>
                 <td colSpan={6} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                  No roles found. Try adjusting your search or filters.
-                </td>
+                  {t('roleManager.noRolesFoundTryAdjustingYourSearchOrFilters')}</td>
               </tr>
             ) : (
               filteredRoles.map((role) => (
@@ -308,7 +314,7 @@ export default function RoleManager({
                           : 'bg-emerald-500/10 text-emerald-700'
                       )}
                     >
-                      {role.isSystem ? 'System' : 'Custom'}
+                      {role.isSystem ? t('roleManager.system') : t('roleManager.custom')}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-sm">
@@ -339,7 +345,7 @@ export default function RoleManager({
                       onClick={() => onViewUsers?.(role)}
                       className="text-primary hover:underline"
                     >
-                      {role.userCount} {role.userCount === 1 ? 'user' : 'users'}
+                      {t('roleManager.userCount', { count: role.userCount })}
                     </button>
                   </td>
                   <td className="px-4 py-3 text-sm text-muted-foreground">
@@ -351,10 +357,9 @@ export default function RoleManager({
                         type="button"
                         onClick={() => onCloneRole?.(role)}
                         className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted"
-                        title="Clone role"
+                        title={t('roleManager.cloneRole')}
                       >
-                        Clone
-                      </button>
+                        {t('roleManager.clone')}</button>
                       {!role.isSystem && (
                         <>
                           <button
@@ -362,8 +367,7 @@ export default function RoleManager({
                             onClick={() => onEditRole?.(role)}
                             className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted"
                           >
-                            Edit
-                          </button>
+                            {t('roleManager.edit')}</button>
                           <button
                             type="button"
                             onClick={() => onDeleteRole?.(role)}
@@ -374,10 +378,11 @@ export default function RoleManager({
                                 ? 'cursor-not-allowed opacity-50'
                                 : 'border-destructive/40 text-destructive hover:bg-destructive/10'
                             )}
-                            title={role.userCount > 0 ? 'Cannot delete role with assigned users' : 'Delete role'}
+                            title={role.userCount > 0
+                              ? t('roleManager.cannotDeleteAssignedRole')
+                              : t('roleManager.deleteRole')}
                           >
-                            Delete
-                          </button>
+                            {t('roleManager.delete')}</button>
                         </>
                       )}
                     </div>
@@ -387,7 +392,7 @@ export default function RoleManager({
                   <tr>
                     <td colSpan={6} className="border-b bg-muted/20 px-6 py-4">
                       <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                        Permissions for {role.name}
+                        {t('roleManager.permissionsFor')}{role.name}
                       </div>
                       {/* Render precedence (intentional ordering):
                             1. Role-specific fetch error (with Retry) — must beat
@@ -417,8 +422,7 @@ export default function RoleManager({
                       ) : (
                         <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
                           <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-                          Loading permissions...
-                        </div>
+                          {t('roleManager.loadingPermissions')}</div>
                       )}
                     </td>
                   </tr>
@@ -445,8 +449,7 @@ function CatalogLoadError({ message, onRetry }: { message: string; onRetry: () =
         onClick={onRetry}
         className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted"
       >
-        Retry
-      </button>
+        {i18n.t('settings:roleManager.retry')}</button>
     </div>
   );
 }
@@ -585,7 +588,7 @@ export function PermissionMatrix({ catalog, permissions, inheritedPermissions = 
       <table className="min-w-full border-collapse text-sm">
         <thead className="bg-muted/40">
           <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            <th className="px-3 py-2">Resource</th>
+            <th className="px-3 py-2">{i18n.t('settings:roleManager.resource')}</th>
             {actions.map((action) => (
               <th key={action} className="px-3 py-2 text-center">
                 <button
@@ -627,8 +630,7 @@ export function PermissionMatrix({ catalog, permissions, inheritedPermissions = 
                   // not a real permission. Issue #801 fix.
                   return (
                     <td key={action} className="px-3 py-2 text-center text-muted-foreground/30">
-                      &mdash;
-                    </td>
+                      {i18n.t('settings:roleManager.mdash')}</td>
                   );
                 }
                 const isDirectlyAssigned = permissionSet.has(key);
@@ -642,7 +644,7 @@ export function PermissionMatrix({ catalog, permissions, inheritedPermissions = 
                         checked={isChecked}
                         onChange={() => togglePermission(resource, action)}
                         disabled={disabled || isInherited}
-                        title={isInherited ? 'Inherited from parent role' : undefined}
+                        title={isInherited ? i18n.t('settings:roleManager.inheritedFromParentRole') : undefined}
                         className={cn(
                           'h-4 w-4 rounded border-border focus:ring-primary',
                           isInherited
@@ -652,7 +654,7 @@ export function PermissionMatrix({ catalog, permissions, inheritedPermissions = 
                         )}
                       />
                       {isInherited && (
-                        <span className="absolute -top-1 -right-1 h-2 w-2 rounded-full bg-amber-400" title="Inherited" />
+                        <span className="absolute -top-1 -right-1 h-2 w-2 rounded-full bg-amber-400" title={i18n.t('settings:roleManager.inherited')} />
                       )}
                     </div>
                   </td>
@@ -713,7 +715,10 @@ export function RoleFormModal({
             return;
           }
           if (!cancelled) {
-            setCatalogError(`Failed to load permissions (${res.status} ${res.statusText || 'error'})`);
+            setCatalogError(i18n.t('settings:roleManager.failedToLoadPermissionsStatus', {
+              status: res.status,
+              statusText: res.statusText || i18n.t('settings:roleManager.error')
+            }));
           }
           return;
         }
@@ -724,7 +729,7 @@ export function RoleFormModal({
         }
       } catch (err) {
         if (!cancelled) {
-          setCatalogError(err instanceof Error ? err.message : 'Failed to load permissions');
+          setCatalogError(err instanceof Error ? err.message : i18n.t('settings:roleManager.failedToLoadPermissions'));
         }
       }
     })();
@@ -749,8 +754,11 @@ export function RoleFormModal({
 
   if (!isOpen) return null;
 
-  const title =
-    mode === 'create' ? 'Create Role' : mode === 'edit' ? 'Edit Role' : `Clone Role: ${role?.name}`;
+  const title = mode === 'create'
+    ? i18n.t('settings:roleManager.createRole')
+    : mode === 'edit'
+      ? i18n.t('settings:roleManager.editRole')
+      : i18n.t('settings:roleManager.cloneRole', { name: role?.name });
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -767,10 +775,10 @@ export function RoleFormModal({
           <h2 className="text-lg font-semibold">{title}</h2>
           <p className="text-sm text-muted-foreground">
             {mode === 'create'
-              ? 'Create a new custom role with specific permissions.'
+              ? i18n.t('settings:roleManager.createANewCustomRoleWithSpecificPermissions')
               : mode === 'edit'
-              ? 'Modify the role name, description, and permissions.'
-              : 'Create a new custom role based on this one.'}
+              ? i18n.t('settings:roleManager.modifyTheRoleNameDescriptionAndPermissions')
+              : i18n.t('settings:roleManager.createANewCustomRoleBasedOnThisOne')}
           </p>
         </div>
 
@@ -778,28 +786,26 @@ export function RoleFormModal({
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <label htmlFor="role-name" className="text-sm font-medium">
-                Name
-              </label>
+                {i18n.t('settings:roleManager.name')}</label>
               <input
                 id="role-name"
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="e.g., Technician"
+                placeholder={i18n.t('settings:roleManager.eGTechnician')}
                 required
                 className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
             <div className="space-y-2">
               <label htmlFor="role-description" className="text-sm font-medium">
-                Description
-              </label>
+                {i18n.t('settings:roleManager.description')}</label>
               <input
                 id="role-description"
                 type="text"
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
-                placeholder="Brief description of this role"
+                placeholder={i18n.t('settings:roleManager.briefDescriptionOfThisRole')}
                 className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
@@ -807,11 +813,9 @@ export function RoleFormModal({
 
           <div className="space-y-2">
             <label htmlFor="role-parent" className="text-sm font-medium">
-              Inherit From (Parent Role)
-            </label>
+              {i18n.t('settings:roleManager.inheritFromParentRole')}</label>
             <p className="text-xs text-muted-foreground">
-              Select a parent role to inherit its permissions. This role will have all parent permissions plus its own.
-            </p>
+              {i18n.t('settings:roleManager.selectAParentRoleToInheritItsPermissionsThisRoleWillHave')}</p>
             <select
               id="role-parent"
               value={parentRoleId || ''}
@@ -819,7 +823,7 @@ export function RoleFormModal({
               disabled={loading}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
             >
-              <option value="">No parent (base role)</option>
+              <option value="">{i18n.t('settings:roleManager.noParentBaseRole')}</option>
               {filteredParentRoles.map((parentRole) => (
                 <option key={parentRole.id} value={parentRole.id}>
                   {parentRole.name}
@@ -830,13 +834,11 @@ export function RoleFormModal({
           </div>
 
           <div className="space-y-2">
-            <label className="text-sm font-medium">Permissions</label>
+            <label className="text-sm font-medium">{i18n.t('settings:roleManager.permissions')}</label>
             <p className="text-xs text-muted-foreground">
-              Click on a resource name to toggle all actions, or click an action header to toggle for all resources.
-              {inheritedPermissions.length > 0 && (
+              {i18n.t('settings:roleManager.clickOnAResourceNameToToggleAllActionsOrClickAnActionHea')}{inheritedPermissions.length > 0 && (
                 <span className="ml-1">
-                  Checkboxes with <span className="inline-block h-2 w-2 rounded-full bg-amber-400 align-middle" /> are inherited from the parent role.
-                </span>
+                  {i18n.t('settings:roleManager.checkboxesWith')}<span className="inline-block h-2 w-2 rounded-full bg-amber-400 align-middle" /> {i18n.t('settings:roleManager.areInheritedFromTheParentRole')}</span>
               )}
             </p>
             <div className="rounded-md border">
@@ -855,8 +857,7 @@ export function RoleFormModal({
               ) : (
                 <div className="flex items-center gap-2 px-3 py-4 text-sm text-muted-foreground">
                   <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-                  Loading permissions...
-                </div>
+                  {i18n.t('settings:roleManager.loadingPermissions')}</div>
               )}
             </div>
           </div>
@@ -868,21 +869,20 @@ export function RoleFormModal({
               disabled={loading}
               className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
             >
-              Cancel
-            </button>
+              {i18n.t('settings:roleManager.cancel')}</button>
             <button
               type="submit"
               disabled={loading || !name.trim() || !catalog}
-              title={!catalog ? 'Waiting for permission catalog to load' : undefined}
+              title={!catalog ? i18n.t('settings:roleManager.waitingForPermissionCatalog') : undefined}
               className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {loading
-                ? 'Saving...'
+                ? i18n.t('settings:roleManager.saving')
                 : mode === 'create'
-                ? 'Create Role'
+                ? i18n.t('settings:roleManager.createRole')
                 : mode === 'clone'
-                ? 'Clone Role'
-                : 'Save Changes'}
+                ? i18n.t('settings:roleManager.cloneRole2')
+                : i18n.t('settings:roleManager.saveChanges')}
             </button>
           </div>
         </form>
@@ -912,15 +912,13 @@ export function DeleteRoleModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
       <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
-        <h2 className="text-lg font-semibold">Delete Role</h2>
+        <h2 className="text-lg font-semibold">{i18n.t('settings:roleManager.deleteRole')}</h2>
         <p className="mt-2 text-sm text-muted-foreground">
-          Are you sure you want to delete the role{' '}
-          <span className="font-medium">{role.name}</span>? This action cannot be undone.
+          {i18n.t('settings:roleManager.deleteConfirmation', { name: role.name })}
         </p>
         {role.userCount > 0 && (
           <p className="mt-2 text-sm text-destructive">
-            This role has {role.userCount} assigned {role.userCount === 1 ? 'user' : 'users'} and
-            cannot be deleted.
+            {i18n.t('settings:roleManager.assignedUsersWarning', { count: role.userCount })}
           </p>
         )}
         <div className="mt-6 flex justify-end gap-3">
@@ -930,15 +928,14 @@ export function DeleteRoleModal({
             disabled={loading}
             className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
           >
-            Cancel
-          </button>
+            {i18n.t('settings:roleManager.cancel')}</button>
           <button
             type="button"
             onClick={onConfirm}
             disabled={loading || role.userCount > 0}
             className="inline-flex h-10 items-center justify-center rounded-md bg-destructive px-4 text-sm font-medium text-destructive-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {loading ? 'Deleting...' : 'Delete'}
+            {loading ? i18n.t('settings:roleManager.deleting') : i18n.t('settings:roleManager.delete')}
           </button>
         </div>
       </div>
@@ -969,10 +966,9 @@ export function RoleUsersModal({
       <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="text-lg font-semibold">Users with Role: {role.name}</h2>
+            <h2 className="text-lg font-semibold">{i18n.t('settings:roleManager.usersWithRoleName', { role: role.name })}</h2>
             <p className="text-sm text-muted-foreground">
-              {users.length} {users.length === 1 ? 'user' : 'users'} assigned to this role
-            </p>
+              {i18n.t('settings:roleManager.assignedUserCount', { count: users.length })}</p>
           </div>
           <button
             type="button"
@@ -989,21 +985,20 @@ export function RoleUsersModal({
           <div className="flex items-center justify-center py-12">
             <div className="text-center">
               <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto" />
-              <p className="mt-4 text-sm text-muted-foreground">Loading users...</p>
+              <p className="mt-4 text-sm text-muted-foreground">{i18n.t('settings:roleManager.loadingUsers')}</p>
             </div>
           </div>
         ) : users.length === 0 ? (
           <div className="py-12 text-center text-sm text-muted-foreground">
-            No users are assigned to this role.
-          </div>
+            {i18n.t('settings:roleManager.noUsersAreAssignedToThisRole')}</div>
         ) : (
           <div className="mt-4 overflow-x-auto rounded-md border">
             <table className="min-w-full divide-y">
               <thead className="bg-muted/40">
                 <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  <th className="px-4 py-3">Name</th>
-                  <th className="px-4 py-3">Email</th>
-                  <th className="px-4 py-3">Status</th>
+                  <th className="px-4 py-3">{i18n.t('settings:roleManager.name')}</th>
+                  <th className="px-4 py-3">{i18n.t('settings:roleManager.email')}</th>
+                  <th className="px-4 py-3">{i18n.t('settings:roleManager.status')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y">

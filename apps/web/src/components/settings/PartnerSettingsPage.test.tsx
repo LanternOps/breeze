@@ -1,12 +1,13 @@
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import PartnerSettingsPage, { runPartnerSave } from './PartnerSettingsPage';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { showToast } from '../shared/Toast';
 import { getJwtClaims } from '../../lib/authScope';
+import { i18n, loadLocale } from '../../lib/i18n';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn()
@@ -44,6 +45,10 @@ const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 const useOrgStoreMock = vi.mocked(useOrgStore);
 const showToastMock = vi.mocked(showToast);
 const getJwtClaimsMock = vi.mocked(getJwtClaims);
+
+afterEach(async () => {
+  await act(async () => { await i18n.changeLanguage('en'); });
+});
 
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({
@@ -144,14 +149,7 @@ describe('runPartnerSave', () => {
 });
 
 describe('PartnerSettingsPage language control', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    window.location.hash = '';
-    useOrgStoreMock.mockReturnValue({ currentPartnerId: 'partner-1', isLoading: false } as never);
-  });
-
-  it('removes coming-soon language selector and shows default language copy', async () => {
-    // Default response for child component fetches (e.g., KnownGuestsSettings)
+  const renderPartner = async (language: 'en' | 'pt-BR' = 'en') => {
     fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
     fetchWithAuthMock.mockResolvedValueOnce(
       makeJsonResponse({
@@ -165,7 +163,7 @@ describe('PartnerSettingsPage language control', () => {
           timezone: 'UTC',
           dateFormat: 'MM/DD/YYYY',
           timeFormat: '12h',
-          language: 'en',
+          language,
           businessHours: { preset: 'business' },
           contact: {}
         }
@@ -173,15 +171,58 @@ describe('PartnerSettingsPage language control', () => {
     );
 
     render(<PartnerSettingsPage />);
-
-    await screen.findByText('Partner Settings');
-    // Company is the default tab now; switch to Regional to check the language copy.
-    const regionalTab = screen.getByRole('link', { name: /^regional$/i });
+    await screen.findByRole('heading', { name: /Partner Settings|Configurações do parceiro/i });
     const user = userEvent.setup();
-    await user.click(regionalTab);
+    await user.click(screen.getByRole('link', { name: /^regional$/i }));
+    return user;
+  };
 
-    expect(screen.queryByText('More languages coming soon')).toBeNull();
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    window.location.hash = '';
+    await act(async () => { await i18n.changeLanguage('en'); });
+    useOrgStoreMock.mockReturnValue({ currentPartnerId: 'partner-1', isLoading: false } as never);
+  });
+
+  it('renders an active selector with exactly the supported locales', async () => {
+    await renderPartner();
+
+    const languageSelect = screen.getByLabelText('Language') as HTMLSelectElement;
+    expect(languageSelect.value).toBe('en');
+    expect(Array.from(languageSelect.options).map(option => option.value)).toEqual(['en', 'pt-BR']);
     expect(screen.getByText('Default language for partner settings.')).not.toBeNull();
+  });
+
+  it('loads pt-BR and includes a language edit in dirty tracking and the save payload', async () => {
+    const user = await renderPartner('pt-BR');
+    const languageSelect = screen.getByLabelText('Language') as HTMLSelectElement;
+    expect(languageSelect.value).toBe('pt-BR');
+
+    const saveButton = screen.getByRole('button', { name: /save settings/i }) as HTMLButtonElement;
+    expect(saveButton.disabled).toBe(true);
+    await user.selectOptions(languageSelect, 'en');
+    expect(saveButton.disabled).toBe(false);
+
+    await user.click(saveButton);
+    const patchCall = fetchWithAuthMock.mock.calls.find(
+      ([, init]) => (init as RequestInit | undefined)?.method === 'PATCH'
+    );
+    expect(patchCall).toBeDefined();
+    const body = JSON.parse((patchCall![1] as RequestInit).body as string);
+    expect(body.settings.language).toBe('en');
+  });
+
+  it('renders the Regional Settings surface in pt-BR', async () => {
+    await act(async () => {
+      await loadLocale('pt-BR');
+      await i18n.changeLanguage('pt-BR');
+    });
+    await renderPartner('pt-BR');
+
+    expect(screen.getByText('Configurações regionais')).not.toBeNull();
+    expect(screen.getByLabelText('Fuso horário')).not.toBeNull();
+    expect(screen.getAllByText('Horário comercial')).toHaveLength(2);
+    expect(screen.getByText('Idioma padrão das configurações do parceiro.')).not.toBeNull();
   });
 });
 

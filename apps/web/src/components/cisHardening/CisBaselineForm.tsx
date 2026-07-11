@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 import { Loader2, X } from 'lucide-react';
 import { fetchWithAuth } from '@/stores/auth';
 import { extractApiError } from '@/lib/apiError';
@@ -12,6 +14,7 @@ interface CisBaselineFormProps {
 }
 
 export default function CisBaselineForm({ baseline, onClose, onSaved }: CisBaselineFormProps) {
+  const { t } = useTranslation('security');
   const [name, setName] = useState(baseline?.name ?? '');
   const [osType, setOsType] = useState(baseline?.osType ?? 'windows');
   const [level, setLevel] = useState(baseline?.level ?? 'l1');
@@ -64,7 +67,7 @@ export default function CisBaselineForm({ baseline, onClose, onSaved }: CisBasel
       onSaved();
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save baseline');
+      setError(err instanceof Error ? err.message : t('cisHardeningCisBaselineForm.messages.saveFailed'));
     } finally {
       setSaving(false);
     }
@@ -77,7 +80,11 @@ export default function CisBaselineForm({ baseline, onClose, onSaved }: CisBasel
     >
       <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-xs">
         <div className="mb-6 flex items-center justify-between">
-          <h2 className="text-lg font-semibold">{baseline ? 'Edit Baseline' : 'New Baseline'}</h2>
+          <h2 className="text-lg font-semibold">
+            {baseline
+              ? t('cisHardeningCisBaselineForm.title.edit')
+              : t('cisHardeningCisBaselineForm.title.new')}
+          </h2>
           <button
             type="button"
             onClick={onClose}
@@ -90,7 +97,7 @@ export default function CisBaselineForm({ baseline, onClose, onSaved }: CisBasel
 
         <form onSubmit={handleSubmit} className="space-y-5">
           <div>
-            <label htmlFor="bl-name" className="block text-sm font-medium mb-1.5">Name</label>
+            <label htmlFor="bl-name" className="block text-sm font-medium mb-1.5">{t('cisHardeningCisBaselineForm.fields.name')}</label>
             <input
               id="bl-name"
               type="text"
@@ -102,23 +109,23 @@ export default function CisBaselineForm({ baseline, onClose, onSaved }: CisBasel
           </div>
 
           <div>
-            <label htmlFor="bl-os" className="block text-sm font-medium mb-1.5">OS Type</label>
+            <label htmlFor="bl-os" className="block text-sm font-medium mb-1.5">{t('cisHardeningCisBaselineForm.fields.osType')}</label>
             <select
               id="bl-os"
               value={osType}
               onChange={(e) => setOsType(e.target.value)}
               className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary"
             >
-              <option value="windows">Windows</option>
-              <option value="macos">macOS</option>
-              <option value="linux">Linux</option>
+              <option value="windows">{t('cisHardeningCisBaselineForm.os.windows')}</option>
+              <option value="macos">{t('cisHardeningCisBaselineForm.os.macos')}</option>
+              <option value="linux">{t('cisHardeningCisBaselineForm.os.linux')}</option>
             </select>
           </div>
 
           <div>
             <label htmlFor="bl-level" className="block text-sm font-medium mb-1.5">
-              Level
-              <HelpTooltip text="L1 checks are practical for most environments. L2 adds security depth but may impact functionality." />
+              {t('cisHardeningCisBaselineForm.fields.level')}
+              <HelpTooltip text={t('cisHardeningCisBaselineForm.tooltips.level')} />
             </label>
             <select
               id="bl-level"
@@ -126,14 +133,14 @@ export default function CisBaselineForm({ baseline, onClose, onSaved }: CisBasel
               onChange={(e) => setLevel(e.target.value)}
               className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary"
             >
-              <option value="l1">L1</option>
-              <option value="l2">L2</option>
-              <option value="custom">Custom</option>
+              <option value="l1">{t('cisHardeningCisBaselineForm.levels.l1')}</option>
+              <option value="l2">{t('cisHardeningCisBaselineForm.levels.l2')}</option>
+              <option value="custom">{t('cisHardeningCisBaselineForm.levels.custom')}</option>
             </select>
           </div>
 
           <div>
-            <label htmlFor="bl-version" className="block text-sm font-medium mb-1.5">Benchmark Version</label>
+            <label htmlFor="bl-version" className="block text-sm font-medium mb-1.5">{t('cisHardeningCisBaselineForm.fields.benchmarkVersion')}</label>
             <input
               id="bl-version"
               type="text"
@@ -141,7 +148,7 @@ export default function CisBaselineForm({ baseline, onClose, onSaved }: CisBasel
               value={benchmarkVersion}
               onChange={(e) => setBenchmarkVersion(e.target.value)}
               className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary"
-              placeholder="e.g. 3.0.0"
+              placeholder={t('cisHardeningCisBaselineForm.placeholders.benchmarkVersion')}
             />
           </div>
 
@@ -153,7 +160,7 @@ export default function CisBaselineForm({ baseline, onClose, onSaved }: CisBasel
               onChange={(e) => setScheduleEnabled(e.target.checked)}
               className="h-4 w-4 rounded border-border"
             />
-            <label htmlFor="bl-schedule" className="text-sm font-medium">Enable scheduled scans</label>
+            <label htmlFor="bl-schedule" className="text-sm font-medium">{t('cisHardeningCisBaselineForm.fields.enableScheduledScans')}</label>
             {scheduleEnabled && (
               <input
                 type="number"
@@ -164,7 +171,7 @@ export default function CisBaselineForm({ baseline, onClose, onSaved }: CisBasel
                 className="w-20 rounded-md border bg-background px-2 py-1 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary"
               />
             )}
-            {scheduleEnabled && <span className="text-sm text-muted-foreground">hours</span>}
+            {scheduleEnabled && <span className="text-sm text-muted-foreground">{t('cisHardeningCisBaselineForm.hours')}</span>}
           </div>
 
           <div className="flex items-center gap-3">
@@ -175,7 +182,7 @@ export default function CisBaselineForm({ baseline, onClose, onSaved }: CisBasel
               onChange={(e) => setIsActive(e.target.checked)}
               className="h-4 w-4 rounded border-border"
             />
-            <label htmlFor="bl-active" className="text-sm font-medium">Active</label>
+            <label htmlFor="bl-active" className="text-sm font-medium">{t('cisHardeningCisBaselineForm.fields.active')}</label>
           </div>
 
           {error && (
@@ -191,7 +198,7 @@ export default function CisBaselineForm({ baseline, onClose, onSaved }: CisBasel
               disabled={saving}
               className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
             >
-              Cancel
+              {t('cisHardeningCisBaselineForm.actions.cancel')}
             </button>
             <button
               type="submit"
@@ -201,10 +208,10 @@ export default function CisBaselineForm({ baseline, onClose, onSaved }: CisBasel
               {saving ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Saving...
+                  {t('cisHardeningCisBaselineForm.actions.saving')}
                 </>
               ) : (
-                'Save'
+                t('cisHardeningCisBaselineForm.actions.save')
               )}
             </button>
           </div>

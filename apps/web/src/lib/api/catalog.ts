@@ -12,6 +12,7 @@
 
 import { fetchWithAuth } from '../../stores/auth';
 import type { PolishTextResponse } from '@breeze/shared';
+import { formatPercent } from '../i18n/format';
 
 export type CatalogItemType = 'hardware' | 'software' | 'service';
 export type CatalogBillingType = 'one_time' | 'recurring';
@@ -271,7 +272,7 @@ export function computeMargin(
 /** '—' when no margin, else one-decimal percent (e.g. '42.5%', '-8.0%'). */
 export function formatMargin(pct: number | null): string {
   if (pct == null) return '—';
-  return `${pct.toFixed(1)}%`;
+  return formatPercent(pct / 100, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 }
 
 /** Tailwind text tone for a margin value: destructive when the item loses money. */

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useRef, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { useTranslation } from 'react-i18next';
 
 // Chrome/animation/a11y were copied from settings/CatalogItemEditorDrawer.tsx,
 // which still carries its own inline copy and was NOT migrated onto this
@@ -29,6 +30,7 @@ export function Drawer({
   closeDisabled = false,
   children,
 }: DrawerProps) {
+  const { t } = useTranslation('common');
   const panelRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<Element | null>(null);
   const titleId = useId();
@@ -109,7 +111,7 @@ export function Drawer({
             type="button"
             onClick={onClose}
             className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
-            aria-label="Close"
+            aria-label={t('actions.close')}
             data-testid={`${dataTestId}-close`}
           >
             <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

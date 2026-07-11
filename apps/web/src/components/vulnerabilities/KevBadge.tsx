@@ -1,3 +1,6 @@
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
+
 import { KEV_EXPLANATION } from './vulnExplanations';
 
 /**
@@ -11,12 +14,13 @@ import { KEV_EXPLANATION } from './vulnExplanations';
  * phrasing (vulnExplanations.ts keeps them identical).
  */
 export function KevBadge() {
+  const { t } = useTranslation('vulnerabilities');
   return (
     <span
       className="inline-flex items-center rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-[11px] font-semibold text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300"
-      title={KEV_EXPLANATION}
+      title={t('kevBadge.title', { defaultValue: KEV_EXPLANATION })}
     >
-      KEV
+      {t('kevBadge.label')}
     </span>
   );
 }

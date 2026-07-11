@@ -12,6 +12,8 @@ import {
   ChevronLeft
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 
 export type ServiceStatus = 'Running' | 'Stopped' | 'Paused' | 'Starting' | 'Stopping';
 export type StartupType = 'Automatic' | 'Manual' | 'Disabled' | 'Automatic (Delayed)';
@@ -84,6 +86,7 @@ export default function ServicesManager({
   onRestartService,
   onChangeStartupType
 }: ServicesManagerProps) {
+  const { t } = useTranslation('remote');
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'Running' | 'Stopped'>('all');
   const [sortField, setSortField] = useState<SortField>('displayName');
@@ -215,10 +218,9 @@ export default function ServicesManager({
         <div className="flex items-center gap-3 rounded-md border border-yellow-500/40 bg-yellow-500/10 p-4">
           <AlertTriangle className="h-5 w-5 text-yellow-600" />
           <div>
-            <h3 className="font-medium text-yellow-700">Windows Only Feature</h3>
+            <h3 className="font-medium text-yellow-700">{t('servicesManager.windowsOnlyTitle')}</h3>
             <p className="text-sm text-yellow-600">
-              The Services Manager is only available for Windows devices. {deviceName} is running{' '}
-              {deviceOs === 'macos' ? 'macOS' : 'Linux'}.
+              {t('servicesManager.windowsOnlyDescription', { device: deviceName, os: deviceOs === 'macos' ? 'macOS' : 'Linux' })}
             </p>
           </div>
         </div>
@@ -233,9 +235,9 @@ export default function ServicesManager({
         <div className="flex items-center gap-3">
           <Monitor className="h-5 w-5 text-muted-foreground" />
           <div>
-            <h2 className="text-lg font-semibold">Services Manager</h2>
+            <h2 className="text-lg font-semibold">{t('servicesManager.title')}</h2>
             <p className="text-sm text-muted-foreground">
-              {filteredServices.length} of {services.length} services on {deviceName}
+              {t('servicesManager.summary', { shown: filteredServices.length, total: services.length, device: deviceName })}
             </p>
           </div>
         </div>
@@ -246,7 +248,7 @@ export default function ServicesManager({
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <input
               type="search"
-              placeholder="Search services..."
+              placeholder={t('servicesManager.searchPlaceholder')}
               value={query}
               onChange={e => {
                 setQuery(e.target.value);
@@ -265,9 +267,9 @@ export default function ServicesManager({
             }}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-32"
           >
-            <option value="all">All Status</option>
-            <option value="Running">Running</option>
-            <option value="Stopped">Stopped</option>
+            <option value="all">{t('servicesManager.allStatus')}</option>
+            <option value="Running">{t('servicesManager.status.running')}</option>
+            <option value="Stopped">{t('servicesManager.status.stopped')}</option>
           </select>
 
           {/* Refresh Button */}
@@ -278,7 +280,7 @@ export default function ServicesManager({
             className="flex h-10 items-center justify-center gap-2 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
           >
             <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />
-            <span className="hidden sm:inline">Refresh</span>
+            <span className="hidden sm:inline">{t('common:actions.refresh')}</span>
           </button>
         </div>
       </div>
@@ -287,10 +289,9 @@ export default function ServicesManager({
       {confirmAction && isAgentService(confirmAction.serviceName) && confirmAction.type === 'stop' && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
           <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-lg">
-            <h3 className="text-lg font-semibold">Action Blocked</h3>
+            <h3 className="text-lg font-semibold">{t('servicesManager.actionBlocked')}</h3>
             <p className="mt-2 text-sm text-muted-foreground">
-              Stopping the Breeze agent will take this device offline and make it unreachable.
-              Use Restart instead.
+              {t('servicesManager.agentStopBlocked')}
             </p>
             <div className="mt-4 flex justify-end gap-3">
               <button
@@ -298,7 +299,7 @@ export default function ServicesManager({
                 onClick={() => setConfirmAction(null)}
                 className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
               >
-                OK
+                {t('servicesManager.ok')}
               </button>
             </div>
           </div>
@@ -307,10 +308,9 @@ export default function ServicesManager({
       {confirmAction && isAgentService(confirmAction.serviceName) && confirmAction.type === 'restart' && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
           <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-lg">
-            <h3 className="text-lg font-semibold">Confirm Action</h3>
+            <h3 className="text-lg font-semibold">{t('servicesManager.confirmAction')}</h3>
             <p className="mt-2 text-sm text-muted-foreground">
-              This will restart the Breeze agent. The device will briefly go offline and
-              reconnect automatically. Continue?
+              {t('servicesManager.agentRestartConfirm')}
             </p>
             <div className="mt-4 flex justify-end gap-3">
               <button
@@ -318,14 +318,14 @@ export default function ServicesManager({
                 onClick={() => setConfirmAction(null)}
                 className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
               >
-                Cancel
+                {t('common:actions.cancel')}
               </button>
               <button
                 type="button"
                 onClick={() => handleAction(confirmAction.type, confirmAction.serviceName)}
                 className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
               >
-                Restart Service
+                {t('servicesManager.restartService')}
               </button>
             </div>
           </div>
@@ -334,17 +334,9 @@ export default function ServicesManager({
       {confirmAction && !isAgentService(confirmAction.serviceName) && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
           <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-lg">
-            <h3 className="text-lg font-semibold">Confirm Action</h3>
+            <h3 className="text-lg font-semibold">{t('servicesManager.confirmAction')}</h3>
             <p className="mt-2 text-sm text-muted-foreground">
-              Are you sure you want to{' '}
-              <span className="font-medium">
-                {confirmAction.type === 'start'
-                  ? 'start'
-                  : confirmAction.type === 'stop'
-                    ? 'stop'
-                    : 'restart'}
-              </span>{' '}
-              the service <span className="font-medium">{confirmAction.serviceDisplayName}</span>?
+              {t('servicesManager.serviceConfirm', { action: t(/* i18n-dynamic */ `servicesManager.action.${confirmAction.type}`), service: confirmAction.serviceDisplayName })}
             </p>
             <div className="mt-4 flex justify-end gap-3">
               <button
@@ -352,7 +344,7 @@ export default function ServicesManager({
                 onClick={() => setConfirmAction(null)}
                 className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
               >
-                Cancel
+                {t('common:actions.cancel')}
               </button>
               <button
                 type="button"
@@ -365,10 +357,10 @@ export default function ServicesManager({
                 )}
               >
                 {confirmAction.type === 'start'
-                  ? 'Start Service'
+                  ? t('servicesManager.startService')
                   : confirmAction.type === 'stop'
-                    ? 'Stop Service'
-                    : 'Restart Service'}
+                    ? t('servicesManager.stopService')
+                    : t('servicesManager.restartService')}
               </button>
             </div>
           </div>
@@ -381,12 +373,12 @@ export default function ServicesManager({
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               <th className="w-8 px-4 py-3"></th>
-              <SortableHeader field="name">Name</SortableHeader>
-              <SortableHeader field="displayName">Display Name</SortableHeader>
-              <SortableHeader field="status">Status</SortableHeader>
-              <SortableHeader field="startupType">Startup</SortableHeader>
-              <SortableHeader field="account">Account</SortableHeader>
-              <th className="px-4 py-3">Actions</th>
+              <SortableHeader field="name">{t('common:labels.name')}</SortableHeader>
+              <SortableHeader field="displayName">{t('servicesManager.displayName')}</SortableHeader>
+              <SortableHeader field="status">{t('common:labels.status')}</SortableHeader>
+              <SortableHeader field="startupType">{t('servicesManager.startup')}</SortableHeader>
+              <SortableHeader field="account">{t('servicesManager.account')}</SortableHeader>
+              <th className="px-4 py-3">{t('common:labels.actions')}</th>
             </tr>
           </thead>
           <tbody className="divide-y">
@@ -394,7 +386,7 @@ export default function ServicesManager({
               <tr>
                 <td colSpan={7} className="px-4 py-12 text-center">
                   <Loader2 className="mx-auto h-6 w-6 animate-spin text-muted-foreground" />
-                  <p className="mt-2 text-sm text-muted-foreground">Loading services...</p>
+                  <p className="mt-2 text-sm text-muted-foreground">{t('servicesManager.loading')}</p>
                 </td>
               </tr>
             ) : paginatedServices.length === 0 ? (
@@ -403,13 +395,13 @@ export default function ServicesManager({
                   <Monitor className="mx-auto h-8 w-8 text-muted-foreground/50" />
                   <p className="mt-2 text-sm font-medium text-muted-foreground">
                     {services.length === 0
-                      ? 'No services available'
-                      : 'No services found'}
+                      ? t('servicesManager.noServicesAvailable')
+                      : t('servicesManager.noServicesFound')}
                   </p>
                   <p className="mt-1 text-xs text-muted-foreground/70">
                     {services.length === 0
-                      ? 'Click Refresh to load services from the device.'
-                      : 'Try adjusting your search or filters.'}
+                      ? t('servicesManager.refreshHint')
+                      : t('servicesManager.adjustHint')}
                   </p>
                 </td>
               </tr>
@@ -469,7 +461,7 @@ export default function ServicesManager({
                                 })
                               }
                               disabled={service.status === 'Running' || service.startupType === 'Disabled'}
-                              title="Start Service"
+                              title={t('servicesManager.startService')}
                               className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted disabled:cursor-not-allowed disabled:opacity-30"
                             >
                               <Play className="h-4 w-4 text-green-600" />
@@ -486,7 +478,7 @@ export default function ServicesManager({
                                 })
                               }
                               disabled={service.status === 'Stopped' || isAgentService(service.name)}
-                              title={isAgentService(service.name) ? 'Cannot stop the Breeze agent' : 'Stop Service'}
+                              title={isAgentService(service.name) ? t('servicesManager.cannotStopAgent') : t('servicesManager.stopService')}
                               className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted disabled:cursor-not-allowed disabled:opacity-30"
                             >
                               <Square className="h-4 w-4 text-red-600" />
@@ -503,7 +495,7 @@ export default function ServicesManager({
                                 })
                               }
                               disabled={service.status === 'Stopped' || service.startupType === 'Disabled'}
-                              title="Restart Service"
+                              title={t('servicesManager.restartService')}
                               className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted disabled:cursor-not-allowed disabled:opacity-30"
                             >
                               <RefreshCw className="h-4 w-4 text-blue-600" />
@@ -522,17 +514,17 @@ export default function ServicesManager({
                           {/* Description */}
                           <div>
                             <h4 className="text-xs font-semibold uppercase text-muted-foreground">
-                              Description
+                              {t('common:labels.description')}
                             </h4>
                             <p className="mt-1 text-sm">
-                              {service.description || 'No description available'}
+                              {service.description || t('servicesManager.noDescription')}
                             </p>
                           </div>
 
                           {/* Executable Path */}
                           <div>
                             <h4 className="text-xs font-semibold uppercase text-muted-foreground">
-                              Executable Path
+                              {t('servicesManager.executablePath')}
                             </h4>
                             <p className="mt-1 break-all font-mono text-xs">
                               {service.path || 'N/A'}
@@ -542,7 +534,7 @@ export default function ServicesManager({
                           {/* Dependencies */}
                           <div>
                             <h4 className="text-xs font-semibold uppercase text-muted-foreground">
-                              Dependencies
+                              {t('servicesManager.dependencies')}
                             </h4>
                             <div className="mt-1">
                               {service.dependencies && service.dependencies.length > 0 ? (
@@ -557,7 +549,7 @@ export default function ServicesManager({
                                   ))}
                                 </div>
                               ) : (
-                                <span className="text-sm text-muted-foreground">None</span>
+                                <span className="text-sm text-muted-foreground">{t('common:labels.none')}</span>
                               )}
                             </div>
                           </div>
@@ -565,7 +557,7 @@ export default function ServicesManager({
                           {/* Dependent Services */}
                           <div>
                             <h4 className="text-xs font-semibold uppercase text-muted-foreground">
-                              Dependent Services
+                              {t('servicesManager.dependentServices')}
                             </h4>
                             <div className="mt-1">
                               {service.dependentServices && service.dependentServices.length > 0 ? (
@@ -580,7 +572,7 @@ export default function ServicesManager({
                                   ))}
                                 </div>
                               ) : (
-                                <span className="text-sm text-muted-foreground">None</span>
+                                <span className="text-sm text-muted-foreground">{t('common:labels.none')}</span>
                               )}
                             </div>
                           </div>
@@ -588,7 +580,7 @@ export default function ServicesManager({
                           {/* Change Startup Type */}
                           <div className="sm:col-span-2">
                             <h4 className="text-xs font-semibold uppercase text-muted-foreground">
-                              Change Startup Type
+                              {t('servicesManager.changeStartupType')}
                             </h4>
                             <div className="mt-2 flex items-center gap-2">
                               <select
@@ -623,8 +615,7 @@ export default function ServicesManager({
       {totalPages > 1 && (
         <div className="mt-4 flex items-center justify-between">
           <p className="text-sm text-muted-foreground">
-            Showing {startIndex + 1} to {Math.min(startIndex + pageSize, filteredServices.length)} of{' '}
-            {filteredServices.length}
+            {t('servicesManager.showing', { start: startIndex + 1, end: Math.min(startIndex + pageSize, filteredServices.length), total: filteredServices.length })}
           </p>
           <div className="flex items-center gap-2">
             <button
@@ -636,7 +627,7 @@ export default function ServicesManager({
               <ChevronLeft className="h-4 w-4" />
             </button>
             <span className="text-sm">
-              Page {currentPage} of {totalPages}
+              {t('servicesManager.page', { current: currentPage, total: totalPages })}
             </span>
             <button
               type="button"

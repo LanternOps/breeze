@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { ChevronUp, ChevronDown, Eye, EyeOff, Loader2, FolderInput } from 'lucide-react';
+import '../../../lib/i18n';
 import { navigateTo } from '@/lib/navigation';
 import { fetchWithAuth } from '../../../stores/auth';
 import { runAction, handleActionError } from '../../../lib/runAction';
 import { usePermissions } from '../../../lib/permissions';
+import { formatPercent } from '@/lib/i18n/format';
 import {
   addBlock,
   updateBlock,
@@ -37,7 +40,6 @@ import {
   type QuoteLine,
   type QuoteLineRecurrence,
   formatMoney,
-  formatRecurrence,
   pctFromFraction,
   lineTaxAmount,
   lineTitle,
@@ -52,18 +54,18 @@ const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 // Heading/rich-text block content is editable in place via PATCH /:id/blocks/:blockId
 // (updateBlock); the block type itself is immutable.
 type AddableBlockType = 'heading' | 'rich_text' | 'image' | 'line_items';
-const ADD_BLOCK_OPTIONS: { value: AddableBlockType; label: string }[] = [
-  { value: 'heading', label: 'Heading' },
-  { value: 'rich_text', label: 'Rich text' },
-  { value: 'image', label: 'Image' },
-  { value: 'line_items', label: 'Pricing table' },
+const ADD_BLOCK_OPTIONS: { value: AddableBlockType; labelKey: string }[] = [
+  { value: 'heading', labelKey: 'quotes.editor.blockTypes.heading' },
+  { value: 'rich_text', labelKey: 'quotes.editor.blockTypes.richText' },
+  { value: 'image', labelKey: 'quotes.editor.blockTypes.image' },
+  { value: 'line_items', labelKey: 'quotes.editor.blockTypes.pricingTable' },
 ];
 
-const BLOCK_TYPE_LABELS: Record<string, string> = {
-  heading: 'Heading',
-  rich_text: 'Rich text',
-  image: 'Image',
-  line_items: 'Pricing table',
+const BLOCK_TYPE_LABEL_KEYS: Record<string, string> = {
+  heading: 'quotes.editor.blockTypes.heading',
+  rich_text: 'quotes.editor.blockTypes.richText',
+  image: 'quotes.editor.blockTypes.image',
+  line_items: 'quotes.editor.blockTypes.pricingTable',
 };
 
 // Changed-fields payload for an inline line edit. Subset of
@@ -120,9 +122,10 @@ function useSavedFlash(): [boolean, () => void] {
 // readers without taking visual space, pairing with the dirty-ring clearing that
 // sighted users see. The single per-field announcer (no toast), so SR users hear
 // "Saved" once, not twice. testId lets tests assert the cue fired.
-function SrSaved({ show, label = 'Saved', testId }: { show: boolean; label?: string; testId?: string }) {
+function SrSaved({ show, label, testId }: { show: boolean; label?: string; testId?: string }) {
+  const { t } = useTranslation('billing');
   // role="status" already implies aria-live="polite" — don't double it.
-  return <span role="status" className="sr-only" data-testid={testId}>{show ? label : ''}</span>;
+  return <span role="status" className="sr-only" data-testid={testId}>{show ? (label ?? t('quotes.editor.status.saved')) : ''}</span>;
 }
 
 // A field's save-state outline: amber while the edit is unsaved, a brief green
@@ -176,6 +179,7 @@ function MoveControls({
 }
 
 export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }: Props) {
+  const { t } = useTranslation('billing');
   const { can } = usePermissions();
   const canWrite = can('quotes', 'write');
   // Cost/margin is a read affordance, not a write one: read-only users already see
@@ -312,14 +316,14 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
         request: () => fetchWithAuth(`/quotes/${quote.id}`, {
           method: 'PATCH', body: JSON.stringify({ termsAndConditions: terms }),
         }),
-        errorFallback: 'Could not save terms.',
+        errorFallback: t('quotes.editor.errors.saveTerms'),
         onUnauthorized: UNAUTHORIZED,
       });
       setTermsDirty(false);
       refresh();
-    }, 'Could not save terms.');
+    }, t('quotes.editor.errors.saveTerms'));
     if (ok) flashTermsSaved();
-  }, [termsDirty, terms, quote.id, refresh, runScoped, flashTermsSaved]);
+  }, [termsDirty, terms, quote.id, refresh, runScoped, flashTermsSaved, t]);
 
   const saveTitle = useCallback(async () => {
     if (!titleDirty) return;
@@ -328,14 +332,14 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
         request: () => fetchWithAuth(`/quotes/${quote.id}`, {
           method: 'PATCH', body: JSON.stringify({ title: title.trim() || null }),
         }),
-        errorFallback: 'Could not save the title.',
+        errorFallback: t('quotes.editor.errors.saveTitle'),
         onUnauthorized: UNAUTHORIZED,
       });
       setTitleDirty(false);
       refresh();
-    }, 'Could not save the title.');
+    }, t('quotes.editor.errors.saveTitle'));
     if (ok) flashTitleSaved();
-  }, [titleDirty, title, quote.id, refresh, runScoped, flashTitleSaved]);
+  }, [titleDirty, title, quote.id, refresh, runScoped, flashTitleSaved, t]);
 
   // Persist a deposit-config change via the quote-header PATCH. runAction surfaces
   // the API's 400 DEPOSIT_* validation message (e.g. "Deposit must be less than the
@@ -348,12 +352,12 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
         request: () => fetchWithAuth(`/quotes/${quote.id}`, {
           method: 'PATCH', body: JSON.stringify(patch),
         }),
-        errorFallback: 'Could not update the deposit.',
+        errorFallback: t('quotes.editor.errors.updateDeposit'),
         onUnauthorized: UNAUTHORIZED,
       });
       refresh();
-    }, 'Could not update the deposit.'),
-  [quote.id, refresh, runScoped]);
+    }, t('quotes.editor.errors.updateDeposit')),
+  [quote.id, refresh, runScoped, t]);
 
   // Snap the local mirrors back to the server-persisted deposit config. Used when
   // a deposit PATCH is rejected (e.g. 400 DEPOSIT_NOT_BELOW_TOTAL or
@@ -571,13 +575,18 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
   // sentence on every keypress is SR chatter, so the announcement is DEBOUNCED to
   // settle-time (below) — only the debounced copy feeds the role="status" node.
   const srSentence = useMemo(
-    () =>
-      `Totals updated. One-time ${formatMoney(railOneTime, currency)}, `
-      + `monthly recurring ${formatMoney(railMonthly, currency)}, `
-      + `annual recurring ${formatMoney(railAnnual, currency)}`
-      + (Number(railTax) > 0 ? `, tax ${formatMoney(railTax, currency)}` : '')
-      + `, due on acceptance ${formatMoney(railDue, currency)}.`,
-    [railOneTime, railMonthly, railAnnual, railTax, railDue, currency],
+    () => {
+      const values = {
+        oneTime: formatMoney(railOneTime, currency),
+        monthly: formatMoney(railMonthly, currency),
+        annual: formatMoney(railAnnual, currency),
+        due: formatMoney(railDue, currency),
+      };
+      return Number(railTax) > 0
+        ? t('quotes.editor.liveTotals.srUpdatedWithTax', { ...values, tax: formatMoney(railTax, currency) })
+        : t('quotes.editor.liveTotals.srUpdated', values);
+    },
+    [railOneTime, railMonthly, railAnnual, railTax, railDue, currency, t],
   );
 
   // Debounced announcement: the status node's text only updates ~800ms after the
@@ -638,8 +647,8 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
   const pricingBlockLabel = useCallback((b: QuoteBlock) => {
     const label = ((b.content?.label as string | undefined) ?? '').trim();
     if (label) return label;
-    return `Pricing table ${pricingBlocks.findIndex((x) => x.id === b.id) + 1}`;
-  }, [pricingBlocks]);
+    return t('quotes.editor.table.fallbackName', { number: pricingBlocks.findIndex((x) => x.id === b.id) + 1 });
+  }, [pricingBlocks, t]);
 
   const linesForBlock = useCallback(
     (blockId: string) =>
@@ -667,7 +676,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
       // File path keeps the immediate client-side 5 MB check; for URLs the server
       // is the size authority (the fetched bytes aren't known here).
       if (source === 'file' && imageFile && imageFile.size > 5 * 1024 * 1024) {
-        handleActionError(new Error('image too large'), 'Image must be 5 MB or smaller.');
+        handleActionError(new Error('image too large'), t('quotes.editor.errors.imageTooLarge'));
         return;
       }
       await runScoped('add-block', async () => {
@@ -676,8 +685,8 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
             ? uploadQuoteImage(quote.id, imageFile!)
             : addQuoteImageFromUrl(quote.id, imageUrl.trim()),
           errorFallback: source === 'file'
-            ? 'Could not upload the image.'
-            : 'Could not fetch the image from that URL.',
+            ? t('quotes.editor.errors.uploadImage')
+            : t('quotes.editor.errors.fetchImageFromUrl'),
           // No success toast: the upload is an internal step of "add image block";
           // only the final "Image block added" toast below is meaningful (web-2).
           onUnauthorized: UNAUTHORIZED,
@@ -690,13 +699,13 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
               ? { imageId: uploaded.imageId, caption: imageCaption.trim() }
               : { imageId: uploaded.imageId },
           }),
-          errorFallback: 'Image added, but adding the section failed.',
-          successMessage: 'Image section added',
+          errorFallback: t('quotes.editor.errors.imageAddedSectionFailed'),
+          successMessage: t('quotes.editor.success.imageSectionAdded'),
           onUnauthorized: UNAUTHORIZED,
         });
         setImageFile(null); setImageCaption(''); setImageUrl('');
         refresh();
-      }, 'Could not add the image section.');
+      }, t('quotes.editor.errors.addImageSection'));
       return;
     }
 
@@ -716,14 +725,14 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
     await runScoped('add-block', async () => {
       await runAction({
         request: () => addBlock(quote.id, body),
-        errorFallback: 'Could not add the section.',
-        successMessage: 'Section added',
+        errorFallback: t('quotes.editor.errors.addSection'),
+        successMessage: t('quotes.editor.success.sectionAdded'),
         onUnauthorized: UNAUTHORIZED,
       });
       setHeadingText(''); setRichText(''); setTableLabel('');
       refresh();
-    }, 'Could not add the section.');
-  }, [addType, headingText, richText, tableLabel, imageFile, imageCaption, imageSource, imageUrl, quote.id, refresh, runScoped]);
+    }, t('quotes.editor.errors.addSection'));
+  }, [addType, headingText, richText, tableLabel, imageFile, imageCaption, imageSource, imageUrl, quote.id, refresh, runScoped, t]);
 
   // Removing a line_items block cascades to every line under it (server-side), so
   // the card's Remove button opens a confirm step instead of deleting outright.
@@ -739,28 +748,28 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
     runScoped(`block:${block.id}`, async () => {
       await runAction({
         request: () => deleteBlock(quote.id, block.id),
-        errorFallback: 'Could not remove the section.',
-        successMessage: 'Section removed',
+        errorFallback: t('quotes.editor.errors.removeSection'),
+        successMessage: t('quotes.editor.success.sectionRemoved'),
         onUnauthorized: UNAUTHORIZED,
       });
       refresh();
-    }, 'Could not remove the section.'),
-  [quote.id, refresh, runScoped]);
+    }, t('quotes.editor.errors.removeSection')),
+  [quote.id, refresh, runScoped, t]);
 
   // ---- line mutations (scoped to a line_items block) ----------------------
   const doAddCatalog = useCallback(async (blockId: string, item: CatalogItem) => {
     await runAction({
       request: () => addCatalogLine(quote.id, { catalogItemId: item.id, quantity: 1, blockId }),
-      errorFallback: 'Could not add the catalog item.',
-      successMessage: 'Item added',
+      errorFallback: t('quotes.editor.errors.addCatalogItem'),
+      successMessage: t('quotes.editor.success.itemAdded'),
       onUnauthorized: UNAUTHORIZED,
     });
     refresh();
-  }, [quote.id, refresh]);
+  }, [quote.id, refresh, t]);
 
   const addCatalog = useCallback((blockId: string, item: CatalogItem) =>
-    runScoped(`add-line:${blockId}`, () => doAddCatalog(blockId, item), 'Could not add the catalog item.'),
-  [doAddCatalog, runScoped]);
+    runScoped(`add-line:${blockId}`, () => doAddCatalog(blockId, item), t('quotes.editor.errors.addCatalogItem')),
+  [doAddCatalog, runScoped, t]);
 
   const resolveCatalogBySku = useCallback(async (sku: string): Promise<CatalogItem | null> => {
     const fromState = catalog.find((i) => i.sku === sku);
@@ -795,15 +804,15 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
             // the raw vendor listing on import (best-effort; falls back to raw).
             aiCleanup: true,
           }),
-          errorFallback: 'Could not import the Pax8 product.',
+          errorFallback: t('quotes.editor.errors.importPax8Product'),
           onUnauthorized: UNAUTHORIZED,
           parseSuccess: (d) => (d as { data: CatalogItem }).data,
         });
       }
       await doAddCatalog(blockId, item);
       void loadCatalog();
-    }, 'Could not add the Pax8 product.'),
-  [doAddCatalog, resolveCatalogBySku, loadCatalog, runScoped]);
+    }, t('quotes.editor.errors.addPax8Product')),
+  [doAddCatalog, resolveCatalogBySku, loadCatalog, runScoped, t]);
 
   const importAndAddDistributor = useCallback((blockId: string, product: EcProduct, sellPrice: number) =>
     runScoped(`add-line:${blockId}`, async () => {
@@ -828,7 +837,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
             // server-side (best-effort; falls back to the raw values).
             aiCleanup: true,
           }),
-          errorFallback: 'Could not import the distributor item.',
+          errorFallback: t('quotes.editor.errors.importDistributorItem'),
           // no success toast here — the "Item added" toast from doAddCatalog is the meaningful one
           onUnauthorized: UNAUTHORIZED,
           parseSuccess: (d) => (d as { data: CatalogItem }).data,
@@ -836,8 +845,8 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
       }
       await doAddCatalog(blockId, item);
       void loadCatalog(); // surface a newly-imported item in the catalog picker too
-    }, 'Could not add the distributor item.'),
-  [doAddCatalog, resolveCatalogBySku, loadCatalog, runScoped]);
+    }, t('quotes.editor.errors.addDistributorItem')),
+  [doAddCatalog, resolveCatalogBySku, loadCatalog, runScoped, t]);
 
   const addManual = useCallback((
     blockId: string,
@@ -849,14 +858,14 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
     // a silent $0-quantity line is a real footgun on the add path.
     const qtyNum = Number(form.quantity);
     if (!Number.isFinite(qtyNum) || qtyNum <= 0 || !Number.isInteger(qtyNum)) {
-      handleActionError(new Error('invalid quantity'), 'Enter a whole-number quantity greater than 0.');
+      handleActionError(new Error('invalid quantity'), t('quotes.editor.errors.quantityWholeGreaterThanZero'));
       return Promise.resolve(false);
     }
     // Guard the unit price too (parity with the inline edit path's commitPrice):
     // a negative/NaN price shouldn't depend on the server to reject it.
     const priceNum = Number(form.unitPrice);
     if (!Number.isFinite(priceNum) || priceNum < 0) {
-      handleActionError(new Error('invalid price'), 'Enter a unit price of 0 or more.');
+      handleActionError(new Error('invalid price'), t('quotes.editor.errors.unitPriceZeroOrMore'));
       return Promise.resolve(false);
     }
     // Cost is optional, but a non-empty entry must be valid — reject it the same way
@@ -865,7 +874,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
     const costEmpty = form.cost.trim() === '';
     const costNum = Number(form.cost);
     if (!costEmpty && (!Number.isFinite(costNum) || costNum < 0)) {
-      handleActionError(new Error('invalid cost'), 'Enter a cost of 0 or more.');
+      handleActionError(new Error('invalid cost'), t('quotes.editor.errors.costZeroOrMore'));
       return Promise.resolve(false);
     }
     return runScoped(`add-line:${blockId}`, async () => {
@@ -887,8 +896,8 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
           // to infer hardware from); the user flags it later in the line editor.
           depositEligible: false,
         }),
-        errorFallback: 'Could not add the line.',
-        successMessage: 'Line added',
+        errorFallback: t('quotes.editor.errors.addLine'),
+        successMessage: t('quotes.editor.success.lineAdded'),
         onUnauthorized: UNAUTHORIZED,
       });
       // Optionally persist the manual line to the product catalog for reuse.
@@ -907,27 +916,27 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
             unitPrice: priceNum,
             taxable: form.taxable,
           }),
-          errorFallback: 'Line added, but saving it to the catalog failed.',
-          successMessage: 'Saved to catalog',
+          errorFallback: t('quotes.editor.errors.lineAddedCatalogSaveFailed'),
+          successMessage: t('quotes.editor.success.savedToCatalog'),
           onUnauthorized: UNAUTHORIZED,
         });
         void loadCatalog();
       }
       refresh();
-    }, 'Could not add the line.');
-  }, [quote.id, refresh, loadCatalog, runScoped]);
+    }, t('quotes.editor.errors.addLine'));
+  }, [quote.id, refresh, loadCatalog, runScoped, t]);
 
   const deleteLine = useCallback((lineId: string) =>
     runScoped(`line:${lineId}`, async () => {
       await runAction({
         request: () => removeLine(quote.id, lineId),
-        errorFallback: 'Could not remove the line.',
-        successMessage: 'Line removed',
+        errorFallback: t('quotes.editor.errors.removeLine'),
+        successMessage: t('quotes.editor.success.lineRemoved'),
         onUnauthorized: UNAUTHORIZED,
       });
       refresh();
-    }, 'Could not remove the line.'),
-  [quote.id, refresh, runScoped]);
+    }, t('quotes.editor.errors.removeLine')),
+  [quote.id, refresh, runScoped, t]);
 
   // Inline edit of an existing line. `body` carries only the changed fields
   // (matches updateQuoteLineSchema). Routed through runAction so failures are
@@ -941,12 +950,12 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
     runScoped(scopeKey ?? `line:${lineId}`, async () => {
       await runAction({
         request: () => updateLine(quote.id, lineId, body),
-        errorFallback: 'Could not update the line.',
+        errorFallback: t('quotes.editor.errors.updateLine'),
         onUnauthorized: UNAUTHORIZED,
       });
       refresh();
-    }, 'Could not update the line.'),
-  [quote.id, refresh, runScoped]);
+    }, t('quotes.editor.errors.updateLine')),
+  [quote.id, refresh, runScoped, t]);
 
   // Inline edit of a block's content (heading text/level, rich-text html). The
   // block type is restated so the server validates the content shape; it is
@@ -956,12 +965,12 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
     runScoped(`block:${block.id}`, async () => {
       await runAction({
         request: () => updateBlock(quote.id, block.id, { blockType: block.blockType, content } as QuoteBlockInput),
-        errorFallback: 'Could not update the section.',
+        errorFallback: t('quotes.editor.errors.updateSection'),
         onUnauthorized: UNAUTHORIZED,
       });
       refresh();
-    }, 'Could not update the block.'),
-  [quote.id, refresh, runScoped]);
+    }, t('quotes.editor.errors.updateBlock')),
+  [quote.id, refresh, runScoped, t]);
 
   // Reorder a block one slot up/down. The optimistic order updates instantly on
   // every click (clicks accumulate — none are dropped while a PATCH is pending),
@@ -989,19 +998,19 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
         try {
           await runAction({
             request: () => reorderBlocksApi(quote.id, { blockIds: ids }),
-            errorFallback: 'Could not reorder sections.',
+            errorFallback: t('quotes.editor.errors.reorderSections'),
             onUnauthorized: UNAUTHORIZED,
           });
           refresh();
         } catch (err) {
-          handleActionError(err, 'Could not reorder blocks.');
+          handleActionError(err, t('quotes.editor.errors.reorderBlocks'));
           setBlockOrder(null);
           blockReorderBase.current = null;
           refresh();
         }
       })();
     }, 250);
-  }, [sortedBlocks, quote.id, refresh]);
+  }, [sortedBlocks, quote.id, refresh, t]);
 
   const moveLine = useCallback((blockId: string, line: QuoteLine, direction: 'up' | 'down') => {
     const currentIds = lineReorderBase.current[blockId] ?? linesForBlock(blockId).map((l) => l.id);
@@ -1020,19 +1029,19 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
         try {
           await runAction({
             request: () => reorderLinesApi(quote.id, blockId, { lineIds: ids }),
-            errorFallback: 'Could not reorder lines.',
+            errorFallback: t('quotes.editor.errors.reorderLines'),
             onUnauthorized: UNAUTHORIZED,
           });
           refresh();
         } catch (err) {
-          handleActionError(err, 'Could not reorder lines.');
+          handleActionError(err, t('quotes.editor.errors.reorderLines'));
           setLineOrder((m) => { const n = { ...m }; delete n[blockId]; return n; });
           delete lineReorderBase.current[blockId];
           refresh();
         }
       })();
     }, 250);
-  }, [linesForBlock, quote.id, refresh]);
+  }, [linesForBlock, quote.id, refresh, t]);
 
   // Cross-panel move: optimistic on both panels at once (the line leaves its
   // source table and appends to the target, bundle children in tow), committed
@@ -1070,13 +1079,13 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
       try {
         await runAction({
           request: () => moveLineApi(quote.id, line.id, { blockId: targetBlockId }),
-          errorFallback: 'Could not move the line.',
-          successMessage: 'Line moved',
+          errorFallback: t('quotes.editor.errors.moveLine'),
+          successMessage: t('quotes.editor.success.lineMoved'),
           onUnauthorized: UNAUTHORIZED,
         });
         refresh();
       } catch (err) {
-        handleActionError(err, 'Could not move the line.');
+        handleActionError(err, t('quotes.editor.errors.moveLine'));
         setLineBlockOverride((m) => {
           const n = { ...m };
           for (const id of movedIds) delete n[id];
@@ -1088,7 +1097,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
         refresh();
       }
     })();
-  }, [lines, linesForBlock, quote.id, refresh]);
+  }, [lines, linesForBlock, quote.id, refresh, t]);
 
   const hasRecurring = Number(railMonthly) > 0 || Number(railAnnual) > 0;
 
@@ -1101,7 +1110,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
       <div className="flex flex-wrap items-center gap-2">
         {canWrite && (
           <p className="text-xs text-muted-foreground" data-testid="quote-editor-autosave-hint">
-            Changes save automatically as you edit. An amber outline marks an edit that hasn’t saved yet.
+            {t('quotes.editor.autosaveHint')}
           </p>
         )}
         <button
@@ -1112,18 +1121,18 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
           className={`ml-auto inline-flex shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors hover:bg-muted ${showInternal ? 'border-primary/40 bg-primary/10 text-primary' : ''}`}
         >
           {showInternal ? <EyeOff className="h-3.5 w-3.5" aria-hidden="true" /> : <Eye className="h-3.5 w-3.5" aria-hidden="true" />}
-          {showInternal ? 'Hide cost & margin' : 'Show cost & margin'}
+          {showInternal ? t('quotes.editor.actions.hideCostMargin') : t('quotes.editor.actions.showCostMargin')}
         </button>
       </div>
       {canWrite && (
         <div className="max-w-xl">
-          <label htmlFor="quote-title" className="mb-1 block text-xs text-muted-foreground">Quote title</label>
+          <label htmlFor="quote-title" className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.title.label')}</label>
           <input
             id="quote-title"
             type="text"
             value={title}
             maxLength={200}
-            placeholder="e.g. Office network refresh"
+            placeholder={t('quotes.editor.title.placeholder')}
             onChange={(e) => { setTitle(e.target.value); setTitleDirty(true); }}
             onBlur={() => void saveTitle()}
             disabled={isPending('title')}
@@ -1146,7 +1155,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
         >
           {sortedBlocks.length === 0 ? (
             <div className="rounded-lg border border-dashed bg-card p-8 text-center text-sm text-muted-foreground" data-testid="quote-blocks-empty">
-              No content yet. Add a heading, rich text, or a pricing table below.
+              {t('quotes.editor.emptyBlocks')}
             </div>
           ) : (
             sortedBlocks.map((block, idx) => (
@@ -1192,7 +1201,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
           {/* Add block */}
           {canWrite && (
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="quote-add-block">
-            <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Add section</h3>
+            <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.editor.addSection.title')}</h3>
             <div className="mb-3 flex flex-wrap gap-2">
               {ADD_BLOCK_OPTIONS.map((o) => (
                 <button
@@ -1205,7 +1214,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                     addType === o.value ? 'border-primary bg-primary/10 text-primary' : 'hover:bg-muted'
                   }`}
                 >
-                  {o.label}
+                  {t(/* i18n-dynamic */ o.labelKey)}
                 </button>
               ))}
             </div>
@@ -1215,7 +1224,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                 type="text"
                 value={headingText}
                 onChange={(e) => setHeadingText(e.target.value)}
-                placeholder="Heading text"
+                placeholder={t('quotes.editor.addSection.headingPlaceholder')}
                 data-testid="quote-block-heading-text"
                 className="mb-3 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
@@ -1224,7 +1233,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
               <textarea
                 value={richText}
                 onChange={(e) => setRichText(e.target.value)}
-                placeholder="Proposal text…"
+                placeholder={t('quotes.editor.addSection.richTextPlaceholder')}
                 rows={4}
                 data-testid="quote-block-rich-text"
                 className="mb-3 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
@@ -1241,7 +1250,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                     data-testid="quote-block-image-source-file"
                     className={`rounded px-3 py-1 font-medium ${imageSource === 'file' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground'}`}
                   >
-                    Upload file
+                    {t('quotes.editor.addSection.uploadFile')}
                   </button>
                   <button
                     type="button"
@@ -1251,7 +1260,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                     data-testid="quote-block-image-source-url"
                     className={`rounded px-3 py-1 font-medium ${imageSource === 'url' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground'}`}
                   >
-                    From URL
+                    {t('quotes.editor.actions.fromUrl')}
                   </button>
                 </div>
                 {imageSource === 'file' ? (
@@ -1267,7 +1276,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                     type="url"
                     value={imageUrl}
                     onChange={(e) => setImageUrl(e.target.value)}
-                    placeholder="https://example.com/photo.png"
+                    placeholder={t('quotes.editor.addSection.imageUrlPlaceholder')}
                     data-testid="quote-block-image-url"
                     className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
@@ -1276,11 +1285,11 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                   type="text"
                   value={imageCaption}
                   onChange={(e) => setImageCaption(e.target.value)}
-                  placeholder="Caption (optional)"
+                    placeholder={t('quotes.editor.addSection.captionPlaceholder')}
                   data-testid="quote-block-image-caption"
                   className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
-                <p className="text-xs text-muted-foreground">PNG, JPEG, or WebP, up to 5 MB.</p>
+                <p className="text-xs text-muted-foreground">{t('quotes.editor.addSection.imageHelp')}</p>
               </div>
             )}
             {addType === 'line_items' && (
@@ -1288,7 +1297,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                 type="text"
                 value={tableLabel}
                 onChange={(e) => setTableLabel(e.target.value)}
-                placeholder="Table label (optional, e.g. Monthly services)"
+                placeholder={t('quotes.editor.table.labelPlaceholder')}
                 data-testid="quote-block-table-label"
                 className="mb-3 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
@@ -1309,8 +1318,8 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                 className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
               >
                 {addType === 'image'
-                  ? (imageSource === 'url' ? 'Fetch & add image' : 'Upload & add image')
-                  : 'Add section'}
+                  ? (imageSource === 'url' ? t('quotes.editor.actions.fetchAddImage') : t('quotes.editor.actions.uploadAddImage'))
+                  : t('quotes.editor.actions.addSection')}
               </button>
             </div>
           </div>
@@ -1322,7 +1331,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
             scrolling the blocks; on narrow widths this column stacks below. */}
         <div className="space-y-4 lg:sticky lg:top-4 lg:self-start">
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="quote-live-totals">
-            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Live totals</h3>
+            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.editor.liveTotals.title')}</h3>
             {/* One concise SR announcement covering every figure, so editing a
                 recurring line (which doesn't move "due on acceptance") still tells
                 a screen-reader user the totals recomputed. Debounced to settle-time
@@ -1333,20 +1342,20 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
             </p>
             <dl className="space-y-2 text-sm tabular-nums">
               <div className="flex items-baseline justify-between">
-                <dt className="text-muted-foreground">One-time</dt>
+                <dt className="text-muted-foreground">{t('quotes.editor.liveTotals.oneTime')}</dt>
                 <dd data-testid="quote-total-onetime">{formatMoney(railOneTime, currency)}</dd>
               </div>
               <div className="flex items-baseline justify-between">
-                <dt className="text-muted-foreground">Monthly recurring</dt>
-                <dd data-testid="quote-total-monthly">{formatMoney(railMonthly, currency)}<span className="text-xs text-muted-foreground">/mo</span></dd>
+                <dt className="text-muted-foreground">{t('quotes.editor.liveTotals.monthlyRecurring')}</dt>
+                <dd data-testid="quote-total-monthly">{formatMoney(railMonthly, currency)}<span className="text-xs text-muted-foreground">{t('quotes.editor.units.perMonth')}</span></dd>
               </div>
               <div className="flex items-baseline justify-between">
-                <dt className="text-muted-foreground">Annual recurring</dt>
-                <dd data-testid="quote-total-annual">{formatMoney(railAnnual, currency)}<span className="text-xs text-muted-foreground">/yr</span></dd>
+                <dt className="text-muted-foreground">{t('quotes.editor.liveTotals.annualRecurring')}</dt>
+                <dd data-testid="quote-total-annual">{formatMoney(railAnnual, currency)}<span className="text-xs text-muted-foreground">{t('quotes.editor.units.perYear')}</span></dd>
               </div>
               {Number(railTax) > 0 && (
                 <div className="flex items-baseline justify-between">
-                  <dt className="text-muted-foreground">Tax</dt>
+                  <dt className="text-muted-foreground">{t('quotes.editor.liveTotals.tax')}</dt>
                   <dd>{formatMoney(railTax, currency)}</dd>
                 </div>
               )}
@@ -1358,13 +1367,13 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
               <div className="mt-2 space-y-0.5 border-t pt-2 text-sm text-muted-foreground" data-testid="quote-category-breakdown">
                 {railBreakdown.map((b) => (
                   <div key={b.category} className="flex justify-between gap-2">
-                    <span className="capitalize">{b.category}</span>
+                    <span>{t(/* i18n-dynamic */ `quotes.editor.categories.${b.category}`, { defaultValue: b.category })}</span>
                     <span className="tabular-nums">
                       {[
                         Number(b.oneTimeTotal) > 0 ? formatMoney(b.oneTimeTotal, currency) : null,
-                        Number(b.monthlyTotal) > 0 ? `${formatMoney(b.monthlyTotal, currency)}/mo` : null,
-                        Number(b.annualTotal) > 0 ? `${formatMoney(b.annualTotal, currency)}/yr` : null,
-                      ].filter(Boolean).join(' + ')}
+                        Number(b.monthlyTotal) > 0 ? `${formatMoney(b.monthlyTotal, currency)}${t('quotes.editor.units.perMonth')}` : null,
+                        Number(b.annualTotal) > 0 ? `${formatMoney(b.annualTotal, currency)}${t('quotes.editor.units.perYear')}` : null,
+                      ].filter(Boolean).join(t('quotes.editor.symbols.plusSeparator'))}
                     </span>
                   </div>
                 ))}
@@ -1375,13 +1384,13 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                 falling back to the partner default) and isn't editable per-quote. */}
             <div className="mt-2 border-t pt-2">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-sm text-muted-foreground">Tax rate</span>
+                <span className="text-sm text-muted-foreground">{t('quotes.editor.liveTotals.taxRate')}</span>
                 <span className="text-sm tabular-nums" data-testid="quote-tax-rate">
-                  {quote.taxRate ? `${pctFromFraction(quote.taxRate)}%` : '—'}
+                  {quote.taxRate ? `${pctFromFraction(quote.taxRate)}%` : t('quotes.editor.symbols.notAvailable')}
                 </span>
               </div>
               <p className="mt-1 text-xs text-muted-foreground">
-                Applies to lines marked taxable. Set in the organization&rsquo;s tax settings.
+                {t('quotes.editor.liveTotals.taxRateHelp')}
               </p>
             </div>
             {/* Deposit controls — writer-only. Selecting a type saves it (the server
@@ -1390,7 +1399,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
             {canWrite && (
               <div className="mt-2 space-y-2 border-t pt-2" data-testid="quote-deposit-controls">
                 <div className="flex items-center justify-between gap-2">
-                  <label htmlFor="quote-deposit-type" className="text-sm text-muted-foreground">Deposit</label>
+                  <label htmlFor="quote-deposit-type" className="text-sm text-muted-foreground">{t('quotes.editor.deposit.label')}</label>
                   <select
                     id="quote-deposit-type"
                     value={depositType}
@@ -1399,14 +1408,14 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                     data-testid="quote-deposit-type"
                     className="h-9 min-w-0 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
                   >
-                    <option value="none">No deposit</option>
-                    <option value="percent">Percent of due-on-acceptance</option>
-                    <option value="selected_lines">Selected lines</option>
+                    <option value="none">{t('quotes.editor.deposit.none')}</option>
+                    <option value="percent">{t('quotes.editor.deposit.percentOfDue')}</option>
+                    <option value="selected_lines">{t('quotes.editor.deposit.selectedLines')}</option>
                   </select>
                 </div>
                 {depositType === 'percent' && (
                   <div className="flex items-center justify-between gap-2">
-                    <label htmlFor="quote-deposit-percent" className="text-sm text-muted-foreground">Percent</label>
+                    <label htmlFor="quote-deposit-percent" className="text-sm text-muted-foreground">{t('quotes.editor.deposit.percent')}</label>
                     <div className="flex items-center gap-1">
                       <input
                         id="quote-deposit-percent"
@@ -1418,25 +1427,25 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                         data-testid="deposit-percent-input"
                         className="h-9 w-24 rounded-md border bg-background px-2 text-right text-sm tabular-nums focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
                       />
-                      <span className="text-sm text-muted-foreground">%</span>
+                      <span className="text-sm text-muted-foreground">{t('quotes.editor.symbols.percent')}</span>
                     </div>
                   </div>
                 )}
                 {depositType === 'selected_lines' && (
                   <p className="text-xs text-muted-foreground">
-                    Check the deposit-eligible one-time lines in each pricing table.
+                    {t('quotes.editor.deposit.selectedLinesHelp')}
                   </p>
                 )}
                 {railDeposit != null && Number(railDeposit) > 0 && (
                   <div className="flex items-baseline justify-between gap-2 text-sm font-medium" data-testid="deposit-due-figure">
-                    <span>Deposit due</span>
+                    <span>{t('quotes.editor.deposit.due')}</span>
                     <span className="tabular-nums">{formatMoney(railDeposit, currency)}</span>
                   </div>
                 )}
               </div>
             )}
             <div className="mt-3 flex items-end justify-between gap-2 border-t pt-3">
-              <span className="shrink-0 text-xs font-medium uppercase tracking-wide text-muted-foreground">Due on acceptance</span>
+              <span className="shrink-0 text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('quotes.editor.liveTotals.dueOnAcceptance')}</span>
               {/* Visual figure only; the SR-only summary node above announces the
                   full set of totals on any change. */}
               <span
@@ -1449,7 +1458,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
             {hasRecurring && (
               <>
                 <div className="mt-2 flex items-baseline justify-between text-sm tabular-nums">
-                  <span className="text-muted-foreground">First-period total (incl. recurring)</span>
+                  <span className="text-muted-foreground">{t('quotes.editor.liveTotals.firstPeriodTotal')}</span>
                   <span className="font-medium" data-testid="quote-total-first-period">{formatMoney(railTotal, currency)}</span>
                 </div>
                 <RecurringBillingNote className="mt-2" testId="quote-totals-recurring-hint" />
@@ -1459,7 +1468,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
 
           <div className="rounded-lg border bg-card p-4 shadow-xs">
             <div className="mb-2 flex items-center justify-between gap-2">
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Terms & Conditions</h3>
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.editor.terms.title')}</h3>
               <span className="flex items-center gap-2">
                 <UnsavedBadge show={termsDirty} />
               </span>
@@ -1472,7 +1481,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
               data-testid="quote-terms"
               rows={3}
               className={`w-full rounded-md border bg-background px-3 py-2 text-sm transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(termsDirty, termsSaved)}`}
-              placeholder="Payment terms, warranty clauses, etc."
+              placeholder={t('quotes.editor.terms.placeholder')}
             />
             <SrSaved show={termsSaved} testId="quote-terms-saved" />
           </div>
@@ -1497,15 +1506,13 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
           })();
         }}
         isLoading={pendingRemove ? isPending(`block:${pendingRemove.id}`) : false}
-        title="Remove section"
+        title={t('quotes.editor.confirm.removeSectionTitle')}
         message={
           pendingRemove?.blockType === 'line_items' && linesForBlock(pendingRemove.id).length > 0
-            ? `This removes the pricing table and its ${linesForBlock(pendingRemove.id).length} line item${
-                linesForBlock(pendingRemove.id).length === 1 ? '' : 's'
-              }. This can't be undone.`
-            : "This removes this section. This can't be undone."
+            ? t('quotes.editor.confirm.removeSectionWithLines', { count: linesForBlock(pendingRemove.id).length })
+            : t('quotes.editor.confirm.removeSectionMessage')
         }
-        confirmLabel="Remove section"
+        confirmLabel={t('quotes.editor.actions.removeSection')}
         confirmTestId="quote-block-remove-confirm"
       />
 
@@ -1524,13 +1531,13 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
           })();
         }}
         isLoading={pendingLineRemove ? isPending(`line:${pendingLineRemove.id}`) : false}
-        title="Remove line"
+        title={t('quotes.editor.confirm.removeLineTitle')}
         message={
           pendingLineRemove
-            ? `This removes "${lineTitle(pendingLineRemove) || 'this line'}" from the quote. This can't be undone.`
+            ? t('quotes.editor.confirm.removeLineMessage', { name: lineTitle(pendingLineRemove) || t('quotes.editor.confirm.thisLine') })
             : ''
         }
-        confirmLabel="Remove line"
+        confirmLabel={t('quotes.editor.actions.removeLine')}
         confirmTestId="quote-line-remove-confirm"
       />
     </div>
@@ -1579,6 +1586,7 @@ function BlockCard({
   moveTargets: { id: string; label: string }[];
   onMoveLineToBlock: (line: QuoteLine, targetBlockId: string) => void;
 }) {
+  const { t } = useTranslation('billing');
   // Pending state scoped to this block: editing/removing this block, or adding a
   // line to it, never disables anything in a sibling block.
   const blockBusy = isPending(`block:${block.id}`);
@@ -1714,7 +1722,7 @@ function BlockCard({
     <div className="rounded-lg border bg-card shadow-xs" data-testid={`quote-block-${block.id}`}>
       <div className="flex items-center justify-between border-b px-4 py-2">
         <span className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          {BLOCK_TYPE_LABELS[block.blockType] ?? block.blockType}
+          {BLOCK_TYPE_LABEL_KEYS[block.blockType] ? t(/* i18n-dynamic */ BLOCK_TYPE_LABEL_KEYS[block.blockType]) : block.blockType}
           {isTable && tableLabel ? ` · ${tableLabel}` : ''}
           <SrSaved show={blockSaved} testId={`quote-block-saved-${block.id}`} />
         </span>
@@ -1725,8 +1733,8 @@ function BlockCard({
               disabledDown={isLast}
               onUp={() => onMoveBlock(block, 'up')}
               onDown={() => onMoveBlock(block, 'down')}
-              labelUp="Move section up"
-              labelDown="Move section down"
+              labelUp={t('quotes.editor.actions.moveSectionUp')}
+              labelDown={t('quotes.editor.actions.moveSectionDown')}
               testIdUp={`quote-block-move-up-${block.id}`}
               testIdDown={`quote-block-move-down-${block.id}`}
             />
@@ -1737,7 +1745,7 @@ function BlockCard({
               data-testid={`quote-block-remove-${block.id}`}
               className="rounded-md border border-destructive/40 px-2 py-0.5 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
             >
-              Remove
+              {t('quotes.editor.actions.remove')}
             </button>
           </div>
         )}
@@ -1748,7 +1756,7 @@ function BlockCard({
           canWrite ? (
             <input
               value={headingDraft}
-              aria-label="Heading text"
+              aria-label={t('quotes.editor.addSection.headingPlaceholder')}
               onChange={(e) => setHeadingDraft(e.target.value)}
               onBlur={() => void commitHeading()}
               disabled={blockBusy}
@@ -1763,7 +1771,7 @@ function BlockCard({
           canWrite ? (
             <textarea
               value={richDraft}
-              aria-label="Rich text content"
+              aria-label={t('quotes.editor.block.richTextContentAria')}
               onChange={(e) => setRichDraft(e.target.value)}
               onBlur={() => void commitRich()}
               disabled={blockBusy}
@@ -1782,7 +1790,7 @@ function BlockCard({
               {imageCaption && <figcaption className="text-xs text-muted-foreground">{imageCaption}</figcaption>}
             </figure>
           ) : (
-            <p className="text-sm text-muted-foreground">Image section (rendered in the PDF).</p>
+            <p className="text-sm text-muted-foreground">{t('quotes.editor.block.imageSectionPdf')}</p>
           )
         )}
 
@@ -1792,11 +1800,11 @@ function BlockCard({
               <input
                 type="text"
                 value={labelDraft}
-                aria-label="Pricing table label"
+                aria-label={t('quotes.editor.table.labelAria')}
                 onChange={(e) => setLabelDraft(e.target.value)}
                 onBlur={() => void commitLabel()}
                 disabled={blockBusy}
-                placeholder="Table label (optional, e.g. Monthly services)"
+                placeholder={t('quotes.editor.table.labelPlaceholder')}
                 data-testid={`quote-block-table-label-input-${block.id}`}
                 className={`h-9 w-full rounded-md border bg-background px-3 text-sm font-semibold transition-shadow disabled:opacity-60 ${fieldRing(labelDraft.trim() !== tableLabel.trim(), blockSaved)}`}
               />
@@ -1804,22 +1812,22 @@ function BlockCard({
             {/* The 7-column row (description + 4 inline controls + total + actions)
                 can't compress gracefully on a tablet, so the table keeps a sensible
                 min width and the wrapper scrolls horizontally below that. */}
-            <div className="overflow-x-auto rounded-md focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring" role="region" aria-label="Pricing table — scroll sideways for tax, total and row actions" tabIndex={0}>
+            <div className="overflow-x-auto rounded-md focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring" role="region" aria-label={t('quotes.editor.table.scrollAria')} tabIndex={0}>
             <table className="w-full min-w-[640px] text-sm" data-testid={`quote-block-lines-${block.id}`}>
               <thead>
                 <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
-                  <th className="px-2 py-2 font-medium">Item</th>
-                  <th className="px-2 py-2 text-right font-medium">Qty</th>
-                  <th className="px-2 py-2 text-right font-medium">Unit price</th>
-                  <th className="px-2 py-2 font-medium">Recurrence</th>
-                  <th className="px-2 py-2 text-center font-medium">Taxable</th>
+                  <th className="px-2 py-2 font-medium">{t('quotes.editor.table.item')}</th>
+                  <th className="px-2 py-2 text-right font-medium">{t('quotes.editor.table.qty')}</th>
+                  <th className="px-2 py-2 text-right font-medium">{t('quotes.editor.table.unitPrice')}</th>
+                  <th className="px-2 py-2 font-medium">{t('quotes.editor.table.recurrence')}</th>
+                  <th className="px-2 py-2 text-center font-medium">{t('quotes.editor.table.taxable')}</th>
                   <th
                     className="px-2 py-2 text-right font-medium"
-                    title="Per-line tax. The header Tax total is authoritative and may differ by a rounding cent."
+                    title={t('quotes.editor.table.taxTitle')}
                   >
-                    Tax
+                    {t('quotes.editor.table.tax')}
                   </th>
-                  <th className="px-2 py-2 text-right font-medium">Total</th>
+                  <th className="px-2 py-2 text-right font-medium">{t('quotes.editor.table.total')}</th>
                   {/* Row-actions column is pinned to the right edge so Up/Down/Remove
                       stay reachable when the wide table scrolls horizontally. */}
                   <th className="sticky right-0 border-l bg-card px-2 py-2" />
@@ -1829,7 +1837,7 @@ function BlockCard({
                 {lines.length === 0 ? (
                   <tr>
                     <td colSpan={8} className="px-2 py-6 text-center text-sm text-muted-foreground">
-                      No lines yet. Add a catalog item or a manual line below.
+                      {t('quotes.editor.table.emptyLines')}
                     </td>
                   </tr>
                 ) : (
@@ -1877,7 +1885,13 @@ function BlockCard({
                       mode === m ? 'border-primary bg-primary/10 text-primary' : 'hover:bg-muted'
                     }`}
                   >
-                    {m === 'catalog' ? 'Catalog item' : m === 'manual' ? 'Manual line' : m === 'distributor' ? 'Search distributor' : 'Search Pax8'}
+                    {m === 'catalog'
+                      ? t('quotes.editor.addLine.catalogItem')
+                      : m === 'manual'
+                        ? t('quotes.editor.addLine.manualLine')
+                        : m === 'distributor'
+                          ? t('quotes.editor.addLine.searchDistributor')
+                          : t('quotes.editor.addLine.searchPax8')}
                   </button>
                 ))}
               </div>
@@ -1898,12 +1912,12 @@ function BlockCard({
                 catalog.length === 0 ? (
                   catalogLoadFailed ? (
                     <p className="text-xs text-muted-foreground" data-testid={`quote-catalog-error-${block.id}`}>
-                      Couldn&apos;t load the catalog. Reopen the editor to retry — your existing items are safe.
+                      {t('quotes.editor.catalog.loadError')}
                     </p>
                   ) : (
                     <p className="text-xs text-muted-foreground" data-testid={`quote-catalog-empty-${block.id}`}>
-                      No catalog items.{' '}
-                      <a href="/settings/catalog" className="underline hover:text-foreground">Add some in Product Catalog</a>.
+                      {t('quotes.editor.catalog.empty')}{' '}
+                      <a href="/settings/catalog" className="underline hover:text-foreground">{t('quotes.editor.catalog.addSome')}</a>.
                     </p>
                   )
                 ) : (
@@ -1912,7 +1926,7 @@ function BlockCard({
                     includeBundles={false}
                     onSelect={(it) => onAddCatalog(block.id, it)}
                     testId={`quote-catalog-picker-${block.id}`}
-                    placeholder="Search catalog by name or SKU"
+                    placeholder={t('quotes.editor.catalog.searchPlaceholder')}
                     disabled={addLineBusy}
                   />
                 )
@@ -1923,8 +1937,8 @@ function BlockCard({
                       idSuffix={`quote-${block.id}`}
                       helpText={
                         defaultMarkupPct != null
-                          ? `Searches the web, fills name, description and tax, estimates your cost, and prices the line at your default ${String(Number(defaultMarkupPct))}% markup.`
-                          : 'Searches the web and fills name, description, tax, and an estimated cost. You set the price.'
+                          ? t('quotes.editor.autoFill.helpWithDefaultMarkup', { markup: String(Number(defaultMarkupPct)) })
+                          : t('quotes.editor.autoFill.help')
                       }
                       guidanceSuffix={null}
                       onApply={(result) => {
@@ -1932,20 +1946,24 @@ function BlockCard({
                         setName(d.name);
                         setDesc(d.description ?? '');
                         setTaxable(d.taxable);
-                        const filled = ['name', 'description', d.taxable ? 'taxable: on' : 'taxable: off'];
+                        const filled = [
+                          t('quotes.editor.autoFill.filledName'),
+                          t('quotes.editor.autoFill.filledDescription'),
+                          d.taxable ? t('quotes.editor.autoFill.filledTaxableOn') : t('quotes.editor.autoFill.filledTaxableOff'),
+                        ];
                         // Pre-fill cost/price only into untouched fields — auto-fill
                         // must never overwrite a number the user already typed (read
                         // the refs: the lookup takes seconds and state may have moved).
                         if (result.estimatedCost != null && costRef.current.trim() === '') {
                           const c = result.estimatedCost.toFixed(2);
                           setCost(c);
-                          filled.push(`estimated cost ${formatMoney(Number(c), currency)}`);
+                          filled.push(t('quotes.editor.autoFill.filledEstimatedCost', { amount: formatMoney(Number(c), currency) }));
                           if (defaultMarkupPct != null && (priceRef.current.trim() === '' || Number(priceRef.current) === 0)) {
                             const p = priceFromMarkup(c, defaultMarkupPct);
                             setPrice(p);
                             setMarkup(String(Number(defaultMarkupPct)));
                             priceAuthority.current = 'markup';
-                            filled.push(`price ${formatMoney(Number(p), currency)} (default ${String(Number(defaultMarkupPct))}% markup)`);
+                            filled.push(t('quotes.editor.autoFill.filledPriceWithDefaultMarkup', { amount: formatMoney(Number(p), currency), markup: String(Number(defaultMarkupPct)) }));
                           }
                         }
                         setAutoFilled(filled);
@@ -1966,18 +1984,18 @@ function BlockCard({
                       directly to the form, so the user must be told what changed. */}
                   {autoFilled && (
                     <p role="status" data-testid={`quote-manual-autofilled-${block.id}`} className="text-xs text-muted-foreground">
-                      <span className="font-medium text-foreground">Auto-filled:</span> {autoFilled.join(' · ')}. Review and adjust before adding.
+                      <span className="font-medium text-foreground">{t('quotes.editor.autoFill.label')}</span> {autoFilled.join(' · ')}. {t('quotes.editor.autoFill.review')}
                     </p>
                   )}
                   <input
-                    type="text" placeholder="Name" aria-label="Line name" value={name}
+                    type="text" placeholder={t('quotes.editor.line.namePlaceholder')} aria-label={t('quotes.editor.line.nameAria')} value={name}
                     onChange={(e) => setName(e.target.value)}
                     data-testid={`quote-manual-name-${block.id}`}
                     className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                   <div className="grid grid-cols-1 items-start gap-2 sm:grid-cols-[1fr_70px_90px_110px]">
                     <label className="block">
-                      <span className="mb-1 block text-xs text-muted-foreground">Description (optional)</span>
+                      <span className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.line.descriptionOptional')}</span>
                       <textarea
                         value={desc}
                         onChange={(e) => setDesc(e.target.value)}
@@ -1987,7 +2005,7 @@ function BlockCard({
                       />
                     </label>
                     <label className="block">
-                      <span className="mb-1 block text-xs text-muted-foreground">Qty</span>
+                      <span className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.table.qty')}</span>
                       <input
                         type="number" min="1" step="1" value={qty}
                         onChange={(e) => setQty(e.target.value)}
@@ -1996,7 +2014,7 @@ function BlockCard({
                       />
                     </label>
                     <label className="block">
-                      <span className="mb-1 block text-xs text-muted-foreground">Unit price</span>
+                      <span className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.table.unitPrice')}</span>
                       <input
                         type="number" min="0" step="0.01" value={price}
                         onChange={(e) => onPriceChange(e.target.value)}
@@ -2005,24 +2023,24 @@ function BlockCard({
                       />
                     </label>
                     <label className="block">
-                      <span className="mb-1 block text-xs text-muted-foreground">Billing</span>
+                      <span className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.line.billing')}</span>
                       <select
                         value={recurrence}
                         onChange={(e) => setRecurrence(e.target.value as QuoteLineRecurrence)}
                         data-testid={`quote-manual-recurrence-${block.id}`}
                         className="h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                       >
-                        <option value="one_time">One-time</option>
-                        <option value="monthly">Monthly</option>
-                        <option value="annual">Annual</option>
+                        <option value="one_time">{t('quotes.editor.recurrence.one_time')}</option>
+                        <option value="monthly">{t('quotes.editor.recurrence.monthly')}</option>
+                        <option value="annual">{t('quotes.editor.recurrence.annual')}</option>
                       </select>
                     </label>
                   </div>
                   {/* Internal-only cost & identity fields (never shown to the customer). */}
-                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Internal · not shown to customer</p>
+                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('quotes.editor.internal.full')}</p>
                   <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_1fr_110px_100px]">
                     <label className="block">
-                      <span className="mb-1 block text-xs text-muted-foreground">SKU (optional)</span>
+                      <span className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.line.skuOptional')}</span>
                       <input
                         type="text" value={sku}
                         onChange={(e) => setSku(e.target.value)}
@@ -2031,7 +2049,7 @@ function BlockCard({
                       />
                     </label>
                     <label className="block">
-                      <span className="mb-1 block text-xs text-muted-foreground">Part # (optional)</span>
+                      <span className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.line.partNumberOptional')}</span>
                       <input
                         type="text" value={partNumber}
                         onChange={(e) => setPartNumber(e.target.value)}
@@ -2040,7 +2058,7 @@ function BlockCard({
                       />
                     </label>
                     <label className="block">
-                      <span className="mb-1 block text-xs text-muted-foreground">Unit cost</span>
+                      <span className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.line.unitCost')}</span>
                       <input
                         type="number" min="0" step="0.01" value={cost}
                         onChange={(e) => onCostChange(e.target.value)}
@@ -2049,30 +2067,30 @@ function BlockCard({
                       />
                     </label>
                     <label className="block">
-                      <span className="mb-1 block text-xs text-muted-foreground">Markup %</span>
+                      <span className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.line.markupPercent')}</span>
                       <input
                         type="number" step="0.1" value={markup}
                         onChange={(e) => onMarkupChange(e.target.value)}
                         disabled={cost.trim() === ''}
                         // Sighted users can see the empty cost field; AT users can't —
                         // mirror the edit-row band's disabled-reason wiring.
-                        title={cost.trim() === '' ? 'Enter a cost first to set markup %' : undefined}
+                        title={cost.trim() === '' ? t('quotes.editor.line.enterCostFirstMarkup') : undefined}
                         aria-describedby={cost.trim() === '' ? `quote-manual-markup-hint-${block.id}` : undefined}
                         data-testid={`quote-manual-markup-${block.id}`}
                         className="h-9 w-full rounded-md border bg-background px-3 text-right text-sm tabular-nums focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
                       />
-                      {cost.trim() === '' && <span id={`quote-manual-markup-hint-${block.id}`} className="sr-only">Enter a cost first to set markup %.</span>}
+                      {cost.trim() === '' && <span id={`quote-manual-markup-hint-${block.id}`} className="sr-only">{t('quotes.editor.line.enterCostFirstMarkupSentence')}</span>}
                     </label>
                   </div>
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex flex-wrap items-center gap-3 text-xs">
                       <label className="flex items-center gap-1">
                         <input type="checkbox" checked={taxable} onChange={(e) => setTaxable(e.target.checked)} data-testid={`quote-manual-taxable-${block.id}`} />
-                        Taxable
+                        {t('quotes.editor.table.taxable')}
                       </label>
                       <label className="flex items-center gap-1">
                         <input type="checkbox" checked={saveToCatalog} onChange={(e) => setSaveToCatalog(e.target.checked)} data-testid={`quote-manual-save-catalog-${block.id}`} />
-                        Save to catalog
+                        {t('quotes.editor.line.saveToCatalog')}
                       </label>
                     </div>
                     <button
@@ -2087,7 +2105,7 @@ function BlockCard({
                       className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
                     >
                       {addLineBusy && <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />}
-                      {addLineBusy ? 'Adding…' : 'Add line'}
+                      {addLineBusy ? t('quotes.editor.actions.adding') : t('quotes.editor.actions.addLine')}
                     </button>
                   </div>
                 </div>
@@ -2105,8 +2123,9 @@ function BlockCard({
 // Mirrors EditableLineRow's two-row shape — the customer-facing cells plus the
 // internal cost/markup/net band — but renders everything as plain text.
 function ReadonlyLineRow({ line: l, quoteId, currency, taxRate, isFirst, showInternal }: { line: QuoteLine; quoteId: string; currency: string; taxRate: string | null; isFirst: boolean; showInternal: boolean }) {
+  const { t } = useTranslation('billing');
   const mk = markupPct(l.unitPrice, l.unitCost);
-  const markupStr = mk === null ? '—' : `${String(Number(mk.toFixed(2)))}%`;
+  const markupStr = mk === null ? t('quotes.editor.symbols.notAvailable') : formatPercent(mk / 100, { maximumFractionDigits: 2 });
   const netCents = l.unitCost === null
     ? null
     : toCents(computeLineTotal(l.quantity, l.unitPrice)) - toCents(computeLineTotal(l.quantity, l.unitCost));
@@ -2129,17 +2148,17 @@ function ReadonlyLineRow({ line: l, quoteId, currency, taxRate, isFirst, showInt
         <td className="px-2 py-2 text-right tabular-nums">{formatMoney(l.unitPrice, currency)}</td>
         <td className="px-2 py-2">
           <span className="inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            {formatRecurrence(l.recurrence)}
+            {t(/* i18n-dynamic */ `quotes.editor.recurrence.${l.recurrence}`)}
           </span>
         </td>
         <td className="px-2 py-2 text-center text-muted-foreground" data-testid={`quote-line-taxable-${l.id}`}>
           {/* aria-label on a non-focusable span is ignored by AT, so hide the glyph
               and carry the meaning in an sr-only label instead. */}
-          <span aria-hidden="true">{l.taxable ? '✓' : '—'}</span>
-          <span className="sr-only">{l.taxable ? 'Taxable' : 'Not taxable'}</span>
+          <span aria-hidden="true">{l.taxable ? t('quotes.editor.symbols.check') : t('quotes.editor.symbols.notAvailable')}</span>
+          <span className="sr-only">{l.taxable ? t('quotes.editor.table.taxable') : t('quotes.editor.table.notTaxable')}</span>
         </td>
         <td className="px-2 py-2 text-right tabular-nums text-muted-foreground" data-testid={`quote-line-tax-${l.id}`}>
-          {tax === null ? '—' : formatMoney(tax, currency)}
+          {tax === null ? t('quotes.editor.symbols.notAvailable') : formatMoney(tax, currency)}
         </td>
         <td className="px-2 py-2 text-right tabular-nums">{formatMoney(l.lineTotal, currency)}</td>
         <td className="sticky right-0 border-l bg-card px-2 py-2 text-right" />
@@ -2148,14 +2167,14 @@ function ReadonlyLineRow({ line: l, quoteId, currency, taxRate, isFirst, showInt
         <td colSpan={8} className="px-2 pb-2">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-muted/40 px-2 py-1 text-xs text-[hsl(220_12%_40%)] dark:text-muted-foreground">
             {/* Full disclaimer on the first row, a subtle "Internal" tag on the rest. */}
-            <span className="font-medium uppercase tracking-wide">{isFirst ? 'Internal · not shown to customer' : 'Internal'}</span>
-            <span data-testid={`quote-line-sku-${l.id}`}>SKU {l.sku || '—'}</span>
-            <span data-testid={`quote-line-partnumber-${l.id}`}>PN {l.partNumber || '—'}</span>
-            <span data-testid={`quote-line-cost-${l.id}`}>Cost {l.unitCost === null ? '—' : formatMoney(l.unitCost, currency)}</span>
-            <span data-testid={`quote-line-markup-${l.id}`}>Markup {markupStr}</span>
-            <span className="ml-auto">Profit{' '}
+            <span className="font-medium uppercase tracking-wide">{isFirst ? t('quotes.editor.internal.full') : t('quotes.editor.internal.short')}</span>
+            <span data-testid={`quote-line-sku-${l.id}`}>{t('quotes.editor.line.sku')} {l.sku || t('quotes.editor.symbols.notAvailable')}</span>
+            <span data-testid={`quote-line-partnumber-${l.id}`}>{t('quotes.editor.line.partNumberAbbr')} {l.partNumber || t('quotes.editor.symbols.notAvailable')}</span>
+            <span data-testid={`quote-line-cost-${l.id}`}>{t('quotes.editor.line.cost')} {l.unitCost === null ? t('quotes.editor.symbols.notAvailable') : formatMoney(l.unitCost, currency)}</span>
+            <span data-testid={`quote-line-markup-${l.id}`}>{t('quotes.editor.line.markup')} {markupStr}</span>
+            <span className="ml-auto">{t('quotes.editor.line.profit')}{' '}
               <span className="font-medium tabular-nums text-foreground" data-testid={`quote-line-net-${l.id}`}>
-                {netCents === null ? '—' : formatMoney(fromCents(netCents), currency)}
+                {netCents === null ? t('quotes.editor.symbols.notAvailable') : formatMoney(fromCents(netCents), currency)}
               </span>
             </span>
           </div>
@@ -2195,6 +2214,7 @@ function EditableLineRow({
   moveTargets: { id: string; label: string }[];
   onMoveTo: (line: QuoteLine, targetBlockId: string) => void;
 }) {
+  const { t } = useTranslation('billing');
   // Per-field pending: only the in-flight control disables, so a slow qty save
   // never freezes price/name/desc (the scoped-pending backport — InvoiceEditor's
   // LineRow got this first). Remove keeps the whole-row key: the confirm-dialog
@@ -2320,7 +2340,7 @@ function EditableLineRow({
   }, [edit]);
   const attachImage = useCallback((file: File) => {
     if (file.size > 5 * 1024 * 1024) {
-      handleActionError(new Error('image too large'), 'Image must be 5 MB or smaller.');
+      handleActionError(new Error('image too large'), t('quotes.editor.errors.imageTooLarge'));
       return;
     }
     void (async () => {
@@ -2328,7 +2348,7 @@ function EditableLineRow({
       try {
         const uploaded = await runAction<{ imageId: string }>({
           request: () => uploadQuoteImage(quoteId, file),
-          errorFallback: 'Could not upload the image.',
+          errorFallback: t('quotes.editor.errors.uploadImage'),
           onUnauthorized: UNAUTHORIZED,
           parseSuccess: (d) => (d as { data: { imageId: string } }).data,
         });
@@ -2339,7 +2359,7 @@ function EditableLineRow({
         setImageBusy(false);
       }
     })();
-  }, [quoteId, applyImageId]);
+  }, [quoteId, applyImageId, t]);
   // URL path: the server fetches + copies the remote bytes (SSRF-guarded, 5 MB
   // cap enforced server-side — unlike the file path there's no local size check
   // because the bytes aren't in hand here). Mirrors the image block's URL flow.
@@ -2351,7 +2371,7 @@ function EditableLineRow({
       try {
         const uploaded = await runAction<{ imageId: string }>({
           request: () => addQuoteImageFromUrl(quoteId, url),
-          errorFallback: 'Could not fetch the image from that URL.',
+          errorFallback: t('quotes.editor.errors.fetchImageFromUrl'),
           onUnauthorized: UNAUTHORIZED,
           parseSuccess: (d) => (d as { data: { imageId: string } }).data,
         });
@@ -2362,7 +2382,7 @@ function EditableLineRow({
         setImageBusy(false);
       }
     })();
-  }, [quoteId, imageUrlDraft, applyImageId]);
+  }, [quoteId, imageUrlDraft, applyImageId, t]);
   // Per-field dirty cue (mirrors the terms/tax ring) so every editable surface
   // signals unsaved state the same way.
   const nameDirty = name.trim() !== (line.name ?? '');
@@ -2428,7 +2448,7 @@ function EditableLineRow({
     if (next === (line.name ?? '')) { setName(line.name ?? ''); return; }
     // A line can't have both name and description blank (mirrors the API refine).
     if (!next && !(line.description ?? '').trim()) {
-      handleActionError(new Error('empty line'), 'A line needs a name or a description.');
+      handleActionError(new Error('empty line'), t('quotes.editor.errors.lineNeedsNameOrDescription'));
       setName(line.name ?? '');
       return;
     }
@@ -2439,7 +2459,7 @@ function EditableLineRow({
     descEdited.current = false; // committing — let the server value re-adopt next
     if (next === (line.description ?? '')) { setDesc(line.description ?? ''); return; }
     if (!next && !(line.name ?? '').trim()) {
-      handleActionError(new Error('empty line'), 'A line needs a name or a description.');
+      handleActionError(new Error('empty line'), t('quotes.editor.errors.lineNeedsNameOrDescription'));
       setDesc(line.description ?? '');
       return;
     }
@@ -2452,7 +2472,7 @@ function EditableLineRow({
     // A rejected entry no longer snaps back silently: tell the user why (parity
     // with the tax field and the manual-add path) before reverting.
     if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) {
-      handleActionError(new Error('invalid quantity'), 'Enter a whole-number quantity greater than 0.');
+      handleActionError(new Error('invalid quantity'), t('quotes.editor.errors.quantityWholeGreaterThanZero'));
       setQty(line.quantity);
       return;
     }
@@ -2463,7 +2483,7 @@ function EditableLineRow({
     priceEdited.current = false;
     if (n === Number(line.unitPrice)) { setPrice(line.unitPrice); return; } // unchanged — silent
     if (!Number.isFinite(n) || n < 0) {
-      handleActionError(new Error('invalid price'), 'Enter a unit price of 0 or more.');
+      handleActionError(new Error('invalid price'), t('quotes.editor.errors.unitPriceZeroOrMore'));
       setPrice(line.unitPrice);
       return;
     }
@@ -2474,7 +2494,7 @@ function EditableLineRow({
     if (cost.trim() === '') { if (line.unitCost !== null) void edit({ unitCost: null }, 'cost'); return; }
     const n = Number(cost);
     if (!Number.isFinite(n) || n < 0) {
-      handleActionError(new Error('invalid cost'), 'Enter a cost of 0 or more.');
+      handleActionError(new Error('invalid cost'), t('quotes.editor.errors.costZeroOrMore'));
       setCost(line.unitCost ?? '');
       return;
     }
@@ -2517,8 +2537,8 @@ function EditableLineRow({
             <input
               type="text"
               value={name}
-              aria-label="Line name"
-              placeholder="Name"
+              aria-label={t('quotes.editor.line.nameAria')}
+              placeholder={t('quotes.editor.line.namePlaceholder')}
               onChange={(e) => { setName(e.target.value); nameEdited.current = true; }}
               onBlur={commitName}
               disabled={fieldBusy('name')}
@@ -2532,7 +2552,7 @@ function EditableLineRow({
         <input
           type="number" min="1" step="1"
           value={qty}
-          aria-label="Quantity"
+          aria-label={t('quotes.editor.line.quantityAria')}
           onChange={(e) => { setQty(e.target.value); qtyEdited.current = true; }}
           onBlur={commitQty}
           disabled={fieldBusy('qty')}
@@ -2544,7 +2564,7 @@ function EditableLineRow({
         <input
           type="number" min="0" step="0.01"
           value={price}
-          aria-label="Unit price"
+          aria-label={t('quotes.editor.table.unitPrice')}
           onChange={(e) => { setPrice(e.target.value); priceEdited.current = true; }}
           onBlur={commitPrice}
           disabled={fieldBusy('price')}
@@ -2555,7 +2575,7 @@ function EditableLineRow({
       <td className="px-2 py-2">
         <select
           value={rec}
-          aria-label="Billing frequency"
+          aria-label={t('quotes.editor.line.billingFrequencyAria')}
           onChange={(e) => {
             const next = e.target.value as QuoteLineRecurrence;
             setRec(next); // optimistic — revert if the save fails
@@ -2565,16 +2585,16 @@ function EditableLineRow({
           data-testid={`quote-line-recurrence-${line.id}`}
           className="h-9 w-full min-w-0 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
         >
-          <option value="one_time">One-time</option>
-          <option value="monthly">Monthly</option>
-          <option value="annual">Annual</option>
+          <option value="one_time">{t('quotes.editor.recurrence.one_time')}</option>
+          <option value="monthly">{t('quotes.editor.recurrence.monthly')}</option>
+          <option value="annual">{t('quotes.editor.recurrence.annual')}</option>
         </select>
       </td>
       <td className="px-2 py-2 text-center">
         <input
           type="checkbox"
           checked={taxable}
-          aria-label="Taxable"
+          aria-label={t('quotes.editor.table.taxable')}
           onChange={(e) => {
             const next = e.target.checked;
             setTaxable(next); // optimistic — revert if the save fails
@@ -2591,7 +2611,7 @@ function EditableLineRow({
             <input
               type="checkbox"
               checked={depositEligible}
-              aria-label="Deposit eligible"
+              aria-label={t('quotes.editor.deposit.eligibleAria')}
               onChange={(e) => {
                 const next = e.target.checked;
                 setDepositEligible(next); // optimistic — revert if the save fails
@@ -2600,12 +2620,12 @@ function EditableLineRow({
               disabled={fieldBusy('deposit')}
               data-testid={`line-deposit-eligible-${line.id}`}
             />
-            Deposit
+            {t('quotes.editor.deposit.short')}
           </label>
         )}
       </td>
       <td className="px-2 py-2 text-right tabular-nums text-muted-foreground" data-testid={`quote-line-tax-${line.id}`}>
-        {displayTax === null ? '—' : formatMoney(displayTax, currency)}
+        {displayTax === null ? t('quotes.editor.symbols.notAvailable') : formatMoney(displayTax, currency)}
       </td>
       <td className="px-2 py-2 text-right tabular-nums">
         <span data-testid={`quote-line-total-${line.id}`}>{formatMoney(displayTotal, currency)}</span>
@@ -2618,8 +2638,8 @@ function EditableLineRow({
             disabledDown={isLast}
             onUp={() => onMove(line, 'up')}
             onDown={() => onMove(line, 'down')}
-            labelUp="Move line up"
-            labelDown="Move line down"
+            labelUp={t('quotes.editor.actions.moveLineUp')}
+            labelDown={t('quotes.editor.actions.moveLineDown')}
             testIdUp={`quote-line-move-up-${line.id}`}
             testIdDown={`quote-line-move-down-${line.id}`}
           />
@@ -2633,7 +2653,7 @@ function EditableLineRow({
                   setMovePos({ top: r.bottom + 4, left: r.right });
                 }}
                 disabled={removeBusy}
-                aria-label="Move line to another pricing table"
+                aria-label={t('quotes.editor.actions.moveLineToAnotherTable')}
                 aria-haspopup="menu"
                 aria-expanded={movePos !== null}
                 data-testid={`quote-line-move-to-${line.id}`}
@@ -2644,12 +2664,12 @@ function EditableLineRow({
               {movePos && (
                 <div
                   role="menu"
-                  aria-label="Move line to"
+                  aria-label={t('quotes.editor.actions.moveLineTo')}
                   style={{ position: 'fixed', top: movePos.top, left: movePos.left, transform: 'translateX(-100%)' }}
                   className="z-50 w-max min-w-40 max-w-[min(20rem,calc(100vw-1rem))] rounded-md border bg-card py-1 shadow-md"
                   data-testid={`quote-line-move-to-menu-${line.id}`}
                 >
-                  <p className="px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Move to</p>
+                  <p className="px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.editor.actions.moveTo')}</p>
                   {moveTargets.map((t) => (
                     <button
                       key={t.id}
@@ -2674,7 +2694,7 @@ function EditableLineRow({
             data-testid={`quote-line-remove-${line.id}`}
             className="rounded-md border border-destructive/40 px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
           >
-            Remove
+            {t('quotes.editor.actions.remove')}
           </button>
         </div>
       </td>
@@ -2686,8 +2706,8 @@ function EditableLineRow({
         <textarea
           ref={descRef}
           value={desc}
-          aria-label="Line description"
-          placeholder="Description (optional)"
+          aria-label={t('quotes.editor.line.descriptionAria')}
+          placeholder={t('quotes.editor.line.descriptionOptional')}
           onChange={(e) => { setDesc(e.target.value); descEdited.current = true; autoGrowDesc(); }}
           onBlur={commitDesc}
           rows={2}
@@ -2733,7 +2753,7 @@ function EditableLineRow({
             className="inline-flex h-8 items-center gap-1 rounded-md border px-2 text-xs font-medium hover:bg-muted disabled:opacity-50"
           >
             {imageBusy && <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />}
-            {imageBusy ? 'Uploading…' : line.imageId ? 'Replace image' : 'Add image'}
+            {imageBusy ? t('quotes.editor.actions.uploading') : line.imageId ? t('quotes.editor.actions.replaceImage') : t('quotes.editor.actions.addImage')}
           </button>
           <button
             type="button"
@@ -2743,7 +2763,7 @@ function EditableLineRow({
             data-testid={`quote-line-image-url-toggle-${line.id}`}
             className="inline-flex h-8 items-center rounded-md border px-2 text-xs font-medium hover:bg-muted disabled:opacity-50"
           >
-            From URL
+            {t('quotes.editor.actions.fromUrl')}
           </button>
           {line.imageId && !imageBusy && (
             <button
@@ -2753,7 +2773,7 @@ function EditableLineRow({
               data-testid={`quote-line-image-remove-${line.id}`}
               className="inline-flex h-8 items-center rounded-md border px-2 text-xs font-medium text-muted-foreground hover:bg-muted disabled:opacity-50"
             >
-              Remove image
+              {t('quotes.editor.actions.removeImage')}
             </button>
           )}
           {/* URL disclosure: w-full forces it onto its own row under the parent's
@@ -2766,9 +2786,9 @@ function EditableLineRow({
                 type="url"
                 value={imageUrlDraft}
                 onChange={(e) => setImageUrlDraft(e.target.value)}
-                placeholder="https://example.com/photo.png"
+                placeholder={t('quotes.editor.addSection.imageUrlPlaceholder')}
                 disabled={imageBusy}
-                aria-label="Image URL"
+                aria-label={t('quotes.editor.line.imageUrlAria')}
                 data-testid={`quote-line-image-url-input-${line.id}`}
                 className="h-8 min-w-0 flex-1 rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
               />
@@ -2779,7 +2799,7 @@ function EditableLineRow({
                 data-testid={`quote-line-image-url-fetch-${line.id}`}
                 className="inline-flex h-8 items-center rounded-md bg-primary px-2 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
               >
-                Fetch
+                {t('quotes.editor.actions.fetch')}
               </button>
               <button
                 type="button"
@@ -2788,7 +2808,7 @@ function EditableLineRow({
                 data-testid={`quote-line-image-url-cancel-${line.id}`}
                 className="inline-flex h-8 items-center rounded-md border px-2 text-xs font-medium text-muted-foreground hover:bg-muted disabled:opacity-50"
               >
-                Cancel
+                {t('quotes.editor.actions.cancel')}
               </button>
             </div>
           )}
@@ -2804,8 +2824,8 @@ function EditableLineRow({
           {/* Full disclaimer on the first row; a subtle "Internal" tag persists on
               every following row so a writer scanning mid-table never mistakes the
               cost/markup band for customer-facing copy. */}
-          <span className="font-medium uppercase tracking-wide">{isFirst ? 'Internal · not shown to customer' : 'Internal'}</span>
-          <label className="flex items-center gap-1">SKU
+          <span className="font-medium uppercase tracking-wide">{isFirst ? t('quotes.editor.internal.full') : t('quotes.editor.internal.short')}</span>
+          <label className="flex items-center gap-1">{t('quotes.editor.line.sku')}
             <input
               type="text"
               value={sku}
@@ -2816,7 +2836,7 @@ function EditableLineRow({
               className={`h-6 w-28 rounded border bg-background px-1 text-foreground transition-shadow ${fieldRing(skuDirty, saved)}`}
             />
           </label>
-          <label className="flex items-center gap-1">PN
+          <label className="flex items-center gap-1">{t('quotes.editor.line.partNumberAbbr')}
             <input
               type="text"
               value={partNumber}
@@ -2827,7 +2847,7 @@ function EditableLineRow({
               className={`h-6 w-28 rounded border bg-background px-1 text-foreground transition-shadow ${fieldRing(partDirty, saved)}`}
             />
           </label>
-          <label className="flex items-center gap-1">Cost
+          <label className="flex items-center gap-1">{t('quotes.editor.line.cost')}
             <input
               type="number" min="0" step="0.01"
               value={cost}
@@ -2838,7 +2858,7 @@ function EditableLineRow({
               className={`h-6 w-20 rounded border bg-background px-1 text-right tabular-nums text-foreground transition-shadow ${fieldRing(costDirty, saved)}`}
             />
           </label>
-          <label className="flex items-center gap-1">Markup
+          <label className="flex items-center gap-1">{t('quotes.editor.line.markup')}
             <input
               type="number" step="0.1"
               value={markupInput}
@@ -2848,16 +2868,16 @@ function EditableLineRow({
               disabled={fieldBusy('price') || cost.trim() === ''}
               // Tell keyboard/SR users WHY the field is disabled — sighted users can
               // see the empty cost field, AT users can't.
-              title={cost.trim() === '' ? 'Enter a cost first to set markup %' : undefined}
+              title={cost.trim() === '' ? t('quotes.editor.line.enterCostFirstMarkup') : undefined}
               aria-describedby={cost.trim() === '' ? `quote-line-markup-hint-${line.id}` : undefined}
               data-testid={`quote-line-markup-${line.id}`}
               className="h-6 w-16 rounded border bg-background px-1 text-right tabular-nums text-foreground disabled:opacity-60"
-            />%
-            {cost.trim() === '' && <span id={`quote-line-markup-hint-${line.id}`} className="sr-only">Enter a cost first to set markup %.</span>}
+            />{t('quotes.editor.symbols.percent')}
+            {cost.trim() === '' && <span id={`quote-line-markup-hint-${line.id}`} className="sr-only">{t('quotes.editor.line.enterCostFirstMarkupSentence')}</span>}
           </label>
-          <span className="ml-auto">Profit{' '}
+          <span className="ml-auto">{t('quotes.editor.line.profit')}{' '}
             <span className="font-medium tabular-nums text-foreground" data-testid={`quote-line-net-${line.id}`}>
-              {netCents === null ? '—' : formatMoney(fromCents(netCents), currency)}
+              {netCents === null ? t('quotes.editor.symbols.notAvailable') : formatMoney(fromCents(netCents), currency)}
             </span>
           </span>
         </div>
@@ -2906,6 +2926,7 @@ function LineImageThumb({ quoteId, imageId }: { quoteId: string; imageId: string
 // header, so a bare <img src> would 401 (web-1). Mirror QuoteWorkspace's PDF
 // preview: fetchWithAuth → blob → object URL, revoked on unmount/change.
 function QuoteImagePreview({ quoteId, imageId, caption }: { quoteId: string; imageId: string; caption?: string }) {
+  const { t } = useTranslation('billing');
   const [url, setUrl] = useState<string>();
   const [failed, setFailed] = useState(false);
 
@@ -2927,7 +2948,7 @@ function QuoteImagePreview({ quoteId, imageId, caption }: { quoteId: string; ima
     return () => { cancelled = true; if (objectUrl) window.URL.revokeObjectURL(objectUrl); };
   }, [quoteId, imageId]);
 
-  if (failed) return <p className="text-sm text-muted-foreground">Image preview unavailable.</p>;
+  if (failed) return <p className="text-sm text-muted-foreground">{t('quotes.editor.image.previewUnavailable')}</p>;
   if (!url) return <div className="h-24 w-full animate-pulse rounded border bg-muted" data-testid="quote-image-loading" />;
-  return <img src={url} alt={caption || 'Quote image'} className="max-h-64 rounded border" />;
+  return <img src={url} alt={caption || t('quotes.editor.image.alt')} className="max-h-64 rounded border" />;
 }

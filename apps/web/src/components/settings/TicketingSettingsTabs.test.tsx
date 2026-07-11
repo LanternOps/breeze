@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Stub child components — we test only the sub-tab group's switching behaviour.
@@ -16,14 +16,17 @@ vi.mock('./TicketPrioritiesTab', () => ({
 }));
 
 import TicketingSettingsTabs from './TicketingSettingsTabs';
+import { applyLocale, i18n } from '@/lib/i18n';
 
 describe('TicketingSettingsTabs', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    await i18n.changeLanguage('en');
     window.location.hash = '';
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     window.location.hash = '';
+    await i18n.changeLanguage('en');
   });
 
   it('renders all four sub-tabs and defaults to statuses', () => {
@@ -73,5 +76,16 @@ describe('TicketingSettingsTabs', () => {
     // Embedded mode starts on the default statuses tab regardless of #tab=.
     expect(screen.getByTestId('ticketing-tab-panel-statuses')).toBeInTheDocument();
     expect(screen.queryByTestId('stub-billables-export-card')).toBeNull();
+  });
+
+  it('updates already-mounted tab labels when the locale changes', async () => {
+    render(<TicketingSettingsTabs />);
+    expect(screen.getByTestId('ticketing-tab-categories')).toHaveTextContent('Categories');
+
+    await act(async () => {
+      await applyLocale('pt-BR');
+    });
+
+    expect(screen.getByTestId('ticketing-tab-categories')).toHaveTextContent('Categorias');
   });
 });

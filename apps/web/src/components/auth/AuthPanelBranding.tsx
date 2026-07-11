@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { getLoginContext, type LoginContextBranding } from '../../lib/loginContext';
 import { sanitizeImageSrc } from '../../lib/safeImageSrc';
 
@@ -12,6 +13,7 @@ import { sanitizeImageSrc } from '../../lib/safeImageSrc';
  * DROPS the Breeze marketing copy.
  */
 export default function AuthPanelBranding({ tagline }: { tagline: string }) {
+  const { t } = useTranslation('auth');
   const [branding, setBranding] = useState<LoginContextBranding | null>(null);
 
   useEffect(() => {
@@ -59,9 +61,9 @@ export default function AuthPanelBranding({ tagline }: { tagline: string }) {
           <h2 className="text-2xl font-bold leading-snug tracking-tight lg:text-3xl">
             {branding?.headline ?? (
               <>
-                Effortless endpoint
+                {t('branding.headlineLine1', { defaultValue: 'Effortless endpoint' })}
                 <br />
-                management
+                {t('branding.headlineLine2', { defaultValue: 'management' })}
               </>
             )}
           </h2>
@@ -79,8 +81,8 @@ export default function AuthPanelBranding({ tagline }: { tagline: string }) {
                 </svg>
               </div>
               <div>
-                <p className="text-sm font-semibold text-white/95">10,000+ endpoints</p>
-                <p className="text-xs leading-relaxed text-white/55">Built to handle fleets of any size without breaking a sweat.</p>
+                <p className="text-sm font-semibold text-white/95">{t('branding.endpoints.title', { defaultValue: '10,000+ endpoints' })}</p>
+                <p className="text-xs leading-relaxed text-white/55">{t('branding.endpoints.description', { defaultValue: 'Built to handle fleets of any size without breaking a sweat.' })}</p>
               </div>
             </div>
 
@@ -91,8 +93,8 @@ export default function AuthPanelBranding({ tagline }: { tagline: string }) {
                 </svg>
               </div>
               <div>
-                <p className="text-sm font-semibold text-white/95">Real-time monitoring</p>
-                <p className="text-xs leading-relaxed text-white/55">Live telemetry, instant alerts, zero guesswork.</p>
+                <p className="text-sm font-semibold text-white/95">{t('branding.monitoring.title', { defaultValue: 'Real-time monitoring' })}</p>
+                <p className="text-xs leading-relaxed text-white/55">{t('branding.monitoring.description', { defaultValue: 'Live telemetry, instant alerts, zero guesswork.' })}</p>
               </div>
             </div>
 
@@ -103,8 +105,8 @@ export default function AuthPanelBranding({ tagline }: { tagline: string }) {
                 </svg>
               </div>
               <div>
-                <p className="text-sm font-semibold text-white/95">AI-powered insights</p>
-                <p className="text-xs leading-relaxed text-white/55">Smart diagnostics and automated remediation at your fingertips.</p>
+                <p className="text-sm font-semibold text-white/95">{t('branding.ai.title', { defaultValue: 'AI-powered insights' })}</p>
+                <p className="text-xs leading-relaxed text-white/55">{t('branding.ai.description', { defaultValue: 'Smart diagnostics and automated remediation at your fingertips.' })}</p>
               </div>
             </div>
           </div>

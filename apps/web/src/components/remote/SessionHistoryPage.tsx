@@ -5,12 +5,16 @@ import { fetchWithAuth } from '@/stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { getSafeHttpHref } from '@/lib/safeHref';
 import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
+import { formatNumber } from '@/lib/i18n/format';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 
 type SessionHistoryPageProps = {
   limit?: number;
 };
 
 export default function SessionHistoryPage({ limit }: SessionHistoryPageProps) {
+  const { t } = useTranslation('remote');
   const [selectedSession, setSelectedSession] = useState<RemoteSession | null>(null);
 
   const handleViewDetails = useCallback((session: RemoteSession) => {
@@ -28,7 +32,7 @@ export default function SessionHistoryPage({ limit }: SessionHistoryPageProps) {
         const response = await fetchWithAuth(`/remote/sessions/history?limit=${pageSize}&page=${page}`);
 
         if (!response.ok) {
-          throw new Error('Failed to fetch sessions for export');
+          throw new Error(t('sessionHistoryPage.errors.exportFetch'));
         }
 
         const data = await response.json();
@@ -80,7 +84,7 @@ export default function SessionHistoryPage({ limit }: SessionHistoryPageProps) {
     } catch (error) {
       console.error('Export failed:', error);
     }
-  }, []);
+  }, [t]);
 
   const formatDateTime = (dateString?: string) => {
     if (!dateString) return '-';
@@ -99,9 +103,9 @@ export default function SessionHistoryPage({ limit }: SessionHistoryPageProps) {
   const formatBytes = (bytes?: number) => {
     if (!bytes) return '-';
     if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+    if (bytes < 1024 * 1024) return `${formatNumber(bytes / 1024, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} KB`;
+    if (bytes < 1024 * 1024 * 1024) return `${formatNumber(bytes / (1024 * 1024), { minimumFractionDigits: 1, maximumFractionDigits: 1 })} MB`;
+    return `${formatNumber(bytes / (1024 * 1024 * 1024), { minimumFractionDigits: 2, maximumFractionDigits: 2 })} GB`;
   };
 
   const safeRecordingUrl = getSafeHttpHref(selectedSession?.recordingUrl);
@@ -113,8 +117,8 @@ export default function SessionHistoryPage({ limit }: SessionHistoryPageProps) {
           <History className="h-6 w-6 text-muted-foreground" />
         </div>
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Session History</h1>
-          <p className="text-muted-foreground">View and audit remote access sessions</p>
+          <h1 className="text-xl font-semibold tracking-tight">{t('sessionHistoryPage.title')}</h1>
+          <p className="text-muted-foreground">{t('sessionHistoryPage.subtitle')}</p>
         </div>
       </div>
 
@@ -129,7 +133,7 @@ export default function SessionHistoryPage({ limit }: SessionHistoryPageProps) {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
           <div className="w-full max-w-2xl max-h-[90vh] overflow-auto rounded-lg border bg-card shadow-lg">
             <div className="flex items-center justify-between border-b p-4">
-              <h3 className="text-lg font-semibold">Session Details</h3>
+              <h3 className="text-lg font-semibold">{t('sessionHistoryPage.detailsTitle')}</h3>
               <button
                 type="button"
                 onClick={() => setSelectedSession(null)}
@@ -142,23 +146,23 @@ export default function SessionHistoryPage({ limit }: SessionHistoryPageProps) {
               {/* Session Info */}
               <div>
                 <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-                  Session Information
+                  {t('sessionHistoryPage.sections.sessionInformation')}
                 </h4>
                 <dl className="grid gap-3 sm:grid-cols-2">
                   <div>
-                    <dt className="text-sm text-muted-foreground">Session ID</dt>
+                    <dt className="text-sm text-muted-foreground">{t('sessionHistoryPage.fields.sessionId')}</dt>
                     <dd className="font-mono text-sm">{selectedSession.id}</dd>
                   </div>
                   <div>
-                    <dt className="text-sm text-muted-foreground">Type</dt>
+                    <dt className="text-sm text-muted-foreground">{t('common:labels.type')}</dt>
                     <dd className="text-sm capitalize">{selectedSession.type.replace('_', ' ')}</dd>
                   </div>
                   <div>
-                    <dt className="text-sm text-muted-foreground">Status</dt>
+                    <dt className="text-sm text-muted-foreground">{t('common:labels.status')}</dt>
                     <dd className="text-sm capitalize">{selectedSession.status}</dd>
                   </div>
                   <div>
-                    <dt className="text-sm text-muted-foreground">Duration</dt>
+                    <dt className="text-sm text-muted-foreground">{t('sessionHistoryPage.fields.duration')}</dt>
                     <dd className="text-sm">{formatDuration(selectedSession.durationSeconds)}</dd>
                   </div>
                 </dl>
@@ -167,19 +171,19 @@ export default function SessionHistoryPage({ limit }: SessionHistoryPageProps) {
               {/* Device Info */}
               <div>
                 <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-                  Device
+                  {t('common:labels.device')}
                 </h4>
                 <dl className="grid gap-3 sm:grid-cols-2">
                   <div>
-                    <dt className="text-sm text-muted-foreground">Hostname</dt>
+                    <dt className="text-sm text-muted-foreground">{t('sessionHistoryPage.fields.hostname')}</dt>
                     <dd className="text-sm font-medium">{selectedSession.deviceHostname}</dd>
                   </div>
                   <div>
-                    <dt className="text-sm text-muted-foreground">OS</dt>
+                    <dt className="text-sm text-muted-foreground">{t('sessionHistoryPage.fields.os')}</dt>
                     <dd className="text-sm capitalize">{selectedSession.deviceOsType}</dd>
                   </div>
                   <div>
-                    <dt className="text-sm text-muted-foreground">Device ID</dt>
+                    <dt className="text-sm text-muted-foreground">{t('sessionHistoryPage.fields.deviceId')}</dt>
                     <dd className="font-mono text-xs">{selectedSession.deviceId}</dd>
                   </div>
                 </dl>
@@ -188,19 +192,19 @@ export default function SessionHistoryPage({ limit }: SessionHistoryPageProps) {
               {/* User Info */}
               <div>
                 <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-                  User
+                  {t('common:labels.user')}
                 </h4>
                 <dl className="grid gap-3 sm:grid-cols-2">
                   <div>
-                    <dt className="text-sm text-muted-foreground">Name</dt>
+                    <dt className="text-sm text-muted-foreground">{t('common:labels.name')}</dt>
                     <dd className="text-sm font-medium">{selectedSession.userName}</dd>
                   </div>
                   <div>
-                    <dt className="text-sm text-muted-foreground">Email</dt>
+                    <dt className="text-sm text-muted-foreground">{t('sessionHistoryPage.fields.email')}</dt>
                     <dd className="text-sm">{selectedSession.userEmail}</dd>
                   </div>
                   <div>
-                    <dt className="text-sm text-muted-foreground">User ID</dt>
+                    <dt className="text-sm text-muted-foreground">{t('sessionHistoryPage.fields.userId')}</dt>
                     <dd className="font-mono text-xs">{selectedSession.userId}</dd>
                   </div>
                 </dl>
@@ -209,23 +213,23 @@ export default function SessionHistoryPage({ limit }: SessionHistoryPageProps) {
               {/* Timeline */}
               <div>
                 <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-                  Timeline
+                  {t('sessionHistoryPage.sections.timeline')}
                 </h4>
                 <dl className="grid gap-3 sm:grid-cols-2">
                   <div>
-                    <dt className="text-sm text-muted-foreground">Created</dt>
+                    <dt className="text-sm text-muted-foreground">{t('common:labels.createdAt')}</dt>
                     <dd className="text-sm">{formatDateTime(selectedSession.createdAt)}</dd>
                   </div>
                   <div>
-                    <dt className="text-sm text-muted-foreground">Started</dt>
+                    <dt className="text-sm text-muted-foreground">{t('sessionHistoryPage.fields.started')}</dt>
                     <dd className="text-sm">{formatDateTime(selectedSession.startedAt)}</dd>
                   </div>
                   <div>
-                    <dt className="text-sm text-muted-foreground">Ended</dt>
+                    <dt className="text-sm text-muted-foreground">{t('sessionHistoryPage.fields.ended')}</dt>
                     <dd className="text-sm">{formatDateTime(selectedSession.endedAt)}</dd>
                   </div>
                   <div>
-                    <dt className="text-sm text-muted-foreground">Data Transferred</dt>
+                    <dt className="text-sm text-muted-foreground">{t('sessionHistoryPage.fields.dataTransferred')}</dt>
                     <dd className="text-sm">{formatBytes(selectedSession.bytesTransferred)}</dd>
                   </div>
                 </dl>
@@ -235,7 +239,7 @@ export default function SessionHistoryPage({ limit }: SessionHistoryPageProps) {
               {safeRecordingUrl && (
                 <div>
                   <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-                    Recording
+                    {t('sessionHistoryPage.sections.recording')}
                   </h4>
                   <a
                     href={safeRecordingUrl}
@@ -243,7 +247,7 @@ export default function SessionHistoryPage({ limit }: SessionHistoryPageProps) {
                     rel="noopener noreferrer"
                     className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
                   >
-                    View Recording
+                    {t('sessionHistoryPage.viewRecording')}
                   </a>
                 </div>
               )}
@@ -258,14 +262,14 @@ export default function SessionHistoryPage({ limit }: SessionHistoryPageProps) {
                 }}
                 className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
               >
-                View Device
+                {t('sessionHistoryPage.viewDevice')}
               </button>
               <button
                 type="button"
                 onClick={() => setSelectedSession(null)}
                 className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
               >
-                Close
+                {t('common:actions.close')}
               </button>
             </div>
           </div>

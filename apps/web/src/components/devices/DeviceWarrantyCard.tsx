@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { ShieldCheck, RefreshCw } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
@@ -40,13 +41,13 @@ type DeviceWarrantyCardProps = {
 };
 
 const statusConfig: Record<string, { label: string; color: string }> = {
-  active: { label: 'Active', color: 'bg-success/15 text-success border-success/30' },
-  expiring: { label: 'Expiring', color: 'bg-warning/15 text-warning border-warning/30' },
-  expired: { label: 'Expired', color: 'bg-destructive/15 text-destructive border-destructive/30' },
-  unknown: { label: 'Unknown', color: 'bg-muted text-muted-foreground border-border' },
+  active: { label: 'active', color: 'bg-success/15 text-success border-success/30' },
+  expiring: { label: 'expiring', color: 'bg-warning/15 text-warning border-warning/30' },
+  expired: { label: 'expired', color: 'bg-destructive/15 text-destructive border-destructive/30' },
+  unknown: { label: 'unknown', color: 'bg-muted text-muted-foreground border-border' },
   // Active AppleCare subscription: renewing coverage with no fixed end date — the
   // stored end date is the next renewal, not an expiry (#1320).
-  subscription_active: { label: 'AppleCare subscription', color: 'bg-success/15 text-success border-success/30' },
+  subscription_active: { label: 'appleCareSubscription', color: 'bg-success/15 text-success border-success/30' },
 };
 
 function formatDate(dateStr: string | null): string {
@@ -102,6 +103,7 @@ export default function DeviceWarrantyCard({
   compact = false,
   pollTimeoutMs = REFRESH_POLL_TIMEOUT_MS,
 }: DeviceWarrantyCardProps) {
+  const { t } = useTranslation('devices');
   const [warranty, setWarranty] = useState<WarrantyData | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -160,12 +162,12 @@ export default function DeviceWarrantyCard({
     try {
       await runAction({
         request: () => fetchWithAuth(`/devices/${deviceId}/warranty/refresh`, { method: 'POST' }),
-        errorFallback: 'Failed to queue warranty refresh',
-        successMessage: 'Refreshing warranty…',
+        errorFallback: t('deviceWarrantyCard.toasts.queueFailed'),
+        successMessage: t('deviceWarrantyCard.toasts.refreshing'),
         onUnauthorized: UNAUTHORIZED,
       });
     } catch (err) {
-      handleActionError(err, 'Failed to queue warranty refresh');
+      handleActionError(err, t('deviceWarrantyCard.toasts.queueFailed'));
       if (mountedRef.current) setRefreshing(false);
       return;
     }
@@ -182,11 +184,11 @@ export default function DeviceWarrantyCard({
         if (mountedRef.current) {
           setRefreshing(false);
           if (next?.lastSyncError && !isProviderNotConfigured(next.lastSyncError)) {
-            showToast({ message: `Warranty refresh failed: ${next.lastSyncError}`, type: 'error' });
+            showToast({ message: t('deviceWarrantyCard.toasts.refreshFailed', { error: next.lastSyncError }), type: 'error' });
           } else if (isProviderNotConfigured(next?.lastSyncError ?? null)) {
-            showToast({ message: 'No warranty provider is configured for this manufacturer.', type: 'warning' });
+            showToast({ message: t('deviceWarrantyCard.toasts.noProvider'), type: 'warning' });
           } else {
-            showToast({ message: 'Warranty information updated.', type: 'success' });
+            showToast({ message: t('deviceWarrantyCard.toasts.updated'), type: 'success' });
           }
         }
         return;
@@ -198,7 +200,7 @@ export default function DeviceWarrantyCard({
         if (mountedRef.current) {
           setRefreshing(false);
           showToast({
-            message: 'Warranty refresh is still in progress; the card will update when it completes.',
+            message: t('deviceWarrantyCard.toasts.stillInProgress'),
             type: 'warning',
           });
         }
@@ -226,24 +228,24 @@ export default function DeviceWarrantyCard({
         <div className="rounded-lg border bg-card p-4 shadow-xs">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <ShieldCheck className="h-4 w-4" />
-            Warranty
+            {t('deviceWarrantyCard.compactTitle')}
           </div>
           {error ? (
             // A fetch failure is distinct from a device that genuinely has no
             // warranty record — surface it with a retry rather than the
             // identical "No warranty information" empty state.
             <p className="mt-2 text-sm text-muted-foreground">
-              Couldn&apos;t load warranty.{' '}
+              {t('deviceWarrantyCard.loadFailed')}{' '}
               <button
                 type="button"
                 onClick={() => { setError(false); setLoading(true); fetchWarranty(); }}
                 className="font-medium text-primary hover:underline"
               >
-                Retry
+                {t('common:actions.retry')}
               </button>
             </p>
           ) : (
-            <p className="mt-2 text-sm text-muted-foreground">No warranty information</p>
+            <p className="mt-2 text-sm text-muted-foreground">{t('deviceWarrantyCard.noInformation')}</p>
           )}
         </div>
       );
@@ -255,7 +257,7 @@ export default function DeviceWarrantyCard({
   const primaryEntitlement = warranty.entitlements?.[0];
   // For a renewing subscription the stored end date is the next renewal, not an expiry.
   const isSubscription = warranty.isSubscription || warranty.status === 'subscription_active';
-  const endDateLabel = isSubscription ? 'Renews' : 'Expires';
+  const endDateLabel = isSubscription ? t('deviceWarrantyCard.renews') : t('deviceWarrantyCard.expires');
 
   if (compact) {
     return (
@@ -263,16 +265,16 @@ export default function DeviceWarrantyCard({
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <ShieldCheck className="h-4 w-4" />
-            Warranty
+            {t('deviceWarrantyCard.compactTitle')}
           </div>
           <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${cfg.color}`}>
-            {cfg.label}
+            {t(/* i18n-dynamic */ `deviceWarrantyCard.status.${cfg.label}`)}
           </span>
         </div>
         <p className="mt-2 text-sm font-medium">
           {primaryEntitlement
             ? `${warranty.manufacturer?.toUpperCase()} ${primaryEntitlement.serviceLevelDescription}`
-            : warranty.manufacturer?.toUpperCase() ?? 'Unknown'}
+            : warranty.manufacturer?.toUpperCase() ?? t('deviceWarrantyCard.status.unknown')}
         </p>
         {warranty.warrantyEndDate && (
           <p className="text-xs text-muted-foreground">
@@ -289,9 +291,9 @@ export default function DeviceWarrantyCard({
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <ShieldCheck className="h-5 w-5 text-muted-foreground" />
-          <h3 className="text-lg font-semibold">Warranty Information</h3>
+          <h3 className="text-lg font-semibold">{t('deviceWarrantyCard.title')}</h3>
           <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${cfg.color}`}>
-            {cfg.label}
+            {t(/* i18n-dynamic */ `deviceWarrantyCard.status.${cfg.label}`)}
           </span>
         </div>
         <button
@@ -301,25 +303,25 @@ export default function DeviceWarrantyCard({
           className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium transition hover:bg-muted disabled:opacity-50"
         >
           <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
-          {refreshing ? 'Checking…' : 'Refresh'}
+          {refreshing ? t('deviceWarrantyCard.checking') : t('common:actions.refresh')}
         </button>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-4">
         <div>
-          <p className="text-xs text-muted-foreground">Manufacturer</p>
+          <p className="text-xs text-muted-foreground">{t('deviceWarrantyCard.manufacturer')}</p>
           <p className="text-sm font-medium">{warranty.manufacturer?.toUpperCase() ?? '\u2014'}</p>
         </div>
         <div>
-          <p className="text-xs text-muted-foreground">Serial Number</p>
+          <p className="text-xs text-muted-foreground">{t('deviceWarrantyCard.serialNumber')}</p>
           <p className="text-sm font-medium font-mono">{warranty.serialNumber ?? '\u2014'}</p>
         </div>
         <div>
-          <p className="text-xs text-muted-foreground">Start Date</p>
+          <p className="text-xs text-muted-foreground">{t('deviceWarrantyCard.startDate')}</p>
           <p className="text-sm font-medium">{formatDate(warranty.warrantyStartDate)}</p>
         </div>
         <div>
-          <p className="text-xs text-muted-foreground">{isSubscription ? 'Renews' : 'End Date'}</p>
+          <p className="text-xs text-muted-foreground">{isSubscription ? t('deviceWarrantyCard.renews') : t('deviceWarrantyCard.endDate')}</p>
           <p className="text-sm font-medium">{formatDate(warranty.warrantyEndDate)}</p>
         </div>
       </div>
@@ -329,10 +331,10 @@ export default function DeviceWarrantyCard({
           <table className="w-full text-sm">
             <thead className="bg-muted/40">
               <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                <th className="px-4 py-2">Service Level</th>
-                <th className="px-4 py-2">Type</th>
-                <th className="px-4 py-2">Start Date</th>
-                <th className="px-4 py-2">End Date</th>
+                <th className="px-4 py-2">{t('deviceWarrantyCard.table.serviceLevel')}</th>
+                <th className="px-4 py-2">{t('deviceWarrantyCard.table.type')}</th>
+                <th className="px-4 py-2">{t('deviceWarrantyCard.table.startDate')}</th>
+                <th className="px-4 py-2">{t('deviceWarrantyCard.table.endDate')}</th>
               </tr>
             </thead>
             <tbody>
@@ -350,16 +352,16 @@ export default function DeviceWarrantyCard({
       )}
 
       <div className="flex items-center gap-4 text-xs text-muted-foreground">
-        <span>Last checked: {timeAgo(warranty.lastSyncAt)}</span>
+        <span>{t('deviceWarrantyCard.lastChecked', { time: timeAgo(warranty.lastSyncAt) })}</span>
         {warranty.dataSource && (
-          <span>Source: {dataSourceLabel(warranty.dataSource)}</span>
+          <span>{t('deviceWarrantyCard.source', { source: dataSourceLabel(warranty.dataSource) })}</span>
         )}
         {/* Legacy: pre-v0.13.9 syncs stored "No configured provider..." as lastSyncError.
             Post-v0.13.9, lastSyncError is null for no-provider cases. Remove after re-sync cycle. */}
         {warranty.lastSyncError && (
           warranty.lastSyncError.includes('No configured provider')
-            ? <span className="text-muted-foreground">Warranty lookup not available for this manufacturer</span>
-            : <span className="text-red-500">Error: {warranty.lastSyncError}</span>
+            ? <span className="text-muted-foreground">{t('deviceWarrantyCard.lookupUnavailable')}</span>
+            : <span className="text-red-500">{t('deviceWarrantyCard.error', { error: warranty.lastSyncError })}</span>
         )}
       </div>
     </div>

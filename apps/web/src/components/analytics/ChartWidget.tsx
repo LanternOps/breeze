@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   ResponsiveContainer,
   LineChart,
@@ -49,6 +50,7 @@ export default function ChartWidget({
   valueKey = 'value',
   height = 280
 }: ChartWidgetProps) {
+  const { t } = useTranslation('reports');
   const derivedSeries = useMemo(() => {
     if (series && series.length > 0) return series;
     const first = data[0];
@@ -67,7 +69,7 @@ export default function ChartWidget({
       <div className={`flex-1 ${minHeightPxClass(height)}`}>
         {data.length === 0 ? (
           <div className="flex h-full items-center justify-center rounded-md border border-dashed text-xs text-muted-foreground">
-            No data available
+            {t('analytics.chartWidget.noData')}
           </div>
         ) : (
           <ResponsiveContainer width="100%" height="100%">

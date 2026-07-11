@@ -11,6 +11,7 @@ import {
   X,
   XCircle
 } from 'lucide-react';
+import { Trans, useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import CreateMonitorForm from '../monitors/CreateMonitorForm';
@@ -86,27 +87,25 @@ const statusColors: Record<string, string> = {
   unknown: 'bg-muted text-muted-foreground border-muted'
 };
 
-const statusLabel: Record<string, string> = {
-  online: 'Online',
-  warning: 'Warning',
-  offline: 'Offline',
-  maintenance: 'Maintenance',
-  unknown: 'Unknown'
-};
+function getStatusLabel(status: string, t: (key: string) => string): string {
+  const key = `longTail.monitoring.MonitoringAssetsDashboard.status.${status}`;
+  const label = t(/* i18n-dynamic */ key);
+  return label === key ? status : label;
+}
 
-function formatRelativeTime(dateString: string | null) {
-  if (!dateString) return 'Never';
+function formatRelativeTime(dateString: string | null, t: (key: string, options?: Record<string, unknown>) => string) {
+  if (!dateString) return t('longTail.monitoring.MonitoringAssetsDashboard.relative.never');
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
   const diffMins = Math.floor(diffMs / (1000 * 60));
-  if (diffMins < 1) return 'Just now';
-  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffMins < 1) return t('longTail.monitoring.MonitoringAssetsDashboard.relative.justNow');
+  if (diffMins < 60) return t('longTail.monitoring.MonitoringAssetsDashboard.relative.minutesAgo', { count: diffMins });
   const diffHours = Math.floor(diffMins / 60);
-  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffHours < 24) return t('longTail.monitoring.MonitoringAssetsDashboard.relative.hoursAgo', { count: diffHours });
   const diffDays = Math.floor(diffHours / 24);
-  return `${diffDays}d ago`;
+  return t('longTail.monitoring.MonitoringAssetsDashboard.relative.daysAgo', { count: diffDays });
 }
 
 function formatInterval(seconds: number | null) {
@@ -122,6 +121,7 @@ type Props = {
 };
 
 export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks }: Props) {
+  const { t } = useTranslation('common');
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
   // Monitoring assets are scoped to a single org; the API returns 400
   // ("orgId is required when partner has multiple organizations") for a
@@ -157,15 +157,15 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
       params.set('orgId', currentOrgId);
       const qs = params.toString() ? `?${params.toString()}` : '';
       const res = await fetchWithAuth(`/monitoring/assets${qs}`);
-      if (!res.ok) throw new Error('Failed to fetch monitoring assets');
+      if (!res.ok) throw new Error(t('longTail.monitoring.MonitoringAssetsDashboard.errors.fetchAssets'));
       const data = await res.json();
       setAssets(data.data ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('longTail.monitoring.MonitoringAssetsDashboard.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [showAll, currentOrgId]);
+  }, [showAll, currentOrgId, t]);
 
   useEffect(() => {
     fetchAssets();
@@ -203,15 +203,15 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
       const res = await fetchWithAuth(`/monitoring/assets/${assetId}`);
       if (!res.ok) {
         const data = await res.json().catch(() => null);
-        throw new Error(data?.error ?? 'Failed to load monitoring details');
+        throw new Error(data?.error ?? t('longTail.monitoring.MonitoringAssetsDashboard.errors.loadDetails'));
       }
       setDetail(await res.json());
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Failed to load monitoring details');
+      setActionError(err instanceof Error ? err.message : t('longTail.monitoring.MonitoringAssetsDashboard.errors.loadDetails'));
     } finally {
       setDetailLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     if (!editingAssetId) return;
@@ -236,14 +236,14 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
       });
       if (!res.ok) {
         const data = await res.json().catch(() => null);
-        throw new Error(data?.error ?? 'Failed to update');
+        throw new Error(data?.error ?? t('longTail.monitoring.MonitoringAssetsDashboard.errors.update'));
       }
       await fetchAssets();
       if (editingAssetId === assetId) {
         await openEdit(assetId);
       }
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'An error occurred');
+      setActionError(err instanceof Error ? err.message : t('longTail.monitoring.MonitoringAssetsDashboard.errors.generic'));
     } finally {
       setActionLoading(null);
     }
@@ -256,14 +256,14 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
       const res = await fetchWithAuth(`/monitoring/assets/${assetId}`, { method: 'DELETE' });
       if (!res.ok) {
         const data = await res.json().catch(() => null);
-        throw new Error(data?.error ?? 'Failed to disable monitoring');
+        throw new Error(data?.error ?? t('longTail.monitoring.MonitoringAssetsDashboard.errors.disableMonitoring'));
       }
       await fetchAssets();
       if (editingAssetId === assetId) {
         setEditingAssetId(null);
       }
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'An error occurred');
+      setActionError(err instanceof Error ? err.message : t('longTail.monitoring.MonitoringAssetsDashboard.errors.generic'));
     } finally {
       setActionLoading(null);
     }
@@ -283,14 +283,18 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
             ? 'bg-warning/15 text-warning border-warning/30'
             : 'bg-muted text-muted-foreground border-muted'
       }`}>
-        {overall === 'active' ? 'Active' : overall === 'paused' ? 'Configured (Paused)' : 'Not configured'}
+        {overall === 'active'
+          ? t('common:states.active')
+          : overall === 'paused'
+            ? t('longTail.monitoring.MonitoringAssetsDashboard.configuredPaused')
+            : t('longTail.monitoring.MonitoringAssetsDashboard.notConfigured')}
       </span>
     );
   };
 
   const renderSnmpCell = (asset: MonitoringAsset) => {
     if (!asset.snmp.configured) {
-      return <span className="text-xs text-muted-foreground">Not configured</span>;
+      return <span className="text-xs text-muted-foreground">{t('longTail.monitoring.MonitoringAssetsDashboard.notConfigured')}</span>;
     }
     return (
       <div className="space-y-1">
@@ -301,15 +305,15 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
               : statusColors[asset.snmp.lastStatus ?? 'unknown'] ?? statusColors.unknown
           }`}>
             {!asset.snmp.isActive
-              ? 'Paused'
-              : statusLabel[asset.snmp.lastStatus ?? 'unknown'] ?? 'Unknown'}
+              ? t('longTail.monitoring.MonitoringAssetsDashboard.paused')
+              : getStatusLabel(asset.snmp.lastStatus ?? 'unknown', t)}
           </span>
           <span className="text-xs text-muted-foreground">
-            {asset.snmp.snmpVersion ?? '—'} • every {formatInterval(asset.snmp.pollingInterval)}
+            {asset.snmp.snmpVersion ?? '—'} • {t('longTail.monitoring.MonitoringAssetsDashboard.everyInterval', { interval: formatInterval(asset.snmp.pollingInterval) })}
           </span>
         </div>
         <div className="text-xs text-muted-foreground">
-          Last polled {formatRelativeTime(asset.snmp.lastPolled)}
+          {t('longTail.monitoring.MonitoringAssetsDashboard.lastPolled', { time: formatRelativeTime(asset.snmp.lastPolled, t) })}
         </div>
       </div>
     );
@@ -323,7 +327,7 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
           type="button"
           onClick={() => setEditingAssetId(asset.id)}
           className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted"
-          title="Configure monitoring"
+          title={t('longTail.monitoring.MonitoringAssetsDashboard.configureMonitoring')}
         >
           <Settings className="h-4 w-4" />
         </button>
@@ -333,7 +337,7 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
             onClick={() => handleToggleSnmpActive(asset.id, !asset.snmp.isActive)}
             disabled={isLoadingAction}
             className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted disabled:opacity-50"
-            title={asset.snmp.isActive ? 'Pause SNMP polling' : 'Resume SNMP polling'}
+            title={asset.snmp.isActive ? t('longTail.monitoring.MonitoringAssetsDashboard.pauseSnmpPolling') : t('longTail.monitoring.MonitoringAssetsDashboard.resumeSnmpPolling')}
           >
             {isLoadingAction ? (
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -350,7 +354,7 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
             onClick={() => handleDisableAll(asset.id)}
             disabled={isLoadingAction}
             className="flex h-8 w-8 items-center justify-center rounded-md border border-destructive/30 text-destructive hover:bg-destructive/10 disabled:opacity-50"
-            title="Disable all active monitoring for this asset"
+            title={t('longTail.monitoring.MonitoringAssetsDashboard.disableAllActiveMonitoring')}
           >
             <XCircle className="h-4 w-4" />
           </button>
@@ -362,9 +366,11 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
   if (needsOrgSelection) {
     return (
       <div className="rounded-md border bg-muted/40 p-4 text-sm text-muted-foreground">
-        Network monitoring assets are scoped to a single organization. Switch the scope in the top bar
-        from <span className="font-medium text-foreground">All orgs</span> to a specific organization
-        to view its monitoring assets.
+        <Trans
+          t={t}
+          i18nKey="longTail.monitoring.MonitoringAssetsDashboard.needsOrgSelection"
+          components={[<span className="font-medium text-foreground" />]}
+        />
       </div>
     );
   }
@@ -374,7 +380,7 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
       <div className="flex items-center justify-center rounded-lg border bg-card p-10 shadow-xs">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading monitoring assets...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('longTail.monitoring.MonitoringAssetsDashboard.loadingAssets')}</p>
         </div>
       </div>
     );
@@ -401,7 +407,7 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
             onClick={() => setShowAll((v) => !v)}
             className="h-9 rounded-md border px-3 text-sm font-medium hover:bg-muted"
           >
-            {showAll ? 'Showing all discovered assets' : 'Showing monitored assets'}
+            {showAll ? t('longTail.monitoring.MonitoringAssetsDashboard.showingAllDiscoveredAssets') : t('longTail.monitoring.MonitoringAssetsDashboard.showingMonitoredAssets')}
           </button>
           {onOpenChecks && (
             <button
@@ -409,7 +415,7 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
               onClick={onOpenChecks}
               className="h-9 rounded-md border px-3 text-sm font-medium hover:bg-muted"
             >
-              Manage network checks
+              {t('longTail.monitoring.MonitoringAssetsDashboard.manageNetworkChecks')}
             </button>
           )}
         </div>
@@ -419,7 +425,7 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
           className="flex h-9 items-center gap-2 rounded-md border px-3 text-sm text-muted-foreground hover:text-foreground"
         >
           <RefreshCw className="h-3.5 w-3.5" />
-          Refresh
+          {t('common:actions.refresh')}
         </button>
       </div>
 
@@ -432,7 +438,7 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
             </div>
             <div>
               <p className="text-2xl font-bold">{configuredCount}</p>
-              <p className="text-xs text-muted-foreground">Configured</p>
+              <p className="text-xs text-muted-foreground">{t('longTail.monitoring.MonitoringAssetsDashboard.summary.configured')}</p>
             </div>
           </div>
         </div>
@@ -443,7 +449,7 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
             </div>
             <div>
               <p className="text-2xl font-bold">{activeCount}</p>
-              <p className="text-xs text-muted-foreground">Active</p>
+              <p className="text-xs text-muted-foreground">{t('common:states.active')}</p>
             </div>
           </div>
         </div>
@@ -454,7 +460,7 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
             </div>
             <div>
               <p className="text-2xl font-bold">{pausedCount}</p>
-              <p className="text-xs text-muted-foreground">Paused</p>
+              <p className="text-xs text-muted-foreground">{t('longTail.monitoring.MonitoringAssetsDashboard.paused')}</p>
             </div>
           </div>
         </div>
@@ -465,7 +471,7 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
             </div>
             <div>
               <p className="text-2xl font-bold">{snmpWarningOrOffline}</p>
-              <p className="text-xs text-muted-foreground">SNMP Warnings</p>
+              <p className="text-xs text-muted-foreground">{t('longTail.monitoring.MonitoringAssetsDashboard.summary.snmpWarnings')}</p>
             </div>
           </div>
         </div>
@@ -476,7 +482,7 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
             </div>
             <div>
               <p className="text-2xl font-bold">{assets.length}</p>
-              <p className="text-xs text-muted-foreground">Shown</p>
+              <p className="text-xs text-muted-foreground">{t('longTail.monitoring.MonitoringAssetsDashboard.summary.shown')}</p>
             </div>
           </div>
         </div>
@@ -485,9 +491,9 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
       <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="text-lg font-semibold">Assets</h2>
+            <h2 className="text-lg font-semibold">{t('longTail.monitoring.MonitoringAssetsDashboard.assets')}</h2>
             <p className="text-sm text-muted-foreground">
-              Unified view of SNMP polling and network checks per discovered asset.
+              {t('longTail.monitoring.MonitoringAssetsDashboard.assetsDescription')}
             </p>
           </div>
         </div>
@@ -498,20 +504,20 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
             <table className="min-w-full divide-y">
               <thead className="bg-muted/40">
                 <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  <th className="px-4 py-3">Asset</th>
-                  <th className="px-4 py-3">IP</th>
-                  <th className="px-4 py-3">Type</th>
-                  <th className="px-4 py-3">Overall</th>
-                  <th className="px-4 py-3">SNMP</th>
-                  <th className="px-4 py-3">Network Checks</th>
-                  <th className="px-4 py-3 text-right">Actions</th>
+                  <th className="px-4 py-3">{t('longTail.monitoring.MonitoringAssetsDashboard.table.asset')}</th>
+                  <th className="px-4 py-3">{t('longTail.monitoring.MonitoringAssetsDashboard.ip')}</th>
+                  <th className="px-4 py-3">{t('common:labels.type')}</th>
+                  <th className="px-4 py-3">{t('longTail.monitoring.MonitoringAssetsDashboard.table.overall')}</th>
+                  <th className="px-4 py-3">{t('longTail.monitoring.MonitoringAssetsDashboard.snmp')}</th>
+                  <th className="px-4 py-3">{t('longTail.monitoring.MonitoringAssetsDashboard.networkChecks')}</th>
+                  <th className="px-4 py-3 text-right">{t('common:labels.actions')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
                 {assets.length === 0 ? (
                   <tr>
                     <td colSpan={7} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                      No assets found.
+                      {t('longTail.monitoring.MonitoringAssetsDashboard.emptyAssets')}
                     </td>
                   </tr>
                 ) : (
@@ -523,7 +529,7 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
                             {asset.hostname || asset.ipAddress || '—'}
                           </p>
                           <p className="truncate text-xs text-muted-foreground">
-                            Last seen {formatRelativeTime(asset.lastSeenAt)}
+                            {t('longTail.monitoring.MonitoringAssetsDashboard.lastSeen', { time: formatRelativeTime(asset.lastSeenAt, t) })}
                           </p>
                         </div>
                       </td>
@@ -533,7 +539,7 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
                       <td className="px-4 py-3">{renderSnmpCell(asset)}</td>
                       <td className="px-4 py-3 text-sm text-muted-foreground">
                         {asset.network.totalCount > 0
-                          ? `${asset.network.activeCount}/${asset.network.totalCount} active`
+                          ? t('longTail.monitoring.MonitoringAssetsDashboard.activeRatio', { active: asset.network.activeCount, total: asset.network.totalCount })
                           : '—'}
                       </td>
                       <td className="px-4 py-3">{renderActions(asset)}</td>
@@ -546,7 +552,7 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
           cards={
             assets.length === 0 ? (
               <DataCard>
-                <p className="py-2 text-center text-sm text-muted-foreground">No assets found.</p>
+                <p className="py-2 text-center text-sm text-muted-foreground">{t('longTail.monitoring.MonitoringAssetsDashboard.emptyAssets')}</p>
               </DataCard>
             ) : (
               assets.map((asset) => (
@@ -555,27 +561,27 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
                     <div className="min-w-0">
                       <p className="truncate font-medium">{asset.hostname || asset.ipAddress || '—'}</p>
                       <p className="truncate text-xs text-muted-foreground">
-                        Last seen {formatRelativeTime(asset.lastSeenAt)}
+                        {t('longTail.monitoring.MonitoringAssetsDashboard.lastSeen', { time: formatRelativeTime(asset.lastSeenAt, t) })}
                       </p>
                     </div>
                     {renderOverallBadge(asset)}
                   </div>
                   <div className="mt-3 space-y-2 border-t pt-3">
-                    <CardField label="IP">
+                    <CardField label={t('longTail.monitoring.MonitoringAssetsDashboard.ip')}>
                       <span className="font-mono text-sm">{asset.ipAddress || '—'}</span>
                     </CardField>
-                    <CardField label="Type">
+                    <CardField label={t('common:labels.type')}>
                       <span className="text-sm capitalize">{asset.assetType}</span>
                     </CardField>
-                    <CardField label="Network checks">
+                    <CardField label={t('longTail.monitoring.MonitoringAssetsDashboard.networkChecks')}>
                       <span className="text-sm text-muted-foreground">
                         {asset.network.totalCount > 0
-                          ? `${asset.network.activeCount}/${asset.network.totalCount} active`
+                          ? t('longTail.monitoring.MonitoringAssetsDashboard.activeRatio', { active: asset.network.activeCount, total: asset.network.totalCount })
                           : '—'}
                       </span>
                     </CardField>
                     <div>
-                      <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">SNMP</span>
+                      <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('longTail.monitoring.MonitoringAssetsDashboard.snmp')}</span>
                       <div className="mt-1">{renderSnmpCell(asset)}</div>
                     </div>
                   </div>
@@ -627,6 +633,7 @@ function EditMonitoringModal({
   onDisable,
   disabling
 }: EditModalProps) {
+  const { t } = useTranslation('common');
   const snmp = detail?.snmpDevice ?? null;
 
   const [snmpVersion, setSnmpVersion] = useState<'v1' | 'v2c' | 'v3'>((snmp?.snmpVersion as any) ?? 'v2c');
@@ -672,12 +679,12 @@ function EditMonitoringModal({
 
       if (snmpVersion === 'v1' || snmpVersion === 'v2c') {
         if (!snmp?.id && !community.trim()) {
-          throw new Error('Community string is required for SNMP v1/v2c');
+          throw new Error(t('longTail.monitoring.MonitoringAssetsDashboard.errors.communityRequired'));
         }
         if (community.trim()) payload.community = community;
       } else {
         if (!snmp?.id && !username.trim()) {
-          throw new Error('Username is required for SNMP v3');
+          throw new Error(t('longTail.monitoring.MonitoringAssetsDashboard.errors.usernameRequired'));
         }
         if (username.trim()) payload.username = username;
         if (authProtocol) payload.authProtocol = authProtocol;
@@ -693,11 +700,11 @@ function EditMonitoringModal({
       });
       if (!res.ok) {
         const data = await res.json().catch(() => null);
-        throw new Error(data?.error ?? 'Failed to save monitoring settings');
+        throw new Error(data?.error ?? t('longTail.monitoring.MonitoringAssetsDashboard.errors.saveSettings'));
       }
       onSaved();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('longTail.monitoring.MonitoringAssetsDashboard.errors.generic'));
     } finally {
       setSaving(false);
     }
@@ -713,7 +720,7 @@ function EditMonitoringModal({
       <div className="w-full max-w-3xl max-h-[90vh] overflow-y-auto rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h2 className="text-lg font-semibold">Configure Monitoring</h2>
+            <h2 className="text-lg font-semibold">{t('longTail.monitoring.MonitoringAssetsDashboard.configureMonitoring')}</h2>
             <p className="mt-1 text-sm text-muted-foreground">
               {asset.hostname || asset.ipAddress} &middot; {asset.assetType}
             </p>
@@ -730,46 +737,50 @@ function EditMonitoringModal({
         {loading && (
           <div className="mt-6 flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
-            Loading monitoring details...
+            {t('longTail.monitoring.MonitoringAssetsDashboard.loadingDetails')}
           </div>
         )}
 
         {!loading && detail && (
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
             <div className="rounded-md border bg-muted/30 px-4 py-3">
-              <p className="text-xs text-muted-foreground">SNMP</p>
+              <p className="text-xs text-muted-foreground">{t('longTail.monitoring.MonitoringAssetsDashboard.snmp')}</p>
               <p className="mt-1 text-sm font-medium">
                 {detail.snmpDevice
                   ? `${detail.snmpDevice.snmpVersion} • every ${detail.snmpDevice.pollingInterval}s`
-                  : 'Not configured'}
+                  : t('longTail.monitoring.MonitoringAssetsDashboard.notConfigured')}
               </p>
               {detail.snmpDevice && (
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Status: {detail.snmpDevice.isActive ? (statusLabel[detail.snmpDevice.lastStatus ?? 'unknown'] ?? 'Unknown') : 'Paused'}
+                  {t('longTail.monitoring.MonitoringAssetsDashboard.statusLine', {
+                    status: detail.snmpDevice.isActive
+                      ? getStatusLabel(detail.snmpDevice.lastStatus ?? 'unknown', t)
+                      : t('longTail.monitoring.MonitoringAssetsDashboard.paused'),
+                  })}
                   {' • '}
-                  Last polled {formatRelativeTime(detail.snmpDevice.lastPolled)}
+                  {t('longTail.monitoring.MonitoringAssetsDashboard.lastPolled', { time: formatRelativeTime(detail.snmpDevice.lastPolled, t) })}
                 </p>
               )}
             </div>
             <div className="rounded-md border bg-muted/30 px-4 py-3">
-              <p className="text-xs text-muted-foreground">Network Checks</p>
+              <p className="text-xs text-muted-foreground">{t('longTail.monitoring.MonitoringAssetsDashboard.networkChecks')}</p>
               <p className="mt-1 text-sm font-medium">
-                {networkSummary ? `${networkSummary.activeCount}/${networkSummary.totalCount} active` : '—'}
+                {networkSummary ? t('longTail.monitoring.MonitoringAssetsDashboard.activeRatio', { active: networkSummary.activeCount, total: networkSummary.totalCount }) : '—'}
               </p>
-              <p className="mt-1 text-xs text-muted-foreground">Create and manage checks per asset.</p>
+              <p className="mt-1 text-xs text-muted-foreground">{t('longTail.monitoring.MonitoringAssetsDashboard.createManageChecks')}</p>
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <button
                   type="button"
                   onClick={() => setShowCreateMonitorForm(true)}
                   className="h-8 rounded-md border px-3 text-xs font-medium hover:bg-muted"
                 >
-                  Add network check
+                  {t('longTail.monitoring.MonitoringAssetsDashboard.addNetworkCheck')}
                 </button>
                 <a
                   href={`/monitoring?assetId=${encodeURIComponent(asset.id)}#checks`}
                   className="inline-flex items-center h-8 rounded-md border px-3 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
                 >
-                  Open checks
+                  {t('longTail.monitoring.MonitoringAssetsDashboard.openChecks')}
                 </a>
               </div>
             </div>
@@ -778,26 +789,26 @@ function EditMonitoringModal({
 
         <form onSubmit={handleSave} className="mt-6 space-y-5">
           <div className="rounded-md border p-4">
-            <h3 className="text-sm font-semibold">SNMP Polling</h3>
+            <h3 className="text-sm font-semibold">{t('longTail.monitoring.MonitoringAssetsDashboard.snmpPolling')}</h3>
             <p className="mt-1 text-xs text-muted-foreground">
-              Configure per-asset SNMP polling. Secrets are not shown; leave blank to keep existing values.
+              {t('longTail.monitoring.MonitoringAssetsDashboard.snmpPollingDescription')}
             </p>
 
             <div className="mt-4 grid gap-4 sm:grid-cols-2">
               <div>
-                <label className="block text-xs font-medium text-muted-foreground mb-1">SNMP Version</label>
+                <label className="block text-xs font-medium text-muted-foreground mb-1">{t('longTail.monitoring.MonitoringAssetsDashboard.snmpVersion')}</label>
                 <select
                   value={snmpVersion}
                   onChange={(e) => setSnmpVersion(e.target.value as any)}
                   className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 >
-                  <option value="v1">v1</option>
-                  <option value="v2c">v2c</option>
-                  <option value="v3">v3</option>
+                  <option value="v1">{t('longTail.monitoring.MonitoringAssetsDashboard.snmpVersions.v1')}</option>
+                  <option value="v2c">{t('longTail.monitoring.MonitoringAssetsDashboard.snmpVersions.v2c')}</option>
+                  <option value="v3">{t('longTail.monitoring.MonitoringAssetsDashboard.snmpVersions.v3')}</option>
                 </select>
               </div>
               <div>
-                <label className="block text-xs font-medium text-muted-foreground mb-1">Polling Interval (seconds)</label>
+                <label className="block text-xs font-medium text-muted-foreground mb-1">{t('longTail.monitoring.MonitoringAssetsDashboard.pollingIntervalSeconds')}</label>
                 <input
                   type="number"
                   value={pollingInterval}
@@ -812,15 +823,15 @@ function EditMonitoringModal({
             {(snmpVersion === 'v1' || snmpVersion === 'v2c') && (
               <div className="mt-4">
                 <label className="block text-xs font-medium text-muted-foreground mb-1">
-                  Community String
-                  <span className="ml-1 text-muted-foreground/60">(leave blank to keep current)</span>
+                  {t('longTail.monitoring.MonitoringAssetsDashboard.communityString')}
+                  <span className="ml-1 text-muted-foreground/60">{t('longTail.monitoring.MonitoringAssetsDashboard.leaveBlankToKeepCurrent')}</span>
                 </label>
                 <input
                   type="text"
                   value={community}
                   onChange={(e) => setCommunity(e.target.value)}
                   className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                  placeholder="public"
+                  placeholder={t('longTail.monitoring.MonitoringAssetsDashboard.communityPlaceholder')}
                 />
               </div>
             )}
@@ -829,8 +840,8 @@ function EditMonitoringModal({
               <div className="mt-4 space-y-4">
                 <div>
                   <label className="block text-xs font-medium text-muted-foreground mb-1">
-                    Username
-                    <span className="ml-1 text-muted-foreground/60">(leave blank to keep current)</span>
+                    {t('longTail.monitoring.MonitoringAssetsDashboard.username')}
+                    <span className="ml-1 text-muted-foreground/60">{t('longTail.monitoring.MonitoringAssetsDashboard.leaveBlankToKeepCurrent')}</span>
                   </label>
                   <input
                     type="text"
@@ -841,49 +852,49 @@ function EditMonitoringModal({
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-xs font-medium text-muted-foreground mb-1">Auth Protocol</label>
+                    <label className="block text-xs font-medium text-muted-foreground mb-1">{t('longTail.monitoring.MonitoringAssetsDashboard.authProtocol')}</label>
                     <select
                       value={authProtocol}
                       onChange={(e) => setAuthProtocol(e.target.value)}
                       className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     >
-                      <option value="md5">MD5</option>
-                      <option value="sha">SHA</option>
-                      <option value="sha256">SHA-256</option>
+                      <option value="md5">{t('longTail.monitoring.MonitoringAssetsDashboard.authProtocols.md5')}</option>
+                      <option value="sha">{t('longTail.monitoring.MonitoringAssetsDashboard.authProtocols.sha')}</option>
+                      <option value="sha256">{t('longTail.monitoring.MonitoringAssetsDashboard.authProtocols.sha256')}</option>
                     </select>
                   </div>
                   <div>
-                    <label className="block text-xs font-medium text-muted-foreground mb-1">Auth Password</label>
+                    <label className="block text-xs font-medium text-muted-foreground mb-1">{t('longTail.monitoring.MonitoringAssetsDashboard.authPassword')}</label>
                     <input
                       type="password"
                       value={authPassword}
                       onChange={(e) => setAuthPassword(e.target.value)}
                       className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                      placeholder="Leave blank to keep"
+                      placeholder={t('longTail.monitoring.MonitoringAssetsDashboard.leaveBlankToKeep')}
                     />
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-xs font-medium text-muted-foreground mb-1">Privacy Protocol</label>
+                    <label className="block text-xs font-medium text-muted-foreground mb-1">{t('longTail.monitoring.MonitoringAssetsDashboard.privacyProtocol')}</label>
                     <select
                       value={privProtocol}
                       onChange={(e) => setPrivProtocol(e.target.value)}
                       className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     >
-                      <option value="des">DES</option>
-                      <option value="aes">AES</option>
-                      <option value="aes256">AES-256</option>
+                      <option value="des">{t('longTail.monitoring.MonitoringAssetsDashboard.privacyProtocols.des')}</option>
+                      <option value="aes">{t('longTail.monitoring.MonitoringAssetsDashboard.privacyProtocols.aes')}</option>
+                      <option value="aes256">{t('longTail.monitoring.MonitoringAssetsDashboard.privacyProtocols.aes256')}</option>
                     </select>
                   </div>
                   <div>
-                    <label className="block text-xs font-medium text-muted-foreground mb-1">Privacy Password</label>
+                    <label className="block text-xs font-medium text-muted-foreground mb-1">{t('longTail.monitoring.MonitoringAssetsDashboard.privacyPassword')}</label>
                     <input
                       type="password"
                       value={privPassword}
                       onChange={(e) => setPrivPassword(e.target.value)}
                       className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                      placeholder="Leave blank to keep"
+                      placeholder={t('longTail.monitoring.MonitoringAssetsDashboard.leaveBlankToKeep')}
                     />
                   </div>
                 </div>
@@ -891,13 +902,13 @@ function EditMonitoringModal({
             )}
 
             <div className="mt-4">
-              <label className="block text-xs font-medium text-muted-foreground mb-1">Template</label>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">{t('longTail.monitoring.MonitoringAssetsDashboard.template')}</label>
               <select
                 value={templateId}
                 onChange={(e) => setTemplateId(e.target.value)}
                 className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               >
-                <option value="">No template</option>
+                <option value="">{t('longTail.monitoring.MonitoringAssetsDashboard.noTemplate')}</option>
                 {templates.map((t) => (
                   <option key={t.id} value={t.id}>
                     {t.name}{t.vendor ? ` (${t.vendor})` : ''}
@@ -908,15 +919,15 @@ function EditMonitoringModal({
 
             {recentMetrics.length > 0 && (
               <div className="mt-4">
-                <h3 className="text-sm font-semibold mb-2">Recent SNMP Metrics</h3>
+                <h3 className="text-sm font-semibold mb-2">{t('longTail.monitoring.MonitoringAssetsDashboard.recentSnmpMetrics')}</h3>
                 <div className="max-h-40 overflow-y-auto rounded-md border">
                   <table className="min-w-full divide-y text-xs">
                     <thead className="bg-muted/40 sticky top-0">
                       <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                        <th className="px-3 py-2">Name</th>
-                        <th className="px-3 py-2">OID</th>
-                        <th className="px-3 py-2 text-right">Value</th>
-                        <th className="px-3 py-2 text-right">Time</th>
+                        <th className="px-3 py-2">{t('common:labels.name')}</th>
+                        <th className="px-3 py-2">{t('longTail.monitoring.MonitoringAssetsDashboard.oid')}</th>
+                        <th className="px-3 py-2 text-right">{t('longTail.monitoring.MonitoringAssetsDashboard.value')}</th>
+                        <th className="px-3 py-2 text-right">{t('longTail.monitoring.MonitoringAssetsDashboard.time')}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y">
@@ -926,7 +937,7 @@ function EditMonitoringModal({
                           <td className="px-3 py-1.5 font-mono text-muted-foreground">{m.oid}</td>
                           <td className="px-3 py-1.5 text-right font-mono">{m.value}</td>
                           <td className="px-3 py-1.5 text-right text-muted-foreground">
-                            {formatRelativeTime(m.timestamp)}
+                            {formatRelativeTime(m.timestamp, t)}
                           </td>
                         </tr>
                       ))}
@@ -952,31 +963,31 @@ function EditMonitoringModal({
                     onClick={() => setConfirmRemove(true)}
                     className="text-xs text-destructive hover:underline"
                   >
-                    Disable active monitoring
+                    {t('longTail.monitoring.MonitoringAssetsDashboard.disableActiveMonitoring')}
                   </button>
                 ) : (
                   <div className="flex items-center gap-2">
-                    <span className="text-xs text-destructive">Are you sure?</span>
+                    <span className="text-xs text-destructive">{t('longTail.monitoring.MonitoringAssetsDashboard.areYouSure')}</span>
                     <button
                       type="button"
                       onClick={onDisable}
                       disabled={disabling}
                       className="h-7 rounded-md border border-destructive/40 px-3 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
                     >
-                      {disabling ? 'Disabling...' : 'Yes, disable'}
+                      {disabling ? t('longTail.monitoring.MonitoringAssetsDashboard.disabling') : t('longTail.monitoring.MonitoringAssetsDashboard.yesDisable')}
                     </button>
                     <button
                       type="button"
                       onClick={() => setConfirmRemove(false)}
                       className="h-7 rounded-md border px-3 text-xs font-medium text-muted-foreground hover:text-foreground"
                     >
-                      Cancel
+                      {t('common:actions.cancel')}
                     </button>
                   </div>
                 )
               ) : (
                 <span className="text-xs text-muted-foreground">
-                  Monitoring is not active for this asset.
+                  {t('longTail.monitoring.MonitoringAssetsDashboard.monitoringNotActive')}
                 </span>
               )}
             </div>
@@ -986,7 +997,7 @@ function EditMonitoringModal({
                 onClick={onClose}
                 className="h-9 rounded-md border px-4 text-sm font-medium text-muted-foreground hover:text-foreground"
               >
-                Close
+                {t('common:actions.close')}
               </button>
               <button
                 type="submit"
@@ -994,7 +1005,7 @@ function EditMonitoringModal({
                 className="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-70 flex items-center gap-2"
               >
                 {saving && <Loader2 className="h-3 w-3 animate-spin" />}
-                {saving ? 'Saving...' : 'Save'}
+                {saving ? t('longTail.monitoring.MonitoringAssetsDashboard.saving') : t('common:actions.save')}
               </button>
             </div>
           </div>

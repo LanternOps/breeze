@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import LoginPage from './LoginPage';
 import PartnerRegisterPage from './PartnerRegisterPage';
 import { useRegistrationGate } from '../../stores/featuresStore';
@@ -15,6 +16,7 @@ function getInitialTab(): Tab {
 }
 
 export default function AuthPage({ next }: AuthPageProps) {
+  const { t } = useTranslation('auth');
   const [tab, setTab] = useState<Tab>(getInitialTab);
 
   // Runtime registration gate (#1308 / #1979). The server enforces
@@ -56,7 +58,7 @@ export default function AuthPage({ next }: AuthPageProps) {
               tab === 'signin' ? 'bg-background shadow-xs' : 'text-muted-foreground hover:text-foreground'
             }`}
           >
-            Sign in
+            {t('authPage.tabs.signIn', { defaultValue: 'Sign in' })}
           </button>
           <button
             type="button"
@@ -68,7 +70,7 @@ export default function AuthPage({ next }: AuthPageProps) {
               tab === 'signup' ? 'bg-background shadow-xs' : 'text-muted-foreground hover:text-foreground'
             }`}
           >
-            Create account
+            {t('authPage.tabs.createAccount', { defaultValue: 'Create account' })}
           </button>
         </div>
       )}
@@ -83,12 +85,14 @@ export default function AuthPage({ next }: AuthPageProps) {
         // off-page) so a directly-shared /auth#signup link isn't a dead end.
         <div data-testid="registration-disabled-notice" role="status" aria-live="polite">
           <div className="mb-8">
-            <p className="text-sm font-medium text-muted-foreground">Registration closed</p>
-            <h1 className="mt-1 text-2xl font-bold tracking-tight">Sign-ups are disabled</h1>
+            <p className="text-sm font-medium text-muted-foreground">{t('authPage.registrationClosed.eyebrow', { defaultValue: 'Registration closed' })}</p>
+            <h1 className="mt-1 text-2xl font-bold tracking-tight">{t('authPage.registrationClosed.title', { defaultValue: 'Sign-ups are disabled' })}</h1>
           </div>
           <div className="mb-6 rounded-md border border-yellow-300 bg-yellow-50 px-4 py-3 text-sm text-yellow-800 dark:border-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-200">
-            New registrations are currently disabled. Please contact your administrator for an
-            invitation.
+            {t('authPage.registrationClosed.description', {
+              defaultValue:
+                'New registrations are currently disabled. Please contact your administrator for an invitation.',
+            })}
           </div>
           <button
             type="button"
@@ -96,7 +100,7 @@ export default function AuthPage({ next }: AuthPageProps) {
             onClick={() => handleTabChange('signin')}
             className="font-medium text-primary hover:underline"
           >
-            Back to sign in
+            {t('common.backToSignIn', { defaultValue: 'Back to sign in' })}
           </button>
         </div>
       ) : (

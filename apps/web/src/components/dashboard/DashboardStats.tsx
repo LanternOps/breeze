@@ -5,6 +5,8 @@ import { getErrorMessage, getErrorTitle } from '@/lib/errorMessages';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { useAiStore } from '@/stores/aiStore';
+import { useTranslation } from 'react-i18next';
+import { formatNumber } from '@/lib/i18n/format';
 
 interface DashboardStatsData {
   totalDevices: number;
@@ -14,16 +16,17 @@ interface DashboardStatsData {
   onlinePercentage: number;
 }
 
-function getGreeting(): string {
+function getGreetingKey(): string {
   const hour = new Date().getHours();
-  if (hour < 12) return 'Good morning';
-  if (hour < 17) return 'Good afternoon';
-  return 'Good evening';
+  if (hour < 12) return 'dashboard.greeting.morning';
+  if (hour < 17) return 'dashboard.greeting.afternoon';
+  return 'dashboard.greeting.evening';
 }
 
 export default function DashboardStats() {
+  const { t } = useTranslation('common');
   const { user } = useAuthStore();
-  const [greeting, setGreeting] = useState('Welcome');
+  const [greeting, setGreeting] = useState(t('dashboard.greeting.welcome'));
   const [stats, setStats] = useState<DashboardStatsData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
@@ -36,7 +39,7 @@ export default function DashboardStats() {
   // deps the stats are stale after a scope change.
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
 
-  useEffect(() => { setGreeting(getGreeting()); }, []);
+  useEffect(() => { setGreeting(t(/* i18n-dynamic */ getGreetingKey())); }, [t]);
 
   useEffect(() => {
     const fetchStats = async () => {
@@ -95,15 +98,15 @@ export default function DashboardStats() {
       const diffMs = Date.now() - lastUpdated.getTime();
       const diffSecs = Math.floor(diffMs / 1000);
       const diffMins = Math.floor(diffMs / 60000);
-      if (diffSecs < 10) setUpdatedText('Just now');
-      else if (diffMins < 1) setUpdatedText(`${diffSecs}s ago`);
-      else if (diffMins < 60) setUpdatedText(`${diffMins}m ago`);
-      else setUpdatedText(`${Math.floor(diffMs / 3600000)}h ago`);
+      if (diffSecs < 10) setUpdatedText(t('dashboard.updated.justNow'));
+      else if (diffMins < 1) setUpdatedText(t('dashboard.updated.secondsAgo', { count: diffSecs }));
+      else if (diffMins < 60) setUpdatedText(t('dashboard.updated.minutesAgo', { count: diffMins }));
+      else setUpdatedText(t('dashboard.updated.hoursAgo', { count: Math.floor(diffMs / 3600000) }));
     };
     tick();
     const interval = setInterval(tick, 10_000);
     return () => clearInterval(interval);
-  }, [lastUpdated]);
+  }, [lastUpdated, t]);
 
   const refresh = () => setRetryCount(c => c + 1);
   const firstName = user?.name?.split(' ')[0];
@@ -111,7 +114,8 @@ export default function DashboardStats() {
   const statItems = stats ? [
     {
       name: 'Total Devices',
-      value: stats.totalDevices.toLocaleString(),
+      label: t('dashboard.stats.totalDevices'),
+      value: formatNumber(stats.totalDevices),
       icon: Monitor,
       href: '/devices',
       change: '',
@@ -119,7 +123,8 @@ export default function DashboardStats() {
     },
     {
       name: 'Online',
-      value: stats.onlineDevices.toLocaleString(),
+      label: t('states.online'),
+      value: formatNumber(stats.onlineDevices),
       icon: CheckCircle,
       href: '/devices?status=online',
       change: `${stats.onlinePercentage}%`,
@@ -127,7 +132,8 @@ export default function DashboardStats() {
     },
     {
       name: 'Warnings',
-      value: stats.warningAlerts.toLocaleString(),
+      label: t('dashboard.stats.warnings'),
+      value: formatNumber(stats.warningAlerts),
       icon: AlertTriangle,
       href: '/alerts?severity=warning&status=active',
       change: '',
@@ -135,7 +141,8 @@ export default function DashboardStats() {
     },
     {
       name: 'Critical',
-      value: stats.criticalAlerts.toLocaleString(),
+      label: t('dashboard.stats.critical'),
+      value: formatNumber(stats.criticalAlerts),
       icon: XCircle,
       href: '/alerts?severity=critical&status=active',
       change: '',
@@ -153,8 +160,8 @@ export default function DashboardStats() {
         <button
           onClick={refresh}
           className="rounded-md p-1 hover:bg-muted transition-colors"
-          title="Refresh dashboard"
-          aria-label="Refresh dashboard"
+          title={t('dashboard.refresh')}
+          aria-label={t('dashboard.refresh')}
         >
           <RefreshCw className={cn('h-3.5 w-3.5', isLoading && 'animate-spin')} />
         </button>
@@ -198,7 +205,7 @@ export default function DashboardStats() {
             <p className="text-sm font-medium text-foreground mb-1">{getErrorTitle(error)}</p>
             <p className="text-xs text-muted-foreground mb-3">{getErrorMessage(error)}</p>
             <button onClick={refresh} className="text-xs font-medium text-primary hover:underline">
-              Try again
+              {t('actions.retry')}
             </button>
           </div>
         </div>
@@ -215,11 +222,11 @@ export default function DashboardStats() {
             <Monitor className="h-5 w-5 text-primary" />
           </div>
           <div className="flex-1">
-            <p className="text-sm font-medium text-foreground">No devices enrolled yet</p>
-            <p className="text-xs text-muted-foreground">Enroll your first device to start monitoring your fleet.</p>
+            <p className="text-sm font-medium text-foreground">{t('dashboard.emptyDevices.title')}</p>
+            <p className="text-xs text-muted-foreground">{t('dashboard.emptyDevices.description')}</p>
           </div>
           <a href="/devices#add-device" className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors">
-            Add Device
+            {t('dashboard.emptyDevices.add')}
             <ArrowRight className="h-3.5 w-3.5" />
           </a>
         </div>
@@ -253,7 +260,7 @@ export default function DashboardStats() {
               )}
             />
             <div>
-              <div className="text-xs font-medium text-muted-foreground">{stat.name}</div>
+              <div className="text-xs font-medium text-muted-foreground">{stat.label}</div>
               <div className="flex items-baseline gap-1.5">
                 <span className="text-2xl font-semibold tracking-tight tabular-nums">{stat.value}</span>
                 {stat.change && (

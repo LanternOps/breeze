@@ -18,6 +18,8 @@ import {
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatTime } from './backupDashboardHelpers';
+import { useTranslation } from 'react-i18next';
+import { i18n } from '@/lib/i18n';
 
 type RecoveryTokenStatus = 'active' | 'revoked' | 'expired' | 'used' | 'completed' | string;
 type RecoveryTokenRestoreType = 'full' | 'selective' | 'bare_metal' | string;
@@ -429,13 +431,15 @@ function statusClassName(status?: string | null): string {
 function restoreTypeLabel(type?: string | null): string {
   switch (type) {
     case 'full':
-      return 'Full restore';
+      return i18n.t('backup:recoveryBootstrapTab.restoreTypeLabelFull');
     case 'selective':
-      return 'Selective restore';
+      return i18n.t('backup:recoveryBootstrapTab.restoreTypeLabelSelective');
     case 'bare_metal':
-      return 'Bare metal';
+      return i18n.t('backup:recoveryBootstrapTab.restoreTypeLabelBareMetal');
     default:
-      return type ? type.replace(/_/g, ' ') : 'Unknown';
+      return type
+        ? type.replace(/_/g, ' ')
+        : i18n.t('backup:recoveryBootstrapTab.restoreTypeLabelUnknown');
   }
 }
 
@@ -458,6 +462,7 @@ function DetailLine({ label, value }: { label: string; value: ReactNode }) {
 }
 
 export default function RecoveryBootstrapTab() {
+  const { t } = useTranslation('backup');
   const [snapshots, setSnapshots] = useState<SnapshotSummary[]>([]);
   const [catalog, setCatalog] = useState<RecoveryTokenRecord[]>(() => readStoredTokens());
   const [mediaCatalog, setMediaCatalog] = useState<RecoveryMediaArtifact[]>([]);
@@ -490,10 +495,10 @@ export default function RecoveryBootstrapTab() {
       fetchWithAuth('/backup/bmr/boot-media?limit=100'),
     ]);
     if (!mediaResponse.ok) {
-      throw new Error('Failed to load recovery bundles');
+      throw new Error(t('recoveryBootstrapTab.failedToLoadRecoveryBundles'));
     }
     if (!bootMediaResponse.ok) {
-      throw new Error('Failed to load bootable recovery media');
+      throw new Error(t('recoveryBootstrapTab.failedToLoadBootableRecoveryMedia'));
     }
 
     const mediaPayload = await mediaResponse.json();
@@ -541,10 +546,10 @@ export default function RecoveryBootstrapTab() {
           fetchWithAuth('/backup/bmr/tokens?limit=100'),
         ]);
         if (!snapshotsResponse.ok) {
-          throw new Error('Failed to load snapshots');
+          throw new Error(t('recoveryBootstrapTab.failedToLoadSnapshots'));
         }
         if (!tokensResponse.ok) {
-          throw new Error('Failed to load recovery tokens');
+          throw new Error(t('recoveryBootstrapTab.failedToLoadRecoveryTokens'));
         }
         const payload = normalizeApiResponse(await snapshotsResponse.json());
         const list = Array.isArray(payload.snapshots)
@@ -602,7 +607,7 @@ export default function RecoveryBootstrapTab() {
         await refreshArtifacts();
       } catch (err) {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Failed to load snapshots');
+          setError(err instanceof Error ? err.message : t('recoveryBootstrapTab.failedToLoadSnapshots'));
         }
       } finally {
         if (!cancelled) setLoadingSnapshots(false);
@@ -636,7 +641,7 @@ export default function RecoveryBootstrapTab() {
 
     const timer = window.setInterval(() => {
       void refreshArtifacts().catch((err) => {
-        setError(err instanceof Error ? err.message : 'Failed to refresh recovery artifacts');
+        setError(err instanceof Error ? err.message : t('recoveryBootstrapTab.failedToRefreshRecoveryArtifacts'));
       });
     }, 10000);
 
@@ -745,7 +750,7 @@ export default function RecoveryBootstrapTab() {
 
       if (!response.ok) {
         const body = await response.json().catch(() => null);
-        throw new Error(body?.error ?? 'Failed to create recovery token');
+        throw new Error(body?.error ?? t('recoveryBootstrapTab.failedToCreateRecoveryToken'));
       }
 
       const payload = normalizeApiResponse(await response.json());
@@ -759,7 +764,7 @@ export default function RecoveryBootstrapTab() {
       setCreateTargetConfig('');
       setCreateExpiresInHours('24');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create recovery token');
+      setError(err instanceof Error ? err.message : t('recoveryBootstrapTab.failedToCreateRecoveryToken'));
     } finally {
       setCreating(false);
     }
@@ -779,7 +784,7 @@ export default function RecoveryBootstrapTab() {
       const response = await fetchWithAuth(`/backup/bmr/tokens/${encodeURIComponent(tokenId)}`);
       if (!response.ok) {
         const body = await response.json().catch(() => null);
-        throw new Error(body?.error ?? 'Failed to load token');
+        throw new Error(body?.error ?? t('recoveryBootstrapTab.failedToLoadToken'));
       }
       const payload = normalizeApiResponse(await response.json());
       const token = toTokenRecord(payload, { id: tokenId });
@@ -787,7 +792,7 @@ export default function RecoveryBootstrapTab() {
       setLoadTokenId('');
       setTokenMessage('Recovery token metadata loaded.');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load token');
+      setError(err instanceof Error ? err.message : t('recoveryBootstrapTab.failedToLoadToken'));
     } finally {
       setRefreshingTokenId(null);
     }
@@ -800,12 +805,12 @@ export default function RecoveryBootstrapTab() {
         const response = await fetchWithAuth(`/backup/bmr/tokens/${encodeURIComponent(tokenId)}`);
         if (!response.ok) {
           const body = await response.json().catch(() => null);
-          throw new Error(body?.error ?? 'Failed to refresh token');
+          throw new Error(body?.error ?? t('recoveryBootstrapTab.failedToRefreshToken'));
         }
         const payload = normalizeApiResponse(await response.json());
         updateToken(tokenId, (current) => toTokenRecord(payload, current));
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to refresh token');
+        setError(err instanceof Error ? err.message : t('recoveryBootstrapTab.failedToRefreshToken'));
       } finally {
         setRefreshingTokenId(null);
       }
@@ -830,7 +835,7 @@ export default function RecoveryBootstrapTab() {
         });
         if (!response.ok) {
           const body = await response.json().catch(() => null);
-          throw new Error(body?.error ?? 'Failed to preview bootstrap');
+          throw new Error(body?.error ?? t('recoveryBootstrapTab.failedToPreviewBootstrap'));
         }
 
         const payload = normalizeApiResponse(await response.json());
@@ -850,7 +855,7 @@ export default function RecoveryBootstrapTab() {
         setSelectedTokenId(tokenId);
         setTokenMessage('Bootstrap preview loaded. The token has been authenticated for the recovery session.');
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to preview bootstrap');
+        setError(err instanceof Error ? err.message : t('recoveryBootstrapTab.failedToPreviewBootstrap'));
       } finally {
         setPreviewingTokenId(null);
       }
@@ -862,7 +867,7 @@ export default function RecoveryBootstrapTab() {
     async (tokenId: string) => {
       const ok = typeof window === 'undefined'
         ? true
-        : window.confirm('Revoke this recovery token? The recovery agent will no longer be able to use it.');
+        : window.confirm(t('recoveryBootstrapTab.revokeTokenConfirm'));
       if (!ok) return;
 
       try {
@@ -873,7 +878,7 @@ export default function RecoveryBootstrapTab() {
         });
         if (!response.ok) {
           const body = await response.json().catch(() => null);
-          throw new Error(body?.error ?? 'Failed to revoke token');
+          throw new Error(body?.error ?? t('recoveryBootstrapTab.failedToRevokeToken'));
         }
         updateToken(tokenId, (current) => ({ ...current, status: 'revoked' }));
         setMediaCatalog((prev) =>
@@ -883,7 +888,7 @@ export default function RecoveryBootstrapTab() {
         );
         setTokenMessage('Recovery token revoked.');
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to revoke token');
+        setError(err instanceof Error ? err.message : t('recoveryBootstrapTab.failedToRevokeToken'));
       } finally {
         setRefreshingTokenId(null);
       }
@@ -897,7 +902,7 @@ export default function RecoveryBootstrapTab() {
       setCopyStatusId(id);
       window.setTimeout(() => setCopyStatusId((current) => (current === id ? null : current)), 1500);
     } catch {
-      setError('Failed to copy to clipboard.');
+      setError(t('recoveryBootstrapTab.failedToCopyToClipboard'));
     }
   }, []);
 
@@ -920,7 +925,7 @@ export default function RecoveryBootstrapTab() {
       });
       if (!response.ok) {
         const body = await response.json().catch(() => null);
-        throw new Error(body?.error ?? 'Failed to create recovery bundle');
+        throw new Error(body?.error ?? t('recoveryBootstrapTab.failedToCreateRecoveryBundle'));
       }
       const payload = normalizeApiResponse(await response.json());
       if (isRecord(payload)) {
@@ -936,7 +941,7 @@ export default function RecoveryBootstrapTab() {
       setTokenMessage('Recovery bundle build started.');
       await refreshArtifacts();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create recovery bundle');
+      setError(err instanceof Error ? err.message : t('recoveryBootstrapTab.failedToCreateRecoveryBundle'));
     } finally {
       setCreatingMedia(false);
     }
@@ -950,7 +955,7 @@ export default function RecoveryBootstrapTab() {
       const response = await fetchWithAuth(artifact.downloadPath);
       if (!response.ok) {
         const body = await response.json().catch(() => null);
-        throw new Error(body?.error ?? 'Failed to download recovery bundle');
+        throw new Error(body?.error ?? t('recoveryBootstrapTab.failedToDownloadRecoveryBundle'));
       }
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
@@ -962,7 +967,7 @@ export default function RecoveryBootstrapTab() {
       anchor.remove();
       window.URL.revokeObjectURL(url);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to download recovery bundle');
+      setError(err instanceof Error ? err.message : t('recoveryBootstrapTab.failedToDownloadRecoveryBundle'));
     } finally {
       setLoadingMedia(false);
     }
@@ -1013,7 +1018,7 @@ export default function RecoveryBootstrapTab() {
       });
       if (!response.ok) {
         const body = await response.json().catch(() => null);
-        throw new Error(body?.error ?? 'Failed to create bootable recovery media');
+        throw new Error(body?.error ?? t('recoveryBootstrapTab.failedToCreateBootableRecoveryMedia'));
       }
       const payload = normalizeApiResponse(await response.json());
       if (isRecord(payload)) {
@@ -1029,7 +1034,7 @@ export default function RecoveryBootstrapTab() {
       setTokenMessage('Bootable recovery media build started.');
       await refreshArtifacts();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create bootable recovery media');
+      setError(err instanceof Error ? err.message : t('recoveryBootstrapTab.failedToCreateBootableRecoveryMedia'));
     } finally {
       setCreatingBootMedia(false);
     }
@@ -1045,7 +1050,7 @@ export default function RecoveryBootstrapTab() {
       <div className="flex items-center justify-center py-16">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading recovery bootstrap tools...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('recoveryBootstrapTab.loadingRecoveryBootstrapTools')}</p>
         </div>
       </div>
     );
@@ -1058,19 +1063,15 @@ export default function RecoveryBootstrapTab() {
           <div className="space-y-1">
             <div className="inline-flex items-center gap-2 rounded-md bg-warning/15 px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-warning">
               <TerminalSquare className="h-3.5 w-3.5" />
-              Manual recovery environment
-            </div>
-            <h2 className="text-xl font-semibold text-foreground">Recovery Bootstrap</h2>
+              {t('recoveryBootstrapTab.manualRecoveryEnvironment')} </div>
+            <h2 className="text-xl font-semibold text-foreground">{t('recoveryBootstrapTab.recoveryBootstrap')}</h2>
             <p className="max-w-3xl text-sm text-muted-foreground">
-              Create, inspect, authenticate, and revoke recovery tokens for manual recovery workflows.
-              This tab bootstraps manual recovery environments and can stage downloadable recovery bundles.
-            </p>
+              {t('recoveryBootstrapTab.createInspectAuthenticateAndRevokeRecoveryTokensFor')} </p>
           </div>
           <div className="rounded-md border border-border/70 bg-background/70 px-3 py-2 text-xs text-muted-foreground">
-            <p className="font-medium text-foreground">CLI template</p>
+            <p className="font-medium text-foreground">{t('recoveryBootstrapTab.cliTemplate')}</p>
             <p className="mt-1 font-mono chart-legend-xs">
-              breeze-backup bmr-recover --token &lt;token&gt; --server &lt;api-server&gt;
-            </p>
+              {t('recoveryBootstrapTab.breezeBackupBmrRecoverTokenLtTokenGt')} </p>
           </div>
         </div>
       </div>
@@ -1091,18 +1092,16 @@ export default function RecoveryBootstrapTab() {
           <div className="rounded-lg border bg-card p-5 shadow-xs">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <h3 className="text-lg font-semibold text-foreground">Create recovery token</h3>
+                <h3 className="text-lg font-semibold text-foreground">{t('recoveryBootstrapTab.createRecoveryToken')}</h3>
                 <p className="text-sm text-muted-foreground">
-                  Generate a new token for a specific backup snapshot and recovery profile.
-                </p>
+                  {t('recoveryBootstrapTab.generateANewTokenForASpecificBackup')} </p>
               </div>
             </div>
 
             <div className="mt-4 grid gap-4 md:grid-cols-2">
               <div className="space-y-1.5">
                 <label htmlFor="recovery-bootstrap-snapshot" className="text-xs font-medium text-muted-foreground">
-                  Snapshot
-                </label>
+                  {t('recoveryBootstrapTab.snapshot')} </label>
                 <select
                   id="recovery-bootstrap-snapshot"
                   value={createSnapshotId}
@@ -1111,7 +1110,7 @@ export default function RecoveryBootstrapTab() {
                   className="h-10 w-full rounded-md border bg-background px-3 text-sm"
                 >
                   {snapshots.length === 0 ? (
-                    <option value="">No snapshots available</option>
+                    <option value="">{t('recoveryBootstrapTab.noSnapshotsAvailable')}</option>
                   ) : (
                     snapshots.map((snapshot) => (
                       <option key={snapshot.id} value={snapshot.id}>
@@ -1124,24 +1123,22 @@ export default function RecoveryBootstrapTab() {
 
               <div className="space-y-1.5">
                 <label htmlFor="recovery-bootstrap-restore-type" className="text-xs font-medium text-muted-foreground">
-                  Restore type
-                </label>
+                  {t('recoveryBootstrapTab.restoreType')} </label>
                 <select
                   id="recovery-bootstrap-restore-type"
                   value={createRestoreType}
                   onChange={(e) => setCreateRestoreType(e.target.value)}
                   className="h-10 w-full rounded-md border bg-background px-3 text-sm"
                 >
-                  <option value="bare_metal">Bare metal</option>
-                  <option value="full">Full</option>
-                  <option value="selective">Selective</option>
+                  <option value="bare_metal">{t('recoveryBootstrapTab.bareMetal')}</option>
+                  <option value="full">{t('recoveryBootstrapTab.full')}</option>
+                  <option value="selective">{t('recoveryBootstrapTab.selective')}</option>
                 </select>
               </div>
 
               <div className="space-y-1.5">
                 <label htmlFor="recovery-bootstrap-expiry" className="text-xs font-medium text-muted-foreground">
-                  Expires in hours
-                </label>
+                  {t('recoveryBootstrapTab.expiresInHours')} </label>
                 <input
                   id="recovery-bootstrap-expiry"
                   type="number"
@@ -1155,19 +1152,17 @@ export default function RecoveryBootstrapTab() {
 
               <div className="space-y-1.5 md:col-span-2">
                 <label htmlFor="recovery-bootstrap-target-config" className="text-xs font-medium text-muted-foreground">
-                  Optional target config JSON
-                </label>
+                  {t('recoveryBootstrapTab.optionalTargetConfigJson')} </label>
                 <textarea
                   id="recovery-bootstrap-target-config"
                   value={createTargetConfig}
                   onChange={(e) => setCreateTargetConfig(e.target.value)}
-                  placeholder='{"targetPaths":[...],"notes":"optional"}'
+                  placeholder={t('recoveryBootstrapTab.targetpathsNotesOptional')}
                   rows={5}
                   className="w-full rounded-md border bg-background px-3 py-2 text-sm font-mono"
                 />
                 <p className="text-xs text-muted-foreground">
-                  Stored on the token for the recovery agent. Leave blank if you do not need overrides.
-                </p>
+                  {t('recoveryBootstrapTab.storedOnTheTokenForTheRecoveryAgent')} </p>
               </div>
             </div>
 
@@ -1179,26 +1174,22 @@ export default function RecoveryBootstrapTab() {
                 className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-60"
               >
                 {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-                Create token
-              </button>
+                {t('recoveryBootstrapTab.createToken')} </button>
               <p className="text-xs text-muted-foreground">
-                The plaintext token is only returned once, so copy the command immediately after creation.
-              </p>
+                {t('recoveryBootstrapTab.thePlaintextTokenIsOnlyReturnedOnceSo')} </p>
             </div>
           </div>
 
           <div className="rounded-lg border bg-card p-5 shadow-xs">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <h3 className="text-lg font-semibold text-foreground">Bootstrap detail</h3>
+                <h3 className="text-lg font-semibold text-foreground">{t('recoveryBootstrapTab.bootstrapDetail')}</h3>
                 <p className="text-sm text-muted-foreground">
-                  Shows the exact command, bootstrap data, restore status, and recovery bundle state for the selected token.
-                </p>
+                  {t('recoveryBootstrapTab.showsTheExactCommandBootstrapDataRestoreStatus')} </p>
               </div>
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <ShieldCheck className="h-4 w-4 text-success" />
-                Authentication preview only, no completion call from this UI
-              </div>
+                {t('recoveryBootstrapTab.authenticationPreviewOnlyNoCompletionCallFromThis')} </div>
             </div>
 
             {selectedToken ? (
@@ -1219,10 +1210,9 @@ export default function RecoveryBootstrapTab() {
                 <div className="rounded-lg border bg-muted/20 p-4">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
-                      <p className="text-sm font-semibold text-foreground">Exact CLI command</p>
+                      <p className="text-sm font-semibold text-foreground">{t('recoveryBootstrapTab.exactCliCommand')}</p>
                       <p className="text-xs text-muted-foreground">
-                        Exact when the plaintext token is known in this browser session, otherwise the API-provided template is shown.
-                      </p>
+                        {t('recoveryBootstrapTab.exactWhenThePlaintextTokenIsKnownIn')} </p>
                     </div>
                     <div className="flex items-center gap-2">
                       {selectedToken.token ? (
@@ -1237,7 +1227,9 @@ export default function RecoveryBootstrapTab() {
                             ) : (
                               <Copy className="h-3.5 w-3.5" />
                             )}
-                            {copyStatusId === selectedToken.id ? 'Copied' : 'Copy command'}
+                            {copyStatusId === selectedToken.id
+                              ? t('recoveryBootstrapTab.copied')
+                              : t('recoveryBootstrapTab.copyCommand')}
                           </button>
                         </>
                       ) : null}
@@ -1253,8 +1245,7 @@ export default function RecoveryBootstrapTab() {
                           ) : (
                             <ClipboardCopy className="h-3.5 w-3.5" />
                           )}
-                          Preview bootstrap bundle
-                        </button>
+                          {t('recoveryBootstrapTab.previewBootstrapBundle')} </button>
                       ) : null}
                     </div>
                   </div>
@@ -1265,53 +1256,51 @@ export default function RecoveryBootstrapTab() {
                     </pre>
                   ) : (
                     <div className="mt-3 rounded-md border border-dashed bg-background/70 p-3 text-sm text-muted-foreground">
-                      Plaintext token unavailable. Load the token in this browser session to show the exact CLI command.
-                    </div>
+                      {t('recoveryBootstrapTab.plaintextTokenUnavailableLoadTheTokenInThis')} </div>
                   )}
                 </div>
 
                 <div className="rounded-lg border bg-background/80 p-4">
                   <div className="flex items-center gap-2">
                     <LockKeyhole className="h-4 w-4 text-primary" />
-                    <p className="text-sm font-semibold text-foreground">Prerequisites</p>
+                    <p className="text-sm font-semibold text-foreground">{t('recoveryBootstrapTab.prerequisites')}</p>
                   </div>
                   <ul className="mt-3 space-y-2 text-sm text-muted-foreground">
-                    <li>Use the token before it expires or is revoked.</li>
-                    <li>The recovery agent needs network reachability to the API host in the command.</li>
-                    <li>The snapshot and device referenced by the token must still exist.</li>
-                    <li>Bootstrap preview authenticates the token session and surfaces the recovery bundle data.</li>
-                    <li>Recovery bundles include the helper binary and launch script, but the plaintext token is still entered at run time.</li>
-                    <li>Target config overrides are optional and only apply when the token stores them.</li>
+                    <li>{t('recoveryBootstrapTab.useTheTokenBeforeItExpiresOrIs')}</li>
+                    <li>{t('recoveryBootstrapTab.theRecoveryAgentNeedsNetworkReachabilityToThe')}</li>
+                    <li>{t('recoveryBootstrapTab.theSnapshotAndDeviceReferencedByTheToken')}</li>
+                    <li>{t('recoveryBootstrapTab.bootstrapPreviewAuthenticatesTheTokenSessionAndSurfaces')}</li>
+                    <li>{t('recoveryBootstrapTab.recoveryBundlesIncludeTheHelperBinaryAndLaunch')}</li>
+                    <li>{t('recoveryBootstrapTab.targetConfigOverridesAreOptionalAndOnlyApply')}</li>
                   </ul>
                 </div>
 
                 <div className="rounded-lg border bg-background/80 p-4">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
-                      <p className="text-sm font-semibold text-foreground">Recovery bundles</p>
+                      <p className="text-sm font-semibold text-foreground">{t('recoveryBootstrapTab.recoveryBundles')}</p>
                       <p className="text-xs text-muted-foreground">
-                        Build a downloadable helper bundle tied to this token. The token remains one-time and is not embedded in the archive.
-                      </p>
+                        {t('recoveryBootstrapTab.buildADownloadableHelperBundleTiedToThis')} </p>
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
                       <select
-                        aria-label="Bundle platform"
+                        aria-label={t('recoveryBootstrapTab.bundlePlatform')}
                         value={bundlePlatform}
                         onChange={(event) => setBundlePlatform(event.target.value)}
                         className="h-9 rounded-md border bg-background px-3 text-xs"
                       >
-                        <option value="linux">Linux</option>
-                        <option value="darwin">macOS</option>
-                        <option value="windows">Windows</option>
+                        <option value="linux">{t('recoveryBootstrapTab.linux')}</option>
+                        <option value="darwin">{t('recoveryBootstrapTab.macos')}</option>
+                        <option value="windows">{t('recoveryBootstrapTab.windows')}</option>
                       </select>
                       <select
-                        aria-label="Bundle architecture"
+                        aria-label={t('recoveryBootstrapTab.bundleArchitecture')}
                         value={bundleArchitecture}
                         onChange={(event) => setBundleArchitecture(event.target.value)}
                         className="h-9 rounded-md border bg-background px-3 text-xs"
                       >
-                        <option value="amd64">amd64</option>
-                        <option value="arm64">arm64</option>
+                        <option value="amd64">{t('recoveryBootstrapTab.amd64')}</option>
+                        <option value="arm64">{t('recoveryBootstrapTab.arm64')}</option>
                       </select>
                       <button
                         type="button"
@@ -1320,8 +1309,7 @@ export default function RecoveryBootstrapTab() {
                         className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-60"
                       >
                         {creatingMedia ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
-                        Create bundle
-                      </button>
+                        {t('recoveryBootstrapTab.createBundle')} </button>
                     </div>
                   </div>
 
@@ -1345,8 +1333,7 @@ export default function RecoveryBootstrapTab() {
                                   className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted"
                                 >
                                   <Copy className="h-3.5 w-3.5" />
-                                  Copy checksum
-                                </button>
+                                  {t('recoveryBootstrapTab.copyChecksum')} </button>
                               ) : null}
                               {artifact.signatureDownloadPath ? (
                                 <button
@@ -1355,15 +1342,14 @@ export default function RecoveryBootstrapTab() {
                                     void handleDownloadArtifact(
                                       artifact.signatureDownloadPath!,
                                       `${artifact.platform}-${artifact.architecture}-recovery-bundle.tar.gz.minisig`,
-                                      'Failed to download recovery bundle signature'
+                                      t('recoveryBootstrapTab.failedToDownloadRecoveryBundleSignature')
                                     )
                                   }
                                   disabled={loadingMedia}
                                   className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-60"
                                 >
                                   <ShieldCheck className="h-3.5 w-3.5" />
-                                  Signature
-                                </button>
+                                  {t('recoveryBootstrapTab.signature')} </button>
                               ) : null}
                               {artifact.downloadPath ? (
                                 <button
@@ -1373,8 +1359,7 @@ export default function RecoveryBootstrapTab() {
                                   className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-60"
                                 >
                                   {loadingMedia ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <TerminalSquare className="h-3.5 w-3.5" />}
-                                  Download
-                                </button>
+                                  {t('recoveryBootstrapTab.download')} </button>
                               ) : null}
                             </div>
                           </div>
@@ -1384,13 +1369,13 @@ export default function RecoveryBootstrapTab() {
                           {(artifact.signingKeyId || artifact.signedAt || artifact.status === 'legacy_unsigned') ? (
                             <div className="mt-2 space-y-1 chart-legend-xs text-muted-foreground">
                               <p>
-                                Signing: {artifact.status === 'legacy_unsigned'
+                                {t('recoveryBootstrapTab.signing')} {artifact.status === 'legacy_unsigned'
                                   ? 'Unsigned legacy bundle'
                                   : artifact.signatureFormat
                                     ? `${artifact.signatureFormat} via ${artifact.signingKeyId ?? 'unknown key'}`
                                     : 'Pending'}
                               </p>
-                              {artifact.signedAt ? <p>Signed at: {formatTime(artifact.signedAt)}</p> : null}
+                              {artifact.signedAt ? <p>{t('recoveryBootstrapTab.signedAt')} {formatTime(artifact.signedAt)}</p> : null}
                             </div>
                           ) : null}
                           {renderTrustMetadata(artifact.metadata, [
@@ -1404,17 +1389,16 @@ export default function RecoveryBootstrapTab() {
                       ))}
                     </div>
                   ) : (
-                    <p className="mt-3 text-sm text-muted-foreground">No recovery bundles have been created for this token yet.</p>
+                    <p className="mt-3 text-sm text-muted-foreground">{t('recoveryBootstrapTab.noRecoveryBundlesHaveBeenCreatedForThis')}</p>
                   )}
                 </div>
 
                 <div className="rounded-lg border bg-background/80 p-4">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
-                      <p className="text-sm font-semibold text-foreground">Bootable recovery media</p>
+                      <p className="text-sm font-semibold text-foreground">{t('recoveryBootstrapTab.bootableRecoveryMedia')}</p>
                       <p className="text-xs text-muted-foreground">
-                        Build a signed linux/amd64 recovery ISO from the latest signed recovery bundle.
-                      </p>
+                        {t('recoveryBootstrapTab.buildASignedLinuxAmd64RecoveryIsoFrom')} </p>
                     </div>
                     <button
                       type="button"
@@ -1423,8 +1407,7 @@ export default function RecoveryBootstrapTab() {
                       className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-60"
                     >
                       {creatingBootMedia ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
-                      Create ISO
-                    </button>
+                      {t('recoveryBootstrapTab.createIso')} </button>
                   </div>
 
                   {selectedBootMedia.length > 0 ? (
@@ -1449,8 +1432,7 @@ export default function RecoveryBootstrapTab() {
                                   className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted"
                                 >
                                   <Copy className="h-3.5 w-3.5" />
-                                  Copy checksum
-                                </button>
+                                  {t('recoveryBootstrapTab.copyChecksum')} </button>
                               ) : null}
                               {artifact.signatureDownloadPath ? (
                                 <button
@@ -1459,15 +1441,14 @@ export default function RecoveryBootstrapTab() {
                                     void handleDownloadArtifact(
                                       artifact.signatureDownloadPath!,
                                       `${artifact.platform}-${artifact.architecture}.${artifact.mediaType}.minisig`,
-                                      'Failed to download boot media signature'
+                                      t('recoveryBootstrapTab.failedToDownloadBootMediaSignature')
                                     )
                                   }
                                   disabled={loadingMedia}
                                   className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-60"
                                 >
                                   <ShieldCheck className="h-3.5 w-3.5" />
-                                  Signature
-                                </button>
+                                  {t('recoveryBootstrapTab.signature')} </button>
                               ) : null}
                               {artifact.downloadPath ? (
                                 <button
@@ -1476,15 +1457,14 @@ export default function RecoveryBootstrapTab() {
                                     void handleDownloadArtifact(
                                       artifact.downloadPath!,
                                       `breeze-recovery-${artifact.platform}-${artifact.architecture}.${artifact.mediaType}`,
-                                      'Failed to download bootable recovery media'
+                                      t('recoveryBootstrapTab.failedToDownloadBootableRecoveryMedia')
                                     )
                                   }
                                   disabled={loadingMedia}
                                   className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-60"
                                 >
                                   {loadingMedia ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <TerminalSquare className="h-3.5 w-3.5" />}
-                                  Download ISO
-                                </button>
+                                  {t('recoveryBootstrapTab.downloadIso')} </button>
                               ) : null}
                             </div>
                           </div>
@@ -1493,8 +1473,8 @@ export default function RecoveryBootstrapTab() {
                           ) : null}
                           {(artifact.signingKeyId || artifact.signedAt) ? (
                             <div className="mt-2 space-y-1 chart-legend-xs text-muted-foreground">
-                              <p>Signing: {artifact.signatureFormat ?? 'signed'} via {artifact.signingKeyId ?? 'unknown key'}</p>
-                              {artifact.signedAt ? <p>Signed at: {formatTime(artifact.signedAt)}</p> : null}
+                              <p>{t('recoveryBootstrapTab.signing')} {artifact.signatureFormat ?? 'signed'} {t('recoveryBootstrapTab.via')} {artifact.signingKeyId ?? 'unknown key'}</p>
+                              {artifact.signedAt ? <p>{t('recoveryBootstrapTab.signedAt')} {formatTime(artifact.signedAt)}</p> : null}
                             </div>
                           ) : null}
                           {renderTrustMetadata(artifact.metadata, [
@@ -1509,16 +1489,15 @@ export default function RecoveryBootstrapTab() {
                     </div>
                   ) : (
                     <p className="mt-3 text-sm text-muted-foreground">
-                      No bootable recovery media has been created for this token yet.
-                    </p>
+                      {t('recoveryBootstrapTab.noBootableRecoveryMediaHasBeenCreatedFor')} </p>
                   )}
                 </div>
 
                 <div className="rounded-lg border bg-background/80 p-4">
                   <div className="flex items-center justify-between gap-3">
                     <div>
-                      <p className="text-sm font-semibold text-foreground">Linked restore job / result</p>
-                      <p className="text-xs text-muted-foreground">Latest restore result linked to this token.</p>
+                      <p className="text-sm font-semibold text-foreground">{t('recoveryBootstrapTab.linkedRestoreJobResult')}</p>
+                      <p className="text-xs text-muted-foreground">{t('recoveryBootstrapTab.latestRestoreResultLinkedToThisToken')}</p>
                     </div>
                   </div>
                   {selectedToken.restoreJobId || selectedToken.restoreResult || selectedToken.linkedRestoreJob?.status ? (
@@ -1531,7 +1510,7 @@ export default function RecoveryBootstrapTab() {
                       <DetailLine label="Restore result" value={<pre className="whitespace-pre-wrap wrap-break-word text-xs text-foreground">{renderJson(selectedToken.restoreResult)}</pre>} />
                     </div>
                   ) : (
-                    <p className="mt-3 text-sm text-muted-foreground">No linked restore job or result has been loaded for this token yet.</p>
+                    <p className="mt-3 text-sm text-muted-foreground">{t('recoveryBootstrapTab.noLinkedRestoreJobOrResultHasBeen')}</p>
                   )}
                 </div>
 
@@ -1539,10 +1518,9 @@ export default function RecoveryBootstrapTab() {
                   <div className="rounded-lg border bg-muted/20 p-4">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div>
-                        <p className="text-sm font-semibold text-foreground">Bootstrap bundle</p>
+                        <p className="text-sm font-semibold text-foreground">{t('recoveryBootstrapTab.bootstrapBundle')}</p>
                         <p className="text-xs text-muted-foreground">
-                          This is the recovery bootstrap payload returned by the API authenticate endpoint.
-                        </p>
+                          {t('recoveryBootstrapTab.thisIsTheRecoveryBootstrapPayloadReturnedBy')} </p>
                       </div>
                       <button
                         type="button"
@@ -1573,8 +1551,7 @@ export default function RecoveryBootstrapTab() {
               </div>
             ) : (
               <div className="mt-4 rounded-md border border-dashed bg-muted/20 p-4 text-sm text-muted-foreground">
-                Create or load a recovery token to inspect the exact CLI command and bootstrap details.
-              </div>
+                {t('recoveryBootstrapTab.createOrLoadARecoveryTokenToInspect')} </div>
             )}
           </div>
         </div>
@@ -1584,10 +1561,9 @@ export default function RecoveryBootstrapTab() {
             <div className="space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <h3 className="text-lg font-semibold text-foreground">Load token by ID</h3>
+                  <h3 className="text-lg font-semibold text-foreground">{t('recoveryBootstrapTab.loadTokenById')}</h3>
                   <p className="text-sm text-muted-foreground">
-                    Look up an existing token to refresh its server-side metadata and bring it into the current view.
-                  </p>
+                    {t('recoveryBootstrapTab.lookUpAnExistingTokenToRefreshIts')} </p>
                 </div>
                 <button
                   type="button"
@@ -1600,19 +1576,17 @@ export default function RecoveryBootstrapTab() {
                   ) : (
                     <Search className="h-3.5 w-3.5" />
                   )}
-                  Load
-                </button>
+                  {t('recoveryBootstrapTab.load')} </button>
               </div>
 
               <div className="space-y-1.5">
                 <label htmlFor="recovery-bootstrap-load-id" className="text-xs font-medium text-muted-foreground">
-                  Token ID
-                </label>
+                  {t('recoveryBootstrapTab.tokenId')} </label>
                 <input
                   id="recovery-bootstrap-load-id"
                   value={loadTokenId}
                   onChange={(e) => setLoadTokenId(e.target.value)}
-                  placeholder="rec-..."
+                  placeholder={t('recoveryBootstrapTab.rec')}
                   className="h-10 w-full rounded-md border bg-background px-3 text-sm font-mono"
                 />
               </div>
@@ -1622,13 +1596,12 @@ export default function RecoveryBootstrapTab() {
           <div className="rounded-lg border bg-card p-5 shadow-xs">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <h3 className="text-lg font-semibold text-foreground">Filter catalog</h3>
+                <h3 className="text-lg font-semibold text-foreground">{t('recoveryBootstrapTab.filterCatalog')}</h3>
                 <p className="text-sm text-muted-foreground">
-                  Filter the recovery token catalog by status, restore type, or search text.
-                </p>
+                  {t('recoveryBootstrapTab.filterTheRecoveryTokenCatalogByStatusRestore')} </p>
               </div>
               <div className="text-sm text-muted-foreground">
-                {filteredTokens.length} of {catalog.length}
+                {filteredTokens.length} {t('recoveryBootstrapTab.of')} {catalog.length}
               </div>
             </div>
 
@@ -1636,13 +1609,12 @@ export default function RecoveryBootstrapTab() {
               <div className="flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm">
                 <Search className="h-4 w-4 text-muted-foreground" />
                 <label htmlFor="recovery-bootstrap-search" className="sr-only">
-                  Search tokens
-                </label>
+                  {t('recoveryBootstrapTab.searchTokens')} </label>
                 <input
                   id="recovery-bootstrap-search"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Search token, snapshot, device..."
+                  placeholder={t('recoveryBootstrapTab.searchTokenSnapshotDevice')}
                   className="w-full bg-transparent outline-hidden"
                 />
               </div>
@@ -1651,38 +1623,36 @@ export default function RecoveryBootstrapTab() {
                 <div className="flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm">
                   <Filter className="h-4 w-4 text-muted-foreground" />
                   <label htmlFor="recovery-bootstrap-status" className="sr-only">
-                    Filter by status
-                  </label>
+                    {t('recoveryBootstrapTab.filterByStatus')} </label>
                   <select
                     id="recovery-bootstrap-status"
                     value={statusFilter}
                     onChange={(e) => setStatusFilter(e.target.value as TokenStatusFilter)}
                     className="w-full bg-transparent outline-hidden"
                   >
-                    <option value="all">All statuses</option>
-                    <option value="active">Active</option>
-                    <option value="revoked">Revoked</option>
-                    <option value="expired">Expired</option>
-                    <option value="used">Used</option>
-                    <option value="completed">Completed</option>
+                    <option value="all">{t('recoveryBootstrapTab.allStatuses')}</option>
+                    <option value="active">{t('recoveryBootstrapTab.active')}</option>
+                    <option value="revoked">{t('recoveryBootstrapTab.revoked')}</option>
+                    <option value="expired">{t('recoveryBootstrapTab.expired')}</option>
+                    <option value="used">{t('recoveryBootstrapTab.used')}</option>
+                    <option value="completed">{t('recoveryBootstrapTab.completed')}</option>
                   </select>
                 </div>
 
                 <div className="flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm">
                   <Filter className="h-4 w-4 text-muted-foreground" />
                   <label htmlFor="recovery-bootstrap-type" className="sr-only">
-                    Filter by restore type
-                  </label>
+                    {t('recoveryBootstrapTab.filterByRestoreType')} </label>
                   <select
                     id="recovery-bootstrap-type"
                     value={restoreTypeFilter}
                     onChange={(e) => setRestoreTypeFilter(e.target.value as RestoreTypeFilter)}
                     className="w-full bg-transparent outline-hidden"
                   >
-                    <option value="all">All restore types</option>
-                    <option value="bare_metal">Bare metal</option>
-                    <option value="full">Full</option>
-                    <option value="selective">Selective</option>
+                    <option value="all">{t('recoveryBootstrapTab.allRestoreTypes')}</option>
+                    <option value="bare_metal">{t('recoveryBootstrapTab.bareMetal')}</option>
+                    <option value="full">{t('recoveryBootstrapTab.full')}</option>
+                    <option value="selective">{t('recoveryBootstrapTab.selective')}</option>
                   </select>
                 </div>
               </div>
@@ -1691,27 +1661,28 @@ export default function RecoveryBootstrapTab() {
 
           <div className="rounded-lg border bg-card p-5 shadow-xs">
             <div className="flex items-center justify-between gap-3">
-              <h3 className="text-lg font-semibold text-foreground">Token catalog</h3>
+              <h3 className="text-lg font-semibold text-foreground">{t('recoveryBootstrapTab.tokenCatalog')}</h3>
               <div className="text-xs text-muted-foreground">
-                {catalog.length === 0 ? 'No recovery tokens found' : `${catalog.length} token${catalog.length === 1 ? '' : 's'} loaded`}
+                {catalog.length === 0
+                  ? t('recoveryBootstrapTab.noRecoveryTokensFound')
+                  : t('recoveryBootstrapTab.tokensLoadedCount', { count: catalog.length })}
               </div>
             </div>
 
             {filteredTokens.length === 0 ? (
               <div className="mt-4 rounded-md border border-dashed bg-muted/20 p-4 text-sm text-muted-foreground">
-                No recovery tokens match the current filters.
-              </div>
+                {t('recoveryBootstrapTab.noRecoveryTokensMatchTheCurrentFilters')} </div>
             ) : (
               <div className="mt-4 overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b text-left text-xs text-muted-foreground">
-                      <th className="pb-2 pr-4 font-medium">Token</th>
-                      <th className="pb-2 pr-4 font-medium">Status</th>
-                      <th className="pb-2 pr-4 font-medium">Type</th>
-                      <th className="pb-2 pr-4 font-medium">Snapshot</th>
-                      <th className="pb-2 pr-4 font-medium">Expires</th>
-                      <th className="pb-2 font-medium">Actions</th>
+                      <th className="pb-2 pr-4 font-medium">{t('recoveryBootstrapTab.token')}</th>
+                      <th className="pb-2 pr-4 font-medium">{t('recoveryBootstrapTab.status')}</th>
+                      <th className="pb-2 pr-4 font-medium">{t('recoveryBootstrapTab.type')}</th>
+                      <th className="pb-2 pr-4 font-medium">{t('recoveryBootstrapTab.snapshot')}</th>
+                      <th className="pb-2 pr-4 font-medium">{t('recoveryBootstrapTab.expires')}</th>
+                      <th className="pb-2 font-medium">{t('recoveryBootstrapTab.actions')}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1760,8 +1731,7 @@ export default function RecoveryBootstrapTab() {
                                 className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
                               >
                                 <Server className="h-3.5 w-3.5" />
-                                View
-                              </button>
+                                {t('recoveryBootstrapTab.view')} </button>
                               <button
                                 type="button"
                                 onClick={(event) => {
@@ -1776,8 +1746,7 @@ export default function RecoveryBootstrapTab() {
                                 ) : (
                                   <RefreshCw className="h-3.5 w-3.5" />
                                 )}
-                                Refresh
-                              </button>
+                                {t('recoveryBootstrapTab.refresh')} </button>
                               <button
                                 type="button"
                                 onClick={(event) => {
@@ -1793,8 +1762,7 @@ export default function RecoveryBootstrapTab() {
                                 ) : (
                                   <ClipboardCopy className="h-3.5 w-3.5" />
                                 )}
-                                Preview
-                              </button>
+                                {t('recoveryBootstrapTab.preview')} </button>
                               <button
                                 type="button"
                                 onClick={(event) => {
@@ -1805,8 +1773,7 @@ export default function RecoveryBootstrapTab() {
                                 className="inline-flex items-center gap-1 rounded-md border border-destructive/30 px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-60"
                               >
                                 <Trash2 className="h-3.5 w-3.5" />
-                                Revoke
-                              </button>
+                                {t('recoveryBootstrapTab.revoke')} </button>
                             </div>
                           </td>
                         </tr>
@@ -1824,10 +1791,9 @@ export default function RecoveryBootstrapTab() {
         <div className="flex items-start gap-3">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
           <div className="space-y-1">
-            <p className="font-medium text-foreground">Plaintext token handling</p>
+            <p className="font-medium text-foreground">{t('recoveryBootstrapTab.plaintextTokenHandling')}</p>
             <p>
-              The server never re-shows the plaintext token. This tab preserves it only while you keep the freshly created token in the current browser session, so copy the exact command immediately after creation.
-            </p>
+              {t('recoveryBootstrapTab.theServerNeverReShowsThePlaintextToken')} </p>
           </div>
         </div>
       </div>

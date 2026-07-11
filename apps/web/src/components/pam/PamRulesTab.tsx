@@ -1,5 +1,7 @@
+import '@/lib/i18n';
 import { useCallback, useEffect, useState } from 'react';
 import { ListChecks, Plus } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
@@ -27,6 +29,7 @@ function ruleCriteriaSummary(rule: PamRule, signerGroupNames: Record<string, str
 }
 
 export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
+  const { t } = useTranslation('security');
   const [rules, setRules] = useState<PamRule[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -90,15 +93,25 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
             method: 'PUT',
             body: JSON.stringify({ defaultUnmatchedVerdict: next }),
           }),
-        errorFallback: 'Failed to update default verdict',
-        successMessage: `Default verdict set to ${VERDICT_LABELS[next]}`,
+        errorFallback: t('pamPamRulesTab.errors.updateDefaultVerdict', {
+          defaultValue: 'Failed to update default verdict',
+        }),
+        successMessage: t('pamPamRulesTab.toasts.defaultVerdictSet', {
+          defaultValue: 'Default verdict set to {{verdict}}',
+          verdict: VERDICT_LABELS[next],
+        }),
         onUnauthorized: () => void navigateTo('/login', { replace: true }),
       });
     } catch (err) {
       setDefaultVerdict(prev); // roll back the optimistic change on failure
       if (err instanceof ActionError && err.status === 401) return;
       if (!(err instanceof ActionError)) {
-        showToast({ type: 'error', message: 'Failed to update default verdict' });
+        showToast({
+          type: 'error',
+          message: t('pamPamRulesTab.errors.updateDefaultVerdict', {
+            defaultValue: 'Failed to update default verdict',
+          }),
+        });
       }
     } finally {
       setSavingDefault(false);
@@ -115,7 +128,12 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
           void navigateTo('/login', { replace: true });
           return;
         }
-        throw new Error(`Failed to load rules (HTTP ${res.status})`);
+          throw new Error(
+            t('pamPamRulesTab.errors.loadWithStatus', {
+              defaultValue: 'Failed to load rules (HTTP {{status}})',
+              status: res.status,
+            }),
+          );
       }
       const body = await res.json();
       const list = ((body.rules ?? []) as PamRule[]).slice();
@@ -123,11 +141,15 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
       setRules(list);
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') return;
-      setError(err instanceof Error ? err.message : 'Failed to load rules');
+      setError(
+        err instanceof Error
+          ? err.message
+          : t('pamPamRulesTab.errors.load', { defaultValue: 'Failed to load rules' }),
+      );
     } finally {
       if (!signal?.aborted) setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -143,15 +165,26 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
             method: 'PATCH',
             body: JSON.stringify({ enabled: !rule.enabled }),
           }),
-        errorFallback: 'Failed to update rule',
-        successMessage: `Rule "${rule.name}" ${rule.enabled ? 'disabled' : 'enabled'}`,
+        errorFallback: t('pamPamRulesTab.errors.updateRule', {
+          defaultValue: 'Failed to update rule',
+        }),
+        successMessage: t('pamPamRulesTab.toasts.ruleToggled', {
+          defaultValue: 'Rule "{{name}}" {{state}}',
+          name: rule.name,
+          state: rule.enabled
+            ? t('pamPamRulesTab.states.disabled', { defaultValue: 'disabled' })
+            : t('pamPamRulesTab.states.enabled', { defaultValue: 'enabled' }),
+        }),
         onUnauthorized: () => void navigateTo('/login', { replace: true }),
       });
       void fetchRules();
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
       if (!(err instanceof ActionError)) {
-        showToast({ type: 'error', message: 'Failed to update rule' });
+        showToast({
+          type: 'error',
+          message: t('pamPamRulesTab.errors.updateRule', { defaultValue: 'Failed to update rule' }),
+        });
       }
     }
   };
@@ -163,15 +196,23 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
     try {
       await runAction({
         request: () => fetchWithAuth(`/pam/rules/${rule.id}`, { method: 'DELETE' }),
-        errorFallback: 'Failed to delete rule',
-        successMessage: `Rule "${rule.name}" deleted`,
+        errorFallback: t('pamPamRulesTab.errors.deleteRule', {
+          defaultValue: 'Failed to delete rule',
+        }),
+        successMessage: t('pamPamRulesTab.toasts.ruleDeleted', {
+          defaultValue: 'Rule "{{name}}" deleted',
+          name: rule.name,
+        }),
         onUnauthorized: () => void navigateTo('/login', { replace: true }),
       });
       void fetchRules();
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
       if (!(err instanceof ActionError)) {
-        showToast({ type: 'error', message: 'Failed to delete rule' });
+        showToast({
+          type: 'error',
+          message: t('pamPamRulesTab.errors.deleteRule', { defaultValue: 'Failed to delete rule' }),
+        });
       }
     } finally {
       setDeleting(false);
@@ -183,8 +224,10 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <p className="text-sm text-muted-foreground">
-          Software policies are evaluated first — an allowlist/blocklist match decides before these rules.
-          Rules then run in priority order (lowest first); the first match decides.
+          {t('pamPamRulesTab.description', {
+            defaultValue:
+              'Software policies are evaluated first — an allowlist/blocklist match decides before these rules. Rules then run in priority order (lowest first); the first match decides.',
+          })}
         </p>
         <button
           type="button"
@@ -193,13 +236,13 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
           className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
         >
           <Plus className="h-4 w-4" />
-          Add rule
+          {t('pamPamRulesTab.actions.addRule', { defaultValue: 'Add rule' })}
         </button>
       </div>
 
       <div className="flex flex-wrap items-center gap-2 rounded-md border bg-card px-3 py-2">
         <label htmlFor="pam-default-unmatched-verdict" className="text-sm font-medium">
-          Default verdict
+          {t('pamPamRulesTab.defaultVerdict.label', { defaultValue: 'Default verdict' })}
         </label>
         <select
           id="pam-default-unmatched-verdict"
@@ -209,11 +252,17 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
           data-testid="pam-default-unmatched-verdict"
           className="rounded-md border bg-background px-2 py-1 text-sm disabled:opacity-50"
         >
-          <option value="require_approval">Require approval</option>
-          <option value="auto_deny">Auto-deny</option>
+          <option value="require_approval">
+            {t('pamPamRulesTab.defaultVerdict.requireApproval', { defaultValue: 'Require approval' })}
+          </option>
+          <option value="auto_deny">
+            {t('pamPamRulesTab.defaultVerdict.autoDeny', { defaultValue: 'Auto-deny' })}
+          </option>
         </select>
         <span className="text-xs text-muted-foreground">
-          Verdict when an elevation matches no policy or rule.
+          {t('pamPamRulesTab.defaultVerdict.help', {
+            defaultValue: 'Verdict when an elevation matches no policy or rule.',
+          })}
         </span>
       </div>
 
@@ -229,14 +278,18 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
       {loading ? (
         <div className="flex items-center gap-2 rounded-md border bg-card px-4 py-6 text-sm text-muted-foreground">
           <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-          Loading rules…
+          {t('pamPamRulesTab.loading', { defaultValue: 'Loading rules…' })}
         </div>
       ) : rules.length === 0 ? (
         <div className="rounded-md border border-dashed bg-card px-4 py-8 text-center">
           <ListChecks className="mx-auto h-8 w-8 text-muted-foreground" />
-          <p className="mt-2 text-sm font-medium">No PAM rules yet</p>
+          <p className="mt-2 text-sm font-medium">
+            {t('pamPamRulesTab.empty.title', { defaultValue: 'No PAM rules yet' })}
+          </p>
           <p className="mt-1 text-xs text-muted-foreground">
-            Without rules, every elevation request waits for a manual decision.
+            {t('pamPamRulesTab.empty.description', {
+              defaultValue: 'Without rules, every elevation request waits for a manual decision.',
+            })}
           </p>
         </div>
       ) : (
@@ -244,12 +297,12 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b text-left text-xs text-muted-foreground">
-                <th className="px-3 py-2 font-medium">Priority</th>
-                <th className="px-3 py-2 font-medium">Name</th>
-                <th className="px-3 py-2 font-medium">Criteria</th>
-                <th className="px-3 py-2 font-medium">Scope</th>
-                <th className="px-3 py-2 font-medium">Verdict</th>
-                <th className="px-3 py-2 font-medium">Enabled</th>
+                <th className="px-3 py-2 font-medium">{t('pamPamRulesTab.table.priority', { defaultValue: 'Priority' })}</th>
+                <th className="px-3 py-2 font-medium">{t('pamPamRulesTab.table.name', { defaultValue: 'Name' })}</th>
+                <th className="px-3 py-2 font-medium">{t('pamPamRulesTab.table.criteria', { defaultValue: 'Criteria' })}</th>
+                <th className="px-3 py-2 font-medium">{t('pamPamRulesTab.table.scope', { defaultValue: 'Scope' })}</th>
+                <th className="px-3 py-2 font-medium">{t('pamPamRulesTab.table.verdict', { defaultValue: 'Verdict' })}</th>
+                <th className="px-3 py-2 font-medium">{t('pamPamRulesTab.table.enabled', { defaultValue: 'Enabled' })}</th>
                 <th className="px-3 py-2 font-medium" />
               </tr>
             </thead>
@@ -274,7 +327,9 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
                     className="whitespace-nowrap px-3 py-2 text-xs text-muted-foreground"
                     data-testid={`pam-rule-scope-${rule.id}`}
                   >
-                    {rule.siteId ? siteNames[rule.siteId] ?? rule.siteId : 'Org-wide'}
+                    {rule.siteId
+                      ? siteNames[rule.siteId] ?? rule.siteId
+                      : t('pamPamRulesTab.table.orgWide', { defaultValue: 'Org-wide' })}
                   </td>
                   <td className="px-3 py-2">{VERDICT_LABELS[rule.verdict]}</td>
                   <td className="px-3 py-2">
@@ -302,7 +357,7 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
                       data-testid={`pam-rule-edit-${rule.id}`}
                       className="rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-accent"
                     >
-                      Edit
+                      {t('common:actions.edit', { defaultValue: 'Edit' })}
                     </button>
                     <button
                       type="button"
@@ -310,7 +365,7 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
                       data-testid={`pam-rule-delete-${rule.id}`}
                       className="ml-1.5 rounded-md border border-destructive/40 px-2.5 py-1 text-xs font-medium text-destructive hover:bg-destructive/10"
                     >
-                      Delete
+                      {t('common:actions.delete', { defaultValue: 'Delete' })}
                     </button>
                   </td>
                 </tr>
@@ -324,9 +379,12 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
         open={deleteTarget !== null}
         onClose={() => setDeleteTarget(null)}
         onConfirm={() => void confirmDeleteRule()}
-        title="Delete PAM rule"
-        message={`Delete rule "${deleteTarget?.name ?? ''}"? Elevation requests will no longer match it.`}
-        confirmLabel="Delete rule"
+        title={t('pamPamRulesTab.deleteDialog.title', { defaultValue: 'Delete PAM rule' })}
+        message={t('pamPamRulesTab.deleteDialog.message', {
+          defaultValue: 'Delete rule "{{name}}"? Elevation requests will no longer match it.',
+          name: deleteTarget?.name ?? '',
+        })}
+        confirmLabel={t('pamPamRulesTab.deleteDialog.confirm', { defaultValue: 'Delete rule' })}
         variant="destructive"
         isLoading={deleting}
         confirmTestId="pam-rule-delete-confirm"

@@ -1,3 +1,5 @@
+import { i18n } from '@/lib/i18n';
+import { useTranslation } from 'react-i18next';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { runAction, handleActionError } from '../../lib/runAction';
@@ -33,6 +35,7 @@ interface ExpandState {
 }
 
 export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number }) {
+  const { t } = useTranslation('settings');
   const [items, setItems] = useState<CatalogItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -118,8 +121,8 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
     try {
       await runAction({
         request: () => archiveCatalogItem(id),
-        errorFallback: 'Archive failed. Retry.',
-        successMessage: 'Item archived',
+        errorFallback: t('catalogItemsTab.archiveFailedRetry'),
+        successMessage: t('catalogItemsTab.itemArchived'),
         onUnauthorized: UNAUTHORIZED,
       });
       void load(view);
@@ -136,8 +139,8 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
     try {
       await runAction({
         request: () => updateCatalogItem(id, { isActive: true }),
-        errorFallback: 'Restore failed. Retry.',
-        successMessage: 'Item restored',
+        errorFallback: t('catalogItemsTab.restoreFailedRetry'),
+        successMessage: t('catalogItemsTab.itemRestored'),
         onUnauthorized: UNAUTHORIZED,
       });
       void load(view);
@@ -179,8 +182,8 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
   }, []);
 
   const itemName = useCallback(
-    (id: string) => items.find((i) => i.id === id)?.name ?? 'Unknown item',
-    [items],
+    (id: string) => items.find((i) => i.id === id)?.name ?? t('catalogItemsTab.unknownItem'),
+    [items, t],
   );
 
   const toggleSort = (key: SortKey) =>
@@ -215,8 +218,7 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
   if (isOrgScoped) {
     return (
       <p className="rounded-lg border bg-card px-4 py-12 text-center text-sm text-muted-foreground" data-testid="catalog-items-org-scope">
-        The product catalog is available to partner accounts only.
-      </p>
+        {t('catalogItemsTab.theProductCatalogIsAvailableToPartnerAccountsOnly')}</p>
     );
   }
 
@@ -241,32 +243,32 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search name or SKU"
-          aria-label="Search catalog"
+          placeholder={t('catalogItemsTab.searchNameOrSKU')}
+          aria-label={t('catalogItemsTab.searchCatalog')}
           className="h-9 min-w-48 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           data-testid="catalog-search"
         />
 
         {/* Type filter — segmented */}
-        <div className="flex items-center gap-1 rounded-md border bg-muted/40 p-1" role="group" aria-label="Filter by type">
-          {(['all', ...CATALOG_TYPE_ORDER] as TypeFilter[]).map((t) => (
+        <div className="flex items-center gap-1 rounded-md border bg-muted/40 p-1" role="group" aria-label={t('catalogItemsTab.filterByType')}>
+          {(['all', ...CATALOG_TYPE_ORDER] as TypeFilter[]).map((catalogType) => (
             <button
-              key={t}
+              key={catalogType}
               type="button"
-              onClick={() => setTypeFilter(t)}
-              aria-pressed={typeFilter === t}
+              onClick={() => setTypeFilter(catalogType)}
+              aria-pressed={typeFilter === catalogType}
               className={`rounded px-2.5 py-1 text-xs font-medium transition ${
-                typeFilter === t ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'
+                typeFilter === catalogType ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'
               }`}
-              data-testid={`catalog-filter-type-${t}`}
+              data-testid={`catalog-filter-type-${catalogType}`}
             >
-              {t === 'all' ? 'All' : CATALOG_TYPE_LABELS[t]}
+              {catalogType === 'all' ? t('catalogItemsTab.all') : CATALOG_TYPE_LABELS[catalogType]}
             </button>
           ))}
         </div>
 
         {/* Active / archived */}
-        <div className="flex items-center gap-1 rounded-md border bg-muted/40 p-1" role="group" aria-label="Active or archived">
+        <div className="flex items-center gap-1 rounded-md border bg-muted/40 p-1" role="group" aria-label={t('catalogItemsTab.activeOrArchived')}>
           {(['active', 'archived'] as View[]).map((v) => (
             <button
               key={v}
@@ -290,8 +292,7 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
             className="inline-flex h-9 items-center justify-center rounded-md border px-4 text-sm font-medium transition hover:bg-muted"
             data-testid="catalog-import-distributor"
           >
-            Import from TD SYNNEX
-          </button>
+            {t('catalogItemsTab.importFromTDSYNNEX')}</button>
         )}
 
         {canWrite && pax8Active && (
@@ -301,8 +302,7 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
             className="inline-flex h-9 items-center justify-center rounded-md border px-4 text-sm font-medium transition hover:bg-muted"
             data-testid="catalog-import-pax8"
           >
-            Import from Pax8
-          </button>
+            {t('catalogItemsTab.importFromPax8')}</button>
         )}
 
         {canWrite && (
@@ -312,8 +312,7 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
             className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
             data-testid="catalog-add-item"
           >
-            Add item
-          </button>
+            {t('catalogItemsTab.addItem')}</button>
         )}
       </div>
 
@@ -331,28 +330,25 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
           </div>
         ) : error ? (
           <div className="px-4 py-12 text-center text-sm text-destructive" data-testid="catalog-items-error">
-            Catalog failed to load.
-            <div>
+            {t('catalogItemsTab.catalogFailedToLoad')}<div>
               <button
                 type="button"
                 onClick={() => void load(view)}
                 className="mt-3 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
                 data-testid="catalog-items-retry"
               >
-                Try again
-              </button>
+                {t('catalogItemsTab.tryAgain')}</button>
             </div>
           </div>
         ) : items.length === 0 ? (
           <div className="px-4 py-14 text-center" data-testid="catalog-items-empty">
             {view === 'archived' ? (
-              <p className="text-sm text-muted-foreground">No archived items.</p>
+              <p className="text-sm text-muted-foreground">{t('catalogItemsTab.noArchivedItems')}</p>
             ) : (
               <>
-                <h3 className="text-sm font-semibold">Build your catalog</h3>
+                <h3 className="text-sm font-semibold">{t('catalogItemsTab.buildYourCatalog')}</h3>
                 <p className="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">
-                  Add the hardware, software, and service items you sell. Catalog items power quotes, contracts, and invoices.
-                </p>
+                  {t('catalogItemsTab.addTheHardwareSoftwareAndServiceItemsYouSellCatalogItems')}</p>
                 {canWrite && (
                   <button
                     type="button"
@@ -360,27 +356,25 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
                     className="mt-4 inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
                     data-testid="catalog-empty-add"
                   >
-                    Add your first item
-                  </button>
+                    {t('catalogItemsTab.addYourFirstItem')}</button>
                 )}
               </>
             )}
           </div>
         ) : rows.length === 0 ? (
           <div className="px-4 py-12 text-center text-sm text-muted-foreground" data-testid="catalog-items-no-match">
-            No items match these filters.
-          </div>
+            {t('catalogItemsTab.noItemsMatchTheseFilters')}</div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm" data-testid="catalog-items-table">
               <thead>
                 <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
-                  <SortHeader label="Name" sortKey="name" />
-                  <th className="px-3 py-3 font-medium">Type</th>
-                  <th className="px-3 py-3 font-medium">SKU</th>
-                  <SortHeader label="Unit price" sortKey="unitPrice" align="right" />
-                  <th className="px-3 py-3 text-right font-medium">Cost</th>
-                  <SortHeader label="Margin" sortKey="margin" align="right" />
+                  <SortHeader label={t('catalogItemsTab.name')} sortKey="name" />
+                  <th className="px-3 py-3 font-medium">{t('catalogItemsTab.type')}</th>
+                  <th className="px-3 py-3 font-medium">{t('catalogItemsTab.sKU')}</th>
+                  <SortHeader label={t('catalogItemsTab.unitPrice')} sortKey="unitPrice" align="right" />
+                  <th className="px-3 py-3 text-right font-medium">{t('catalogItemsTab.cost')}</th>
+                  <SortHeader label={t('catalogItemsTab.margin')} sortKey="margin" align="right" />
                   <th className="px-3 py-3" />
                 </tr>
               </thead>
@@ -408,7 +402,7 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
                                 type="button"
                                 onClick={(e) => { e.stopPropagation(); toggleExpand(it); }}
                                 aria-expanded={isOpen}
-                                aria-label={isOpen ? 'Collapse bundle' : 'Expand bundle'}
+                                aria-label={isOpen ? t('catalogItemsTab.collapseBundle') : t('catalogItemsTab.expandBundle')}
                                 className="-ml-1 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
                                 data-testid={`catalog-bundle-toggle-${it.id}`}
                               >
@@ -422,8 +416,7 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
                             {it.name}
                             {it.isBundle && (
                               <span className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                                Bundle
-                              </span>
+                                {t('catalogItemsTab.bundle')}</span>
                             )}
                           </span>
                         </td>
@@ -454,14 +447,14 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
                         <tr className="border-t bg-muted/20" data-testid={`catalog-bundle-detail-${it.id}`}>
                           <td colSpan={7} className="px-3 py-3">
                             {exp.loading ? (
-                              <p className="pl-6 text-xs text-muted-foreground">Loading components.</p>
+                              <p className="pl-6 text-xs text-muted-foreground">{t('catalogItemsTab.loadingComponents')}</p>
                             ) : exp.failed ? (
                               <p className="pl-6 text-xs text-destructive">
-                                Couldn&rsquo;t load components.{' '}
-                                <button type="button" onClick={() => { toggleExpand(it); toggleExpand(it); }} className="underline hover:text-foreground">Retry</button>
+                                {t('catalogItemsTab.couldnRsquoTLoadComponents')}{' '}
+                                <button type="button" onClick={() => { toggleExpand(it); toggleExpand(it); }} className="underline hover:text-foreground">{t('catalogItemsTab.retry')}</button>
                               </p>
                             ) : exp.components.length === 0 ? (
-                              <p className="pl-6 text-xs text-muted-foreground">This bundle has no components yet.</p>
+                              <p className="pl-6 text-xs text-muted-foreground">{t('catalogItemsTab.thisBundleHasNoComponentsYet')}</p>
                             ) : (
                               <div className="pl-6">
                                 <ul className="space-y-1">
@@ -471,16 +464,15 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
                                       <span>{itemName(c.componentItemId)}</span>
                                       {c.showOnInvoice && (
                                         <span className="rounded border border-border bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                                          on invoice
-                                        </span>
+                                          {t('catalogItemsTab.onInvoice')}</span>
                                       )}
                                     </li>
                                   ))}
                                 </ul>
                                 {exp.economics && (
                                   <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1 border-t pt-2 text-xs text-muted-foreground">
-                                    <span>Component cost <span className="tabular-nums text-foreground">{formatMoney(exp.economics.totalCost)}</span></span>
-                                    <span>Bundle margin <span className={`tabular-nums ${marginTone(exp.economics.marginPct)}`}>{formatMoney(exp.economics.margin)} ({formatMargin(exp.economics.marginPct)})</span></span>
+                                    <span>{t('catalogItemsTab.componentCost')}<span className="tabular-nums text-foreground">{formatMoney(exp.economics.totalCost)}</span></span>
+                                    <span>{t('catalogItemsTab.bundleMargin')}<span className={`tabular-nums ${marginTone(exp.economics.marginPct)}`}>{formatMoney(exp.economics.margin)} ({formatMargin(exp.economics.marginPct)})</span></span>
                                   </div>
                                 )}
                               </div>
@@ -499,8 +491,7 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
 
       {capHit && (
         <p className="text-xs text-muted-foreground" data-testid="catalog-cap-note">
-          Showing the first {CATALOG_PAGE_LIMIT} items. Use search to narrow the list.
-        </p>
+          {t('catalogItemsTab.showingTheFirst')}{CATALOG_PAGE_LIMIT} {t('catalogItemsTab.itemsUseSearchToNarrowTheList')}</p>
       )}
 
       <CatalogItemEditorDrawer
@@ -531,9 +522,9 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
           setPendingArchive(null);
           if (target) void archive(target.id);
         }}
-        title="Archive item"
+        title={t('catalogItemsTab.archiveItem')}
         message={pendingArchive
-          ? `Archive "${pendingArchive.name}"? It will be hidden from active pickers (quotes, invoices, bundles). You can restore it from the Archived view.`
+          ? t('catalogItemsTab.archiveConfirm', { name: pendingArchive.name })
           : ''}
         confirmLabel="Archive"
         variant="destructive"
@@ -620,7 +611,7 @@ function RowActions({
         disabled={disabled && !busy}
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-label="Row actions"
+        aria-label={i18n.t('settings:catalogItemsTab.rowActions')}
         className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
         data-testid={`catalog-actions-${item.id}`}
       >
@@ -651,8 +642,7 @@ function RowActions({
               className={itemCls}
               data-testid={`catalog-edit-${item.id}`}
             >
-              Edit
-            </button>
+              {i18n.t('settings:catalogItemsTab.edit')}</button>
           )}
           {showArchive && (
             <button
@@ -662,8 +652,7 @@ function RowActions({
               className={`${itemCls} text-destructive`}
               data-testid={`catalog-archive-${item.id}`}
             >
-              Archive
-            </button>
+              {i18n.t('settings:catalogItemsTab.archive')}</button>
           )}
           {showRestore && (
             <button
@@ -673,8 +662,7 @@ function RowActions({
               className={`${itemCls} text-primary`}
               data-testid={`catalog-restore-${item.id}`}
             >
-              Restore
-            </button>
+              {i18n.t('settings:catalogItemsTab.restore')}</button>
           )}
         </div>,
         document.body,

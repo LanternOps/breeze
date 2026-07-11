@@ -1,3 +1,6 @@
+import { useTranslation } from 'react-i18next';
+import '../../../lib/i18n';
+
 export interface BulkAction {
   key: string;
   label: string;
@@ -14,6 +17,7 @@ export interface BulkActionBarProps {
 }
 
 export function BulkActionBar({ count, actions, onClear, testIdPrefix }: BulkActionBarProps) {
+  const { t } = useTranslation('billing');
   if (count === 0) return null;
   return (
     // In-flow `sticky` bar: a sticky element occupies its own layout box, so the
@@ -26,7 +30,7 @@ export function BulkActionBar({ count, actions, onClear, testIdPrefix }: BulkAct
       data-testid={`${testIdPrefix}-bulk-bar`}
     >
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-sm font-medium tabular-nums">{count} selected</span>
+        <span className="text-sm font-medium tabular-nums">{t('bulk.bulkActionBar.selected', { count })}</span>
         <div className="ml-auto flex flex-wrap items-center gap-2">
           {actions.map((a) => (
             <button
@@ -50,7 +54,7 @@ export function BulkActionBar({ count, actions, onClear, testIdPrefix }: BulkAct
             data-testid={`${testIdPrefix}-bulk-clear`}
             className="text-sm text-muted-foreground hover:text-foreground hover:underline"
           >
-            Clear
+            {t('common:actions.clear')}
           </button>
         </div>
       </div>

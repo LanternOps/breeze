@@ -6,6 +6,8 @@
  */
 
 import { CheckCircle2, Cpu, Monitor, Server, Zap } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 
 type RestoreMode = 'full' | 'instant';
 
@@ -28,42 +30,38 @@ export default function VMRestoreConfirmStep({
   mode,
   vmName,
 }: VMRestoreConfirmStepProps) {
+  const { t } = useTranslation('backup');
   return (
     <div className="space-y-4">
       <div>
-        <h3 className="text-lg font-semibold text-foreground">Review & confirm</h3>
-        <p className="text-sm text-muted-foreground">Verify the restore configuration before starting.</p>
+        <h3 className="text-lg font-semibold text-foreground">{t('vMRestoreConfirmStep.reviewConfirm')}</h3>
+        <p className="text-sm text-muted-foreground">{t('vMRestoreConfirmStep.verifyTheRestoreConfigurationBeforeStarting')}</p>
       </div>
       <div className="grid gap-3 md:grid-cols-2">
         <div className="rounded-md border border-dashed bg-muted/30 p-4">
           <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-            <CheckCircle2 className="h-4 w-4 text-success" /> Snapshot
-          </div>
+            <CheckCircle2 className="h-4 w-4 text-success" /> {t('vMRestoreConfirmStep.snapshot')} </div>
           <p className="mt-2 text-xs text-muted-foreground">
             {snapshotLabel ?? 'None selected'}
           </p>
         </div>
         <div className="rounded-md border border-dashed bg-muted/30 p-4">
           <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-            <Monitor className="h-4 w-4 text-primary" /> Target Host
-          </div>
+            <Monitor className="h-4 w-4 text-primary" /> {t('vMRestoreConfirmStep.targetHost')} </div>
           <p className="mt-2 text-xs text-muted-foreground">
             {hostname ?? 'None selected'}
           </p>
         </div>
         <div className="rounded-md border border-dashed bg-muted/30 p-4">
           <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-            <Cpu className="h-4 w-4 text-primary" /> VM Specs
-          </div>
+            <Cpu className="h-4 w-4 text-primary" /> {t('vMRestoreConfirmStep.vmSpecs')} </div>
           <p className="mt-2 text-xs text-muted-foreground">
-            {cpuCount} CPU, {memoryMB} MB RAM, {diskGB} GB Disk
-          </p>
+            {cpuCount} {t('vMRestoreConfirmStep.cpu')} {memoryMB} {t('vMRestoreConfirmStep.mbRam')} {diskGB} {t('vMRestoreConfirmStep.gbDisk')} </p>
         </div>
         <div className="rounded-md border border-dashed bg-muted/30 p-4">
           <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
             {mode === 'full' ? <Server className="h-4 w-4 text-primary" /> : <Zap className="h-4 w-4 text-primary" />}
-            Mode
-          </div>
+            {t('vMRestoreConfirmStep.mode')} </div>
           <p className="mt-2 text-xs text-muted-foreground">
             {mode === 'full' ? 'Full Restore' : 'Instant Boot'}
             {vmName && ` - ${vmName}`}

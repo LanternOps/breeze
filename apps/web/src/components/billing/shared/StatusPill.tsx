@@ -1,4 +1,6 @@
 import { STATUS_PILL, type StatusPillRole } from './statusPillRoles';
+import { useTranslation } from 'react-i18next';
+import '../../../lib/i18n';
 
 const BASE = 'inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium';
 
@@ -22,12 +24,13 @@ interface StatusPillProps {
  * spoken value. The visible `label` sits alongside it.
  */
 export function StatusPill({ role, label, className, testId }: StatusPillProps) {
+  const { t } = useTranslation('billing');
   return (
     <span
       className={className ? `${BASE} ${STATUS_PILL[role]} ${className}` : `${BASE} ${STATUS_PILL[role]}`}
       data-testid={testId}
     >
-      <span className="sr-only">Status: </span>{label}
+      <span className="sr-only">{t('shared.statusPill.prefix')} </span>{label}
     </span>
   );
 }

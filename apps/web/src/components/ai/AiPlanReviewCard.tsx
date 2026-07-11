@@ -1,12 +1,20 @@
-import { useState, useEffect } from 'react';
-import { ListChecks, Check, X, Clock, ChevronDown, ChevronRight } from 'lucide-react';
-import type { ActionPlanStep } from '@breeze/shared';
-import { cn, widthPercentClass } from '@/lib/utils';
+import { useState, useEffect } from "react";
+import {
+  ListChecks,
+  Check,
+  X,
+  Clock,
+  ChevronDown,
+  ChevronRight,
+} from "lucide-react";
+import type { ActionPlanStep } from "@breeze/shared";
+import { cn, widthPercentClass } from "@/lib/utils";
+import { useTranslation } from "react-i18next";
 
 const AUTO_REJECT_MS = 10 * 60 * 1000; // 10 minutes
 
 /** Keys that are internal identifiers */
-const HIDDEN_INPUT_KEYS = new Set(['deviceId', 'orgId', 'siteId', 'sessionId']);
+const HIDDEN_INPUT_KEYS = new Set(["deviceId", "orgId", "siteId", "sessionId"]);
 
 function filterInput(input: Record<string, unknown>): Record<string, unknown> {
   const filtered: Record<string, unknown> = {};
@@ -18,7 +26,7 @@ function filterInput(input: Record<string, unknown>): Record<string, unknown> {
 
 /** Human-readable tool name */
 function formatToolName(name: string): string {
-  return name.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  return name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 interface AiPlanReviewCardProps {
@@ -27,7 +35,12 @@ interface AiPlanReviewCardProps {
   onReject: () => void;
 }
 
-export default function AiPlanReviewCard({ steps, onApprove, onReject }: AiPlanReviewCardProps) {
+export default function AiPlanReviewCard({
+  steps,
+  onApprove,
+  onReject,
+}: AiPlanReviewCardProps) {
+  const { t } = useTranslation("ai");
   const [remainingMs, setRemainingMs] = useState(AUTO_REJECT_MS);
   const [expandedStep, setExpandedStep] = useState<number | null>(null);
 
@@ -47,7 +60,7 @@ export default function AiPlanReviewCard({ steps, onApprove, onReject }: AiPlanR
 
   const minutes = Math.floor(remainingMs / 60000);
   const seconds = Math.floor((remainingMs % 60000) / 1000);
-  const countdown = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+  const countdown = `${minutes}:${seconds.toString().padStart(2, "0")}`;
   const progressPct = (remainingMs / AUTO_REJECT_MS) * 100;
 
   return (
@@ -55,9 +68,11 @@ export default function AiPlanReviewCard({ steps, onApprove, onReject }: AiPlanR
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <ListChecks className="h-4 w-4 text-primary" />
-          <span className="text-sm font-medium text-primary">Action Plan</span>
+          <span className="text-sm font-medium text-primary">
+            {t("aiPlanReviewCard.title")}
+          </span>
           <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary">
-            {steps.length} step{steps.length !== 1 ? 's' : ''}
+            {t("aiPlanReviewCard.stepCount", { count: steps.length })}
           </span>
         </div>
         <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -70,8 +85,8 @@ export default function AiPlanReviewCard({ steps, onApprove, onReject }: AiPlanR
       <div className="mt-2 h-0.5 w-full overflow-hidden rounded-full bg-muted">
         <div
           className={cn(
-            'h-full rounded-full bg-primary/60 transition-all duration-1000 ease-linear',
-            widthPercentClass(progressPct)
+            "h-full rounded-full bg-primary/60 transition-all duration-1000 ease-linear",
+            widthPercentClass(progressPct),
           )}
         />
       </div>
@@ -84,7 +99,10 @@ export default function AiPlanReviewCard({ steps, onApprove, onReject }: AiPlanR
           const hasVisibleInput = Object.keys(visibleInput).length > 0;
 
           return (
-            <div key={stepIdx} className="rounded-md bg-gray-100/40 px-2.5 py-2 dark:bg-gray-800/40">
+            <div
+              key={stepIdx}
+              className="rounded-md bg-gray-100/40 px-2.5 py-2 dark:bg-gray-800/40"
+            >
               <button
                 onClick={() => setExpandedStep(isExpanded ? null : stepIdx)}
                 className="flex w-full items-center gap-2 text-left"
@@ -123,14 +141,14 @@ export default function AiPlanReviewCard({ steps, onApprove, onReject }: AiPlanR
           className="flex items-center gap-1.5 rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-green-500"
         >
           <Check className="h-3.5 w-3.5" />
-          Approve All
+          {t("aiPlanReviewCard.approveAll")}
         </button>
         <button
           onClick={onReject}
           className="flex items-center gap-1.5 rounded-md bg-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
         >
           <X className="h-3.5 w-3.5" />
-          Reject
+          {t("aiPlanReviewCard.reject")}
         </button>
       </div>
     </div>

@@ -22,7 +22,7 @@ import { captureException } from '../services/sentry';
 import { encryptColumnValueForWrite } from '../services/encryptedColumnRegistry';
 import { escapeLike } from '../utils/sql';
 import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema } from '@breeze/shared';
-import type { IpAllowlistStatus } from '@breeze/shared';
+import type { IpAllowlistStatus, SupportedLocale } from '@breeze/shared';
 import { isValidIpOrCidr } from '../services/ipMatch';
 import { seedSystemTicketStatuses } from '../services/ticketConfigService';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
@@ -352,6 +352,7 @@ const dayScheduleSchema = z.object({
   closed: z.boolean().optional()
 });
 
+const supportedLocales = ['en', 'pt-BR'] as const satisfies readonly SupportedLocale[];
 
 const partnerSettingsSchema = z.object({
   // Partner tz is the canonical default for every downstream tz field (#1318),
@@ -359,7 +360,7 @@ const partnerSettingsSchema = z.object({
   timezone: z.string().refine(isValidIanaTimezone, 'Invalid IANA timezone').optional(),
   dateFormat: z.enum(['MM/DD/YYYY', 'DD/MM/YYYY', 'YYYY-MM-DD']).optional(),
   timeFormat: z.enum(['12h', '24h']).optional(),
-  language: z.literal('en').optional(),
+  language: z.enum(supportedLocales).optional(),
   businessHours: z.object({
     preset: z.enum(['24/7', 'business', 'extended', 'custom']),
     custom: z.record(z.string(), dayScheduleSchema).optional()

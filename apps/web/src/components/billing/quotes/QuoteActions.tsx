@@ -1,4 +1,6 @@
 import { useCallback, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '../../../lib/i18n';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../../lib/runAction';
 import { usePermissions } from '../../../lib/permissions';
@@ -34,6 +36,7 @@ interface Props {
  * data-testids are stable across both variants.
  */
 export default function QuoteActions({ detail, onChanged, variant, savePending = false }: Props) {
+  const { t } = useTranslation('billing');
   const { can } = usePermissions();
   const organizations = useOrgStore((s) => s.organizations);
   const { quote, blocks, lines } = detail;
@@ -63,20 +66,20 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
     try {
       await runAction({
         request: () => sendQuote(quote.id),
-        errorFallback: 'Could not send the proposal.',
+        errorFallback: t('quotes.actions.sendError'),
         // Tell the seller what happens next: the quote advances to Viewed and
         // Accepted on its own as the customer engages — no further action here.
-        successMessage: `Proposal sent — we'll mark it Viewed and Accepted as ${orgName} opens and signs.`,
+        successMessage: t('quotes.actions.sendSuccess', { orgName }),
         onUnauthorized: UNAUTHORIZED,
       });
       setSendOpen(false);
       refresh();
     } catch (err) {
-      handleActionError(err, 'Could not send the proposal.');
+      handleActionError(err, t('quotes.actions.sendError'));
     } finally {
       setSending(false);
     }
-  }, [sending, quote.id, orgName, refresh]);
+  }, [sending, quote.id, orgName, refresh, t]);
 
   const remove = useCallback(async () => {
     if (deleting) return;
@@ -84,18 +87,18 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
     try {
       await runAction({
         request: () => deleteQuote(quote.id),
-        errorFallback: 'Could not delete the draft.',
-        successMessage: 'Draft deleted',
+        errorFallback: t('quotes.actions.deleteError'),
+        successMessage: t('quotes.actions.deleteSuccess'),
         onUnauthorized: UNAUTHORIZED,
       });
       setDelOpen(false);
       void navigateTo('/billing/quotes');
     } catch (err) {
-      handleActionError(err, 'Could not delete the draft.');
+      handleActionError(err, t('quotes.actions.deleteError'));
     } finally {
       setDeleting(false);
     }
-  }, [deleting, quote.id]);
+  }, [deleting, quote.id, t]);
 
   const header = variant === 'header';
   // Rail buttons stretch full-width and stack; header buttons size to content and
@@ -130,14 +133,14 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
                 : undefined
             }
             title={
-              isEmpty ? 'Add at least one item before sending.'
-                : savePending ? 'Saving your changes — Send unlocks when everything is saved.'
+              isEmpty ? t('quotes.actions.emptyHint')
+                : savePending ? t('quotes.actions.savingTitle')
                 : undefined
             }
             data-testid="quote-send"
             className={`${btnBase} bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50`}
           >
-            {sending ? 'Sending…' : savePending ? 'Saving…' : 'Send proposal'}
+            {sending ? t('quotes.actions.sending') : savePending ? t('common:states.saving') : t('quotes.actions.sendProposal')}
           </button>
         )}
         {/* PDF download is a read affordance (quotes has no dedicated export
@@ -150,7 +153,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
             data-testid="quote-download-pdf"
             className={`${btnBase} border hover:bg-muted disabled:opacity-50`}
           >
-            Download PDF
+            {t('quotes.actions.downloadPdf')}
           </button>
         )}
         {canDelete && (
@@ -160,7 +163,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
             data-testid="quote-delete-open"
             className={`${btnBase} border border-destructive/40 text-destructive hover:bg-destructive/10`}
           >
-            Delete draft
+            {t('quotes.actions.deleteDraft')}
           </button>
         )}
         {canSend && isEmpty && (
@@ -175,7 +178,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
             data-testid="quote-send-empty-hint"
             className={header ? 'basis-full text-xs text-muted-foreground text-right' : 'text-center text-xs text-muted-foreground'}
           >
-            Add at least one item before sending.
+            {t('quotes.actions.emptyHint')}
           </p>
         )}
         {canSend && !isEmpty && savePending && (
@@ -186,7 +189,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
             data-testid="quote-send-saving-hint"
             className={header ? 'basis-full text-xs text-muted-foreground text-right' : 'text-center text-xs text-muted-foreground'}
           >
-            Saving changes… Send unlocks when everything is saved.
+            {t('quotes.actions.savingHint')}
           </p>
         )}
       </div>
@@ -197,9 +200,12 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
         onConfirm={() => void send()}
         isLoading={sending}
         variant="warning"
-        title="Send this proposal?"
-        message={`We'll email this proposal to ${orgName} and mark it Sent — ${formatMoney(quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal, currency)} due on acceptance. This can't be undone.`}
-        confirmLabel="Send proposal"
+        title={t('quotes.actions.sendConfirm.title')}
+        message={t('quotes.actions.sendConfirm.message', {
+          orgName,
+          amount: formatMoney(quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal, currency),
+        })}
+        confirmLabel={t('quotes.actions.sendProposal')}
         confirmTestId="quote-send-confirm"
       />
       <ConfirmDialog
@@ -207,9 +213,9 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
         onClose={() => setDelOpen(false)}
         onConfirm={() => void remove()}
         isLoading={deleting}
-        title="Delete draft quote"
-        message="This permanently deletes the draft quote. This can't be undone."
-        confirmLabel="Delete draft"
+        title={t('quotes.actions.deleteConfirm.title')}
+        message={t('quotes.actions.deleteConfirm.message')}
+        confirmLabel={t('quotes.actions.deleteDraft')}
         confirmTestId="quote-delete-confirm"
       />
     </>

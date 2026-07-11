@@ -1,0 +1,720 @@
+{
+  "assetDetailModal": {
+    "actions": {
+      "connect": "Connect",
+      "connecting": "Connecting...",
+      "deleteAsset": "Delete Asset",
+      "deleting": "Deleting...",
+      "enabling": "Enabling...",
+      "linkAsset": "Link asset",
+      "linking": "Linking...",
+      "resetType": "Reset to auto-detected",
+      "unlink": "Unlink",
+      "working": "Working..."
+    },
+    "assetInfoTitle": "Asset Info",
+    "confirmDelete": "Delete discovered asset \"{{name}}\"?",
+    "confirmUnlink": "Unlink this device?",
+    "deleteDescription": "Remove this asset from discovery results.",
+    "detailsUnavailableDescription": "We couldn’t load this device’s record. It may have been removed or you may not have access to it.",
+    "detailsUnavailableTitle": "Details unavailable",
+    "deviceDetailsTitle": "Device details",
+    "errors": {
+      "createAllowlist": "Failed to create allowlist entry",
+      "createProxyTunnel": "Failed to create proxy tunnel",
+      "createTunnel": "Failed to create tunnel",
+      "delete": "Failed to delete asset",
+      "generic": "An error occurred",
+      "link": "Failed to link asset",
+      "resetType": "Failed to reset type",
+      "saveInfo": "Failed to save asset info",
+      "selectDeviceToLink": "Select a device to link.",
+      "unlink": "Failed to unlink asset"
+    },
+    "fields": {
+      "assetType": "Asset Type",
+      "displayName": "Display Name",
+      "notesDescription": "Notes / Description",
+      "osFingerprint": "OS Fingerprint",
+      "ping": "Ping",
+      "tags": "Tags (comma-separated)"
+    },
+    "identityOnlyBefore": "Identity / asset-tracking only — this does",
+    "lastSeen": "Last seen {{time}}",
+    "linkManagedDeviceDescription": "Associate this discovered asset with an existing agent-managed device so Breeze treats them as the same machine. This does not install an agent or create a new device. The asset will be marked as approved.",
+    "linkManagedDeviceTitle": "Link to managed device",
+    "loadingDetails": "Loading device details…",
+    "messages": {
+      "linked": "Asset linked. It is now marked approved.",
+      "linkedToDevice": "Asset linked to {{device}}. It is now marked approved.",
+      "unlinked": "Device unlinked."
+    },
+    "networkDetailsTitle": "Network Details",
+    "noOpenPorts": "No open ports detected.",
+    "noSnmpData": "No SNMP data was collected — the device may not have responded, or SNMP was not probed. Check that the SNMP method is enabled and the community string is set on the discovery profile.",
+    "openPorts": "Open Ports",
+    "options": {
+      "selectManagedDevice": "Select a managed device"
+    },
+    "placeholders": {
+      "displayName": "e.g. Main Switch",
+      "notes": "e.g. Located in Closet A, 2nd floor",
+      "tags": "e.g. critical, floor-2, networking"
+    },
+    "proxy": {
+      "allowSelfSigned": "Allow self-signed certificate (common for printers, iLO/IPMI, switches)",
+      "description": "Reach this device's web interface in your browser, tunnelled through an online agent on its network. Enabling whitelists this device's IP so an agent is permitted to proxy to it.",
+      "enable": "Enable Proxy Access",
+      "enabled": "Proxy enabled",
+      "noOnlineAgent": "No online agent available to proxy to this device. An agent must be online and on the same network as {{ip}} to bridge the connection.",
+      "port": "Port {{port}}",
+      "portWithService": "Port {{port}} ({{service}})",
+      "throughAgent": "Proxy through agent",
+      "throughAgentHelp": "Pick an online agent that can reach {{ip}} on its network (usually the one that discovered it). This is separate from the identity link above.",
+      "title": "Proxy Access"
+    },
+    "snmpDataTitle": "SNMP Data",
+    "notText": "not",
+    "identityOnlyAfter": "control proxy access or choose the proxy agent (set those under Proxy Access below).",
+    "snmpFields": {
+      "systemName": "System Name",
+      "objectId": "Object ID"
+    }
+  },
+  "assetMonitoringSection": {
+    "actions": {
+      "addUpdate": "Add / Update Monitoring",
+      "disableActive": "Disable Active Monitoring",
+      "disabling": "Disabling...",
+      "enable": "Enable Monitoring",
+      "open": "Open Monitoring"
+    },
+    "activeChecks": "{{active}}/{{total}} network checks active",
+    "errors": {
+      "disable": "Failed to disable monitoring",
+      "loadMonitors": "Failed to load network monitors",
+      "loadStatus": "Failed to load monitoring status"
+    },
+    "loading": "Loading monitoring status...",
+    "monitorTypes": {
+      "icmp_ping": "ICMP Ping",
+      "tcp_port": "TCP Port",
+      "http_check": "HTTP Check",
+      "dns_check": "DNS Check"
+    },
+    "networkMonitorsTitle": "Network Monitors ({{count}})",
+    "noChecks": "No network checks configured",
+    "snmpSummary": "{{version}} · every {{seconds}}s",
+    "snmpTitle": "SNMP Device Monitor",
+    "state": {
+      "active": "Active",
+      "configuredPaused": "Configured (Paused)",
+      "paused": "Paused",
+      "notConfigured": "Not Configured"
+    },
+    "title": "Monitoring",
+    "lastPolled": " • last polled {{time}}"
+  },
+  "discoveredAssetList": {
+    "actions": {
+      "approve": "Approve",
+      "approveSelected": "Approve selected ({{count}})",
+      "approving": "Approving...",
+      "clearAll": "Clear all",
+      "clearSelection": "Clear selection",
+      "deselectAllVisible": "Deselect all visible",
+      "dismiss": "Dismiss",
+      "dismissSelected": "Dismiss selected ({{count}})",
+      "dismissing": "Dismissing...",
+      "selectAllVisible": "Select all visible",
+      "selectAllVisibleAssets": "Select all visible assets",
+      "selectAsset": "Select asset {{asset}}",
+      "viewDetails": "View details"
+    },
+    "columns": {
+      "approval": "Approval",
+      "host": "Host",
+      "lastSeen": "Last Seen"
+    },
+    "description": "Review assets detected in your environment.",
+    "empty": "No assets discovered yet.",
+    "emptyFiltered": "No assets match the current filters.",
+    "errors": {
+      "approve": "Failed to approve asset",
+      "bulkApprove": "Failed to approve selected assets",
+      "bulkDismiss": "Failed to dismiss selected assets",
+      "dismiss": "Failed to dismiss asset",
+      "fetch": "Failed to fetch discovered assets",
+      "generic": "An error occurred"
+    },
+    "filters": {
+      "profile": "Profile",
+      "subnet": "Subnet"
+    },
+    "loading": "Loading discovered assets...",
+    "monitored": "Monitored",
+    "title": "Discovered Assets",
+    "tryAgain": "Try again"
+  },
+  "discoveryJobList": {
+    "actions": {
+      "assets": "Assets",
+      "cancelJob": "Cancel job",
+      "clearAll": "Clear all",
+      "clearFilter": "Clear filter",
+      "viewDiscoveredAssets": "View discovered assets"
+    },
+    "columns": {
+      "duration": "Duration",
+      "finished": "Finished",
+      "hostsDiscovered": "Hosts discovered",
+      "newAssets": "New assets",
+      "profile": "Profile",
+      "progress": "Progress",
+      "scheduled": "Scheduled",
+      "started": "Started"
+    },
+    "description": "Track running and scheduled scans.",
+    "empty": "No discovery jobs yet.",
+    "emptyForProfile": "No jobs for this profile yet.",
+    "errors": {
+      "cancel": "Failed to cancel job",
+      "fetch": "Failed to fetch discovery jobs",
+      "generic": "An error occurred"
+    },
+    "filteredByProfile": "Filtered by profile:",
+    "filters": {
+      "subnet": "Subnet"
+    },
+    "loading": "Loading discovery jobs...",
+    "status": {
+      "scheduled": "Scheduled",
+      "running": "Running",
+      "completed": "Completed",
+      "failed": "Failed",
+      "cancelled": "Cancelled",
+      "pending": "Pending"
+    },
+    "title": "Discovery Jobs",
+    "tryAgain": "Try again",
+    "unknownProfile": "Unknown profile"
+  },
+  "discoveryPage": {
+    "actions": {
+      "newProfile": "New Profile"
+    },
+    "allOrgs": {
+      "description": "Network discovery is scoped to a single organization, site, and agent. Choose an organization in the scope switcher to view its discovered assets, profiles, scan jobs, and topology.",
+      "title": "Select an organization to view network discovery"
+    },
+    "confirmDeleteProfile": "Delete profile \"{{name}}\"? This will also remove all associated scan jobs.",
+    "description": "Configure discovery profiles, monitor scans, and manage network assets.",
+    "errors": {
+      "deleteProfile": "Failed to delete profile",
+      "fetchProfiles": "Failed to fetch discovery profiles",
+      "generic": "An error occurred",
+      "loadProfileDetails": "Failed to load profile details",
+      "loadProfileDetailsHttp": "Failed to load profile details (HTTP {{status}})",
+      "profileDeletedRefresh": "This profile may have been deleted. Please refresh the page.",
+      "profileDetailsUnavailable": "Profile detail endpoint unavailable. SNMP credentials may not be loaded.",
+      "runProfile": "Failed to run discovery profile \"{{name}}\"",
+      "saveProfile": "Failed to save profile",
+      "selectSite": "Please select a site for this discovery profile.",
+      "snmpAuthPassphrase": "SNMPv3 auth passphrase is required.",
+      "snmpUsername": "SNMPv3 username is required."
+    },
+    "modal": {
+      "closeAria": "Close profile settings modal",
+      "createProfile": "Create Profile",
+      "creating": "Creating...",
+      "description": "Configure network scope, scan methods, and scheduling settings.",
+      "editTitle": "Edit Discovery Profile",
+      "newTitle": "New Discovery Profile",
+      "updateProfile": "Update Profile",
+      "updating": "Updating..."
+    },
+    "relative": {
+      "daysAgo": "{{count}}d ago",
+      "hoursAgo": "{{count}}h ago",
+      "justNow": "just now",
+      "minutesAgo": "{{count}}m ago",
+      "monthsAgo": "{{count}}mo ago"
+    },
+    "schedule": {
+      "cron": "Cron schedule",
+      "cronValue": "Cron: {{cron}}",
+      "daily": "Daily at {{time}}",
+      "everyHours": "Every {{count}} hours",
+      "everyMinutes": "Every {{count}} min",
+      "interval": "Interval schedule",
+      "manual": "Manual",
+      "monthly": "Monthly on {{day}} at {{time}}",
+      "weekly": "Weekly on {{day}} at {{time}}"
+    },
+    "tabs": {
+      "assets": "Assets",
+      "changes": "Changes",
+      "jobs": "Jobs",
+      "profiles": "Profiles",
+      "topology": "Topology"
+    },
+    "title": "Network Discovery",
+    "toasts": {
+      "scanQueued": "Discovery scan queued for \"{{name}}\""
+    },
+    "days": {
+      "monday": "Monday",
+      "tuesday": "Tuesday",
+      "wednesday": "Wednesday",
+      "thursday": "Thursday",
+      "friday": "Friday",
+      "saturday": "Saturday",
+      "sunday": "Sunday"
+    }
+  },
+  "discoveryProfileForm": {
+    "alerting": {
+      "alertOnChanged": "Changed devices",
+      "alertOnDisappeared": "Disappeared devices",
+      "alertOnNew": "New devices",
+      "description": "Alert when new or changed devices are detected on this subnet.",
+      "enable": "Enable network alerting",
+      "title": "Network Alerting"
+    },
+    "cadence": {
+      "daily": "Daily",
+      "hourly": "Hourly",
+      "interval": "Custom interval",
+      "monthly": "Monthly",
+      "weekly": "Weekly"
+    },
+    "days": {
+      "monday": "Monday",
+      "tuesday": "Tuesday",
+      "wednesday": "Wednesday",
+      "thursday": "Thursday",
+      "friday": "Friday",
+      "saturday": "Saturday",
+      "sunday": "Sunday"
+    },
+    "fields": {
+      "authPassphrase": "Auth passphrase",
+      "authProtocol": "Auth protocol",
+      "community": "Community string",
+      "dayOfMonth": "Day of month",
+      "dayOfWeek": "Day of week",
+      "methods": "Discovery methods",
+      "port": "Port",
+      "privacyPassphrase": "Privacy passphrase",
+      "privacyProtocol": "Privacy protocol",
+      "profileName": "Profile name",
+      "repeatEvery": "Repeat every",
+      "repeatEveryMinutes": "Repeat every (minutes)",
+      "retainChangeLog": "Retain change log (days)",
+      "retries": "Retries",
+      "scheduleCadence": "Schedule cadence",
+      "snmpVersion": "SNMP version",
+      "subnets": "Subnets to scan",
+      "time": "Time",
+      "timeout": "Timeout (ms)",
+      "timezone": "Timezone",
+      "username": "Username"
+    },
+    "options": {
+      "everyHours": "Every {{count}} hours",
+      "selectSite": "Select a site..."
+    },
+    "placeholders": {
+      "profileName": "Headquarters scan",
+      "subnets": "10.0.0.0/24\\n10.0.1.0/24"
+    },
+    "profileDetails": {
+      "description": "Define the network scope and discovery methods.",
+      "title": "Profile Details"
+    },
+    "schedule": {
+      "description": "Set when discovery jobs should run.",
+      "title": "Schedule"
+    },
+    "snmp": {
+      "description": "Credentials used for SNMP discovery probes.",
+      "title": "SNMP Settings"
+    },
+    "subnetsHelp": "Enter CIDR ranges separated by commas or new lines.",
+    "validation": {
+      "invalidCidr": "\"{{value}}\": not a valid CIDR range or IP address",
+      "octet": "\"{{value}}\": octet value exceeds 255",
+      "prefix": "\"{{value}}\": prefix length must be 0–32",
+      "subnetRequired": "At least one subnet or IP address is required."
+    },
+    "actions": {
+      "saveProfile": "Save Profile"
+    },
+    "methods": {
+      "ping": "ICMP Ping",
+      "arp": "ARP Sweep",
+      "snmp": "SNMP Probe",
+      "portScan": "TCP Port Scan"
+    }
+  },
+  "discoveryProfileList": {
+    "actions": {
+      "deleteProfile": "Delete profile",
+      "editProfile": "Edit profile",
+      "runNow": "Run now",
+      "runProfile": "Run {{name}}",
+      "running": "Running...",
+      "runningProfile": "Running {{name}}",
+      "viewJobs": "View jobs"
+    },
+    "columns": {
+      "methods": "Methods",
+      "profile": "Profile",
+      "schedule": "Schedule",
+      "subnets": "Subnets"
+    },
+    "configuredCount": "{{count}} profiles configured",
+    "empty": "No discovery profiles yet. Create your first profile to start scanning.",
+    "lastRun": "Last run {{time}}",
+    "loading": "Loading discovery profiles...",
+    "nextRun": "Next: {{time}}",
+    "notRunYet": "Not run yet",
+    "scheduleHint": "Schedules run automatically or on demand",
+    "status": {
+      "active": "Active",
+      "paused": "Paused",
+      "draft": "Draft",
+      "error": "Error"
+    },
+    "title": "Discovery Profiles",
+    "tryAgain": "Try again"
+  },
+  "enableMonitoringForm": {
+    "actions": {
+      "addNetworkMonitor": "Add Network Monitor",
+      "enableSnmp": "Enable SNMP Monitoring",
+      "enabling": "Enabling..."
+    },
+    "description": "Monitoring supports SNMP polling and network checks Ping/TCP/HTTP/DNS . You can configure either or both.",
+    "errors": {
+      "communityRequired": "Community string is required for SNMP v1/v2c",
+      "enable": "Failed to enable monitoring",
+      "generic": "An error occurred",
+      "loadTemplates": "Failed to load templates",
+      "usernameRequired": "Username is required for SNMP v3"
+    },
+    "fields": {
+      "authPassword": "Auth Password",
+      "authProtocol": "Auth Protocol",
+      "community": "Community String",
+      "pollingInterval": "Polling Interval (seconds)",
+      "privacyPassword": "Privacy Password",
+      "privacyProtocol": "Privacy Protocol",
+      "snmpVersion": "SNMP Version",
+      "template": "Template",
+      "username": "Username"
+    },
+    "networkChecksDescription": "Add ping, TCP, HTTP, or DNS monitors for this asset.",
+    "networkChecksTitle": "Network Checks",
+    "noTemplate": "No template",
+    "placeholders": {
+      "community": "public"
+    },
+    "snmpTitle": "SNMP Device Monitoring"
+  },
+  "networkBaselinesPanel": {
+    "actions": {
+      "changes": "Changes",
+      "create": "Create Baseline",
+      "creating": "Creating...",
+      "runNow": "Run now",
+      "saveSettings": "Save Baseline Settings",
+      "viewChanges": "View changes"
+    },
+    "alertLabels": {
+      "changed": "Device changed",
+      "disappeared": "Device disappeared",
+      "newDevice": "New device",
+      "rogue": "Rogue device"
+    },
+    "alertNames": {
+      "changed": "changed",
+      "gone": "gone",
+      "new": "new",
+      "rogue": "rogue"
+    },
+    "alertsSummary": "Alerts: {{alerts}}",
+    "columns": {
+      "knownDevices": "Known Devices",
+      "lastScan": "Last Scan",
+      "schedule": "Schedule",
+      "subnet": "Subnet"
+    },
+    "deleteDialog": {
+      "confirm": "Delete Baseline",
+      "message": "Are you sure you want to delete baseline {{subnet}}? Associated change events will also be deleted. This action cannot be undone.",
+      "title": "Delete Network Baseline"
+    },
+    "empty": "No network baselines yet. Create one to enable continuous change detection.",
+    "errors": {
+      "create": "Failed to create baseline",
+      "delete": "Failed to delete baseline",
+      "load": "Failed to load network baselines",
+      "run": "Failed to trigger baseline scan",
+      "save": "Failed to save baseline",
+      "update": "Failed to update baseline"
+    },
+    "everyHoursShort": "Every {{count}}h",
+    "fields": {
+      "alertSettings": "Alert Settings",
+      "enableScheduledScans": "Enable scheduled scans",
+      "scanInterval": "Scan Interval (hours)",
+      "subnetCidr": "Subnet (CIDR)"
+    },
+    "form": {
+      "createDescription": "Create a subnet baseline for scheduled discovery comparisons.",
+      "createTitle": "Create Baseline",
+      "editDescription": "Update scan cadence and alert behavior.",
+      "editTitle": "Edit Baseline",
+      "immutableHint": "Site and subnet are immutable after creation."
+    },
+    "loading": "Loading network baselines...",
+    "messages": {
+      "created": "Baseline created.",
+      "deleted": "Deleted baseline {{subnet}}.",
+      "scanQueued": "Scan queued.",
+      "scanQueuedWithId": "Scan queued ({{id}}).",
+      "updated": "Baseline settings updated."
+    },
+    "next": "Next: {{time}}",
+    "options": {
+      "selectSite": "Select site"
+    },
+    "paused": "Paused",
+    "permissionManage": "Mutating actions are disabled after permission check failure. Requires `devices:write`.",
+    "placeholders": {
+      "subnet": "192.168.1.0/24"
+    },
+    "title": "Network Baselines",
+    "validation": {
+      "cidr": "Subnet must be in CIDR format (example: 192.168.1.0/24).",
+      "interval": "Scan interval must be between 1 and 168 hours.",
+      "selectSite": "Select a site before saving."
+    },
+    "configuredCount": "{{count}} baselines configured"
+  },
+  "networkChangeDetailModal": {
+    "acknowledgeTitle": "Acknowledge Event",
+    "actions": {
+      "acknowledge": "Acknowledge",
+      "acknowledging": "Acknowledging...",
+      "linkDevice": "Link Device",
+      "linking": "Linking..."
+    },
+    "alreadyAcknowledged": "This event is already acknowledged.",
+    "currentState": "Current State",
+    "errors": {
+      "acknowledge": "Failed to acknowledge event",
+      "linkDevice": "Failed to link device",
+      "selectDeviceBeforeLinking": "Select a device before linking."
+    },
+    "eventDetailsTitle": "Event Details",
+    "fields": {
+      "acknowledgedAt": "Acknowledged At",
+      "alertId": "Alert ID",
+      "assetType": "Asset Type",
+      "linkedDevice": "Linked Device",
+      "subnet": "Subnet"
+    },
+    "linkManagedDeviceTitle": "Link Managed Device",
+    "noNotes": "No notes recorded.",
+    "notLinked": "Not linked",
+    "notesTitle": "Notes",
+    "options": {
+      "selectDevice": "Select device"
+    },
+    "permissionAcknowledge": "Hidden after permission check failure. Requires `alerts:acknowledge`.",
+    "permissionLinkDevice": "Hidden after permission check failure. Requires `devices:write`.",
+    "placeholders": {
+      "ackNotes": "Optional acknowledgement notes"
+    },
+    "previousState": "Previous State",
+    "status": {
+      "acknowledged": "Acknowledged",
+      "unacknowledged": "Unacknowledged"
+    },
+    "summary": "IP {{ip}} • MAC {{mac}} • Detected {{detected}}"
+  },
+  "networkChangesPanel": {
+    "actions": {
+      "ack": "Ack",
+      "acknowledgeSelected": "Acknowledge Selected",
+      "acknowledging": "Acknowledging...",
+      "details": "Details",
+      "goToProfiles": "Go to Profiles",
+      "link": "Link",
+      "resetFilters": "Reset filters"
+    },
+    "columns": {
+      "detected": "Detected",
+      "event": "Event",
+      "linkedDevice": "Linked Device"
+    },
+    "description": "Review and triage network change events across discovery profiles.",
+    "empty": {
+      "alertingDisabled": "Discovery scans won’t record changes until Alerting is enabled on a discovery profile.",
+      "enableAlerting": "Enable Alerting",
+      "filtered": "No change events match the selected filters.",
+      "noEventsTitle": "No change events recorded yet.",
+      "noProfilesDescription": "Network change events are created by discovery profiles. Create a profile and enable Alerting to record new, changed, or disappeared devices.",
+      "noProfilesTitle": "Set up a network discovery profile to start tracking changes.",
+      "profileAlertingDisabled": "Discovery scans on “{{profile}}” won’t record changes until Alerting is enabled on that profile.",
+      "enableAlertingSuffix": "in the profile’s settings (Profiles tab) to start tracking network changes."
+    },
+    "errors": {
+      "acknowledgeEvent": "Failed to acknowledge event",
+      "acknowledgeSelected": "Failed to acknowledge selected events",
+      "linkDevice": "Failed to link device",
+      "loadChanges": "Failed to load network changes",
+      "loadDevices": "Failed to load devices",
+      "loadMetadata": "Failed to load network metadata",
+      "loadProfileFilters": "Failed to load profile filters"
+    },
+    "eventsLoaded": "{{count}} events loaded",
+    "fields": {
+      "acknowledged": "Acknowledged",
+      "eventType": "Event Type",
+      "profile": "Profile",
+      "since": "Since"
+    },
+    "loading": "Loading network changes...",
+    "messages": {
+      "acknowledgedCount": "Acknowledged {{count}} event(s).",
+      "deviceLinked": "Device linked.",
+      "eventAcknowledged": "Event acknowledged."
+    },
+    "noMac": "No MAC",
+    "notLinked": "Not linked",
+    "options": {
+      "allProfiles": "All profiles",
+      "allSites": "All sites",
+      "allTypes": "All types"
+    },
+    "permissionAcknowledge": "Acknowledge actions disabled after permission check failure. Requires `alerts:acknowledge`.",
+    "permissionLink": "Device linking disabled after permission check failure. Requires `devices:write`.",
+    "placeholders": {
+      "bulkNotes": "Optional bulk acknowledgement notes"
+    },
+    "selectedUnacknowledged": "{{count}} unacknowledged event(s) selected",
+    "status": {
+      "acknowledged": "Acknowledged",
+      "unacknowledged": "Unacknowledged"
+    },
+    "title": "Network Changes",
+    "unknownHost": "Unknown host"
+  },
+  "networkEvents": {
+    "type": {
+      "device_changed": "Changed",
+      "device_disappeared": "Disappeared",
+      "new_device": "New device",
+      "rogue_device": "Rogue"
+    }
+  },
+  "networkTopologyMap": {
+    "actions": {
+      "addPlaceholderTitle": "Add a {{role}} placeholder",
+      "autoArrange": "Auto-arrange",
+      "clearSelection": "Clear selection",
+      "collapse": "Collapse",
+      "confirmDelete": "Confirm delete?",
+      "confirmDeleteConnection": "Confirm delete connection",
+      "confirmDeleteNode": "Confirm delete node",
+      "deleteConnection": "Delete connection",
+      "deleteNode": "Delete node",
+      "doneEditing": "Done editing",
+      "editMap": "Edit map",
+      "exitFullScreenTitle": "Exit full screen (Esc)",
+      "expand": "Expand",
+      "expandTitle": "Expand map to full screen",
+      "fit": "Fit",
+      "fitTitle": "Fit the whole map to view",
+      "selectSingleSiteTitle": "Select a single site to add manual nodes",
+      "viewDetails": "View details"
+    },
+    "addNodeAria": "Add node:",
+    "addNodeLabel": "Add node",
+    "adjacencyNote": "Connection lines appear only where real adjacency is measured (LLDP/CDP/SNMP). None has been collected yet, so assets are grouped by subnet without inferred links.",
+    "allDevices": "All devices ({{count}})",
+    "canvasAriaEmpty": "Network topology map: no devices discovered yet.",
+    "canvasAriaWithDevices": "Network topology map: {{count}} device{{suffix}}. Use the device list below to inspect each device with the keyboard.",
+    "confidence": "{{confidence}} confidence",
+    "connectHint": "Tap another node to connect",
+    "connection": "Connection",
+    "edgeMethods": {
+      "fdb": "Bridge FDB",
+      "manual": "Manual",
+      "lldp": "LLDP",
+      "cdp": "CDP"
+    },
+    "editHint": "Drag to arrange · tap two nodes to link",
+    "empty": {
+      "description": "Run a network discovery scan to populate the topology map.",
+      "title": "No assets discovered yet"
+    },
+    "errors": {
+      "addNode": "Failed to add node",
+      "addNodeSentence": "Failed to add node.",
+      "connectNodes": "Failed to connect nodes",
+      "connectNodesSentence": "Failed to connect nodes.",
+      "deleteConnection": "Failed to delete connection",
+      "deleteConnectionSentence": "Failed to delete connection.",
+      "deleteNode": "Failed to delete node",
+      "deleteNodeSentence": "Failed to delete node.",
+      "fetch": "Failed to fetch topology",
+      "generic": "An error occurred",
+      "savePosition": "Failed to save node position"
+    },
+    "handMapped": "Hand-mapped",
+    "legend": {
+      "lldpCdp": "LLDP/CDP",
+      "title": "Legend"
+    },
+    "loading": "Loading topology...",
+    "manualBadge": "Manual",
+    "measuredAdjacency": "Measured adjacency",
+    "measuredNotEditable": "Measured by scan — not editable",
+    "messages": {
+      "connectionAdded": "Connection added",
+      "connectionRemoved": "Connection removed",
+      "layoutSaved": "Layout saved",
+      "nodeAdded": "Node added",
+      "nodeRemoved": "Node removed"
+    },
+    "title": "Network Topology",
+    "tryAgain": "Try again",
+    "vlan": "VLAN {{vlan}}",
+    "escToCancel": "· Esc to cancel"
+  },
+  "assetTypes": {
+    "workstation": "Workstation",
+    "server": "Server",
+    "printer": "Printer",
+    "router": "Router",
+    "switch": "Switch",
+    "firewall": "Firewall",
+    "accessPoint": "Access Point",
+    "phone": "Phone",
+    "iot": "IoT",
+    "camera": "Camera",
+    "nas": "NAS",
+    "unknown": "Unknown",
+    "patchPanel": "Patch Panel",
+    "other": "Other"
+  },
+  "approvalStatus": {
+    "pending": "Pending",
+    "approved": "Approved",
+    "dismissed": "Dismissed"
+  }
+}
