@@ -101,3 +101,4 @@ export * from './onedriveHelper';
 export * from './vulnerabilityManagement';
 export * from './partnerLoginBranding';
 export * from './recoveryKeys';
+export * from './abuseSignals';
