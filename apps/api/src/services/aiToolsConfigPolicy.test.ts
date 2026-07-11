@@ -13,7 +13,7 @@ const {
   validateAssignmentTargetMock: vi.fn(),
   // SR5-07 site sub-axis: default allow so existing (unrestricted) cases are
   // unaffected; site-scope tests override to assert denial.
-  authorizeAssignmentTargetMock: vi.fn(async () => ({ valid: true })),
+  authorizeAssignmentTargetMock: vi.fn(async (): Promise<{ valid: boolean; error?: string }> => ({ valid: true })),
   policyAccessConditionMock: vi.fn(),
   canManagePartnerWidePoliciesMock: vi.fn(() => true),
   createConfigPolicyMock: vi.fn(),
