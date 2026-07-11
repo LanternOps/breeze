@@ -137,7 +137,7 @@
       "noInstall": "Nenhuma instalação registrada"
     },
     "confirm": {
-      "title": "Confirmar ação em frota",
+      "title": "Confirmar ação em dispositivos",
       "selectedOrganization": "a organização selecionada",
       "scanAction": "Verificar patches",
       "installAction": "Instalar patches",
