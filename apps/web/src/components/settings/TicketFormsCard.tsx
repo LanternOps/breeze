@@ -287,9 +287,9 @@ export default function TicketFormsCard() {
     // Org-scoped create needs an org. If orgs FAILED to load, the inline
     // `ticket-form-orgs-error` notice (with retry) is the honest feedback — emit
     // the "select an org" line only when orgs are actually available to pick.
-    const orgScopeBlockedByLoad =
-      editing.id === undefined && d.ownerScope === 'organization' && !d.orgId && orgsLoadFailed;
-    if (editing.id === undefined && d.ownerScope === 'organization' && !d.orgId && !orgsLoadFailed) {
+    const orgScopeNeedsOrg = editing.id === undefined && d.ownerScope === 'organization' && !d.orgId;
+    const orgScopeBlockedByLoad = orgScopeNeedsOrg && orgsLoadFailed;
+    if (orgScopeNeedsOrg && !orgsLoadFailed) {
       localIssues.push('Select an organization for an organization-scoped form.');
     }
     const built = buildFields(d.fields);
@@ -349,24 +349,22 @@ export default function TicketFormsCard() {
     setOptional('descriptionIntro', d.descriptionIntro);
     setOptional('defaultPriority', d.defaultPriority);
 
+    // CREATE also sends the immutable ownership axis; UPDATE (schema is
+    // .partial()) sends only the mutable base.
+    const request = isCreate
+      ? () => {
+          const body: Record<string, unknown> = { ...base, ownerScope: d.ownerScope };
+          if (d.ownerScope === 'organization') body.orgId = d.orgId;
+          return fetchWithAuth('/ticket-forms', { method: 'POST', body: JSON.stringify(body) });
+        }
+      : () => fetchWithAuth(`/ticket-forms/${editing.id}`, { method: 'PUT', body: JSON.stringify(base) });
     try {
-      if (isCreate) {
-        const body: Record<string, unknown> = { ...base, ownerScope: d.ownerScope };
-        if (d.ownerScope === 'organization') body.orgId = d.orgId;
-        await runAction({
-          request: () => fetchWithAuth('/ticket-forms', { method: 'POST', body: JSON.stringify(body) }),
-          successMessage: 'Form saved',
-          errorFallback: 'Failed to save form. Retry.',
-          onUnauthorized: UNAUTHORIZED
-        });
-      } else {
-        await runAction({
-          request: () => fetchWithAuth(`/ticket-forms/${editing.id}`, { method: 'PUT', body: JSON.stringify(base) }),
-          successMessage: 'Form saved',
-          errorFallback: 'Failed to save form. Retry.',
-          onUnauthorized: UNAUTHORIZED
-        });
-      }
+      await runAction({
+        request,
+        successMessage: 'Form saved',
+        errorFallback: 'Failed to save form. Retry.',
+        onUnauthorized: UNAUTHORIZED
+      });
       closeEditor();
       await load();
     } catch (err) {
