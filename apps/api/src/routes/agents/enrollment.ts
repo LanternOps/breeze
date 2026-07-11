@@ -189,12 +189,12 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
     if (matchingKey.keySecretHash) {
       if (!providedSecret) {
         writeAuditEvent(c, {
-          orgId: null,
+          orgId: matchingKey.orgId,
           actorType: 'system',
           action: 'agent.enroll',
           resourceType: 'device',
           resourceName: data.hostname,
-          details: { reason: 'missing_enrollment_secret' },
+          details: { reason: 'missing_enrollment_secret', keyId: matchingKey.id },
           result: 'denied',
           errorMessage: 'Enrollment secret required',
         });
@@ -205,12 +205,12 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
       const providedSecretHash = hashEnrollmentSecret(providedSecret);
       if (!timingSafeStringEqual(providedSecretHash, matchingKey.keySecretHash)) {
         writeAuditEvent(c, {
-          orgId: null,
+          orgId: matchingKey.orgId,
           actorType: 'system',
           action: 'agent.enroll',
           resourceType: 'device',
           resourceName: data.hostname,
-          details: { reason: 'invalid_enrollment_secret' },
+          details: { reason: 'invalid_enrollment_secret', keyId: matchingKey.id },
           result: 'denied',
           errorMessage: 'Invalid enrollment secret',
         });
@@ -220,12 +220,12 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
     } else if (configuredSecret) {
       if (!providedSecret) {
         writeAuditEvent(c, {
-          orgId: null,
+          orgId: matchingKey.orgId,
           actorType: 'system',
           action: 'agent.enroll',
           resourceType: 'device',
           resourceName: data.hostname,
-          details: { reason: 'missing_enrollment_secret' },
+          details: { reason: 'missing_enrollment_secret', keyId: matchingKey.id },
           result: 'denied',
           errorMessage: 'Enrollment secret required',
         });
@@ -235,12 +235,12 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
 
       if (!timingSafeStringEqual(hashEnrollmentSecret(providedSecret), hashEnrollmentSecret(configuredSecret))) {
         writeAuditEvent(c, {
-          orgId: null,
+          orgId: matchingKey.orgId,
           actorType: 'system',
           action: 'agent.enroll',
           resourceType: 'device',
           resourceName: data.hostname,
-          details: { reason: 'invalid_enrollment_secret' },
+          details: { reason: 'invalid_enrollment_secret', keyId: matchingKey.id },
           result: 'denied',
           errorMessage: 'Invalid enrollment secret',
         });
@@ -566,6 +566,26 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
             maxDevices,
           }).catch((err) => {
             console.error('[Enrollment] Failed to dispatch device-limit hook:', err instanceof Error ? err.message : err);
+          });
+          // Device-cap denials are org-attributable (the key was already
+          // resolved) and must land in audit_logs like every other denial
+          // path — otherwise this signal is invisible to the abuse-signals
+          // sweep's `denied` CTE (heuristics.ts).
+          writeAuditEvent(c, {
+            orgId: key.orgId,
+            actorType: 'system',
+            action: 'agent.enroll',
+            resourceType: 'device',
+            resourceName: data.hostname,
+            details: {
+              reason: 'device_limit_reached',
+              enrollmentKeyId: key.id,
+              partnerId: deviceLimitPartnerId,
+              currentDevices: activeCount,
+              maxDevices,
+            },
+            result: 'denied',
+            errorMessage: 'Partner device limit reached',
           });
           recordAgentEnrollment('error', deviceLimitPartnerId);
           throw new HTTPException(403, {

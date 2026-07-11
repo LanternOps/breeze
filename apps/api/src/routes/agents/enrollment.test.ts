@@ -92,7 +92,7 @@ vi.mock('../../services/warrantyWorker', () => ({
 }));
 
 vi.mock('../../services/partnerHooks', () => ({
-  dispatchHook: vi.fn(),
+  dispatchHook: vi.fn(async () => undefined),
 }));
 
 vi.mock('../../services/tenantStatus', () => ({
@@ -809,6 +809,126 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
           reason: 'quarantined_device_reenroll_refused',
         }),
       })
+    );
+  });
+});
+
+describe('POST /agents/enroll — resolved-key denials are org-attributable', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env.AGENT_ENROLLMENT_SECRET;
+    process.env.NODE_ENV = 'test';
+    vi.mocked(getActiveOrgTenant).mockResolvedValue({ orgId: 'org-active', partnerId: 'partner-active' });
+  });
+
+  it('attributes missing_enrollment_secret to the resolved key\'s org (not null)', async () => {
+    mockKeyLookup({
+      id: 'key-secret-1',
+      orgId: 'org-secret-1',
+      siteId: 'site-secret-1',
+      keySecretHash: 'per-key-secret-hash',
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: null,
+      usageCount: 0,
+    });
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(403);
+    expect(writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        orgId: 'org-secret-1',
+        result: 'denied',
+        details: expect.objectContaining({ reason: 'missing_enrollment_secret', keyId: 'key-secret-1' }),
+      }),
+    );
+  });
+
+  it('attributes invalid_enrollment_secret to the resolved key\'s org (not null)', async () => {
+    mockKeyLookup({
+      id: 'key-secret-2',
+      orgId: 'org-secret-2',
+      siteId: 'site-secret-2',
+      keySecretHash: createHash('sha256').update('the-real-secret').digest('hex'),
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: null,
+      usageCount: 0,
+    });
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...baseEnrollBody, enrollmentSecret: 'wrong-secret' }),
+    });
+
+    expect(resp.status).toBe(403);
+    expect(writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        orgId: 'org-secret-2',
+        result: 'denied',
+        details: expect.objectContaining({ reason: 'invalid_enrollment_secret', keyId: 'key-secret-2' }),
+      }),
+    );
+  });
+
+  it('audits device_limit_reached denials with the resolved org — otherwise this signal is invisible to the abuse-signals denied CTE', async () => {
+    mockKeyLookup({
+      id: 'key-limit-1',
+      orgId: 'org-limit-1',
+      siteId: 'site-limit-1',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: null,
+      usageCount: 0,
+    });
+
+    mockSelectRows([{ partnerId: 'partner-limit-1' }]);
+    mockSelectRows([{ maxDevices: 2 }]);
+    mockSelectRows([]); // no existing device
+
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
+      const fakeTx = {
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 2 }]), // at cap
+          }),
+        }),
+        insert: vi.fn(),
+        update: vi.fn(),
+        delete: vi.fn(),
+      };
+      return fn(fakeTx);
+    });
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(403);
+    const body = (await resp.json()) as Record<string, unknown>;
+    expect(body.code).toBe('DEVICE_LIMIT_REACHED');
+    expect(writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        orgId: 'org-limit-1',
+        action: 'agent.enroll',
+        result: 'denied',
+        details: expect.objectContaining({
+          reason: 'device_limit_reached',
+          enrollmentKeyId: 'key-limit-1',
+          partnerId: 'partner-limit-1',
+          currentDevices: 2,
+          maxDevices: 2,
+        }),
+      }),
     );
   });
 });

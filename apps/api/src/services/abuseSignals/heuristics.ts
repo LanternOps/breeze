@@ -70,8 +70,10 @@ export async function loadPartnerAggregates(): Promise<PartnerAggregates[]> {
       GROUP BY o.partner_id
     ),
     denied AS (
-      -- Counts only org-attributable denials (expired/exhausted keys, device-cap hits).
-      -- Denials from unresolved enrollment keys carry org_id NULL and are unattributable to a partner.
+      -- Counts org-attributable enrollment denials (expired/exhausted keys,
+      -- secret mismatches on a resolved key, device-cap hits). Pre-key-
+      -- resolution denials (unknown key, rate limit) have no org and are
+      -- inherently unattributable to a partner.
       SELECT o.partner_id, COUNT(*) AS denied_24h
       FROM audit_logs al JOIN organizations o ON o.id = al.org_id
       WHERE al.action = 'agent.enroll' AND al.result = 'denied'
