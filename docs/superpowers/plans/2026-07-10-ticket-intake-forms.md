@@ -111,7 +111,7 @@ describe('buildResponseValidator', () => {
   const v = buildResponseValidator(fields);
 
   it('accepts valid responses', () => {
-    const r = v.safeParse({ affected_user: 'jdoe@client.com', start_date: '2026-07-14', needs_vpn: true, license_count: 3, department: 'Sales' });
+    const r = v.safeParse({ affected_user: 'jdoe@client.example', start_date: '2026-07-14', needs_vpn: true, license_count: 3, department: 'Sales' });
     expect(r.success).toBe(true);
   });
 
@@ -146,11 +146,11 @@ describe('rendering', () => {
   it('renders a markdown block with intro, Yes/No checkboxes, and em-dash for blanks', () => {
     const out = renderFormResponses(
       { name: 'New user onboarding', descriptionIntro: 'HR request.', fields },
-      { affected_user: 'jdoe@client.com', start_date: '2026-07-14', needs_vpn: true, department: 'Sales' }
+      { affected_user: 'jdoe@client.example', start_date: '2026-07-14', needs_vpn: true, department: 'Sales' }
     );
     expect(out).toContain('HR request.');
     expect(out).toContain('**New user onboarding** (form)');
-    expect(out).toContain('- **Affected user:** jdoe@client.com');
+    expect(out).toContain('- **Affected user:** jdoe@client.example');
     expect(out).toContain('- **Needs VPN:** Yes');
     expect(out).toContain('- **License count:** —');
   });
@@ -757,10 +757,10 @@ const form = {
 
 describe('applyIntakeForm', () => {
   it('validates, composes subject/description, and snapshots responses', () => {
-    const r = applyIntakeForm(form, { affected_user: 'jdoe@client.com', needs_vpn: true });
-    expect(r.subjectFromForm).toBe('Onboard jdoe@client.com');
+    const r = applyIntakeForm(form, { affected_user: 'jdoe@client.example', needs_vpn: true });
+    expect(r.subjectFromForm).toBe('Onboard jdoe@client.example');
     expect(r.descriptionBlock).toContain('HR request.');
-    expect(r.descriptionBlock).toContain('- **Affected user:** jdoe@client.com');
+    expect(r.descriptionBlock).toContain('- **Affected user:** jdoe@client.example');
     expect(r.categoryId).toBe('cat-1');
     expect(r.defaultPriority).toBe('high');
     expect(r.defaultTags).toEqual(['onboarding']);
@@ -769,7 +769,7 @@ describe('applyIntakeForm', () => {
         formId: 'form-1',
         formName: 'New user onboarding',
         formVersion: 2,
-        responses: { affected_user: 'jdoe@client.com', needs_vpn: true }
+        responses: { affected_user: 'jdoe@client.example', needs_vpn: true }
       }
     });
   });
@@ -1111,14 +1111,14 @@ In `apps/api/src/routes/tickets/tickets.test.ts`, add to the POST `/tickets` des
       body: JSON.stringify({
         orgId: '3f2f1d8e-1111-4222-8333-444455556666',
         formId: '9a8b7c6d-1111-4222-8333-444455556666',
-        formResponses: { affected_user: 'jdoe@client.com' }
+        formResponses: { affected_user: 'jdoe@client.example' }
       })
     });
     expect(res.status).toBe(201);
     expect(serviceMocks.createTicket).toHaveBeenCalledWith(
       expect.objectContaining({
         formId: '9a8b7c6d-1111-4222-8333-444455556666',
-        formResponses: { affected_user: 'jdoe@client.com' }
+        formResponses: { affected_user: 'jdoe@client.example' }
       }),
       expect.anything()
     );
@@ -1702,14 +1702,14 @@ Add to `CreateTicketPage.test.tsx` (extend `mockOptionsApi` with the new endpoin
     render(<CreateTicketPage />);
     fireEvent.change(await screen.findByTestId('create-ticket-org'), { target: { value: 'org-a' } });
     fireEvent.change(await screen.findByTestId('create-ticket-form-picker'), { target: { value: 'form-1' } });
-    fireEvent.change(screen.getByTestId('ticket-form-field-affected_user'), { target: { value: 'jdoe@client.com' } });
+    fireEvent.change(screen.getByTestId('ticket-form-field-affected_user'), { target: { value: 'jdoe@client.example' } });
     fireEvent.click(screen.getByTestId('create-ticket-submit'));
     await waitFor(() => {
       const post = fetchMock.mock.calls.find(([u, i]) => String(u) === '/tickets' && (i as RequestInit)?.method === 'POST');
       expect(post).toBeTruthy();
       const body = JSON.parse(String((post![1] as RequestInit).body));
       expect(body.formId).toBe('form-1');
-      expect(body.formResponses).toEqual({ affected_user: 'jdoe@client.com' });
+      expect(body.formResponses).toEqual({ affected_user: 'jdoe@client.example' });
       expect(body.subject).toBeUndefined();
     });
   });

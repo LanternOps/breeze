@@ -445,14 +445,14 @@ describe('POST /tickets', () => {
       body: JSON.stringify({
         orgId: ORG_ID,
         formId: '9a8b7c6d-1111-4222-8333-444455556666',
-        formResponses: { affected_user: 'jdoe@client.com' }
+        formResponses: { affected_user: 'jdoe@client.example' }
       })
     });
     expect(res.status).toBe(201);
     expect(serviceMocks.createTicket).toHaveBeenCalledWith(
       expect.objectContaining({
         formId: '9a8b7c6d-1111-4222-8333-444455556666',
-        formResponses: { affected_user: 'jdoe@client.com' }
+        formResponses: { affected_user: 'jdoe@client.example' }
       }),
       expect.anything()
     );

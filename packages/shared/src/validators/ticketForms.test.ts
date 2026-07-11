@@ -112,7 +112,7 @@ describe('buildResponseValidator', () => {
   const v = buildResponseValidator(fields);
 
   it('accepts valid responses', () => {
-    const r = v.safeParse({ affected_user: 'jdoe@client.com', start_date: '2026-07-14', needs_vpn: true, license_count: 3, department: 'Sales' });
+    const r = v.safeParse({ affected_user: 'jdoe@client.example', start_date: '2026-07-14', needs_vpn: true, license_count: 3, department: 'Sales' });
     expect(r.success).toBe(true);
   });
 
@@ -162,11 +162,11 @@ describe('rendering', () => {
   it('renders a markdown block with intro, Yes/No checkboxes, and em-dash for blanks', () => {
     const out = renderFormResponses(
       { name: 'New user onboarding', descriptionIntro: 'HR request.', fields },
-      { affected_user: 'jdoe@client.com', start_date: '2026-07-14', needs_vpn: true, department: 'Sales' }
+      { affected_user: 'jdoe@client.example', start_date: '2026-07-14', needs_vpn: true, department: 'Sales' }
     );
     expect(out).toContain('HR request.');
     expect(out).toContain('**New user onboarding** (form)');
-    expect(out).toContain('- **Affected user:** jdoe@client.com');
+    expect(out).toContain('- **Affected user:** jdoe@client.example');
     expect(out).toContain('- **Needs VPN:** Yes');
     expect(out).toContain('- **License count:** —');
   });

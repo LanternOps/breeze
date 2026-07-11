@@ -62,7 +62,7 @@ On submission, `tickets.custom_fields` (now written by `createTicket` when a for
 
 ```json
 { "intakeForm": { "formId": "…", "formName": "…", "formVersion": 3,
-    "responses": { "affected_user": "jdoe@client.com", "start_date": "2026-07-14" } } }
+    "responses": { "affected_user": "jdoe@client.example", "start_date": "2026-07-14" } } }
 ```
 
 No `ticket_form_submissions` table in v1 — the ticket IS the submission. Add a table only if/when reporting over responses demands SQL-queryable rows.
@@ -93,7 +93,7 @@ Shared exports (used by API, web, portal — one source of truth):
 {description_intro}
 
 **New User Onboarding** (form)
-- **Affected user:** jdoe@client.com
+- **Affected user:** jdoe@client.example
 - **Start date:** 2026-07-14
 - **Needs VPN:** Yes
 ```

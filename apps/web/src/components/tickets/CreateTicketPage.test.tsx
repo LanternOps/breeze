@@ -276,14 +276,14 @@ describe('CreateTicketPage', () => {
       render(<CreateTicketPage />);
       fireEvent.change(await screen.findByTestId('create-ticket-org-input'), { target: { value: 'org-a' } });
       fireEvent.change(await screen.findByTestId('create-ticket-form-picker'), { target: { value: 'form-1' } });
-      fireEvent.change(screen.getByTestId('ticket-form-field-affected_user'), { target: { value: 'jdoe@client.com' } });
+      fireEvent.change(screen.getByTestId('ticket-form-field-affected_user'), { target: { value: 'jdoe@client.example' } });
       fireEvent.click(screen.getByTestId('create-ticket-submit'));
       await waitFor(() => {
         const post = fetchMock.mock.calls.find(([u, i]) => String(u) === '/tickets' && (i as RequestInit)?.method === 'POST');
         expect(post).toBeTruthy();
         const body = JSON.parse(String((post![1] as RequestInit).body));
         expect(body.formId).toBe('form-1');
-        expect(body.formResponses).toEqual({ affected_user: 'jdoe@client.com' });
+        expect(body.formResponses).toEqual({ affected_user: 'jdoe@client.example' });
         expect(body.subject).toBeUndefined();
       });
     });

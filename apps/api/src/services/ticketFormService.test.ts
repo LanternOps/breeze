@@ -45,10 +45,10 @@ const form = {
 
 describe('applyIntakeForm', () => {
   it('validates, composes subject/description, and snapshots responses', () => {
-    const r = applyIntakeForm(form, { affected_user: 'jdoe@client.com', needs_vpn: true });
-    expect(r.subjectFromForm).toBe('Onboard jdoe@client.com');
+    const r = applyIntakeForm(form, { affected_user: 'jdoe@client.example', needs_vpn: true });
+    expect(r.subjectFromForm).toBe('Onboard jdoe@client.example');
     expect(r.descriptionBlock).toContain('HR request.');
-    expect(r.descriptionBlock).toContain('- **Affected user:** jdoe@client.com');
+    expect(r.descriptionBlock).toContain('- **Affected user:** jdoe@client.example');
     expect(r.categoryId).toBe('cat-1');
     expect(r.defaultPriority).toBe('high');
     expect(r.defaultTags).toEqual(['onboarding']);
@@ -57,7 +57,7 @@ describe('applyIntakeForm', () => {
         formId: 'form-1',
         formName: 'New user onboarding',
         formVersion: 2,
-        responses: { affected_user: 'jdoe@client.com', needs_vpn: true }
+        responses: { affected_user: 'jdoe@client.example', needs_vpn: true }
       }
     });
   });
