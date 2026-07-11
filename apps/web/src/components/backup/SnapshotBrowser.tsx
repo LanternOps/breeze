@@ -15,6 +15,8 @@ import { cn, marginLeftPxClass } from '@/lib/utils';
 import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatNumber } from '@/lib/i18n/format';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 
 type TreeNode = {
   id: string;
@@ -113,6 +115,7 @@ function formatDateTime(value: string | null | undefined): string {
 }
 
 export default function SnapshotBrowser() {
+  const { t } = useTranslation('backup');
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [selectedSnapshotId, setSelectedSnapshotId] = useState('');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -388,7 +391,7 @@ export default function SnapshotBrowser() {
       <div className="flex items-center justify-center py-16">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading snapshots...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('snapshotBrowser.loadingSnapshots')}</p>
         </div>
       </div>
     );
@@ -403,8 +406,7 @@ export default function SnapshotBrowser() {
           onClick={fetchSnapshots}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Try again
-        </button>
+          {t('snapshotBrowser.tryAgain')} </button>
       </div>
     );
   }
@@ -412,10 +414,9 @@ export default function SnapshotBrowser() {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-xl font-semibold text-foreground">Snapshots</h2>
+        <h2 className="text-xl font-semibold text-foreground">{t('snapshotBrowser.snapshots')}</h2>
         <p className="text-sm text-muted-foreground">
-          Manage backup restore points, inspect protection state, and browse files inside each snapshot.
-        </p>
+          {t('snapshotBrowser.manageBackupRestorePointsInspectProtectionStateAnd')} </p>
       </div>
 
       <div className="rounded-lg border bg-card p-5 shadow-xs space-y-4">
@@ -432,8 +433,7 @@ export default function SnapshotBrowser() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <History className="h-4 w-4" />
-            Snapshot
-          </div>
+            {t('snapshotBrowser.snapshot')} </div>
           <div className="flex flex-wrap items-center gap-2">
             <select
               className="rounded-md border bg-background px-3 py-2 text-sm"
@@ -451,8 +451,7 @@ export default function SnapshotBrowser() {
               className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-accent"
             >
               <RefreshCw className="h-4 w-4" />
-              Refresh
-            </button>
+              {t('snapshotBrowser.refresh')} </button>
           </div>
         </div>
 
@@ -463,8 +462,7 @@ export default function SnapshotBrowser() {
                 <span className="text-sm font-semibold text-foreground">{selectedSnapshotDisplayLabel}</span>
                 {selectedSnapshot.legalHold && (
                   <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700">
-                    Legal hold
-                  </span>
+                    {t('snapshotBrowser.legalHold')} </span>
                 )}
                 {selectedSnapshot.isImmutable && (
                   <span className="rounded-full border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-xs font-medium text-sky-700">
@@ -477,22 +475,20 @@ export default function SnapshotBrowser() {
                 <div className="rounded-md border bg-background p-3">
                   <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                     <CalendarClock className="h-3.5 w-3.5" />
-                    Snapshot Timing
-                  </div>
+                    {t('snapshotBrowser.snapshotTiming')} </div>
                   <div className="mt-2 space-y-1 text-sm text-foreground">
-                    <div>Created: {formatDateTime(selectedSnapshot.createdAt)}</div>
-                    <div>Expires: {formatDateTime(selectedSnapshot.expiresAt)}</div>
-                    <div>Immutable until: {formatDateTime(selectedSnapshot.immutableUntil)}</div>
+                    <div>{t('snapshotBrowser.created')} {formatDateTime(selectedSnapshot.createdAt)}</div>
+                    <div>{t('snapshotBrowser.expires')} {formatDateTime(selectedSnapshot.expiresAt)}</div>
+                    <div>{t('snapshotBrowser.immutableUntil')} {formatDateTime(selectedSnapshot.immutableUntil)}</div>
                   </div>
                 </div>
                 <div className="rounded-md border bg-background p-3">
                   <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                     <Database className="h-3.5 w-3.5" />
-                    Snapshot Details
-                  </div>
+                    {t('snapshotBrowser.snapshotDetails')} </div>
                   <div className="mt-2 space-y-1 text-sm text-foreground">
-                    <div>Size: {formatBytes(selectedSnapshot.sizeBytes)}</div>
-                    <div>Files: {selectedSnapshot.fileCount ?? '-'}</div>
+                    <div>{t('snapshotBrowser.size')} {formatBytes(selectedSnapshot.sizeBytes)}</div>
+                    <div>{t('snapshotBrowser.files')} {selectedSnapshot.fileCount ?? '-'}</div>
                     <div className="break-all text-muted-foreground">{selectedSnapshot.location ?? '-'}</div>
                   </div>
                 </div>
@@ -502,13 +498,13 @@ export default function SnapshotBrowser() {
                 <div className="rounded-md border bg-background p-3 text-sm">
                   {selectedSnapshot.legalHoldReason && (
                     <div>
-                      <span className="font-medium text-foreground">Hold reason:</span>{' '}
+                      <span className="font-medium text-foreground">{t('snapshotBrowser.holdReason')}</span>{' '}
                       <span className="text-muted-foreground">{selectedSnapshot.legalHoldReason}</span>
                     </div>
                   )}
                   {selectedSnapshot.legalHoldSource && (
                     <div>
-                      <span className="font-medium text-foreground">Hold source:</span>{' '}
+                      <span className="font-medium text-foreground">{t('snapshotBrowser.holdSource')}</span>{' '}
                       <span className="text-muted-foreground">
                         {selectedSnapshot.legalHoldSource === 'policy' ? 'Inherited from backup policy' : 'Applied manually'}
                       </span>
@@ -516,7 +512,7 @@ export default function SnapshotBrowser() {
                   )}
                   {selectedSnapshot.immutabilityEnforcement && (
                     <div>
-                      <span className="font-medium text-foreground">Enforcement:</span>{' '}
+                      <span className="font-medium text-foreground">{t('snapshotBrowser.enforcement')}</span>{' '}
                       <span className="text-muted-foreground">
                         {selectedSnapshot.immutabilityEnforcement === 'provider'
                           ? 'Provider-enforced WORM'
@@ -530,10 +526,9 @@ export default function SnapshotBrowser() {
               {selectedSnapshot.requestedImmutabilityEnforcement === 'provider' &&
                 selectedSnapshot.immutabilityEnforcement === 'application' && (
                   <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-800">
-                    Provider immutability was requested by policy, but Breeze applied application protection instead.
-                    {selectedSnapshot.immutabilityFallbackReason && (
+                    {t('snapshotBrowser.providerImmutabilityWasRequestedByPolicyButBreeze')} {selectedSnapshot.immutabilityFallbackReason && (
                       <div className="mt-1 text-xs text-amber-900/80">
-                        Reason: {selectedSnapshot.immutabilityFallbackReason}
+                        {t('snapshotBrowser.reason')} {selectedSnapshot.immutabilityFallbackReason}
                       </div>
                     )}
                   </div>
@@ -543,30 +538,27 @@ export default function SnapshotBrowser() {
             <div className="space-y-3 rounded-md border bg-background p-4">
               <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
                 <AlertTriangle className="h-4 w-4 text-amber-600" />
-                Protection Controls
-              </div>
+                {t('snapshotBrowser.protectionControls')} </div>
               <p className="text-xs text-muted-foreground">
-                These actions apply to the selected snapshot only. Application protection is enforced by Breeze retention cleanup. Releasing protection can make an expired snapshot eligible for deletion immediately.
-              </p>
+                {t('snapshotBrowser.theseActionsApplyToTheSelectedSnapshotOnly')} </p>
               {selectedSnapshot.retentionBlockedReason && (
                 <p className="text-xs text-muted-foreground">
-                  Retention cleanup is currently blocked by {selectedSnapshot.retentionBlockedReason === 'legal_hold' ? 'legal hold' : 'immutability'} for this snapshot.
-                </p>
+                  {t('snapshotBrowser.retentionCleanupIsCurrentlyBlockedBy')} {selectedSnapshot.retentionBlockedReason === 'legal_hold' ? 'legal hold' : 'immutability'} {t('snapshotBrowser.forThisSnapshot')} </p>
               )}
               <div>
-                <label className="text-xs font-medium text-muted-foreground">Reason</label>
+                <label className="text-xs font-medium text-muted-foreground">{t('snapshotBrowser.reason2')}</label>
                 <input
-                  aria-label="Reason"
+                  aria-label={t('snapshotBrowser.reason2')}
                   value={reason}
                   onChange={(event) => setReason(event.target.value)}
-                  placeholder="Reason for applying or releasing protection"
+                  placeholder={t('snapshotBrowser.reasonForApplyingOrReleasingProtection')}
                   className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
                 />
               </div>
               <div>
-                <label className="text-xs font-medium text-muted-foreground">Application immutability days</label>
+                <label className="text-xs font-medium text-muted-foreground">{t('snapshotBrowser.applicationImmutabilityDays')}</label>
                 <input
-                  aria-label="Application immutability days"
+                  aria-label={t('snapshotBrowser.applicationImmutabilityDays')}
                   type="number"
                   min={1}
                   max={3650}
@@ -576,14 +568,14 @@ export default function SnapshotBrowser() {
                 />
               </div>
               <div>
-                <label className="text-xs font-medium text-muted-foreground">Immutability enforcement</label>
+                <label className="text-xs font-medium text-muted-foreground">{t('snapshotBrowser.immutabilityEnforcement')}</label>
                 <select
                   value={immutabilityMode}
                   onChange={(event) => setImmutabilityMode(event.target.value as 'application' | 'provider')}
                   className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
                 >
-                  <option value="application">Application-level</option>
-                  <option value="provider">Provider-enforced</option>
+                  <option value="application">{t('snapshotBrowser.applicationLevel')}</option>
+                  <option value="provider">{t('snapshotBrowser.providerEnforced')}</option>
                 </select>
               </div>
               <div className="grid gap-2 sm:grid-cols-2">
@@ -601,8 +593,7 @@ export default function SnapshotBrowser() {
                   onClick={() => void handleProtectionAction('release-hold')}
                   className="rounded-md border px-3 py-2 text-sm font-medium text-foreground disabled:opacity-50"
                 >
-                  Release legal hold
-                </button>
+                  {t('snapshotBrowser.releaseLegalHold')} </button>
                 <button
                   type="button"
                   disabled={actionLoading}
@@ -621,13 +612,11 @@ export default function SnapshotBrowser() {
                   onClick={() => void handleProtectionAction('release-immutability')}
                   className="rounded-md border px-3 py-2 text-sm font-medium text-foreground disabled:opacity-50"
                 >
-                  Release app immutability
-                </button>
+                  {t('snapshotBrowser.releaseAppImmutability')} </button>
               </div>
               {selectedSnapshot.immutabilityEnforcement === 'provider' && selectedSnapshot.isImmutable && (
                 <p className="text-xs text-muted-foreground">
-                  Provider-enforced immutability cannot be released from Breeze.
-                </p>
+                  {t('snapshotBrowser.providerEnforcedImmutabilityCannotBeReleasedFromBreeze')} </p>
               )}
             </div>
           </div>
@@ -635,14 +624,13 @@ export default function SnapshotBrowser() {
 
         <div className="grid gap-4 lg:grid-cols-[260px_1fr]">
           <div className="rounded-md border bg-muted/10 p-3">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">File Tree</h3>
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('snapshotBrowser.fileTree')}</h3>
             <div className="mt-3 space-y-1 text-sm">
               {selectedSnapshot?.tree ? (
                 renderTree(selectedSnapshot.tree)
               ) : (
                 <div className="rounded-md border border-dashed bg-muted/30 p-3 text-xs text-muted-foreground">
-                  No file tree available.
-                </div>
+                  {t('snapshotBrowser.noFileTreeAvailable')} </div>
               )}
             </div>
           </div>
@@ -650,7 +638,7 @@ export default function SnapshotBrowser() {
           <div className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="text-sm text-muted-foreground">
-                <span className="font-semibold text-foreground">Path:</span>
+                <span className="font-semibold text-foreground">{t('snapshotBrowser.path')}</span>
                 <span className="ml-2 text-muted-foreground">/</span>
                 {breadcrumbs.map((crumb, index) => (
                   <span key={`${index}-${crumb}`} className="ml-2 text-muted-foreground">
@@ -660,18 +648,17 @@ export default function SnapshotBrowser() {
                 ))}
               </div>
               <p className="text-xs text-muted-foreground">
-                Use the restore workflow to recover or export files from this snapshot.
-              </p>
+                {t('snapshotBrowser.useTheRestoreWorkflowToRecoverOrExport')} </p>
             </div>
 
             <div className="overflow-x-auto rounded-lg border">
               <table className="w-full min-w-[400px]">
                 <thead className="bg-muted/40 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                   <tr>
-                    <th className="px-4 py-3">Select</th>
-                    <th className="px-4 py-3">Name</th>
-                    <th className="px-4 py-3">Size</th>
-                    <th className="px-4 py-3">Modified</th>
+                    <th className="px-4 py-3">{t('snapshotBrowser.select')}</th>
+                    <th className="px-4 py-3">{t('snapshotBrowser.name')}</th>
+                    <th className="px-4 py-3">{t('snapshotBrowser.size2')}</th>
+                    <th className="px-4 py-3">{t('snapshotBrowser.modified')}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">

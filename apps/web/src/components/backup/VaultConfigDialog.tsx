@@ -3,6 +3,8 @@ import { HardDrive, Loader2, Server, Usb, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { extractApiError } from '@/lib/apiError';
 import { fetchWithAuth } from '../../stores/auth';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -36,6 +38,7 @@ const typeOptions: { value: VaultType; label: string; icon: typeof HardDrive; de
 // ── Component ─────────────────────────────────────────────────────
 
 export default function VaultConfigDialog({ vault, onClose }: VaultConfigDialogProps) {
+  const { t } = useTranslation('backup');
   const isEdit = !!vault;
 
   const [deviceId, setDeviceId] = useState(vault?.deviceId ?? '');
@@ -144,12 +147,10 @@ export default function VaultConfigDialog({ vault, onClose }: VaultConfigDialogP
           {/* Device Picker */}
           <div>
             <label htmlFor="vault-device" className="text-xs font-medium text-muted-foreground">
-              Device
-            </label>
+              {t('vaultConfigDialog.device')} </label>
             {devicesLoading ? (
               <div className="mt-1 flex items-center gap-2 text-sm text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin" /> Loading devices...
-              </div>
+                <Loader2 className="h-4 w-4 animate-spin" /> {t('vaultConfigDialog.loadingDevices')} </div>
             ) : (
               <select
                 id="vault-device"
@@ -158,7 +159,7 @@ export default function VaultConfigDialog({ vault, onClose }: VaultConfigDialogP
                 disabled={isEdit}
                 className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm disabled:opacity-60"
               >
-                <option value="">Select a device...</option>
+                <option value="">{t('vaultConfigDialog.selectADevice')}</option>
                 {devices.map((d) => (
                   <option key={d.id} value={d.id}>
                     {d.hostname}
@@ -171,8 +172,7 @@ export default function VaultConfigDialog({ vault, onClose }: VaultConfigDialogP
           {/* Vault Path */}
           <div>
             <label htmlFor="vault-path" className="text-xs font-medium text-muted-foreground">
-              Vault Path
-            </label>
+              {t('vaultConfigDialog.vaultPath')} </label>
             <input
               id="vault-path"
               value={vaultPath}
@@ -184,7 +184,7 @@ export default function VaultConfigDialog({ vault, onClose }: VaultConfigDialogP
 
           {/* Vault Type */}
           <div>
-            <label className="text-xs font-medium text-muted-foreground">Vault Type</label>
+            <label className="text-xs font-medium text-muted-foreground">{t('vaultConfigDialog.vaultType')}</label>
             <div className="mt-2 grid gap-2 sm:grid-cols-3">
               {typeOptions.map((opt) => {
                 const Icon = opt.icon;
@@ -220,8 +220,7 @@ export default function VaultConfigDialog({ vault, onClose }: VaultConfigDialogP
           {/* Retention Count */}
           <div>
             <label htmlFor="vault-retention" className="text-xs font-medium text-muted-foreground">
-              Retention Count
-            </label>
+              {t('vaultConfigDialog.retentionCount')} </label>
             <input
               id="vault-retention"
               type="number"
@@ -232,8 +231,7 @@ export default function VaultConfigDialog({ vault, onClose }: VaultConfigDialogP
               className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
             />
             <p className="mt-1 chart-legend-xs text-muted-foreground">
-              Number of snapshots to keep in the vault (1-100).
-            </p>
+              {t('vaultConfigDialog.numberOfSnapshotsToKeepInTheVault')} </p>
           </div>
         </div>
 
@@ -244,8 +242,7 @@ export default function VaultConfigDialog({ vault, onClose }: VaultConfigDialogP
             onClick={() => onClose()}
             className="rounded-md border px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-muted"
           >
-            Cancel
-          </button>
+            {t('vaultConfigDialog.cancel')} </button>
           <button
             type="button"
             onClick={handleSave}

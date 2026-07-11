@@ -4,6 +4,8 @@ import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatTime } from './backupDashboardHelpers';
 import AlphaBadge from '../shared/AlphaBadge';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -28,6 +30,7 @@ const statusConfig: Record<VaultStatus, { icon: typeof CheckCircle2; className: 
 // ── Component ─────────────────────────────────────────────────────
 
 export default function DeviceVaultStatus({ deviceId }: { deviceId: string }) {
+  const { t } = useTranslation('backup');
   const [vault, setVault] = useState<DeviceVault | null>(null);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -68,8 +71,7 @@ export default function DeviceVaultStatus({ deviceId }: { deviceId: string }) {
   if (loading) {
     return (
       <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
-        <Loader2 className="h-4 w-4 animate-spin" /> Loading vault status...
-      </div>
+        <Loader2 className="h-4 w-4 animate-spin" /> {t('deviceVaultStatus.loadingVaultStatus')} </div>
     );
   }
 
@@ -77,7 +79,7 @@ export default function DeviceVaultStatus({ deviceId }: { deviceId: string }) {
     return (
       <div className="rounded-lg border border-dashed bg-muted/20 p-4 text-center">
         <HardDrive className="mx-auto h-8 w-8 text-muted-foreground/40" />
-        <p className="mt-2 text-sm text-muted-foreground">No local vault configured for this device.</p>
+        <p className="mt-2 text-sm text-muted-foreground">{t('deviceVaultStatus.noLocalVaultConfiguredForThisDevice')}</p>
       </div>
     );
   }
@@ -90,7 +92,7 @@ export default function DeviceVaultStatus({ deviceId }: { deviceId: string }) {
       <div className="flex items-center justify-between">
         <h4 className="flex items-center gap-2 text-sm font-semibold">
           <HardDrive className="h-4 w-4" />
-          Local Vault <AlphaBadge />
+          {t('deviceVaultStatus.localVault')} <AlphaBadge />
         </h4>
         <button
           type="button"
@@ -99,24 +101,23 @@ export default function DeviceVaultStatus({ deviceId }: { deviceId: string }) {
           className="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
         >
           {syncing ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
-          Sync Now
-        </button>
+          {t('deviceVaultStatus.syncNow')} </button>
       </div>
       <div className="mt-3 grid gap-3 sm:grid-cols-4">
         <div>
-          <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Path</p>
+          <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{t('deviceVaultStatus.path')}</p>
           <p className="mt-0.5 truncate font-mono text-xs text-foreground">{vault.vaultPath}</p>
         </div>
         <div>
-          <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Type</p>
+          <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{t('deviceVaultStatus.type')}</p>
           <p className="mt-0.5 text-xs capitalize text-foreground">{vault.type}</p>
         </div>
         <div>
-          <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Last Sync</p>
+          <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{t('deviceVaultStatus.lastSync')}</p>
           <p className="mt-0.5 text-xs text-foreground">{formatTime(vault.lastSyncAt)}</p>
         </div>
         <div>
-          <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Status</p>
+          <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{t('deviceVaultStatus.status')}</p>
           <span className={cn('mt-0.5 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium', sCfg.className)}>
             <StatusIcon className={cn('h-3 w-3', vault.status === 'syncing' && 'animate-spin')} />
             {sCfg.label}
@@ -124,8 +125,7 @@ export default function DeviceVaultStatus({ deviceId }: { deviceId: string }) {
         </div>
       </div>
       <div className="mt-2 text-xs text-muted-foreground">
-        {vault.snapshotCount ?? 0} snapshot{(vault.snapshotCount ?? 0) !== 1 ? 's' : ''} stored
-      </div>
+        {vault.snapshotCount ?? 0} {t('deviceVaultStatus.snapshot')}{(vault.snapshotCount ?? 0) !== 1 ? 's' : ''} {t('deviceVaultStatus.stored')} </div>
     </div>
   );
 }

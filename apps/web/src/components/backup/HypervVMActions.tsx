@@ -12,6 +12,8 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -58,6 +60,7 @@ export default function HypervVMActions({
   currentState,
   onStateChange,
 }: HypervVMActionsProps) {
+  const { t } = useTranslation('backup');
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [error, setError] = useState<string>();
   const [confirmAction, setConfirmAction] = useState<PowerAction | CheckpointAction | null>(null);
@@ -165,8 +168,7 @@ export default function HypervVMActions({
       {/* Power Actions */}
       <div>
         <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          Power Controls
-        </h4>
+          {t('hypervVMActions.powerControls')} </h4>
         <div className="flex flex-wrap gap-2">
           {visiblePowerActions.map((action) => {
             const cfg = powerActionConfig[action];
@@ -196,8 +198,7 @@ export default function HypervVMActions({
           })}
           {visiblePowerActions.length === 0 && (
             <span className="text-xs text-muted-foreground">
-              No power actions available in current state.
-            </span>
+              {t('hypervVMActions.noPowerActionsAvailableInCurrentState')} </span>
           )}
         </div>
       </div>
@@ -205,15 +206,14 @@ export default function HypervVMActions({
       {/* Checkpoint Actions */}
       <div>
         <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          Checkpoint Controls
-        </h4>
+          {t('hypervVMActions.checkpointControls')} </h4>
         <div className="flex flex-wrap items-end gap-2">
           <div className="flex-1 min-w-[180px]">
-            <label htmlFor={`cp-name-${vmId}`} className="sr-only">Checkpoint name</label>
+            <label htmlFor={`cp-name-${vmId}`} className="sr-only">{t('hypervVMActions.checkpointName')}</label>
             <input
               id={`cp-name-${vmId}`}
               className="w-full rounded-md border bg-background px-3 py-1.5 text-xs"
-              placeholder="Checkpoint name..."
+              placeholder={t('hypervVMActions.checkpointName2')}
               value={checkpointName}
               onChange={(e) => setCheckpointName(e.target.value)}
             />
@@ -229,8 +229,7 @@ export default function HypervVMActions({
             ) : (
               <Plus className="h-3.5 w-3.5" />
             )}
-            Create
-          </button>
+            {t('hypervVMActions.create')} </button>
           <button
             type="button"
             onClick={() => handleCheckpointAction('apply')}
@@ -242,8 +241,7 @@ export default function HypervVMActions({
             ) : (
               <RotateCcw className="h-3.5 w-3.5" />
             )}
-            Apply
-          </button>
+            {t('hypervVMActions.apply')} </button>
           <button
             type="button"
             onClick={() => handleCheckpointAction('delete')}
@@ -255,8 +253,7 @@ export default function HypervVMActions({
             ) : (
               <Trash2 className="h-3.5 w-3.5" />
             )}
-            Delete
-          </button>
+            {t('hypervVMActions.delete')} </button>
         </div>
       </div>
 
@@ -265,7 +262,7 @@ export default function HypervVMActions({
         ref={confirmDialogRef}
         className="rounded-lg border bg-card p-6 shadow-xl backdrop:bg-black/50"
       >
-        <h3 className="text-base font-semibold text-foreground">Confirm Action</h3>
+        <h3 className="text-base font-semibold text-foreground">{t('hypervVMActions.confirmAction')}</h3>
         <p className="mt-2 text-sm text-muted-foreground">
           {confirmAction === 'delete'
             ? `Are you sure you want to delete checkpoint "${checkpointName}" for ${vmName}?`
@@ -279,15 +276,13 @@ export default function HypervVMActions({
             onClick={handleCancelConfirm}
             className="rounded-md border px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-accent"
           >
-            Cancel
-          </button>
+            {t('hypervVMActions.cancel')} </button>
           <button
             type="button"
             onClick={handleConfirm}
             className="rounded-md bg-destructive px-4 py-2 text-sm font-medium text-destructive-foreground hover:bg-destructive/90"
           >
-            Confirm
-          </button>
+            {t('hypervVMActions.confirm')} </button>
         </div>
       </dialog>
     </div>

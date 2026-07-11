@@ -19,6 +19,8 @@ import { fetchWithAuth } from '../../stores/auth';
 import { formatTime } from './backupDashboardHelpers';
 import HypervVMActions from './HypervVMActions';
 import AlphaBadge from '../shared/AlphaBadge';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -80,6 +82,7 @@ function normalizeVmState(state?: string): VmState {
 // ── Component ─────────────────────────────────────────────────────
 
 export default function HypervDashboard() {
+  const { t } = useTranslation('backup');
   const [vms, setVms] = useState<HypervVm[]>([]);
   const [discoveryTargets, setDiscoveryTargets] = useState<DeviceSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -209,7 +212,7 @@ export default function HypervDashboard() {
       <div className="flex items-center justify-center py-16">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading Hyper-V VMs...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('hypervDashboard.loadingHyperVVms')}</p>
         </div>
       </div>
     );
@@ -224,8 +227,7 @@ export default function HypervDashboard() {
           onClick={fetchData}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Try again
-        </button>
+          {t('hypervDashboard.tryAgain')} </button>
       </div>
     );
   }
@@ -255,7 +257,7 @@ export default function HypervDashboard() {
                 <div className="font-medium text-foreground">
                   {singleEligibleDiscoveryTarget.displayName ?? singleEligibleDiscoveryTarget.hostname ?? singleEligibleDiscoveryTarget.id}
                 </div>
-                <div className="text-xs text-muted-foreground">Protected Hyper-V host</div>
+                <div className="text-xs text-muted-foreground">{t('hypervDashboard.protectedHyperVHost')}</div>
               </div>
             ) : (
               <select
@@ -263,7 +265,7 @@ export default function HypervDashboard() {
                 value={discoverTargetDeviceId}
                 onChange={(event) => setDiscoverTargetDeviceId(event.target.value)}
               >
-                <option value="">Select a protected Windows host</option>
+                <option value="">{t('hypervDashboard.selectAProtectedWindowsHost')}</option>
                 {discoveryTargets.map((device) => (
                   <option key={device.id} value={device.id}>
                     {`${device.displayName ?? device.hostname ?? device.id}${device.eligible ? '' : ' — offline'}`}
@@ -282,14 +284,12 @@ export default function HypervDashboard() {
               ) : (
                 <Search className="h-4 w-4" />
               )}
-              Run discovery
-            </button>
+              {t('hypervDashboard.runDiscovery')} </button>
           </div>
         )}
         {discoveryTargets.length > 0 && !eligibleDiscoveryTargets.length && (
           <p className="mt-3 text-xs text-muted-foreground">
-            A protected Hyper-V host exists, but discovery requires the host to be online.
-          </p>
+            {t('hypervDashboard.aProtectedHyperVHostExistsButDiscovery')} </p>
         )}
       </div>
     );
@@ -300,10 +300,9 @@ export default function HypervDashboard() {
       <AlphaBadge variant="banner" disclaimer="Hyper-V VM backup and restore is in early access. VM export, import, and checkpoint management are functional but may not cover all VM configurations." />
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-xl font-semibold text-foreground">Hyper-V Backup</h2>
+          <h2 className="text-xl font-semibold text-foreground">{t('hypervDashboard.hyperVBackup')}</h2>
           <p className="text-sm text-muted-foreground">
-            Manage VMs, checkpoints, restore-as-VM, and instant boot operations.
-          </p>
+            {t('hypervDashboard.manageVmsCheckpointsRestoreAsVmAndInstant')} </p>
         </div>
         <div className="flex items-center gap-2">
           {discoveryTargets.length > 0 ? (
@@ -313,12 +312,12 @@ export default function HypervDashboard() {
               </div>
             ) : (
               <select
-                aria-label="Discover Hyper-V host"
+                aria-label={t('hypervDashboard.discoverHyperVHost')}
                 className="h-9 min-w-56 rounded-md border bg-background px-3 text-xs"
                 value={discoverTargetDeviceId}
                 onChange={(event) => setDiscoverTargetDeviceId(event.target.value)}
               >
-                <option value="">Select protected host</option>
+                <option value="">{t('hypervDashboard.selectProtectedHost')}</option>
                 {discoveryTargets.map((device) => (
                   <option key={device.id} value={device.id}>
                     {`${device.displayName ?? device.hostname ?? device.id}${device.eligible ? '' : ' — offline'}`}
@@ -328,8 +327,7 @@ export default function HypervDashboard() {
             )
           ) : (
             <div className="hidden rounded-md border bg-muted/30 px-3 py-1.5 text-xs text-muted-foreground md:block">
-              No protected Hyper-V hosts
-            </div>
+              {t('hypervDashboard.noProtectedHyperVHosts')} </div>
           )}
           <button
             type="button"
@@ -342,16 +340,14 @@ export default function HypervDashboard() {
             ) : (
               <Search className="h-3.5 w-3.5" />
             )}
-            Discover VMs
-          </button>
+            {t('hypervDashboard.discoverVms')} </button>
           <button
             type="button"
             onClick={fetchData}
             className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted"
           >
             <RefreshCw className="h-3.5 w-3.5" />
-            Refresh
-          </button>
+            {t('hypervDashboard.refresh')} </button>
         </div>
       </div>
 
@@ -370,41 +366,41 @@ export default function HypervDashboard() {
       <div className="grid gap-3 rounded-lg border bg-card p-4 shadow-xs md:grid-cols-3">
         <div className="flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm">
           <Search className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
-          <label htmlFor="hyperv-search" className="sr-only">Search VMs</label>
+          <label htmlFor="hyperv-search" className="sr-only">{t('hypervDashboard.searchVms')}</label>
           <input
             id="hyperv-search"
             className="w-full bg-transparent text-sm outline-hidden"
-            placeholder="Search VM name..."
+            placeholder={t('hypervDashboard.searchVmName')}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
         </div>
         <div className="flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm">
           <Filter className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
-          <label htmlFor="hyperv-state-filter" className="sr-only">Filter by state</label>
+          <label htmlFor="hyperv-state-filter" className="sr-only">{t('hypervDashboard.filterByState')}</label>
           <select
             id="hyperv-state-filter"
             className="w-full appearance-none bg-transparent text-sm outline-hidden"
             value={stateFilter}
             onChange={(e) => setStateFilter(e.target.value as VmState | 'all')}
           >
-            <option value="all">All states</option>
-            <option value="Running">Running</option>
-            <option value="Off">Off</option>
-            <option value="Saved">Saved</option>
-            <option value="Paused">Paused</option>
+            <option value="all">{t('hypervDashboard.allStates')}</option>
+            <option value="Running">{t('hypervDashboard.running')}</option>
+            <option value="Off">{t('hypervDashboard.off')}</option>
+            <option value="Saved">{t('hypervDashboard.saved')}</option>
+            <option value="Paused">{t('hypervDashboard.paused')}</option>
           </select>
         </div>
         <div className="flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm">
           <Server className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
-          <label htmlFor="hyperv-host-filter" className="sr-only">Filter by host</label>
+          <label htmlFor="hyperv-host-filter" className="sr-only">{t('hypervDashboard.filterByHost')}</label>
           <select
             id="hyperv-host-filter"
             className="w-full appearance-none bg-transparent text-sm outline-hidden"
             value={hostFilter}
             onChange={(e) => setHostFilter(e.target.value)}
           >
-            <option value="all">All hosts</option>
+            <option value="all">{t('hypervDashboard.allHosts')}</option>
             {hostDeviceIds.map((id) => (
               <option key={id} value={id}>
                 {deviceNameById.get(id) ?? `${id.slice(0, 8)}...`}
@@ -420,23 +416,22 @@ export default function HypervDashboard() {
           <thead className="bg-muted/40 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             <tr>
               <th className="px-4 py-3 w-8" />
-              <th className="px-4 py-3">VM Name</th>
-              <th className="px-4 py-3">State</th>
-              <th className="px-4 py-3">Gen</th>
-              <th className="px-4 py-3">Memory</th>
-              <th className="px-4 py-3">CPU</th>
-              <th className="px-4 py-3">VHDs</th>
-              <th className="px-4 py-3">RCT</th>
-              <th className="px-4 py-3">Warnings</th>
-              <th className="px-4 py-3 text-right">Actions</th>
+              <th className="px-4 py-3">{t('hypervDashboard.vmName')}</th>
+              <th className="px-4 py-3">{t('hypervDashboard.state')}</th>
+              <th className="px-4 py-3">{t('hypervDashboard.gen')}</th>
+              <th className="px-4 py-3">{t('hypervDashboard.memory')}</th>
+              <th className="px-4 py-3">{t('hypervDashboard.cpu')}</th>
+              <th className="px-4 py-3">{t('hypervDashboard.vhds')}</th>
+              <th className="px-4 py-3">{t('hypervDashboard.rct')}</th>
+              <th className="px-4 py-3">{t('hypervDashboard.warnings')}</th>
+              <th className="px-4 py-3 text-right">{t('hypervDashboard.actions')}</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-border">
             {filteredVms.length === 0 ? (
               <tr>
                 <td colSpan={10} className="px-4 py-8 text-center text-sm text-muted-foreground">
-                  No VMs match your filters.
-                </td>
+                  {t('hypervDashboard.noVmsMatchYourFilters')} </td>
               </tr>
             ) : (
               filteredVms.map((vm) => {
@@ -475,6 +470,7 @@ type VmRowProps = {
 };
 
 function VmRow({ vm, vmState, stateCfg, isExpanded, onToggle, onRefresh }: VmRowProps) {
+  const { t } = useTranslation('backup');
   const displayName = vm.vmName ?? vm.name ?? 'Unnamed VM';
   const cpuCount = vm.processorCount ?? vm.cpuCount ?? null;
   const vhdCount = Array.isArray(vm.vhdPaths) ? vm.vhdPaths.length : (vm.vhdCount ?? null);
@@ -523,18 +519,16 @@ function VmRow({ vm, vmState, stateCfg, isExpanded, onToggle, onRefresh }: VmRow
           {vm.rctEnabled ? (
             <span className="inline-flex items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-xs font-medium text-success">
               <ShieldCheck className="h-3 w-3" />
-              On
-            </span>
+              {t('hypervDashboard.on')} </span>
           ) : (
-            <span className="text-xs text-muted-foreground">Off</span>
+            <span className="text-xs text-muted-foreground">{t('hypervDashboard.off')}</span>
           )}
         </td>
         <td className="px-4 py-3">
           {hasPassthroughDisk ? (
             <span className="inline-flex items-center gap-1 rounded-full bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning">
               <AlertTriangle className="h-3 w-3" />
-              Pass-through
-            </span>
+              {t('hypervDashboard.passThrough')} </span>
           ) : (
             <span className="text-xs text-muted-foreground">-</span>
           )}
@@ -547,8 +541,7 @@ function VmRow({ vm, vmState, stateCfg, isExpanded, onToggle, onRefresh }: VmRow
               className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs font-medium text-primary hover:bg-primary/10"
             >
               <HardDrive className="h-3.5 w-3.5" />
-              Manage
-            </button>
+              {t('hypervDashboard.manage')} </button>
           </div>
         </td>
       </tr>
@@ -568,13 +561,13 @@ function VmRow({ vm, vmState, stateCfg, isExpanded, onToggle, onRefresh }: VmRow
               {/* Checkpoints */}
               {vm.checkpoints && vm.checkpoints.length > 0 && (
                 <div>
-                  <h4 className="mb-2 text-sm font-semibold text-foreground">Checkpoints</h4>
+                  <h4 className="mb-2 text-sm font-semibold text-foreground">{t('hypervDashboard.checkpoints')}</h4>
                   <CheckpointTree checkpoints={vm.checkpoints} depth={0} />
                 </div>
               )}
 
               {(!vm.checkpoints || vm.checkpoints.length === 0) && (
-                <p className="text-xs text-muted-foreground">No checkpoints for this VM.</p>
+                <p className="text-xs text-muted-foreground">{t('hypervDashboard.noCheckpointsForThisVm')}</p>
               )}
             </div>
           </td>

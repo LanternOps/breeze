@@ -6,6 +6,8 @@ import {
   Trash2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 
 export type DRPlanDevice = {
   id: string;
@@ -48,6 +50,7 @@ export default function DRPlanGroupCard({
   onMove,
   onRemove,
 }: DRPlanGroupCardProps) {
+  const { t } = useTranslation('backup');
   return (
     <article className="rounded-lg border">
       <div className="flex items-center justify-between border-b bg-muted/20 px-4 py-3">
@@ -60,7 +63,7 @@ export default function DRPlanGroupCard({
               {group.name.trim() || `Recovery group ${index + 1}`}
             </p>
             <p className="text-xs text-muted-foreground">
-              {group.deviceIds.length} device{group.deviceIds.length !== 1 ? 's' : ''}
+              {group.deviceIds.length} {t('dRPlanGroupCard.device')}{group.deviceIds.length !== 1 ? 's' : ''}
             </p>
           </div>
         </div>
@@ -70,7 +73,7 @@ export default function DRPlanGroupCard({
             onClick={() => onMove(-1)}
             disabled={index === 0}
             className="rounded-md border p-2 hover:bg-muted disabled:opacity-40"
-            aria-label="Move group up"
+            aria-label={t('dRPlanGroupCard.moveGroupUp')}
           >
             <ArrowUp className="h-4 w-4" />
           </button>
@@ -79,7 +82,7 @@ export default function DRPlanGroupCard({
             onClick={() => onMove(1)}
             disabled={index === total - 1}
             className="rounded-md border p-2 hover:bg-muted disabled:opacity-40"
-            aria-label="Move group down"
+            aria-label={t('dRPlanGroupCard.moveGroupDown')}
           >
             <ArrowDown className="h-4 w-4" />
           </button>
@@ -87,7 +90,7 @@ export default function DRPlanGroupCard({
             type="button"
             onClick={onRemove}
             className="rounded-md border p-2 text-destructive hover:bg-destructive/10"
-            aria-label="Remove group"
+            aria-label={t('dRPlanGroupCard.removeGroup')}
           >
             <Trash2 className="h-4 w-4" />
           </button>
@@ -96,16 +99,16 @@ export default function DRPlanGroupCard({
 
       <div className="grid gap-4 p-4 lg:grid-cols-[minmax(0,280px)_160px_200px_minmax(0,1fr)]">
         <div>
-          <label className="mb-1 block text-xs font-medium text-muted-foreground">Group name</label>
+          <label className="mb-1 block text-xs font-medium text-muted-foreground">{t('dRPlanGroupCard.groupName')}</label>
           <input
             value={group.name}
             onChange={(event) => onChange((current) => ({ ...current, name: event.target.value }))}
-            placeholder="Core services"
+            placeholder={t('dRPlanGroupCard.coreServices')}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm"
           />
         </div>
         <div>
-          <label className="mb-1 block text-xs font-medium text-muted-foreground">Estimated duration</label>
+          <label className="mb-1 block text-xs font-medium text-muted-foreground">{t('dRPlanGroupCard.estimatedDuration')}</label>
           <div className="relative">
             <Clock3 className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <input
@@ -124,7 +127,7 @@ export default function DRPlanGroupCard({
           </div>
         </div>
         <div>
-          <label className="mb-1 block text-xs font-medium text-muted-foreground">Dependency</label>
+          <label className="mb-1 block text-xs font-medium text-muted-foreground">{t('dRPlanGroupCard.dependency')}</label>
           <select
             value={group.dependsOnGroupKey ?? ''}
             onChange={(event) =>
@@ -135,7 +138,7 @@ export default function DRPlanGroupCard({
             }
             className="h-10 w-full rounded-md border bg-background px-3 text-sm"
           >
-            <option value="">No dependency</option>
+            <option value="">{t('dRPlanGroupCard.noDependency')}</option>
             {dependencyOptions.map((option, optionIndex) => (
               <option key={option.localId} value={option.localId}>
                 {optionIndex + 1}. {option.name || `Recovery group ${optionIndex + 1}`}
@@ -147,11 +150,10 @@ export default function DRPlanGroupCard({
         <div className="rounded-lg border bg-muted/20 p-3">
           <div className="mb-2 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
             <Server className="h-3.5 w-3.5" />
-            Device selection
-          </div>
+            {t('dRPlanGroupCard.deviceSelection')} </div>
           <div className="max-h-44 overflow-y-auto rounded-md border bg-background">
             {devices.length === 0 ? (
-              <div className="px-3 py-6 text-sm text-muted-foreground">No devices available to assign.</div>
+              <div className="px-3 py-6 text-sm text-muted-foreground">{t('dRPlanGroupCard.noDevicesAvailableToAssign')}</div>
             ) : (
               devices.map((device) => {
                 const selected = group.deviceIds.includes(device.id);

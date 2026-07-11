@@ -19,6 +19,8 @@ import { formatDateTime } from '@/lib/dateTimeFormat';
 import { formatNumber } from '@/lib/i18n/format';
 import { fetchWithAuth } from '../../stores/auth';
 import AlphaBadge from '../shared/AlphaBadge';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 
 type RestoreType = 'full' | 'selective';
 
@@ -136,6 +138,7 @@ async function readApiError(response: Response, fallback: string): Promise<strin
 }
 
 export default function RestoreWizard() {
+  const { t } = useTranslation('backup');
   const [step, setStep] = useState(0);
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [snapshotId, setSnapshotId] = useState('');
@@ -337,7 +340,7 @@ export default function RestoreWizard() {
       <div className="flex items-center justify-center py-16">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading restore options...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('restoreWizard.loadingRestoreOptions')}</p>
         </div>
       </div>
     );
@@ -352,8 +355,7 @@ export default function RestoreWizard() {
           onClick={fetchSnapshots}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Try again
-        </button>
+          {t('restoreWizard.tryAgain')} </button>
       </div>
     );
   }
@@ -362,10 +364,9 @@ export default function RestoreWizard() {
     <div className="space-y-6">
       <AlphaBadge variant="banner" disclaimer="File restore with staging and selective paths is in early access. Resume support for interrupted restores is available but has not been extensively tested." />
       <div>
-        <h2 className="text-xl font-semibold text-foreground">Restore Wizard</h2>
+        <h2 className="text-xl font-semibold text-foreground">{t('restoreWizard.restoreWizard')}</h2>
         <p className="text-sm text-muted-foreground">
-          Guided restore flow for snapshots and targeted files.
-        </p>
+          {t('restoreWizard.guidedRestoreFlowForSnapshotsAndTargetedFiles')} </p>
       </div>
 
       {error && (
@@ -409,15 +410,13 @@ export default function RestoreWizard() {
           {step === 0 && (
             <div className="space-y-4">
               <div>
-                <h3 className="text-lg font-semibold text-foreground">Select a snapshot</h3>
+                <h3 className="text-lg font-semibold text-foreground">{t('restoreWizard.selectASnapshot')}</h3>
                 <p className="text-sm text-muted-foreground">
-                  Choose the recovery point you want to restore from.
-                </p>
+                  {t('restoreWizard.chooseTheRecoveryPointYouWantToRestore')} </p>
               </div>
               {snapshots.length === 0 ? (
                 <div className="rounded-md border border-dashed bg-muted/30 p-4 text-sm text-muted-foreground">
-                  No snapshots available.
-                </div>
+                  {t('restoreWizard.noSnapshotsAvailable')} </div>
               ) : (
                 <div className="grid gap-4 md:grid-cols-3">
                   {snapshots.map((snapshot) => (
@@ -448,10 +447,9 @@ export default function RestoreWizard() {
           {step === 1 && (
             <div className="space-y-4">
               <div>
-                <h3 className="text-lg font-semibold text-foreground">Select restore type</h3>
+                <h3 className="text-lg font-semibold text-foreground">{t('restoreWizard.selectRestoreType')}</h3>
                 <p className="text-sm text-muted-foreground">
-                  Full restores everything, selective restores specific files.
-                </p>
+                  {t('restoreWizard.fullRestoresEverythingSelectiveRestoresSpecificFiles')} </p>
               </div>
               <div className="grid gap-4 md:grid-cols-2">
                 <button
@@ -465,11 +463,9 @@ export default function RestoreWizard() {
                 >
                   <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
                     <Server className="h-4 w-4 text-primary" />
-                    Full restore
-                  </div>
+                    {t('restoreWizard.fullRestore')} </div>
                   <p className="mt-2 text-xs text-muted-foreground">
-                    Restores all data from the selected snapshot.
-                  </p>
+                    {t('restoreWizard.restoresAllDataFromTheSelectedSnapshot')} </p>
                 </button>
                 <button
                   onClick={() => setRestoreType('selective')}
@@ -482,11 +478,9 @@ export default function RestoreWizard() {
                 >
                   <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
                     <ClipboardList className="h-4 w-4 text-primary" />
-                    Selective restore
-                  </div>
+                    {t('restoreWizard.selectiveRestore')} </div>
                   <p className="mt-2 text-xs text-muted-foreground">
-                    Restore only the files and folders you choose.
-                  </p>
+                    {t('restoreWizard.restoreOnlyTheFilesAndFoldersYouChoose')} </p>
                 </button>
               </div>
             </div>
@@ -495,10 +489,9 @@ export default function RestoreWizard() {
           {step === 2 && (
             <div className="space-y-4">
               <div>
-                <h3 className="text-lg font-semibold text-foreground">Select files</h3>
+                <h3 className="text-lg font-semibold text-foreground">{t('restoreWizard.selectFiles')}</h3>
                 <p className="text-sm text-muted-foreground">
-                  Choose files to restore for selective recoveries.
-                </p>
+                  {t('restoreWizard.chooseFilesToRestoreForSelectiveRecoveries')} </p>
               </div>
               {restoreType === 'selective' ? (
                 <div className="space-y-3">
@@ -528,8 +521,7 @@ export default function RestoreWizard() {
                 </div>
               ) : (
                 <div className="rounded-md border border-dashed bg-muted/30 p-4 text-sm text-muted-foreground">
-                  Full restore selected. Skip this step to continue.
-                </div>
+                  {t('restoreWizard.fullRestoreSelectedSkipThisStepToContinue')} </div>
               )}
             </div>
           )}
@@ -537,10 +529,9 @@ export default function RestoreWizard() {
           {step === 3 && (
             <div className="space-y-4">
               <div>
-                <h3 className="text-lg font-semibold text-foreground">Destination</h3>
+                <h3 className="text-lg font-semibold text-foreground">{t('restoreWizard.destination')}</h3>
                 <p className="text-sm text-muted-foreground">
-                  Restore to the original location or provide an alternate path.
-                </p>
+                  {t('restoreWizard.restoreToTheOriginalLocationOrProvideAn')} </p>
               </div>
               <div className="grid gap-4 md:grid-cols-2">
                 <button
@@ -554,9 +545,8 @@ export default function RestoreWizard() {
                 >
                   <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
                     <RotateCcw className="h-4 w-4 text-primary" />
-                    Original location
-                  </div>
-                  <p className="mt-2 text-xs text-muted-foreground">Restore files in place.</p>
+                    {t('restoreWizard.originalLocation')} </div>
+                  <p className="mt-2 text-xs text-muted-foreground">{t('restoreWizard.restoreFilesInPlace')}</p>
                 </button>
                 <button
                   onClick={() => setDestination('alternate')}
@@ -569,14 +559,13 @@ export default function RestoreWizard() {
                 >
                   <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
                     <FolderOpen className="h-4 w-4 text-primary" />
-                    Alternate path
-                  </div>
-                  <p className="mt-2 text-xs text-muted-foreground">Restore to a new folder.</p>
+                    {t('restoreWizard.alternatePath')} </div>
+                  <p className="mt-2 text-xs text-muted-foreground">{t('restoreWizard.restoreToANewFolder')}</p>
                 </button>
               </div>
               {destination === 'alternate' && (
                 <div className="space-y-2">
-                  <label htmlFor="restore-alt-path" className="text-xs font-medium text-muted-foreground">Alternate path</label>
+                  <label htmlFor="restore-alt-path" className="text-xs font-medium text-muted-foreground">{t('restoreWizard.alternatePath')}</label>
                   <input
                     id="restore-alt-path"
                     className="w-full rounded-md border bg-background px-3 py-2 text-sm"
@@ -591,15 +580,14 @@ export default function RestoreWizard() {
           {step === 4 && (
             <div className="space-y-4">
               <div>
-                <h3 className="text-lg font-semibold text-foreground">Review & confirm</h3>
-                <p className="text-sm text-muted-foreground">Confirm the restore summary before starting.</p>
+                <h3 className="text-lg font-semibold text-foreground">{t('restoreWizard.reviewConfirm')}</h3>
+                <p className="text-sm text-muted-foreground">{t('restoreWizard.confirmTheRestoreSummaryBeforeStarting')}</p>
               </div>
               <div className="grid gap-3 md:grid-cols-2">
                 <div className="rounded-md border border-dashed bg-muted/30 p-4">
                   <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
                     <CheckCircle2 className="h-4 w-4 text-success" />
-                    Snapshot
-                  </div>
+                    {t('restoreWizard.snapshot')} </div>
                   <p className="mt-2 text-xs text-muted-foreground">
                     {selectedSnapshot?.label ?? 'No snapshot selected'}
                   </p>
@@ -607,8 +595,7 @@ export default function RestoreWizard() {
                 <div className="rounded-md border border-dashed bg-muted/30 p-4">
                   <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
                     <Server className="h-4 w-4 text-primary" />
-                    Restore type
-                  </div>
+                    {t('restoreWizard.restoreType')} </div>
                   <p className="mt-2 text-xs text-muted-foreground">
                     {restoreType === 'full' ? 'Full restore' : 'Selective restore'}
                   </p>
@@ -616,8 +603,7 @@ export default function RestoreWizard() {
                 <div className="rounded-md border border-dashed bg-muted/30 p-4">
                   <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
                     <MapPin className="h-4 w-4 text-primary" />
-                    Destination
-                  </div>
+                    {t('restoreWizard.destination')} </div>
                   <p className="mt-2 text-xs text-muted-foreground">
                     {destination === 'original' ? 'Original path' : 'Alternate path'}
                   </p>
@@ -625,8 +611,7 @@ export default function RestoreWizard() {
                 <div className="rounded-md border border-dashed bg-muted/30 p-4">
                   <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
                     <ClipboardList className="h-4 w-4 text-primary" />
-                    Files
-                  </div>
+                    {t('restoreWizard.files')} </div>
                   <p className="mt-2 text-xs text-muted-foreground">
                     {restoreType === 'full'
                       ? 'All files from snapshot'
@@ -645,16 +630,14 @@ export default function RestoreWizard() {
             className="inline-flex items-center gap-2 rounded-md border bg-card px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-accent disabled:opacity-50"
           >
             <ArrowLeft className="h-4 w-4" />
-            Back
-          </button>
+            {t('restoreWizard.back')} </button>
           <div className="flex items-center gap-2">
             {step < 4 ? (
               <button
                 onClick={nextStep}
                 className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
               >
-                Continue
-                <ArrowRight className="h-4 w-4" />
+                {t('restoreWizard.continue')} <ArrowRight className="h-4 w-4" />
               </button>
             ) : (
               <button
@@ -679,10 +662,9 @@ export default function RestoreWizard() {
           <div className="rounded-lg border bg-card p-5 shadow-xs">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <h3 className="text-base font-semibold text-foreground">Latest restore job</h3>
+                <h3 className="text-base font-semibold text-foreground">{t('restoreWizard.latestRestoreJob')}</h3>
                 <p className="text-sm text-muted-foreground">
-                  Status and result details for the most recently started restore.
-                </p>
+                  {t('restoreWizard.statusAndResultDetailsForTheMostRecently')} </p>
               </div>
               {latestKnownRestore?.id ? (
                 <button
@@ -691,8 +673,7 @@ export default function RestoreWizard() {
                   className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
                 >
                   <RefreshCw className="h-3.5 w-3.5" />
-                  Refresh
-                </button>
+                  {t('restoreWizard.refresh')} </button>
               ) : null}
             </div>
 
@@ -700,19 +681,19 @@ export default function RestoreWizard() {
               <div className="mt-4 space-y-4">
                 <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                   <div className="rounded-md border bg-muted/20 p-4">
-                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Status</p>
+                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('restoreWizard.status')}</p>
                     <p className="mt-2 text-sm font-semibold capitalize text-foreground">{latestKnownRestore.status}</p>
                   </div>
                   <div className="rounded-md border bg-muted/20 p-4">
-                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Created</p>
+                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('restoreWizard.created')}</p>
                     <p className="mt-2 text-sm font-semibold text-foreground">{formatTimestamp(latestKnownRestore.createdAt)}</p>
                   </div>
                   <div className="rounded-md border bg-muted/20 p-4">
-                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Restored files</p>
+                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('restoreWizard.restoredFiles')}</p>
                     <p className="mt-2 text-sm font-semibold text-foreground">{latestKnownRestore.restoredFiles ?? '--'}</p>
                   </div>
                   <div className="rounded-md border bg-muted/20 p-4">
-                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Restored size</p>
+                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('restoreWizard.restoredSize')}</p>
                     <p className="mt-2 text-sm font-semibold text-foreground">{formatBytes(latestKnownRestore.restoredSize)}</p>
                   </div>
                 </div>
@@ -731,7 +712,7 @@ export default function RestoreWizard() {
                     <div className="flex items-start gap-2">
                       <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
                       <div>
-                        <p className="font-medium">Warnings</p>
+                        <p className="font-medium">{t('restoreWizard.warnings')}</p>
                         <ul className="mt-1 space-y-1 text-xs">
                           {latestKnownRestore.resultDetails.warnings.map((warning) => (
                             <li key={warning}>{warning}</li>
@@ -744,13 +725,13 @@ export default function RestoreWizard() {
 
                 <div className="grid gap-3 md:grid-cols-2">
                   <div className="rounded-md border border-dashed bg-muted/20 p-4">
-                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Command / target</p>
-                    <p className="mt-2 text-xs text-foreground">Command: {latestKnownRestore.commandId ?? '--'}</p>
-                    <p className="mt-1 text-xs text-foreground">Target path: {latestKnownRestore.targetPath ?? 'Original location'}</p>
-                    <p className="mt-1 text-xs text-foreground">Completed: {formatTimestamp(latestKnownRestore.completedAt)}</p>
+                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('restoreWizard.commandTarget')}</p>
+                    <p className="mt-2 text-xs text-foreground">{t('restoreWizard.command')} {latestKnownRestore.commandId ?? '--'}</p>
+                    <p className="mt-1 text-xs text-foreground">{t('restoreWizard.targetPath')} {latestKnownRestore.targetPath ?? 'Original location'}</p>
+                    <p className="mt-1 text-xs text-foreground">{t('restoreWizard.completed')} {formatTimestamp(latestKnownRestore.completedAt)}</p>
                   </div>
                   <div className="rounded-md border border-dashed bg-muted/20 p-4">
-                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Result payload</p>
+                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('restoreWizard.resultPayload')}</p>
                     <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap wrap-break-word chart-legend-xs text-foreground">
                       {renderJson(latestKnownRestore.resultDetails)}
                     </pre>
@@ -759,18 +740,16 @@ export default function RestoreWizard() {
               </div>
             ) : (
               <div className="mt-4 rounded-md border border-dashed p-4 text-sm text-muted-foreground">
-                No restore history yet. Start a restore to load live result details here.
-              </div>
+                {t('restoreWizard.noRestoreHistoryYetStartARestoreTo')} </div>
             )}
           </div>
 
           <div className="rounded-lg border bg-card p-5 shadow-xs">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <h3 className="text-base font-semibold text-foreground">Recent restore history</h3>
+                <h3 className="text-base font-semibold text-foreground">{t('restoreWizard.recentRestoreHistory')}</h3>
                 <p className="text-sm text-muted-foreground">
-                  Most recent restore jobs for this organization.
-                </p>
+                  {t('restoreWizard.mostRecentRestoreJobsForThisOrganization')} </p>
               </div>
               {restoreHistoryLoading ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /> : null}
             </div>
@@ -778,8 +757,7 @@ export default function RestoreWizard() {
             <div className="mt-4 space-y-3">
               {restoreHistory.length === 0 ? (
                 <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
-                  No restore history yet.
-                </div>
+                  {t('restoreWizard.noRestoreHistoryYet')} </div>
               ) : (
                 restoreHistory.map((job) => {
                   const isFailed = `${job.status}`.toLowerCase().includes('fail');
@@ -790,7 +768,7 @@ export default function RestoreWizard() {
                         <div className="min-w-0">
                           <p className="truncate text-sm font-semibold text-foreground">{job.id}</p>
                           <p className="text-xs text-muted-foreground">
-                            {job.restoreType} restore · {formatTimestamp(job.createdAt)}
+                            {job.restoreType} {t('restoreWizard.restore')} {formatTimestamp(job.createdAt)}
                           </p>
                         </div>
                         <span className={cn(
@@ -804,8 +782,8 @@ export default function RestoreWizard() {
                         </span>
                       </div>
                       <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-                        <span>Files: {job.restoredFiles ?? '--'}</span>
-                        <span>Size: {formatBytes(job.restoredSize)}</span>
+                        <span>{t('restoreWizard.files2')} {job.restoredFiles ?? '--'}</span>
+                        <span>{t('restoreWizard.size')} {formatBytes(job.restoredSize)}</span>
                       </div>
                       {job.errorSummary ? (
                         <p className="mt-2 line-clamp-2 text-xs text-destructive">{job.errorSummary}</p>

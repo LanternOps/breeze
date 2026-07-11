@@ -31,8 +31,11 @@ import {
   statIconMap,
   statusConfig
 } from './backupDashboardHelpers';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 
 function UsageHistoryChart({ points }: { points: UsageHistoryPoint[] }) {
+  const { t } = useTranslation('backup');
   const providers = Array.from(
     new Set(points.flatMap((point) => point.providers.map((provider) => provider.provider)))
   );
@@ -40,8 +43,7 @@ function UsageHistoryChart({ points }: { points: UsageHistoryPoint[] }) {
   if (providers.length === 0 || points.length === 0) {
     return (
       <div className="rounded-md border border-dashed bg-muted/30 p-3 text-xs text-muted-foreground">
-        No provider timeline available yet.
-      </div>
+        {t('backupOverviewContent.noProviderTimelineAvailableYet')} </div>
     );
   }
 
@@ -77,9 +79,9 @@ function UsageHistoryChart({ points }: { points: UsageHistoryPoint[] }) {
           preserveAspectRatio="none"
           className="h-full w-full"
           role="img"
-          aria-label="Storage usage trend by provider over time"
+          aria-label={t('backupOverviewContent.storageUsageTrendByProviderOverTime')}
         >
-          <title>Provider usage history chart</title>
+          <title>{t('backupOverviewContent.providerUsageHistoryChart')}</title>
           <polyline
             fill="none"
             stroke="hsl(var(--muted-foreground))"
@@ -111,8 +113,7 @@ function UsageHistoryChart({ points }: { points: UsageHistoryPoint[] }) {
           ))}
           <span className="inline-flex items-center gap-1 rounded-full border bg-background px-2 py-0.5 text-muted-foreground">
             <span className="h-2 w-2 rounded-full bg-muted-foreground" />
-            Total
-          </span>
+            {t('backupOverviewContent.total')} </span>
         </div>
         <div className="flex items-center justify-between text-muted-foreground">
           <span>{new Date(first.timestamp).toLocaleDateString()}</span>
@@ -153,6 +154,7 @@ export type BackupOverviewContentProps = {
 };
 
 export default function BackupOverviewContent(props: BackupOverviewContentProps) {
+  const { t } = useTranslation('backup');
   const {
     stats, recentJobs, overdueDevices, storageProviders, usageHistory,
     usageHistoryError, attentionItems, showAllJobs, setShowAllJobs, error,
@@ -165,10 +167,9 @@ export default function BackupOverviewContent(props: BackupOverviewContentProps)
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-xl font-semibold text-foreground">Backup Overview</h2>
+          <h2 className="text-xl font-semibold text-foreground">{t('backupOverviewContent.backupOverview')}</h2>
           <p className="text-sm text-muted-foreground">
-            Monitor protection coverage, storage trends, and recent activity.
-          </p>
+            {t('backupOverviewContent.monitorProtectionCoverageStorageTrendsAndRecentActivity')} </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <button
@@ -178,8 +179,7 @@ export default function BackupOverviewContent(props: BackupOverviewContentProps)
             className="inline-flex items-center gap-2 rounded-md border bg-card px-4 py-2 text-sm font-medium shadow-xs hover:bg-accent disabled:opacity-50"
           >
             {runAllLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />}
-            Run all backups
-          </button>
+            {t('backupOverviewContent.runAllBackups')} </button>
         </div>
       </div>
 
@@ -204,8 +204,7 @@ export default function BackupOverviewContent(props: BackupOverviewContentProps)
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {stats.length === 0 ? (
           <div className="rounded-lg border border-dashed p-6 text-sm text-muted-foreground lg:col-span-4">
-            No backup metrics yet. Configure a backup policy to start tracking protection coverage.
-          </div>
+            {t('backupOverviewContent.noBackupMetricsYetConfigureABackupPolicy')} </div>
         ) : (
           stats.map((stat, index) => {
             const StatIcon = resolveStatIcon(stat);
@@ -244,8 +243,8 @@ export default function BackupOverviewContent(props: BackupOverviewContentProps)
         <div className="rounded-lg border bg-card p-5 shadow-xs lg:col-span-2">
           <div className="flex items-center justify-between">
             <div>
-              <h3 className="text-base font-semibold text-foreground">Recent Jobs</h3>
-              <p className="text-sm text-muted-foreground">Latest backup activity across sites.</p>
+              <h3 className="text-base font-semibold text-foreground">{t('backupOverviewContent.recentJobs')}</h3>
+              <p className="text-sm text-muted-foreground">{t('backupOverviewContent.latestBackupActivityAcrossSites')}</p>
             </div>
             <button
               onClick={() => setShowAllJobs(!showAllJobs)}
@@ -262,8 +261,7 @@ export default function BackupOverviewContent(props: BackupOverviewContentProps)
           <div className="mt-4 space-y-3">
             {recentJobs.length === 0 ? (
               <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
-                No recent activity. Jobs will appear here once a backup configuration runs.
-              </div>
+                {t('backupOverviewContent.noRecentActivityJobsWillAppearHereOnce')} </div>
             ) : (
               recentJobs.map((job) => {
                 const normalizedStatus = resolveJobStatus(job.status);
@@ -290,8 +288,8 @@ export default function BackupOverviewContent(props: BackupOverviewContentProps)
                         <span className="inline-flex items-center gap-1">
                           <Clock className="h-3.5 w-3.5" /> {resolveJobStarted(job)}
                         </span>
-                        <span>Duration: {resolveJobDuration(job)}</span>
-                        <span>Size: {resolveJobSize(job)}</span>
+                        <span>{t('backupOverviewContent.duration')} {resolveJobDuration(job)}</span>
+                        <span>{t('backupOverviewContent.size')} {resolveJobSize(job)}</span>
                         <span className="text-foreground">{status.label}</span>
                       </div>
                     </div>
@@ -312,16 +310,15 @@ export default function BackupOverviewContent(props: BackupOverviewContentProps)
         <div className="rounded-lg border bg-card p-5 shadow-xs">
           <div className="flex items-center justify-between">
             <div>
-              <h3 className="text-base font-semibold text-foreground">Storage by Provider</h3>
-              <p className="text-sm text-muted-foreground">Current usage and capacity.</p>
+              <h3 className="text-base font-semibold text-foreground">{t('backupOverviewContent.storageByProvider')}</h3>
+              <p className="text-sm text-muted-foreground">{t('backupOverviewContent.currentUsageAndCapacity')}</p>
             </div>
             <TrendingUp className="h-5 w-5 text-muted-foreground" />
           </div>
           <div className="mt-4 space-y-4">
             {storageProviders.length === 0 ? (
               <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
-                No storage providers configured yet. Add a backup config to track usage.
-              </div>
+                {t('backupOverviewContent.noStorageProvidersConfiguredYetAddABackup')} </div>
             ) : (
               storageProviders.map((provider) => {
                 const percent = resolveProviderPercent(provider);
@@ -347,8 +344,7 @@ export default function BackupOverviewContent(props: BackupOverviewContentProps)
               </div>
             ) : usageHistory.length === 0 ? (
               <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
-                Usage history will appear after the first few backup runs.
-              </div>
+                {t('backupOverviewContent.usageHistoryWillAppearAfterTheFirstFew')} </div>
             ) : (
               <UsageHistoryChart points={usageHistory} />
             )}
@@ -360,16 +356,15 @@ export default function BackupOverviewContent(props: BackupOverviewContentProps)
         <div className="rounded-lg border bg-card p-5 shadow-xs">
           <div className="flex items-center justify-between">
             <div>
-              <h3 className="text-base font-semibold text-foreground">Devices Needing Backup</h3>
-              <p className="text-sm text-muted-foreground">Overdue based on schedule.</p>
+              <h3 className="text-base font-semibold text-foreground">{t('backupOverviewContent.devicesNeedingBackup')}</h3>
+              <p className="text-sm text-muted-foreground">{t('backupOverviewContent.overdueBasedOnSchedule')}</p>
             </div>
             <AlertTriangle className="h-5 w-5 text-warning" />
           </div>
           <div className="mt-4 space-y-3">
             {overdueDevices.length === 0 ? (
               <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
-                All devices are on schedule. Nothing overdue.
-              </div>
+                {t('backupOverviewContent.allDevicesAreOnScheduleNothingOverdue')} </div>
             ) : (
               overdueDevices.map((device) => (
                 <div
@@ -383,7 +378,7 @@ export default function BackupOverviewContent(props: BackupOverviewContentProps)
                     </p>
                   </div>
                   <div className="text-right">
-                    <p className="text-xs text-muted-foreground">Last backup</p>
+                    <p className="text-xs text-muted-foreground">{t('backupOverviewContent.lastBackup')}</p>
                     <p className="text-sm font-medium text-destructive">
                       {device.lastBackup ?? '--'}
                     </p>
@@ -399,24 +394,21 @@ export default function BackupOverviewContent(props: BackupOverviewContentProps)
             className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-md border bg-card px-4 py-2 text-sm font-medium hover:bg-accent disabled:opacity-50"
           >
             {runOverdueLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />}
-            Run overdue backups
-          </button>
+            {t('backupOverviewContent.runOverdueBackups')} </button>
         </div>
 
         <div className="rounded-lg border bg-card p-5 shadow-xs lg:col-span-2">
           <div className="flex items-center justify-between">
             <div>
-              <h3 className="text-base font-semibold text-foreground">Attention Needed</h3>
+              <h3 className="text-base font-semibold text-foreground">{t('backupOverviewContent.attentionNeeded')}</h3>
               <p className="text-sm text-muted-foreground">
-                Alerts for backup performance and coverage.
-              </p>
+                {t('backupOverviewContent.alertsForBackupPerformanceAndCoverage')} </p>
             </div>
           </div>
           <div className="mt-4 grid gap-3 md:grid-cols-2">
             {attentionItems.length === 0 ? (
               <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground md:col-span-2">
-                No active alerts. Backup health looks good.
-              </div>
+                {t('backupOverviewContent.noActiveAlertsBackupHealthLooksGood')} </div>
             ) : (
               attentionItems.map((item) => {
                 const severity = item.severity ?? 'warning';
@@ -459,18 +451,17 @@ export default function BackupOverviewContent(props: BackupOverviewContentProps)
         className="rounded-lg border bg-card p-6 shadow-lg backdrop:bg-black/40"
         onClose={handleRunAllCancel}
       >
-        <h3 className="text-base font-semibold text-foreground">Run all backups</h3>
+        <h3 className="text-base font-semibold text-foreground">{t('backupOverviewContent.runAllBackups')}</h3>
         {runAllPreview && runAllPreview.deviceCount === 0 ? (
           <>
             <p className="mt-2 text-sm text-muted-foreground">
-              No eligible devices are ready for a manual backup run.
-            </p>
+              {t('backupOverviewContent.noEligibleDevicesAreReadyForAManual')} </p>
             <div className="mt-3 space-y-1 text-sm text-muted-foreground">
               {runAllPreview.alreadyRunning > 0 && (
-                <p>{runAllPreview.alreadyRunning} device{runAllPreview.alreadyRunning !== 1 ? 's are' : ' is'} already running a backup.</p>
+                <p>{runAllPreview.alreadyRunning} {t('backupOverviewContent.device')}{runAllPreview.alreadyRunning !== 1 ? 's are' : ' is'} {t('backupOverviewContent.alreadyRunningABackup')}</p>
               )}
               {runAllPreview.offline > 0 && (
-                <p>{runAllPreview.offline} device{runAllPreview.offline !== 1 ? 's are' : ' is'} offline.</p>
+                <p>{runAllPreview.offline} {t('backupOverviewContent.device')}{runAllPreview.offline !== 1 ? 's are' : ' is'} {t('backupOverviewContent.offline')}</p>
               )}
             </div>
             <div className="mt-4 flex justify-end">
@@ -479,23 +470,22 @@ export default function BackupOverviewContent(props: BackupOverviewContentProps)
                 onClick={handleRunAllCancel}
                 className="rounded-md border px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-accent"
               >
-                Close
-              </button>
+                {t('backupOverviewContent.close')} </button>
             </div>
           </>
         ) : (
           <>
             <p className="mt-2 text-sm text-muted-foreground">
-              This will start manual backup jobs for{' '}
-              <span className="font-medium text-foreground">{runAllPreview?.deviceCount ?? 0} device{(runAllPreview?.deviceCount ?? 0) !== 1 ? 's' : ''}</span>.
+              {t('backupOverviewContent.thisWillStartManualBackupJobsFor')}{' '}
+              <span className="font-medium text-foreground">{runAllPreview?.deviceCount ?? 0} {t('backupOverviewContent.device')}{(runAllPreview?.deviceCount ?? 0) !== 1 ? 's' : ''}</span>.
             </p>
             {((runAllPreview?.alreadyRunning ?? 0) > 0 || (runAllPreview?.offline ?? 0) > 0) && (
               <div className="mt-3 space-y-1 text-sm text-muted-foreground">
                 {(runAllPreview?.alreadyRunning ?? 0) > 0 && (
-                  <p>{runAllPreview?.alreadyRunning} already running {runAllPreview?.alreadyRunning === 1 ? 'device will' : 'devices will'} be skipped.</p>
+                  <p>{runAllPreview?.alreadyRunning} {t('backupOverviewContent.alreadyRunning')} {runAllPreview?.alreadyRunning === 1 ? 'device will' : 'devices will'} {t('backupOverviewContent.beSkipped')}</p>
                 )}
                 {(runAllPreview?.offline ?? 0) > 0 && (
-                  <p>{runAllPreview?.offline} offline {runAllPreview?.offline === 1 ? 'device will' : 'devices will'} be skipped.</p>
+                  <p>{runAllPreview?.offline} {t('backupOverviewContent.offline2')} {runAllPreview?.offline === 1 ? 'device will' : 'devices will'} {t('backupOverviewContent.beSkipped')}</p>
                 )}
               </div>
             )}
@@ -505,8 +495,7 @@ export default function BackupOverviewContent(props: BackupOverviewContentProps)
                 onClick={handleRunAllCancel}
                 className="rounded-md border px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-accent"
               >
-                Cancel
-              </button>
+                {t('backupOverviewContent.cancel')} </button>
               <button
                 type="button"
                 onClick={handleRunAllConfirm}
@@ -514,8 +503,7 @@ export default function BackupOverviewContent(props: BackupOverviewContentProps)
                 className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
               >
                 {runAllLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />}
-                Run backups
-              </button>
+                {t('backupOverviewContent.runBackups')} </button>
             </div>
           </>
         )}

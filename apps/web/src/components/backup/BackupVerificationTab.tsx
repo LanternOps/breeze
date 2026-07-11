@@ -14,6 +14,8 @@ import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import { friendlyFetchError } from '../../lib/utils';
 import { formatNumber } from '@/lib/i18n/format';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 
 type VerificationType = 'integrity' | 'test_restore';
 type VerificationStatus = 'pending' | 'running' | 'passed' | 'failed' | 'partial';
@@ -88,6 +90,7 @@ export default function BackupVerificationTab({
   deviceId: string;
   deviceStatus?: DeviceStatus;
 }) {
+  const { t } = useTranslation('backup');
   const [verifications, setVerifications] = useState<Verification[]>([]);
   const [readiness, setReadiness] = useState<Readiness | null>(null);
   const [loading, setLoading] = useState(true);
@@ -183,7 +186,7 @@ export default function BackupVerificationTab({
       <div className="flex items-center justify-center py-16">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading verification data...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('backupVerificationTab.loadingVerificationData')}</p>
         </div>
       </div>
     );
@@ -195,8 +198,7 @@ export default function BackupVerificationTab({
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive flex items-center justify-between">
           <span>{error}</span>
           <button type="button" onClick={fetchData} className="text-xs font-medium underline hover:no-underline">
-            Try again
-          </button>
+            {t('backupVerificationTab.tryAgain')} </button>
         </div>
       )}
 
@@ -204,7 +206,7 @@ export default function BackupVerificationTab({
       <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="mb-4 flex items-center gap-2">
           <ShieldCheck className="h-5 w-5 text-primary" />
-          <h3 className="text-lg font-semibold">Recovery Readiness</h3>
+          <h3 className="text-lg font-semibold">{t('backupVerificationTab.recoveryReadiness')}</h3>
         </div>
         {readiness ? (
           <div className="grid gap-4 sm:grid-cols-4">
@@ -212,15 +214,15 @@ export default function BackupVerificationTab({
               <p className={`text-3xl font-bold ${readinessColor(readiness.readinessScore)}`}>
                 {readiness.readinessScore}
               </p>
-              <p className="text-xs text-muted-foreground">Score (0-100)</p>
+              <p className="text-xs text-muted-foreground">{t('backupVerificationTab.score0100')}</p>
             </div>
             <div className="text-center">
               <p className="text-xl font-semibold">{readiness.estimatedRtoMinutes ?? '-'}</p>
-              <p className="text-xs text-muted-foreground">Est. RTO (min)</p>
+              <p className="text-xs text-muted-foreground">{t('backupVerificationTab.estRtoMin')}</p>
             </div>
             <div className="text-center">
               <p className="text-xl font-semibold">{readiness.estimatedRpoMinutes ?? '-'}</p>
-              <p className="text-xs text-muted-foreground">Est. RPO (min)</p>
+              <p className="text-xs text-muted-foreground">{t('backupVerificationTab.estRpoMin')}</p>
             </div>
             <div>
               {readiness.riskFactors.length > 0 ? (
@@ -236,14 +238,13 @@ export default function BackupVerificationTab({
                   ))}
                 </div>
               ) : (
-                <span className="text-xs text-success">No risk factors</span>
+                <span className="text-xs text-success">{t('backupVerificationTab.noRiskFactors')}</span>
               )}
             </div>
           </div>
         ) : (
           <p className="text-sm text-muted-foreground">
-            No verification history. Run a verification to check backup integrity.
-          </p>
+            {t('backupVerificationTab.noVerificationHistoryRunAVerificationToCheck')} </p>
         )}
       </div>
 
@@ -251,14 +252,12 @@ export default function BackupVerificationTab({
       <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h3 className="text-lg font-semibold">Verification Actions</h3>
+            <h3 className="text-lg font-semibold">{t('backupVerificationTab.verificationActions')}</h3>
             <p className="text-sm text-muted-foreground">
-              Run checks to validate backup integrity and recoverability.
-            </p>
+              {t('backupVerificationTab.runChecksToValidateBackupIntegrityAndRecoverability')} </p>
             {isOffline && (
               <p className="mt-2 text-sm text-warning">
-                Device is offline. Verification requires a connected agent.
-              </p>
+                {t('backupVerificationTab.deviceIsOfflineVerificationRequiresAConnectedAgent')} </p>
             )}
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -273,8 +272,7 @@ export default function BackupVerificationTab({
               ) : (
                 <FileCheck className="h-4 w-4" />
               )}
-              Integrity Check
-            </button>
+              {t('backupVerificationTab.integrityCheck')} </button>
             <button
               type="button"
               onClick={() => triggerVerification('test_restore')}
@@ -286,8 +284,7 @@ export default function BackupVerificationTab({
               ) : (
                 <Play className="h-4 w-4" />
               )}
-              Test Restore
-            </button>
+              {t('backupVerificationTab.testRestore')} </button>
             <button
               type="button"
               onClick={fetchData}
@@ -295,8 +292,7 @@ export default function BackupVerificationTab({
               className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm font-medium hover:bg-muted disabled:opacity-60"
             >
               <RefreshCw className="h-4 w-4" />
-              Refresh
-            </button>
+              {t('backupVerificationTab.refresh')} </button>
           </div>
         </div>
       </div>
@@ -305,22 +301,22 @@ export default function BackupVerificationTab({
       <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="mb-4 flex items-center gap-2">
           <FileCheck className="h-4 w-4 text-primary" />
-          <h3 className="font-semibold">Verification History</h3>
+          <h3 className="font-semibold">{t('backupVerificationTab.verificationHistory')}</h3>
         </div>
         {verifications.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No verification history. Run a verification to check backup integrity.</p>
+          <p className="text-sm text-muted-foreground">{t('backupVerificationTab.noVerificationHistoryRunAVerificationToCheck')}</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b text-left text-xs text-muted-foreground">
-                  <th className="pb-2 pr-4">Type</th>
-                  <th className="pb-2 pr-4">Status</th>
-                  <th className="pb-2 pr-4">Started</th>
-                  <th className="pb-2 pr-4">Duration</th>
-                  <th className="pb-2 pr-4">Files OK</th>
-                  <th className="pb-2 pr-4">Files Failed</th>
-                  <th className="pb-2">Size</th>
+                  <th className="pb-2 pr-4">{t('backupVerificationTab.type')}</th>
+                  <th className="pb-2 pr-4">{t('backupVerificationTab.status')}</th>
+                  <th className="pb-2 pr-4">{t('backupVerificationTab.started')}</th>
+                  <th className="pb-2 pr-4">{t('backupVerificationTab.duration')}</th>
+                  <th className="pb-2 pr-4">{t('backupVerificationTab.filesOk')}</th>
+                  <th className="pb-2 pr-4">{t('backupVerificationTab.filesFailed')}</th>
+                  <th className="pb-2">{t('backupVerificationTab.size')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -346,8 +342,7 @@ export default function BackupVerificationTab({
                         </span>
                         {v.details && Boolean((v.details as Record<string, unknown>).simulated) && (
                           <span className="ml-1 inline-flex items-center rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground border border-border">
-                            simulated
-                          </span>
+                            {t('backupVerificationTab.simulated')} </span>
                         )}
                       </td>
                       <td className="py-2 pr-4 text-muted-foreground">

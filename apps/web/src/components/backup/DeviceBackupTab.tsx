@@ -17,6 +17,8 @@ import BackupVerificationTab from './BackupVerificationTab';
 import { formatNumber } from '@/lib/i18n/format';
 import DeviceVaultStatus from './DeviceVaultStatus';
 import AlphaBadge from '../shared/AlphaBadge';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 
 type BackupJobStatus = 'completed' | 'running' | 'failed' | 'pending' | 'cancelled';
 type VssWriterState = 'stable' | 'failed' | 'waiting' | string;
@@ -154,6 +156,7 @@ type DeviceBackupTabProps = {
 };
 
 export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackupTabProps) {
+  const { t } = useTranslation('backup');
   const [status, setStatus] = useState<BackupStatus | null>(null);
   const [jobs, setJobs] = useState<BackupJob[]>([]);
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
@@ -311,7 +314,7 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
       <div className="flex items-center justify-center py-16">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading backup data...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('deviceBackupTab.loadingBackupData')}</p>
         </div>
       </div>
     );
@@ -322,10 +325,9 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
     return (
       <div className="flex flex-col items-center justify-center py-20 text-center">
         <Database className="h-12 w-12 text-muted-foreground/40" />
-        <h3 className="mt-4 text-base font-semibold text-foreground">No backup configured</h3>
+        <h3 className="mt-4 text-base font-semibold text-foreground">{t('deviceBackupTab.noBackupConfigured')}</h3>
         <p className="mt-1 text-sm text-muted-foreground">
-          Assign a backup policy to protect this device.
-        </p>
+          {t('deviceBackupTab.assignABackupPolicyToProtectThisDevice')} </p>
       </div>
     );
   }
@@ -363,7 +365,7 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
           <div className="flex flex-wrap items-center gap-4">
             {statusCfg && lastJobStatus ? (
               <div className="flex items-center gap-2">
-                <span className="text-xs font-medium text-muted-foreground">Last backup</span>
+                <span className="text-xs font-medium text-muted-foreground">{t('deviceBackupTab.lastBackup')}</span>
                 <span
                   className={cn(
                     'inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium',
@@ -378,21 +380,20 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
               <div className="flex items-center gap-2">
                 <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2.5 py-0.5 text-xs font-medium text-primary">
                   <ShieldCheck className="h-3.5 w-3.5" />
-                  Policy assigned
-                </span>
-                <span className="text-xs text-muted-foreground">Awaiting first backup run</span>
+                  {t('deviceBackupTab.policyAssigned')} </span>
+                <span className="text-xs text-muted-foreground">{t('deviceBackupTab.awaitingFirstBackupRun')}</span>
               </div>
             ) : null}
             {status?.lastSuccessAt && (
               <div className="flex items-center gap-1 text-xs text-muted-foreground">
                 <CheckCircle2 className="h-3.5 w-3.5 text-success" />
-                <span>Last success: {formatTime(status.lastSuccessAt)}</span>
+                <span>{t('deviceBackupTab.lastSuccess')} {formatTime(status.lastSuccessAt)}</span>
               </div>
             )}
             {status?.nextScheduledAt && (
               <div className="flex items-center gap-1 text-xs text-muted-foreground">
                 <Clock className="h-3.5 w-3.5" />
-                <span>Next: {formatTime(status.nextScheduledAt)}</span>
+                <span>{t('deviceBackupTab.next')} {formatTime(status.nextScheduledAt)}</span>
               </div>
             )}
           </div>
@@ -403,14 +404,13 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
             className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-60"
           >
             {refreshing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-            Refresh
-          </button>
+            {t('deviceBackupTab.refresh')} </button>
         </div>
       </div>
 
       {/* Job History */}
       <div className="rounded-lg border bg-card p-5 shadow-xs">
-        <h3 className="mb-4 font-semibold">Job History</h3>
+        <h3 className="mb-4 font-semibold">{t('deviceBackupTab.jobHistory')}</h3>
         {recentJobs.length === 0 ? (
           <p className="text-sm text-muted-foreground">
             {status?.protected
@@ -422,12 +422,12 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b text-left text-xs text-muted-foreground">
-                  <th className="pb-2 pr-4 font-medium">Type</th>
-                  <th className="pb-2 pr-4 font-medium">Status</th>
-                  <th className="pb-2 pr-4 font-medium">Started</th>
-                  <th className="pb-2 pr-4 font-medium">Duration</th>
-                  <th className="pb-2 pr-4 font-medium">Size</th>
-                  <th className="pb-2 font-medium">Errors</th>
+                  <th className="pb-2 pr-4 font-medium">{t('deviceBackupTab.type')}</th>
+                  <th className="pb-2 pr-4 font-medium">{t('deviceBackupTab.status')}</th>
+                  <th className="pb-2 pr-4 font-medium">{t('deviceBackupTab.started')}</th>
+                  <th className="pb-2 pr-4 font-medium">{t('deviceBackupTab.duration')}</th>
+                  <th className="pb-2 pr-4 font-medium">{t('deviceBackupTab.size')}</th>
+                  <th className="pb-2 font-medium">{t('deviceBackupTab.errors')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -484,14 +484,14 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
       {showVssStatus && (
         <div className="rounded-lg border bg-card p-5 shadow-xs">
           <div className="flex items-center justify-between gap-3">
-            <h3 className="font-semibold">VSS Status <AlphaBadge /></h3>
-            <span className="text-xs text-muted-foreground">Latest backup job</span>
+            <h3 className="font-semibold">{t('deviceBackupTab.vssStatus')} <AlphaBadge /></h3>
+            <span className="text-xs text-muted-foreground">{t('deviceBackupTab.latestBackupJob')}</span>
           </div>
 
           {hasVssWarnings && (
             <div className="mt-4 flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-              <span>One or more VSS writers are not stable. Review the latest writer states before the next run.</span>
+              <span>{t('deviceBackupTab.oneOrMoreVssWritersAreNotStable')}</span>
             </div>
           )}
 
@@ -500,8 +500,8 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b text-left text-xs text-muted-foreground">
-                    <th className="pb-2 pr-4 font-medium">Writer</th>
-                    <th className="pb-2 font-medium">State</th>
+                    <th className="pb-2 pr-4 font-medium">{t('deviceBackupTab.writer')}</th>
+                    <th className="pb-2 font-medium">{t('deviceBackupTab.state')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -529,7 +529,7 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
               </table>
             </div>
           ) : (
-            <p className="mt-4 text-sm text-muted-foreground">No VSS writer details were reported for the latest backup.</p>
+            <p className="mt-4 text-sm text-muted-foreground">{t('deviceBackupTab.noVssWriterDetailsWereReportedForThe')}</p>
           )}
         </div>
       )}
@@ -542,13 +542,12 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
         <div className="rounded-lg border bg-card p-5 shadow-xs">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h3 className="font-semibold">Restore Points</h3>
+              <h3 className="font-semibold">{t('deviceBackupTab.restorePoints')}</h3>
               <p className="mt-1 text-sm text-muted-foreground">
-                Manage snapshot protection for this device without leaving the device record.
-              </p>
+                {t('deviceBackupTab.manageSnapshotProtectionForThisDeviceWithoutLeaving')} </p>
             </div>
             <span className="text-xs text-muted-foreground">
-              {snapshots.length} restore point{snapshots.length === 1 ? '' : 's'}
+              {snapshots.length} {t('deviceBackupTab.restorePoint')}{snapshots.length === 1 ? '' : 's'}
             </span>
           </div>
 
@@ -561,8 +560,7 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
                   </span>
                   {selectedSnapshot.legalHold && (
                     <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700">
-                      Legal hold
-                    </span>
+                      {t('deviceBackupTab.legalHold')} </span>
                   )}
                   {selectedSnapshot.isImmutable && (
                     <span className="rounded-full border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-xs font-medium text-sky-700">
@@ -576,22 +574,20 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div className="rounded-md border bg-background p-3 text-sm">
                     <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                      Timing
-                    </div>
+                      {t('deviceBackupTab.timing')} </div>
                     <div className="mt-2 space-y-1 text-foreground">
-                      <div>Created: {formatTime(selectedSnapshot.createdAt)}</div>
-                      <div>Expires: {formatTime(selectedSnapshot.expiresAt)}</div>
-                      <div>Immutable until: {formatTime(selectedSnapshot.immutableUntil)}</div>
+                      <div>{t('deviceBackupTab.created')} {formatTime(selectedSnapshot.createdAt)}</div>
+                      <div>{t('deviceBackupTab.expires')} {formatTime(selectedSnapshot.expiresAt)}</div>
+                      <div>{t('deviceBackupTab.immutableUntil')} {formatTime(selectedSnapshot.immutableUntil)}</div>
                     </div>
                   </div>
                   <div className="rounded-md border bg-background p-3 text-sm">
                     <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                      Snapshot Details
-                    </div>
+                      {t('deviceBackupTab.snapshotDetails')} </div>
                     <div className="mt-2 space-y-1 text-foreground">
-                      <div>Size: {formatBytes(selectedSnapshot.sizeBytes)}</div>
-                      <div>Files: {selectedSnapshot.fileCount ?? '-'}</div>
-                      <div>Protection: {protectionSummary(selectedSnapshot)}</div>
+                      <div>{t('deviceBackupTab.size2')} {formatBytes(selectedSnapshot.sizeBytes)}</div>
+                      <div>{t('deviceBackupTab.files')} {selectedSnapshot.fileCount ?? '-'}</div>
+                      <div>{t('deviceBackupTab.protection')} {protectionSummary(selectedSnapshot)}</div>
                     </div>
                   </div>
                 </div>
@@ -600,13 +596,13 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
                   <div className="rounded-md border bg-background p-3 text-sm">
                     {selectedSnapshot.legalHoldReason && (
                       <div>
-                        <span className="font-medium text-foreground">Hold reason:</span>{' '}
+                        <span className="font-medium text-foreground">{t('deviceBackupTab.holdReason')}</span>{' '}
                         <span className="text-muted-foreground">{selectedSnapshot.legalHoldReason}</span>
                       </div>
                     )}
                     {selectedSnapshot.legalHoldSource && (
                       <div>
-                        <span className="font-medium text-foreground">Hold source:</span>{' '}
+                        <span className="font-medium text-foreground">{t('deviceBackupTab.holdSource')}</span>{' '}
                         <span className="text-muted-foreground">
                           {selectedSnapshot.legalHoldSource === 'policy' ? 'Inherited from backup policy' : 'Applied manually'}
                         </span>
@@ -614,7 +610,7 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
                     )}
                     {selectedSnapshot.immutabilityEnforcement && (
                       <div>
-                        <span className="font-medium text-foreground">Enforcement:</span>{' '}
+                        <span className="font-medium text-foreground">{t('deviceBackupTab.enforcement')}</span>{' '}
                         <span className="text-muted-foreground">
                           {selectedSnapshot.immutabilityEnforcement === 'provider'
                             ? 'Provider-enforced WORM'
@@ -624,7 +620,7 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
                     )}
                     {selectedSnapshot.location && (
                       <div className="break-all">
-                        <span className="font-medium text-foreground">Location:</span>{' '}
+                        <span className="font-medium text-foreground">{t('deviceBackupTab.location')}</span>{' '}
                         <span className="text-muted-foreground">{selectedSnapshot.location}</span>
                       </div>
                     )}
@@ -634,10 +630,9 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
                 {selectedSnapshot.requestedImmutabilityEnforcement === 'provider' &&
                   selectedSnapshot.immutabilityEnforcement === 'application' && (
                     <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-800">
-                      Provider immutability was requested by policy, but Breeze applied application protection instead.
-                      {selectedSnapshot.immutabilityFallbackReason && (
+                      {t('deviceBackupTab.providerImmutabilityWasRequestedByPolicyButBreeze')} {selectedSnapshot.immutabilityFallbackReason && (
                         <div className="mt-1 text-xs text-amber-900/80">
-                          Reason: {selectedSnapshot.immutabilityFallbackReason}
+                          {t('deviceBackupTab.reason')} {selectedSnapshot.immutabilityFallbackReason}
                         </div>
                       )}
                     </div>
@@ -647,27 +642,24 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
               <div className="space-y-3 rounded-md border bg-background p-4">
                 <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
                   <ShieldCheck className="h-4 w-4 text-primary" />
-                  Protection Controls
-                </div>
+                  {t('deviceBackupTab.protectionControls')} </div>
                 <p className="text-xs text-muted-foreground">
-                  These actions apply only to the selected restore point. Application protection is enforced by Breeze retention cleanup. Releasing protection can make an expired snapshot eligible for deletion immediately.
-                </p>
+                  {t('deviceBackupTab.theseActionsApplyOnlyToTheSelectedRestore')} </p>
                 {selectedSnapshot.retentionBlockedReason && (
                   <p className="text-xs text-muted-foreground">
-                    Retention cleanup is currently blocked by {selectedSnapshot.retentionBlockedReason === 'legal_hold' ? 'legal hold' : 'immutability'} for this restore point.
-                  </p>
+                    {t('deviceBackupTab.retentionCleanupIsCurrentlyBlockedBy')} {selectedSnapshot.retentionBlockedReason === 'legal_hold' ? 'legal hold' : 'immutability'} {t('deviceBackupTab.forThisRestorePoint')} </p>
                 )}
                 <div>
-                  <label className="text-xs font-medium text-muted-foreground">Reason</label>
+                  <label className="text-xs font-medium text-muted-foreground">{t('deviceBackupTab.reason2')}</label>
                   <input
                     value={reason}
                     onChange={(event) => setReason(event.target.value)}
-                    placeholder="Reason for applying or releasing protection"
+                    placeholder={t('deviceBackupTab.reasonForApplyingOrReleasingProtection')}
                     className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
                   />
                 </div>
                 <div>
-                  <label className="text-xs font-medium text-muted-foreground">Immutable for (days)</label>
+                  <label className="text-xs font-medium text-muted-foreground">{t('deviceBackupTab.immutableForDays')}</label>
                   <input
                     type="number"
                     min={1}
@@ -678,14 +670,14 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
                   />
                 </div>
                 <div>
-                  <label className="text-xs font-medium text-muted-foreground">Immutability enforcement</label>
+                  <label className="text-xs font-medium text-muted-foreground">{t('deviceBackupTab.immutabilityEnforcement')}</label>
                   <select
                     value={immutabilityMode}
                     onChange={(event) => setImmutabilityMode(event.target.value as 'application' | 'provider')}
                     className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
                   >
-                    <option value="application">Application-level</option>
-                    <option value="provider">Provider-enforced</option>
+                    <option value="application">{t('deviceBackupTab.applicationLevel')}</option>
+                    <option value="provider">{t('deviceBackupTab.providerEnforced')}</option>
                   </select>
                 </div>
                 <div className="grid gap-2 sm:grid-cols-2">
@@ -703,8 +695,7 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
                     onClick={() => void handleProtectionAction('release-hold')}
                     className="rounded-md border px-3 py-2 text-sm font-medium text-foreground disabled:opacity-50"
                   >
-                    Release legal hold
-                  </button>
+                    {t('deviceBackupTab.releaseLegalHold')} </button>
                   <button
                     type="button"
                     disabled={actionLoading}
@@ -723,13 +714,11 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
                     onClick={() => void handleProtectionAction('release-immutability')}
                     className="rounded-md border px-3 py-2 text-sm font-medium text-foreground disabled:opacity-50"
                   >
-                    Release app immutability
-                  </button>
+                    {t('deviceBackupTab.releaseAppImmutability')} </button>
                 </div>
                 {selectedSnapshot.immutabilityEnforcement === 'provider' && selectedSnapshot.isImmutable && (
                   <p className="text-xs text-muted-foreground">
-                    Provider-enforced immutability must be released at the storage provider.
-                  </p>
+                    {t('deviceBackupTab.providerEnforcedImmutabilityMustBeReleasedAtThe')} </p>
                 )}
               </div>
             </div>
@@ -739,11 +728,11 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
             <table className="mt-4 w-full text-sm">
               <thead>
                 <tr className="border-b text-left text-xs text-muted-foreground">
-                  <th className="pb-2 pr-4 font-medium">Label</th>
-                  <th className="pb-2 pr-4 font-medium">Created</th>
-                  <th className="pb-2 pr-4 font-medium">Expires</th>
-                  <th className="pb-2 pr-4 font-medium">Size</th>
-                  <th className="pb-2 font-medium">Protection</th>
+                  <th className="pb-2 pr-4 font-medium">{t('deviceBackupTab.label')}</th>
+                  <th className="pb-2 pr-4 font-medium">{t('deviceBackupTab.created2')}</th>
+                  <th className="pb-2 pr-4 font-medium">{t('deviceBackupTab.expires2')}</th>
+                  <th className="pb-2 pr-4 font-medium">{t('deviceBackupTab.size')}</th>
+                  <th className="pb-2 font-medium">{t('deviceBackupTab.protection2')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -768,8 +757,7 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
                       <div className="flex flex-wrap items-center gap-1.5">
                         {snap.legalHold && (
                           <span className="inline-flex items-center rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700">
-                            Hold
-                          </span>
+                            {t('deviceBackupTab.hold')} </span>
                         )}
                         {snap.isImmutable && (
                           <span className="inline-flex items-center rounded-full bg-sky-500/10 px-2 py-0.5 text-xs font-medium text-sky-700">
@@ -777,7 +765,7 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
                           </span>
                         )}
                         {!snap.legalHold && !snap.isImmutable && (
-                          <span className="text-muted-foreground">Standard</span>
+                          <span className="text-muted-foreground">{t('deviceBackupTab.standard')}</span>
                         )}
                       </div>
                     </td>

@@ -16,6 +16,8 @@ import { formatBytes, formatTime } from './backupDashboardHelpers';
 import VMRestoreSpecsStep from './VMRestoreSpecsStep';
 import VMRestoreConfirmStep from './VMRestoreConfirmStep';
 import AlphaBadge from '../shared/AlphaBadge';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -54,6 +56,7 @@ const steps = ['Snapshot', 'Target Host', 'VM Specs', 'VM Name', 'Mode', 'Review
 // ── Component ─────────────────────────────────────────────────────
 
 export default function VMRestoreWizard() {
+  const { t } = useTranslation('backup');
   const [step, setStep] = useState(0);
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [devices, setDevices] = useState<Device[]>([]);
@@ -193,7 +196,7 @@ export default function VMRestoreWizard() {
       <div className="flex items-center justify-center py-16">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading VM restore options...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('vMRestoreWizard.loadingVmRestoreOptions')}</p>
         </div>
       </div>
     );
@@ -203,10 +206,9 @@ export default function VMRestoreWizard() {
     <div className="space-y-6">
       <AlphaBadge variant="banner" disclaimer="Restoring backups as Hyper-V VMs and Instant Boot are in early access. These features create new VMs from file-level backups and may require manual driver installation for some hardware configurations." />
       <div>
-        <h2 className="text-xl font-semibold text-foreground">VM Restore Wizard</h2>
+        <h2 className="text-xl font-semibold text-foreground">{t('vMRestoreWizard.vmRestoreWizard')}</h2>
         <p className="text-sm text-muted-foreground">
-          Restore a backup as a Hyper-V virtual machine or instant boot.
-        </p>
+          {t('vMRestoreWizard.restoreABackupAsAHyperVVirtual')} </p>
       </div>
 
       {error && (
@@ -250,15 +252,13 @@ export default function VMRestoreWizard() {
           {step === 0 && (
             <div className="space-y-4">
               <div>
-                <h3 className="text-lg font-semibold text-foreground">Select backup snapshot</h3>
+                <h3 className="text-lg font-semibold text-foreground">{t('vMRestoreWizard.selectBackupSnapshot')}</h3>
                 <p className="text-sm text-muted-foreground">
-                  Choose the snapshot to restore as a virtual machine.
-                </p>
+                  {t('vMRestoreWizard.chooseTheSnapshotToRestoreAsAVirtual')} </p>
               </div>
               {snapshots.length === 0 ? (
                 <div className="rounded-md border border-dashed bg-muted/30 p-4 text-sm text-muted-foreground">
-                  No snapshots available.
-                </div>
+                  {t('vMRestoreWizard.noSnapshotsAvailable')} </div>
               ) : (
                 <div className="grid gap-3 md:grid-cols-2">
                   {snapshots.map((snap) => (
@@ -282,18 +282,15 @@ export default function VMRestoreWizard() {
                         <div className="mt-2 flex flex-wrap gap-3 text-xs text-muted-foreground">
                           {snap.hardwareProfile.cpuCount && (
                             <span className="inline-flex items-center gap-1">
-                              <Cpu className="h-3 w-3" /> {snap.hardwareProfile.cpuCount} CPU
-                            </span>
+                              <Cpu className="h-3 w-3" /> {snap.hardwareProfile.cpuCount} {t('vMRestoreWizard.cpu')} </span>
                           )}
                           {snap.hardwareProfile.memoryMB && (
                             <span className="inline-flex items-center gap-1">
-                              <MemoryStick className="h-3 w-3" /> {snap.hardwareProfile.memoryMB} MB
-                            </span>
+                              <MemoryStick className="h-3 w-3" /> {snap.hardwareProfile.memoryMB} {t('vMRestoreWizard.mb')} </span>
                           )}
                           {snap.hardwareProfile.diskGB && (
                             <span className="inline-flex items-center gap-1">
-                              <HardDrive className="h-3 w-3" /> {snap.hardwareProfile.diskGB} GB
-                            </span>
+                              <HardDrive className="h-3 w-3" /> {snap.hardwareProfile.diskGB} {t('vMRestoreWizard.gb')} </span>
                           )}
                         </div>
                       )}
@@ -308,22 +305,20 @@ export default function VMRestoreWizard() {
           {step === 1 && (
             <div className="space-y-4">
               <div>
-                <h3 className="text-lg font-semibold text-foreground">Select target host</h3>
+                <h3 className="text-lg font-semibold text-foreground">{t('vMRestoreWizard.selectTargetHost')}</h3>
                 <p className="text-sm text-muted-foreground">
-                  Choose a Windows device with Hyper-V to host the virtual machine.
-                </p>
+                  {t('vMRestoreWizard.chooseAWindowsDeviceWithHyperVTo')} </p>
               </div>
               {devices.length === 0 ? (
                 <div className="rounded-md border border-dashed bg-muted/30 p-4 text-sm text-muted-foreground">
-                  No Windows devices available.
-                </div>
+                  {t('vMRestoreWizard.noWindowsDevicesAvailable')} </div>
               ) : (
                 <select
                   value={targetDeviceId}
                   onChange={(e) => setTargetDeviceId(e.target.value)}
                   className="h-10 w-full rounded-md border bg-background px-3 text-sm"
                 >
-                  <option value="">Select a target host...</option>
+                  <option value="">{t('vMRestoreWizard.selectATargetHost')}</option>
                   {devices.map((d) => (
                     <option key={d.id} value={d.id}>
                       {d.hostname}
@@ -350,31 +345,30 @@ export default function VMRestoreWizard() {
           {step === 3 && (
             <div className="space-y-4">
               <div>
-                <h3 className="text-lg font-semibold text-foreground">VM identity</h3>
+                <h3 className="text-lg font-semibold text-foreground">{t('vMRestoreWizard.vmIdentity')}</h3>
                 <p className="text-sm text-muted-foreground">
-                  Name the virtual machine and optionally specify a virtual switch.
-                </p>
+                  {t('vMRestoreWizard.nameTheVirtualMachineAndOptionallySpecifyA')} </p>
               </div>
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
-                  <label htmlFor="vm-name" className="text-xs font-medium text-muted-foreground">VM Name</label>
+                  <label htmlFor="vm-name" className="text-xs font-medium text-muted-foreground">{t('vMRestoreWizard.vmName')}</label>
                   <input
                     id="vm-name"
                     value={vmName}
                     onChange={(e) => setVmName(e.target.value)}
-                    placeholder="e.g. Restored-DB-Server"
+                    placeholder={t('vMRestoreWizard.eGRestoredDbServer')}
                     className="w-full rounded-md border bg-background px-3 py-2 text-sm"
                   />
                 </div>
                 <div className="space-y-2">
                   <label htmlFor="vm-switch" className="text-xs font-medium text-muted-foreground">
-                    Virtual Switch <span className="text-muted-foreground/60">(optional)</span>
+                    {t('vMRestoreWizard.virtualSwitch')} <span className="text-muted-foreground/60">{t('vMRestoreWizard.optional')}</span>
                   </label>
                   <input
                     id="vm-switch"
                     value={virtualSwitch}
                     onChange={(e) => setVirtualSwitch(e.target.value)}
-                    placeholder="Default Switch"
+                    placeholder={t('vMRestoreWizard.defaultSwitch')}
                     className="w-full rounded-md border bg-background px-3 py-2 text-sm"
                   />
                 </div>
@@ -386,10 +380,9 @@ export default function VMRestoreWizard() {
           {step === 4 && (
             <div className="space-y-4">
               <div>
-                <h3 className="text-lg font-semibold text-foreground">Restore mode</h3>
+                <h3 className="text-lg font-semibold text-foreground">{t('vMRestoreWizard.restoreMode')}</h3>
                 <p className="text-sm text-muted-foreground">
-                  Choose how the VM will be created from the backup.
-                </p>
+                  {t('vMRestoreWizard.chooseHowTheVmWillBeCreatedFrom')} </p>
               </div>
               <div className="grid gap-4 md:grid-cols-2">
                 <button
@@ -402,11 +395,9 @@ export default function VMRestoreWizard() {
                 >
                   <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
                     <Server className="h-4 w-4 text-primary" />
-                    Full Restore
-                  </div>
+                    {t('vMRestoreWizard.fullRestore')} </div>
                   <p className="mt-2 text-xs text-muted-foreground">
-                    Restores the entire backup to a new VM. Best for permanent recovery. The VM is ready once the full disk is written.
-                  </p>
+                    {t('vMRestoreWizard.restoresTheEntireBackupToANewVm')} </p>
                 </button>
                 <button
                   type="button"
@@ -418,11 +409,9 @@ export default function VMRestoreWizard() {
                 >
                   <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
                     <Zap className="h-4 w-4 text-primary" />
-                    Instant Boot
-                  </div>
+                    {t('vMRestoreWizard.instantBoot')} </div>
                   <p className="mt-2 text-xs text-muted-foreground">
-                    Boots the VM directly from the backup storage. Ready in seconds. Background migration copies data to the host.
-                  </p>
+                    {t('vMRestoreWizard.bootsTheVmDirectlyFromTheBackupStorage')} </p>
                 </button>
               </div>
             </div>
@@ -450,8 +439,7 @@ export default function VMRestoreWizard() {
             disabled={step === 0}
             className="inline-flex items-center gap-2 rounded-md border bg-card px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-accent disabled:opacity-50"
           >
-            <ArrowLeft className="h-4 w-4" /> Back
-          </button>
+            <ArrowLeft className="h-4 w-4" /> {t('vMRestoreWizard.back')} </button>
           <div className="flex items-center gap-2">
             {step < steps.length - 1 ? (
               <button
@@ -459,7 +447,7 @@ export default function VMRestoreWizard() {
                 onClick={nextStep}
                 className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
               >
-                Continue <ArrowRight className="h-4 w-4" />
+                {t('vMRestoreWizard.continue')} <ArrowRight className="h-4 w-4" />
               </button>
             ) : (
               <button
@@ -470,8 +458,7 @@ export default function VMRestoreWizard() {
               >
                 {restoring ? (
                   <>
-                    <Loader2 className="h-4 w-4 animate-spin" /> Starting...
-                  </>
+                    <Loader2 className="h-4 w-4 animate-spin" /> {t('vMRestoreWizard.starting')} </>
                 ) : (
                   <>
                     {mode === 'full' ? 'Start Full Restore' : 'Start Instant Boot'}
