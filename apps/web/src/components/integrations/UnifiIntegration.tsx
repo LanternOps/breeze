@@ -13,6 +13,7 @@ import { runAction, handleActionError, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext, getJwtClaims } from '../../lib/authScope';
 import { formatDateTime } from '@/lib/dateTimeFormat';
+import { formatNumber } from '@/lib/i18n/format';
 
 type ConnectionStatus = 'connected' | 'error' | 'reauth_required';
 
@@ -1302,7 +1303,7 @@ export default function UnifiIntegration() {
                             <td className="px-3 py-2 tabular-nums">{d.numClients ?? '—'}</td>
                             <td className="px-3 py-2">
                               {Array.isArray(d.poePorts) && d.poePorts.length > 0
-                                ? `${d.poePorts.filter((p) => p.up).length}/${d.poePorts.length} up · ${d.poePorts.reduce((sum, p) => sum + (p.poe_power_w ?? 0), 0).toFixed(1)}W`
+                                ? `${d.poePorts.filter((p) => p.up).length}/${d.poePorts.length} up · ${formatNumber(d.poePorts.reduce((sum, p) => sum + (p.poe_power_w ?? 0), 0), { minimumFractionDigits: 1, maximumFractionDigits: 1 })}W`
                                 : '—'}
                             </td>
                           </tr>

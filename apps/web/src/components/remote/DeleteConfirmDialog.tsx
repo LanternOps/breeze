@@ -1,5 +1,6 @@
 import { Trash2, AlertTriangle, File, Folder, X } from 'lucide-react';
 import { Dialog } from '../shared/Dialog';
+import { formatNumber } from '@/lib/i18n/format';
 
 type DeleteConfirmDialogProps = {
   open: boolean;
@@ -12,10 +13,10 @@ function formatSize(bytes?: number): string {
   if (bytes === undefined || bytes === null) return '-';
   if (bytes === 0) return '0 B';
   if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  if (bytes < 1024 * 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-  return `${(bytes / (1024 * 1024 * 1024 * 1024)).toFixed(2)} TB`;
+  if (bytes < 1024 * 1024) return `${formatNumber(bytes / 1024, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${formatNumber(bytes / (1024 * 1024), { minimumFractionDigits: 1, maximumFractionDigits: 1 })} MB`;
+  if (bytes < 1024 * 1024 * 1024 * 1024) return `${formatNumber(bytes / (1024 * 1024 * 1024), { minimumFractionDigits: 2, maximumFractionDigits: 2 })} GB`;
+  return `${formatNumber(bytes / (1024 * 1024 * 1024 * 1024), { minimumFractionDigits: 2, maximumFractionDigits: 2 })} TB`;
 }
 
 export default function DeleteConfirmDialog({

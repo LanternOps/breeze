@@ -13,6 +13,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { formatTime } from './backupDashboardHelpers';
 import SLAConfigDialog from './SLAConfigDialog';
 import AlphaBadge from '../shared/AlphaBadge';
+import { formatPercent } from '@/lib/i18n/format';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -166,7 +167,7 @@ export default function SLADashboard() {
             'mt-1 text-2xl font-bold',
             compliance >= 95 ? 'text-success' : compliance >= 80 ? 'text-warning' : 'text-destructive'
           )}>
-            {compliance.toFixed(1)}%
+            {formatPercent(compliance / 100, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}
           </p>
         </div>
         <div className="rounded-lg border bg-card p-4 shadow-xs">

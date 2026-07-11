@@ -4,6 +4,7 @@ import { navigateTo } from '@/lib/navigation';
 import { fetchWithAuth } from '../../../stores/auth';
 import { runAction, handleActionError } from '../../../lib/runAction';
 import { usePermissions } from '../../../lib/permissions';
+import { formatPercent } from '@/lib/i18n/format';
 import {
   addBlock,
   updateBlock,
@@ -2107,7 +2108,7 @@ function BlockCard({
 // internal cost/markup/net band — but renders everything as plain text.
 function ReadonlyLineRow({ line: l, quoteId, currency, taxRate, isFirst, showInternal }: { line: QuoteLine; quoteId: string; currency: string; taxRate: string | null; isFirst: boolean; showInternal: boolean }) {
   const mk = markupPct(l.unitPrice, l.unitCost);
-  const markupStr = mk === null ? '—' : `${String(Number(mk.toFixed(2)))}%`;
+  const markupStr = mk === null ? '—' : formatPercent(mk / 100, { maximumFractionDigits: 2 });
   const netCents = l.unitCost === null
     ? null
     : toCents(computeLineTotal(l.quantity, l.unitPrice)) - toCents(computeLineTotal(l.quantity, l.unitCost));

@@ -15,6 +15,7 @@ import { Dialog } from '../shared/Dialog';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { runAction, handleActionError } from '@/lib/runAction';
 import { navigateTo } from '@/lib/navigation';
+import { formatCurrency } from '@/lib/i18n/format';
 
 /**
  * AI for Office — per-org provisioning status + onboarding wizard (spec §9.1).
@@ -48,7 +49,7 @@ interface OrgsTabProps {
 const ENTRA_TENANT_GUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-const formatCost = (cents: number) => `$${(cents / 100).toFixed(2)}`;
+const formatCost = (cents: number) => formatCurrency(cents / 100);
 
 /** Spec §9.1 status chip: not provisioned / consent pending / active. */
 function StatusChip({ status }: { status: OrgStatusRow['consentStatus'] }) {

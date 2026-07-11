@@ -15,6 +15,7 @@ import {
   ChevronRight as ChevronRightIcon
 } from 'lucide-react';
 import { cn, widthPercentClass } from '@/lib/utils';
+import { formatPercent } from '@/lib/i18n/format';
 
 export type ComplianceStatus = 'compliant' | 'non_compliant' | 'unknown';
 
@@ -212,13 +213,13 @@ function TrendChart({ trend }: { trend: ComplianceTrend[] }) {
         {trendDirection === 'up' && (
           <>
             <TrendingUp className="h-4 w-4 text-green-500" />
-            <span className="text-sm text-green-600">+{(lastPercent - firstPercent).toFixed(1)}%</span>
+            <span className="text-sm text-green-600">+{formatPercent((lastPercent - firstPercent) / 100, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</span>
           </>
         )}
         {trendDirection === 'down' && (
           <>
             <TrendingDown className="h-4 w-4 text-red-500" />
-            <span className="text-sm text-red-600">{(lastPercent - firstPercent).toFixed(1)}%</span>
+            <span className="text-sm text-red-600">{formatPercent((lastPercent - firstPercent) / 100, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</span>
           </>
         )}
         {trendDirection === 'flat' && (

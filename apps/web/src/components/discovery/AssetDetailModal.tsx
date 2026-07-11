@@ -9,6 +9,7 @@ import { extractApiError } from '../../lib/apiError';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { buildRemoteProxyPageUrl } from '@/lib/remoteTunnelUrls';
 import { isManualLink, type DiscoveredAssetLinkSource } from './networkTypes';
+import { formatNumber } from '@/lib/i18n/format';
 
 export type AssetDetail = DiscoveredAsset & {
   openPorts?: OpenPortEntry[];
@@ -415,7 +416,7 @@ export default function AssetDetailModal({
                     {asset.responseTimeMs != null
                       ? asset.responseTimeMs < 1
                         ? '<1 ms'
-                        : `${asset.responseTimeMs.toFixed(1)} ms`
+                        : `${formatNumber(asset.responseTimeMs, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} ms`
                       : '—'}
                   </dd>
                 </div>

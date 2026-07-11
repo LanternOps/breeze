@@ -7,6 +7,7 @@ import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
 import { computeMarginBreakdown, priceFromCostMarkup, formatMarginSummary } from './marginMath';
+import { formatNumber } from '@/lib/i18n/format';
 
 const MASKED = '********';
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
@@ -429,11 +430,11 @@ function TdSynnexEcExpressPanel() {
                 <div className="grid gap-2 text-sm sm:grid-cols-3">
                   <div>
                     <div className="text-xs text-muted-foreground">Your cost</div>
-                    <div>{product.cost !== null ? `${product.currency ?? 'USD'} ${product.cost.toFixed(2)}` : 'N/A'}</div>
+                    <div>{product.cost !== null ? `${product.currency ?? 'USD'} ${formatNumber(product.cost, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : 'N/A'}</div>
                   </div>
                   <div>
                     <div className="text-xs text-muted-foreground">MSRP</div>
-                    <div>{product.msrp !== null ? `${product.currency ?? 'USD'} ${product.msrp.toFixed(2)}` : 'N/A'}</div>
+                    <div>{product.msrp !== null ? `${product.currency ?? 'USD'} ${formatNumber(product.msrp, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : 'N/A'}</div>
                   </div>
                   <div>
                     <div className="text-xs text-muted-foreground">Total available</div>

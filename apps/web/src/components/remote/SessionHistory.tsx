@@ -17,6 +17,7 @@ import {
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '@/stores/auth';
 import { formatDateTime as formatUserDateTime, formatTime as formatUserTime } from '@/lib/dateTimeFormat';
+import { formatNumber } from '@/lib/i18n/format';
 
 const DATE_LOCALE = 'en-US';
 const DATE_TIME_ZONE = 'UTC';
@@ -95,9 +96,9 @@ function formatDuration(seconds?: number): string {
 function formatBytes(bytes?: number): string {
   if (bytes === undefined || bytes === null || bytes === 0) return '-';
   if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  if (bytes < 1024 * 1024) return `${formatNumber(bytes / 1024, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${formatNumber(bytes / (1024 * 1024), { minimumFractionDigits: 1, maximumFractionDigits: 1 })} MB`;
+  return `${formatNumber(bytes / (1024 * 1024 * 1024), { minimumFractionDigits: 2, maximumFractionDigits: 2 })} GB`;
 }
 
 // Format date/time

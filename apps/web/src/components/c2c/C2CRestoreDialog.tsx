@@ -13,6 +13,7 @@ import { cn } from '@/lib/utils';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
+import { formatNumber } from '@/lib/i18n/format';
 
 type C2CItem = {
   id: string;
@@ -49,7 +50,8 @@ function formatBytes(bytes: number | null): string {
   if (!bytes) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
   const exp = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  return `${(bytes / 1024 ** exp).toFixed(exp === 0 ? 0 : 1)} ${units[exp]}`;
+  const precision = exp === 0 ? 0 : 1;
+  return `${formatNumber(bytes / 1024 ** exp, { minimumFractionDigits: precision, maximumFractionDigits: precision })} ${units[exp]}`;
 }
 
 function formatDate(value: string | null): string {

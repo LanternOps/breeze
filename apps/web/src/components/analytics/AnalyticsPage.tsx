@@ -8,6 +8,7 @@ import SLAComplianceCard from './SLAComplianceCard';
 import ExecutiveSummary, { type ExecutiveSummaryProps } from './ExecutiveSummary';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatTime } from '@/lib/dateTimeFormat';
+import { formatPercent } from '@/lib/i18n/format';
 
 const dashboardOptions = [
   { value: 'operations', label: 'Operations Overview' },
@@ -583,7 +584,7 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
         title: 'Uptime',
         type: 'summary',
         data: {
-          value: `${summaryMetrics.uptime.toFixed(2)}%`,
+          value: formatPercent(summaryMetrics.uptime / 100, { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
           label: 'Fleet uptime',
           change: summaryMetrics.uptimeChange,
           changeLabel: summaryMetrics.uptimeChangeLabel

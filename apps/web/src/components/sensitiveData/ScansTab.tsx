@@ -4,6 +4,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { SCAN_STATUS_COLORS } from './constants';
 import CreateScanModal from './CreateScanModal';
 import { formatDateTime } from '@/lib/dateTimeFormat';
+import { formatNumber } from '@/lib/i18n/format';
 
 type Scan = {
   id: string;
@@ -55,7 +56,7 @@ export default function ScansTab() {
     if (!end) return 'Running...';
     const ms = new Date(end).getTime() - new Date(start).getTime();
     if (ms < 1000) return `${ms}ms`;
-    if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+    if (ms < 60000) return `${formatNumber(ms / 1000, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}s`;
     return `${Math.round(ms / 60000)}m`;
   };
 

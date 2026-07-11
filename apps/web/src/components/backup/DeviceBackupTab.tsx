@@ -14,6 +14,7 @@ import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import { friendlyFetchError } from '../../lib/utils';
 import BackupVerificationTab from './BackupVerificationTab';
+import { formatNumber } from '@/lib/i18n/format';
 import DeviceVaultStatus from './DeviceVaultStatus';
 import AlphaBadge from '../shared/AlphaBadge';
 
@@ -90,7 +91,7 @@ function formatBytes(bytes: number | null | undefined): string {
   const k = 1024;
   const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
+  return `${formatNumber(bytes / Math.pow(k, i), { maximumFractionDigits: 1 })} ${sizes[i]}`;
 }
 
 function formatTime(iso: string | null | undefined): string {

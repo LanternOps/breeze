@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { cn, formatNumber, formatRelativeTime } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import { formatCurrency, formatNumber as formatLocaleNumber } from '@/lib/i18n/format';
 
 type Device = {
   id?: string | number;
@@ -124,16 +125,6 @@ const deviceStatusStyles: Record<DeviceStatus, { label: string; badge: string }>
     badge: 'bg-muted text-muted-foreground border-border'
   }
 };
-
-const currencyFormatter = new Intl.NumberFormat('en-US', {
-  style: 'currency',
-  currency: 'USD',
-  maximumFractionDigits: 0
-});
-
-const percentFormatter = new Intl.NumberFormat('en-US', {
-  maximumFractionDigits: 0
-});
 
 function parseNumber(value: unknown): number | null {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -484,7 +475,7 @@ export default function PartnerDashboard() {
                           <span className="text-muted-foreground">•</span>
                           <span>
                             {customer.healthScore !== null
-                              ? `${percentFormatter.format(customer.healthScore)} health score`
+                              ? `${formatLocaleNumber(customer.healthScore, { maximumFractionDigits: 0 })} health score`
                               : 'Health score unavailable'}
                           </span>
                         </div>
@@ -517,7 +508,7 @@ export default function PartnerDashboard() {
                           <span className="text-muted-foreground">Compliance</span>
                         </div>
                         <p className="mt-2 text-sm font-semibold">
-                          {percentFormatter.format(customer.compliance)}%
+                          {formatLocaleNumber(customer.compliance, { maximumFractionDigits: 0 })}%
                         </p>
                       </div>
                     </div>
@@ -569,7 +560,7 @@ export default function PartnerDashboard() {
                         </div>
                       </td>
                       <td className="px-3 py-2 text-right text-sm font-semibold text-foreground">
-                        {currencyFormatter.format(customer.mrr)}
+                        {formatCurrency(customer.mrr, 'USD', { maximumFractionDigits: 0 })}
                       </td>
                     </tr>
                   ))}
@@ -580,7 +571,7 @@ export default function PartnerDashboard() {
             <div className="mt-4 flex items-center justify-between text-sm">
               <span className="text-muted-foreground">Total MRR</span>
               <span className="font-semibold text-foreground">
-                {currencyFormatter.format(totalMrr)}
+                {formatCurrency(totalMrr, 'USD', { maximumFractionDigits: 0 })}
               </span>
             </div>
           </div>
@@ -689,7 +680,7 @@ export default function PartnerDashboard() {
                       {formatNumber(device.alerts)}
                     </td>
                     <td className="px-4 py-3 text-right text-foreground">
-                      {percentFormatter.format(device.compliance)}%
+                      {formatLocaleNumber(device.compliance, { maximumFractionDigits: 0 })}%
                     </td>
                     <td className="px-4 py-3 text-right text-muted-foreground">
                       {device.lastSeen}

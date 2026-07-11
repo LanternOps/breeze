@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { fetchWithAuth, AuthSessionExpiredError } from '../../stores/auth';
 import { Dialog } from '../shared/Dialog';
 import LinkSubscriptionPicker from '../integrations/LinkSubscriptionPicker';
+import { formatNumber } from '@/lib/i18n/format';
 
 interface Pax8Subscription {
   id: string;
@@ -22,7 +23,7 @@ function sellPriceLabel(unitPrice: string | null, currencyCode: string | null): 
   if (unitPrice == null) return null;
   const n = Number.parseFloat(unitPrice);
   if (!Number.isFinite(n) || n <= 0) return null;
-  return `${currencyCode ?? 'USD'} ${n.toFixed(2)}/ea`;
+  return `${currencyCode ?? 'USD'} ${formatNumber(n, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}/ea`;
 }
 
 interface Props {

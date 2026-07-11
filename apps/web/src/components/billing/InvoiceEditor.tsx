@@ -14,6 +14,7 @@ import {
 import CatalogItemPicker from '../catalog/CatalogItemPicker';
 import PolishButton from '../catalog/PolishButton';
 import { listCatalog, type CatalogItem } from '../../lib/api/catalog';
+import { formatPercent } from '@/lib/i18n/format';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -438,7 +439,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Summary</h3>
             <dl className="space-y-1 text-sm">
               <div className="flex justify-between"><dt className="text-muted-foreground">Subtotal</dt><dd data-testid="invoice-subtotal">{formatMoney(invoice.subtotal, currency)}</dd></div>
-              <div className="flex justify-between"><dt className="text-muted-foreground">Tax{!noTaxRate ? ` (${(Number(invoice.taxRate) * 100).toFixed(2)}%)` : ''}</dt><dd data-testid="invoice-tax">{formatMoney(invoice.taxTotal, currency)}</dd></div>
+              <div className="flex justify-between"><dt className="text-muted-foreground">Tax{!noTaxRate ? ` (${formatPercent(Number(invoice.taxRate), { minimumFractionDigits: 2, maximumFractionDigits: 2 })})` : ''}</dt><dd data-testid="invoice-tax">{formatMoney(invoice.taxTotal, currency)}</dd></div>
               <div className="flex justify-between border-t pt-1 font-semibold"><dt>Total</dt><dd data-testid="invoice-total">{formatMoney(invoice.total, currency)}</dd></div>
             </dl>
             {hasTaxableLine && noTaxRate && (

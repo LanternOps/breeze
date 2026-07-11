@@ -29,6 +29,7 @@ import {
   ChevronDown,
   ChevronUp
 } from 'lucide-react';
+import { formatNumber } from '@/lib/i18n/format';
 import { cn, leftPxClass, topPxClass, widthPercentClass } from '@/lib/utils';
 import { fetchWithAuth } from '@/stores/auth';
 import { buildBreadcrumbs, getParentPath, isPathRoot, joinRemotePath } from './filePathUtils';
@@ -179,10 +180,10 @@ function formatSize(bytes?: number): string {
   if (bytes === undefined || bytes === null) return '-';
   if (bytes === 0) return '0 B';
   if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  if (bytes < 1024 * 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-  return `${(bytes / (1024 * 1024 * 1024 * 1024)).toFixed(2)} TB`;
+  if (bytes < 1024 * 1024) return `${formatNumber(bytes / 1024, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${formatNumber(bytes / (1024 * 1024), { minimumFractionDigits: 1, maximumFractionDigits: 1 })} MB`;
+  if (bytes < 1024 * 1024 * 1024 * 1024) return `${formatNumber(bytes / (1024 * 1024 * 1024), { minimumFractionDigits: 2, maximumFractionDigits: 2 })} GB`;
+  return `${formatNumber(bytes / (1024 * 1024 * 1024 * 1024), { minimumFractionDigits: 2, maximumFractionDigits: 2 })} TB`;
 }
 
 function normalizeHierarchyPath(path: string): string {

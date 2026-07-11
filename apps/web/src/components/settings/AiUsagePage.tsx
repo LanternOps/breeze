@@ -3,6 +3,7 @@ import { Bot, DollarSign, Flag, MessageSquare, Zap, Save, Loader2, Lock } from '
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { formatDateTime } from '@/lib/dateTimeFormat';
+import { formatCurrency, formatNumber } from '@/lib/i18n/format';
 
 interface UsageData {
   daily: { inputTokens: number; outputTokens: number; totalCostCents: number; messageCount: number };
@@ -165,8 +166,8 @@ export default function AiUsagePage() {
     );
   }
 
-  const formatCost = (cents: number) => `$${(cents / 100).toFixed(2)}`;
-  const formatTokens = (n: number) => n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1_000 ? `${(n / 1_000).toFixed(1)}K` : String(n);
+  const formatCost = (cents: number) => formatCurrency(cents / 100);
+  const formatTokens = (n: number) => n >= 1_000_000 ? `${formatNumber(n / 1_000_000, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}M` : n >= 1_000 ? `${formatNumber(n / 1_000, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}K` : formatNumber(n);
 
   return (
     <div className="space-y-6">

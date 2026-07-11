@@ -1,5 +1,6 @@
 import { AlertTriangle, CheckCircle, XCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { formatPercent } from '@/lib/i18n/format';
 
 type SLAComplianceCardProps = {
   uptime: number;
@@ -48,13 +49,13 @@ export default function SLAComplianceCard({
       </div>
       <div className="mt-4">
         <div className="text-3xl font-semibold">
-          {uptime.toFixed(2)}%
+          {formatPercent(uptime / 100, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
         </div>
         <div className="text-xs text-muted-foreground">Target {target}% uptime</div>
       </div>
       <div className="mt-4 flex items-center justify-between text-xs text-muted-foreground">
         <span>{incidents} incidents</span>
-        <span>Downtime {Math.max(0, (100 - uptime)).toFixed(2)}%</span>
+        <span>Downtime {formatPercent(Math.max(0, 100 - uptime) / 100, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
       </div>
     </div>
   );

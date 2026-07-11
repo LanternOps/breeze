@@ -10,6 +10,7 @@ import { CreateVulnTicketModal } from './CreateVulnTicketModal';
 import { usePermissions } from '../../lib/permissions';
 import { handleActionError } from '../../lib/runAction';
 import { plural } from '../../lib/utils';
+import { formatPercent } from '@/lib/i18n/format';
 import {
   bulkAcceptVulnRisk,
   bulkMitigateVulns,
@@ -24,7 +25,7 @@ const ACTION_BTN =
   'inline-flex items-center rounded-md border px-3 py-1.5 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50';
 
 function fmtEpss(value: number | null): string {
-  return value === null ? '—' : `${(value * 100).toFixed(1)}%`;
+  return value === null ? '—' : formatPercent(value, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 }
 
 export function SoftwareGroupDrawer({

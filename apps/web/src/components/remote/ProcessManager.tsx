@@ -13,6 +13,7 @@ import {
   ChevronRight
 } from 'lucide-react';
 import { cn, widthPercentClass } from '@/lib/utils';
+import { formatNumber, formatPercent } from '@/lib/i18n/format';
 
 export type ProcessStatus = 'running' | 'sleeping' | 'stopped' | 'zombie' | 'idle';
 
@@ -60,9 +61,9 @@ const statusLabels: Record<ProcessStatus, string> = {
 };
 
 function formatMemory(mb: number): string {
-  if (mb < 1) return (mb * 1024).toFixed(0) + ' KB';
-  if (mb < 1024) return mb.toFixed(1) + ' MB';
-  return (mb / 1024).toFixed(2) + ' GB';
+  if (mb < 1) return formatNumber(mb * 1024, { maximumFractionDigits: 0 }) + ' KB';
+  if (mb < 1024) return formatNumber(mb, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + ' MB';
+  return formatNumber(mb / 1024, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' GB';
 }
 
 function formatStartTime(dateString?: string): string {
@@ -151,7 +152,7 @@ export default function ProcessManager({
     const totalMemory = processes.reduce((sum, p) => sum + p.memoryMb, 0);
     return {
       totalProcesses: processes.length,
-      totalCpu: Math.min(totalCpu, 100).toFixed(1),
+      totalCpu: formatNumber(Math.min(totalCpu, 100), { minimumFractionDigits: 1, maximumFractionDigits: 1 }),
       totalMemory: formatMemory(totalMemory)
     };
   }, [processes]);
@@ -428,7 +429,7 @@ export default function ProcessManager({
                             />
                           </div>
                           <span className="w-12 text-right text-sm">
-                            {proc.cpuPercent.toFixed(1)}%
+                            {formatPercent(proc.cpuPercent / 100, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}
                           </span>
                         </div>
                       </td>
@@ -546,7 +547,7 @@ export default function ProcessManager({
                 </div>
                 <div>
                   <span className="text-muted-foreground">CPU:</span>{' '}
-                  <span>{processToKill.cpuPercent.toFixed(1)}%</span>
+                  <span>{formatPercent(processToKill.cpuPercent / 100, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</span>
                 </div>
               </div>
             </div>

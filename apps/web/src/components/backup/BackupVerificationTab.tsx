@@ -13,6 +13,7 @@ import {
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import { friendlyFetchError } from '../../lib/utils';
+import { formatNumber } from '@/lib/i18n/format';
 
 type VerificationType = 'integrity' | 'test_restore';
 type VerificationStatus = 'pending' | 'running' | 'passed' | 'failed' | 'partial';
@@ -68,8 +69,8 @@ function formatDuration(seconds: number | null | undefined): string {
 function formatBytes(bytes: number | null | undefined): string {
   if (bytes == null) return '-';
   if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes < 1024 * 1024) return `${formatNumber(bytes / 1024, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} KB`;
+  return `${formatNumber(bytes / (1024 * 1024), { minimumFractionDigits: 1, maximumFractionDigits: 1 })} MB`;
 }
 
 function readinessColor(score: number): string {

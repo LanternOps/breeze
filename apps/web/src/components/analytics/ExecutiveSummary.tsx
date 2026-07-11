@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { AlertTriangle, CheckCircle, TrendingDown, TrendingUp } from 'lucide-react';
 import { ResponsiveContainer, LineChart, Line } from 'recharts';
 import { cn, formatNumber } from '@/lib/utils';
+import { formatPercent } from '@/lib/i18n/format';
 
 type ExecutiveSummaryProps = {
   totalDevices?: number;
@@ -40,7 +41,7 @@ export default function ExecutiveSummary({
           </div>
           <div className="text-right text-xs text-muted-foreground">
             <p>Uptime</p>
-            <p className="text-base font-semibold text-foreground">{uptimeRate.toFixed(1)}%</p>
+            <p className="text-base font-semibold text-foreground">{formatPercent(uptimeRate / 100, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</p>
           </div>
         </div>
         <div className="grid gap-3 sm:grid-cols-3">
@@ -72,7 +73,7 @@ export default function ExecutiveSummary({
               )}
             >
               {alertsTrend.change <= 0 ? <TrendingDown className="h-3 w-3" /> : <TrendingUp className="h-3 w-3" />}
-              {Math.abs(alertsTrend.change).toFixed(1)}%
+              {formatPercent(Math.abs(alertsTrend.change) / 100, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}
             </div>
           </div>
           <div className="flex items-center gap-3">

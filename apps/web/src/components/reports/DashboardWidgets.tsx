@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { cn, widthPercentClass } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import { formatPercent } from '@/lib/i18n/format';
 import AccessDenied from '../shared/AccessDenied';
 import { formatTime } from '@/lib/dateTimeFormat';
 
@@ -285,7 +286,7 @@ export default function DashboardWidgets({
             <div className="flex items-center justify-between">
               <Monitor className="h-5 w-5 text-muted-foreground" />
               <span className="text-xs text-muted-foreground">
-                {((deviceStatus.online / (deviceStatus.total || 1)) * 100).toFixed(0)}% online
+                {formatPercent(deviceStatus.online / (deviceStatus.total || 1), { maximumFractionDigits: 0 })} online
               </span>
             </div>
             <div className="mt-4">

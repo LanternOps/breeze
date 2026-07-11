@@ -10,6 +10,7 @@ import {
   STATUS_COLORS,
 } from './constants';
 import RemediationModal from './RemediationModal';
+import { formatPercent } from '@/lib/i18n/format';
 
 type Finding = {
   id: string;
@@ -234,7 +235,7 @@ export default function FindingsTab() {
                       {f.risk}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-xs">{(f.confidence * 100).toFixed(0)}%</td>
+                  <td className="px-4 py-3 text-xs">{formatPercent(f.confidence, { maximumFractionDigits: 0 })}</td>
                   <td className="px-4 py-3">
                     <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium capitalize ${STATUS_COLORS[f.status] ?? ''}`}>
                       {f.status.replace('_', ' ')}

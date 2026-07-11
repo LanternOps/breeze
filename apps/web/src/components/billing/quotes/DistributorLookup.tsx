@@ -2,6 +2,7 @@
 import { useState } from 'react';
 import { ecExpressLookup, sellPriceDefault, type EcProduct } from '../../../lib/api/distributors';
 import { computeMarginBreakdown, formatMarginSummary } from '../../settings/marginMath';
+import { formatNumber } from '@/lib/i18n/format';
 
 function toMoney(value: string): number | null {
   if (!value.trim()) return null;
@@ -83,8 +84,8 @@ export default function DistributorLookup({ blockId, busy, onImportAdd }: Distri
             <div className="font-medium">{p.name}</div>
             <div className="text-xs text-muted-foreground">
               SKU {p.synnexSku}{p.status ? ` · ${p.status}` : ''}
-              {p.cost != null ? ` · cost ${p.currency ?? 'USD'} ${p.cost.toFixed(2)}` : ''}
-              {p.msrp != null ? ` · MSRP ${p.msrp.toFixed(2)}` : ''}
+              {p.cost != null ? ` · cost ${p.currency ?? 'USD'} ${formatNumber(p.cost, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : ''}
+              {p.msrp != null ? ` · MSRP ${formatNumber(p.msrp, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : ''}
               {p.totalQty != null ? ` · ${p.totalQty} avail` : ''}
             </div>
             <div className="mt-2 flex items-center gap-2">

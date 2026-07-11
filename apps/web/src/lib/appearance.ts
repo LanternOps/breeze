@@ -95,33 +95,33 @@ export function normalizeLinkedProfileCollapse(value: unknown): LinkedProfileCol
 }
 
 function readStorageValue(key: string): string | null {
-  if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') {
+  if (typeof window === 'undefined') {
     return null;
   }
   try {
-    return window.localStorage.getItem(key);
+    return window.localStorage?.getItem(key) ?? null;
   } catch {
     return null;
   }
 }
 
 function writeStorageValue(key: string, value: string): void {
-  if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') {
+  if (typeof window === 'undefined') {
     return;
   }
   try {
-    window.localStorage.setItem(key, value);
+    window.localStorage?.setItem(key, value);
   } catch {
     // Quota / SecurityError: ignore. The DOM-applied value still takes effect.
   }
 }
 
 function removeStorageValue(key: string): void {
-  if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') {
+  if (typeof window === 'undefined') {
     return;
   }
   try {
-    window.localStorage.removeItem(key);
+    window.localStorage?.removeItem(key);
   } catch {
     // Storage unavailable: the runtime resolution still uses browser defaults.
   }

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Coins } from 'lucide-react';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { cn, widthPercentClass } from '@/lib/utils';
+import { formatCurrency } from '@/lib/i18n/format';
 
 interface UsageData {
   daily: { totalCostCents: number; messageCount: number };
@@ -72,8 +73,8 @@ export default function AiCostIndicator({ enabled = true }: AiCostIndicatorProps
   const percentage = monthlyBudget ? Math.min((monthlyUsed / monthlyBudget) * 100, 100) : 0;
 
   const costDisplay = monthlyBudget
-    ? `$${(monthlyUsed / 100).toFixed(2)} / $${(monthlyBudget / 100).toFixed(2)}`
-    : `$${(monthlyUsed / 100).toFixed(2)} this month`;
+    ? `${formatCurrency(monthlyUsed / 100)} / ${formatCurrency(monthlyBudget / 100)}`
+    : `${formatCurrency(monthlyUsed / 100)} this month`;
 
   const barColor = percentage > 90 ? 'bg-red-500' : percentage > 70 ? 'bg-yellow-500' : 'bg-primary';
 

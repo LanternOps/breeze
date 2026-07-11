@@ -7,16 +7,18 @@
 // Money fields arrive from the API as numeric(12,2) *dollar* strings
 // (e.g. '123.40') — these format dollars, NOT cents.
 
+import { formatCurrency, formatNumber } from '@/lib/i18n/format';
+
 /** Currency-aware money formatter (invoices/quotes/contracts carry their own
  *  currencyCode, unlike the USD-only lib/timeFormat.formatMoney). */
 export function formatMoney(value: string | number | null | undefined, currencyCode = 'USD'): string {
   const n = typeof value === 'number' ? value : Number(value);
   const safe = Number.isFinite(n) ? n : 0;
   try {
-    return safe.toLocaleString('en-US', { style: 'currency', currency: currencyCode || 'USD' });
+    return formatCurrency(safe, currencyCode || 'USD');
   } catch {
     // Unknown/invalid currency code → fall back to plain 2-decimal + code suffix.
-    return `${safe.toFixed(2)} ${currencyCode || ''}`.trim();
+    return `${formatNumber(safe, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currencyCode || ''}`.trim();
   }
 }
 

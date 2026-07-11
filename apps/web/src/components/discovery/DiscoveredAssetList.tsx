@@ -4,6 +4,7 @@ import AssetDetailModal, { type AssetDetail } from './AssetDetailModal';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
+import { formatNumber } from '@/lib/i18n/format';
 import {
   parseDiscoveredAssetLinkSource,
   parseDiscoveredAssetTypeSource,
@@ -140,7 +141,7 @@ function formatLastSeen(value?: string, timezone?: string) {
 function formatPing(ms?: number | null) {
   if (ms == null) return '—';
   if (ms < 1) return '<1 ms';
-  return `${ms.toFixed(1)} ms`;
+  return `${formatNumber(ms, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} ms`;
 }
 
 function pingColor(ms?: number | null) {

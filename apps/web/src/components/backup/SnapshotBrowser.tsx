@@ -14,6 +14,7 @@ import {
 import { cn, marginLeftPxClass } from '@/lib/utils';
 import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
+import { formatNumber } from '@/lib/i18n/format';
 
 type TreeNode = {
   id: string;
@@ -96,7 +97,8 @@ function formatBytes(bytes: number | null | undefined): string {
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
   const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   const value = bytes / (1024 ** exponent);
-  return `${value.toFixed(value >= 10 || exponent === 0 ? 0 : 1)} ${units[exponent]}`;
+  const precision = value >= 10 || exponent === 0 ? 0 : 1;
+  return `${formatNumber(value, { minimumFractionDigits: precision, maximumFractionDigits: precision })} ${units[exponent]}`;
 }
 
 function formatDateTime(value: string | null | undefined): string {

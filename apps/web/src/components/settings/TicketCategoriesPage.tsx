@@ -5,6 +5,7 @@ import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
 import { priorityConfig, type TicketPriority } from '../tickets/ticketConfig';
+import { formatCurrency } from '@/lib/i18n/format';
 
 interface Category {
   id: string;
@@ -83,7 +84,7 @@ function defaultsSummary(c: Category): string {
   if (c.defaultPriority) parts.push(priorityConfig[c.defaultPriority as TicketPriority]?.label ?? c.defaultPriority);
   if (c.responseSlaMinutes != null) parts.push(`${c.responseSlaMinutes}m response`);
   if (c.resolutionSlaMinutes != null) parts.push(`${c.resolutionSlaMinutes}m resolve`);
-  if (c.defaultHourlyRate) parts.push(`$${parseFloat(c.defaultHourlyRate).toFixed(2)}/h`);
+  if (c.defaultHourlyRate) parts.push(`${formatCurrency(parseFloat(c.defaultHourlyRate))}/h`);
   if (c.defaultBillable) parts.push('billable');
   else if (parts.length > 0) parts.push('non-billable');
   return parts.length > 0 ? parts.join(' · ') : '—';

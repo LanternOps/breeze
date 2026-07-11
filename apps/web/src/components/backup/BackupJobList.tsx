@@ -13,6 +13,7 @@ import {
 import { cn } from '@/lib/utils';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
+import { formatNumber } from '@/lib/i18n/format';
 
 type JobStatus = 'completed' | 'running' | 'failed' | 'queued' | 'cancelled';
 
@@ -105,7 +106,7 @@ function formatBytes(bytes: number): string {
     unitIndex += 1;
   }
   const precision = value >= 100 ? 0 : value >= 10 ? 1 : 2;
-  return `${value.toFixed(precision)} ${units[unitIndex]}`;
+  return `${formatNumber(value, { minimumFractionDigits: precision, maximumFractionDigits: precision })} ${units[unitIndex]}`;
 }
 
 function formatDuration(startedAt?: string | null, completedAt?: string | null): string {

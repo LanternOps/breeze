@@ -5,6 +5,7 @@ import { fetchWithAuth } from '@/stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { getSafeHttpHref } from '@/lib/safeHref';
 import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
+import { formatNumber } from '@/lib/i18n/format';
 
 type SessionHistoryPageProps = {
   limit?: number;
@@ -99,9 +100,9 @@ export default function SessionHistoryPage({ limit }: SessionHistoryPageProps) {
   const formatBytes = (bytes?: number) => {
     if (!bytes) return '-';
     if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+    if (bytes < 1024 * 1024) return `${formatNumber(bytes / 1024, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} KB`;
+    if (bytes < 1024 * 1024 * 1024) return `${formatNumber(bytes / (1024 * 1024), { minimumFractionDigits: 1, maximumFractionDigits: 1 })} MB`;
+    return `${formatNumber(bytes / (1024 * 1024 * 1024), { minimumFractionDigits: 2, maximumFractionDigits: 2 })} GB`;
   };
 
   const safeRecordingUrl = getSafeHttpHref(selectedSession?.recordingUrl);

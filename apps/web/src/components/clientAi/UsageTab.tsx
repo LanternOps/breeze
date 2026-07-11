@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight, Download, Loader2 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
+import { formatCurrency, formatNumber } from '@/lib/i18n/format';
 
 /**
  * AI for Office — usage & billing report (spec §8, §9.4). The CSV is the MSP's
@@ -38,9 +39,9 @@ function currentMonthKey(): string {
   return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
 }
 
-const formatCost = (cents: number) => `$${(cents / 100).toFixed(2)}`;
+const formatCost = (cents: number) => formatCurrency(cents / 100);
 const formatTokens = (n: number) =>
-  n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1_000 ? `${(n / 1_000).toFixed(1)}K` : String(n);
+  n >= 1_000_000 ? `${formatNumber(n / 1_000_000, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}M` : n >= 1_000 ? `${formatNumber(n / 1_000, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}K` : formatNumber(n);
 
 interface OrgGroup {
   orgId: string;
