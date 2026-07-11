@@ -2,16 +2,73 @@
 // entrypoint (db:migrate) that, via seed, gates on NODE_ENV. See #917 (L-6).
 import '../config/normalizeNodeEnv';
 import { createHash } from 'node:crypto';
+import { readdirSync } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
+import { discoverExtensions } from '../extensions/discovery';
 import { ensureAppRole } from './ensureAppRole';
 import { seed } from './seed';
 
 const MIGRATION_FILE_PATTERN = /^\d{4}-.*\.sql$/;
 // IMPORTANT: MIGRATION_TABLE is a hardcoded constant — never accept user input.
 const MIGRATION_TABLE = 'breeze_migrations';
+
+export interface PlannedMigration {
+  ledgerName: string;
+  filePath: string;
+}
+
+/** Core filenames (already discovered+sorted) + extension files, extensions last. */
+export function planMigrations(
+  coreFilenames: string[],
+  extensionsRoot?: string,
+): PlannedMigration[] {
+  const core: PlannedMigration[] = coreFilenames.map((filename) => ({
+    ledgerName: filename,
+    filePath: path.join(resolveMigrationsDir(), filename),
+  }));
+  const extensions: PlannedMigration[] = [];
+
+  for (const extension of discoverExtensions(extensionsRoot)) {
+    if (!extension.migrationsDir) continue;
+    const files = readdirSync(extension.migrationsDir)
+      .filter((name) => MIGRATION_FILE_PATTERN.test(name))
+      .sort((a, b) => a.localeCompare(b));
+    for (const filename of files) {
+      extensions.push({
+        ledgerName: `${extension.name}/${filename}`,
+        filePath: path.join(extension.migrationsDir, filename),
+      });
+    }
+  }
+
+  return [...core, ...extensions];
+}
+
+/** Split ledger rows into checksum-verifiable vs skip (absent extension). */
+export function partitionLedgerRows(
+  ledgerFilenames: string[],
+  extensionsRoot?: string,
+): { verify: string[]; skip: string[] } {
+  const presentExtensions = new Set(
+    discoverExtensions(extensionsRoot).map((extension) => extension.name),
+  );
+  const verify: string[] = [];
+  const skip: string[] = [];
+
+  for (const filename of ledgerFilenames) {
+    const slash = filename.indexOf('/');
+    if (slash === -1 || presentExtensions.has(filename.slice(0, slash))) {
+      verify.push(filename);
+    } else {
+      skip.push(filename);
+    }
+  }
+
+  return { verify, skip };
+}
 
 /**
  * Compute a SHA-256 hex hash of SQL content for checksum tracking.
@@ -331,6 +388,8 @@ export async function autoMigrate(): Promise<void> {
       return;
     }
 
+    const migrationPlan = planMigrations(allFiles);
+
     // ── 4. Load already-applied checksums ────────────────────────────────
     const applied = await loadApplied(client);
 
@@ -388,12 +447,22 @@ export async function autoMigrate(): Promise<void> {
     }
 
     // ── 6. Validate checksums for already-applied migrations ─────────────
-    for (const filename of allFiles) {
+    const { verify: ledgerRowsToVerify, skip: ledgerRowsToSkip } = partitionLedgerRows([
+      ...applied.keys(),
+    ]);
+    for (const filename of ledgerRowsToSkip) {
+      console.warn(
+        `[auto-migrate] skipping checksum for ${filename} — extension not present`,
+      );
+    }
+    const verifiableLedgerRows = new Set(ledgerRowsToVerify);
+    for (const migration of migrationPlan) {
+      const filename = migration.ledgerName;
+      if (!verifiableLedgerRows.has(filename)) continue;
       const priorChecksum = applied.get(filename);
       if (!priorChecksum) continue;
 
-      const sqlPath = path.join(migrationsDir, filename);
-      const content = await readFile(sqlPath, 'utf8');
+      const content = await readFile(migration.filePath, 'utf8');
       const currentChecksum = hashSql(content);
 
       if (priorChecksum !== currentChecksum) {
@@ -434,11 +503,11 @@ export async function autoMigrate(): Promise<void> {
 
     // ── 7. Apply pending migrations ──────────────────────────────────────
     let appliedCount = 0;
-    for (const filename of allFiles) {
+    for (const migration of migrationPlan) {
+      const filename = migration.ledgerName;
       if (applied.has(filename)) continue;
 
-      const sqlPath = path.join(migrationsDir, filename);
-      const content = await readFile(sqlPath, 'utf8');
+      const content = await readFile(migration.filePath, 'utf8');
       const checksum = hashSql(content);
 
       // Migrations marked with `-- @no-transaction` at the top run OUTSIDE

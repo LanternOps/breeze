@@ -1,8 +1,14 @@
+import { useState } from 'react';
+
 import AiChatMessages from '../ai/AiChatMessages';
 import AiChatInput from '../ai/AiChatInput';
 import AiContextBadge from '../ai/AiContextBadge';
 import AiCostIndicator from '../ai/AiCostIndicator';
+import CreateTicketFromChatModal, { type CreateTicketFromChatModalProps } from '../ai/CreateTicketFromChatModal';
+import { showToast } from '../shared/Toast';
+import { ActionError, handleActionError } from '@/lib/runAction';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
+import type { AiTicketDraft } from '@breeze/shared';
 import type { TabState } from '@/stores/workspaceStore';
 
 interface WorkspaceChatPanelProps {
@@ -18,10 +24,58 @@ export default function WorkspaceChatPanel({ tab }: WorkspaceChatPanelProps) {
     pauseAi,
     interruptResponse,
     clearError,
+    draftTicketFromChat,
+    saveTicketFromChat,
   } = useWorkspaceStore();
+
+  const [modalOpen, setModalOpen] = useState(false);
+  const [draft, setDraft] = useState<AiTicketDraft | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const hasAssistantMsg = tab.messages.some((m) => m.role === 'assistant');
+  const canCreateTicket = !!tab.sessionId && hasAssistantMsg;
+
+  const openTicketModal = async () => {
+    setBusy(true);
+    setModalOpen(true);
+    try {
+      setDraft(await draftTicketFromChat(tab.id));
+    } catch (err) {
+      console.error('[Workspace] Ticket draft failed; falling back to manual entry:', err);
+      setDraft(null);
+      showToast({ type: 'warning', message: "Couldn't auto-draft from this conversation — you can fill in the ticket manually." });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitTicket: CreateTicketFromChatModalProps['onSubmit'] = async (payload) => {
+    setBusy(true);
+    try {
+      await saveTicketFromChat(tab.id, { ...payload, priority: undefined });
+      setModalOpen(false);
+      setDraft(null);
+    } catch (err) {
+      if (err instanceof ActionError) return; // already toasted by runAction
+      handleActionError(err, 'Could not create the ticket.');
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
+      <div className="flex items-center justify-end border-b border-gray-200/50 px-4 py-1.5 dark:border-gray-700/50">
+        <button
+          type="button"
+          onClick={openTicketModal}
+          disabled={!canCreateTicket}
+          className="rounded px-2 py-1 text-xs font-medium text-blue-600 hover:bg-blue-50 disabled:opacity-40 dark:text-blue-400 dark:hover:bg-blue-950/40"
+        >
+          Create Ticket
+        </button>
+      </div>
+
       {/* Cost indicator */}
       <AiCostIndicator enabled />
 
@@ -69,6 +123,23 @@ export default function WorkspaceChatPanel({ tab }: WorkspaceChatPanelProps) {
         isStreaming={tab.isStreaming}
         isInterrupting={tab.isInterrupting}
       />
+
+      {modalOpen && (
+        <CreateTicketFromChatModal
+          key={draft ? 'draft' : 'manual'}
+          draft={draft}
+          orgName={draft?.orgName ?? null}
+          deviceHostname={draft?.deviceHostname ?? null}
+          busy={busy}
+          onCancel={() => {
+            if (!busy) {
+              setModalOpen(false);
+              setDraft(null);
+            }
+          }}
+          onSubmit={submitTicket}
+        />
+      )}
     </div>
   );
 }

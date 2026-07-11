@@ -26,6 +26,8 @@ import {
   TrendingUp,
   HeartPulse,
   ShieldCheck,
+  Link2,
+  Cloud,
 } from 'lucide-react';
 import { formatUptime } from '../../lib/utils';
 import type { Device, DeviceStatus } from './DeviceList';
@@ -36,6 +38,7 @@ import DeviceHardwareInventory from './DeviceHardwareInventory';
 import DeviceSoftwareInventory from './DeviceSoftwareInventory';
 import DevicePatchStatusTab from './DevicePatchStatusTab';
 import DeviceVulnerabilitiesTab from './DeviceVulnerabilitiesTab';
+import DeviceOneDriveTab from './DeviceOneDriveTab';
 import DeviceSecurityTab from './DeviceSecurityTab';
 import DeviceAlertHistory from './DeviceAlertHistory';
 import DeviceActivityFeed from './DeviceActivityFeed';
@@ -62,6 +65,7 @@ import DeviceAnomaliesPanel from './DeviceAnomaliesPanel';
 import DeviceReliabilityPanel from './DeviceReliabilityPanel';
 import DeviceMonitoringTab from './DeviceMonitoringTab';
 import DeviceComplianceTab from './DeviceComplianceTab';
+import DeviceLinkedProfilesTab from './DeviceLinkedProfilesTab';
 
 type Tab =
   | 'overview'
@@ -73,6 +77,7 @@ type Tab =
   | 'security'
   | 'management'
   | 'effective-config'
+  | 'onedrive'
   | 'alerts'
   | 'anomalies'
   | 'scripts'
@@ -88,6 +93,7 @@ type Tab =
   | 'playbooks'
   | 'peripherals'
   | 'backup'
+  | 'linked-profiles'
   | 'tickets';
 
 type DeviceDetailsProps = {
@@ -136,9 +142,9 @@ function formatLastSeen(dateString: string, timezone?: string): string {
 
 const VALID_TABS: Tab[] = [
   'overview', 'details', 'hardware', 'software', 'patches', 'vulnerabilities', 'security',
-  'management', 'effective-config', 'alerts', 'scripts', 'performance',
+  'management', 'effective-config', 'onedrive', 'alerts', 'scripts', 'performance',
   'anomalies', 'eventlog', 'monitoring', 'compliance', 'activities', 'connections', 'filesystem', 'ip-history',
-  'boot-performance', 'playbooks', 'peripherals', 'backup', 'tickets',
+  'boot-performance', 'playbooks', 'peripherals', 'backup', 'linked-profiles', 'tickets',
 ];
 
 function getTabFromHash(): Tab {
@@ -184,6 +190,7 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
     // --- Summary ---
     { id: 'overview', label: 'Overview', icon: <Monitor className="h-4 w-4" /> },
     { id: 'details', label: 'Details', icon: <Info className="h-4 w-4" />, title: 'OS, network, and system details' },
+    { id: 'linked-profiles', label: 'Linked Profiles', icon: <Link2 className="h-4 w-4" />, title: 'Multi-boot OS profiles linked to this machine' },
     // --- Monitoring ---
     { id: 'performance', label: 'Performance', icon: <Activity className="h-4 w-4" />, separator: true, title: 'CPU, RAM, and disk usage over time' },
     { id: 'alerts', label: 'Alerts', icon: <AlertTriangle className="h-4 w-4" />, title: 'Alert history for this device' },
@@ -202,6 +209,7 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
     { id: 'scripts', label: 'Scripts', icon: <Terminal className="h-4 w-4" />, separator: true, title: 'Script execution history' },
     { id: 'management', label: 'Management', icon: <Server className="h-4 w-4" />, title: 'Agent settings and device management' },
     { id: 'effective-config', label: 'Config', icon: <Layers className="h-4 w-4" />, title: 'Resolved configuration from all assigned policies' },
+    { id: 'onedrive', label: 'OneDrive', icon: <Cloud className="h-4 w-4" />, title: 'OneDrive/SharePoint sign-in, Known Folder Move, and library drift' },
     { id: 'security', label: 'Security', icon: <Shield className="h-4 w-4" /> },
     { id: 'playbooks', label: 'Playbooks', icon: <Activity className="h-4 w-4" />, title: 'Automated remediation playbook runs' },
     // --- History & Network ---
@@ -328,6 +336,10 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
         <DeviceInfoTab deviceId={device.id} />
       )}
 
+      {activeTab === 'linked-profiles' && (
+        <DeviceLinkedProfilesTab deviceId={device.id} />
+      )}
+
       {activeTab === 'hardware' && (
         <DeviceHardwareInventory deviceId={device.id} />
       )}
@@ -368,6 +380,10 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
 
       {activeTab === 'management' && (
         <DeviceManagementTab deviceId={device.id} />
+      )}
+
+      {activeTab === 'onedrive' && (
+        <DeviceOneDriveTab deviceId={device.id} />
       )}
 
       {activeTab === 'effective-config' && (

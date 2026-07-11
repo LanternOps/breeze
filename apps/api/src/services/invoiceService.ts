@@ -14,7 +14,7 @@ import { formatInvoiceNumber } from './invoiceNumbers';
 import { emitInvoiceEvent } from './invoiceEvents';
 import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
 import { gatherOrgTimeEntries, gatherOrgParts, gatherTicketBillables, type DraftLineSpec } from './invoiceAssembly';
-import { buildSellerSnapshot } from './sellerSnapshot';
+import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
 import { InvoiceServiceError } from './invoiceTypes';
 import type { InvoiceActor } from './invoiceTypes';
 import type { ManualLineInput, RecordPaymentInput } from '@breeze/shared';
@@ -372,6 +372,7 @@ export async function updateOrgBillingSettings(
   orgId: string,
   patch: {
     taxId?: string | null; taxExempt?: boolean; taxRate?: number | null;
+    billingContactEmail?: string | null; billingContactName?: string | null;
     billingAddressLine1?: string | null; billingAddressLine2?: string | null;
     billingAddressCity?: string | null; billingAddressRegion?: string | null;
     billingAddressPostalCode?: string | null; billingAddressCountry?: string | null;
@@ -383,6 +384,17 @@ export async function updateOrgBillingSettings(
   if (patch.taxId !== undefined) set.taxId = patch.taxId;
   if (patch.taxExempt !== undefined) set.taxExempt = patch.taxExempt;
   if (patch.taxRate !== undefined) set.taxRate = patch.taxRate === null ? null : Number(patch.taxRate).toFixed(5);
+  // billingContact is a jsonb bag other importers (e.g. QuickBooks) also write.
+  // Merge email/name in the DB with `||` (COALESCE handles a NULL start on a fresh
+  // org) so we never drop keys we don't model here AND never lose a concurrent
+  // writer's key to a read-modify-write race — the merge is one atomic statement,
+  // no pre-read round-trip. Only build it when a contact field is in the patch.
+  const contactPatch: Record<string, unknown> = {};
+  if (patch.billingContactEmail !== undefined) contactPatch.email = patch.billingContactEmail;
+  if (patch.billingContactName !== undefined) contactPatch.name = patch.billingContactName;
+  if (Object.keys(contactPatch).length > 0) {
+    set.billingContact = sql`COALESCE(${organizations.billingContact}, '{}'::jsonb) || ${JSON.stringify(contactPatch)}::jsonb`;
+  }
   if (patch.billingAddressLine1 !== undefined) set.billingAddressLine1 = patch.billingAddressLine1;
   if (patch.billingAddressLine2 !== undefined) set.billingAddressLine2 = patch.billingAddressLine2;
   if (patch.billingAddressCity !== undefined) set.billingAddressCity = patch.billingAddressCity;
@@ -391,6 +403,7 @@ export async function updateOrgBillingSettings(
   if (patch.billingAddressCountry !== undefined) set.billingAddressCountry = patch.billingAddressCountry;
   const [row] = await db.update(organizations).set(set).where(eq(organizations.id, orgId)).returning({
     id: organizations.id, taxId: organizations.taxId, taxExempt: organizations.taxExempt, taxRate: organizations.taxRate,
+    billingContact: organizations.billingContact,
     billingAddressLine1: organizations.billingAddressLine1, billingAddressLine2: organizations.billingAddressLine2,
     billingAddressCity: organizations.billingAddressCity, billingAddressRegion: organizations.billingAddressRegion,
     billingAddressPostalCode: organizations.billingAddressPostalCode, billingAddressCountry: organizations.billingAddressCountry,
@@ -497,11 +510,7 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
     // Recompute totals with the snapshotted rate, then write everything atomically.
     const lineRows = await db.select({ lineTotal: invoiceLines.lineTotal, taxable: invoiceLines.taxable, customerVisible: invoiceLines.customerVisible }).from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId));
     const { subtotal, taxTotal, total } = computeInvoiceTotals(lineRows, taxRate);
-    const billToAddress = {
-      line1: org?.billingAddressLine1 ?? null, line2: org?.billingAddressLine2 ?? null,
-      city: org?.billingAddressCity ?? null, region: org?.billingAddressRegion ?? null,
-      postalCode: org?.billingAddressPostalCode ?? null, country: org?.billingAddressCountry ?? null
-    };
+    const billToAddress = buildBillToAddress(org);
 
     await db.update(invoices).set({
       // status 'sent' is the lifecycle "issued/finalized" state. sentAt is left

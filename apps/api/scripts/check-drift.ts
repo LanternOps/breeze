@@ -42,6 +42,7 @@ import { readdirSync } from 'node:fs';
 import { dirname, join, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
+import { partitionLedgerRows, planMigrations } from '../src/db/autoMigrate';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const projectDir = resolvePath(scriptDir, '..');
@@ -86,13 +87,30 @@ async function main() {
       process.exit(1);
     }
 
-    const applied = new Set(ledger.map((r) => r.filename));
-    const missing = onDisk.filter((f) => !applied.has(f));
-    const extra = [...applied].filter((f) => !onDisk.includes(f));
+    const expected = planMigrations(onDisk).map((migration) => migration.ledgerName);
+    const { verify: ledgerVerifiable, skip: absentExtensionRows } = partitionLedgerRows(
+      ledger.map((row) => row.filename),
+    );
+
+    for (const row of absentExtensionRows) {
+      console.warn(
+        `[check-drift] WARN: ledger row "${row}" belongs to an extension not present on disk`,
+      );
+    }
+    if (absentExtensionRows.length > 0 && process.env.STRICT_EXTENSION_DRIFT === 'true') {
+      console.error(
+        '[check-drift] STRICT_EXTENSION_DRIFT=true — failing on absent-extension ledger rows',
+      );
+      process.exit(1);
+    }
+
+    const applied = new Set(ledgerVerifiable);
+    const missing = expected.filter((f) => !applied.has(f));
+    const extra = ledgerVerifiable.filter((f) => !expected.includes(f));
 
     if (missing.length === 0 && extra.length === 0) {
       console.log(
-        `No drift detected — all ${onDisk.length} migration files match the breeze_migrations ledger.`,
+        `No drift detected — all ${expected.length} migration files match the breeze_migrations ledger.`,
       );
       console.log(
         '(Schema-vs-live-DB structural drift is covered by integration + RLS coverage tests, not by this script.)',

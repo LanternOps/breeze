@@ -50,6 +50,9 @@ export const CSRF_HEADER_NAME = 'x-breeze-csrf';
 export const PORTAL_CSRF_COOKIE_NAME = 'breeze_portal_csrf_token';
 export const PORTAL_CSRF_COOKIE_PATH = '/';
 export const RESET_TTL_SECONDS = Math.floor(RESET_TTL_MS / 1000);
+export const INVITE_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 days
+export const INVITE_TTL_SECONDS = Math.floor(INVITE_TTL_MS / 1000);
+export const PORTAL_INVITE_TOKEN_CAP = 20000;
 
 export const PORTAL_USE_REDIS =
   process.env.PORTAL_STATE_BACKEND === 'redis' || process.env.NODE_ENV === 'production';
@@ -58,6 +61,7 @@ export const PORTAL_REDIS_KEYS = {
   session: (token: string) => `portal:session:${token}`,
   userSessions: (userId: string) => `portal:user-sessions:${userId}`,
   resetToken: (hash: string) => `portal:reset:${hash}`,
+  inviteToken: (hash: string) => `portal:invite:${hash}`,
   rlAttempts: (key: string) => `portal:rl:attempts:${key}`,
   rlBlock: (key: string) => `portal:rl:block:${key}`,
 };
@@ -102,6 +106,12 @@ export const forgotPasswordSchema = z.object({
 export const resetPasswordSchema = z.object({
   token: z.string().min(1),
   password: z.string().min(8)
+});
+
+export const acceptInviteSchema = z.object({
+  token: z.string().min(1),
+  password: z.string().min(8),
+  name: z.string().min(1).max(255).optional()
 });
 
 export const listSchema = z.object({

@@ -144,6 +144,7 @@ import { browserSecurityRoutes } from './routes/browserSecurity';
 import { c2cRoutes, m365CallbackRoute } from './routes/c2c';
 import { googleRoutes } from './routes/google';
 import { m365Routes } from './routes/m365';
+import { onedriveRoutes } from './routes/onedrive';
 import { drRoutes } from './routes/dr';
 import { adminRoutes } from './routes/admin';
 import { internalSyntheticRoutes } from './routes/internal/synthetic';
@@ -264,6 +265,7 @@ import { drainAuditRetryQueue } from './services/auditService';
 import { createCorsOriginResolver } from './services/corsOrigins';
 import { validateConfig } from './config/validate';
 import { autoMigrate } from './db/autoMigrate';
+import { mountExtensions } from './extensions/loader';
 import { syncBinaries } from './services/binarySync';
 import * as dbModule from './db';
 import { deviceGroups, devices, securityThreats, webhookDeliveries, webhooks as webhooksTable } from './db/schema';
@@ -923,6 +925,7 @@ api.route('/', m365CallbackRoute); // Public callback (no auth) — must precede
 api.route('/c2c', c2cRoutes);
 api.route('/google', googleRoutes);
 api.route('/m365', m365Routes);
+api.route('/onedrive', onedriveRoutes);
 api.route('/dr', drRoutes);
 api.route('/admin', adminRoutes);
 api.route('/admin', accountDeletionAdminRoutes);
@@ -1514,6 +1517,8 @@ async function bootstrap(): Promise<void> {
   if (process.env.AUTO_MIGRATE !== 'false') {
     await autoMigrate();
   }
+
+  await mountExtensions(app);
 
   try {
     await bootstrapPlatformAdmins();

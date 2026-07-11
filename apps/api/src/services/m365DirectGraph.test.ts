@@ -20,7 +20,8 @@ vi.mock('./c2cM365', () => ({
   isM365TenantId: (x: string) => /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(x),
 }));
 
-import { invokeDirect } from './m365DirectGraph';
+import { invokeDirect, getToken, clearTokenCache, TOKEN_CACHE_MAX } from './m365DirectGraph';
+import { acquireClientCredentialsToken } from './c2cM365';
 
 const GRAPH = 'https://graph.microsoft.com/v1.0';
 
@@ -37,6 +38,7 @@ function mockFetch(status: number, body: unknown) {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.unstubAllGlobals();
+  clearTokenCache();
 });
 
 describe('m365DirectGraph.invokeDirect endpoint mapping', () => {
@@ -100,4 +102,97 @@ describe('m365DirectGraph.invokeDirect endpoint mapping', () => {
     expect((res as { kind: 'error'; code: string }).code).toBe('bad_request');
     expect(f).not.toHaveBeenCalled();
   });
+});
+
+describe('getToken caching', () => {
+  it('a second call within the token expiry does not re-acquire', async () => {
+    const a = await getToken('org-1');
+    expect(a).toEqual({ token: 'TOKEN-123' });
+    const b = await getToken('org-1');
+    expect(b).toEqual({ token: 'TOKEN-123' });
+    expect(acquireClientCredentialsToken).toHaveBeenCalledTimes(1);
+  });
+
+  it('bounds the cached TTL at 30 minutes even though the token grants 60', async () => {
+    vi.useFakeTimers();
+    try {
+      await getToken('org-1');
+      vi.advanceTimersByTime(30 * 60 * 1000 - 1);
+      await getToken('org-1');
+      expect(acquireClientCredentialsToken).toHaveBeenCalledTimes(1); // still within the 30-min cap
+
+      vi.advanceTimersByTime(2);
+      await getToken('org-1');
+      expect(acquireClientCredentialsToken).toHaveBeenCalledTimes(2); // cap elapsed — re-acquired
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('applies the 60s skew to a token with a shorter expiry', async () => {
+    (acquireClientCredentialsToken as any).mockResolvedValueOnce({ accessToken: 'SHORT-1', expiresIn: 120 });
+    vi.useFakeTimers();
+    try {
+      const a = await getToken('org-1');
+      expect(a).toEqual({ token: 'SHORT-1' });
+
+      // 120s expiry - 60s skew = 60s cached TTL.
+      vi.advanceTimersByTime(60_000 - 1);
+      const b = await getToken('org-1');
+      expect(b).toEqual({ token: 'SHORT-1' }); // still cached
+      expect(acquireClientCredentialsToken).toHaveBeenCalledTimes(1);
+
+      (acquireClientCredentialsToken as any).mockResolvedValueOnce({ accessToken: 'SHORT-2', expiresIn: 120 });
+      vi.advanceTimersByTime(2);
+      const c = await getToken('org-1');
+      expect(c).toEqual({ token: 'SHORT-2' });
+      expect(acquireClientCredentialsToken).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('auth_failed drops any stale cache entry so a repaired secret is retried immediately', async () => {
+    vi.useFakeTimers();
+    try {
+      const a = await getToken('org-1');
+      expect(a).toEqual({ token: 'TOKEN-123' });
+      expect(acquireClientCredentialsToken).toHaveBeenCalledTimes(1);
+
+      // Let the cache expire, then simulate a broken secret on the next acquisition.
+      vi.advanceTimersByTime(30 * 60 * 1000 + 1);
+      (acquireClientCredentialsToken as any).mockRejectedValueOnce(new Error('invalid_client'));
+      const b = await getToken('org-1');
+      expect(b).toEqual({ kind: 'error', code: 'auth_failed', message: 'invalid_client' });
+      expect(acquireClientCredentialsToken).toHaveBeenCalledTimes(2);
+
+      // Secret is fixed — the very next call re-acquires rather than being blocked.
+      (acquireClientCredentialsToken as any).mockResolvedValueOnce({ accessToken: 'TOKEN-456', expiresIn: 3600 });
+      const c = await getToken('org-1');
+      expect(c).toEqual({ token: 'TOKEN-456' });
+      expect(acquireClientCredentialsToken).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('getToken cache bound', () => {
+  it('evicts the oldest entries once the cache exceeds TOKEN_CACHE_MAX', async () => {
+    const overflow = 5;
+    for (let i = 0; i < TOKEN_CACHE_MAX + overflow; i++) {
+      await getToken(`org-${i}`);
+    }
+    const callsAfterFill = (acquireClientCredentialsToken as any).mock.calls.length;
+    expect(callsAfterFill).toBe(TOKEN_CACHE_MAX + overflow);
+
+    // The earliest-inserted org key was evicted — asking again re-acquires.
+    await getToken('org-0');
+    expect((acquireClientCredentialsToken as any).mock.calls.length).toBe(callsAfterFill + 1);
+
+    // The most-recently-inserted org key is still cached — no additional call.
+    const callsAfterRefetch = (acquireClientCredentialsToken as any).mock.calls.length;
+    await getToken(`org-${TOKEN_CACHE_MAX + overflow - 1}`);
+    expect((acquireClientCredentialsToken as any).mock.calls.length).toBe(callsAfterRefetch);
+  }, 20_000);
 });

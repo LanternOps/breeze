@@ -338,6 +338,15 @@ describe('MCP bootstrap carve-out', () => {
     const names = listBody.result.tools.map((t: any) => t.name);
     expect(names).toContain('send_deployment_invites');
 
+    // Regression: the bootstrap tool's zod schema must convert to a JSON Schema
+    // that carries a `type`. The old hand-rolled converter switched on the
+    // zod-3 `_def.typeName` (removed in zod 4) and fell through to `{}`, which
+    // MCP clients reject — failing the ENTIRE tools/list (0 tools loaded).
+    const sendTool = listBody.result.tools.find(
+      (t: any) => t.name === 'send_deployment_invites',
+    );
+    expect(sendTool?.inputSchema?.type).toBe('object');
+
     // 2) tools/call dispatches to the handler with parsed input + ctx.apiKey.
     const callRes = await mod.mcpServerRoutes.request('/message', {
       method: 'POST',

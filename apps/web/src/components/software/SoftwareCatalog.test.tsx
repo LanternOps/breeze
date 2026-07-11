@@ -13,7 +13,12 @@ vi.mock('../shared/Toast', () => ({ showToast: (a: unknown) => showToast(a) }));
 
 // DeploymentWizard / SoftwareVersionManager pull in their own fetches; stub them
 // out so this test exercises only the catalog delete flow.
-vi.mock('./DeploymentWizard', () => ({ default: () => null }));
+// Probe echoes the preselected package id so we can assert per-card deploy preselect.
+vi.mock('./DeploymentWizard', () => ({
+  default: (props: { initialCatalogId?: string }) => (
+    <div data-testid="wizard">wizard:{props.initialCatalogId ?? 'none'}</div>
+  ),
+}));
 vi.mock('./SoftwareVersionManager', () => ({ default: () => null }));
 
 const fetchMock = vi.mocked(fetchWithAuth);
@@ -28,6 +33,7 @@ const jsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Res
 
 const ITEM = {
   id: 'cat-1',
+  orgId: 'org-1',
   name: 'TestApp',
   vendor: 'Acme',
   category: 'utility',
@@ -61,13 +67,43 @@ describe('SoftwareCatalog delete', () => {
     const confirmButtons = screen.getAllByRole('button', { name: /^Delete$/ });
     fireEvent.click(confirmButtons[confirmButtons.length - 1]);
 
+    // The item's own orgId must ride on the DELETE so a partner/system user in
+    // "All organizations" mode (no ambient orgId injected by fetchWithAuth) can
+    // still resolve which org's package to remove — otherwise the API answers
+    // "orgId is required for this scope" (resolveScopedOrgId).
     await waitFor(() =>
-      expect(fetchMock).toHaveBeenLastCalledWith('/software/catalog/cat-1', { method: 'DELETE' })
+      expect(fetchMock).toHaveBeenLastCalledWith('/software/catalog/cat-1?orgId=org-1', { method: 'DELETE' })
     );
 
     // Success toast + item removed from the grid.
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' })));
     await waitFor(() => expect(screen.queryByText('TestApp')).not.toBeInTheDocument());
+  });
+
+  it('deletes an org-less (partner-scoped) package with no orgId query param', async () => {
+    // A package the loader mapped with no orgId (DB org_id NULL) must DELETE to
+    // the bare URL — appending ?orgId=undefined would break the request. Guards
+    // against collapsing the conditional into an unconditional template.
+    const { orgId, ...orgLessItem } = ITEM;
+    void orgId;
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ data: [orgLessItem] })) // GET /software/catalog
+      .mockResolvedValueOnce(jsonResponse({ success: true, id: ITEM.id })); // DELETE
+
+    render(<SoftwareCatalog />);
+    await waitFor(() => expect(screen.getByText('TestApp')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('TestApp'));
+    const deleteButtons = await screen.findAllByRole('button', { name: /Delete/ });
+    fireEvent.click(deleteButtons[0]);
+    expect(await screen.findByText('Delete package?')).toBeInTheDocument();
+
+    const confirmButtons = screen.getAllByRole('button', { name: /^Delete$/ });
+    fireEvent.click(confirmButtons[confirmButtons.length - 1]);
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenLastCalledWith('/software/catalog/cat-1', { method: 'DELETE' })
+    );
   });
 
   it('does not call the API when the delete is cancelled', async () => {
@@ -102,31 +138,66 @@ const BUILTIN_ITEM = {
   partnerId: 'partner-1'
 };
 
+/** Route the catalog + readiness fetches by URL so test order is robust. */
+function routeBuiltin(items: unknown[], huntress?: unknown, s1?: unknown) {
+  fetchMock.mockImplementation((url: string) => {
+    if (url === '/software/catalog') return Promise.resolve(jsonResponse({ data: items }));
+    if (url.startsWith('/huntress/integration')) return Promise.resolve(jsonResponse({ data: huntress ?? null }));
+    if (url.startsWith('/s1/integration')) return Promise.resolve(jsonResponse({ data: s1 ?? null }));
+    return Promise.resolve(jsonResponse({ data: null }));
+  });
+}
+
+const HUNTRESS_READY = { isActive: true, hasAccountKey: true, lastSyncOrgs: 2 };
+
 describe('SoftwareCatalog built-in packages', () => {
   beforeEach(() => {
     fetchMock.mockReset();
     showToast.mockReset();
   });
 
-  it('renders a "Built-in · Huntress" badge for an integration package', async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ data: [BUILTIN_ITEM] }));
+  it('renders a branded "Built-in" chip and a Ready pill for a ready Huntress package', async () => {
+    routeBuiltin([BUILTIN_ITEM], HUNTRESS_READY);
 
     render(<SoftwareCatalog />);
 
-    expect(await screen.findByText(/Built-in · Huntress/)).toBeInTheDocument();
+    expect(await screen.findByText(/^Built-in$/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText(/^Ready$/)).toBeInTheDocument());
+    // The Huntress card no longer shows any installer-upload cue.
+    expect(screen.queryByText(/Upload installer/i)).not.toBeInTheDocument();
   });
 
-  it('hides Delete for a built-in package and shows the managed-by note instead', async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ data: [BUILTIN_ITEM] }));
+  it('opens the readiness detail panel (Managed built-in) with no Delete control', async () => {
+    routeBuiltin([BUILTIN_ITEM], HUNTRESS_READY);
 
     render(<SoftwareCatalog />);
     await waitFor(() => expect(screen.getByText('Huntress EDR Agent')).toBeInTheDocument());
 
     fireEvent.click(screen.getByText('Huntress EDR Agent'));
 
-    // Detail modal open: managed note present, no Delete control.
-    expect(await screen.findByText(/managed by the Huntress integration/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Managed built-in/i)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^Delete$/ })).not.toBeInTheDocument();
+  });
+
+  it('surfaces the account-key next step in the detail panel when Huntress is incomplete', async () => {
+    routeBuiltin([BUILTIN_ITEM], { isActive: true, hasAccountKey: false, lastSyncOrgs: 2 });
+
+    render(<SoftwareCatalog />);
+    await waitFor(() => expect(screen.getByText('Huntress EDR Agent')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('Huntress EDR Agent'));
+
+    expect(await screen.findByText(/Next step: Account key configured/i)).toBeInTheDocument();
+  });
+
+  it('preselects the package into the deploy wizard when Deploy is clicked', async () => {
+    routeBuiltin([BUILTIN_ITEM], HUNTRESS_READY);
+
+    render(<SoftwareCatalog />);
+    await waitFor(() => expect(screen.getByText('Huntress EDR Agent')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /^Deploy$/ }));
+    expect(await screen.findByTestId('wizard')).toHaveTextContent('wizard:builtin-huntress');
   });
 
   it('disables Deploy with an upload hint for a SentinelOne package that has no version', async () => {
@@ -141,7 +212,7 @@ describe('SoftwareCatalog built-in packages', () => {
       partnerId: 'partner-1',
       versionCount: 0
     };
-    fetchMock.mockResolvedValueOnce(jsonResponse({ data: [s1NoVersion] }));
+    routeBuiltin([s1NoVersion], undefined, { isActive: true });
 
     render(<SoftwareCatalog />);
     await waitFor(() => expect(screen.getByText('SentinelOne Agent')).toBeInTheDocument());
@@ -162,7 +233,7 @@ describe('SoftwareCatalog built-in packages', () => {
       partnerId: 'partner-1',
       versionCount: 1
     };
-    fetchMock.mockResolvedValueOnce(jsonResponse({ data: [s1WithVersion] }));
+    routeBuiltin([s1WithVersion], undefined, { isActive: true });
 
     render(<SoftwareCatalog />);
     await waitFor(() => expect(screen.getByText('SentinelOne Agent')).toBeInTheDocument());

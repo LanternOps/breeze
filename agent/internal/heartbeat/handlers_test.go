@@ -121,6 +121,9 @@ var allCommandTypes = []string{
 
 	// handlers_actuate.go init() — PAM Track 5
 	tools.CmdActuateElevation,
+
+	// handlers_encryption.go init()
+	tools.CmdEncryptionCollectKeys, tools.CmdEncryptionRotateKey,
 }
 
 func TestHandlerRegistryCompleteness(t *testing.T) {

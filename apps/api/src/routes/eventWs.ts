@@ -309,12 +309,18 @@ export function createEventWsTicketRoute(): Hono {
     }
 
     // Resolve orgId for partner/system users who pass it as a query param.
-    // When `allOrgs=1` is passed (or no specific org is requested), partner-
-    // scoped users get a ticket scoped to ALL their accessible orgs so a
-    // single connection can receive events for the full set without the
-    // client needing to multiplex tickets.
+    // When no specific org is requested, partner-scoped users get a ticket
+    // scoped to ALL their accessible orgs so a single connection can receive
+    // events for the full set without the client needing to multiplex
+    // tickets. This matches the list endpoints' scoping: the web client
+    // (`useEventStream`) sends no params in All-Organizations mode, and
+    // `fetchWithAuth` auto-injects `orgId=` when a specific org is selected.
+    // (#2256: the old behaviour narrowed no-param multi-org requests to
+    // `orgIds[0]` unless a legacy `allOrgs=1` flag was passed, so the
+    // All-Orgs Devices view only received live status events for the first
+    // org. The `allOrgs=1` param is no longer read at all — clients that
+    // still send it (e.g. the mobile app) get the same all-orgs result.)
     const requestedOrgId = c.req.query('orgId') ?? undefined;
-    const allOrgs = c.req.query('allOrgs') === '1';
     const orgAccess = await resolveOrgAccess(auth, requestedOrgId);
 
     let orgIds: string[];
@@ -323,7 +329,7 @@ export function createEventWsTicketRoute(): Hono {
     } else if (orgAccess.type === 'single') {
       orgIds = [orgAccess.orgId];
     } else if (orgAccess.type === 'multiple' && orgAccess.orgIds.length > 0) {
-      orgIds = allOrgs ? orgAccess.orgIds : [orgAccess.orgIds[0]!];
+      orgIds = orgAccess.orgIds;
     } else {
       return c.json({ error: 'Organization context required — select an org first' }, 400);
     }

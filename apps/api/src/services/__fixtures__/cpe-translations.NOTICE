@@ -1,0 +1,3 @@
+Derived from FleetDM cpe_translations.json
+Source: https://github.com/fleetdm/fleet/blob/main/server/vulnerabilities/nvd/cpe_translations.json
+License: MIT. Converted to {name,vendor,product} via apps/api/scripts/regen-cpe-data.ts.

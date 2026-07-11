@@ -106,6 +106,11 @@ func NewWithOptions(socketPath, role, binaryKind, context string) *Client {
 // Run connects to the root daemon, authenticates, and enters the command loop.
 // Blocks until stopChan is closed or the connection drops.
 func (c *Client) Run() error {
+	// Exempt the helper from macOS App Nap before doing anything else, so the
+	// OS can't suspend/throttle the IPC read loop and starve the keepalive
+	// TypePong reply (issue #2273). No-op on non-macOS / nocgo builds.
+	guardAgainstAppNap()
+
 	if err := c.connect(); err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
@@ -224,18 +229,19 @@ func (c *Client) authenticate() error {
 	sessionID := fmt.Sprintf("helper-%s-%d", username, os.Getpid())
 
 	authReq := ipc.AuthRequest{
-		ProtocolVersion: ipc.ProtocolVersion,
-		UID:             uint32(uid),
-		SID:             sid,
-		Username:        username,
-		SessionID:       sessionID,
-		DisplayEnv:      displayEnv,
-		PID:             os.Getpid(),
-		BinaryHash:      binaryHash,
-		WinSessionID:    currentWinSessionID(),
-		HelperRole:      c.role,
-		BinaryKind:      c.binaryKind,
-		DesktopContext:  c.context,
+		ProtocolVersion:   ipc.ProtocolVersion,
+		UID:               uint32(uid),
+		SID:               sid,
+		Username:          username,
+		SessionID:         sessionID,
+		DisplayEnv:        displayEnv,
+		PID:               os.Getpid(),
+		BinaryHash:        binaryHash,
+		WinSessionID:      currentWinSessionID(),
+		HelperRole:        c.role,
+		BinaryKind:        c.binaryKind,
+		DesktopContext:    c.context,
+		SupportsConsentUI: consentUISupported(),
 	}
 
 	if err := c.conn.SendTyped("auth", ipc.TypeAuthRequest, authReq); err != nil {
@@ -372,6 +378,15 @@ func (c *Client) commandLoop() error {
 
 		case ipc.TypePamRequestDialog:
 			safeGo("pam_dialog", func() { c.handlePamDialog(env) })
+
+		case ipc.TypeConsentRequest:
+			safeGo("consent_request", func() { c.handleConsentRequest(env) })
+
+		case ipc.TypeBannerShow:
+			safeGo("banner_show", func() { c.handleBannerShowEnvelope(env) })
+
+		case ipc.TypeBannerHide:
+			safeGo("banner_hide", func() { c.handleBannerHideEnvelope(env) })
 
 		case ipc.TypeTrayUpdate:
 			safeGo("tray_update", func() { c.handleTrayUpdate(env) })

@@ -11,6 +11,19 @@ vi.mock('../db', () => ({
 
 import { validateAssignmentTarget } from './configurationPolicy';
 
+// Build a drizzle-style select chain that resolves to `rows`. Covers both the
+// no-join org lookup and the innerJoin site/group/device lookups — every branch
+// ends in `.limit(1)` returning an array.
+function mockSelectResolving(rows: unknown[]) {
+  const chain: any = {
+    from: () => chain,
+    innerJoin: () => chain,
+    where: () => chain,
+    limit: () => Promise.resolve(rows),
+  };
+  selectMock.mockReturnValue(chain);
+}
+
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const PARTNER_ID = '22222222-2222-2222-2222-222222222222';
 
@@ -26,20 +39,94 @@ describe('validateAssignmentTarget — ownership gating', () => {
       PARTNER_ID
     );
     expect(result.valid).toBe(false);
-    expect(result.error).toMatch(/Only partner-wide policies can be assigned at the Partner level/i);
+    if (!result.valid) expect(result.error).toMatch(/Only partner-wide policies can be assigned at the Partner level/i);
     // Pure early return — no DB lookup for this illegal combination.
     expect(selectMock).not.toHaveBeenCalled();
   });
 
-  it('rejects a partner-owned policy assigned below the Partner level', async () => {
+  it('accepts a partner-owned policy assigned to an in-partner organization', async () => {
+    mockSelectResolving([{ id: ORG_ID }]);
     const result = await validateAssignmentTarget(
       { orgId: null, partnerId: PARTNER_ID },
       'organization',
       ORG_ID
     );
+    expect(result.valid).toBe(true);
+    expect(selectMock).toHaveBeenCalled();
+  });
+
+  it('rejects a partner-owned policy assigned to an out-of-partner organization', async () => {
+    mockSelectResolving([]); // org exists but not under this partner → no row
+    const result = await validateAssignmentTarget(
+      { orgId: null, partnerId: PARTNER_ID },
+      'organization',
+      'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+    );
     expect(result.valid).toBe(false);
-    expect(result.error).toMatch(/can only be assigned at the Partner level/i);
-    expect(selectMock).not.toHaveBeenCalled();
+    if (!result.valid) expect(result.error).toMatch(/not in this partner/i);
+  });
+
+  it('accepts a partner-owned policy assigned to an in-partner device', async () => {
+    mockSelectResolving([{ id: '33333333-3333-3333-3333-333333333333' }]);
+    const result = await validateAssignmentTarget(
+      { orgId: null, partnerId: PARTNER_ID },
+      'device',
+      '33333333-3333-3333-3333-333333333333'
+    );
+    expect(result.valid).toBe(true);
+  });
+
+  it('rejects a partner-owned policy assigned to an out-of-partner device', async () => {
+    mockSelectResolving([]); // device exists but its org isn't under this partner → no row
+    const result = await validateAssignmentTarget(
+      { orgId: null, partnerId: PARTNER_ID },
+      'device',
+      '33333333-3333-3333-3333-333333333333'
+    );
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.error).toMatch(/not in this partner/i);
+  });
+
+  it('accepts a partner-owned policy assigned to an in-partner site', async () => {
+    mockSelectResolving([{ id: '44444444-4444-4444-4444-444444444444' }]);
+    const result = await validateAssignmentTarget(
+      { orgId: null, partnerId: PARTNER_ID },
+      'site',
+      '44444444-4444-4444-4444-444444444444'
+    );
+    expect(result.valid).toBe(true);
+  });
+
+  it('rejects a partner-owned policy assigned to an out-of-partner site', async () => {
+    mockSelectResolving([]); // site exists but its org isn't under this partner → no row
+    const result = await validateAssignmentTarget(
+      { orgId: null, partnerId: PARTNER_ID },
+      'site',
+      '44444444-4444-4444-4444-444444444444'
+    );
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.error).toMatch(/not in this partner/i);
+  });
+
+  it('accepts a partner-owned policy assigned to an in-partner device group', async () => {
+    mockSelectResolving([{ id: '55555555-5555-5555-5555-555555555555' }]);
+    const result = await validateAssignmentTarget(
+      { orgId: null, partnerId: PARTNER_ID },
+      'device_group',
+      '55555555-5555-5555-5555-555555555555'
+    );
+    expect(result.valid).toBe(true);
+  });
+
+  it('rejects a partner-owned policy assigned to an out-of-partner device group', async () => {
+    mockSelectResolving([]); // group exists but its org isn't under this partner → no row
+    const result = await validateAssignmentTarget(
+      { orgId: null, partnerId: PARTNER_ID },
+      'device_group',
+      '55555555-5555-5555-5555-555555555555'
+    );
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.error).toMatch(/not in this partner/i);
   });
 
   it('accepts a partner-owned policy targeting its own partner', async () => {
@@ -59,6 +146,6 @@ describe('validateAssignmentTarget — ownership gating', () => {
       'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
     );
     expect(result.valid).toBe(false);
-    expect(result.error).toMatch(/can only target its own partner/i);
+    if (!result.valid) expect(result.error).toMatch(/can only target its own partner/i);
   });
 });

@@ -1034,3 +1034,49 @@ func TestSetSessionAuthenticatedHandler(t *testing.T) {
 	b2 := New("/tmp/x.sock", func(*Session, *ipc.Envelope) {})
 	b2.fireSessionAuthenticated(&Session{})
 }
+
+func TestConsentUIFallbackScopeGrant(t *testing.T) {
+	b := &Broker{}
+	tests := []struct {
+		name            string
+		role            string
+		supportsConsent bool
+		wantFallback    bool
+	}{
+		{"user role advertising support", ipc.HelperRoleUser, true, true},
+		{"user role not advertising", ipc.HelperRoleUser, false, false},
+		{"system role advertising", ipc.HelperRoleSystem, true, false},
+		{"assist role advertising", ipc.HelperRoleAssist, true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scopes := b.grantScopes(tt.role, ipc.AuthRequest{
+				BinaryKind:        ipc.HelperBinaryUserHelper,
+				SupportsConsentUI: tt.supportsConsent,
+			}, runtime.GOOS, "")
+			got := false
+			for _, s := range scopes {
+				if s == ipc.ScopeConsentUIFallback {
+					got = true
+				}
+			}
+			if got != tt.wantFallback {
+				t.Errorf("fallback scope granted = %v, want %v (scopes: %v)", got, tt.wantFallback, scopes)
+			}
+		})
+	}
+}
+
+func TestConsentUIFallbackGrantDoesNotMutateSharedScopeSlices(t *testing.T) {
+	b := &Broker{}
+	before := len(userHelperScopes)
+	_ = b.grantScopes(ipc.HelperRoleUser, ipc.AuthRequest{BinaryKind: ipc.HelperBinaryUserHelper, SupportsConsentUI: true}, runtime.GOOS, "")
+	if len(userHelperScopes) != before {
+		t.Fatalf("userHelperScopes mutated: len %d -> %d", before, len(userHelperScopes))
+	}
+	for _, s := range userHelperScopes {
+		if s == ipc.ScopeConsentUIFallback {
+			t.Fatal("shared userHelperScopes slice now contains the fallback scope")
+		}
+	}
+}

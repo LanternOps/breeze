@@ -7,11 +7,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const results: unknown[][] = [];
 function queueResult(rows: unknown[]) { results.push(rows); }
 
+// Records every payload passed to `.set(...)` so tests can assert what a mutation
+// actually wrote (e.g. the frozen bill-to snapshot on send), not just what the
+// re-select mock returns.
+const setCalls: Array<Record<string, unknown>> = [];
+
 vi.mock('../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
     const methods = ['select', 'from', 'where', 'limit', 'orderBy', 'insert', 'values', 'returning', 'update', 'set', 'delete', 'for', 'innerJoin', 'execute', 'transaction'];
     for (const m of methods) chain[m] = vi.fn(() => chain);
+    chain.set = vi.fn((payload: Record<string, unknown>) => { setCalls.push(payload); return chain; });
     (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) => {
       const rows = results.shift() ?? [];
       return Promise.resolve(rows).then(resolve);
@@ -225,6 +231,7 @@ describe('sendQuote deposit validation', () => {
 describe('sendQuote customer-facing PDF', () => {
   beforeEach(() => {
     results.length = 0;
+    setCalls.length = 0;
     vi.clearAllMocks();
     capturedPdfArgs = null;
     sendEmailMock.mockResolvedValue(undefined);
@@ -253,10 +260,9 @@ describe('sendQuote customer-facing PDF', () => {
     queueResult([]); // blocks
     queueResult([visibleLine, internalLine]); // lines
 
-    queueResult([{ id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null }]); // partnerRow
+    queueResult([{ id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null }]); // partnerRow (reused for partner name)
+    queueResult([{ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } }]); // org (billing snapshot + recipient)
     queueResult([{ id: 'q1' }]); // update ... returning (claimed)
-    queueResult([{ billingContact: { email: 'billing@customer.example' } }]); // org billingContact
-    queueResult([{ name: 'Acme MSP' }]); // partner name
     queueResult([]); // portalBranding — none configured
     queueResult([{ // final re-select
       id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent',
@@ -276,5 +282,142 @@ describe('sendQuote customer-facing PDF', () => {
     expect(renderedLines.some((l) => l.name === 'Internal markup buffer')).toBe(false);
     // toCustomerLines also strips the cost-basis field, same as the portal route.
     expect(renderedLines[0]).not.toHaveProperty('unitCost');
+  });
+});
+
+/**
+ * Bill-to snapshot freeze (bug: org Billing address never appeared on the quote).
+ * `sendQuote` must copy the org's Billing-settings address into the quote's frozen
+ * `billToAddress` (+ name/taxId) at send time — the same snapshot the invoice issue
+ * path takes. Before this, `bill_to_address` stayed NULL and the PDF rendered no
+ * customer address no matter what the tech saved on the org.
+ */
+describe('sendQuote bill-to snapshot', () => {
+  beforeEach(() => {
+    results.length = 0;
+    setCalls.length = 0;
+    vi.clearAllMocks();
+    capturedPdfArgs = null;
+    sendEmailMock.mockResolvedValue(undefined);
+  });
+
+  /** Queue getQuote (quote/blocks/lines) + partnerRow + org + claim + email-path reads. */
+  function queueSendPath(quote: Record<string, unknown>, org: Record<string, unknown>) {
+    queueResult([quote]); // getQuote: quote
+    queueResult([]);       // getQuote: blocks
+    queueResult([{ quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }]); // getQuote: lines
+    queueResult([{ id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null }]); // partnerRow (reused for partner name)
+    queueResult([org]);    // org (billing snapshot + recipient)
+    queueResult([{ id: 'q1' }]); // update ... returning (claimed)
+    queueResult([]);       // portalBranding
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]); // final re-select
+  }
+
+  const baseQuote = {
+    id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft',
+    taxRate: null, depositType: 'none', depositPercent: null,
+    quoteNumber: 'Q-2026-0001', issueDate: '2026-01-01', expiryDate: null,
+    total: '100.00', currencyCode: 'USD', terms: null, termsAndConditions: null,
+    sellerSnapshot: null, billToName: null, billToTaxId: null,
+  };
+
+  /** Pull the `.set(...)` payload from the status→sent claim update. */
+  function claimSet() {
+    const found = setCalls.find((s) => s.status === 'sent' && 'billToAddress' in s);
+    expect(found, 'send update should set billToAddress').toBeDefined();
+    return found!;
+  }
+
+  it('freezes the org billing address into billToAddress/name/taxId on send', async () => {
+    queueSendPath(baseQuote, {
+      name: 'Customer Co', taxId: 'TAX-42',
+      billingContact: { email: 'billing@customer.example' },
+      billingAddressLine1: '123 Main St', billingAddressLine2: 'Suite 4',
+      billingAddressCity: 'Austin', billingAddressRegion: 'TX',
+      billingAddressPostalCode: '78701', billingAddressCountry: 'US',
+    });
+
+    await sendQuote('q1', actor);
+
+    const set = claimSet();
+    expect(set.billToAddress).toEqual({
+      line1: '123 Main St', line2: 'Suite 4', city: 'Austin',
+      region: 'TX', postalCode: '78701', country: 'US',
+    });
+    expect(set.billToName).toBe('Customer Co'); // no draft override → org name
+    expect(set.billToTaxId).toBe('TAX-42');
+  });
+
+  it('preserves a tech-set draft billToName over the org name', async () => {
+    queueSendPath(
+      { ...baseQuote, billToName: 'Attn: Accounts Payable' },
+      {
+        name: 'Customer Co', taxId: null,
+        billingContact: { email: 'billing@customer.example' },
+        billingAddressLine1: '1 Elm', billingAddressLine2: null,
+        billingAddressCity: 'Reno', billingAddressRegion: 'NV',
+        billingAddressPostalCode: '89501', billingAddressCountry: 'US',
+      },
+    );
+
+    await sendQuote('q1', actor);
+
+    const set = claimSet();
+    expect(set.billToName).toBe('Attn: Accounts Payable'); // draft override wins
+    expect(set.billToAddress).toMatchObject({ line1: '1 Elm', city: 'Reno' });
+  });
+
+  it('falls back to the org name when a draft billToName is blank (not a bare ?? on "")', async () => {
+    // updateQuote persists billToName verbatim, so a draft can carry '' — a naive
+    // `quote.billToName ?? org.name` would freeze an empty name. Whitespace too.
+    queueSendPath(
+      { ...baseQuote, billToName: '   ' },
+      {
+        name: 'Customer Co', taxId: null,
+        billingContact: { email: 'billing@customer.example' },
+        billingAddressLine1: '1 Elm', billingAddressLine2: null,
+        billingAddressCity: 'Reno', billingAddressRegion: 'NV',
+        billingAddressPostalCode: '89501', billingAddressCountry: 'US',
+      },
+    );
+
+    await sendQuote('q1', actor);
+
+    expect(claimSet().billToName).toBe('Customer Co');
+  });
+
+  it('preserves a tech-set draft billToTaxId over the org taxId', async () => {
+    queueSendPath(
+      { ...baseQuote, billToTaxId: 'OVERRIDE-TAX' },
+      {
+        name: 'Customer Co', taxId: 'ORG-TAX',
+        billingContact: { email: 'billing@customer.example' },
+        billingAddressLine1: '1 Elm', billingAddressLine2: null,
+        billingAddressCity: 'Reno', billingAddressRegion: 'NV',
+        billingAddressPostalCode: '89501', billingAddressCountry: 'US',
+      },
+    );
+
+    await sendQuote('q1', actor);
+
+    expect(claimSet().billToTaxId).toBe('OVERRIDE-TAX'); // draft override wins over ORG-TAX
+  });
+
+  it('freezes an all-null address when the org has no billing address saved', async () => {
+    queueSendPath(baseQuote, {
+      name: 'Customer Co', taxId: null,
+      billingContact: { email: 'billing@customer.example' },
+      billingAddressLine1: null, billingAddressLine2: null,
+      billingAddressCity: null, billingAddressRegion: null,
+      billingAddressPostalCode: null, billingAddressCountry: null,
+    });
+
+    await sendQuote('q1', actor);
+
+    // Still a well-formed object (addressLines() renders nothing from it) — never
+    // a partial/undefined shape the PDF helper would choke on.
+    expect(claimSet().billToAddress).toEqual({
+      line1: null, line2: null, city: null, region: null, postalCode: null, country: null,
+    });
   });
 });

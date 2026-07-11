@@ -31,75 +31,45 @@ beforeEach(() => {
   fetchWithAuth.mockResolvedValue(jsonResponse({ data: [] }));
 });
 
-describe('AssignmentsTab — partner-OWNED policy (all organizations)', () => {
-  it('shows the partner-wide banner and no level/target picker', async () => {
+describe('AssignmentsTab — partner-OWNED policy (all organizations library, #2280)', () => {
+  it('delegates to OrganizationScopePanel — no level/target picker, no partner-wide banner', async () => {
     render(<AssignmentsTab policyId={POLICY_ID} orgId={null} partnerId={PARTNER_ID} />);
-    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalled());
 
+    // OrganizationScopePanel's own heading + master toggle render instead of
+    // the old fixed "all organizations" copy and add-assignment card.
+    expect(await screen.findByRole('heading', { name: 'Organizations' })).toBeInTheDocument();
     expect(
-      screen.getByText('This policy applies to all organizations in your partner.')
+      screen.getByRole('checkbox', { name: /All organizations \(partner-wide\)/i })
     ).toBeInTheDocument();
+    expect(
+      screen.queryByText('This policy applies to all organizations in your partner.')
+    ).not.toBeInTheDocument();
     // The org-owned "Level" picker must not exist for a partner-owned policy.
     expect(screen.queryByText('Level')).not.toBeInTheDocument();
   });
 
-  it('POSTs a partner assignment with no targetId (server-derived) when re-assigning', async () => {
+  it('lists the partner organizations as a checklist', async () => {
+    fetchWithAuth
+      .mockResolvedValueOnce(jsonResponse({ data: [] })) // assignments
+      .mockResolvedValueOnce(jsonResponse({
+        data: [{ id: 'org-acme', name: 'Acme Corp' }, { id: 'org-contoso', name: 'Contoso Ltd' }],
+        pagination: { page: 1, limit: 100, total: 2 },
+      })); // org list
     render(<AssignmentsTab policyId={POLICY_ID} orgId={null} partnerId={PARTNER_ID} />);
-    // Wait for the empty-assignments add card to appear.
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: /Assign to all organizations/i })).toBeInTheDocument()
-    );
 
-    fetchWithAuth.mockResolvedValueOnce(jsonResponse({ id: 'a1', level: 'partner' }, 201));
-    fireEvent.click(screen.getByRole('button', { name: /Assign to all organizations/i }));
-
-    await waitFor(() => {
-      const post = findPost();
-      expect(post).toBeTruthy();
-      const body = JSON.parse(String((post![1] as RequestInit).body));
-      expect(body.level).toBe('partner');
-      expect(body).not.toHaveProperty('targetId');
-    });
-    // The system-scoped partner-list call must NEVER be made.
-    const urls = fetchWithAuth.mock.calls.map((c) => String(c[0]));
-    expect(urls.some((u) => u.includes('/orgs/partners'))).toBe(false);
+    expect(await screen.findByRole('checkbox', { name: 'Acme Corp' })).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: 'Contoso Ltd' })).toBeInTheDocument();
   });
 
-  it('hides the re-assign card once a partner assignment exists', async () => {
+  it('checks the All-orgs toggle when a partner-level assignment already exists', async () => {
     fetchWithAuth.mockResolvedValue(
       jsonResponse({ data: [{ id: 'a1', level: 'partner', targetId: PARTNER_ID, priority: 0 }] })
     );
     render(<AssignmentsTab policyId={POLICY_ID} orgId={null} partnerId={PARTNER_ID} />);
 
-    await waitFor(() => expect(screen.getByText('All Organizations')).toBeInTheDocument());
-    expect(
-      screen.queryByRole('button', { name: /Assign to all organizations/i })
-    ).not.toBeInTheDocument();
-  });
-
-  it('includes priority and role/OS filters in the partner re-assign POST body', async () => {
-    render(<AssignmentsTab policyId={POLICY_ID} orgId={null} partnerId={PARTNER_ID} />);
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: /Assign to all organizations/i })).toBeInTheDocument()
+      expect(screen.getByRole('checkbox', { name: /All organizations \(partner-wide\)/i })).toBeChecked()
     );
-
-    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '5' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Workstation' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Windows' }));
-
-    fetchWithAuth.mockResolvedValueOnce(jsonResponse({ id: 'a1', level: 'partner' }, 201));
-    fireEvent.click(screen.getByRole('button', { name: /Assign to all organizations/i }));
-
-    await waitFor(() => {
-      const post = findPost();
-      expect(post).toBeTruthy();
-      const body = JSON.parse(String((post![1] as RequestInit).body));
-      expect(body.level).toBe('partner');
-      expect(body).not.toHaveProperty('targetId');
-      expect(body.priority).toBe(5);
-      expect(body.roleFilter).toEqual(['workstation']);
-      expect(body.osFilter).toEqual(['windows']);
-    });
   });
 });
 

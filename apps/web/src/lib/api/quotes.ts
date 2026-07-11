@@ -199,6 +199,18 @@ export function uploadQuoteImage(id: string, file: File): Promise<Response> {
   return fetchWithAuth(`/quotes/${id}/images`, { method: 'POST', body: form });
 }
 
+/** Copy an image into a quote from a URL (POST /quotes/:id/images with a JSON
+ *  body). The server fetches + stores the bytes — not a hotlink. Responds with
+ *  the same `{ data: { imageId, mime, byteSize } }` as the multipart upload.
+ *  Gated server-side on quotes:write. */
+export function addQuoteImageFromUrl(id: string, url: string): Promise<Response> {
+  return fetchWithAuth(`/quotes/${id}/images`, {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ url }),
+  });
+}
+
 /** Absolute API path for a quote image (`GET /api/v1/quotes/:id/images/:imageId`).
  *  The route serves the raw bytes; used as an `<img src>` for the editor preview. */
 export function quoteImageUrl(id: string, imageId: string): string {

@@ -72,7 +72,8 @@ vi.mock('./configurationPolicy', () => ({
 
 import { db } from '../db';
 import { registerConfigPolicyTools } from './aiToolsConfigPolicy';
-import { addFeatureLink, getConfigPolicy } from './configurationPolicy';
+import { addFeatureLink, getConfigPolicy, updateFeatureLink } from './configurationPolicy';
+import { onedriveHelperInlineSettingsSchema } from '@breeze/shared/validators';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const POLICY_ID = '22222222-2222-2222-2222-222222222222';
@@ -397,6 +398,52 @@ describe('configuration policy AI tools', () => {
     );
   });
 
+  it('apply_configuration_policy denies an ORGANIZATION-level assignment on a partner-owned policy without partner-wide capability (#2280)', async () => {
+    // The library-model gate applies to ANY assignment level on a partner-owned
+    // policy (org_id NULL), not just the 'partner' level — mirrors the HTTP
+    // route's gate in routes/configurationPolicies/assignments.ts.
+    mockSelectRows([{ id: POLICY_ID, orgId: null, partnerId: PARTNER_ID, name: 'Library Policy' }]);
+    canManagePartnerWidePoliciesMock.mockReturnValue(false);
+
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+
+    const output = await tools.get('apply_configuration_policy')!.handler({
+      configPolicyId: POLICY_ID,
+      level: 'organization',
+      targetId: ORG_ID,
+    }, makePartnerAuth());
+
+    expect(JSON.parse(output)).toEqual({ error: 'partner-wide write denied' });
+    expect(assignPolicyMock).not.toHaveBeenCalled();
+  });
+
+  it('apply_configuration_policy allows an ORGANIZATION-level (subset) assignment on a partner-owned policy with partner-wide capability (#2280)', async () => {
+    mockSelectRows([{ id: POLICY_ID, orgId: null, partnerId: PARTNER_ID, name: 'Library Policy' }]);
+    canManagePartnerWidePoliciesMock.mockReturnValue(true);
+    validateAssignmentTargetMock.mockResolvedValue({ valid: true });
+    assignPolicyMock.mockResolvedValue({ id: 'assignment-1', level: 'organization', targetId: ORG_ID });
+
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+
+    const output = await tools.get('apply_configuration_policy')!.handler({
+      configPolicyId: POLICY_ID,
+      level: 'organization',
+      targetId: ORG_ID,
+    }, makePartnerAuth());
+
+    expect(JSON.parse(output).success).toBe(true);
+    expect(validateAssignmentTargetMock).toHaveBeenCalledWith(
+      { orgId: null, partnerId: PARTNER_ID },
+      'organization',
+      ORG_ID
+    );
+    expect(assignPolicyMock).toHaveBeenCalledWith(
+      POLICY_ID, 'organization', ORG_ID, 0, 'user-1', undefined, undefined
+    );
+  });
+
   it('remove_configuration_policy_assignment denies removing a partner-wide assignment without capability', async () => {
     mockSelectRows([{
       id: 'assignment-1',
@@ -419,10 +466,9 @@ describe('configuration policy AI tools', () => {
     expect(unassignPolicyMock).not.toHaveBeenCalled();
   });
 
-  it('manage_configuration_policy create ownerScope=partner makes a partner-owned policy and seeds the partner assignment', async () => {
+  it('manage_configuration_policy create ownerScope=partner makes a partner-owned policy WITHOUT auto-assigning it (#2280 library model)', async () => {
     mockSelectRows([]); // duplicate-name check → none
     createConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, orgId: null, partnerId: PARTNER_ID, name: 'All-Orgs Baseline' });
-    assignPolicyMock.mockResolvedValue({ id: 'assignment-1' });
 
     const tools = new Map<string, any>();
     registerConfigPolicyTools(tools);
@@ -440,7 +486,105 @@ describe('configuration policy AI tools', () => {
       { name: 'All-Orgs Baseline', description: 'baseline for every org', status: 'active' },
       'user-1'
     );
-    expect(assignPolicyMock).toHaveBeenCalledWith(POLICY_ID, 'partner', PARTNER_ID, 0, 'user-1');
+    // Library policies start empty — no partner-level (or any) assignment is
+    // seeded. The policy is applied later via explicit apply_configuration_policy
+    // calls (#2280 library model), mirroring the HTTP create route.
+    expect(assignPolicyMock).not.toHaveBeenCalled();
+  });
+
+  // Half-fix follow-up: addFeatureLink/updateFeatureLink keep inlineSettings as
+  // a JSONB mirror alongside the normalized settings tables. decomposeInlineSettings
+  // re-parses onedrive_helper input through the schema when writing the normalized
+  // row (so that row always has defaults), but previously the AI handler passed
+  // raw, un-defaulted input straight through — leaving the mirror out of sync
+  // with the normalized row. The handler must normalize via the schema first.
+  it('normalizes onedrive_helper inlineSettings via schema before add so the JSONB mirror carries defaults', async () => {
+    vi.mocked(getConfigPolicy).mockResolvedValue({
+      id: POLICY_ID,
+      orgId: ORG_ID,
+      partnerId: null,
+      name: 'Org policy',
+    } as any);
+    vi.mocked(addFeatureLink).mockResolvedValue({
+      id: 'link-1',
+      configPolicyId: POLICY_ID,
+      featureType: 'onedrive_helper',
+    } as any);
+
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+
+    const raw = { kfmSilentOptIn: true, kfmFolders: ['Documents'] };
+    const output = await tools.get('manage_policy_feature_link')!.handler({
+      action: 'add',
+      configPolicyId: POLICY_ID,
+      featureType: 'onedrive_helper',
+      inlineSettings: raw,
+    }, makeAuth());
+
+    expect(JSON.parse(output).success).toBe(true);
+    expect(vi.mocked(addFeatureLink)).toHaveBeenCalledWith(
+      POLICY_ID,
+      'onedrive_helper',
+      null,
+      onedriveHelperInlineSettingsSchema.parse(raw)
+    );
+  });
+
+  it('rejects invalid onedrive_helper inlineSettings on add with a tool error, not a throw', async () => {
+    vi.mocked(getConfigPolicy).mockResolvedValue({
+      id: POLICY_ID,
+      orgId: ORG_ID,
+      partnerId: null,
+      name: 'Org policy',
+    } as any);
+
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+
+    const output = await tools.get('manage_policy_feature_link')!.handler({
+      action: 'add',
+      configPolicyId: POLICY_ID,
+      featureType: 'onedrive_helper',
+      inlineSettings: { libraries: [{ libraryId: 'x', displayName: 'X', targetingMode: 'nonsense' }] },
+    }, makeAuth());
+
+    expect(typeof JSON.parse(output).error).toBe('string');
+    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
+  });
+
+  it('normalizes onedrive_helper inlineSettings via schema before update by looking up the existing link featureType', async () => {
+    vi.mocked(getConfigPolicy).mockResolvedValue({
+      id: POLICY_ID,
+      orgId: ORG_ID,
+      partnerId: null,
+      name: 'Org policy',
+    } as any);
+    // existing-link featureType lookup inside the 'update' branch
+    mockSelectRows([{ featureType: 'onedrive_helper' }]);
+    vi.mocked(updateFeatureLink).mockResolvedValue({
+      id: 'link-1',
+      configPolicyId: POLICY_ID,
+      featureType: 'onedrive_helper',
+    } as any);
+
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+
+    const raw = { kfmBlockOptOut: true };
+    const output = await tools.get('manage_policy_feature_link')!.handler({
+      action: 'update',
+      configPolicyId: POLICY_ID,
+      featureLinkId: 'link-1',
+      inlineSettings: raw,
+    }, makeAuth());
+
+    expect(JSON.parse(output).success).toBe(true);
+    expect(vi.mocked(updateFeatureLink)).toHaveBeenCalledWith(
+      'link-1',
+      { inlineSettings: onedriveHelperInlineSettingsSchema.parse(raw) },
+      POLICY_ID
+    );
   });
 
   it('manage_configuration_policy create ownerScope=partner is denied without partner-wide capability', async () => {

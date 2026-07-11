@@ -4,6 +4,7 @@ import path from 'path';
 export default defineConfig({
   resolve: {
     alias: {
+      '@breeze/extension-api': path.resolve(__dirname, '../../packages/extension-api/src'),
       '@breeze/shared': path.resolve(__dirname, '../../packages/shared/src'),
     },
   },
@@ -27,6 +28,7 @@ export default defineConfig({
       'src/services/vulnerability*.integration.test.ts',
       'src/services/aiToolsVulnerability.integration.test.ts',
       'src/services/cpeMap.integration.test.ts',
+      'src/services/cpeResolution.integration.test.ts',
       'src/services/exploitFeeds.integration.test.ts',
       'src/jobs/vulnerability*.integration.test.ts',
       // Warranty alert evaluator real-DB test: imports `__tests__/integration/setup`

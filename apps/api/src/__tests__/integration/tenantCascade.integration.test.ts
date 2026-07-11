@@ -2,14 +2,14 @@ import { describe, it, expect } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { db } from '../../db';
 import {
-  ORG_CASCADE_DELETE_ORDER,
+  getOrgCascadeDeleteOrder,
   topologicalCascadeOrder,
 } from '../../services/tenantCascade';
 
 /**
  * Contract test for Task 30 — GDPR org-wide erasure.
  *
- * The cascade list (`ORG_CASCADE_DELETE_ORDER`) is the authoritative
+ * The cascade list (`getOrgCascadeDeleteOrder()`) is the authoritative
  * set of tables that get wiped when a platform admin POSTs to
  * `/admin/tenant-erasure`. This test guarantees the list stays in
  * sync with the actual schema: any new `org_id`-columned public table
@@ -30,18 +30,20 @@ const NOT_CASCADE_SCOPED: ReadonlySet<string> = new Set<string>([
   'third_party_release_tests', // system-wide release test results
 ]);
 
+const cascadeOrder = getOrgCascadeDeleteOrder();
+
 describe('Tenant cascade list contract', () => {
-  it('ORG_CASCADE_DELETE_ORDER is alphabetised (organizations last) for determinism', () => {
+  it('getOrgCascadeDeleteOrder() is alphabetised (organizations last) for determinism', () => {
     // organizations is id-keyed and must be cleared last (after every
     // org_id-FK child). Everything else should be in alpha order.
-    const cascade = [...ORG_CASCADE_DELETE_ORDER];
+    const cascade = [...cascadeOrder];
     expect(cascade.at(-1)).toBe('organizations');
     const orgScopedPrefix = cascade.slice(0, -1);
     const sorted = [...orgScopedPrefix].sort((a, b) => a.localeCompare(b));
     expect(orgScopedPrefix).toEqual(sorted);
   });
 
-  it('every org_id-columned public table is in ORG_CASCADE_DELETE_ORDER', async () => {
+  it('every org_id-columned public table is in getOrgCascadeDeleteOrder()', async () => {
     const rows = (await db.execute(sql`
       SELECT DISTINCT c.table_name
       FROM information_schema.columns c
@@ -64,12 +66,12 @@ describe('Tenant cascade list contract', () => {
       .map((r) => r.table_name)
       .filter((t) => !NOT_CASCADE_SCOPED.has(t));
 
-    const cascadeSet = new Set(ORG_CASCADE_DELETE_ORDER);
+    const cascadeSet = new Set(cascadeOrder);
     const missing = dbTables.filter((t) => !cascadeSet.has(t));
 
     expect(
       missing,
-      `New org_id-scoped tables that are missing from ORG_CASCADE_DELETE_ORDER ` +
+      `New org_id-scoped tables that are missing from getOrgCascadeDeleteOrder() ` +
         `(apps/api/src/services/tenantCascade.ts). Add them to keep the GDPR cascade ` +
         `complete:\n${JSON.stringify(missing, null, 2)}\n\n` +
         `If a table is intentionally not part of the cascade, add it to ` +
@@ -77,7 +79,7 @@ describe('Tenant cascade list contract', () => {
     ).toEqual([]);
   });
 
-  it('no entry in ORG_CASCADE_DELETE_ORDER references a non-existent table', async () => {
+  it('no entry in getOrgCascadeDeleteOrder() references a non-existent table', async () => {
     const rows = (await db.execute(sql`
       SELECT table_name
       FROM information_schema.tables
@@ -85,11 +87,11 @@ describe('Tenant cascade list contract', () => {
     `)) as unknown as Array<{ table_name: string }>;
     const present = new Set(rows.map((r) => r.table_name));
 
-    const stale = ORG_CASCADE_DELETE_ORDER.filter((t) => !present.has(t));
+    const stale = cascadeOrder.filter((t) => !present.has(t));
 
     expect(
       stale,
-      `ORG_CASCADE_DELETE_ORDER references tables that don't exist in this deployment:\n` +
+      `getOrgCascadeDeleteOrder() references tables that don't exist in this deployment:\n` +
         `${JSON.stringify(stale, null, 2)}\n\n` +
         `Remove them from the cascade list or restore the schema/migration that defines them.`,
     ).toEqual([]);
@@ -97,8 +99,8 @@ describe('Tenant cascade list contract', () => {
 
   it('topologicalCascadeOrder() returns every cascade table exactly once', async () => {
     const order = await topologicalCascadeOrder();
-    expect(order.length).toBe(ORG_CASCADE_DELETE_ORDER.length);
-    expect(new Set(order)).toEqual(new Set(ORG_CASCADE_DELETE_ORDER));
+    expect(order.length).toBe(cascadeOrder.length);
+    expect(new Set(order)).toEqual(new Set(cascadeOrder));
   });
 
   it('topological order has all FK children appearing before their parents', async () => {
@@ -107,7 +109,7 @@ describe('Tenant cascade list contract', () => {
     order.forEach((table, i) => indexOf.set(table, i));
 
     // Pull FK edges between cascade tables.
-    const cascadeSet = new Set(ORG_CASCADE_DELETE_ORDER);
+    const cascadeSet = new Set(cascadeOrder);
     const edges = (await db.execute(sql`
       SELECT
         tc.relname AS child_table,

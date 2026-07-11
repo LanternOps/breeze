@@ -214,6 +214,11 @@ export const heartbeatSchema = z.object({
     kfmFolderStates: z.record(z.string(), z.string()).default({}),
     mountedLibraries: z.array(z.string().max(1024)).default([]),
     entitledLibraries: z.array(z.string().max(1024)).default([]),
+    // Cap mirrored by the agent (onedrivehelper_windows.go readDeviceState) —
+    // lowering it silently degrades reports from already-shipped agents. The
+    // field-level .catch([]) means a violating value (17+ UPNs, oversized
+    // string, non-array) drops ONLY the UPNs, not the whole device-state block.
+    signedInUpns: z.array(z.string().max(320)).max(16).default([]).catch([]),
     driftEntries: z.array(z.record(z.string(), z.unknown())).default([]),
   }).optional().catch(undefined),
 });
@@ -315,6 +320,18 @@ export const securityStatusIngestSchema = z.object({
 });
 
 export type SecurityStatusPayload = z.infer<typeof securityStatusIngestSchema>;
+
+export const recoveryKeysIngestSchema = z.object({
+  source: z.enum(['snapshot', 'rotation']),
+  keys: z.array(z.object({
+    keyType: z.enum(['bitlocker_recovery_password', 'filevault_personal_recovery_key']),
+    volumeMount: z.string().max(100).optional(),
+    protectorId: z.string().max(100).optional(),
+    recoveryKey: z.string().min(8).max(512)
+  })).max(50)
+});
+
+export type RecoveryKeysIngestPayload = z.infer<typeof recoveryKeysIngestSchema>;
 
 export const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 

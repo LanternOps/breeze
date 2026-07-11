@@ -49,6 +49,8 @@ export const portalUsers = pgTable('portal_users', {
   receiveNotifications: boolean('receive_notifications').notNull().default(true),
   lastLoginAt: timestamp('last_login_at'),
   status: varchar('status', { length: 20 }).notNull().default('active'),
+  invitedBy: uuid('invited_by').references(() => users.id),
+  invitedAt: timestamp('invited_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });

@@ -23,6 +23,10 @@ vi.mock('../../db', () => ({
   },
 }));
 
+vi.mock('../../services/deviceLinkGroups', () => ({
+  dissolveLinkGroupIfBelowMinimum: vi.fn(async () => false),
+}));
+
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
@@ -84,11 +88,14 @@ vi.mock('../agents/enrollment', () => ({
 import * as schema from '../../db/schema';
 import {
   coreRoutes,
+  getDeviceCascadeDeleteTables,
   DEVICE_CASCADE_DELETE_TABLES,
   DEVICE_DETACH_DEVICE_ID_TABLES,
   DEVICE_LINKED_DEVICE_ID_TABLES,
 } from './core';
 import { db } from '../../db';
+
+const deviceCascadeDeleteTables = getDeviceCascadeDeleteTables();
 
 /**
  * Tables that have a column named `device_id` but it does NOT reference devices.id.
@@ -112,7 +119,7 @@ function allSchemaTables(): PgTable<any>[] {
 
 describe('device hard-delete table coverage contract', () => {
   it('every table with a device_id FK to devices.id is in exactly one of cascade/detach/linked sets', () => {
-    const cascadeSet = new Set<string>(DEVICE_CASCADE_DELETE_TABLES);
+    const cascadeSet = new Set<string>(deviceCascadeDeleteTables);
     const detachSet = new Set<string>(DEVICE_DETACH_DEVICE_ID_TABLES);
     const linkedSet = new Set<string>(DEVICE_LINKED_DEVICE_ID_TABLES);
 
@@ -126,7 +133,7 @@ describe('device hard-delete table coverage contract', () => {
       if (!hasDeviceId) continue;
 
       const memberships = [
-        cascadeSet.has(tableName) ? 'DEVICE_CASCADE_DELETE_TABLES' : null,
+        cascadeSet.has(tableName) ? 'getDeviceCascadeDeleteTables()' : null,
         detachSet.has(tableName) ? 'DEVICE_DETACH_DEVICE_ID_TABLES' : null,
         linkedSet.has(tableName) ? 'DEVICE_LINKED_DEVICE_ID_TABLES' : null,
       ].filter((m): m is string => m !== null);
@@ -141,7 +148,7 @@ describe('device hard-delete table coverage contract', () => {
     expect(
       problems,
       `Every table with a device_id FK to devices.id must appear in EXACTLY ONE of ` +
-        `DEVICE_CASCADE_DELETE_TABLES (rows deleted; order matters — children before parents), ` +
+        `getDeviceCascadeDeleteTables() (rows deleted; order matters — children before parents), ` +
         `DEVICE_DETACH_DEVICE_ID_TABLES (tenant business records — device_id SET NULL), or ` +
         `DEVICE_LINKED_DEVICE_ID_TABLES (linked_device_id SET NULL) in core.ts. ` +
         `If the device_id column references a table other than devices, add it to NOT_DEVICES_FK ` +
@@ -153,14 +160,14 @@ describe('device hard-delete table coverage contract', () => {
     // Tickets are tenant business records — hard-deleting a device must
     // preserve ticket history and detach the device, never destroy tickets.
     expect(DEVICE_DETACH_DEVICE_ID_TABLES).toContain('tickets');
-    expect(DEVICE_CASCADE_DELETE_TABLES).not.toContain('tickets');
+    expect(deviceCascadeDeleteTables).not.toContain('tickets');
   });
 
   it('deletes ML output rows before anomaly parent rows during device hard-delete', () => {
-    expect(DEVICE_CASCADE_DELETE_TABLES).toContain('remediation_suggestions');
-    expect(DEVICE_CASCADE_DELETE_TABLES).toContain('metric_anomalies');
-    expect(DEVICE_CASCADE_DELETE_TABLES.indexOf('remediation_suggestions')).toBeLessThan(
-      DEVICE_CASCADE_DELETE_TABLES.indexOf('metric_anomalies'),
+    expect(deviceCascadeDeleteTables).toContain('remediation_suggestions');
+    expect(deviceCascadeDeleteTables).toContain('metric_anomalies');
+    expect(deviceCascadeDeleteTables.indexOf('remediation_suggestions')).toBeLessThan(
+      deviceCascadeDeleteTables.indexOf('metric_anomalies'),
     );
   });
 
@@ -202,7 +209,7 @@ describe('device hard-delete table coverage contract', () => {
 
     expect(
       staleCascade,
-      `These tables are in DEVICE_CASCADE_DELETE_TABLES but no longer exist in the schema. Remove them.`
+      `These core tables are in DEVICE_CASCADE_DELETE_TABLES but no longer exist in the schema. Remove them.`
     ).toEqual([]);
     expect(
       staleDetach,
@@ -315,5 +322,37 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
     expect(
       statements.some((s) => s.startsWith('DELETE FROM psa_ticket_mappings WHERE'))
     ).toBe(true);
+  });
+
+  it('runs the link-group dissolve check when hard-deleting a linked boot profile (#2138)', async () => {
+    const { dissolveLinkGroupIfBelowMinimum } = await import('../../services/deviceLinkGroups');
+    rigDeviceLookup({ ...DEVICE, linkGroupId: 'grp-multiboot-1' });
+    rigDeleteTransaction();
+
+    const res = await app.request(`/devices/${DEVICE.id}/permanent`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(200);
+    // The deleted device's link_group_id went with its row; the group may now
+    // have a single lone survivor. Dropping this call silently strands a
+    // 1-member group (the survivor renders ungrouped and re-linking it 409s).
+    expect(dissolveLinkGroupIfBelowMinimum).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(dissolveLinkGroupIfBelowMinimum).mock.calls[0]![1]).toBe('grp-multiboot-1');
+  });
+
+  it('does not touch link groups when the deleted device was unlinked', async () => {
+    const { dissolveLinkGroupIfBelowMinimum } = await import('../../services/deviceLinkGroups');
+    rigDeviceLookup(DEVICE);
+    rigDeleteTransaction();
+
+    const res = await app.request(`/devices/${DEVICE.id}/permanent`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(dissolveLinkGroupIfBelowMinimum).not.toHaveBeenCalled();
   });
 });

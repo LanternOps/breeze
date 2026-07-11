@@ -264,6 +264,67 @@ describe('heartbeatSchema — Layer A tolerance', () => {
   });
 });
 
+// signedInUpns degrades at FIELD level (.catch([])): a violating UPN list must
+// cost only the UPNs, never the whole onedriveDeviceState block — the block
+// carries mounted/drift/KFM state whose silent loss leaves stale rows that
+// graph_group tagging keeps consuming.
+describe('heartbeatSchema — onedriveDeviceState signedInUpns bounds', () => {
+  const minimal = { status: 'ok' as const, agentVersion: '0.65.15' };
+  const state = (signedInUpns: unknown) => ({
+    ...minimal,
+    onedriveDeviceState: {
+      signedIn: true,
+      filesOnDemandOn: true,
+      kfmFolderStates: { Desktop: 'redirected' },
+      mountedLibraries: ['C:\\x'],
+      entitledLibraries: ['lib-1'],
+      driftEntries: [],
+      signedInUpns,
+    },
+  });
+  const parseState = (signedInUpns: unknown) => {
+    const result = heartbeatSchema.safeParse(state(signedInUpns));
+    expect(result.success).toBe(true);
+    return (result as { success: true; data: { onedriveDeviceState?: { signedInUpns: string[]; mountedLibraries: string[] } } }).data.onedriveDeviceState;
+  };
+
+  it('keeps exactly 16 UPNs (the cap the agent mirrors)', () => {
+    const upns = Array.from({ length: 16 }, (_, i) => `u${i}@c.com`);
+    const parsed = parseState(upns);
+    expect(parsed?.signedInUpns).toEqual(upns);
+  });
+
+  it('17 UPNs → field degrades to [], the rest of the state block survives', () => {
+    const parsed = parseState(Array.from({ length: 17 }, (_, i) => `u${i}@c.com`));
+    expect(parsed?.signedInUpns).toEqual([]);
+    expect(parsed?.mountedLibraries).toEqual(['C:\\x']);
+  });
+
+  it('an oversized (>320 char) UPN → field degrades to [], block survives', () => {
+    const parsed = parseState([`${'a'.repeat(321)}@c.com`]);
+    expect(parsed?.signedInUpns).toEqual([]);
+    expect(parsed?.mountedLibraries).toEqual(['C:\\x']);
+  });
+
+  it('non-array → field degrades to [], block survives', () => {
+    const parsed = parseState('not-an-array');
+    expect(parsed?.signedInUpns).toEqual([]);
+    expect(parsed?.mountedLibraries).toEqual(['C:\\x']);
+  });
+
+  it('omitted → defaults to [] (Phase 3 agents), block survives', () => {
+    const result = heartbeatSchema.safeParse({
+      ...minimal,
+      onedriveDeviceState: {
+        signedIn: false,
+        filesOnDemandOn: false,
+      },
+    });
+    expect(result.success).toBe(true);
+    expect((result as { success: true; data: { onedriveDeviceState?: { signedInUpns: string[] } } }).data.onedriveDeviceState?.signedInUpns).toEqual([]);
+  });
+});
+
 // uint64Counter guards the cumulative byte/packet counters against v4's new
 // z.number().int() 2^53 cap. The agent emits Go uint64 counters (bigint columns)
 // that exceed 2^53 on busy/long-uptime hosts; a revert to .int() would, via the

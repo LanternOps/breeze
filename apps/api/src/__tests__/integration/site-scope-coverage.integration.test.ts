@@ -180,6 +180,13 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   'routes/sentinelOne.ts:GET /status',
   'routes/softwarePolicies.ts:GET /compliance/overview',
   'routes/updateRings.ts:GET /:id/compliance',
+  // Org-scoped compliance list, identical posture to its sibling routes
+  // (/firewall, /trends) which resolve rows through the same org-scoped
+  // listStatusRows helper. Flagged only because the recovery-key escrow
+  // enrichment references deviceRecoveryKeys.deviceId inline — and that
+  // lookup is constrained (inArray) to the device ids listStatusRows already
+  // resolved, so it discloses no device beyond the caller's accessible orgs.
+  'routes/security/compliance.ts:GET /encryption',
 ]);
 
 // SITE_SCOPE_INPUT_EXEMPT entries that ARE reached via the user `authMiddleware`
@@ -211,6 +218,10 @@ const SITE_SCOPE_INPUT_EXEMPT_USER_SESSION_OK: ReadonlySet<string> = new Set<str
   'routes/sentinelOne.ts:GET /status',
   'routes/softwarePolicies.ts:GET /compliance/overview',
   'routes/updateRings.ts:GET /:id/compliance',
+  // Org-scoped compliance list (see note in SITE_SCOPE_INPUT_EXEMPT). Reached
+  // via user auth (requireScope) but exempt because the escrow enrichment is
+  // constrained to the org-scoped device set listStatusRows already resolved.
+  'routes/security/compliance.ts:GET /encryption',
 ]);
 
 // BASELINE RATCHET — pre-existing handlers flagged at the time this detector
