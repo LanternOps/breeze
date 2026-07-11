@@ -75,6 +75,8 @@ function tokenHashMatches(storedHash: string | null | undefined, presentedToken:
 enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => {
   const data = c.req.valid('json');
   const clientIp = getTrustedClientIp(c, 'unknown');
+  // 'unknown' is the rate-limiter fallback, not a real address — store NULL.
+  const enrollmentIp = clientIp === 'unknown' ? null : clientIp;
   const rateCheck = await rateLimiter(
     getRedis(),
     `agent-enroll:${clientIp}`,
@@ -602,6 +604,7 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
           .update(devices)
           .set({
             agentId: agentId,
+            enrollmentIp,
             agentTokenHash: tokenHash,
             watchdogTokenHash,
             helperTokenHash,
@@ -639,6 +642,7 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
             watchdogTokenHash,
             helperTokenHash,
             hostname: data.hostname,
+            enrollmentIp,
             osType: data.osType,
             osVersion: data.osVersion,
             architecture: data.architecture,
