@@ -1,6 +1,9 @@
 import { and, eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { ticketMailboxConnections } from '../../db/schema/ticketMailbox';
+import {
+  ticketMailboxConnections,
+  ticketMailboxTenantOwnerships,
+} from '../../db/schema/ticketMailbox';
 import { getMailboxToken } from './mailboxToken';
 
 export type MailboxConnectionStatus =
@@ -23,24 +26,64 @@ export interface MailboxConnection {
   updatedAt: Date;
 }
 
+export interface MailboxConnectionListItem {
+  id: string;
+  mailboxAddress: string;
+  displayName: string | null;
+  status: MailboxConnectionStatus;
+  lastPolledAt: Date | null;
+  lastMessageAt: Date | null;
+}
+
+type ConnectedMailbox = Pick<
+  MailboxConnection,
+  'id' | 'partnerId' | 'tenantId' | 'mailboxAddress' | 'deltaLink'
+>;
+
 type Row = typeof ticketMailboxConnections.$inferSelect;
 
 function toConnection(r: Row): MailboxConnection {
   return { ...r, status: r.status as MailboxConnectionStatus };
 }
 
-export async function listMailboxConnections(partnerId: string): Promise<MailboxConnection[]> {
-  const rows = await db.select().from(ticketMailboxConnections)
+export async function listMailboxConnections(partnerId: string): Promise<MailboxConnectionListItem[]> {
+  const rows = await db.select({
+    id: ticketMailboxConnections.id,
+    mailboxAddress: ticketMailboxConnections.mailboxAddress,
+    displayName: ticketMailboxConnections.displayName,
+    status: ticketMailboxConnections.status,
+    lastPolledAt: ticketMailboxConnections.lastPolledAt,
+    lastMessageAt: ticketMailboxConnections.lastMessageAt,
+  }).from(ticketMailboxConnections)
     .where(eq(ticketMailboxConnections.partnerId, partnerId));
-  return rows.map(toConnection);
+  return rows.map((row) => ({
+    id: row.id,
+    mailboxAddress: row.mailboxAddress,
+    displayName: row.displayName,
+    status: row.status as MailboxConnectionStatus,
+    lastPolledAt: row.lastPolledAt,
+    lastMessageAt: row.lastMessageAt,
+  }));
 }
 
 /** System-context read across all partners — used by the poll worker (Plan 2). */
-export async function listConnectedMailboxes(): Promise<MailboxConnection[]> {
+export async function listConnectedMailboxes(): Promise<ConnectedMailbox[]> {
   return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-    const rows = await db.select().from(ticketMailboxConnections)
+    return db.select({
+      id: ticketMailboxConnections.id,
+      partnerId: ticketMailboxConnections.partnerId,
+      tenantId: ticketMailboxConnections.tenantId,
+      mailboxAddress: ticketMailboxConnections.mailboxAddress,
+      deltaLink: ticketMailboxConnections.deltaLink,
+    }).from(ticketMailboxConnections)
+      .innerJoin(
+        ticketMailboxTenantOwnerships,
+        and(
+          eq(ticketMailboxConnections.tenantId, ticketMailboxTenantOwnerships.tenantId),
+          eq(ticketMailboxConnections.partnerId, ticketMailboxTenantOwnerships.partnerId),
+        ),
+      )
       .where(eq(ticketMailboxConnections.status, 'connected'));
-    return rows.map(toConnection);
   }));
 }
 
@@ -62,22 +105,74 @@ export async function createPendingConnection(input: {
     createdBy: input.createdBy,
   }).onConflictDoUpdate({
     target: [ticketMailboxConnections.partnerId, ticketMailboxConnections.mailboxAddress],
-    set: { status: 'pending_consent', displayName: input.displayName, updatedAt: new Date() },
+    set: {
+      status: 'pending_consent',
+      tenantId: null,
+      deltaLink: null,
+      lastError: null,
+      lastPolledAt: null,
+      lastMessageAt: null,
+      displayName: input.displayName,
+      updatedAt: new Date(),
+    },
   }).returning();
   const row = rows[0];
   if (!row) throw new Error('Failed to create pending mailbox connection');
   return toConnection(row);
 }
 
-export async function setConnectionTenant(id: string, partnerId: string, tenantId: string): Promise<void> {
-  await db.update(ticketMailboxConnections)
-    .set({ tenantId, updatedAt: new Date() })
-    .where(and(eq(ticketMailboxConnections.id, id), eq(ticketMailboxConnections.partnerId, partnerId)));
+export async function bindVerifiedTenant(
+  connectionId: string,
+  partnerId: string,
+  tenantId: string,
+  evidence: { microsoftOid: string; breezeUserId: string | null },
+): Promise<void> {
+  const normalizedTenantId = tenantId.toLowerCase();
+  const normalizedMicrosoftOid = evidence.microsoftOid.toLowerCase();
+
+  await db.transaction(async (tx) => {
+    await tx.insert(ticketMailboxTenantOwnerships).values({
+      tenantId: normalizedTenantId,
+      partnerId,
+      verifiedBy: evidence.breezeUserId,
+      verifiedMicrosoftOid: normalizedMicrosoftOid,
+    }).onConflictDoNothing({
+      target: ticketMailboxTenantOwnerships.tenantId,
+    }).returning({ partnerId: ticketMailboxTenantOwnerships.partnerId });
+
+    const ownershipRows = await tx.select({ partnerId: ticketMailboxTenantOwnerships.partnerId })
+      .from(ticketMailboxTenantOwnerships)
+      .where(eq(ticketMailboxTenantOwnerships.tenantId, normalizedTenantId))
+      .limit(1);
+    const ownership = ownershipRows[0];
+    if (!ownership) throw new Error('Failed to verify mailbox tenant ownership');
+    if (ownership.partnerId !== partnerId) {
+      throw new Error('Mailbox tenant is already owned by another partner');
+    }
+
+    const updated = await tx.update(ticketMailboxConnections)
+      .set({
+        tenantId: normalizedTenantId,
+        status: 'connected',
+        lastError: null,
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(ticketMailboxConnections.id, connectionId),
+        eq(ticketMailboxConnections.partnerId, partnerId),
+        eq(ticketMailboxConnections.status, 'pending_consent'),
+      ))
+      .returning({ id: ticketMailboxConnections.id });
+    if (updated.length !== 1) throw new Error('Pending mailbox connection not found');
+  });
 }
 
 export async function setConnectionStatus(
   id: string, partnerId: string, status: MailboxConnectionStatus, lastError: string | null,
 ): Promise<void> {
+  if (status === 'connected') {
+    throw new Error('Connected status requires bindVerifiedTenant');
+  }
   await db.update(ticketMailboxConnections)
     .set({ status, lastError, updatedAt: new Date() })
     .where(and(eq(ticketMailboxConnections.id, id), eq(ticketMailboxConnections.partnerId, partnerId)));
