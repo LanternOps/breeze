@@ -68,6 +68,8 @@ async function verifyMigrationCleanup() {
     const adminDb = getTestDb();
     const partner = await createPartner();
     const connectionId = randomUUID();
+    const cleanDisabledConnectionId = randomUUID();
+    const dirtyDisabledConnectionId = randomUUID();
     const legacyTenantId = randomUUID();
 
     // Recreate the pre-hardening schema and row, then replay the real migration.
@@ -85,6 +87,15 @@ async function verifyMigrationCleanup() {
       VALUES
         (${connectionId}, ${partner.id}, ${legacyTenantId}, 'legacy@example.com',
          'connected', 'https://graph.example/delta', 'legacy error')
+    `);
+    await adminDb.execute(sql`
+      INSERT INTO ticket_mailbox_connections
+        (id, partner_id, tenant_id, mailbox_address, status, delta_link)
+      VALUES
+        (${cleanDisabledConnectionId}, ${partner.id}, NULL, 'clean-disabled@example.com',
+         'disabled', NULL),
+        (${dirtyDisabledConnectionId}, ${partner.id}, ${randomUUID()}, 'dirty-disabled@example.com',
+         'disabled', 'https://graph.example/legacy-disabled-delta')
     `);
 
     await adminDb.execute(sql.raw(readFileSync(MIGRATION_FILE, 'utf8')));
@@ -109,6 +120,36 @@ async function verifyMigrationCleanup() {
     expect(rows[0]?.tenantId).toBeNull();
     expect(rows[0]?.deltaLink).toBeNull();
     expect(rows[0]?.lastError).toBeNull();
+
+    const disabledRows = await adminDb.execute(sql`
+      SELECT id, status, tenant_id AS "tenantId", delta_link AS "deltaLink"
+      FROM ticket_mailbox_connections
+      WHERE id IN (${cleanDisabledConnectionId}, ${dirtyDisabledConnectionId})
+      ORDER BY mailbox_address
+    `) as unknown as Array<{
+      id: string;
+      status: string;
+      tenantId: string | null;
+      deltaLink: string | null;
+    }>;
+    expect(disabledRows).toEqual([
+      expect.objectContaining({
+        id: cleanDisabledConnectionId, status: 'disabled', tenantId: null, deltaLink: null,
+      }),
+      expect.objectContaining({
+        id: dirtyDisabledConnectionId, status: 'reauth_required', tenantId: null, deltaLink: null,
+      }),
+    ]);
+
+    const sessionColumns = await adminDb.execute(sql`
+      SELECT column_name AS "columnName", data_type AS "dataType"
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'ticket_mailbox_consent_sessions'
+        AND column_name IN ('tenant_hint', 'tenant_hint_hash')
+      ORDER BY column_name
+    `) as unknown as Array<{ columnName: string; dataType: string }>;
+    expect(sessionColumns).toEqual([{ columnName: 'tenant_hint_hash', dataType: 'text' }]);
 
     // Once the column is hardened to UUID, replay must not revoke a valid
     // verified binding or discard its active delta cursor.
@@ -221,9 +262,9 @@ async function verifyPartnerAxisRls() {
     `);
     await adminDb.execute(sql`
       INSERT INTO ticket_mailbox_consent_sessions
-        (state, phase, partner_id, connection_id, user_id, tenant_hint, expires_at)
+        (state, phase, partner_id, connection_id, user_id, tenant_hint_hash, expires_at)
       VALUES ('state-b', 'admin_consent', ${partnerB.id}, ${connectionB}, ${userB.id},
-              ${tenantB}, now() + interval '10 minutes')
+              'test-only-tenant-hash', now() + interval '10 minutes')
     `);
 
     const ownershipRows = await withDbAccessContext(contextA, () => db.execute(sql`

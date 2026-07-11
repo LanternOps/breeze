@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { dbMocks, generatorMocks, contextMocks } = vi.hoisted(() => ({
@@ -51,6 +52,7 @@ vi.mock('drizzle-orm', async (importActual) => {
     and: vi.fn((...conditions: unknown[]) => ({ op: 'and', conditions })),
     eq: vi.fn((column: unknown, value: unknown) => ({ op: 'eq', column, value })),
     gt: vi.fn((column: unknown, value: unknown) => ({ op: 'gt', column, value })),
+    lte: vi.fn((column: unknown, value: unknown) => ({ op: 'lte', column, value })),
     sql: vi.fn((strings: TemplateStringsArray, ...params: unknown[]) => ({
       op: 'sql', strings: [...strings], params,
     })),
@@ -80,7 +82,7 @@ function row(overrides: Record<string, unknown> = {}) {
     partnerId: PARTNER_ID,
     connectionId: CONNECTION_ID,
     userId: USER_ID,
-    tenantHint: null,
+    tenantHintHash: null,
     nonce: null,
     codeVerifier: null,
     expiresAt: new Date(NOW.getTime() + 10 * 60_000),
@@ -115,7 +117,7 @@ describe('ticket mailbox consent sessions', () => {
       partnerId: PARTNER_ID, connectionId: CONNECTION_ID, userId: USER_ID,
     })).resolves.toEqual(expect.objectContaining({
       state: 'state-1', phase: 'admin_consent', partnerId: PARTNER_ID,
-      connectionId: CONNECTION_ID, userId: USER_ID, tenantHint: null,
+      connectionId: CONNECTION_ID, userId: USER_ID, tenantHintHash: null,
       nonce: null, codeVerifier: null,
       expiresAt: new Date('2026-07-11T12:10:00.000Z'),
     }));
@@ -140,9 +142,9 @@ describe('ticket mailbox consent sessions', () => {
     expect(dbMocks.insertedValues.map((value) => value.state)).toEqual(['colliding-state', 'fresh-state']);
   });
 
-  it('creates an identity-verification session with tenant hint, nonce, and PKCE verifier', async () => {
+  it('persists only a keyed tenant-hint hash with nonce and PKCE verifier', async () => {
     dbMocks.insertResults.push([row({
-      phase: 'identity_verification', tenantHint: TENANT_ID,
+      phase: 'identity_verification', tenantHintHash: 'expected-hmac',
       nonce: 'nonce-1', codeVerifier: 'verifier-1',
     })]);
 
@@ -152,13 +154,33 @@ describe('ticket mailbox consent sessions', () => {
 
     expect(result).toEqual({
       session: expect.objectContaining({
-        phase: 'identity_verification', tenantHint: TENANT_ID,
+        phase: 'identity_verification', tenantHintHash: 'expected-hmac',
         nonce: 'nonce-1', codeVerifier: 'verifier-1',
       }),
       codeChallenge: 'challenge-1',
     });
+    const expectedHash = createHmac(
+      'sha256',
+      'test-jwt-secret-must-be-at-least-32-characters-long',
+    ).update(`ticket-mailbox-oauth-tenant-hint:${TENANT_ID}`).digest('base64url');
     expect(dbMocks.insertedValues[0]).toEqual(expect.objectContaining({
-      tenantHint: TENANT_ID, nonce: 'nonce-1', codeVerifier: 'verifier-1',
+      tenantHintHash: expectedHash, nonce: 'nonce-1', codeVerifier: 'verifier-1',
+    }));
+    expect(dbMocks.insertedValues[0]).not.toHaveProperty('tenantHint');
+    expect(JSON.stringify(dbMocks.insertedValues[0])).not.toContain(TENANT_ID);
+  });
+
+  it('deletes expired sessions before creating a new session', async () => {
+    dbMocks.insertResults.push([row()]);
+
+    await createAdminConsentSession({
+      partnerId: PARTNER_ID, connectionId: CONNECTION_ID, userId: USER_ID,
+    });
+
+    expect(dbMocks.deleteWhere).toHaveBeenCalledWith(expect.objectContaining({
+      op: 'lte',
+      column: ticketMailboxConsentSessions.expiresAt,
+      value: { op: 'sql', strings: ['now()'], params: [] },
     }));
   });
 

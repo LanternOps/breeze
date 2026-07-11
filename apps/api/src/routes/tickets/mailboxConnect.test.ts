@@ -35,6 +35,7 @@ const { authRef, mocks } = vi.hoisted(() => ({
     createAdminConsentSession: vi.fn(),
     createIdentityVerificationSession: vi.fn(),
     consumeConsentSession: vi.fn(),
+    hashTenantHint: vi.fn((tenant: string) => `tenant-hash:${tenant.toLowerCase()}`),
     exchangeMicrosoftAuthorizationCode: vi.fn(),
     verifyMicrosoftAdminIdToken: vi.fn(),
     hasMailboxConsentAdminRole: vi.fn(() => true),
@@ -100,6 +101,7 @@ vi.mock('../../services/ticketMailbox/consentSessionService', () => ({
   createAdminConsentSession: mocks.createAdminConsentSession,
   createIdentityVerificationSession: mocks.createIdentityVerificationSession,
   consumeConsentSession: mocks.consumeConsentSession,
+  hashTenantHint: mocks.hashTenantHint,
 }));
 vi.mock('../../services/ticketMailbox/microsoftIdentity', () => ({
   buildMicrosoftAuthorizationUrl: vi.fn((input: Record<string, string>) => {
@@ -120,11 +122,16 @@ vi.mock('../../services/sentry', () => ({ captureException: mocks.captureExcepti
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../../services/partnerWideAccess';
 import { mailboxRoutes } from './mailboxConnect';
 
-function cookieFor(phase: 'admin_consent' | 'identity_verification', state: string): string {
+function cookieFor(
+  phase: 'admin_consent' | 'identity_verification',
+  state: string,
+  tenantHint = phase === 'identity_verification' ? TENANT_ID : null,
+): string {
+  const signedPayload = tenantHint ? `${phase}:${state}:${tenantHint}` : `${phase}:${state}`;
   const mac = createHmac('sha256', FIXED_SECRET)
-    .update(`${LABEL}-cookie:${phase}:${state}`)
+    .update(`${LABEL}-cookie:${signedPayload}`)
     .digest('base64url');
-  return `${phase}.${mac}`;
+  return tenantHint ? `${phase}.${tenantHint}.${mac}` : `${phase}.${mac}`;
 }
 
 function session(phase: 'admin_consent' | 'identity_verification', overrides: Record<string, unknown> = {}) {
@@ -134,7 +141,7 @@ function session(phase: 'admin_consent' | 'identity_verification', overrides: Re
     partnerId: PARTNER_ID,
     connectionId: CONNECTION_ID,
     userId: USER_ID,
-    tenantHint: phase === 'identity_verification' ? TENANT_ID : null,
+    tenantHintHash: phase === 'identity_verification' ? `tenant-hash:${TENANT_ID}` : null,
     nonce: phase === 'identity_verification' ? 'stored-nonce' : null,
     codeVerifier: phase === 'identity_verification' ? 'stored-code-verifier' : null,
     expiresAt: new Date(Date.now() + 60_000),
@@ -232,6 +239,18 @@ describe('M365 mailbox lifecycle routes', () => {
       });
       expect(mocks.listMailboxConnections).toHaveBeenCalledWith(PARTNER_ID);
     });
+
+    it('allows system scope only when auth supplies a server-derived partner', async () => {
+      authRef.current = adminAuth({ scope: 'system', partnerId: PARTNER_ID, partnerOrgAccess: null });
+      expect((await app.request('/connections')).status).toBe(200);
+      expect(mocks.listMailboxConnections).toHaveBeenCalledWith(PARTNER_ID);
+    });
+
+    it('denies system scope without a server-derived partner', async () => {
+      authRef.current = adminAuth({ scope: 'system', partnerId: null, partnerOrgAccess: null });
+      expect((await app.request('/connections')).status).toBe(403);
+      expect(mocks.listMailboxConnections).not.toHaveBeenCalled();
+    });
   });
 
   const mutations = [
@@ -270,6 +289,17 @@ describe('M365 mailbox lifecycle routes', () => {
       const response = await request(app);
       expect(response.status).toBe(403);
       await expect(response.json()).resolves.toEqual({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+      expectNoLifecycleEffects();
+    });
+
+    it('allows system scope with a server-derived partner', async () => {
+      authRef.current = adminAuth({ scope: 'system', partnerId: PARTNER_ID, partnerOrgAccess: null });
+      expect((await request(app)).status).toBe(200);
+    });
+
+    it('denies system scope without a server-derived partner before mutation', async () => {
+      authRef.current = adminAuth({ scope: 'system', partnerId: null, partnerOrgAccess: null });
+      expect((await request(app)).status).toBe(403);
       expectNoLifecycleEffects();
     });
   });
@@ -407,6 +437,53 @@ describe('M365 mailbox lifecycle routes', () => {
     expect(JSON.stringify(mocks.writeAuditEvent.mock.calls)).not.toContain('authorization-code');
     expect(JSON.stringify(mocks.writeAuditEvent.mock.calls)).not.toContain('verified-id-token');
     expect(JSON.stringify(mocks.writeAuditEvent.mock.calls)).not.toContain('platform-client-secret');
+  });
+
+  it('rejects an identity cookie tenant whose hash does not match the consumed session', async () => {
+    const response = await app.request('/callback?state=identity-state&code=authorization-code', {
+      headers: {
+        cookie: `ticket_mailbox_oauth_state=${cookieFor('identity_verification', 'identity-state', ATTACKER_TENANT)}`,
+      },
+    });
+
+    expect(response.status).toBe(400);
+    expect(mocks.consumeConsentSession).toHaveBeenCalledWith('identity-state', 'identity_verification');
+    expect(mocks.exchangeMicrosoftAuthorizationCode).not.toHaveBeenCalled();
+    expect(mocks.verifyMicrosoftAdminIdToken).not.toHaveBeenCalled();
+    expect(mocks.probeMailbox).not.toHaveBeenCalled();
+    expect(mocks.bindVerifiedTenant).not.toHaveBeenCalled();
+    expect(mocks.writeAuditEvent).not.toHaveBeenCalled();
+  });
+
+  it('rejects an identity cookie without its tenant before consuming state', async () => {
+    const mac = createHmac('sha256', FIXED_SECRET)
+      .update(`${LABEL}-cookie:identity_verification:identity-state`)
+      .digest('base64url');
+    const response = await app.request('/callback?state=identity-state&code=authorization-code', {
+      headers: { cookie: `ticket_mailbox_oauth_state=identity_verification.${mac}` },
+    });
+
+    expect(response.status).toBe(400);
+    expect(mocks.consumeConsentSession).not.toHaveBeenCalled();
+    expect(mocks.exchangeMicrosoftAuthorizationCode).not.toHaveBeenCalled();
+    expect(mocks.probeMailbox).not.toHaveBeenCalled();
+    expect(mocks.bindVerifiedTenant).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['tampered', `identity_verification.${TENANT_ID}.invalid-signature`],
+  ])('rejects a %s identity cookie before state or provider work', async (_label, cookie) => {
+    const response = await app.request('/callback?state=identity-state&code=authorization-code', {
+      headers: cookie ? { cookie: `ticket_mailbox_oauth_state=${cookie}` } : undefined,
+    });
+
+    expect(response.status).toBe(400);
+    expect(mocks.consumeConsentSession).not.toHaveBeenCalled();
+    expect(mocks.exchangeMicrosoftAuthorizationCode).not.toHaveBeenCalled();
+    expect(mocks.verifyMicrosoftAdminIdToken).not.toHaveBeenCalled();
+    expect(mocks.probeMailbox).not.toHaveBeenCalled();
+    expect(mocks.bindVerifiedTenant).not.toHaveBeenCalled();
   });
 
   it('rejects callback query injection that mixes identity code with a tenant hint', async () => {

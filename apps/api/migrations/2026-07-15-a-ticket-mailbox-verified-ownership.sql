@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS ticket_mailbox_consent_sessions (
   partner_id uuid NOT NULL REFERENCES partners(id),
   connection_id uuid NOT NULL,
   user_id uuid REFERENCES users(id),
-  tenant_hint uuid,
+  tenant_hint_hash text,
   nonce text,
   code_verifier text,
   expires_at timestamptz NOT NULL,

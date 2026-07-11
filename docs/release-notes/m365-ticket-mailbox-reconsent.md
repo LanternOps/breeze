@@ -4,7 +4,7 @@
 
 This release strengthens Microsoft 365 ticket mailbox consent by verifying the Microsoft tenant and consenting administrator identity and binding verified tenant ownership to the Breeze partner.
 
-All existing Microsoft 365 ticket mailbox connections become `reauth_required` during the upgrade. Inbound Microsoft polling and outbound Microsoft Graph replies remain disabled until a full-partner mailbox administrator with MFA completes consent again. SMTP fallback for outbound customer mail remains active when no verified Graph mailbox resolves.
+All non-disabled Microsoft 365 ticket mailbox connections become `reauth_required` during the upgrade. Disabled rows that retain a legacy tenant or delta cursor also become `reauth_required` and have that state cleared. Already-disabled rows with neither value remain disabled and are not reactivated. Inbound Microsoft polling and outbound Microsoft Graph replies remain disabled until a full-partner mailbox administrator with MFA completes consent again. SMTP fallback for outbound customer mail remains active when no verified Graph mailbox resolves.
 
 For each affected mailbox, a full-partner mailbox administrator must:
 
@@ -36,7 +36,7 @@ WHERE c.status = 'connected'
   AND o.tenant_id IS NULL;
 ```
 
-Confirm that legacy connections remain `reauth_required` until their administrators complete consent again. After re-consent, verify that inbound polling and outbound Graph replies resume only for the verified connection. Confirm that SMTP delivery remains available when no verified Graph mailbox resolves.
+Confirm that active connections and disabled rows with legacy tenant/cursor state remain `reauth_required` until their administrators complete consent again. Confirm that clean rows that were already disabled remain `disabled`. After re-consent, verify that inbound polling and outbound Graph replies resume only for the verified connection. Confirm that SMTP delivery remains available when no verified Graph mailbox resolves.
 
 ## Rollback
 

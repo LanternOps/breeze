@@ -23,6 +23,7 @@ import {
   createAdminConsentSession,
   createIdentityVerificationSession,
   consumeConsentSession,
+  hashTenantHint,
   type ConsentSession,
 } from '../../services/ticketMailbox/consentSessionService';
 import {
@@ -61,6 +62,7 @@ const STATE_COOKIE = 'ticket_mailbox_oauth_state';
 const STATE_TTL_SECONDS = 10 * 60;
 const LABEL = 'ticket-mailbox-oauth';
 type CallbackPhase = ConsentSession['phase'];
+type BrowserBinding = { phase: CallbackPhase; tenantHint: string | null };
 
 const connectBody = z.object({
   mailboxAddress: z.string().email(),
@@ -85,7 +87,9 @@ type CallbackIntent =
 function resolvePartnerId(
   auth: Pick<AuthContext, 'scope' | 'partnerId'>,
 ): { partnerId: string } | { error: string; status: 403 } {
-  if (auth.scope === 'partner' && auth.partnerId) return { partnerId: auth.partnerId };
+  if ((auth.scope === 'partner' || auth.scope === 'system') && auth.partnerId) {
+    return { partnerId: auth.partnerId };
+  }
   return {
     error: 'Partner context required to manage ticket mailbox connections',
     status: 403,
@@ -115,23 +119,51 @@ function constantTimeEqual(a: string, b: string): boolean {
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
-function bindingCookieValue(phase: CallbackPhase, state: string): string | null {
-  const signature = hmac(`${phase}:${state}`);
-  return signature ? `${phase}.${signature}` : null;
+function bindingCookieValue(
+  phase: CallbackPhase,
+  state: string,
+  tenantHint: string | null = null,
+): string | null {
+  if (phase === 'identity_verification' && !tenantHint) return null;
+  const normalizedTenant = tenantHint?.trim().toLowerCase() ?? null;
+  if (normalizedTenant && !isM365TenantId(normalizedTenant)) return null;
+  const signedPayload = normalizedTenant
+    ? `${phase}:${state}:${normalizedTenant}`
+    : `${phase}:${state}`;
+  const signature = hmac(signedPayload);
+  if (!signature) return null;
+  return normalizedTenant
+    ? `${phase}.${normalizedTenant}.${signature}`
+    : `${phase}.${signature}`;
 }
 
-function readBoundPhase(c: Context, state: string): CallbackPhase | null {
+function readBrowserBinding(c: Context, state: string): BrowserBinding | null {
   const presented = getCookie(c, STATE_COOKIE);
   if (!presented) return null;
-  for (const phase of ['admin_consent', 'identity_verification'] as const) {
-    const expected = bindingCookieValue(phase, state);
-    if (expected && constantTimeEqual(presented, expected)) return phase;
+  const parts = presented.split('.');
+  if (parts[0] === 'admin_consent' && parts.length === 2) {
+    const expected = bindingCookieValue('admin_consent', state);
+    if (expected && constantTimeEqual(presented, expected)) {
+      return { phase: 'admin_consent', tenantHint: null };
+    }
+  }
+  if (parts[0] === 'identity_verification' && parts.length === 3) {
+    const tenantHint = parts[1]?.toLowerCase() ?? '';
+    const expected = bindingCookieValue('identity_verification', state, tenantHint);
+    if (expected && constantTimeEqual(presented, expected)) {
+      return { phase: 'identity_verification', tenantHint };
+    }
   }
   return null;
 }
 
-function setBindingCookie(c: Context, phase: CallbackPhase, state: string): boolean {
-  const value = bindingCookieValue(phase, state);
+function setBindingCookie(
+  c: Context,
+  phase: CallbackPhase,
+  state: string,
+  tenantHint: string | null = null,
+): boolean {
+  const value = bindingCookieValue(phase, state, tenantHint);
   if (!value) return false;
   setCookie(c, STATE_COOKIE, value, {
     httpOnly: true,
@@ -309,14 +341,26 @@ mailboxRoutes.post(
 // never treated as verified ownership evidence.
 mailboxRoutes.get('/callback', zValidator('query', callbackQuery), async (c) => {
   const query = c.req.valid('query');
-  const phase = readBoundPhase(c, query.state);
-  if (!phase) return c.json({ error: 'OAuth state binding mismatch' }, 400);
+  const binding = readBrowserBinding(c, query.state);
+  if (!binding) return c.json({ error: 'OAuth state binding mismatch' }, 400);
+  const { phase } = binding;
   const intent = parseCallbackIntent(phase, query);
   if (!intent) return c.json({ error: 'Invalid OAuth callback parameters' }, 400);
 
   const session = await consumeConsentSession(query.state, phase);
   if (!session) return c.json({ error: 'Invalid or expired OAuth state' }, 400);
   deleteCookie(c, STATE_COOKIE, { path: '/' });
+
+  if (phase === 'identity_verification') {
+    const presentedHash = binding.tenantHint ? hashTenantHint(binding.tenantHint) : null;
+    if (
+      !presentedHash
+      || !session.tenantHintHash
+      || !constantTimeEqual(presentedHash, session.tenantHintHash)
+    ) {
+      return c.json({ error: 'OAuth state binding mismatch' }, 400);
+    }
+  }
 
   let connection: MailboxConnection | null = null;
   const fail = async (
@@ -356,7 +400,10 @@ mailboxRoutes.get('/callback', zValidator('query', callbackQuery), async (c) => 
         userId: session.userId,
         tenantHint: intent.tenantHint,
       });
-      if (!next.session.nonce || !setBindingCookie(c, next.session.phase, next.session.state)) {
+      if (
+        !next.session.nonce
+        || !setBindingCookie(c, next.session.phase, next.session.state, intent.tenantHint)
+      ) {
         return fail('invalid_identity');
       }
       return c.redirect(buildMicrosoftAuthorizationUrl({
@@ -373,13 +420,14 @@ mailboxRoutes.get('/callback', zValidator('query', callbackQuery), async (c) => 
     }
   }
 
-  if (!session.tenantHint || !session.nonce || !session.codeVerifier) {
+  const tenantHint = binding.tenantHint;
+  if (!tenantHint || !session.tenantHintHash || !session.nonce || !session.codeVerifier) {
     return fail('invalid_identity');
   }
 
   try {
     const exchanged = await exchangeMicrosoftAuthorizationCode({
-      tenantHint: session.tenantHint,
+      tenantHint,
       clientId: platform.clientId,
       clientSecret: platform.clientSecret,
       redirectUri: getMailboxCallbackUri(),
@@ -387,7 +435,7 @@ mailboxRoutes.get('/callback', zValidator('query', callbackQuery), async (c) => 
       codeVerifier: session.codeVerifier,
     });
     const claims = await verifyMicrosoftAdminIdToken(exchanged.idToken, {
-      tenantHint: session.tenantHint,
+      tenantHint,
       clientId: platform.clientId,
       nonce: session.nonce,
     });

@@ -64,11 +64,13 @@ app-only token acquisition as tenant ownership proof.
 
 ### Existing connections
 
-The migration marks existing mailbox connections `reauth_required`, clears their delta cursor, and
-records that ownership verification is absent. The data-change block records its affected row count
-in PostgreSQL logs. Polling and outbound Graph replies remain disabled until the connection
-completes the new verified flow. This is an intentional operational breaking change and requires
-release-note and administrator re-consent instructions.
+The migration marks non-disabled mailbox connections and disabled rows retaining legacy tenant or
+cursor state `reauth_required`, clears their tenant and delta cursor, and records that ownership
+verification is absent. Already-disabled clean rows remain disabled and are not resurrected. The
+data-change block records its affected row count in PostgreSQL logs. Polling and outbound Graph
+replies remain disabled until the connection completes the new verified flow. This is an
+intentional operational breaking change and requires release-note and administrator re-consent
+instructions.
 
 ### Authorization and response minimization
 

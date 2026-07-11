@@ -66,7 +66,7 @@ export const ticketMailboxConsentSessions = pgTable('ticket_mailbox_consent_sess
   partnerId: uuid('partner_id').notNull().references(() => partners.id),
   connectionId: uuid('connection_id').notNull(),
   userId: uuid('user_id').references(() => users.id),
-  tenantHint: uuid('tenant_hint'),
+  tenantHintHash: text('tenant_hint_hash'),
   nonce: text('nonce'),
   codeVerifier: text('code_verifier'),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),

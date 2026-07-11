@@ -1,4 +1,5 @@
-import { and, eq, gt, sql } from 'drizzle-orm';
+import { createHmac } from 'node:crypto';
+import { and, eq, gt, lte, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
   ticketMailboxConsentSessions,
@@ -7,6 +8,7 @@ import {
 import { generateNonce, generatePKCEChallenge, generateState } from '../sso';
 
 const CONSENT_SESSION_TTL_MS = 10 * 60_000;
+const TENANT_HINT_HASH_LABEL = 'ticket-mailbox-oauth-tenant-hint';
 
 export interface ConsentSession {
   state: string;
@@ -14,7 +16,7 @@ export interface ConsentSession {
   partnerId: string;
   connectionId: string;
   userId: string | null;
-  tenantHint: string | null;
+  tenantHintHash: string | null;
   nonce: string | null;
   codeVerifier: string | null;
   expiresAt: Date;
@@ -29,7 +31,7 @@ function toConsentSession(row: SessionRow): ConsentSession {
     partnerId: row.partnerId,
     connectionId: row.connectionId,
     userId: row.userId,
-    tenantHint: row.tenantHint,
+    tenantHintHash: row.tenantHintHash,
     nonce: row.nonce,
     codeVerifier: row.codeVerifier,
     expiresAt: row.expiresAt,
@@ -41,13 +43,16 @@ async function createConsentSession(input: {
   partnerId: string;
   connectionId: string;
   userId: string | null;
-  tenantHint: string | null;
+  tenantHintHash: string | null;
   nonce: string | null;
   codeVerifier: string | null;
 }): Promise<ConsentSession> {
   const expiresAt = new Date(Date.now() + CONSENT_SESSION_TTL_MS);
 
   return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    await db.delete(ticketMailboxConsentSessions).where(
+      lte(ticketMailboxConsentSessions.expiresAt, sql`now()`),
+    );
     while (true) {
       const rows = await db.insert(ticketMailboxConsentSessions).values({
         ...input,
@@ -60,6 +65,25 @@ async function createConsentSession(input: {
   }));
 }
 
+function signingSecret(): string | null {
+  return process.env.APP_ENCRYPTION_KEY?.trim()
+    || process.env.SECRET_ENCRYPTION_KEY?.trim()
+    || process.env.SESSION_SECRET?.trim()
+    || process.env.JWT_SECRET?.trim()
+    || (process.env.NODE_ENV === 'production'
+      ? null
+      : 'test-only-ticket-mailbox-oauth-state-secret');
+}
+
+export function hashTenantHint(tenantHint: string): string | null {
+  const secret = signingSecret();
+  if (!secret) return null;
+  const normalized = tenantHint.trim().toLowerCase();
+  return createHmac('sha256', secret)
+    .update(`${TENANT_HINT_HASH_LABEL}:${normalized}`)
+    .digest('base64url');
+}
+
 export async function createAdminConsentSession(input: {
   partnerId: string;
   connectionId: string;
@@ -68,7 +92,7 @@ export async function createAdminConsentSession(input: {
   return createConsentSession({
     ...input,
     phase: 'admin_consent',
-    tenantHint: null,
+    tenantHintHash: null,
     nonce: null,
     codeVerifier: null,
   });
@@ -82,9 +106,14 @@ export async function createIdentityVerificationSession(input: {
 }): Promise<{ session: ConsentSession; codeChallenge: string }> {
   const nonce = generateNonce();
   const pkce = generatePKCEChallenge();
+  const tenantHintHash = hashTenantHint(input.tenantHint);
+  if (!tenantHintHash) throw new Error('OAuth state signing secret is not configured');
   const session = await createConsentSession({
-    ...input,
+    partnerId: input.partnerId,
+    connectionId: input.connectionId,
+    userId: input.userId,
     phase: 'identity_verification',
+    tenantHintHash,
     nonce,
     codeVerifier: pkce.codeVerifier,
   });

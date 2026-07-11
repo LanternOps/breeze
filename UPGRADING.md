@@ -2,7 +2,7 @@
 
 ## Action required: reconnect Microsoft 365 ticket mailboxes
 
-This release strengthens Microsoft 365 ticket mailbox consent by verifying the Microsoft tenant and consenting administrator identity and binding the tenant to its Breeze partner. During the upgrade, every existing Microsoft 365 ticket mailbox connection becomes `reauth_required`.
+This release strengthens Microsoft 365 ticket mailbox consent by verifying the Microsoft tenant and consenting administrator identity and binding the tenant to its Breeze partner. During the upgrade, every non-disabled Microsoft 365 ticket mailbox connection becomes `reauth_required`. Disabled rows that still hold a legacy tenant or delta cursor also become `reauth_required` and have that state cleared. Already-disabled rows with neither value remain disabled and are not reactivated.
 
 ### Deploy order
 
@@ -34,7 +34,7 @@ WHERE c.status = 'connected'
   AND o.tenant_id IS NULL;
 ```
 
-Also confirm that expected legacy connections are `reauth_required` until their administrators finish consent again.
+Also confirm that expected active or legacy-state connections are `reauth_required` until their administrators finish consent again, while clean rows that were already disabled remain `disabled`.
 
 ### Rollback warning
 

@@ -17,7 +17,7 @@
 - Lifecycle writes require `ticket_mailbox:admin`, MFA, and system or partner scope with `partnerOrgAccess === 'all'`; list requires `ticket_mailbox:read`.
 - Accept only Global Administrator (`62e90394-69f5-4237-9190-012177145e10`) and Privileged Role Administrator (`e8611ab8-c189-46e8-94e1-60213ab1f814`) in the verified `wids` claim.
 - Never persist or probe the admin-consent `tenant` query value; only the signature-verified ID-token `tid` may reach ownership binding or app-only token acquisition.
-- Existing connections become `reauth_required`, lose `tenant_id` and `delta_link`, and remain excluded from polling and outbound Graph replies until verified again.
+- Non-disabled connections and disabled rows retaining legacy tenant/cursor state become `reauth_required`, lose `tenant_id` and `delta_link`, and remain excluded from polling and outbound Graph replies until verified again. Already-disabled clean rows remain disabled.
 - Audit details must not contain authorization codes, access/ID tokens, PKCE verifiers, nonce values, delta links, or raw Graph errors/responses.
 - Use test-driven development: demonstrate each security regression red before production changes and green after them.
 - Use OrbStack for PostgreSQL-backed tests: `PATH="$HOME/.orbstack/bin:$PATH" docker-compose -f docker-compose.test.yml up -d --wait`.
@@ -236,7 +236,7 @@ export const ticketMailboxConsentSessions = pgTable('ticket_mailbox_consent_sess
   partnerId: uuid('partner_id').notNull().references(() => partners.id),
   connectionId: uuid('connection_id').notNull(),
   userId: uuid('user_id').references(() => users.id),
-  tenantHint: uuid('tenant_hint'),
+  tenantHintHash: text('tenant_hint_hash'),
   nonce: text('nonce'),
   codeVerifier: text('code_verifier'),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
@@ -268,7 +268,7 @@ CREATE TABLE IF NOT EXISTS ticket_mailbox_consent_sessions (
   partner_id uuid NOT NULL REFERENCES partners(id),
   connection_id uuid NOT NULL,
   user_id uuid REFERENCES users(id),
-  tenant_hint uuid,
+  tenant_hint_hash text,
   nonce text,
   code_verifier text,
   expires_at timestamptz NOT NULL,
@@ -380,7 +380,7 @@ export interface ConsentSession {
   partnerId: string;
   connectionId: string;
   userId: string | null;
-  tenantHint: string | null;
+  tenantHintHash: string | null;
   nonce: string | null;
   codeVerifier: string | null;
   expiresAt: Date;
@@ -405,7 +405,7 @@ export async function consumeConsentSession(
 ): Promise<ConsentSession | null>;
 ```
 
-Use a 10-minute TTL. `consumeConsentSession` must perform one `DELETE ... WHERE state = ? AND phase = ? AND expires_at > now() RETURNING *` inside `runOutsideDbContext(() => withSystemDbAccessContext(...))`; never select then delete.
+Use a 10-minute TTL. Persist only a keyed HMAC of the normalized identity-phase tenant hint; carry the raw normalized hint solely in a phase/state-bound signed HttpOnly browser cookie. Delete expired session rows during creation. `consumeConsentSession` must perform one `DELETE ... WHERE state = ? AND phase = ? AND expires_at > now() RETURNING *` inside `runOutsideDbContext(() => withSystemDbAccessContext(...))`; never select then delete.
 
 - [ ] **Step 4: Run consent-session tests green**
 
