@@ -3,10 +3,11 @@ import { useEventStream } from '../../hooks/useEventStream';
 import { useAdvancedFilterIds } from '../../hooks/useAdvancedFilterIds';
 import { List, Grid, Plus, AlertCircle } from 'lucide-react';
 import { showToast } from '../shared/Toast';
-import type { FilterConditionGroup } from '@breeze/shared';
+import type { FilterCondition, FilterConditionGroup } from '@breeze/shared';
 import DeviceList, { type Device, type DeviceClass, type DeviceStatus, type OSType } from './DeviceList';
 import type { DeviceRole } from '@/lib/deviceRoles';
 import DeviceCard from './DeviceCard';
+import DecommissionedHiddenHint from './DecommissionedHiddenHint';
 import ScriptPickerModal, { type Script, type ScriptRunAsSelection } from './ScriptPickerModal';
 import DeviceSettingsModal from './DeviceSettingsModal';
 import AddDeviceModal from './AddDeviceModal';
@@ -202,6 +203,31 @@ export default function DevicesPage() {
         : c.value === 'decommissioned';
     });
   }, [advancedFilter]);
+
+  // "Show" action for the hidden-decommissioned hint (#2251): applies the
+  // Decommissioned status filter — the same unhide mechanism the toolbar's
+  // status picker uses — replacing any other status equals/in value. Same
+  // single-select-per-field semantics as DeviceFilterToolbar's addCondition
+  // (independent implementation; chip order may differ — the replacement is
+  // appended rather than placed in the replaced condition's slot). Other
+  // filter conditions are preserved. If the current group is an OR sentence
+  // built in the Advanced drawer, nest it instead of rewriting it so its
+  // meaning is kept and the status condition stays top-level (where the
+  // includeDecommissioned memo looks); the AND intersection can be empty if
+  // the OR sentence itself constrains status — the rows still unhide, but
+  // zero of them may match.
+  const handleShowDecommissioned = useCallback(() => {
+    setAdvancedFilter(prev => {
+      const statusCond: FilterCondition = { field: 'status', operator: 'equals', value: 'decommissioned' };
+      if (!prev) return { operator: 'AND', conditions: [statusCond] };
+      if (prev.operator === 'OR') return { operator: 'AND', conditions: [prev, statusCond] };
+      const rest = prev.conditions.filter(
+        c => 'conditions' in c || c.field !== 'status' || (c.operator !== 'equals' && c.operator !== 'in')
+      );
+      return { operator: 'AND', conditions: [...rest, statusCond] };
+    });
+  }, []);
+
   // Per-segment counts come from the full merged fleet so each segment shows its
   // true total regardless of which one is active. Gated to the network arm; with
   // the flag off the segment isn't rendered and these go unused.
@@ -220,6 +246,17 @@ export default function DevicesPage() {
       return advancedFilterIds === null ? base : base.filter(d => advancedFilterIds.has(d.id));
     },
     [classFilteredDevices, advancedFilterIds, includeDecommissioned]
+  );
+  // How many decommissioned devices the default view is hiding (#2251) — drives
+  // the grid view's hint line (the list view computes its own from the same
+  // classFilteredDevices set, so the two stay in lockstep). The page fetches
+  // with includeDecommissioned: true, so this is a cheap client-side count.
+  const hiddenDecommissionedCount = useMemo(
+    () =>
+      includeDecommissioned
+        ? 0
+        : classFilteredDevices.filter(d => d.status === 'decommissioned').length,
+    [classFilteredDevices, includeDecommissioned]
   );
 
   const fetchDevices = useCallback(async (signal?: AbortSignal) => {
@@ -1063,6 +1100,7 @@ export default function DevicesPage() {
           serverFilterIds={advancedFilterIds}
           serverFilterLoading={advancedFilterLoading}
           includeDecommissioned={includeDecommissioned}
+          onShowDecommissioned={handleShowDecommissioned}
           listFilters={listFilters}
           onListFiltersChange={setListFilters}
           onCreateGroup={() => setShowCreateGroup(true)}
@@ -1071,15 +1109,25 @@ export default function DevicesPage() {
           networkDevicesEnabled={ENABLE_NETWORK_DEVICES_IN_LIST}
         />
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-          {gridDevices.map(device => (
-            <DeviceCard
-              key={device.id}
-              device={device}
-              onClick={handleSelectDevice}
-              onAction={handleDeviceAction}
-            />
-          ))}
+        <div className="space-y-3">
+          {hiddenDecommissionedCount > 0 && (
+            <p>
+              <DecommissionedHiddenHint
+                count={hiddenDecommissionedCount}
+                onShow={handleShowDecommissioned}
+              />
+            </p>
+          )}
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            {gridDevices.map(device => (
+              <DeviceCard
+                key={device.id}
+                device={device}
+                onClick={handleSelectDevice}
+                onAction={handleDeviceAction}
+              />
+            ))}
+          </div>
         </div>
       )}
 

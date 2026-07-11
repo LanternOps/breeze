@@ -858,3 +858,73 @@ describe('DeviceList — linked multi-boot profiles (#2138)', () => {
     expect(screen.queryByTestId('collapse-linked-toggle')).toBeNull();
   });
 });
+
+// #2251 — the default view hides decommissioned devices; the "X of Y devices"
+// count line (rendered above the table) must say so and offer the existing
+// unhide mechanism (the Decommissioned status filter, applied upstream via
+// onShowDecommissioned).
+describe('DeviceList — hidden-decommissioned hint (#2251)', () => {
+  beforeEach(() => {
+    window.localStorage?.clear();
+  });
+
+  const decomDevice: Device = {
+    ...baseDevice,
+    id: '99999999-9999-9999-9999-999999999999',
+    hostname: 'host-decom',
+    status: 'decommissioned',
+  };
+
+  it('shows the hidden count and calls onShowDecommissioned when "show" is clicked', () => {
+    const onShow = vi.fn();
+    render(
+      <DeviceList
+        devices={[baseDevice, decomDevice]}
+        onShowDecommissioned={onShow}
+      />
+    );
+
+    const hint = screen.getByTestId('decommissioned-hidden-hint');
+    expect(hint).toHaveTextContent('1 decommissioned hidden');
+
+    fireEvent.click(screen.getByTestId('decommissioned-hidden-show'));
+    expect(onShow).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the count-line total consistent with the hidden rows (excludes decommissioned)', () => {
+    render(
+      <DeviceList
+        devices={[baseDevice, decomDevice]}
+        onShowDecommissioned={vi.fn()}
+      />
+    );
+
+    // 1 visible of 1 non-decommissioned — the hidden row is called out by the
+    // hint instead of silently vanishing from the denominator.
+    expect(screen.getByText(/1 of 1 devices/)).toBeInTheDocument();
+  });
+
+  it('renders no hint when decommissioned devices are already visible (includeDecommissioned)', () => {
+    render(
+      <DeviceList
+        devices={[baseDevice, decomDevice]}
+        includeDecommissioned
+        onShowDecommissioned={vi.fn()}
+      />
+    );
+
+    expect(screen.queryByTestId('decommissioned-hidden-hint')).toBeNull();
+    // Denominator includes the now-visible decommissioned row.
+    expect(screen.getByText(/2 of 2 devices/)).toBeInTheDocument();
+  });
+
+  it('renders no hint when there are no decommissioned devices', () => {
+    render(<DeviceList devices={[baseDevice]} onShowDecommissioned={vi.fn()} />);
+    expect(screen.queryByTestId('decommissioned-hidden-hint')).toBeNull();
+  });
+
+  it('renders no hint when no onShowDecommissioned handler is wired (standalone render)', () => {
+    render(<DeviceList devices={[baseDevice, decomDevice]} />);
+    expect(screen.queryByTestId('decommissioned-hidden-hint')).toBeNull();
+  });
+});

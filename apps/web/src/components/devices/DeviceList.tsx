@@ -41,6 +41,7 @@ import {
   type LinkedProfileCollapsePreference,
 } from '@/lib/appearance';
 import { groupLinkedDevices } from './linkedDevices';
+import DecommissionedHiddenHint from './DecommissionedHiddenHint';
 import { OSIcon } from './osIcons';
 import { formatDeviceOsVersion } from './osDisplay';
 import { type ListFilters, DEFAULT_LIST_FILTERS } from './deviceListFilters';
@@ -194,6 +195,10 @@ type DeviceListProps = {
   // true only when the active filter group explicitly targets the
   // 'decommissioned' status, so filtering FOR decommissioned still shows them.
   includeDecommissioned?: boolean;
+  // Applies the Decommissioned status filter upstream (#2251) — the existing
+  // unhide mechanism. Wired by DevicesPage; when absent (standalone renders /
+  // tests) the "N decommissioned hidden — show" hint is not rendered.
+  onShowDecommissioned?: () => void;
   // Unified-list network arm (#1322). Off by default behind a build-time flag
   // (PUBLIC_ENABLE_NETWORK_DEVICES_IN_LIST); when false the Class/Type columns
   // and the All/Agent/Network facet are hidden entirely so the list is the
@@ -358,6 +363,7 @@ export default function DeviceList({
   onBulkAction,
   pageSize = 10,
   includeDecommissioned = false,
+  onShowDecommissioned,
   serverFilterIds = null,
   serverFilterLoading = false,
   networkDevicesEnabled = false,
@@ -549,6 +555,17 @@ export default function DeviceList({
       return matchesClass && matchesVpn && matchesQuery;
     });
   }, [devices, query, classFilter, vpnFilter, serverFilterIds, includeDecommissioned]);
+
+  // How many decommissioned devices the default view is hiding (#2251). Zero
+  // when they're already visible (includeDecommissioned) so the hint and the
+  // count math below stay consistent with what the table actually shows.
+  const hiddenDecommissionedCount = useMemo(
+    () =>
+      includeDecommissioned
+        ? 0
+        : devices.filter(d => d.status === 'decommissioned').length,
+    [devices, includeDecommissioned]
+  );
 
   // Providers present across the loaded set — drives the VPN facet options so
   // techs only see providers that actually exist in their fleet.
@@ -1271,12 +1288,20 @@ export default function DeviceList({
       <div className="flex flex-col gap-3">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-sm text-muted-foreground">
-            {filteredDevices.length} of {includeDecommissioned ? devices.length : devices.filter(d => d.status !== 'decommissioned').length} devices
+            {filteredDevices.length} of {devices.length - hiddenDecommissionedCount} devices
             {serverFilterIds !== null && (
               <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
                 <Filter className="h-3 w-3" />
                 Advanced filter active
                 {serverFilterLoading && <span className="ml-1 animate-pulse">...</span>}
+              </span>
+            )}
+            {onShowDecommissioned && hiddenDecommissionedCount > 0 && (
+              <span className="ml-2">
+                <DecommissionedHiddenHint
+                  count={hiddenDecommissionedCount}
+                  onShow={onShowDecommissioned}
+                />
               </span>
             )}
           </p>
