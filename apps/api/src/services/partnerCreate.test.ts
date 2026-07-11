@@ -106,6 +106,7 @@ describe('createPartner', () => {
       adminName: 'Alex',
       passwordHash: 'hashed',
       origin: { mcp: false },
+      status: 'active',
     });
 
     // Basic return shape.
@@ -148,6 +149,7 @@ describe('createPartner', () => {
       adminName: 'Alex',
       passwordHash: 'hashed',
       origin: { mcp: false },
+      status: 'active',
     });
 
     const statusCalls = insertCalls.filter((c) => (c.table as any).__t === 'ticket_statuses');
@@ -181,6 +183,7 @@ describe('createPartner', () => {
       adminName: 'Alex',
       passwordHash: null,
       origin: { mcp: true, ip: '1.2.3.4', userAgent: 'ClaudeAgent/1.0' },
+      status: 'pending',
     });
 
     expect(result.mcpOrigin).toBe(true);

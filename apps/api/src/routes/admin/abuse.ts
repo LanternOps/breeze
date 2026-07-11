@@ -385,6 +385,7 @@ abuseRoutes.post(
           .select({
             id: partners.id,
             paymentMethodAttachedAt: partners.paymentMethodAttachedAt,
+            emailVerifiedAt: partners.emailVerifiedAt,
           })
           .from(partners)
           .where(eq(partners.id, partnerId))
@@ -394,12 +395,11 @@ abuseRoutes.post(
           return { notFound: true as const };
         }
 
-        // Preserve the activation gate: only flip to 'active' if the partner
-        // has a payment method attached. Otherwise, route them back through
-        // the pending-activation flow.
-        const newStatus: 'active' | 'pending' = partner.paymentMethodAttachedAt
-          ? 'active'
-          : 'pending';
+        // Preserve the FULL activation gate (email verification AND payment
+        // method) — unsuspend must not become the one path that activates an
+        // unverified partner. Otherwise route back through pending-activation.
+        const newStatus: 'active' | 'pending' =
+          partner.paymentMethodAttachedAt && partner.emailVerifiedAt ? 'active' : 'pending';
 
         await tx
           .update(partners)

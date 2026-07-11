@@ -10,6 +10,7 @@ const txMockState = vi.hoisted(() => ({
     id: string;
     status: string;
     paymentMethodAttachedAt: Date | null;
+    emailVerifiedAt: Date | null;
   },
   partnerDevices: [] as Array<{ id: string }>,
   partnerOrgs: [] as Array<{ id: string }>,
@@ -133,7 +134,12 @@ vi.mock('../../db/schema', async (importOriginal) => ({
   // via remoteSessionTeardown) resolve; override the tables this suite asserts
   // on with opaque tokens below.
   ...(await importOriginal<typeof import('../../db/schema')>()),
-  partners: { id: 'partners.id', status: 'partners.status', paymentMethodAttachedAt: 'partners.pma' },
+  partners: {
+    id: 'partners.id',
+    status: 'partners.status',
+    paymentMethodAttachedAt: 'partners.pma',
+    emailVerifiedAt: 'partners.emailVerifiedAt',
+  },
   organizations: { id: 'organizations.id', partnerId: 'organizations.partnerId' },
   devices: { id: 'devices.id', orgId: 'devices.orgId' },
   deviceCommands: {
@@ -251,7 +257,12 @@ const partnerAdminAuth: FakeAuth = {
 
 function resetState() {
   Object.assign(txMockState, {
-    partner: { id: 'partner-1', status: 'active', paymentMethodAttachedAt: new Date() },
+    partner: {
+      id: 'partner-1',
+      status: 'active',
+      paymentMethodAttachedAt: new Date(),
+      emailVerifiedAt: new Date(),
+    },
     partnerDevices: [{ id: 'd-1' }, { id: 'd-2' }, { id: 'd-3' }],
     partnerOrgs: [{ id: 'org-1' }, { id: 'org-2' }],
     partnerUserRows: [
@@ -767,7 +778,12 @@ describe('admin/abuse — unsuspend agent-fleet restore', () => {
   it('does NOT restore the fleet when the partner only returns to pending (no payment method)', async () => {
     // Without a payment method the unsuspend routes back to 'pending'; agents
     // stay gated off (and token-suspended) until full activation.
-    txMockState.partner = { id: 'partner-1', status: 'suspended', paymentMethodAttachedAt: null };
+    txMockState.partner = {
+      id: 'partner-1',
+      status: 'suspended',
+      paymentMethodAttachedAt: null,
+      emailVerifiedAt: new Date(),
+    };
     const app = buildApp(platformAdminAuth);
     const res = await app.request('/admin/partners/partner-1/unsuspend', {
       method: 'POST',
@@ -779,6 +795,41 @@ describe('admin/abuse — unsuspend agent-fleet restore', () => {
     const body = (await res.json()) as { status: string };
     expect(body.status).toBe('pending');
     expect(restorePartnerTenantAccess).not.toHaveBeenCalled();
+  });
+
+  // Regression coverage: unsuspend must preserve the FULL activation gate
+  // (email verification AND payment method), not just payment. Before this
+  // fix, unsuspend was the one activation write that ignored email
+  // verification and could flip an unverified partner straight to 'active'
+  // on payment alone.
+  it('unsuspend falls back to pending when email is unverified, even with payment attached', async () => {
+    txMockState.partner = {
+      id: 'partner-1',
+      status: 'suspended',
+      paymentMethodAttachedAt: new Date(),
+      emailVerifiedAt: null,
+    };
+
+    const app = buildApp(platformAdminAuth);
+    const res = await app.request('/admin/partners/partner-1/unsuspend', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'reinstating but email still unverified' }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string };
+    expect(body.status).toBe('pending');
+    expect(restorePartnerTenantAccess).not.toHaveBeenCalled();
+
+    // The partners UPDATE itself must have been issued with status 'pending',
+    // not 'active' — distinguish it from the separate users re-enable update
+    // (which always sets status 'active' + disabledReason) by shape.
+    const capturedPartnerUpdate = txMockState.updates.find(
+      (u) => u.values && 'status' in u.values && !('disabledReason' in u.values),
+    )?.values;
+    expect(capturedPartnerUpdate).toBeDefined();
+    expect(capturedPartnerUpdate!.status).toBe('pending');
   });
 
   it('returns 500 (does NOT silently 200) when the agent-fleet restore throws', async () => {
