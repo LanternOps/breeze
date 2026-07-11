@@ -365,10 +365,14 @@ func New(cfg *config.Config) *Heartbeat {
 }
 
 func newHeartbeatHTTPClient(tlsCfg *tls.Config) *http.Client {
-	// Dials go through the last-known-good DNS cache (#2288); TLS (including
-	// the mTLS client cert) sits above it, so hostname verification is
-	// unchanged — the cache alters where we dial, never what we trust.
-	transport := &http.Transport{DialContext: netcache.Shared().DialContext}
+	// Clone DefaultTransport so proxy support (ProxyFromEnvironment) and the
+	// idle-conn/timeout defaults survive; a bare &http.Transport{} would
+	// silently strand proxied agents. Dials then go through the
+	// last-known-good DNS cache (#2288); TLS (including the mTLS client
+	// cert) sits above it, so hostname verification is unchanged — the cache
+	// alters where we dial, never what we trust.
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = netcache.Shared().DialContext
 	if tlsCfg != nil {
 		transport.TLSClientConfig = tlsCfg
 	}
