@@ -2363,6 +2363,11 @@ const desktopCommandResultSchema = z.object({
     // prompt was allowed by the user.
     reason: z.enum(['user', 'timeout', 'no_user', 'helper_absent']).optional(),
     consentReason: z.literal('user').optional(),
+    // Desk-stop confirmations from fielded agents send {"stopped": true}
+    // (agent/internal/heartbeat/handlers_desktop.go). Not consumed
+    // server-side, but must be accepted so the result isn't dropped as
+    // malformed (#2307).
+    stopped: z.boolean().optional(),
   }).strict().optional(),
 }).passthrough();
 
