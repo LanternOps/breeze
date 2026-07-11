@@ -61,5 +61,25 @@
     "sectionBackup": "Backup",
     "sectionReporting": "Reporting",
     "sectionSettings": "Settings"
+  },
+  "actions": {
+    "save": "Save", "cancel": "Cancel", "delete": "Delete", "edit": "Edit",
+    "create": "Create", "add": "Add", "remove": "Remove", "close": "Close",
+    "confirm": "Confirm", "search": "Search", "filter": "Filter", "refresh": "Refresh",
+    "export": "Export", "download": "Download", "upload": "Upload", "copy": "Copy",
+    "retry": "Retry", "back": "Back", "next": "Next", "done": "Done", "apply": "Apply",
+    "enable": "Enable", "disable": "Disable", "view": "View", "run": "Run"
+  },
+  "states": {
+    "loading": "Loading…", "saving": "Saving…", "saved": "Saved",
+    "error": "Something went wrong", "empty": "No results found",
+    "enabled": "Enabled", "disabled": "Disabled", "active": "Active", "inactive": "Inactive",
+    "online": "Online", "offline": "Offline", "pending": "Pending", "unknown": "Unknown"
+  },
+  "labels": {
+    "name": "Name", "description": "Description", "status": "Status", "type": "Type",
+    "organization": "Organization", "site": "Site", "device": "Device", "user": "User",
+    "createdAt": "Created", "updatedAt": "Updated", "actions": "Actions", "all": "All",
+    "yes": "Yes", "no": "No", "none": "None", "optional": "Optional", "required": "Required"
   }
 }

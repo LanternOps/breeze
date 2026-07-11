@@ -31,3 +31,12 @@ Every extraction PR containing machine-drafted Portuguese must include:
 `pt-BR strings are machine-drafted pending native review`
 
 Do NOT translate `data-testid` values, log messages, or API payload values.
+
+## Conventions for extraction PRs
+
+- **Interpolation:** `"deleteConfirm": "Delete {{name}}?"` → `t('deleteConfirm', { name: device.name })`. Never concatenate translated fragments.
+- **Plurals:** `"deviceCount_one": "{{count}} device"`, `"deviceCount_other": "{{count}} devices"` → `t('deviceCount', { count })`. pt-BR uses the same `_one`/`_other` suffixes; add `_many` only if i18next warns because CLDR Portuguese handles the usual forms.
+- **Rich text:** embedded markup uses `<Trans i18nKey="ns:key">plain <strong>bold</strong> text</Trans>` from `react-i18next`. Never split a sentence across multiple `t()` calls.
+- **Reuse:** check `common:actions`, `common:states`, and `common:labels` before minting a key. A plain Save button is always `t('common:actions.save')`.
+- **Scope:** translate visible text plus `placeholder`, `title`, `aria-label`, toast, and message strings. Do not translate `data-testid`, React keys, structural test fields, or API values.
+- **Review flag:** every extraction PR with machine-drafted Portuguese includes the exact line `pt-BR strings are machine-drafted pending native review` in its description.

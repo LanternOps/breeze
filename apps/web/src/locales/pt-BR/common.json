@@ -61,5 +61,25 @@
     "sectionBackup": "Backup",
     "sectionReporting": "Relatórios",
     "sectionSettings": "Configurações"
+  },
+  "actions": {
+    "save": "Salvar", "cancel": "Cancelar", "delete": "Excluir", "edit": "Editar",
+    "create": "Criar", "add": "Adicionar", "remove": "Remover", "close": "Fechar",
+    "confirm": "Confirmar", "search": "Pesquisar", "filter": "Filtrar", "refresh": "Atualizar",
+    "export": "Exportar", "download": "Baixar", "upload": "Enviar", "copy": "Copiar",
+    "retry": "Tentar novamente", "back": "Voltar", "next": "Avançar", "done": "Concluído", "apply": "Aplicar",
+    "enable": "Ativar", "disable": "Desativar", "view": "Visualizar", "run": "Executar"
+  },
+  "states": {
+    "loading": "Carregando…", "saving": "Salvando…", "saved": "Salvo",
+    "error": "Algo deu errado", "empty": "Nenhum resultado encontrado",
+    "enabled": "Ativado", "disabled": "Desativado", "active": "Ativo", "inactive": "Inativo",
+    "online": "Online", "offline": "Offline", "pending": "Pendente", "unknown": "Desconhecido"
+  },
+  "labels": {
+    "name": "Nome", "description": "Descrição", "status": "Status", "type": "Tipo",
+    "organization": "Organização", "site": "Local", "device": "Dispositivo", "user": "Usuário",
+    "createdAt": "Criado em", "updatedAt": "Atualizado em", "actions": "Ações", "all": "Todos",
+    "yes": "Sim", "no": "Não", "none": "Nenhum", "optional": "Opcional", "required": "Obrigatório"
   }
 }
