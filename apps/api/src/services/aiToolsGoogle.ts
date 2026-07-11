@@ -71,25 +71,98 @@ type CalendarRole = (typeof CALENDAR_ROLES)[number];
 type DirectoryClient = ReturnType<typeof getDirectoryClient>;
 
 /**
- * Issue a mobile-device action to every device enrolled to a user.
+ * Canonicalize a user-supplied email to a single, strict addr-spec.
+ *
+ * Returns the lowercased address, or null if the input is not a bare, single
+ * email. This deliberately rejects the Google Directory query metacharacters
+ * (`*`, `:`, whitespace, quotes, parentheses, angle brackets, commas) that would
+ * otherwise turn `email:${x}` into a prefix / OR search matching MORE than one
+ * user — the SR5-02 wipe target-expansion vector. A value like `a*` or
+ * `a@x.com OR b@y.com` fails this test and is refused before any wipe.
+ */
+export function canonicalizeUserEmail(raw: string): string | null {
+  const email = raw.trim();
+  // Single addr-spec only: local@domain.tld, RFC-ish, no query operators.
+  const STRICT_EMAIL = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
+  if (!STRICT_EMAIL.test(email)) return null;
+  // No embedded whitespace or wildcard survived the regex, but be explicit.
+  if (/[\s*]/.test(email)) return null;
+  return email.toLowerCase();
+}
+
+type ResolvedWipeTarget =
+  | { ok: true; user: string; deviceIds: string[] }
+  | { ok: false; code: string; message: string };
+
+/**
+ * Resolve the EXACT set of mobile devices to wipe for one user.
+ *
+ * Hardening (SR5-02): rather than trusting the raw `email:${x}` server query to
+ * scope the target set, we (1) canonicalize the input to a single address,
+ * (2) resolve the exact identity via `users.get` (one user or fail — zero/404 is
+ * refused, and an exact key can never resolve multiple), then (3) locally
+ * EXACT-match each returned device's account emails to the resolved
+ * `primaryEmail`, dropping any device that does not carry that exact account.
+ * The server query is only a prefilter; the local exact-match is the real gate.
+ */
+async function resolveWipeTarget(dir: DirectoryClient, rawEmail: string): Promise<ResolvedWipeTarget> {
+  const canonical = canonicalizeUserEmail(rawEmail);
+  if (!canonical) {
+    return {
+      ok: false,
+      code: 'invalid_user_email',
+      message:
+        'userEmail must be a single canonical email address (no wildcards, query operators, or whitespace).',
+    };
+  }
+
+  // Resolve the exact identity first. `users.get` by key returns exactly one
+  // user or 404 — this rejects both zero (no such user) and any expansion.
+  let primaryEmail: string;
+  try {
+    const res = await dir.users.get({ userKey: canonical });
+    const pe = res.data.primaryEmail;
+    if (!pe) {
+      return { ok: false, code: 'user_not_resolved', message: `Could not resolve a single user for ${canonical}.` };
+    }
+    primaryEmail = pe.toLowerCase();
+  } catch (err) {
+    const norm = normalizeGoogleError(err);
+    return { ok: false, code: norm.code, message: norm.message };
+  }
+
+  const list = await dir.mobiledevices.list({ customerId: 'my_customer', query: `email:${primaryEmail}` });
+  const deviceIds: string[] = [];
+  for (const d of list.data.mobiledevices ?? []) {
+    if (!d.resourceId) continue;
+    // EXACT-match: only wipe a device that actually carries the resolved
+    // user's account. Drops prefix / fuzzy matches the server may return.
+    const accounts = (d.email ?? []).map((e) => (e ?? '').toLowerCase());
+    if (!accounts.includes(primaryEmail)) continue;
+    deviceIds.push(d.resourceId);
+  }
+  return { ok: true, user: primaryEmail, deviceIds };
+}
+
+/**
+ * Issue a mobile-device action to a pre-resolved, bounded set of device IDs.
  *   - admin_account_wipe: remove ONLY the managed corporate account + its data
  *     (mail/Drive) from the device. Safe for BYOD; the personal device is intact.
  *   - admin_remote_wipe: full factory reset of the entire device. STOLEN-DEVICE
  *     use only — never part of offboarding.
+ * The caller resolves `deviceIds` via `resolveWipeTarget` so the acted-on set is
+ * bound to one exact user, not whatever a raw query happened to return.
  */
 async function wipeMobileDevices(
   dir: DirectoryClient,
-  userEmail: string,
+  deviceIds: string[],
   action: 'admin_account_wipe' | 'admin_remote_wipe',
 ): Promise<number> {
-  const list = await dir.mobiledevices.list({ customerId: 'my_customer', query: `email:${userEmail}` });
-  const devices = list.data.mobiledevices ?? [];
   let n = 0;
-  for (const d of devices) {
-    if (!d.resourceId) continue;
+  for (const resourceId of deviceIds) {
     await dir.mobiledevices.action({
       customerId: 'my_customer',
-      resourceId: d.resourceId,
+      resourceId,
       requestBody: { action },
     });
     n++;
@@ -878,8 +951,14 @@ export async function googleOffboardUserHandler(
   // 4. SELECTIVE mobile account-wipe (BYOD: corporate data only).
   if (accountWipeMobile) {
     steps.push(await runStep('mobile_account_wipe', async () => {
-      const n = await wipeMobileDevices(dir, email, 'admin_account_wipe');
-      return n === 0 ? 'no mobile devices enrolled' : `account-wiped ${n} device(s) (corporate data only)`;
+      const resolved = await resolveWipeTarget(dir, email);
+      // Fail the step (not swallow) if the target can't be resolved to one
+      // exact user — the offboard then reports incomplete rather than green.
+      if (!resolved.ok) throw new Error(`${resolved.code}: ${resolved.message}`);
+      const n = await wipeMobileDevices(dir, resolved.deviceIds, 'admin_account_wipe');
+      return n === 0
+        ? `no mobile devices enrolled for ${resolved.user}`
+        : `account-wiped ${n} device(s) for ${resolved.user} (corporate data only) [${resolved.deviceIds.join(', ')}]`;
     }));
   }
 
@@ -930,9 +1009,13 @@ export async function googleWipeMobileDeviceHandler(
 
   try {
     const dir = getDirectoryClient(ctx.keyJson, ctx.conn.adminEmail);
-    const n = await wipeMobileDevices(dir, email, 'admin_remote_wipe');
-    if (n === 0) return `No mobile devices are enrolled for ${email}; nothing to wipe.`;
-    return `Issued a FULL factory reset to ${n} device(s) for ${email} (stolen-device remote wipe). This erases the entire device, not just corporate data.`;
+    const resolved = await resolveWipeTarget(dir, email);
+    if (!resolved.ok) return errorString(resolved.code, resolved.message);
+    const n = await wipeMobileDevices(dir, resolved.deviceIds, 'admin_remote_wipe');
+    if (n === 0) return `No mobile devices are enrolled for ${resolved.user}; nothing to wipe.`;
+    // Execution record is bound to the resolved canonical user + the concrete
+    // device IDs, so the audited action is a known, bounded set (SR5-02).
+    return `Issued a FULL factory reset to ${n} device(s) for ${resolved.user} (stolen-device remote wipe) [${resolved.deviceIds.join(', ')}]. This erases the entire device, not just corporate data.`;
   } catch (err) {
     return googleError(err);
   }
