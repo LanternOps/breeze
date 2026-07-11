@@ -3556,3 +3556,33 @@ tests never exercised the real browser payloads** — worth a validator/UI-contr
 
 - No implementation defects found in automated verification.
 - Live persistence across a fresh browser profile remains to be exercised when an E2E stack is configured.
+
+## Web console i18n Phase 2 extraction (en / pt-BR) — 2026-07-11
+
+**Branch:** `worktree-web-i18n-phase1`
+**Commit:** `6a0b0a53b`
+**Tested by:** Codex
+**Result:** PARTIAL
+
+### What was tested
+
+- [x] Full web unit suite after the final residue pass.
+- [x] Locale parity and static translation-key usage across all extracted namespaces.
+- [x] Partner-default locale API coverage and precedence behavior.
+- [x] Astro type/static analysis and production web build.
+- [x] Post-wave visible-string residue audit, including multiline UI, CSV, and printable-report copy.
+- [ ] Manual pt-BR click-through of the top 10 pages: unavailable because this worktree has no configured `E2E_*` credentials and no running compose services.
+
+### Evidence
+
+- Full web suite: 416 files / 3,234 tests passed.
+- API org/user route suites: 2 files / 214 tests passed.
+- Astro check: 1,323 files, 0 errors (existing hints only).
+- Production build: passed; pt-BR remains emitted through lazy locale chunks.
+- Worktree diff and whitespace checks: clean.
+
+### Issues Found
+
+- Automated verification found and fixed structural enum/state values that had been translated by mechanical extraction, two callback variables shadowing `t()`, cross-namespace device metadata labels, and several post-wave literal-string misses.
+- Brazilian Portuguese copy is machine-drafted and still requires native-speaker review.
+- Live locale persistence/navigation smoke remains pending until an E2E stack is configured.
