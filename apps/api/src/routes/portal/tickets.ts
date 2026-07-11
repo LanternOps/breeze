@@ -24,14 +24,20 @@ import { editCommentSchema } from '@breeze/shared';
 
 export const ticketRoutes = new Hono();
 
-// GET /ticket-forms — literal path, registered first so it can never be
-// shadowed by a `/tickets/:id`-style param route mounted later in this file
-// (same mount-order convention as Phase 1). Portal runs under an org-scoped
-// RLS context where partner-wide ticket_forms rows are invisible (#1105
-// pattern), so the org's partnerId is resolved under a system context first —
-// mirrors routes/portal/quotes.ts:70 exactly. Slim payload only: no
-// titleTemplate (the server composes subjects, never the portal client).
-ticketRoutes.get('/ticket-forms', async (c) => {
+// GET /tickets/forms — MUST live under the `/tickets/` prefix: portal auth is
+// applied per-prefix in routes/portal/index.ts (`use('/tickets/*', ...)`), so
+// a sibling path like `/ticket-forms` would ship with NO auth at all (the
+// prefix matcher does not cover it). MOUNT ORDER: this literal route is
+// registered BEFORE `GET /tickets/:id` below — Hono matches in registration
+// order, so registering it later would let the :id matcher swallow `forms`
+// (and 400 on the guid param). Same mount-order convention as Phase 1's
+// staff ticket router.
+// Portal runs under an org-scoped RLS context where partner-wide
+// ticket_forms rows are invisible (#1105 pattern), so the org's partnerId is
+// resolved under a system context first — mirrors routes/portal/quotes.ts:70
+// exactly. Slim payload only: no titleTemplate (the server composes
+// subjects, never the portal client).
+ticketRoutes.get('/tickets/forms', async (c) => {
   const auth = c.get('portalAuth');
 
   const [org] = await runOutsideDbContext(() =>

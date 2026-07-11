@@ -57,7 +57,7 @@ vi.mock('../../db', () => ({
     select: dbSelectMock,
     insert: vi.fn(() => ({ values: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([])) })) }))
   },
-  // GET /ticket-forms resolves the session org's partnerId under a system
+  // GET /tickets/forms resolves the session org's partnerId under a system
   // context (mirrors routes/portal/quotes.ts:70) — pass-through no-ops here,
   // same convention as routes/portal/quotes.test.ts.
   runOutsideDbContext: <T,>(fn: () => T): T => fn(),
@@ -363,7 +363,7 @@ describe('portal ticket soft-delete exclusion', () => {
   });
 });
 
-// ── GET /ticket-forms — Task 4: portal forms read ────────────────────────────
+// ── GET /tickets/forms — Task 4: portal forms read ───────────────────────────
 
 const FORM_ROW = {
   id: 'f-1',
@@ -384,7 +384,7 @@ const FORM_ROW = {
   updatedAt: new Date()
 };
 
-describe('GET /ticket-forms', () => {
+describe('GET /tickets/forms', () => {
   let app: ReturnType<typeof buildApp>;
 
   beforeEach(() => {
@@ -403,7 +403,7 @@ describe('GET /ticket-forms', () => {
   it('resolves the session org + partnerId and calls listTicketFormsForOrg with portalOnly: true', async () => {
     listTicketFormsForOrgMock.mockResolvedValue([FORM_ROW]);
 
-    const res = await app.request('/ticket-forms', {
+    const res = await app.request('/tickets/forms', {
       headers: { Authorization: 'Bearer portal-token' }
     });
 
@@ -417,7 +417,7 @@ describe('GET /ticket-forms', () => {
   it('returns ONLY the slim keys (id, name, description, categoryId, fields, defaultPriority) — no titleTemplate or other columns', async () => {
     listTicketFormsForOrgMock.mockResolvedValue([FORM_ROW]);
 
-    const res = await app.request('/ticket-forms', {
+    const res = await app.request('/tickets/forms', {
       headers: { Authorization: 'Bearer portal-token' }
     });
 
@@ -441,13 +441,78 @@ describe('GET /ticket-forms', () => {
   it('returns { data: [] } when the service returns no forms', async () => {
     listTicketFormsForOrgMock.mockResolvedValue([]);
 
-    const res = await app.request('/ticket-forms', {
+    const res = await app.request('/tickets/forms', {
       headers: { Authorization: 'Bearer portal-token' }
     });
 
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toEqual({ data: [] });
+  });
+});
+
+// ── GET /tickets/forms — mount-wiring regression (auth-prefix coverage) ───────
+//
+// routes/portal/index.ts protects the ticket router with
+// `portalRoutes.use('/tickets/*', portalAuthMiddleware)` — a `/tickets/*`
+// prefix, NOT a blanket `use('*')` like buildApp() above. A forms route
+// registered outside that prefix (the original `/ticket-forms` path) ships
+// with NO auth in production and 500s on the missing portalAuth context.
+// This suite wires the app the way index.ts ACTUALLY mounts it (same
+// use-prefix + route('/') calls, with a portalAuthMiddleware stand-in that
+// 401s without a session) so the auth-prefix coverage of the forms route is
+// asserted structurally, not assumed.
+describe('GET /tickets/forms — index.ts mount wiring', () => {
+  function buildMountedApp() {
+    const app = new Hono();
+    // Verbatim shape of routes/portal/index.ts: prefix-scoped auth middleware,
+    // then the router mounted at '/'. The stub mirrors portalAuthMiddleware's
+    // contract: 401 without a session credential, portalAuth set otherwise.
+    app.use('/tickets/*', async (c, next) => {
+      if (!c.req.header('Authorization')) {
+        return c.json({ error: 'Authentication required' }, 401);
+      }
+      c.set('portalAuth' as never, { user: PORTAL_USER, token: 'tok-1', authMethod: 'bearer' });
+      await next();
+    });
+    app.route('/', ticketRoutes);
+    return app;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbSelectMock.mockImplementation(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn(() => Promise.resolve([{ partnerId: 'p-1' }]))
+        }))
+      }))
+    }));
+  });
+
+  it('WITHOUT a session: 401 — proves the /tickets/* auth prefix covers the forms route', async () => {
+    const app = buildMountedApp();
+    const res = await app.request('/tickets/forms');
+    expect(res.status).toBe(401);
+    expect(listTicketFormsForOrgMock).not.toHaveBeenCalled();
+  });
+
+  it('WITH a session: 200 slim payload — proves /tickets/forms is not swallowed by the /tickets/:id matcher', async () => {
+    listTicketFormsForOrgMock.mockResolvedValue([FORM_ROW]);
+    const app = buildMountedApp();
+    const res = await app.request('/tickets/forms', {
+      headers: { Authorization: 'Bearer portal-token' }
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { data: Record<string, unknown>[] };
+    expect(body.data[0]).toEqual({
+      id: FORM_ROW.id,
+      name: FORM_ROW.name,
+      description: FORM_ROW.description,
+      categoryId: FORM_ROW.categoryId,
+      fields: FORM_ROW.fields,
+      defaultPriority: FORM_ROW.defaultPriority
+    });
   });
 });
 
