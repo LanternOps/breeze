@@ -1,0 +1,328 @@
+{
+  "createVulnTicketModal": {
+    "title": "Criar chamado",
+    "heading": "Criar chamado — {{count}} achados",
+    "heading_one": "Criar chamado — {{count}} achado",
+    "heading_other": "Criar chamado — {{count}} achados",
+    "crossOrgNote": "A seleção abrange {{count}} organizações — será criado um chamado por organização.",
+    "crossOrgNote_one": "A seleção abrange {{count}} organização — será criado um chamado por organização.",
+    "crossOrgNote_other": "A seleção abrange {{count}} organizações — será criado um chamado por organização.",
+    "autoDetailNote": "Os detalhes de dispositivo e CVE são adicionados automaticamente, por organização.",
+    "fields": {
+      "title": "Título",
+      "note": "Observação (opcional)",
+      "notePlaceholder": "Adicione qualquer contexto para o técnico (opcional)",
+      "priority": "Prioridade"
+    },
+    "priorities": {
+      "low": "Baixa",
+      "normal": "Normal",
+      "high": "Alta",
+      "urgent": "Urgente"
+    },
+    "actions": {
+      "create": "Criar chamado"
+    }
+  },
+  "cveDrawer": {
+    "errors": {
+      "load": "Falha ao carregar CVE",
+      "reopen": "Falha ao reabrir achado",
+      "scheduleRemediation": "Falha ao agendar remediação",
+      "acceptRisk": "Falha ao aceitar risco",
+      "mitigate": "Falha ao mitigar",
+      "createTicket": "Falha ao criar chamado"
+    },
+    "meta": {
+      "cvss": "CVSS {{version}}",
+      "vector": "Vetor",
+      "epss": "EPSS",
+      "knownExploited": "Exploração conhecida",
+      "published": "Publicado",
+      "modified": "Modificado"
+    },
+    "sections": {
+      "devices": "Dispositivos ({{count}} achados)",
+      "devices_one": "Dispositivos ({{count}} achado)",
+      "devices_other": "Dispositivos ({{count}} achados)"
+    },
+    "selection": {
+      "selectAll": "Selecionar todos",
+      "selectAllAria": "Selecionar todos os achados",
+      "deselectAllAria": "Desmarcar todos os achados",
+      "selectFindingAria": "Selecionar achado em {{deviceName}}",
+      "selected": "{{count}} selecionados",
+      "selected_one": "{{count}} selecionado",
+      "selected_other": "{{count}} selecionados"
+    },
+    "empty": {
+      "noFindings": "Nenhum dispositivo da sua frota é afetado por esta CVE no momento — nada a fazer."
+    },
+    "findings": {
+      "patch": "Correção",
+      "ticket": "Chamado"
+    },
+    "actions": {
+      "reopen": "Reabrir",
+      "remediate": "Remediar",
+      "acceptRisk": "Aceitar risco",
+      "mitigate": "Mitigar",
+      "createTicket": "Criar chamado"
+    },
+    "ticket": {
+      "defaultTitle": "Remediar {{cveId}}"
+    }
+  },
+  "findingStatus": {
+    "acceptedUntil": "Aceito até {{date}}",
+    "status": {
+      "open": "aberto",
+      "accepted": "aceito",
+      "mitigated": "mitigado",
+      "patched": "corrigido"
+    }
+  },
+  "kevBadge": {
+    "label": "KEV",
+    "title": "Vulnerabilidade explorada conhecida (catálogo CISA KEV)"
+  },
+  "severityBadge": {
+    "critical": "Crítica",
+    "high": "Alta",
+    "medium": "Média",
+    "low": "Baixa",
+    "unknown": "Desconhecida"
+  },
+  "softwareGroupDrawer": {
+    "titleFallback": "Grupo de software",
+    "errors": {
+      "load": "Falha ao carregar grupo de software",
+      "reopen": "Falha ao reabrir achado",
+      "scheduleRemediation": "Falha ao agendar remediação",
+      "acceptRisk": "Falha ao aceitar risco",
+      "mitigate": "Falha ao mitigar",
+      "createTicket": "Falha ao criar chamado"
+    },
+    "summary": {
+      "devices": "{{count}} dispositivos",
+      "devices_one": "{{count}} dispositivo",
+      "devices_other": "{{count}} dispositivos",
+      "maxRisk": "risco máximo {{risk}}"
+    },
+    "tickets": {
+      "number": "Chamado {{number}}",
+      "view": "Ver chamado"
+    },
+    "sections": {
+      "cves": "CVEs ({{count}})",
+      "devices": "Dispositivos ({{count}} achados)",
+      "devices_one": "Dispositivos ({{count}} achado)",
+      "devices_other": "Dispositivos ({{count}} achados)"
+    },
+    "cveMeta": {
+      "cvss": "CVSS {{score}}",
+      "epss": "EPSS {{score}}"
+    },
+    "selection": {
+      "selectAll": "Selecionar todos",
+      "selectAllAria": "Selecionar todos os achados",
+      "deselectAllAria": "Desmarcar todos os achados",
+      "selectFindingAria": "Selecionar achado {{cveId}} em {{deviceName}}",
+      "selected": "{{count}} selecionados",
+      "selected_one": "{{count}} selecionado",
+      "selected_other": "{{count}} selecionados"
+    },
+    "empty": {
+      "noFindings": "Nenhum achado de dispositivo permanece neste grupo — nada a fazer."
+    },
+    "findings": {
+      "patch": "Correção",
+      "ticket": "Chamado"
+    },
+    "actions": {
+      "reopen": "Reabrir",
+      "remediate": "Remediar",
+      "acceptRisk": "Aceitar risco",
+      "mitigate": "Mitigar",
+      "createTicket": "Criar chamado"
+    },
+    "ticket": {
+      "defaultTitle": "Remediar {{name}}"
+    }
+  },
+  "softwareGroupTable": {
+    "errors": {
+      "load": "Falha ao carregar grupos de software"
+    },
+    "table": {
+      "software": "Software",
+      "severity": "Gravidade",
+      "risk": "Risco",
+      "cves": "CVEs",
+      "devices": "Dispositivos",
+      "patch": "Correção"
+    },
+    "help": {
+      "riskAria": "Sobre a pontuação de risco"
+    },
+    "actions": {
+      "openDetailsAria": "Abrir detalhes de vulnerabilidade de {{name}}"
+    },
+    "patch": {
+      "ready": "Prontas · {{ready}}/{{total}} dispositivos",
+      "ready_one": "Pronta · {{ready}}/{{total}} dispositivo",
+      "ready_other": "Prontas · {{ready}}/{{total}} dispositivos"
+    },
+    "hasMore": "Mostrando os 500 principais grupos por risco — restrinja os filtros para ver o restante."
+  },
+  "vulnBulkActionModal": {
+    "headings": {
+      "remediate": "Remediar achados",
+      "accept": "Aceitar risco",
+      "mitigate": "Marcar como mitigado"
+    },
+    "headingWithCount": "{{heading}} — {{count}} achados",
+    "headingWithCount_one": "{{heading}} — {{count}} achado",
+    "headingWithCount_other": "{{heading}} — {{count}} achados",
+    "counts": {
+      "devices": "{{count}} dispositivos",
+      "devices_one": "{{count}} dispositivo",
+      "devices_other": "{{count}} dispositivos",
+      "findings": "{{count}} achados",
+      "findings_one": "{{count}} achado",
+      "findings_other": "{{count}} achados"
+    },
+    "selection": {
+      "more": "e mais {{count}}"
+    },
+    "consequence": {
+      "remediate": "Instala a correção aprovada para cada CVE em {{deviceText}} ({{findingText}}). Achados sem uma correção aprovada e aplicável são ignorados.",
+      "accept": "Oculta {{findingText}} em {{deviceText}} da fila aberta até a data definida. Eles não reabrem automaticamente — aceitações perto do vencimento aparecem no cartão “Aceitos, vencendo em breve”.",
+      "mitigate": "Marca {{findingText}} em {{deviceText}} como mitigado, com sua observação registrada como controle compensatório. O Breeze não altera os dispositivos."
+    },
+    "fields": {
+      "reason": "Motivo",
+      "mitigationNote": "Observação de mitigação",
+      "acceptedUntil": "Aceito até"
+    },
+    "actions": {
+      "working": "Trabalhando…",
+      "remediate": "Remediar",
+      "accept": "Aceitar risco",
+      "mitigate": "Marcar como mitigado"
+    }
+  },
+  "vulnEmptyState": {
+    "filtered": {
+      "message": "Nenhuma vulnerabilidade corresponde aos filtros atuais.",
+      "clearFilters": "Limpar filtros"
+    },
+    "clean": {
+      "title": "Nenhuma vulnerabilidade aberta em toda a sua frota",
+      "description": "Todos os achados detectados foram corrigidos, mitigados ou aceitos. Novos achados aparecerão aqui conforme as varreduras forem executadas.",
+      "lastDetected": "Último achado detectado em {{date}}"
+    },
+    "unscanned": {
+      "title": "Ainda não há achados de vulnerabilidade",
+      "description": "O Breeze verifica o inventário de software e sistema operacional de cada dispositivo em relação a CVEs conhecidas e coloca aqui tudo que precisa de correção, mitigação ou aceitação de risco.",
+      "setupHint": "A varredura vem desativada por padrão — ative-a na aba Vulnerabilidade de uma política de configuração.",
+      "setupAction": "Configurar varredura de vulnerabilidades"
+    },
+    "unknown": {
+      "message": "Nenhuma vulnerabilidade para mostrar."
+    }
+  },
+  "vulnFilterBar": {
+    "searchPlaceholder": {
+      "software": "Pesquisar software ou CVE…",
+      "cves": "Pesquisar ID da CVE…"
+    },
+    "labels": {
+      "severity": "Gravidade"
+    },
+    "statusOptions": {
+      "open": "Aberto",
+      "accepted": "Aceito",
+      "mitigated": "Mitigado",
+      "patched": "Corrigido",
+      "all": "Todos os status"
+    },
+    "filters": {
+      "kevOnly": "Somente KEV",
+      "patchAvailable": "Correção disponível"
+    },
+    "expiring": {
+      "clearAria": "Limpar o filtro de vencimento em até {{count}} dias",
+      "clearAria_one": "Limpar o filtro de vencimento em até {{count}} dia",
+      "clearAria_other": "Limpar o filtro de vencimento em até {{count}} dias",
+      "label": "Vence em até {{count}} dias",
+      "label_one": "Vence em até {{count}} dia",
+      "label_other": "Vence em até {{count}} dias"
+    }
+  },
+  "vulnerabilityFleetPage": {
+    "stats": {
+      "critical": {
+        "label": "Críticas abertas",
+        "detail": "{{count}} achados abertos classificados como críticos",
+        "detail_one": "{{count}} achado aberto classificado como crítico",
+        "detail_other": "{{count}} achados abertos classificados como críticos"
+      },
+      "kev": {
+        "label": "Exposição KEV",
+        "detail": "{{count}} CVEs exploradas conhecidas · {{deviceText}}",
+        "detail_one": "{{count}} CVE explorada conhecida · {{deviceText}}",
+        "detail_other": "{{count}} CVEs exploradas conhecidas · {{deviceText}}",
+        "devices": "{{count}} dispositivos",
+        "devices_one": "{{count}} dispositivo",
+        "devices_other": "{{count}} dispositivos"
+      },
+      "patchReady": {
+        "label": "Correção pronta",
+        "detail": "{{count}} achados abertos com correção disponível",
+        "detail_one": "{{count}} achado aberto com correção disponível",
+        "detail_other": "{{count}} achados abertos com correção disponível"
+      },
+      "acceptedExpiring": {
+        "label": "Aceitos, vencendo em breve",
+        "detail": "{{count}} achados aceitos vencendo em até {{days}} dias",
+        "detail_one": "{{count}} achado aceito vencendo em até {{days}} dias",
+        "detail_other": "{{count}} achados aceitos vencendo em até {{days}} dias"
+      }
+    },
+    "tabs": {
+      "ariaLabel": "Visualizações de vulnerabilidades",
+      "software": "Por software",
+      "cves": "Por CVE"
+    }
+  },
+  "vulnerabilityTable": {
+    "errors": {
+      "load": "Falha ao carregar vulnerabilidades"
+    },
+    "table": {
+      "cve": "CVE",
+      "severity": "Gravidade",
+      "cvss": "CVSS",
+      "risk": "Risco",
+      "epss": "EPSS",
+      "patch": "Correção",
+      "affectedDevices": "Dispositivos afetados",
+      "kev": "KEV",
+      "knownExploited": "Exploração conhecida"
+    },
+    "help": {
+      "cvssAria": "Sobre a pontuação CVSS",
+      "riskAria": "Sobre a pontuação de risco",
+      "epssAria": "Sobre a pontuação EPSS",
+      "kevAria": "Sobre o sinalizador KEV"
+    },
+    "actions": {
+      "openDetailsAria": "Abrir detalhes de {{cveId}}"
+    },
+    "patch": {
+      "ready": "Pronta"
+    },
+    "hasMore": "Mostrando as 500 principais CVEs por risco — restrinja os filtros para ver o restante."
+  }
+}

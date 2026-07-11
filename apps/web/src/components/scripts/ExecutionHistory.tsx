@@ -1,8 +1,11 @@
 import { useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Eye, Clock, CheckCircle, XCircle, Loader2, AlertTriangle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatDateTime as formatUserDateTime, formatTime as formatUserTime } from '@/lib/dateTimeFormat';
 export type ExecutionStatus = 'pending' | 'running' | 'completed' | 'failed' | 'timeout';
+type ScriptsT = TFunction<'scripts'>;
 
 export type ScriptExecution = {
   id: string;
@@ -28,11 +31,11 @@ type ExecutionHistoryProps = {
 };
 
 const statusConfig: Record<ExecutionStatus, { label: string; color: string; icon: typeof CheckCircle }> = {
-  pending: { label: 'Pending', color: 'bg-muted text-muted-foreground border-border', icon: Clock },
-  running: { label: 'Running', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40', icon: Loader2 },
-  completed: { label: 'Completed', color: 'bg-success/15 text-success border-success/30', icon: CheckCircle },
-  failed: { label: 'Failed', color: 'bg-destructive/15 text-destructive border-destructive/30', icon: XCircle },
-  timeout: { label: 'Timeout', color: 'bg-warning/15 text-warning border-warning/30', icon: AlertTriangle }
+  pending: { label: 'status.pending', color: 'bg-muted text-muted-foreground border-border', icon: Clock },
+  running: { label: 'status.running', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40', icon: Loader2 },
+  completed: { label: 'status.completed', color: 'bg-success/15 text-success border-success/30', icon: CheckCircle },
+  failed: { label: 'status.failed', color: 'bg-destructive/15 text-destructive border-destructive/30', icon: XCircle },
+  timeout: { label: 'status.timeout', color: 'bg-warning/15 text-warning border-warning/30', icon: AlertTriangle }
 };
 
 function formatDuration(seconds?: number): string {
@@ -45,7 +48,7 @@ function formatDuration(seconds?: number): string {
   return `${hours}h ${mins}m`;
 }
 
-function formatDateTime(dateString: string, timezone?: string): string {
+function formatDateTime(dateString: string, t: ScriptsT, timezone?: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
 
@@ -62,7 +65,9 @@ function formatDateTime(dateString: string, timezone?: string): string {
   const isYesterday = date.toDateString() === yesterday.toDateString();
 
   if (isYesterday) {
-    return `Yesterday ${formatUserTime(date, { hour: '2-digit', minute: '2-digit', timeZone: tz })}`;
+    return t('executionHistory.relativeTime.yesterday', {
+      time: formatUserTime(date, { hour: '2-digit', minute: '2-digit', timeZone: tz })
+    });
   }
 
   return formatUserDateTime(date, {
@@ -81,6 +86,7 @@ export default function ExecutionHistory({
   showScriptName = true,
   timezone
 }: ExecutionHistoryProps) {
+  const { t } = useTranslation('scripts');
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [dateFilter, setDateFilter] = useState<string>('all');
@@ -177,7 +183,7 @@ export default function ExecutionHistory({
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <input
               type="search"
-              placeholder="Search..."
+              placeholder={t('executionHistory.searchPlaceholder')}
               value={query}
               onChange={event => {
                 setQuery(event.target.value);
@@ -194,12 +200,12 @@ export default function ExecutionHistory({
             }}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-36"
           >
-            <option value="all">All Status</option>
-            <option value="pending">Pending</option>
-            <option value="running">Running</option>
-            <option value="completed">Completed</option>
-            <option value="failed">Failed</option>
-            <option value="timeout">Timeout</option>
+            <option value="all">{t('executionHistory.filters.allStatus')}</option>
+            <option value="pending">{t('executionHistory.status.pending')}</option>
+            <option value="running">{t('executionHistory.status.running')}</option>
+            <option value="completed">{t('executionHistory.status.completed')}</option>
+            <option value="failed">{t('executionHistory.status.failed')}</option>
+            <option value="timeout">{t('executionHistory.status.timeout')}</option>
           </select>
           <select
             value={dateFilter}
@@ -209,15 +215,15 @@ export default function ExecutionHistory({
             }}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-36"
           >
-            <option value="all">All Time</option>
-            <option value="hour">Last Hour</option>
-            <option value="day">Last 24 Hours</option>
-            <option value="week">Last 7 Days</option>
-            <option value="month">Last 30 Days</option>
+            <option value="all">{t('executionHistory.filters.allTime')}</option>
+            <option value="hour">{t('executionHistory.filters.lastHour')}</option>
+            <option value="day">{t('executionHistory.filters.lastDay')}</option>
+            <option value="week">{t('executionHistory.filters.lastWeek')}</option>
+            <option value="month">{t('executionHistory.filters.lastMonth')}</option>
           </select>
         </div>
         <span className="text-xs text-muted-foreground tabular-nums whitespace-nowrap">
-          {filteredExecutions.length} of {executions.length}
+          {t('executionHistory.summary', { shown: filteredExecutions.length, total: executions.length })}
         </span>
       </div>
 
@@ -228,49 +234,49 @@ export default function ExecutionHistory({
               {showScriptName && (
                 <th className="px-4 py-2.5 cursor-pointer select-none transition-colors hover:text-foreground" onClick={() => toggleSort('scriptName')}>
                   <span className="inline-flex items-center gap-1">
-                    Script
+                    {t('executionHistory.headers.script')}
                     {sortColumn === 'scriptName' && (sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />)}
                   </span>
                 </th>
               )}
               <th className="px-4 py-2.5 cursor-pointer select-none transition-colors hover:text-foreground" onClick={() => toggleSort('device')}>
                 <span className="inline-flex items-center gap-1">
-                  Device
+                  {t('common:labels.device')}
                   {sortColumn === 'device' && (sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />)}
                 </span>
               </th>
               <th className="px-4 py-2.5 cursor-pointer select-none transition-colors hover:text-foreground" onClick={() => toggleSort('status')}>
                 <span className="inline-flex items-center gap-1">
-                  Status
+                  {t('common:labels.status')}
                   {sortColumn === 'status' && (sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />)}
                 </span>
               </th>
               <th className="px-4 py-2.5 cursor-pointer select-none transition-colors hover:text-foreground" onClick={() => toggleSort('startedAt')}>
                 <span className="inline-flex items-center gap-1">
-                  Started
+                  {t('executionHistory.headers.started')}
                   {sortColumn === 'startedAt' && (sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />)}
                 </span>
               </th>
               <th className="px-4 py-2.5 cursor-pointer select-none transition-colors hover:text-foreground" onClick={() => toggleSort('duration')}>
                 <span className="inline-flex items-center gap-1">
-                  Duration
+                  {t('executionHistory.headers.duration')}
                   {sortColumn === 'duration' && (sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />)}
                 </span>
               </th>
               <th className="px-4 py-2.5 cursor-pointer select-none transition-colors hover:text-foreground" onClick={() => toggleSort('exitCode')}>
                 <span className="inline-flex items-center gap-1">
-                  Exit Code
+                  {t('executionHistory.headers.exitCode')}
                   {sortColumn === 'exitCode' && (sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />)}
                 </span>
               </th>
-              <th className="px-4 py-2.5 text-right">Actions</th>
+              <th className="px-4 py-2.5 text-right">{t('common:labels.actions')}</th>
             </tr>
           </thead>
           <tbody className="divide-y">
             {paginatedExecutions.length === 0 ? (
               <tr>
                 <td colSpan={showScriptName ? 7 : 6} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                  No executions found. Try adjusting your filters.
+                  {t('executionHistory.empty')}
                 </td>
               </tr>
             ) : (
@@ -300,17 +306,17 @@ export default function ExecutionHistory({
                           'h-3 w-3',
                           execution.status === 'running' && 'animate-spin'
                         )} />
-                        {statusConfig[execution.status].label}
+                        {t(`executionHistory.${statusConfig[execution.status].label}`)}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">
-                      {formatDateTime(execution.startedAt, timezone)}
+                      {formatDateTime(execution.startedAt, t, timezone)}
                     </td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">
                       {execution.status === 'running' ? (
                         <span className="flex items-center gap-1">
                           <Clock className="h-3 w-3 animate-pulse" />
-                          Running...
+                          {t('executionHistory.status.running')}
                         </span>
                       ) : (
                         formatDuration(execution.duration)
@@ -339,7 +345,7 @@ export default function ExecutionHistory({
                             onViewDetails?.(execution);
                           }}
                           className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
-                          title="View details"
+                          title={t('executionHistory.actions.viewDetails')}
                         >
                           <Eye className="h-4 w-4" />
                         </button>
@@ -356,7 +362,11 @@ export default function ExecutionHistory({
       {totalPages > 1 && (
         <div className="mt-4 flex items-center justify-between">
           <p className="text-sm text-muted-foreground">
-            Showing {startIndex + 1} to {Math.min(startIndex + pageSize, filteredExecutions.length)} of {filteredExecutions.length}
+            {t('executionHistory.pagination.showing', {
+              start: startIndex + 1,
+              end: Math.min(startIndex + pageSize, filteredExecutions.length),
+              total: filteredExecutions.length
+            })}
           </p>
           <div className="flex items-center gap-2">
             <button
@@ -368,7 +378,7 @@ export default function ExecutionHistory({
               <ChevronLeft className="h-4 w-4" />
             </button>
             <span className="text-sm">
-              Page {currentPage} of {totalPages}
+              {t('executionHistory.pagination.page', { page: currentPage, total: totalPages })}
             </span>
             <button
               type="button"

@@ -1,4 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import {
   X,
   CheckCircle,
@@ -15,6 +17,8 @@ import {
 import { cn } from '@/lib/utils';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { formatNumber } from '@/lib/i18n/format';
+
+type ScriptsT = TFunction<'scripts'>;
 
 export type DeviceRunResult = {
   deviceId: string;
@@ -62,37 +66,37 @@ type AutomationRunHistoryProps = {
 type StatusKey = 'running' | 'success' | 'failed' | 'partial' | 'skipped' | 'pending';
 const statusConfig: Record<StatusKey, { label: string; color: string; bgColor: string; icon: typeof CheckCircle }> = {
   running: {
-    label: 'Running',
+    label: 'status.running',
     color: 'text-blue-600',
     bgColor: 'bg-blue-500/20 border-blue-500/40',
     icon: Clock
   },
   pending: {
-    label: 'Pending',
+    label: 'status.pending',
     color: 'text-gray-500',
     bgColor: 'bg-gray-500/20 border-gray-500/40',
     icon: Clock
   },
   success: {
-    label: 'Success',
+    label: 'status.success',
     color: 'text-green-600',
     bgColor: 'bg-green-500/20 border-green-500/40',
     icon: CheckCircle
   },
   failed: {
-    label: 'Failed',
+    label: 'status.failed',
     color: 'text-red-600',
     bgColor: 'bg-red-500/20 border-red-500/40',
     icon: XCircle
   },
   partial: {
-    label: 'Partial',
+    label: 'status.partial',
     color: 'text-yellow-600',
     bgColor: 'bg-yellow-500/20 border-yellow-500/40',
     icon: AlertTriangle
   },
   skipped: {
-    label: 'Skipped',
+    label: 'status.skipped',
     color: 'text-gray-600',
     bgColor: 'bg-gray-500/20 border-gray-500/40',
     icon: Clock
@@ -100,11 +104,11 @@ const statusConfig: Record<StatusKey, { label: string; color: string; bgColor: s
 };
 
 const triggerLabels: Record<string, string> = {
-  schedule: 'Scheduled',
-  event: 'Event Triggered',
-  webhook: 'Webhook',
-  manual: 'Manual',
-  api: 'API Call'
+  schedule: 'triggeredBy.scheduled',
+  event: 'triggeredBy.event',
+  webhook: 'triggeredBy.webhook',
+  manual: 'triggeredBy.manual',
+  api: 'triggeredBy.api'
 };
 
 function formatDate(dateString: string, timezone: string): string {
@@ -121,7 +125,7 @@ function formatDuration(ms: number): string {
   return `${mins}m ${secs}s`;
 }
 
-function formatRelativeTime(dateString: string, timezone: string): string {
+function formatRelativeTime(dateString: string, timezone: string, t: ScriptsT): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
 
@@ -131,10 +135,10 @@ function formatRelativeTime(dateString: string, timezone: string): string {
   const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
   const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
 
-  if (diffMins < 1) return 'Just now';
-  if (diffMins < 60) return `${diffMins}m ago`;
-  if (diffHours < 24) return `${diffHours}h ago`;
-  if (diffDays < 7) return `${diffDays}d ago`;
+  if (diffMins < 1) return t('automationRunHistory.relativeTime.justNow');
+  if (diffMins < 60) return t('automationRunHistory.relativeTime.minutesAgo', { count: diffMins });
+  if (diffHours < 24) return t('automationRunHistory.relativeTime.hoursAgo', { count: diffHours });
+  if (diffDays < 7) return t('automationRunHistory.relativeTime.daysAgo', { count: diffDays });
   return date.toLocaleDateString([], { timeZone: timezone });
 }
 
@@ -142,10 +146,12 @@ function RunItem({
   run,
   timezone,
   onLoadRunDetail,
+  t,
 }: {
   run: AutomationRun;
   timezone: string;
   onLoadRunDetail?: RunDetailLoader;
+  t: ScriptsT;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
@@ -207,7 +213,7 @@ function RunItem({
           <StatusIcon className={cn('h-5 w-5', statusConfig[run.status].color)} />
           <div>
             <div className="flex items-center gap-2">
-              <span className="text-sm font-medium">{formatRelativeTime(run.startedAt, timezone)}</span>
+              <span className="text-sm font-medium">{formatRelativeTime(run.startedAt, timezone, t)}</span>
               <span
                 className={cn(
                   'inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium',
@@ -215,27 +221,28 @@ function RunItem({
                   statusConfig[run.status].color
                 )}
               >
-                {statusConfig[run.status].label}
+                {t(`automationRunHistory.${statusConfig[run.status].label}`)}
               </span>
             </div>
             <p className="text-xs text-muted-foreground">
-              {triggerLabels[run.triggeredBy]} - {run.devicesTotal} devices
+              {t(`automationRunHistory.${triggerLabels[run.triggeredBy]}`)} -{' '}
+              {t('automationRunHistory.deviceCount', { count: run.devicesTotal })}
             </p>
           </div>
         </div>
         <div className="flex items-center gap-4">
           <div className="text-right text-xs">
             <div className="flex items-center gap-2 text-muted-foreground">
-              <span className="text-green-600">{run.devicesSuccess} passed</span>
+              <span className="text-green-600">{t('automationRunHistory.resultCount.passed', { count: run.devicesSuccess })}</span>
               {run.devicesFailed > 0 && (
-                <span className="text-red-600">{run.devicesFailed} failed</span>
+                <span className="text-red-600">{t('automationRunHistory.resultCount.failed', { count: run.devicesFailed })}</span>
               )}
               {run.devicesSkipped > 0 && (
-                <span className="text-gray-500">{run.devicesSkipped} skipped</span>
+                <span className="text-gray-500">{t('automationRunHistory.resultCount.skipped', { count: run.devicesSkipped })}</span>
               )}
             </div>
             {duration && (
-              <p className="text-muted-foreground">Duration: {formatDuration(duration)}</p>
+              <p className="text-muted-foreground">{t('automationRunHistory.duration', { duration: formatDuration(duration) })}</p>
             )}
           </div>
           {expanded ? (
@@ -251,7 +258,7 @@ function RunItem({
         <div className="px-4 pb-3" data-testid="run-progress">
           <div className="mb-1 flex items-center justify-between text-xs text-muted-foreground">
             <span>
-              {finishedCount} of {run.devicesTotal} devices finished
+              {t('automationRunHistory.progress.finished', { finished: finishedCount, total: run.devicesTotal })}
             </span>
             <span>{progressPct}%</span>
           </div>
@@ -267,7 +274,7 @@ function RunItem({
       {expanded && (
         <div className="border-t bg-muted/20 p-4">
           <div className="mb-4 flex items-center justify-between">
-            <h4 className="text-sm font-medium">Device Results</h4>
+            <h4 className="text-sm font-medium">{t('automationRunHistory.deviceResults.title')}</h4>
             {logs && logs.length > 0 && (
               <button
                 type="button"
@@ -275,7 +282,7 @@ function RunItem({
                 className="flex items-center gap-1 text-xs text-primary hover:underline"
               >
                 <Terminal className="h-3 w-3" />
-                {showLogs ? 'Hide Logs' : 'View Logs'}
+                {showLogs ? t('automationRunHistory.actions.hideLogs') : t('automationRunHistory.actions.viewLogs')}
               </button>
             )}
           </div>
@@ -291,15 +298,15 @@ function RunItem({
           )}
 
           {detailLoading && deviceResults.length === 0 && (
-            <p className="text-xs text-muted-foreground">Loading device results…</p>
+            <p className="text-xs text-muted-foreground">{t('automationRunHistory.deviceResults.loading')}</p>
           )}
 
           {!detailLoading && deviceResults.length === 0 && detailError && (
-            <p className="text-xs text-red-600">Couldn't load device results. Try reopening the run.</p>
+            <p className="text-xs text-red-600">{t('automationRunHistory.deviceResults.error')}</p>
           )}
 
           {!detailLoading && deviceResults.length === 0 && !detailError && (
-            <p className="text-xs text-muted-foreground">No per-device results recorded for this run.</p>
+            <p className="text-xs text-muted-foreground">{t('automationRunHistory.deviceResults.empty')}</p>
           )}
 
           <div className="space-y-2">
@@ -338,12 +345,12 @@ function RunItem({
           <div className="mt-4 flex items-center gap-4 text-xs text-muted-foreground">
             <div className="flex items-center gap-1">
               <Calendar className="h-3 w-3" />
-              Started: {formatDate(run.startedAt, timezone)}
+              {t('automationRunHistory.timestamps.started', { date: formatDate(run.startedAt, timezone) })}
             </div>
             {run.completedAt && (
               <div className="flex items-center gap-1">
                 <Calendar className="h-3 w-3" />
-                Completed: {formatDate(run.completedAt, timezone)}
+                {t('automationRunHistory.timestamps.completed', { date: formatDate(run.completedAt, timezone) })}
               </div>
             )}
           </div>
@@ -361,6 +368,7 @@ export default function AutomationRunHistory({
   timezone = Intl.DateTimeFormat().resolvedOptions().timeZone,
   onLoadRunDetail
 }: AutomationRunHistoryProps) {
+  const { t } = useTranslation('scripts');
   const [statusFilter, setStatusFilter] = useState<string>('all');
 
   const filteredRuns = useMemo(() => {
@@ -375,7 +383,7 @@ export default function AutomationRunHistory({
       <div className="w-full max-w-3xl rounded-lg border bg-card shadow-lg">
         <div className="flex items-center justify-between border-b px-6 py-4">
           <div>
-            <h2 className="text-lg font-semibold">Run History</h2>
+            <h2 className="text-lg font-semibold">{t('automationRunHistory.title')}</h2>
             {automationName && (
               <p className="text-sm text-muted-foreground">{automationName}</p>
             )}
@@ -392,18 +400,18 @@ export default function AutomationRunHistory({
         <div className="p-6">
           <div className="mb-4 flex items-center justify-between">
             <p className="text-sm text-muted-foreground">
-              {filteredRuns.length} of {runs.length} runs
+              {t('automationRunHistory.summary', { shown: filteredRuns.length, total: runs.length })}
             </p>
             <select
               value={statusFilter}
               onChange={e => setStatusFilter(e.target.value)}
               className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
-              <option value="all">All Status</option>
-              <option value="success">Success</option>
-              <option value="failed">Failed</option>
-              <option value="partial">Partial</option>
-              <option value="running">Running</option>
+              <option value="all">{t('automationRunHistory.filters.allStatus')}</option>
+              <option value="success">{t('automationRunHistory.status.success')}</option>
+              <option value="failed">{t('automationRunHistory.status.failed')}</option>
+              <option value="partial">{t('automationRunHistory.status.partial')}</option>
+              <option value="running">{t('automationRunHistory.status.running')}</option>
             </select>
           </div>
 
@@ -411,13 +419,13 @@ export default function AutomationRunHistory({
             <div className="rounded-md border border-dashed p-8 text-center">
               <Clock className="mx-auto h-8 w-8 text-muted-foreground" />
               <p className="mt-2 text-sm text-muted-foreground">
-                No run history available.
+                {t('automationRunHistory.empty')}
               </p>
             </div>
           ) : (
             <div className="space-y-3">
               {filteredRuns.map(run => (
-                <RunItem key={run.id} run={run} timezone={timezone} onLoadRunDetail={onLoadRunDetail} />
+                <RunItem key={run.id} run={run} timezone={timezone} onLoadRunDetail={onLoadRunDetail} t={t} />
               ))}
             </div>
           )}

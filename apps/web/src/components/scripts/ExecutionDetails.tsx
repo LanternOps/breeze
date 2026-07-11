@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { X, ChevronDown, ChevronUp, Copy, Check, Clock, CheckCircle, XCircle, Loader2, AlertTriangle, Terminal, AlertOctagon } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
@@ -12,11 +13,11 @@ type ExecutionDetailsProps = {
 };
 
 const statusConfig: Record<ExecutionStatus, { label: string; color: string; bgColor: string; icon: typeof CheckCircle }> = {
-  pending: { label: 'Pending', color: 'text-muted-foreground', bgColor: 'bg-muted', icon: Clock },
-  running: { label: 'Running', color: 'text-blue-700 dark:text-blue-400', bgColor: 'bg-blue-500/10', icon: Loader2 },
-  completed: { label: 'Completed', color: 'text-success', bgColor: 'bg-success/10', icon: CheckCircle },
-  failed: { label: 'Failed', color: 'text-destructive', bgColor: 'bg-destructive/10', icon: XCircle },
-  timeout: { label: 'Timeout', color: 'text-warning', bgColor: 'bg-warning/10', icon: AlertTriangle }
+  pending: { label: 'status.pending', color: 'text-muted-foreground', bgColor: 'bg-muted', icon: Clock },
+  running: { label: 'status.running', color: 'text-blue-700 dark:text-blue-400', bgColor: 'bg-blue-500/10', icon: Loader2 },
+  completed: { label: 'status.completed', color: 'text-success', bgColor: 'bg-success/10', icon: CheckCircle },
+  failed: { label: 'status.failed', color: 'text-destructive', bgColor: 'bg-destructive/10', icon: XCircle },
+  timeout: { label: 'status.timeout', color: 'text-warning', bgColor: 'bg-warning/10', icon: AlertTriangle }
 };
 
 function formatDuration(seconds?: number): string {
@@ -68,6 +69,7 @@ function OutputSection({
   defaultOpen?: boolean;
   variant?: 'default' | 'error';
 }) {
+  const { t } = useTranslation('scripts');
   const [isOpen, setIsOpen] = useState(defaultOpen);
   const [copied, setCopied] = useState(false);
   const normalized = content ? normalizeOutput(content) : content;
@@ -111,7 +113,7 @@ function OutputSection({
             {title}
           </span>
           {isEmpty && (
-            <span className="text-xs text-muted-foreground">(empty)</span>
+            <span className="text-xs text-muted-foreground">{t('executionDetails.output.emptyMarker')}</span>
           )}
         </div>
         <div className="flex items-center gap-2">
@@ -123,7 +125,7 @@ function OutputSection({
                 handleCopy();
               }}
               className="flex h-7 w-7 items-center justify-center rounded hover:bg-muted"
-              title="Copy to clipboard"
+              title={t('executionDetails.actions.copyToClipboard')}
             >
               {copied ? (
                 <Check className="h-4 w-4 text-success" />
@@ -142,7 +144,7 @@ function OutputSection({
       {isOpen && (
         <div className="p-4">
           {isEmpty ? (
-            <p className="text-sm text-muted-foreground italic">No output</p>
+            <p className="text-sm text-muted-foreground italic">{t('executionDetails.output.noOutput')}</p>
           ) : (
             <pre className={cn(
               'overflow-x-auto rounded-md p-4 text-sm font-mono whitespace-pre-wrap wrap-break-word',
@@ -163,6 +165,7 @@ export default function ExecutionDetails({
   onClose,
   timezone
 }: ExecutionDetailsProps) {
+  const { t } = useTranslation('scripts');
   if (!isOpen) return null;
 
   const StatusIcon = statusConfig[execution.status].icon;
@@ -173,7 +176,7 @@ export default function ExecutionDetails({
         {/* Header */}
         <div className="flex items-center justify-between border-b px-6 py-4">
           <div>
-            <h2 className="text-lg font-semibold">Execution Details</h2>
+            <h2 className="text-lg font-semibold">{t('executionDetails.title')}</h2>
             <p className="text-sm text-muted-foreground">{execution.scriptName}</p>
           </div>
           <button
@@ -203,18 +206,18 @@ export default function ExecutionDetails({
                   'text-lg font-semibold',
                   statusConfig[execution.status].color
                 )}>
-                  {statusConfig[execution.status].label}
+                  {t(`executionDetails.${statusConfig[execution.status].label}`)}
                 </p>
                 <p className="text-sm text-muted-foreground">
                   {execution.status === 'running'
-                    ? 'Script is currently executing...'
+                    ? t('executionDetails.statusDescription.running')
                     : execution.status === 'completed'
-                      ? 'Script completed successfully'
+                      ? t('executionDetails.statusDescription.completed')
                       : execution.status === 'failed'
-                        ? 'Script execution failed'
+                        ? t('executionDetails.statusDescription.failed')
                         : execution.status === 'timeout'
-                          ? 'Script execution timed out'
-                          : 'Script is waiting to be executed'}
+                          ? t('executionDetails.statusDescription.timeout')
+                          : t('executionDetails.statusDescription.pending')}
                 </p>
               </div>
             </div>
@@ -223,20 +226,20 @@ export default function ExecutionDetails({
           {/* Metadata Grid */}
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <div className="rounded-md border bg-muted/20 p-4">
-              <p className="text-xs font-medium text-muted-foreground">Device</p>
+              <p className="text-xs font-medium text-muted-foreground">{t('common:labels.device')}</p>
               <p className="text-sm font-medium mt-1">{execution.deviceHostname}</p>
             </div>
             <div className="rounded-md border bg-muted/20 p-4">
-              <p className="text-xs font-medium text-muted-foreground">Started At</p>
+              <p className="text-xs font-medium text-muted-foreground">{t('executionDetails.fields.startedAt')}</p>
               <p className="text-sm font-medium mt-1">{formatDateTime(execution.startedAt, timezone)}</p>
             </div>
             <div className="rounded-md border bg-muted/20 p-4">
-              <p className="text-xs font-medium text-muted-foreground">Duration</p>
+              <p className="text-xs font-medium text-muted-foreground">{t('executionDetails.fields.duration')}</p>
               <p className="text-sm font-medium mt-1">
                 {execution.status === 'running' ? (
                   <span className="flex items-center gap-1">
                     <Loader2 className="h-3 w-3 animate-spin" />
-                    Running...
+                    {t('executionDetails.status.running')}
                   </span>
                 ) : (
                   formatDuration(execution.duration)
@@ -244,7 +247,7 @@ export default function ExecutionDetails({
               </p>
             </div>
             <div className="rounded-md border bg-muted/20 p-4">
-              <p className="text-xs font-medium text-muted-foreground">Exit Code</p>
+              <p className="text-xs font-medium text-muted-foreground">{t('executionDetails.fields.exitCode')}</p>
               <p className="text-sm font-medium mt-1">
                 {execution.exitCode !== undefined ? (
                   <span className={cn(
@@ -264,24 +267,24 @@ export default function ExecutionDetails({
 
           {execution.completedAt && (
             <div className="rounded-md border bg-muted/20 p-4">
-              <p className="text-xs font-medium text-muted-foreground">Completed At</p>
+              <p className="text-xs font-medium text-muted-foreground">{t('executionDetails.fields.completedAt')}</p>
               <p className="text-sm font-medium mt-1">{formatDateTime(execution.completedAt, timezone)}</p>
             </div>
           )}
 
           {/* Output Sections */}
           <div className="space-y-4">
-            <h3 className="text-sm font-semibold">Output</h3>
+            <h3 className="text-sm font-semibold">{t('executionDetails.output.title')}</h3>
 
             <OutputSection
-              title="Standard Output (stdout)"
+              title={t('executionDetails.output.stdout')}
               content={execution.stdout}
               icon={Terminal}
               defaultOpen={true}
             />
 
             <OutputSection
-              title="Standard Error (stderr)"
+              title={t('executionDetails.output.stderr')}
               content={execution.stderr}
               icon={AlertOctagon}
               defaultOpen={!!execution.stderr}
@@ -297,7 +300,7 @@ export default function ExecutionDetails({
             onClick={onClose}
             className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
           >
-            Close
+            {t('common:actions.close')}
           </button>
         </div>
       </div>

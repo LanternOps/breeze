@@ -1,16 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 import type { VulnFleetFilters } from '../../lib/api/vulnerabilities';
+import '@/lib/i18n';
 
 const SEARCH_DEBOUNCE_MS = 300;
 
 const SEVERITY_OPTIONS = ['critical', 'high', 'medium', 'low'] as const;
 const STATUS_OPTIONS = [
-  { value: 'open', label: 'Open' },
-  { value: 'accepted', label: 'Accepted' },
-  { value: 'mitigated', label: 'Mitigated' },
-  { value: 'patched', label: 'Patched' },
-  { value: 'all', label: 'All statuses' },
+  { value: 'open', labelKey: 'open' },
+  { value: 'accepted', labelKey: 'accepted' },
+  { value: 'mitigated', labelKey: 'mitigated' },
+  { value: 'patched', labelKey: 'patched' },
+  { value: 'all', labelKey: 'all' },
 ] as const;
 
 const selectCls = 'rounded-md border bg-background px-2 py-1 text-sm';
@@ -19,9 +21,9 @@ const selectCls = 'rounded-md border bg-background px-2 py-1 text-sm';
 // and CVE ids, but the by-CVE endpoint only matches CVE ids (matching software
 // names there would mean joining per-device inventory into the CVE aggregate —
 // not a small or index-friendly change), so the placeholder must not promise it.
-const SEARCH_PLACEHOLDER: Record<'software' | 'cves', string> = {
-  software: 'Search software or CVE…',
-  cves: 'Search CVE id…',
+const SEARCH_PLACEHOLDER_KEYS: Record<'software' | 'cves', string> = {
+  software: 'software',
+  cves: 'cves',
 };
 
 export function VulnFilterBar({
@@ -34,6 +36,7 @@ export function VulnFilterBar({
   /** Active tab — controls what the search placeholder can honestly claim. */
   searchScope?: 'software' | 'cves';
 }) {
+  const { t } = useTranslation('vulnerabilities');
   // Local echo of the search box so typing is instant while the fetch-driving
   // filter commits on a trailing debounce (one request per pause, not per
   // keystroke — same pattern as TicketsPage). Clearing applies immediately.
@@ -70,25 +73,25 @@ export function VulnFilterBar({
         data-testid="vuln-filter-search"
         value={searchText}
         onChange={(e) => setSearchText(e.target.value)}
-        placeholder={SEARCH_PLACEHOLDER[searchScope]}
+        placeholder={t(/* i18n-dynamic */ `vulnFilterBar.searchPlaceholder.${SEARCH_PLACEHOLDER_KEYS[searchScope]}`)}
         className="w-56 rounded-md border bg-background px-2 py-1 text-sm"
       />
       <label className="flex items-center gap-2 text-sm">
-        <span className="text-muted-foreground">Severity</span>
+        <span className="text-muted-foreground">{t('vulnFilterBar.labels.severity')}</span>
         <select
           data-testid="vuln-filter-severity"
           value={filters.severity}
           onChange={(e) => onChange({ ...filters, severity: e.target.value })}
           className={selectCls}
         >
-          <option value="">All</option>
+          <option value="">{t('common:labels.all')}</option>
           {SEVERITY_OPTIONS.map((s) => (
-            <option key={s} value={s}>{s[0]!.toUpperCase() + s.slice(1)}</option>
+            <option key={s} value={s}>{t(`severityBadge.${s}`)}{/* i18n-dynamic */}</option>
           ))}
         </select>
       </label>
       <label className="flex items-center gap-2 text-sm">
-        <span className="text-muted-foreground">Status</span>
+        <span className="text-muted-foreground">{t('common:labels.status')}</span>
         <select
           data-testid="vuln-filter-status"
           value={filters.status}
@@ -99,7 +102,7 @@ export function VulnFilterBar({
           className={selectCls}
         >
           {STATUS_OPTIONS.map((s) => (
-            <option key={s.value} value={s.value}>{s.label}</option>
+            <option key={s.value} value={s.value}>{t(`vulnFilterBar.statusOptions.${s.labelKey}`)}{/* i18n-dynamic */}</option>
           ))}
         </select>
       </label>
@@ -111,7 +114,7 @@ export function VulnFilterBar({
           onChange={(e) => onChange({ ...filters, kevOnly: e.target.checked })}
           className="h-4 w-4 rounded border"
         />
-        <span>KEV only</span>
+        <span>{t('vulnFilterBar.filters.kevOnly')}</span>
       </label>
       <label className="flex items-center gap-2 text-sm">
         <input
@@ -121,7 +124,7 @@ export function VulnFilterBar({
           onChange={(e) => onChange({ ...filters, patchAvailable: e.target.checked })}
           className="h-4 w-4 rounded border"
         />
-        <span>Patch available</span>
+        <span>{t('vulnFilterBar.filters.patchAvailable')}</span>
       </label>
       {filters.expiringWithinDays !== undefined && (
         // Active-filter chip for the stat-card-driven window: there is no
@@ -131,10 +134,10 @@ export function VulnFilterBar({
           type="button"
           data-testid="vuln-filter-expiring-clear"
           className="inline-flex items-center gap-1 rounded-full border bg-muted/40 px-2.5 py-1 text-xs font-medium transition hover:bg-muted focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary"
-          aria-label={`Clear the expiring within ${filters.expiringWithinDays} days filter`}
+          aria-label={t('vulnFilterBar.expiring.clearAria', { count: filters.expiringWithinDays })}
           onClick={() => onChange({ ...filters, expiringWithinDays: undefined })}
         >
-          Expiring within {filters.expiringWithinDays} days
+          {t('vulnFilterBar.expiring.label', { count: filters.expiringWithinDays })}
           <span aria-hidden="true">×</span>
         </button>
       )}

@@ -68,7 +68,7 @@
     "confirm": "Confirm", "search": "Search", "filter": "Filter", "refresh": "Refresh",
     "export": "Export", "download": "Download", "upload": "Upload", "copy": "Copy",
     "retry": "Retry", "back": "Back", "next": "Next", "done": "Done", "apply": "Apply",
-    "enable": "Enable", "disable": "Disable", "view": "View", "run": "Run"
+    "enable": "Enable", "disable": "Disable", "view": "View", "run": "Run", "clear": "Clear"
   },
   "states": {
     "loading": "Loading…", "saving": "Saving…", "saved": "Saved",

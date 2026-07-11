@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { ArrowLeft } from 'lucide-react';
 import PolicyForm, { type PolicyFormValues } from './PolicyForm';
 import { fetchWithAuth } from '../../stores/auth';
@@ -16,6 +17,7 @@ type PolicyEditPageProps = {
 };
 
 export default function PolicyEditPage({ policyId, isNew = false }: PolicyEditPageProps) {
+  const { t } = useTranslation('scripts');
   const [loading, setLoading] = useState(!isNew);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
@@ -33,7 +35,7 @@ export default function PolicyEditPage({ policyId, isNew = false }: PolicyEditPa
       setError(undefined);
       const response = await fetchWithAuth(`/policies/${policyId}`);
       if (!response.ok) {
-        throw new Error('Failed to fetch policy');
+        throw new Error(t('policyEditPage.errors.fetch'));
       }
       const data = await response.json();
       const policy = data.policy ?? data;
@@ -50,11 +52,11 @@ export default function PolicyEditPage({ policyId, isNew = false }: PolicyEditPa
         checkIntervalMinutes: policy.checkIntervalMinutes ?? 60
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('policyEditPage.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [policyId, isNew]);
+  }, [policyId, isNew, t]);
 
   const fetchSites = useCallback(async () => {
     try {
@@ -171,7 +173,7 @@ export default function PolicyEditPage({ policyId, isNew = false }: PolicyEditPa
       if (!response.ok) {
         const data = await response.json();
         // Handle different error formats - string, object with message, or validation errors
-        let errorMessage = 'Failed to save policy';
+        let errorMessage = t('policyEditPage.errors.save');
         if (typeof data.error === 'string') {
           errorMessage = data.error;
         } else if (data.error?.message) {
@@ -187,7 +189,7 @@ export default function PolicyEditPage({ policyId, isNew = false }: PolicyEditPa
 
       void navigateTo('/policies');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('policyEditPage.errors.generic'));
     } finally {
       setSaving(false);
     }
@@ -202,7 +204,7 @@ export default function PolicyEditPage({ policyId, isNew = false }: PolicyEditPa
       <div className="flex items-center justify-center py-12">
         <div className="text-center">
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading policy...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('policyEditPage.loading')}</p>
         </div>
       </div>
     );
@@ -217,7 +219,7 @@ export default function PolicyEditPage({ policyId, isNew = false }: PolicyEditPa
           onClick={fetchPolicy}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Try again
+          {t('common:actions.retry')}
         </button>
       </div>
     );
@@ -226,8 +228,8 @@ export default function PolicyEditPage({ policyId, isNew = false }: PolicyEditPa
   return (
     <div className="space-y-6">
       <Breadcrumbs items={[
-        { label: 'Policies', href: '/policies' },
-        { label: isNew ? 'New Policy' : (defaultValues?.name || 'Edit Policy') }
+        { label: t('policyEditPage.breadcrumb.policies'), href: '/policies' },
+        { label: isNew ? t('policyEditPage.breadcrumb.new') : (defaultValues?.name || t('policyEditPage.breadcrumb.edit')) }
       ]} />
       <div className="flex items-center gap-4">
         <a
@@ -238,12 +240,12 @@ export default function PolicyEditPage({ policyId, isNew = false }: PolicyEditPa
         </a>
         <div>
           <h1 className="text-xl font-semibold tracking-tight">
-            {isNew ? 'Create Policy' : 'Edit Policy'}
+            {isNew ? t('policyEditPage.title.create') : t('policyEditPage.title.edit')}
           </h1>
           <p className="text-muted-foreground">
             {isNew
-              ? 'Define compliance rules and enforcement behavior.'
-              : 'Modify the policy configuration.'}
+              ? t('policyEditPage.description.create')
+              : t('policyEditPage.description.edit')}
           </p>
         </div>
       </div>
@@ -258,7 +260,7 @@ export default function PolicyEditPage({ policyId, isNew = false }: PolicyEditPa
         onSubmit={handleSubmit}
         onCancel={handleCancel}
         defaultValues={defaultValues}
-        submitLabel={isNew ? 'Create Policy' : 'Save Changes'}
+        submitLabel={isNew ? t('policyEditPage.actions.create') : t('policyEditPage.actions.saveChanges')}
         loading={saving}
         sites={sites}
         groups={groups}

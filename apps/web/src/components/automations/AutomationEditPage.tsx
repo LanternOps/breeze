@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { ArrowLeft } from 'lucide-react';
 import AutomationForm, { type ActionFormValues, type AutomationFormValues } from './AutomationForm';
 import { fetchWithAuth } from '../../stores/auth';
@@ -104,6 +105,7 @@ function buildActionPayload(action: ActionFormValues) {
 }
 
 export default function AutomationEditPage({ automationId, isNew = false }: AutomationEditPageProps) {
+  const { t } = useTranslation('scripts');
   const [loading, setLoading] = useState(!isNew);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
@@ -133,7 +135,7 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
       setError(undefined);
       const response = await fetchWithAuth(`/automations/${automationId}`);
       if (!response.ok) {
-        throw new Error('Failed to fetch automation');
+        throw new Error(t('automationEditPage.errors.fetch'));
       }
       const data = await response.json();
       const automation = data.automation ?? data;
@@ -185,11 +187,11 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
 
       setWebhookUrl(asString(trigger.webhookUrl));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('automationEditPage.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [automationId, isNew]);
+  }, [automationId, isNew, t]);
 
   const fetchSites = useCallback(async () => {
     try {
@@ -319,12 +321,12 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
 
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
-        throw new Error(extractApiError(data, 'Failed to save automation'));
+        throw new Error(extractApiError(data, t('automationEditPage.errors.save')));
       }
 
       void navigateTo('/automations');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('automationEditPage.errors.generic'));
     } finally {
       setSaving(false);
     }
@@ -339,7 +341,7 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
       <div className="flex items-center justify-center py-12">
         <div className="text-center">
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading automation...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('automationEditPage.loading')}</p>
         </div>
       </div>
     );
@@ -354,7 +356,7 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
           onClick={fetchAutomation}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Try again
+          {t('common:actions.retry')}
         </button>
       </div>
     );
@@ -363,8 +365,8 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
   return (
     <div className="space-y-6">
       <Breadcrumbs items={[
-        { label: 'Automations', href: '/automations' },
-        { label: isNew ? 'New Automation' : (defaultValues?.name || 'Edit Automation') }
+        { label: t('automationEditPage.breadcrumb.automations'), href: '/automations' },
+        { label: isNew ? t('automationEditPage.breadcrumb.new') : (defaultValues?.name || t('automationEditPage.breadcrumb.edit')) }
       ]} />
       <div className="flex items-center gap-4">
         <a
@@ -375,12 +377,12 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
         </a>
         <div>
           <h1 className="text-xl font-semibold tracking-tight">
-            {isNew ? 'Create Automation' : 'Edit Automation'}
+            {isNew ? t('automationEditPage.title.create') : t('automationEditPage.title.edit')}
           </h1>
           <p className="text-muted-foreground">
             {isNew
-              ? 'Build an automated workflow with triggers, conditions, and actions.'
-              : 'Modify the automation configuration.'}
+              ? t('automationEditPage.description.create')
+              : t('automationEditPage.description.edit')}
           </p>
         </div>
       </div>
@@ -397,7 +399,7 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
         defaultValues={isNew ? { ownerScope: defaultOwnerScope, ...defaultValues } : defaultValues}
         webhookUrl={webhookUrl}
         showOwnerScope={isNew && isPartnerScope}
-        submitLabel={isNew ? 'Create Automation' : 'Save Changes'}
+        submitLabel={isNew ? t('automationEditPage.actions.create') : t('automationEditPage.actions.saveChanges')}
         loading={saving}
         sites={sites}
         groups={groups}

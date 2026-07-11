@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Download, Search } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
@@ -18,13 +19,14 @@ type ScriptTemplateGalleryProps = {
 };
 
 const languageConfig: Record<ScriptTemplate['language'], { label: string; color: string }> = {
-  powershell: { label: 'PowerShell', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40' },
-  bash: { label: 'Bash', color: 'bg-green-500/20 text-green-700 border-green-500/40' },
-  python: { label: 'Python', color: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40' },
-  cmd: { label: 'CMD', color: 'bg-gray-500/20 text-gray-700 border-gray-500/40' }
+  powershell: { label: 'languages.powershell', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40' },
+  bash: { label: 'languages.bash', color: 'bg-green-500/20 text-green-700 border-green-500/40' },
+  python: { label: 'languages.python', color: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40' },
+  cmd: { label: 'languages.cmd', color: 'bg-gray-500/20 text-gray-700 border-gray-500/40' }
 };
 
 export default function ScriptTemplateGallery({ onUseTemplate }: ScriptTemplateGalleryProps) {
+  const { t } = useTranslation('scripts');
   const [templates, setTemplates] = useState<ScriptTemplate[]>([]);
   const [query, setQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('all');
@@ -45,17 +47,17 @@ export default function ScriptTemplateGallery({ onUseTemplate }: ScriptTemplateG
       }
 
       if (!response.ok) {
-        throw new Error('Failed to fetch templates');
+        throw new Error(t('scriptTemplateGallery.errors.fetch'));
       }
 
       const data = await response.json();
       setTemplates(data.templates || []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load templates');
+      setError(err instanceof Error ? err.message : t('scriptTemplateGallery.errors.load'));
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     fetchTemplates();
@@ -98,8 +100,8 @@ export default function ScriptTemplateGallery({ onUseTemplate }: ScriptTemplateG
       <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h2 className="text-lg font-semibold">Template Gallery</h2>
-            <p className="text-sm text-muted-foreground">Browse reusable script templates.</p>
+            <h2 className="text-lg font-semibold">{t('scriptTemplateGallery.title')}</h2>
+            <p className="text-sm text-muted-foreground">{t('scriptTemplateGallery.description')}</p>
           </div>
         </div>
         <div className="mt-6 flex h-48 items-center justify-center">
@@ -114,8 +116,8 @@ export default function ScriptTemplateGallery({ onUseTemplate }: ScriptTemplateG
       <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h2 className="text-lg font-semibold">Template Gallery</h2>
-            <p className="text-sm text-muted-foreground">Browse reusable script templates.</p>
+            <h2 className="text-lg font-semibold">{t('scriptTemplateGallery.title')}</h2>
+            <p className="text-sm text-muted-foreground">{t('scriptTemplateGallery.description')}</p>
           </div>
         </div>
         <div className="mt-6 flex h-48 flex-col items-center justify-center gap-2 text-muted-foreground">
@@ -125,7 +127,7 @@ export default function ScriptTemplateGallery({ onUseTemplate }: ScriptTemplateG
             onClick={fetchTemplates}
             className="text-sm text-primary hover:underline"
           >
-            Try again
+            {t('common:actions.retry')}
           </button>
         </div>
       </div>
@@ -136,8 +138,8 @@ export default function ScriptTemplateGallery({ onUseTemplate }: ScriptTemplateG
     <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-lg font-semibold">Template Gallery</h2>
-          <p className="text-sm text-muted-foreground">Browse reusable script templates.</p>
+          <h2 className="text-lg font-semibold">{t('scriptTemplateGallery.title')}</h2>
+          <p className="text-sm text-muted-foreground">{t('scriptTemplateGallery.description')}</p>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <div className="relative">
@@ -146,7 +148,7 @@ export default function ScriptTemplateGallery({ onUseTemplate }: ScriptTemplateG
               type="search"
               value={query}
               onChange={event => setQuery(event.target.value)}
-              placeholder="Search templates"
+              placeholder={t('scriptTemplateGallery.searchPlaceholder')}
               className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-56"
             />
           </div>
@@ -155,7 +157,7 @@ export default function ScriptTemplateGallery({ onUseTemplate }: ScriptTemplateG
             onChange={event => setCategoryFilter(event.target.value)}
             className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
-            <option value="all">All Categories</option>
+            <option value="all">{t('scriptList.filters.allCategories')}</option>
             {categories.map(category => (
               <option key={category} value={category}>
                 {category}
@@ -167,11 +169,11 @@ export default function ScriptTemplateGallery({ onUseTemplate }: ScriptTemplateG
             onChange={event => setLanguageFilter(event.target.value)}
             className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
-            <option value="all">All Languages</option>
-            <option value="powershell">PowerShell</option>
-            <option value="bash">Bash</option>
-            <option value="python">Python</option>
-            <option value="cmd">CMD</option>
+            <option value="all">{t('scriptList.filters.allLanguages')}</option>
+            <option value="powershell">{t('scriptTemplateGallery.languages.powershell')}</option>
+            <option value="bash">{t('scriptTemplateGallery.languages.bash')}</option>
+            <option value="python">{t('scriptTemplateGallery.languages.python')}</option>
+            <option value="cmd">{t('scriptTemplateGallery.languages.cmd')}</option>
           </select>
         </div>
       </div>
@@ -179,7 +181,7 @@ export default function ScriptTemplateGallery({ onUseTemplate }: ScriptTemplateG
       <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {filteredTemplates.length === 0 ? (
           <div className="col-span-full py-8 text-center text-muted-foreground">
-            No templates found matching your criteria.
+            {t('scriptTemplateGallery.empty')}
           </div>
         ) : (
           filteredTemplates.map(template => (
@@ -195,21 +197,21 @@ export default function ScriptTemplateGallery({ onUseTemplate }: ScriptTemplateG
                     languageConfig[template.language]?.color || 'bg-gray-500/20 text-gray-700 border-gray-500/40'
                   )}
                 >
-                  {languageConfig[template.language]?.label || template.language}
+                  {languageConfig[template.language] ? t(`scriptTemplateGallery.${languageConfig[template.language].label}`) : template.language}
                 </span>
               </div>
               <p className="mt-3 text-sm text-muted-foreground">{template.description}</p>
               <div className="mt-4 flex items-center justify-between text-xs text-muted-foreground">
                 <span className="flex items-center gap-1">
                   <Download className="h-3 w-3" />
-                  {template.downloads.toLocaleString()} downloads
+                  {t('scriptTemplateGallery.downloadCount', { count: template.downloads.toLocaleString() })}
                 </span>
                 <button
                   type="button"
                   onClick={() => handleUseTemplate(template)}
                   className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground"
                 >
-                  Use Template
+                  {t('scriptTemplateGallery.actions.useTemplate')}
                 </button>
               </div>
             </div>

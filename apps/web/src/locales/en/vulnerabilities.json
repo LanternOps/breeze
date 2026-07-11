@@ -1,0 +1,328 @@
+{
+  "createVulnTicketModal": {
+    "title": "Create ticket",
+    "heading": "Create ticket — {{count}} findings",
+    "heading_one": "Create ticket — {{count}} finding",
+    "heading_other": "Create ticket — {{count}} findings",
+    "crossOrgNote": "Selection spans {{count}} organizations — one ticket per organization will be created.",
+    "crossOrgNote_one": "Selection spans {{count}} organization — one ticket per organization will be created.",
+    "crossOrgNote_other": "Selection spans {{count}} organizations — one ticket per organization will be created.",
+    "autoDetailNote": "Device and CVE details are added automatically, per organization.",
+    "fields": {
+      "title": "Title",
+      "note": "Note (optional)",
+      "notePlaceholder": "Add any context for the technician (optional)",
+      "priority": "Priority"
+    },
+    "priorities": {
+      "low": "Low",
+      "normal": "Normal",
+      "high": "High",
+      "urgent": "Urgent"
+    },
+    "actions": {
+      "create": "Create ticket"
+    }
+  },
+  "cveDrawer": {
+    "errors": {
+      "load": "Failed to load CVE",
+      "reopen": "Failed to reopen finding",
+      "scheduleRemediation": "Failed to schedule remediation",
+      "acceptRisk": "Failed to accept risk",
+      "mitigate": "Failed to mitigate",
+      "createTicket": "Failed to create ticket"
+    },
+    "meta": {
+      "cvss": "CVSS {{version}}",
+      "vector": "Vector",
+      "epss": "EPSS",
+      "knownExploited": "Known exploited",
+      "published": "Published",
+      "modified": "Modified"
+    },
+    "sections": {
+      "devices": "Devices ({{count}} findings)",
+      "devices_one": "Devices ({{count}} finding)",
+      "devices_other": "Devices ({{count}} findings)"
+    },
+    "selection": {
+      "selectAll": "Select all",
+      "selectAllAria": "Select all findings",
+      "deselectAllAria": "Deselect all findings",
+      "selectFindingAria": "Select finding on {{deviceName}}",
+      "selected": "{{count}} selected",
+      "selected_one": "{{count}} selected",
+      "selected_other": "{{count}} selected"
+    },
+    "empty": {
+      "noFindings": "No devices in your fleet are affected by this CVE right now — nothing to act on."
+    },
+    "findings": {
+      "patch": "Patch",
+      "ticket": "Ticket"
+    },
+    "actions": {
+      "reopen": "Reopen",
+      "remediate": "Remediate",
+      "acceptRisk": "Accept risk",
+      "mitigate": "Mitigate",
+      "createTicket": "Create ticket"
+    },
+    "ticket": {
+      "defaultTitle": "Remediate {{cveId}}"
+    }
+  },
+  "findingStatus": {
+    "acceptedUntil": "Accepted until {{date}}",
+    "status": {
+      "open": "open",
+      "accepted": "accepted",
+      "mitigated": "mitigated",
+      "patched": "patched"
+    }
+  },
+  "kevBadge": {
+    "label": "KEV",
+    "title": "Known Exploited Vulnerability (CISA KEV catalog)"
+  },
+  "severityBadge": {
+    "critical": "Critical",
+    "high": "High",
+    "medium": "Medium",
+    "low": "Low",
+    "unknown": "Unknown"
+  },
+  "softwareGroupDrawer": {
+    "titleFallback": "Software group",
+    "errors": {
+      "load": "Failed to load software group",
+      "reopen": "Failed to reopen finding",
+      "scheduleRemediation": "Failed to schedule remediation",
+      "acceptRisk": "Failed to accept risk",
+      "mitigate": "Failed to mitigate",
+      "createTicket": "Failed to create ticket"
+    },
+    "summary": {
+      "devices": "{{count}} devices",
+      "devices_one": "{{count}} device",
+      "devices_other": "{{count}} devices",
+      "maxRisk": "max risk {{risk}}"
+    },
+    "tickets": {
+      "number": "Ticket {{number}}",
+      "view": "View ticket"
+    },
+    "sections": {
+      "cves": "CVEs ({{count}})",
+      "devices": "Devices ({{count}} findings)",
+      "devices_one": "Devices ({{count}} finding)",
+      "devices_other": "Devices ({{count}} findings)"
+    },
+    "cveMeta": {
+      "cvss": "CVSS {{score}}",
+      "epss": "EPSS {{score}}"
+    },
+    "selection": {
+      "selectAll": "Select all",
+      "selectAllAria": "Select all findings",
+      "deselectAllAria": "Deselect all findings",
+      "selectFindingAria": "Select {{cveId}} finding on {{deviceName}}",
+      "selected": "{{count}} selected",
+      "selected_one": "{{count}} selected",
+      "selected_other": "{{count}} selected"
+    },
+    "empty": {
+      "noFindings": "No device findings remain in this group — nothing to act on."
+    },
+    "findings": {
+      "patch": "Patch",
+      "ticket": "Ticket"
+    },
+    "actions": {
+      "reopen": "Reopen",
+      "remediate": "Remediate",
+      "acceptRisk": "Accept risk",
+      "mitigate": "Mitigate",
+      "createTicket": "Create ticket"
+    },
+    "ticket": {
+      "defaultTitle": "Remediate {{name}}"
+    }
+  },
+  "softwareGroupTable": {
+    "errors": {
+      "load": "Failed to load software groups"
+    },
+    "table": {
+      "software": "Software",
+      "severity": "Severity",
+      "risk": "Risk",
+      "cves": "CVEs",
+      "devices": "Devices",
+      "patch": "Patch"
+    },
+    "help": {
+      "riskAria": "About the risk score"
+    },
+    "actions": {
+      "openDetailsAria": "Open {{name}} vulnerability details"
+    },
+    "patch": {
+      "ready": "Ready · {{ready}}/{{total}} devices",
+      "ready_one": "Ready · {{ready}}/{{total}} device",
+      "ready_other": "Ready · {{ready}}/{{total}} devices"
+    },
+    "hasMore": "Showing the top 500 groups by risk — narrow the filters to see the rest."
+  },
+  "vulnBulkActionModal": {
+    "headings": {
+      "remediate": "Remediate findings",
+      "accept": "Accept risk",
+      "mitigate": "Mark mitigated"
+    },
+    "headingWithCount": "{{heading}} — {{count}} findings",
+    "headingWithCount_one": "{{heading}} — {{count}} finding",
+    "headingWithCount_other": "{{heading}} — {{count}} findings",
+    "counts": {
+      "devices": "{{count}} devices",
+      "devices_one": "{{count}} device",
+      "devices_other": "{{count}} devices",
+      "findings": "{{count}} findings",
+      "findings_one": "{{count}} finding",
+      "findings_other": "{{count}} findings"
+    },
+    "selection": {
+      "more": "and {{count}} more"
+    },
+    "consequence": {
+      "remediate": "Installs the approved patch for each CVE on {{deviceText}} ({{findingText}}). Findings without an approved, applicable patch are skipped.",
+      "accept": "Hides {{findingText}} on {{deviceText}} from the open queue until the date you set. They do not reopen automatically — expiring acceptances surface in the “Accepted, expiring soon” card.",
+      "mitigate": "Marks {{findingText}} on {{deviceText}} mitigated, with your note recorded as the compensating control. Breeze does not change the devices."
+    },
+    "fields": {
+      "reason": "Reason",
+      "mitigationNote": "Mitigation note",
+      "acceptedUntil": "Accepted until"
+    },
+    "actions": {
+      "working": "Working…",
+      "remediate": "Remediate",
+      "accept": "Accept risk",
+      "mitigate": "Mark mitigated"
+    }
+  },
+  "vulnEmptyState": {
+    "filtered": {
+      "message": "No vulnerabilities match the current filters.",
+      "clearFilters": "Clear filters"
+    },
+    "clean": {
+      "title": "No open vulnerabilities across your fleet",
+      "description": "Every detected finding has been patched, mitigated, or accepted. New findings will appear here as scans run.",
+      "lastDetected": "Last finding detected {{date}}"
+    },
+    "unscanned": {
+      "title": "No vulnerability findings yet",
+      "description": "Breeze checks each device's software and OS inventory against known CVEs and queues anything that needs patching, mitigation, or risk acceptance here.",
+      "setupHint": "Scanning is off by default — enable it on the Vulnerability tab of a configuration policy.",
+      "setupAction": "Set up vulnerability scanning"
+    },
+    "unknown": {
+      "message": "No vulnerabilities to show."
+    }
+  },
+  "vulnFilterBar": {
+    "searchPlaceholder": {
+      "software": "Search software or CVE…",
+      "cves": "Search CVE id…"
+    },
+    "labels": {
+      "severity": "Severity"
+    },
+    "statusOptions": {
+      "open": "Open",
+      "accepted": "Accepted",
+      "mitigated": "Mitigated",
+      "patched": "Patched",
+      "all": "All statuses"
+    },
+    "filters": {
+      "kevOnly": "KEV only",
+      "patchAvailable": "Patch available"
+    },
+    "expiring": {
+      "clearAria": "Clear the expiring within {{count}} days filter",
+      "clearAria_one": "Clear the expiring within {{count}} day filter",
+      "clearAria_other": "Clear the expiring within {{count}} days filter",
+      "label": "Expiring within {{count}} days",
+      "label_one": "Expiring within {{count}} day",
+      "label_other": "Expiring within {{count}} days"
+    }
+  },
+  "vulnerabilityFleetPage": {
+    "stats": {
+      "critical": {
+        "label": "Critical open",
+        "detail": "{{count}} open findings rated critical",
+        "detail_one": "{{count}} open finding rated critical",
+        "detail_other": "{{count}} open findings rated critical"
+      },
+      "kev": {
+        "label": "KEV exposure",
+        "detail": "{{count}} known-exploited CVEs · {{deviceText}}",
+        "detail_one": "{{count}} known-exploited CVE · {{deviceText}}",
+        "detail_other": "{{count}} known-exploited CVEs · {{deviceText}}",
+        "devices": "{{count}} devices",
+        "devices_one": "{{count}} device",
+        "devices_other": "{{count}} devices"
+      },
+      "patchReady": {
+        "label": "Patch ready",
+        "detail": "{{count}} open findings with a patch available",
+        "detail_one": "{{count}} open finding with a patch available",
+        "detail_other": "{{count}} open findings with a patch available"
+      },
+      "acceptedExpiring": {
+        "label": "Accepted, expiring soon",
+        "detail": "{{count}} accepted findings expiring within {{days}} days",
+        "detail_one": "{{count}} accepted finding expiring within {{days}} days",
+        "detail_other": "{{count}} accepted findings expiring within {{days}} days"
+      }
+    },
+    "tabs": {
+      "ariaLabel": "Vulnerability views",
+      "software": "By software",
+      "cves": "By CVE"
+    }
+  },
+  "vulnerabilityTable": {
+    "errors": {
+      "load": "Failed to load vulnerabilities"
+    },
+    "table": {
+      "cve": "CVE",
+      "severity": "Severity",
+      "cvss": "CVSS",
+      "risk": "Risk",
+      "epss": "EPSS",
+      "patch": "Patch",
+      "affectedDevices": "Affected devices",
+      "kev": "KEV",
+      "knownExploited": "Known exploited"
+    },
+    "help": {
+      "cvssAria": "About the CVSS score",
+      "riskAria": "About the risk score",
+      "epssAria": "About the EPSS score",
+      "kevAria": "About the KEV flag"
+    },
+    "actions": {
+      "openDetailsAria": "Open {{cveId}} details"
+    },
+    "patch": {
+      "ready": "Ready"
+    },
+    "hasMore": "Showing the top 500 CVEs by risk — narrow the filters to see the rest."
+  }
+}

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { ArrowLeft, History } from 'lucide-react';
 import ScriptForm, { type ScriptFormValues, type ScriptSubmitValues } from './ScriptForm';
 import { mappingToRows } from './ScriptFormSchema';
@@ -21,6 +22,7 @@ type ScriptScope = {
 };
 
 export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
+  const { t } = useTranslation('scripts');
   const [script, setScript] = useState<ScriptFormValues | null>(null);
   const [scriptScope, setScriptScope] = useState<ScriptScope | null>(null);
   const [loading, setLoading] = useState(!!scriptId);
@@ -43,7 +45,7 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
           void navigateTo('/login', { replace: true });
           return;
         }
-        throw new Error('Failed to fetch script');
+        throw new Error(t('scriptEditPage.errors.fetch'));
       }
       const data = await response.json();
       const scriptData = data.script ?? data;
@@ -71,11 +73,11 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
         isSystem: scriptData.isSystem ?? false,
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('scriptEditPage.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [scriptId]);
+  }, [scriptId, t]);
 
   useEffect(() => {
     fetchScript();
@@ -126,7 +128,7 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
       });
 
       if (!response.ok) {
-        let errorMessage = 'Failed to save script';
+        let errorMessage = t('scriptEditPage.errors.save');
         try {
           const data = await response.json();
           if (data.error) errorMessage = data.error;
@@ -134,10 +136,10 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
         throw new Error(errorMessage);
       }
 
-      showToast({ type: 'success', message: isNew ? 'Script created' : 'Script saved' });
+      showToast({ type: 'success', message: isNew ? t('scriptEditPage.toast.created') : t('scriptEditPage.toast.saved') });
       void navigateTo('/scripts');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('scriptEditPage.errors.generic'));
       throw err; // re-throw so ScriptForm knows the save failed
     } finally {
       setSubmitting(false);
@@ -153,7 +155,7 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
       <div className="flex items-center justify-center py-12">
         <div className="text-center">
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading script...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('scriptEditPage.loading')}</p>
         </div>
       </div>
     );
@@ -168,14 +170,14 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
             href="/scripts"
             className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
           >
-            Back to Scripts
+            {t('scriptEditPage.actions.backToScripts')}
           </a>
           <button
             type="button"
             onClick={fetchScript}
             className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
           >
-            Try again
+            {t('common:actions.retry')}
           </button>
         </div>
       </div>
@@ -185,8 +187,8 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
   return (
     <div className="space-y-6">
       <Breadcrumbs items={[
-        { label: 'Scripts', href: '/scripts' },
-        { label: isNew ? 'New Script' : (script?.name || 'Edit Script') }
+        { label: t('scriptEditPage.breadcrumb.scripts'), href: '/scripts' },
+        { label: isNew ? t('scriptEditPage.breadcrumb.new') : (script?.name || t('scriptEditPage.breadcrumb.edit')) }
       ]} />
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
@@ -197,7 +199,7 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
             <ArrowLeft className="h-5 w-5" />
           </a>
           <h1 className="text-xl font-semibold tracking-tight">
-            {isNew ? 'New Script' : (script?.name || 'Edit Script')}
+            {isNew ? t('scriptEditPage.title.new') : (script?.name || t('scriptEditPage.title.edit'))}
           </h1>
           {!isNew && scriptScope && (
             <ScopeBadge
@@ -214,7 +216,7 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
             className="inline-flex h-10 items-center justify-center gap-2 rounded-md border px-4 text-sm font-medium transition hover:bg-muted"
           >
             <History className="h-4 w-4" />
-            Execution History
+            {t('scriptEditPage.actions.executionHistory')}
           </a>
         )}
       </div>
@@ -229,7 +231,7 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
         onSubmit={handleSubmit}
         onCancel={handleCancel}
         defaultValues={script || undefined}
-        submitLabel={isNew ? 'Create Script' : 'Save Changes'}
+        submitLabel={isNew ? t('scriptEditPage.actions.create') : t('scriptEditPage.actions.saveChanges')}
         loading={submitting}
         isNew={isNew}
         isSystemScript={scriptScope?.isSystem ?? false}

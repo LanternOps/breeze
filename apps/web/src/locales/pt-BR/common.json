@@ -68,7 +68,7 @@
     "confirm": "Confirmar", "search": "Pesquisar", "filter": "Filtrar", "refresh": "Atualizar",
     "export": "Exportar", "download": "Baixar", "upload": "Enviar", "copy": "Copiar",
     "retry": "Tentar novamente", "back": "Voltar", "next": "Avançar", "done": "Concluído", "apply": "Aplicar",
-    "enable": "Ativar", "disable": "Desativar", "view": "Visualizar", "run": "Executar"
+    "enable": "Ativar", "disable": "Desativar", "view": "Visualizar", "run": "Executar", "clear": "Limpar"
   },
   "states": {
     "loading": "Carregando…", "saving": "Salvando…", "saved": "Salvo",

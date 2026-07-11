@@ -1,10 +1,14 @@
 import { useEffect, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Bot, User, Wrench, Check, X, Loader2 } from 'lucide-react';
 import { useScriptAiStore, type ScriptAiMessage } from '@/stores/scriptAiStore';
 
-function MessageBubble({ message }: { message: ScriptAiMessage }) {
+type ScriptsT = TFunction<'scripts'>;
+
+function MessageBubble({ message, t }: { message: ScriptAiMessage; t: ScriptsT }) {
   const isUser = message.role === 'user';
   const isTool = message.role === 'tool_use' || message.role === 'tool_result';
 
@@ -15,10 +19,10 @@ function MessageBubble({ message }: { message: ScriptAiMessage }) {
         <Wrench className="h-3 w-3 shrink-0" />
         <span className="truncate">
           {message.applyFailed
-            ? 'Could not apply to editor'
+            ? t('scriptAiMessages.tool.applyFailed')
             : isApplyTool && message.role === 'tool_result'
-              ? `Applied to editor`
-              : message.toolName ?? 'Tool call'}
+              ? t('scriptAiMessages.tool.applied')
+              : message.toolName ?? t('scriptAiMessages.tool.call')}
         </span>
         {message.role === 'tool_result' && (
           message.applyFailed
@@ -71,14 +75,14 @@ function MessageBubble({ message }: { message: ScriptAiMessage }) {
   );
 }
 
-function ApprovalCard() {
+function ApprovalCard({ t }: { t: ScriptsT }) {
   const { pendingApproval, approveExecution } = useScriptAiStore();
   if (!pendingApproval) return null;
 
   return (
     <div className="mx-3 my-2 rounded-lg border border-amber-500/50 bg-amber-50 p-3 dark:bg-amber-950/30">
       <p className="text-sm font-medium text-amber-800 dark:text-amber-200">
-        Approval Required
+        {t('scriptAiMessages.approval.title')}
       </p>
       <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">
         {pendingApproval.description}
@@ -89,14 +93,14 @@ function ApprovalCard() {
           onClick={() => approveExecution(pendingApproval.executionId, true)}
           className="flex items-center gap-1 rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-700"
         >
-          <Check className="h-3 w-3" /> Approve
+          <Check className="h-3 w-3" /> {t('scriptAiMessages.approval.approve')}
         </button>
         <button
           type="button"
           onClick={() => approveExecution(pendingApproval.executionId, false)}
           className="flex items-center gap-1 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
         >
-          <X className="h-3 w-3" /> Reject
+          <X className="h-3 w-3" /> {t('scriptAiMessages.approval.reject')}
         </button>
       </div>
     </div>
@@ -104,6 +108,7 @@ function ApprovalCard() {
 }
 
 export default function ScriptAiMessages() {
+  const { t } = useTranslation('scripts');
   const { messages, isStreaming, isLoading } = useScriptAiStore();
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -125,9 +130,9 @@ export default function ScriptAiMessages() {
     return (
       <div className="flex flex-1 flex-col items-center justify-center px-4 text-center">
         <Bot className="h-8 w-8 text-muted-foreground/50" />
-        <p className="mt-2 text-sm font-medium text-muted-foreground">Script AI Assistant</p>
+        <p className="mt-2 text-sm font-medium text-muted-foreground">{t('scriptAiMessages.empty.title')}</p>
         <p className="mt-1 text-xs text-muted-foreground/70">
-          Describe what you need and I'll write the script for you.
+          {t('scriptAiMessages.empty.description')}
         </p>
       </div>
     );
@@ -136,9 +141,9 @@ export default function ScriptAiMessages() {
   return (
     <div ref={containerRef} className="min-h-0 flex-1 overflow-y-auto">
       {messages.map((msg) => (
-        <MessageBubble key={msg.id} message={msg} />
+        <MessageBubble key={msg.id} message={msg} t={t} />
       ))}
-      <ApprovalCard />
+      <ApprovalCard t={t} />
     </div>
   );
 }

@@ -1,4 +1,6 @@
 import { useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import {
   Search,
   ChevronLeft,
@@ -17,6 +19,7 @@ import {
 import { cn } from '@/lib/utils';
 
 export type EnforcementLevel = 'monitor' | 'warn' | 'enforce';
+type ScriptsT = TFunction<'scripts'>;
 
 export type Policy = {
   id: string;
@@ -54,26 +57,26 @@ type PolicyListProps = {
 
 const enforcementConfig: Record<EnforcementLevel, { label: string; color: string; icon: typeof Shield; description: string }> = {
   monitor: {
-    label: 'Monitor',
+    label: 'enforcement.monitor.label',
     color: 'bg-blue-500/20 text-blue-700 border-blue-500/40',
     icon: Eye,
-    description: 'Track compliance without taking action'
+    description: 'enforcement.monitor.description'
   },
   warn: {
-    label: 'Warn',
+    label: 'enforcement.warn.label',
     color: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40',
     icon: AlertTriangle,
-    description: 'Generate alerts for violations'
+    description: 'enforcement.warn.description'
   },
   enforce: {
-    label: 'Enforce',
+    label: 'enforcement.enforce.label',
     color: 'bg-red-500/20 text-red-700 border-red-500/40',
     icon: ShieldAlert,
-    description: 'Automatically remediate violations'
+    description: 'enforcement.enforce.description'
   }
 };
 
-function formatDate(dateString: string, timezone: string): string {
+function formatDate(dateString: string, timezone: string, t: ScriptsT): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
 
@@ -83,17 +86,17 @@ function formatDate(dateString: string, timezone: string): string {
   const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
   const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
 
-  if (diffMins < 1) return 'Just now';
-  if (diffMins < 60) return `${diffMins}m ago`;
-  if (diffHours < 24) return `${diffHours}h ago`;
-  if (diffDays < 7) return `${diffDays}d ago`;
+  if (diffMins < 1) return t('policyList.relativeTime.justNow');
+  if (diffMins < 60) return t('policyList.relativeTime.minutesAgo', { count: diffMins });
+  if (diffHours < 24) return t('policyList.relativeTime.hoursAgo', { count: diffHours });
+  if (diffDays < 7) return t('policyList.relativeTime.daysAgo', { count: diffDays });
   return date.toLocaleDateString([], { timeZone: timezone });
 }
 
-function ComplianceMiniChart({ compliance }: { compliance: Policy['compliance'] | undefined }) {
-  if (!compliance) return <span className="text-xs text-muted-foreground">N/A</span>;
+function ComplianceMiniChart({ compliance, t }: { compliance: Policy['compliance'] | undefined; t: ScriptsT }) {
+  if (!compliance) return <span className="text-xs text-muted-foreground">{t('policyList.notAvailable')}</span>;
   const { total, compliant, nonCompliant, unknown } = compliance;
-  if (total === 0) return <span className="text-xs text-muted-foreground">N/A</span>;
+  if (total === 0) return <span className="text-xs text-muted-foreground">{t('policyList.notAvailable')}</span>;
 
   const compliantPercent = Math.round((compliant / total) * 100);
   const nonCompliantPercent = Math.round((nonCompliant / total) * 100);
@@ -159,6 +162,7 @@ export default function PolicyList({
   pageSize = 10,
   timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
 }: PolicyListProps) {
+  const { t } = useTranslation('scripts');
   const [query, setQuery] = useState('');
   const [enforcementFilter, setEnforcementFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
@@ -194,9 +198,9 @@ export default function PolicyList({
     <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-lg font-semibold">Policies</h2>
+          <h2 className="text-lg font-semibold">{t('policyList.title')}</h2>
           <p className="text-sm text-muted-foreground">
-            {filteredPolicies.length} of {policies.length} policies
+            {t('policyList.summary', { shown: filteredPolicies.length, total: policies.length })}
           </p>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center flex-wrap">
@@ -204,7 +208,7 @@ export default function PolicyList({
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <input
               type="search"
-              placeholder="Search policies..."
+              placeholder={t('policyList.searchPlaceholder')}
               value={query}
               onChange={event => {
                 setQuery(event.target.value);
@@ -221,10 +225,10 @@ export default function PolicyList({
             }}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-36"
           >
-            <option value="all">All Enforcement</option>
-            <option value="monitor">Monitor</option>
-            <option value="warn">Warn</option>
-            <option value="enforce">Enforce</option>
+            <option value="all">{t('policyList.filters.allEnforcement')}</option>
+            <option value="monitor">{t('policyList.enforcement.monitor.label')}</option>
+            <option value="warn">{t('policyList.enforcement.warn.label')}</option>
+            <option value="enforce">{t('policyList.enforcement.enforce.label')}</option>
           </select>
           <select
             value={statusFilter}
@@ -234,9 +238,9 @@ export default function PolicyList({
             }}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-32"
           >
-            <option value="all">All Status</option>
-            <option value="enabled">Enabled</option>
-            <option value="disabled">Disabled</option>
+            <option value="all">{t('policyList.filters.allStatus')}</option>
+            <option value="enabled">{t('common:states.enabled')}</option>
+            <option value="disabled">{t('common:states.disabled')}</option>
           </select>
         </div>
       </div>
@@ -245,19 +249,19 @@ export default function PolicyList({
         <table className="min-w-full divide-y">
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <th className="px-4 py-3">Name</th>
-              <th className="px-4 py-3">Enforcement</th>
-              <th className="px-4 py-3">Compliance</th>
-              <th className="px-4 py-3">Last Evaluated</th>
-              <th className="px-4 py-3">Enabled</th>
-              <th className="px-4 py-3 text-right">Actions</th>
+              <th className="px-4 py-3">{t('common:labels.name')}</th>
+              <th className="px-4 py-3">{t('policyList.headers.enforcement')}</th>
+              <th className="px-4 py-3">{t('policyList.headers.compliance')}</th>
+              <th className="px-4 py-3">{t('policyList.headers.lastEvaluated')}</th>
+              <th className="px-4 py-3">{t('common:states.enabled')}</th>
+              <th className="px-4 py-3 text-right">{t('common:labels.actions')}</th>
             </tr>
           </thead>
           <tbody className="divide-y">
             {paginatedPolicies.length === 0 ? (
               <tr>
                 <td colSpan={6} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                  No policies found. Try adjusting your search or filters.
+                  {t('policyList.empty')}
                 </td>
               </tr>
             ) : (
@@ -273,11 +277,11 @@ export default function PolicyList({
                           {policy.orgId === null && (
                             <span
                               className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
-                              title="Partner-wide policy — evaluates devices in every organization"
+                              title={t('policyList.partnerWideTitle')}
                               data-testid="automation-policy-partner-wide-badge"
                             >
                               <Globe className="h-3 w-3" />
-                              All orgs
+                              {t('policyList.allOrgs')}
                             </span>
                           )}
                         </div>
@@ -287,10 +291,10 @@ export default function PolicyList({
                           </p>
                         )}
                         <p className="text-xs text-muted-foreground mt-1">
-                          {policy.rulesCount} rule{policy.rulesCount !== 1 ? 's' : ''}
+                          {t('policyList.ruleCount', { count: policy.rulesCount })}
                           {policy.targetType !== 'all' && policy.targetNames && (
                             <> - {policy.targetNames.slice(0, 2).join(', ')}
-                            {policy.targetNames.length > 2 && ` +${policy.targetNames.length - 2} more`}</>
+                            {policy.targetNames.length > 2 && t('policyList.moreTargets', { count: policy.targetNames.length - 2 })}</>
                           )}
                         </p>
                       </div>
@@ -303,27 +307,27 @@ export default function PolicyList({
                         )}
                       >
                         <EnforcementIcon className="h-3 w-3" />
-                        {enforcementConfig[policy.enforcementLevel].label}
+                        {t(`policyList.${enforcementConfig[policy.enforcementLevel].label}`)}
                       </span>
                     </td>
                     <td className="px-4 py-3">
-                      <ComplianceMiniChart compliance={policy.compliance} />
+                      <ComplianceMiniChart compliance={policy.compliance} t={t} />
                       <button
                         type="button"
                         onClick={() => onViewCompliance?.(policy)}
                         className="mt-1 text-xs text-primary hover:underline"
                       >
-                        View details
+                        {t('policyList.actions.viewDetails')}
                       </button>
                     </td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">
                       {policy.lastEvaluatedAt ? (
                         <div className="flex items-center gap-1">
                           <Calendar className="h-3 w-3" />
-                          {formatDate(policy.lastEvaluatedAt, timezone)}
+                          {formatDate(policy.lastEvaluatedAt, timezone, t)}
                         </div>
                       ) : (
-                        <span className="text-muted-foreground/60">Never</span>
+                        <span className="text-muted-foreground/60">{t('policyList.never')}</span>
                       )}
                     </td>
                     <td className="px-4 py-3">
@@ -343,7 +347,7 @@ export default function PolicyList({
                           type="button"
                           onClick={() => onViewCompliance?.(policy)}
                           className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
-                          title="View compliance"
+                          title={t('policyList.actions.viewCompliance')}
                         >
                           <Eye className="h-4 w-4" />
                         </button>
@@ -351,7 +355,7 @@ export default function PolicyList({
                           type="button"
                           onClick={() => onEdit?.(policy)}
                           className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
-                          title="Edit"
+                          title={t('common:actions.edit')}
                         >
                           <Pencil className="h-4 w-4" />
                         </button>
@@ -359,7 +363,7 @@ export default function PolicyList({
                           type="button"
                           onClick={() => onDelete?.(policy)}
                           className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted text-destructive"
-                          title="Delete"
+                          title={t('common:actions.delete')}
                         >
                           <Trash2 className="h-4 w-4" />
                         </button>
@@ -376,8 +380,11 @@ export default function PolicyList({
       {totalPages > 1 && (
         <div className="mt-4 flex items-center justify-between">
           <p className="text-sm text-muted-foreground">
-            Showing {startIndex + 1} to {Math.min(startIndex + pageSize, filteredPolicies.length)} of{' '}
-            {filteredPolicies.length}
+            {t('policyList.pagination.showing', {
+              start: startIndex + 1,
+              end: Math.min(startIndex + pageSize, filteredPolicies.length),
+              total: filteredPolicies.length
+            })}
           </p>
           <div className="flex items-center gap-2">
             <button
@@ -389,7 +396,7 @@ export default function PolicyList({
               <ChevronLeft className="h-4 w-4" />
             </button>
             <span className="text-sm">
-              Page {currentPage} of {totalPages}
+              {t('policyList.pagination.page', { page: currentPage, total: totalPages })}
             </span>
             <button
               type="button"

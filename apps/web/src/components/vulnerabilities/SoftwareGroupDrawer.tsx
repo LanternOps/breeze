@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 import { Drawer } from '../shared/Drawer';
+import '@/lib/i18n';
 import { SeverityBadge } from './SeverityBadge';
 import { KevBadge } from './KevBadge';
 import { CVSS_EXPLANATION, EPSS_EXPLANATION } from './vulnExplanations';
@@ -9,7 +11,6 @@ import { VulnBulkActionModal } from './VulnBulkActionModal';
 import { CreateVulnTicketModal } from './CreateVulnTicketModal';
 import { usePermissions } from '../../lib/permissions';
 import { handleActionError } from '../../lib/runAction';
-import { plural } from '../../lib/utils';
 import { formatPercent } from '@/lib/i18n/format';
 import {
   bulkAcceptVulnRisk,
@@ -39,6 +40,7 @@ export function SoftwareGroupDrawer({
   onActionComplete: () => void;
   onSelectCve: (cveId: string) => void;
 }) {
+  const { t } = useTranslation('vulnerabilities');
   const [detail, setDetail] = useState<SoftwareGroupDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -67,9 +69,9 @@ export function SoftwareGroupDrawer({
       setSelected(new Set(d.findings.filter((f) => f.status === 'open').map((f) => f.deviceVulnerabilityId)));
     } catch (err) {
       setDetail(null);
-      setError(err instanceof Error ? err.message : 'Failed to load software group');
+      setError(err instanceof Error ? err.message : t('softwareGroupDrawer.errors.load'));
     }
-  }, [groupKey]);
+  }, [groupKey, t]);
 
   useEffect(() => {
     void load();
@@ -131,13 +133,13 @@ export function SoftwareGroupDrawer({
         await load();
         onActionComplete();
       } catch (err) {
-        handleActionError(err, 'Failed to reopen finding');
+        handleActionError(err, t('softwareGroupDrawer.errors.reopen'));
       } finally {
         busyRef.current = false;
         setBusy(null);
       }
     },
-    [busy, load, onActionComplete],
+    [busy, load, onActionComplete, t],
   );
 
   const title = detail ? (
@@ -147,7 +149,7 @@ export function SoftwareGroupDrawer({
       {detail.group.kevCveCount > 0 && <KevBadge />}
     </span>
   ) : (
-    'Software group'
+    t('softwareGroupDrawer.titleFallback')
   );
 
   return (
@@ -160,7 +162,7 @@ export function SoftwareGroupDrawer({
           >
             <p>{error}</p>
             <button type="button" data-testid="vuln-drawer-retry" className="mt-2 text-sm font-medium underline" onClick={() => void load()}>
-              Retry
+              {t('common:actions.retry')}
             </button>
           </div>
         )}
@@ -170,29 +172,31 @@ export function SoftwareGroupDrawer({
             <div className="text-sm text-muted-foreground">
               {/* Round the risk score the same way the tables do, so the same
                   number never shows two different values. */}
-              {[detail.group.vendor, plural(detail.group.deviceCount, 'device'), `max risk ${detail.group.maxRiskScore === null ? '—' : Math.round(detail.group.maxRiskScore)}`]
+              {[detail.group.vendor, t('softwareGroupDrawer.summary.devices', { count: detail.group.deviceCount }), t('softwareGroupDrawer.summary.maxRisk', { risk: detail.group.maxRiskScore === null ? '—' : Math.round(detail.group.maxRiskScore) })]
                 .filter(Boolean)
                 .join(' · ')}
             </div>
 
             {detail.group.tickets.length > 0 && (
               <div className="flex flex-wrap gap-2">
-                {detail.group.tickets.map((t) => (
+                {detail.group.tickets.map((ticket) => (
                   <a
-                    key={t.id}
+                    key={ticket.id}
                     // TicketsPage resolves the hash by internalNumber or id.
-                    href={`/tickets#${t.number ?? t.id}`}
-                    data-testid={`vuln-ticket-chip-${t.id}`}
+                    href={`/tickets#${ticket.number ?? ticket.id}`}
+                    data-testid={`vuln-ticket-chip-${ticket.id}`}
                     className="inline-flex items-center rounded-full border bg-muted/40 px-2.5 py-1 text-xs font-medium hover:bg-muted"
                   >
-                    {t.number ? `Ticket ${t.number}` : 'View ticket'}
+                    {ticket.number ? t('softwareGroupDrawer.tickets.number', { number: ticket.number }) : t('softwareGroupDrawer.tickets.view')}
                   </a>
                 ))}
               </div>
             )}
 
             <section>
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">CVEs ({detail.cves.length})</h3>
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                {t('softwareGroupDrawer.sections.cves', { count: detail.cves.length })}
+              </h3>
               <ul className="mt-2 divide-y rounded-md border">
                 {detail.cves.map((cve) => (
                   <li key={cve.cveId}>
@@ -214,8 +218,12 @@ export function SoftwareGroupDrawer({
                       <span className="font-medium">{cve.cveId}</span>
                       <span className="flex items-center gap-2 text-xs text-muted-foreground">
                         <SeverityBadge severity={cve.severity} />
-                        <span className="tabular-nums" title={CVSS_EXPLANATION}>CVSS {cve.cvssScore ?? '—'}</span>
-                        <span className="tabular-nums" title={EPSS_EXPLANATION}>EPSS {fmtEpss(cve.epssScore)}</span>
+                        <span className="tabular-nums" title={CVSS_EXPLANATION}>
+                          {t('softwareGroupDrawer.cveMeta.cvss', { score: cve.cvssScore ?? '—' })}
+                        </span>
+                        <span className="tabular-nums" title={EPSS_EXPLANATION}>
+                          {t('softwareGroupDrawer.cveMeta.epss', { score: fmtEpss(cve.epssScore) })}
+                        </span>
                         {cve.knownExploited && <KevBadge />}
                       </span>
                     </button>
@@ -227,14 +235,14 @@ export function SoftwareGroupDrawer({
             <section>
               <div className="flex items-center justify-between gap-2">
                 <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  Devices ({plural(detail.findings.length, 'finding')})
+                  {t('softwareGroupDrawer.sections.devices', { count: detail.findings.length })}
                 </h3>
                 {detail.findings.length > 0 && (
                   <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground">
                     <input
                       type="checkbox"
                       data-testid="vuln-select-all"
-                      aria-label={allSelected ? 'Deselect all findings' : 'Select all findings'}
+                      aria-label={allSelected ? t('softwareGroupDrawer.selection.deselectAllAria') : t('softwareGroupDrawer.selection.selectAllAria')}
                       checked={allSelected}
                       // Native indeterminate has no attribute form — set it via ref.
                       ref={(el) => {
@@ -243,7 +251,7 @@ export function SoftwareGroupDrawer({
                       onChange={toggleAll}
                       className="h-4 w-4 rounded border"
                     />
-                    Select all
+                    {t('softwareGroupDrawer.selection.selectAll')}
                   </label>
                 )}
               </div>
@@ -254,7 +262,7 @@ export function SoftwareGroupDrawer({
                   data-testid="vuln-drawer-no-findings"
                   className="mt-2 rounded-md border border-dashed px-3 py-4 text-center text-xs text-muted-foreground"
                 >
-                  No device findings remain in this group — nothing to act on.
+                  {t('softwareGroupDrawer.empty.noFindings')}
                 </p>
               ) : (
               <ul className="mt-2 divide-y rounded-md border">
@@ -263,7 +271,7 @@ export function SoftwareGroupDrawer({
                     <input
                       type="checkbox"
                       data-testid={`vuln-finding-check-${f.deviceVulnerabilityId}`}
-                      aria-label={`Select ${f.cveId} finding on ${f.deviceName}`}
+                      aria-label={t('softwareGroupDrawer.selection.selectFindingAria', { cveId: f.cveId, deviceName: f.deviceName })}
                       checked={selected.has(f.deviceVulnerabilityId)}
                       onChange={() => toggle(f.deviceVulnerabilityId)}
                       className="h-4 w-4 rounded border"
@@ -275,14 +283,14 @@ export function SoftwareGroupDrawer({
                       </span>
                     </span>
                     <FindingStatus status={f.status} acceptedUntil={f.acceptedUntil} />
-                    <span className="text-xs">{f.patchAvailable ? 'Patch' : '—'}</span>
+                    <span className="text-xs">{f.patchAvailable ? t('softwareGroupDrawer.findings.patch') : '—'}</span>
                     {f.ticketId && (
                       <a
                         href={`/tickets#${f.ticketNumber ?? f.ticketId}`}
                         data-testid={`vuln-finding-ticket-${f.deviceVulnerabilityId}`}
                         className="text-xs underline"
                       >
-                        {f.ticketNumber ?? 'Ticket'}
+                        {f.ticketNumber ?? t('softwareGroupDrawer.findings.ticket')}
                       </a>
                     )}
                     {canAcceptRisk && (f.status === 'accepted' || f.status === 'mitigated') && (
@@ -293,7 +301,7 @@ export function SoftwareGroupDrawer({
                         disabled={busy !== null}
                         onClick={() => void onReopen(f.deviceVulnerabilityId)}
                       >
-                        Reopen
+                        {t('softwareGroupDrawer.actions.reopen')}
                       </button>
                     )}
                   </li>
@@ -307,7 +315,7 @@ export function SoftwareGroupDrawer({
 
       {detail && (
         <div className="flex flex-wrap items-center gap-2 border-t px-5 py-3">
-          <span className="mr-auto text-xs text-muted-foreground">{selectedIds.length} selected</span>
+          <span className="mr-auto text-xs text-muted-foreground">{t('softwareGroupDrawer.selection.selected', { count: selectedIds.length })}</span>
           {canRemediate && (
             <button
               type="button"
@@ -319,7 +327,7 @@ export function SoftwareGroupDrawer({
                 setModal('remediate');
               }}
             >
-              Remediate
+              {t('softwareGroupDrawer.actions.remediate')}
             </button>
           )}
           {canAcceptRisk && (
@@ -333,7 +341,7 @@ export function SoftwareGroupDrawer({
                 setModal('accept');
               }}
             >
-              Accept risk
+              {t('softwareGroupDrawer.actions.acceptRisk')}
             </button>
           )}
           {canMitigate && (
@@ -347,7 +355,7 @@ export function SoftwareGroupDrawer({
                 setModal('mitigate');
               }}
             >
-              Mitigate
+              {t('softwareGroupDrawer.actions.mitigate')}
             </button>
           )}
           {canCreateTicket && (
@@ -358,7 +366,7 @@ export function SoftwareGroupDrawer({
               disabled={busy !== null || selectedIds.length === 0}
               onClick={() => setTicketModal(true)}
             >
-              Create ticket
+              {t('softwareGroupDrawer.actions.createTicket')}
             </button>
           )}
         </div>
@@ -381,15 +389,15 @@ export function SoftwareGroupDrawer({
           onSubmit={(payload) => {
             setModalError(null);
             if (modal === 'remediate') {
-              void runBulk('remediate', () => remediateVuln(selectedIds), 'Failed to schedule remediation');
+              void runBulk('remediate', () => remediateVuln(selectedIds), t('softwareGroupDrawer.errors.scheduleRemediation'));
             } else if (modal === 'accept') {
               void runBulk(
                 'accept',
                 () => bulkAcceptVulnRisk(selectedIds, { reason: payload.reason ?? '', acceptedUntil: payload.acceptedUntil ?? '' }),
-                'Failed to accept risk',
+                t('softwareGroupDrawer.errors.acceptRisk'),
               );
             } else {
-              void runBulk('mitigate', () => bulkMitigateVulns(selectedIds, { note: payload.note ?? '' }), 'Failed to mitigate');
+              void runBulk('mitigate', () => bulkMitigateVulns(selectedIds, { note: payload.note ?? '' }), t('softwareGroupDrawer.errors.mitigate'));
             }
           }}
         />
@@ -398,12 +406,12 @@ export function SoftwareGroupDrawer({
       {ticketModal && detail && (
         <CreateVulnTicketModal
           findings={detail.findings.filter((f) => selected.has(f.deviceVulnerabilityId))}
-          defaultTitle={`Remediate ${detail.group.name}`}
+          defaultTitle={t('softwareGroupDrawer.ticket.defaultTitle', { name: detail.group.name })}
           busy={busy !== null}
           onCancel={() => setTicketModal(false)}
           onSubmit={(payload) => {
             setTicketModal(false);
-            void runBulk('ticket', () => createVulnTicket(selectedIds, payload), 'Failed to create ticket');
+            void runBulk('ticket', () => createVulnTicket(selectedIds, payload), t('softwareGroupDrawer.errors.createTicket'));
           }}
         />
       )}

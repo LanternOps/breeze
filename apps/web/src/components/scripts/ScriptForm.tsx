@@ -1,5 +1,6 @@
 import { useMemo, useState, useEffect, useRef, useCallback, type ComponentType } from 'react';
 import { useForm, useFieldArray, Controller } from 'react-hook-form';
+import { useTranslation } from 'react-i18next';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Plus, Trash2, Sparkles } from 'lucide-react';
 import type { EditorProps } from '@monaco-editor/react';
@@ -51,11 +52,12 @@ export default function ScriptForm({
   onSubmit,
   onCancel,
   defaultValues,
-  submitLabel = 'Save script',
+  submitLabel,
   loading,
   isNew = false,
   isSystemScript = false,
 }: ScriptFormProps) {
+  const { t } = useTranslation('scripts');
   const [editorMounted, setEditorMounted] = useState(false);
   const editorInstanceRef = useRef<Parameters<NonNullable<EditorProps['onMount']>>[0] | null>(null);
   const [paramsOpen, setParamsOpen] = useState(false);
@@ -103,7 +105,7 @@ export default function ScriptForm({
         .catch((err) => {
           if (!cancelled) {
             console.error('Failed to load script editor:', err);
-            setEditorLoadError('Failed to load the code editor. Try refreshing the page.');
+            setEditorLoadError(t('scriptForm.editor.loadError'));
           }
         });
     };
@@ -114,7 +116,7 @@ export default function ScriptForm({
       document.removeEventListener('astro:after-swap', loadEditor);
       disposeEditor();
     };
-  }, [disposeEditor]);
+  }, [disposeEditor, t]);
 
   // Force editor relayout after View Transition navigation completes
   useEffect(() => {
@@ -214,7 +216,7 @@ export default function ScriptForm({
     };
     const onAstroNav = (e: Event) => {
       if (skipGuardRef.current) { skipGuardRef.current = false; return; }
-      if (isDirtyRef.current && !window.confirm('You have unsaved changes. Leave this page?')) {
+      if (isDirtyRef.current && !window.confirm(t('scriptForm.unsavedConfirm'))) {
         e.preventDefault();
       }
     };
@@ -224,7 +226,7 @@ export default function ScriptForm({
       window.removeEventListener('beforeunload', onBeforeUnload);
       document.removeEventListener('astro:before-preparation', onAstroNav);
     };
-  }, []);
+  }, [t]);
 
   const formRef = useRef<HTMLFormElement>(null);
 
@@ -269,6 +271,14 @@ export default function ScriptForm({
   }, [watchLanguage]);
 
   const isLoading = useMemo(() => loading ?? isSubmitting, [loading, isSubmitting]);
+  const resolvedSubmitLabel = submitLabel ?? t('scriptForm.actions.saveScript');
+
+  const languageLabel = (value: string) => t(`scriptForm.languages.${value}`);
+  const runAsLabel = (value: string) => t(`scriptForm.runAs.${value}.label`);
+  const runAsDescription = (value: string) => t(`scriptForm.runAs.${value}.description`);
+  const parameterTypeLabel = (value: string) => t(`scriptForm.parameterTypes.${value}`);
+  const severityLabel = (value: string) => t(`scriptForm.severity.${value}`);
+  const osLabel = (os: OSType) => t(`scriptForm.os.${os}`);
 
   const handleOsToggle = (os: OSType) => {
     const current = watchOsTypes || [];
@@ -319,11 +329,10 @@ export default function ScriptForm({
           scope on edit), so no hardcoded defaultChecked. */}
       {showAvailabilityPicker && (
         <fieldset className="space-y-2 rounded-md border p-4">
-          <legend className="px-1 text-sm font-medium">Available to</legend>
+          <legend className="px-1 text-sm font-medium">{t('scriptForm.availability.title')}</legend>
           {!isNew && (
             <p className="text-xs text-muted-foreground">
-              Change which organizations can see and run this script. &ldquo;All my
-              organizations&rdquo; makes it partner-wide.
+              {t('scriptForm.availability.description')}
             </p>
           )}
           <label className="flex items-center gap-2 text-sm">
@@ -332,7 +341,7 @@ export default function ScriptForm({
               value="partner"
               {...register('availability')}
             />
-            All my organizations
+            {t('scriptForm.availability.partner')}
           </label>
           <label className="flex items-center gap-2 text-sm">
             <input
@@ -340,19 +349,19 @@ export default function ScriptForm({
               value="org"
               {...register('availability')}
             />
-            A specific organization
+            {t('scriptForm.availability.organization')}
           </label>
           {watchAvailability === 'org' && (
             <div className="mt-2 space-y-1 pl-6">
               <label htmlFor="script-org" className="text-xs font-medium text-muted-foreground">
-                Organization
+                {t('common:labels.organization')}
               </label>
               <select
                 id="script-org"
                 className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 {...register('orgId')}
               >
-                <option value="">Select an organization</option>
+                <option value="">{t('scriptForm.availability.selectOrganization')}</option>
                 {organizations.map(org => (
                   <option key={org.id} value={org.id}>{org.name}</option>
                 ))}
@@ -366,11 +375,11 @@ export default function ScriptForm({
       <div className="grid gap-6 md:grid-cols-2">
         <div className="space-y-2">
           <label htmlFor="script-name" className="text-sm font-medium">
-            Script name
+            {t('scriptForm.fields.name')}
           </label>
           <input
             id="script-name"
-            placeholder="Clear Temp Files"
+            placeholder={t('scriptForm.placeholders.name')}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('name')}
           />
@@ -379,7 +388,7 @@ export default function ScriptForm({
 
         <div className="space-y-2">
           <label htmlFor="script-category" className="text-sm font-medium">
-            Category
+            {t('scriptForm.fields.category')}
           </label>
           <select
             id="script-category"
@@ -397,11 +406,11 @@ export default function ScriptForm({
 
         <div className="space-y-2 md:col-span-2">
           <label htmlFor="script-description" className="text-sm font-medium">
-            Description
+            {t('common:labels.description')}
           </label>
           <textarea
             id="script-description"
-            placeholder="Describe what this script does..."
+            placeholder={t('scriptForm.placeholders.description')}
             rows={2}
             className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring resize-none"
             {...register('description')}
@@ -410,7 +419,7 @@ export default function ScriptForm({
 
         <div className="space-y-2">
           <label htmlFor="script-language" className="text-sm font-medium">
-            Language
+            {t('scriptForm.fields.language')}
           </label>
           <select
             id="script-language"
@@ -419,7 +428,7 @@ export default function ScriptForm({
           >
             {languageOptions.map(lang => (
               <option key={lang.value} value={lang.value}>
-                {lang.label}
+                {languageLabel(lang.value)}
               </option>
             ))}
           </select>
@@ -427,7 +436,7 @@ export default function ScriptForm({
         </div>
 
         <div className="space-y-2">
-          <label className="text-sm font-medium">Target OS</label>
+          <label className="text-sm font-medium">{t('scriptForm.fields.targetOs')}</label>
           <div className="flex flex-wrap gap-2">
             {(['windows', 'macos', 'linux'] as OSType[]).map(os => (
               <button
@@ -441,7 +450,7 @@ export default function ScriptForm({
                     : 'border-input bg-background hover:bg-muted'
                 )}
               >
-                {os === 'windows' ? 'Windows' : os === 'macos' ? 'macOS' : 'Linux'}
+                {osLabel(os)}
               </button>
             ))}
           </div>
@@ -452,7 +461,7 @@ export default function ScriptForm({
       {/* Script Content + AI Panel */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <h3 className="text-base font-bold tracking-tight">Script Content</h3>
+          <h3 className="text-base font-bold tracking-tight">{t('scriptForm.sections.content')}</h3>
           <button
             type="button"
             onClick={togglePanel}
@@ -462,10 +471,10 @@ export default function ScriptForm({
                 ? 'bg-primary text-primary-foreground'
                 : 'border hover:bg-muted'
             )}
-            title="Toggle AI Script Assistant (⌘⇧I)"
+            title={t('scriptForm.ai.toggleTitle')}
           >
             <Sparkles className="h-3.5 w-3.5" />
-            AI Assistant
+            {t('scriptForm.ai.button')}
           </button>
         </div>
         <div className="flex rounded-md border">
@@ -504,13 +513,13 @@ export default function ScriptForm({
                         <>
                           <p className="text-sm text-red-400">{editorLoadError}</p>
                           <button type="button" onClick={() => window.location.reload()} className="mt-2 text-xs underline hover:text-white">
-                            Refresh page
+                            {t('scriptForm.editor.refreshPage')}
                           </button>
                         </>
                       ) : (
                         <>
                           <div className="h-6 w-6 animate-spin rounded-full border-2 border-white/40 border-t-white mx-auto" />
-                          <p className="mt-2 text-sm">Loading editor...</p>
+                          <p className="mt-2 text-sm">{t('scriptForm.editor.loading')}</p>
                         </>
                       )}
                     </div>
@@ -526,7 +535,7 @@ export default function ScriptForm({
 
       {/* Parameters */}
       <CollapsibleSection
-        title="Parameters"
+        title={t('scriptForm.sections.parameters')}
         open={paramsOpen}
         onToggle={() => setParamsOpen(prev => !prev)}
         badge={fields.length > 0 ? (
@@ -536,9 +545,11 @@ export default function ScriptForm({
         <div className="space-y-3">
           {fields.length === 0 && (
             <p className="text-sm text-muted-foreground">
-              No parameters yet. Parameters let users supply values at runtime &mdash; reference them
-              in your script as <code className="rounded bg-muted px-1 py-0.5 text-xs font-mono">$paramName</code> (PowerShell/Bash)
-              or <code className="rounded bg-muted px-1 py-0.5 text-xs font-mono">sys.argv</code> (Python).
+              {t('scriptForm.parameters.emptyPrefix')}{' '}
+              <code className="rounded bg-muted px-1 py-0.5 text-xs font-mono">$paramName</code>{' '}
+              {t('scriptForm.parameters.emptyMiddle')}{' '}
+              <code className="rounded bg-muted px-1 py-0.5 text-xs font-mono">sys.argv</code>{' '}
+              {t('scriptForm.parameters.emptySuffix')}
             </p>
           )}
           {fields.map((field, index) => (
@@ -547,35 +558,35 @@ export default function ScriptForm({
                 <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-medium text-muted-foreground mt-2">{index + 1}</span>
                 <div className="flex-1 grid gap-4 sm:grid-cols-2 md:grid-cols-4">
                   <div className="space-y-1">
-                    <label className="text-xs font-medium text-muted-foreground">Name</label>
-                    <input placeholder="paramName" className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" {...register(`parameters.${index}.name`)} />
+                    <label className="text-xs font-medium text-muted-foreground">{t('common:labels.name')}</label>
+                    <input placeholder={t('scriptForm.placeholders.parameterName')} className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" {...register(`parameters.${index}.name`)} />
                     {errors.parameters?.[index]?.name && <p className="text-xs text-destructive">{errors.parameters[index]?.name?.message}</p>}
                   </div>
                   <div className="space-y-1">
-                    <label className="text-xs font-medium text-muted-foreground">Type</label>
+                    <label className="text-xs font-medium text-muted-foreground">{t('common:labels.type')}</label>
                     <select className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" {...register(`parameters.${index}.type`)}>
-                      {parameterTypeOptions.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+                      {parameterTypeOptions.map(opt => <option key={opt.value} value={opt.value}>{parameterTypeLabel(opt.value)}</option>)}
                     </select>
                   </div>
                   <div className="space-y-1">
-                    <label className="text-xs font-medium text-muted-foreground">Default Value</label>
-                    <input placeholder="Default" className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" {...register(`parameters.${index}.defaultValue`)} />
+                    <label className="text-xs font-medium text-muted-foreground">{t('scriptForm.fields.defaultValue')}</label>
+                    <input placeholder={t('scriptForm.placeholders.defaultValue')} className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" {...register(`parameters.${index}.defaultValue`)} />
                   </div>
                   <div className="space-y-1">
-                    <label className="text-xs font-medium text-muted-foreground">Required</label>
+                    <label className="text-xs font-medium text-muted-foreground">{t('common:labels.required')}</label>
                     <div className="flex items-center h-9">
                       <input type="checkbox" className="h-4 w-4 rounded border-border" {...register(`parameters.${index}.required`)} />
-                      <span className="ml-2 text-sm">Yes</span>
+                      <span className="ml-2 text-sm">{t('common:labels.yes')}</span>
                     </div>
                   </div>
                   {watchParameters?.[index]?.type === 'select' && (
                     <div className="space-y-1 sm:col-span-2 md:col-span-4">
-                      <label className="text-xs font-medium text-muted-foreground">Options (comma-separated)</label>
-                      <input placeholder="option1, option2, option3" className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" {...register(`parameters.${index}.options`)} />
+                      <label className="text-xs font-medium text-muted-foreground">{t('scriptForm.fields.options')}</label>
+                      <input placeholder={t('scriptForm.placeholders.options')} className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" {...register(`parameters.${index}.options`)} />
                     </div>
                   )}
                 </div>
-                <button type="button" onClick={() => remove(index)} className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-muted text-destructive" title="Remove parameter">
+                <button type="button" onClick={() => remove(index)} className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-muted text-destructive" title={t('scriptForm.actions.removeParameter')}>
                   <Trash2 className="h-4 w-4" />
                 </button>
               </div>
@@ -583,34 +594,34 @@ export default function ScriptForm({
           ))}
           <button type="button" onClick={addParameter} className="inline-flex items-center gap-1.5 rounded-md border border-dashed px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition">
             <Plus className="h-4 w-4" />
-            Add parameter
+            {t('scriptForm.actions.addParameter')}
           </button>
         </div>
       </CollapsibleSection>
 
       {/* Execution Settings */}
       <CollapsibleSection
-        title="Execution Settings"
+        title={t('scriptForm.sections.executionSettings')}
         open={settingsOpen}
         onToggle={() => setSettingsOpen(prev => !prev)}
-        summary={<span className="text-xs text-muted-foreground">{watch('timeoutSeconds')}s &middot; {runAsOptions.find(o => o.value === watch('runAs'))?.label}</span>}
+        summary={<span className="text-xs text-muted-foreground">{watch('timeoutSeconds')}s &middot; {runAsLabel(watch('runAs'))}</span>}
       >
         <div className="grid gap-6 md:grid-cols-2">
           <div className="space-y-2">
-            <label htmlFor="timeout-seconds" className="text-sm font-medium">Timeout (seconds)</label>
+            <label htmlFor="timeout-seconds" className="text-sm font-medium">{t('scriptForm.fields.timeoutSeconds')}</label>
             <input id="timeout-seconds" type="number" min={1} max={86400} className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" {...register('timeoutSeconds')} />
             {errors.timeoutSeconds && <p className="text-sm text-destructive">{errors.timeoutSeconds.message}</p>}
-            <p className="text-xs text-muted-foreground">Script is killed after this duration. Default 300s (5 min) is suitable for most tasks.</p>
+            <p className="text-xs text-muted-foreground">{t('scriptForm.execution.timeoutHint')}</p>
           </div>
           <div className="space-y-2">
-            <label htmlFor="run-as" className="text-sm font-medium">Run As</label>
+            <label htmlFor="run-as" className="text-sm font-medium">{t('scriptForm.fields.runAs')}</label>
             <select id="run-as" className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" {...register('runAs')}>
-              {runAsOptions.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+              {runAsOptions.map(opt => <option key={opt.value} value={opt.value}>{runAsLabel(opt.value)}</option>)}
             </select>
             {errors.runAs && <p className="text-sm text-destructive">{errors.runAs.message}</p>}
             <p className="text-xs text-muted-foreground">
-              {runAsOptions.find(o => o.value === watch('runAs'))?.description}.
-              {watch('runAs') === 'elevated' && ' Uses sudo on macOS/Linux, runas on Windows.'}
+              {runAsDescription(watch('runAs'))}
+              {watch('runAs') === 'elevated' && ` ${t('scriptForm.execution.elevatedHint')}`}
             </p>
           </div>
         </div>
@@ -618,7 +629,7 @@ export default function ScriptForm({
 
       {/* Exit-code severity mapping */}
       <CollapsibleSection
-        title="Exit Code Severity"
+        title={t('scriptForm.sections.exitCodeSeverity')}
         open={severityOpen}
         onToggle={() => setSeverityOpen(prev => !prev)}
         badge={severityFields.length > 0 ? (
@@ -628,22 +639,21 @@ export default function ScriptForm({
         <div className="space-y-3">
           {severityFields.length === 0 && (
             <p className="text-sm text-muted-foreground">
-              Map specific exit codes to alert severities. When the script returns one of these codes,
-              an alert is raised at the configured severity. Choose <em>Suppress alert</em> to mark a
-              code as informational (no incident raised). Exit codes you don&apos;t list here use the
-              default outcome handling.
+              {t('scriptForm.exitCodeSeverity.emptyPrefix')}{' '}
+              <em>{t('scriptForm.exitCodeSeverity.suppressAlert')}</em>{' '}
+              {t('scriptForm.exitCodeSeverity.emptySuffix')}
             </p>
           )}
           {severityFields.map((field, index) => (
             <div key={field.id} className="flex items-start gap-3 rounded-md border bg-muted/20 p-3">
               <div className="grid flex-1 gap-3 sm:grid-cols-2">
                 <div className="space-y-1">
-                  <label className="text-xs font-medium text-muted-foreground">Exit code</label>
+                  <label className="text-xs font-medium text-muted-foreground">{t('scriptForm.fields.exitCode')}</label>
                   <input
                     type="text"
                     inputMode="numeric"
                     pattern="[0-9]*"
-                    placeholder="e.g. 1"
+                    placeholder={t('scriptForm.placeholders.exitCode')}
                     className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     {...register(`exitCodeSeverityMapping.${index}.exitCode`)}
                   />
@@ -654,17 +664,17 @@ export default function ScriptForm({
                   )}
                 </div>
                 <div className="space-y-1">
-                  <label className="text-xs font-medium text-muted-foreground">Severity</label>
+                  <label className="text-xs font-medium text-muted-foreground">{t('scriptForm.fields.severity')}</label>
                   <select
                     className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     {...register(`exitCodeSeverityMapping.${index}.severity`)}
                   >
                     {severityOptions.map(opt => (
-                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                      <option key={opt.value} value={opt.value}>{severityLabel(opt.value)}</option>
                     ))}
                   </select>
                   <p className="text-xs text-muted-foreground">
-                    Suppress alert &mdash; exit code is treated as informational, no incident raised.
+                    {t('scriptForm.exitCodeSeverity.suppressHint')}
                   </p>
                 </div>
               </div>
@@ -672,7 +682,7 @@ export default function ScriptForm({
                 type="button"
                 onClick={() => removeSeverity(index)}
                 className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-muted text-destructive"
-                title="Remove mapping"
+                title={t('scriptForm.actions.removeMapping')}
               >
                 <Trash2 className="h-4 w-4" />
               </button>
@@ -684,7 +694,7 @@ export default function ScriptForm({
             className="inline-flex items-center gap-1.5 rounded-md border border-dashed px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition"
           >
             <Plus className="h-4 w-4" />
-            Add exit code
+            {t('scriptForm.actions.addExitCode')}
           </button>
         </div>
       </CollapsibleSection>
@@ -692,7 +702,9 @@ export default function ScriptForm({
       {/* Form Actions */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <p className="hidden text-xs text-muted-foreground sm:block">
-          {typeof navigator !== 'undefined' && navigator.platform?.includes('Mac') ? '⌘S' : 'Ctrl+S'} to save
+          {t('scriptForm.keyboardSave', {
+            shortcut: typeof navigator !== 'undefined' && navigator.platform?.includes('Mac') ? '⌘S' : 'Ctrl+S'
+          })}
         </p>
         <div className="flex flex-col gap-3 sm:flex-row">
           <button
@@ -700,14 +712,14 @@ export default function ScriptForm({
             onClick={onCancel}
             className="h-11 w-full rounded-md border bg-background text-sm font-medium text-foreground transition hover:bg-muted sm:w-auto sm:px-6"
           >
-            Cancel
+            {t('common:actions.cancel')}
           </button>
           <button
             type="submit"
             disabled={isLoading}
             className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto sm:px-6"
           >
-            {isLoading ? 'Saving...' : submitLabel}
+            {isLoading ? t('common:states.saving') : resolvedSubmitLabel}
           </button>
         </div>
       </div>
