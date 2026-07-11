@@ -8,10 +8,11 @@
 
 import { db } from '../db';
 import { drExecutions, drPlanGroups, drPlans } from '../db/schema';
-import { eq, and, asc, desc, sql, SQL } from 'drizzle-orm';
+import { eq, and, asc, desc, inArray, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { createDrExecutionAndEnqueue } from './drExecutionService';
+import { resolveSiteDevicePartition } from './aiToolsSiteScope';
 
 type DRHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -56,6 +57,19 @@ async function loadPlanWithAccess(planId: string, auth: AuthContext) {
     .limit(1);
 
   return plan ?? null;
+}
+
+/** Collect the distinct in-plan device IDs across a set of DR plan groups. */
+function collectGroupDeviceIds(groups: Array<{ devices: unknown }>): string[] {
+  const ids = new Set<string>();
+  for (const group of groups) {
+    if (Array.isArray(group.devices)) {
+      for (const deviceId of group.devices) {
+        if (typeof deviceId === 'string') ids.add(deviceId);
+      }
+    }
+  }
+  return [...ids];
 }
 
 // ============================================
@@ -124,6 +138,38 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
         )
         .orderBy(desc(drPlans.createdAt))
         .limit(limit);
+
+      // Site axis (app-layer only; RLS enforces org, NOT site). Hide plans that
+      // are ENTIRELY outside a site-restricted caller's scope so they cannot
+      // enumerate foreign plans/devices. No-op for unrestricted callers.
+      const orgId = getOrgId(auth);
+      const partition = orgId ? await resolveSiteDevicePartition(orgId, auth) : null;
+      if (partition && rows.length > 0) {
+        const allowed = new Set(partition.allowed);
+        const planIds = rows.map((row) => row.id);
+        const groupRows = await db
+          .select({ planId: drPlanGroups.planId, devices: drPlanGroups.devices })
+          .from(drPlanGroups)
+          .where(inArray(drPlanGroups.planId, planIds));
+        const deviceIdsByPlan = new Map<string, string[]>();
+        for (const group of groupRows) {
+          const list = deviceIdsByPlan.get(group.planId) ?? [];
+          if (Array.isArray(group.devices)) {
+            for (const deviceId of group.devices) {
+              if (typeof deviceId === 'string') list.push(deviceId);
+            }
+          }
+          deviceIdsByPlan.set(group.planId, list);
+        }
+        const visible = rows.filter((row) => {
+          const ids = deviceIdsByPlan.get(row.id) ?? [];
+          // A plan with no assigned devices carries nothing site-sensitive.
+          if (ids.length === 0) return true;
+          // Otherwise require at least one device in an accessible site.
+          return ids.some((id) => allowed.has(id));
+        });
+        return JSON.stringify({ plans: visible, showing: visible.length });
+      }
 
       return JSON.stringify({ plans: rows, showing: rows.length });
     }),
@@ -297,11 +343,31 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
         .where(and(...groupConditions))
         .orderBy(asc(drPlanGroups.sequence));
 
+      // Site axis (app-layer only; RLS enforces org, NOT site). This Tier-3 tool
+      // has no deviceArgs — the devices live in the group JSON arrays, so the
+      // central per-device site gate never sees them. A site-restricted caller
+      // may execute a plan only if EVERY device across all its groups is within
+      // their site scope; deny otherwise. The authorized set is then pinned onto
+      // the execution so the (system-context) worker refuses to dispatch to any
+      // out-of-scope device even if the plan's groups are later edited.
+      const planDeviceIds = collectGroupDeviceIds(groups);
+      let authorizedDeviceIds: string[] | null = null;
+      const partition = await resolveSiteDevicePartition(plan.orgId, auth);
+      if (partition) {
+        const allowed = new Set(partition.allowed);
+        const outOfScope = planDeviceIds.filter((id) => !allowed.has(id));
+        if (outOfScope.length > 0) {
+          return JSON.stringify({ error: 'DR plan includes devices outside your site access' });
+        }
+        authorizedDeviceIds = planDeviceIds;
+      }
+
       const execution = await createDrExecutionAndEnqueue({
         planId: plan.id,
         orgId: plan.orgId,
         executionType: executionType as 'rehearsal' | 'failover' | 'failback',
         initiatedBy: auth.user?.id ?? null,
+        authorizedDeviceIds,
       });
       if (!execution) return JSON.stringify({ error: 'Failed to create DR execution record' });
 
