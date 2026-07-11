@@ -18,7 +18,9 @@ export interface CreatePartnerInput {
   adminName: string;
   /** Null for MCP-originated bootstraps; users set their password later. */
   passwordHash: string | null;
-  origin: { mcp: false } | { mcp: true; ip?: string; userAgent?: string };
+  origin:
+    | { mcp: false; ip?: string; userAgent?: string }
+    | { mcp: true; ip?: string; userAgent?: string };
   /**
    * Initial partner status. Defaults to 'active' if omitted.
    * Hosted signups should pass 'pending' so the existing partnerGuard
@@ -74,6 +76,8 @@ export async function createPartner(input: CreatePartnerInput): Promise<CreatePa
         mcpOrigin,
         mcpOriginIp: mcpOrigin ? (input.origin as { ip?: string }).ip ?? null : null,
         mcpOriginUserAgent: mcpOrigin ? (input.origin as { userAgent?: string }).userAgent ?? null : null,
+        signupIp: !mcpOrigin ? (input.origin as { ip?: string }).ip ?? null : null,
+        signupUserAgent: !mcpOrigin ? (input.origin as { userAgent?: string }).userAgent ?? null : null,
       })
       .returning();
 
