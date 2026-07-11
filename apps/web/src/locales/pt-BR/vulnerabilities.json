@@ -1,7 +1,7 @@
 {
   "vulnerabilityLandingPage": {
     "title": "Vulnerabilidades",
-    "subtitle": "Exposição a CVEs da frota agrupada para triagem — corrija, aceite o risco ou crie um ticket."
+    "subtitle": "Exposição a CVEs dos dispositivos agrupada para triagem — corrija, aceite o risco ou crie um chamado."
   },
   "createVulnTicketModal": {
     "title": "Criar chamado",
@@ -60,7 +60,7 @@
       "selected_other": "{{count}} selecionados"
     },
     "empty": {
-      "noFindings": "Nenhum dispositivo da sua frota é afetado por esta CVE no momento — nada a fazer."
+      "noFindings": "Nenhum dos seus dispositivos é afetado por esta CVE no momento — nada a fazer."
     },
     "findings": {
       "patch": "Correção",
@@ -222,7 +222,7 @@
       "clearFilters": "Limpar filtros"
     },
     "clean": {
-      "title": "Nenhuma vulnerabilidade aberta em toda a sua frota",
+      "title": "Nenhuma vulnerabilidade aberta em nenhum dispositivo",
       "description": "Todos os achados detectados foram corrigidos, mitigados ou aceitos. Novos achados aparecerão aqui conforme as varreduras forem executadas.",
       "lastDetected": "Último achado detectado em {{date}}"
     },
