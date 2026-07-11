@@ -78,6 +78,7 @@
   },
   "aiContextBadge": { "context": "Contexto", "dashboard": "Painel" },
   "aiCostIndicator": {
+    "messageCount": "{{count}} msgs",
     "messageCount_one": "{{count}} msg",
     "messageCount_other": "{{count}} msgs"
   },
@@ -90,6 +91,7 @@
   },
   "aiPlanReviewCard": {
     "title": "Plano de ação",
+    "stepCount": "{{count}} etapas",
     "stepCount_one": "{{count}} etapa",
     "stepCount_other": "{{count}} etapas",
     "approveAll": "Aprovar tudo",
@@ -257,6 +259,7 @@
     "ruleName": "Nome da regra",
     "regexPlaceholder": "Expressão regular, ex.: PRJ-\\d{4}",
     "removeRule": "Remover regra",
+    "matchCount": "{{count}} correspondências na amostra",
     "matchCount_one": "{{count}} correspondência na amostra",
     "matchCount_other": "{{count}} correspondências na amostra",
     "patternCompiles": "O padrão compila — adicione uma amostra acima para ver correspondências",
@@ -379,6 +382,7 @@
       "tokens": "Tokens (entrada/saída)",
       "cost": "Custo"
     },
+    "rowCount": "{{count}} linhas",
     "rowCount_one": "{{count}} linha",
     "rowCount_other": "{{count}} linhas",
     "empty": "Nenhum uso registrado neste intervalo",

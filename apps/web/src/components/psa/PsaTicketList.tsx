@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { providerMeta, type PsaProvider } from './PsaConnectionList';
+import { useTranslation } from 'react-i18next';
 
 export type PsaTicketStatus = 'open' | 'in_progress' | 'waiting' | 'resolved' | 'closed';
 
@@ -18,35 +19,36 @@ type PsaTicketListProps = {
   timezone?: string;
 };
 
-const statusConfig: Record<PsaTicketStatus, { label: string; className: string }> = {
+const statusConfig: Record<PsaTicketStatus, { labelKey: string; className: string }> = {
   open: {
-    label: 'Open',
+    labelKey: 'longTail.psa.PsaTicketList.status.open',
     className: 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-400'
   },
   in_progress: {
-    label: 'In Progress',
+    labelKey: 'longTail.psa.PsaTicketList.status.inProgress',
     className: 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-400'
   },
   waiting: {
-    label: 'Waiting',
+    labelKey: 'longTail.psa.PsaTicketList.status.waiting',
     className: 'border-gray-200 bg-gray-50 text-gray-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-400'
   },
   resolved: {
-    label: 'Resolved',
+    labelKey: 'longTail.psa.PsaTicketList.status.resolved',
     className: 'border-green-200 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-950 dark:text-green-400'
   },
   closed: {
-    label: 'Closed',
+    labelKey: 'longTail.psa.PsaTicketList.status.closed',
     className: 'border-muted bg-muted text-muted-foreground'
   }
 };
 
 export default function PsaTicketList({ tickets, timezone }: PsaTicketListProps) {
+  const { t } = useTranslation('common');
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<PsaTicketStatus | 'all'>('all');
 
   const formatDate = (value: string | null) => {
-    if (!value) return 'Unknown';
+    if (!value) return t('common:states.unknown');
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString([], { timeZone: timezone });
   };
@@ -75,15 +77,15 @@ export default function PsaTicketList({ tickets, timezone }: PsaTicketListProps)
     <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-lg font-semibold">Synced Tickets</h2>
+          <h2 className="text-lg font-semibold">{t('longTail.psa.PsaTicketList.title')}</h2>
           <p className="text-sm text-muted-foreground">
-            {filteredTickets.length} of {tickets.length} tickets
+            {t('longTail.psa.PsaTicketList.ticketCount', { filtered: filteredTickets.length, total: tickets.length })}
           </p>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <input
             type="search"
-            placeholder="Search tickets"
+            placeholder={t('longTail.psa.PsaTicketList.searchPlaceholder')}
             value={query}
             onChange={event => setQuery(event.target.value)}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-56"
@@ -95,7 +97,7 @@ export default function PsaTicketList({ tickets, timezone }: PsaTicketListProps)
           >
             {statusOptions.map(status => (
               <option key={status} value={status}>
-                {status === 'all' ? 'All statuses' : statusConfig[status as PsaTicketStatus].label}
+                {status === 'all' ? t('longTail.psa.PsaTicketList.filters.allStatuses') : t(statusConfig[status as PsaTicketStatus].labelKey)}
               </option>
             ))}
           </select>
@@ -106,11 +108,11 @@ export default function PsaTicketList({ tickets, timezone }: PsaTicketListProps)
         <table className="min-w-full divide-y">
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <th className="px-4 py-3">Ticket</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3">Linked Alert</th>
-              <th className="px-4 py-3">Device</th>
-              <th className="px-4 py-3">Updated</th>
+              <th className="px-4 py-3">{t('longTail.psa.PsaTicketList.headers.ticket')}</th>
+              <th className="px-4 py-3">{t('common:labels.status')}</th>
+              <th className="px-4 py-3">{t('longTail.psa.PsaTicketList.headers.linkedAlert')}</th>
+              <th className="px-4 py-3">{t('common:labels.device')}</th>
+              <th className="px-4 py-3">{t('longTail.psa.PsaTicketList.headers.updated')}</th>
             </tr>
           </thead>
           <tbody className="divide-y">
@@ -128,11 +130,11 @@ export default function PsaTicketList({ tickets, timezone }: PsaTicketListProps)
                         />
                       </svg>
                     </div>
-                    <p className="text-sm font-medium text-muted-foreground">No PSA tickets synced</p>
+                    <p className="text-sm font-medium text-muted-foreground">{t('longTail.psa.PsaTicketList.empty.title')}</p>
                     <p className="text-sm text-muted-foreground">
                       {tickets.length === 0
-                        ? 'Sync your first PSA connection to see tickets here.'
-                        : 'No tickets match your search or filters.'}
+                        ? t('longTail.psa.PsaTicketList.empty.noTickets')
+                        : t('longTail.psa.PsaTicketList.empty.noMatches')}
                     </p>
                   </div>
                 </td>
@@ -152,14 +154,14 @@ export default function PsaTicketList({ tickets, timezone }: PsaTicketListProps)
                     </td>
                     <td className="px-4 py-3 text-sm">
                       <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusStyle.className}`}>
-                        {statusStyle.label}
+                        {t(statusStyle.labelKey)}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">
-                      {ticket.alertTitle || 'Unlinked'}
+                      {ticket.alertTitle || t('longTail.psa.PsaTicketList.unlinked')}
                     </td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">
-                      {ticket.deviceName || 'Unlinked'}
+                      {ticket.deviceName || t('longTail.psa.PsaTicketList.unlinked')}
                     </td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">
                       {formatDate(ticket.updatedAt)}

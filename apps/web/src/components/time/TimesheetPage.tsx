@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError, handleActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
@@ -94,18 +95,17 @@ function writeHash(week: string, tech: string | null): void {
 // ---------------------------------------------------------------------------
 
 const FRIENDLY: Record<string, string> = {
-  ADMIN_REQUIRED: 'Approving timesheets requires an admin role.',
-  APPROVED_IMMUTABLE: 'Approved entries can only be changed by an admin.',
-  NOT_OWN_ENTRY: 'You can only edit your own time entries.',
+  ADMIN_REQUIRED: 'friendly.adminRequired',
+  APPROVED_IMMUTABLE: 'friendly.approvedImmutable',
+  NOT_OWN_ENTRY: 'friendly.notOwnEntry',
 };
-
-const friendly = (code: string): string | undefined => FRIENDLY[code];
 
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
 export default function TimesheetPage() {
+  const { t } = useTranslation('common');
   const initial = parseHash();
   const [week, setWeek] = useState<string>(initial.week);
   const [tech, setTech] = useState<string | null>(initial.tech);
@@ -117,6 +117,10 @@ export default function TimesheetPage() {
   const [editForm, setEditForm] = useState<EditForm>({ description: '', isBillable: true, hourlyRate: '' });
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
+  const friendly = useCallback((code: string): string | undefined => {
+    const key = FRIENDLY[code];
+    return key ? t(`longTail.time.TimesheetPage.${key}`) : undefined;
+  }, [t]);
 
   // Load users once on mount
   useEffect(() => {
@@ -216,7 +220,7 @@ export default function TimesheetPage() {
           method: 'POST',
           body: JSON.stringify({ ids, approve }),
         }),
-        errorFallback: 'Bulk approval failed. Retry.',
+        errorFallback: t('longTail.time.TimesheetPage.errors.bulkApprovalFailed'),
         parseSuccess: (data) => {
           const d = data as { data: { updated: number; skipped: number; skippedReasons: Record<string, number>; total: number } };
           return d.data;
@@ -227,14 +231,19 @@ export default function TimesheetPage() {
         const reasons = Object.entries(result.skippedReasons ?? {})
           .map(([code, count]) => `${count}× ${code.toLowerCase().replace(/_/g, ' ')}`)
           .join(', ');
-        showToast({ type: 'warning', message: `${result.updated} updated, ${result.skipped} skipped (${reasons})` });
+        showToast({ type: 'warning', message: t('longTail.time.TimesheetPage.toasts.bulkSkipped', { updated: result.updated, skipped: result.skipped, reasons }) });
       } else {
-        showToast({ type: 'success', message: `${result.updated} ${approve ? 'approved' : 'unapproved'}` });
+        showToast({
+          type: 'success',
+          message: approve
+            ? t('longTail.time.TimesheetPage.toasts.bulkApproved', { count: result.updated })
+            : t('longTail.time.TimesheetPage.toasts.bulkUnapproved', { count: result.updated }),
+        });
       }
       setSelected(new Set());
       void loadSheet(week, tech);
     } catch (err) {
-      handleActionError(err, 'Bulk approval failed. Retry.');
+      handleActionError(err, t('longTail.time.TimesheetPage.errors.bulkApprovalFailed'));
     }
   }, [selected, week, tech, loadSheet]);
 
@@ -259,14 +268,14 @@ export default function TimesheetPage() {
             hourlyRate: editForm.hourlyRate === '' ? null : Number(editForm.hourlyRate),
           }),
         }),
-        errorFallback: 'Failed to save entry. Retry.',
-        successMessage: 'Entry updated',
+        errorFallback: t('longTail.time.TimesheetPage.errors.saveEntryFailed'),
+        successMessage: t('longTail.time.TimesheetPage.toasts.entryUpdated'),
         friendly,
       });
       setEditingId(null);
       void loadSheet(week, tech);
     } catch (err) {
-      handleActionError(err, 'Failed to save entry. Retry.');
+      handleActionError(err, t('longTail.time.TimesheetPage.errors.saveEntryFailed'));
     }
   }, [editForm, week, tech, loadSheet]);
 
@@ -280,17 +289,17 @@ export default function TimesheetPage() {
     <div className="flex flex-col gap-4" data-testid="timesheet-page">
       {/* Header */}
       <div className="flex flex-wrap items-center gap-3">
-        <h1 className="text-xl font-semibold">Timesheet</h1>
+        <h1 className="text-xl font-semibold">{t('longTail.time.TimesheetPage.title')}</h1>
 
         {users.length > 0 && (
           <select
             value={tech ?? ''}
             onChange={(e) => handleTechChange(e.target.value)}
-            aria-label="Select technician"
+            aria-label={t('longTail.time.TimesheetPage.selectTechnician')}
             data-testid="timesheet-tech-select"
             className="h-8 rounded-md border bg-background px-2 text-sm"
           >
-            <option value="">My timesheet</option>
+            <option value="">{t('longTail.time.TimesheetPage.myTimesheet')}</option>
             {users.map((u) => (
               <option key={u.id} value={u.id}>{u.name || u.email}</option>
             ))}
@@ -302,17 +311,17 @@ export default function TimesheetPage() {
             type="button"
             onClick={goToPrevWeek}
             data-testid="timesheet-prev-week"
-            aria-label="Previous week"
+            aria-label={t('longTail.time.TimesheetPage.previousWeek')}
             className="rounded-md border px-2.5 py-1.5 text-sm hover:bg-muted"
           >
             ←
           </button>
-          <span className="px-2 text-sm" data-testid="timesheet-week-label">Week of {weekLabel}</span>
+          <span className="px-2 text-sm" data-testid="timesheet-week-label">{t('longTail.time.TimesheetPage.weekOf', { week: weekLabel })}</span>
           <button
             type="button"
             onClick={goToNextWeek}
             data-testid="timesheet-next-week"
-            aria-label="Next week"
+            aria-label={t('longTail.time.TimesheetPage.nextWeek')}
             className="rounded-md border px-2.5 py-1.5 text-sm hover:bg-muted"
           >
             →
@@ -323,7 +332,7 @@ export default function TimesheetPage() {
             data-testid="timesheet-this-week"
             className="rounded-md border px-2.5 py-1.5 text-sm hover:bg-muted"
           >
-            This week
+            {t('longTail.time.TimesheetPage.thisWeek')}
           </button>
         </div>
       </div>
@@ -334,7 +343,7 @@ export default function TimesheetPage() {
           data-testid="timesheet-admin-notice"
           className="rounded-md border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-800"
         >
-          Viewing other technicians&apos; timesheets requires an admin role — showing yours.
+          {t('longTail.time.TimesheetPage.adminNotice')}
         </div>
       )}
 
@@ -344,14 +353,14 @@ export default function TimesheetPage() {
           data-testid="timesheet-bulk-bar"
           className="flex items-center gap-3 rounded-md border bg-background px-3 py-2 shadow-xs"
         >
-          <span className="text-sm font-medium tabular-nums">{selected.size} selected</span>
+          <span className="text-sm font-medium tabular-nums">{t('longTail.time.TimesheetPage.selectedCount', { count: selected.size })}</span>
           <button
             type="button"
             onClick={() => void bulkApprove(true)}
             data-testid="timesheet-approve-selected"
             className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white hover:bg-primary/90"
           >
-            Approve selected
+            {t('longTail.time.TimesheetPage.approveSelected')}
           </button>
           <button
             type="button"
@@ -359,7 +368,7 @@ export default function TimesheetPage() {
             data-testid="timesheet-unapprove-selected"
             className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted"
           >
-            Unapprove
+            {t('longTail.time.TimesheetPage.unapprove')}
           </button>
         </div>
       )}
@@ -367,12 +376,12 @@ export default function TimesheetPage() {
       {/* Loading / error states */}
       {loading && !sheet && (
         <div data-testid="timesheet-loading" className="py-8 text-center text-sm text-muted-foreground">
-          Loading…
+          {t('common:states.loading')}
         </div>
       )}
       {!loading && !sheet && loadError && (
         <div data-testid="timesheet-error" className="py-8 text-center text-sm text-destructive">
-          Failed to load timesheet. Retry.
+          {t('longTail.time.TimesheetPage.errors.loadTimesheetFailed')}
         </div>
       )}
 
@@ -398,14 +407,14 @@ export default function TimesheetPage() {
                   {day.totalMinutes > 0 ? (
                     <>
                       {formatMinutes(day.totalMinutes)}
-                      {day.billableMinutes > 0 && ` · ${formatMinutes(day.billableMinutes)} billable`}
+                      {day.billableMinutes > 0 && t('longTail.time.TimesheetPage.billableDuration', { duration: formatMinutes(day.billableMinutes) })}
                     </>
                   ) : '—'}
                 </span>
               </div>
 
               {day.entries.length === 0 ? (
-                <div className="px-4 py-3 text-sm text-muted-foreground">No entries</div>
+                <div className="px-4 py-3 text-sm text-muted-foreground">{t('longTail.time.TimesheetPage.noEntries')}</div>
               ) : (
                 <div className="divide-y">
                   {day.entries.map((entry) => (
@@ -422,7 +431,7 @@ export default function TimesheetPage() {
                             value={editForm.description}
                             onChange={(e) => setEditForm((f) => ({ ...f, description: e.target.value }))}
                             data-testid={`timesheet-edit-description-${entry.id}`}
-                            placeholder="Description"
+                            placeholder={t('common:labels.description')}
                             className="min-w-0 flex-1 rounded-md border bg-background px-2 py-1 text-sm"
                           />
                           <label className="flex items-center gap-1 text-sm">
@@ -432,14 +441,14 @@ export default function TimesheetPage() {
                               onChange={(e) => setEditForm((f) => ({ ...f, isBillable: e.target.checked }))}
                               data-testid={`timesheet-edit-billable-${entry.id}`}
                             />
-                            Billable
+                            {t('longTail.time.TimesheetPage.billable')}
                           </label>
                           <input
                             type="number"
                             value={editForm.hourlyRate}
                             onChange={(e) => setEditForm((f) => ({ ...f, hourlyRate: e.target.value }))}
-                            aria-label="Rate"
-                            placeholder="Rate"
+                            aria-label={t('longTail.time.TimesheetPage.rate')}
+                            placeholder={t('longTail.time.TimesheetPage.rate')}
                             className="w-24 rounded-md border bg-background px-2 py-1 text-sm"
                             data-testid={`timesheet-edit-rate-${entry.id}`}
                           />
@@ -449,7 +458,7 @@ export default function TimesheetPage() {
                             data-testid={`timesheet-edit-save-${entry.id}`}
                             className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-white hover:bg-primary/90"
                           >
-                            Save
+                            {t('common:actions.save')}
                           </button>
                           <button
                             type="button"
@@ -457,7 +466,7 @@ export default function TimesheetPage() {
                             data-testid={`timesheet-edit-cancel-${entry.id}`}
                             className="rounded-md border px-2.5 py-1.5 text-xs hover:bg-muted"
                           >
-                            Cancel
+                            {t('common:actions.cancel')}
                           </button>
                         </div>
                       ) : (
@@ -469,7 +478,7 @@ export default function TimesheetPage() {
                             onChange={() => toggleSelect(entry.id)}
                             disabled={!entry.endedAt}
                             data-testid={`timesheet-select-${entry.id}`}
-                            aria-label={`Select entry ${entry.id}`}
+                            aria-label={t('longTail.time.TimesheetPage.selectEntry', { id: entry.id })}
                             className="mt-0.5"
                           />
                           <div className="flex min-w-0 flex-1 flex-col gap-0.5">
@@ -483,33 +492,33 @@ export default function TimesheetPage() {
                               {entry.description ? (
                                 <span className="text-sm">{entry.description}</span>
                               ) : (
-                                <span className="text-sm text-muted-foreground">No description</span>
+                                <span className="text-sm text-muted-foreground">{t('longTail.time.TimesheetPage.noDescription')}</span>
                               )}
                               {entry.isApproved && (
                                 <span
                                   data-testid={`timesheet-approved-${entry.id}`}
                                   className="rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700"
                                 >
-                                  Approved
+                                  {t('longTail.time.TimesheetPage.approved')}
                                 </span>
                               )}
                               {!entry.isBillable && (
-                                <span className="text-xs text-muted-foreground">non-billable</span>
+                                <span className="text-xs text-muted-foreground">{t('longTail.time.TimesheetPage.nonBillable')}</span>
                               )}
                             </div>
                           </div>
                           <div className="flex items-center gap-2">
                             <span className="text-sm tabular-nums text-muted-foreground">
-                              {entry.endedAt ? formatMinutes(entry.durationMinutes) : 'running'}
+                              {entry.endedAt ? formatMinutes(entry.durationMinutes) : t('longTail.time.TimesheetPage.running')}
                             </span>
                             <button
                               type="button"
                               onClick={() => startEdit(entry)}
                               data-testid={`timesheet-edit-${entry.id}`}
-                              aria-label={`Edit entry ${entry.id}`}
+                              aria-label={t('longTail.time.TimesheetPage.editEntry', { id: entry.id })}
                               className="rounded-md border px-2 py-1 text-xs hover:bg-muted"
                             >
-                              Edit
+                              {t('common:actions.edit')}
                             </button>
                           </div>
                         </>
@@ -529,9 +538,9 @@ export default function TimesheetPage() {
           data-testid="timesheet-total"
           className="flex items-center gap-4 rounded-lg border bg-muted/30 px-4 py-3 text-sm font-medium"
         >
-          <span>Total: {formatMinutes(sheet.totals.totalMinutes)}</span>
+          <span>{t('longTail.time.TimesheetPage.total', { duration: formatMinutes(sheet.totals.totalMinutes) })}</span>
           {sheet.totals.billableMinutes > 0 && (
-            <span className="text-muted-foreground">Billable: {formatMinutes(sheet.totals.billableMinutes)}</span>
+            <span className="text-muted-foreground">{t('longTail.time.TimesheetPage.billableTotal', { duration: formatMinutes(sheet.totals.billableMinutes) })}</span>
           )}
         </div>
       )}

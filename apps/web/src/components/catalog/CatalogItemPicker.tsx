@@ -1,9 +1,10 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { formatMoney } from '../../lib/timeFormat';
 import {
-  CATALOG_TYPE_CHIP, CATALOG_TYPE_LABELS,
+  CATALOG_TYPE_CHIP,
   type CatalogItem,
 } from '../../lib/api/catalog';
+import { useTranslation } from 'react-i18next';
 
 interface Props {
   /** Active catalog items to search (caller loads via lib/api/catalog.listCatalog). */
@@ -26,8 +27,10 @@ const MAX_RESULTS = 8;
  * wrapper (callers place it in non-overflow-clipped form areas).
  */
 export default function CatalogItemPicker({
-  items, onSelect, includeBundles = true, placeholder = 'Search catalog by name or SKU', disabled, testId = 'catalog-picker',
+  items, onSelect, includeBundles = true, placeholder, disabled, testId = 'catalog-picker',
 }: Props) {
+  const { t } = useTranslation('common');
+  const resolvedPlaceholder = placeholder ?? t('longTail.catalog.CatalogItemPicker.placeholder');
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
@@ -76,7 +79,7 @@ export default function CatalogItemPicker({
         aria-autocomplete="list"
         value={query}
         disabled={disabled}
-        placeholder={placeholder}
+        placeholder={resolvedPlaceholder}
         onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
         onFocus={() => setOpen(true)}
         onKeyDown={onKeyDown}
@@ -102,11 +105,11 @@ export default function CatalogItemPicker({
                 <span className="flex-1 truncate font-medium">{item.name}</span>
                 {item.isBundle && (
                   <span className="rounded border border-border bg-muted px-1 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                    Bundle
+                    {t('longTail.catalog.CatalogItemPicker.bundle')}
                   </span>
                 )}
                 <span className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${CATALOG_TYPE_CHIP[item.itemType]}`}>
-                  {CATALOG_TYPE_LABELS[item.itemType]}
+                  {t(`longTail.catalog.CatalogItemPicker.itemTypes.${item.itemType}`)}
                 </span>
                 {item.sku && <span className="font-mono chart-legend-xs text-muted-foreground">{item.sku}</span>}
                 <span className="tabular-nums text-muted-foreground">{formatMoney(item.unitPrice)}</span>
@@ -120,7 +123,7 @@ export default function CatalogItemPicker({
           className="absolute z-30 mt-1 w-full rounded-md border bg-card px-3 py-2 text-xs text-muted-foreground shadow-lg"
           data-testid={`${testId}-noresults`}
         >
-          No matching catalog items.
+          {t('longTail.catalog.CatalogItemPicker.noResults')}
         </div>
       )}
     </div>

@@ -3,6 +3,7 @@ import PsaConnectionList, { type PsaConnection } from './PsaConnectionList';
 import PsaConnectionForm, { type PsaConnectionFormValues } from './PsaConnectionForm';
 import PsaTicketList, { type PsaTicket } from './PsaTicketList';
 import { fetchWithAuth } from '../../stores/auth';
+import { useTranslation } from 'react-i18next';
 
 type ModalMode = 'closed' | 'add' | 'edit' | 'delete' | 'test';
 
@@ -22,6 +23,7 @@ type PsaConnectionDetails = PsaConnectionFormValues & {
 };
 
 export default function PsaConnectionsPage() {
+  const { t } = useTranslation('common');
   const [connections, setConnections] = useState<PsaConnection[]>([]);
   const [tickets, setTickets] = useState<PsaTicket[]>([]);
   const [loading, setLoading] = useState(true);
@@ -39,16 +41,16 @@ export default function PsaConnectionsPage() {
       setError(undefined);
       const response = await fetchWithAuth('/psa/connections');
       if (!response.ok) {
-        throw new Error('Failed to fetch PSA connections');
+        throw new Error(t('longTail.psa.PsaConnectionsPage.errors.fetchConnections'));
       }
       const data = await response.json();
       setConnections(data.data ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('longTail.psa.PsaConnectionsPage.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   const fetchTickets = useCallback(async () => {
     try {
@@ -100,13 +102,13 @@ export default function PsaConnectionsPage() {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to start sync');
+        throw new Error(t('longTail.psa.PsaConnectionsPage.errors.startSync'));
       }
 
       await fetchConnections();
       await fetchTickets();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('longTail.psa.PsaConnectionsPage.errors.generic'));
     }
   };
 
@@ -118,12 +120,12 @@ export default function PsaConnectionsPage() {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to update connection status');
+        throw new Error(t('longTail.psa.PsaConnectionsPage.errors.updateStatus'));
       }
 
       await fetchConnections();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('longTail.psa.PsaConnectionsPage.errors.generic'));
     }
   };
 
@@ -155,7 +157,7 @@ export default function PsaConnectionsPage() {
     } catch (err) {
       setTestResult({
         success: false,
-        error: err instanceof Error ? err.message : 'Test failed'
+        error: err instanceof Error ? err.message : t('longTail.psa.PsaConnectionsPage.errors.testFailed')
       });
       setModalMode('test');
     } finally {
@@ -185,14 +187,14 @@ export default function PsaConnectionsPage() {
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || 'Failed to save connection');
+        throw new Error(errorData.error || t('longTail.psa.PsaConnectionsPage.errors.saveConnection'));
       }
 
       await fetchConnections();
       await fetchTickets();
       handleCloseModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('longTail.psa.PsaConnectionsPage.errors.generic'));
     } finally {
       setSubmitting(false);
     }
@@ -208,14 +210,14 @@ export default function PsaConnectionsPage() {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to delete connection');
+        throw new Error(t('longTail.psa.PsaConnectionsPage.errors.deleteConnection'));
       }
 
       await fetchConnections();
       await fetchTickets();
       handleCloseModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('longTail.psa.PsaConnectionsPage.errors.generic'));
     } finally {
       setSubmitting(false);
     }
@@ -226,7 +228,7 @@ export default function PsaConnectionsPage() {
       <div className="flex items-center justify-center py-12">
         <div className="text-center">
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading PSA connections...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('longTail.psa.PsaConnectionsPage.loading')}</p>
         </div>
       </div>
     );
@@ -241,7 +243,7 @@ export default function PsaConnectionsPage() {
           onClick={fetchConnections}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Try again
+          {t('longTail.psa.PsaConnectionsPage.actions.tryAgain')}
         </button>
       </div>
     );
@@ -251,9 +253,9 @@ export default function PsaConnectionsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">PSA Integrations</h1>
+          <h1 className="text-xl font-semibold tracking-tight">{t('longTail.psa.PsaConnectionsPage.title')}</h1>
           <p className="text-muted-foreground">
-            Connect your PSA to sync tickets and link alerts.
+            {t('longTail.psa.PsaConnectionsPage.subtitle')}
           </p>
         </div>
         <button
@@ -264,7 +266,7 @@ export default function PsaConnectionsPage() {
           <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
           </svg>
-          Add connection
+          {t('longTail.psa.PsaConnectionsPage.actions.addConnection')}
         </button>
       </div>
 
@@ -289,12 +291,12 @@ export default function PsaConnectionsPage() {
           <div className="w-full max-w-3xl max-h-[90vh] overflow-y-auto">
             <div className="mb-4">
               <h2 className="text-lg font-semibold">
-                {modalMode === 'add' ? 'Add PSA Connection' : 'Edit PSA Connection'}
+                {modalMode === 'add' ? t('longTail.psa.PsaConnectionsPage.modal.addTitle') : t('longTail.psa.PsaConnectionsPage.modal.editTitle')}
               </h2>
               <p className="text-sm text-muted-foreground">
                 {modalMode === 'add'
-                  ? 'Set up a new PSA connection for your organization.'
-                  : 'Update the PSA connection details and sync preferences.'}
+                  ? t('longTail.psa.PsaConnectionsPage.modal.addDescription')
+                  : t('longTail.psa.PsaConnectionsPage.modal.editDescription')}
               </p>
             </div>
             <PsaConnectionForm
@@ -321,7 +323,7 @@ export default function PsaConnectionsPage() {
                     }
                   : undefined
               }
-              submitLabel={modalMode === 'add' ? 'Create connection' : 'Save changes'}
+              submitLabel={modalMode === 'add' ? t('longTail.psa.PsaConnectionsPage.actions.createConnection') : t('longTail.psa.PsaConnectionsPage.actions.saveChanges')}
               loading={submitting}
               testingConnection={testingConnection}
               isEditing={modalMode === 'edit'}
@@ -334,19 +336,19 @@ export default function PsaConnectionsPage() {
       {modalMode === 'delete' && selectedConnection && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
           <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
-            <h2 className="text-lg font-semibold">Delete PSA Connection</h2>
+            <h2 className="text-lg font-semibold">{t('longTail.psa.PsaConnectionsPage.delete.title')}</h2>
             <p className="mt-2 text-sm text-muted-foreground">
-              Are you sure you want to delete <span className="font-medium">{selectedConnection.name}</span>?
+              {t('longTail.psa.PsaConnectionsPage.delete.confirm', { name: selectedConnection.name })}
             </p>
             {selectedConnection.status === 'active' && (
               <div className="mt-4 rounded-md border border-amber-200 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950">
                 <p className="text-sm text-amber-700 dark:text-amber-300">
-                  <strong>Warning:</strong> This connection is active. Ticket syncing will stop immediately.
+                  <strong>{t('longTail.psa.PsaConnectionsPage.delete.warningLabel')}</strong> {t('longTail.psa.PsaConnectionsPage.delete.activeWarning')}
                 </p>
               </div>
             )}
             <p className="mt-4 text-sm text-muted-foreground">
-              This action cannot be undone.
+              {t('longTail.psa.PsaConnectionsPage.delete.irreversible')}
             </p>
             <div className="mt-6 flex justify-end gap-3">
               <button
@@ -354,7 +356,7 @@ export default function PsaConnectionsPage() {
                 onClick={handleCloseModal}
                 className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
               >
-                Cancel
+                {t('common:actions.cancel')}
               </button>
               <button
                 type="button"
@@ -362,7 +364,7 @@ export default function PsaConnectionsPage() {
                 disabled={submitting}
                 className="inline-flex h-10 items-center justify-center rounded-md bg-destructive px-4 text-sm font-medium text-destructive-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {submitting ? 'Deleting...' : 'Delete connection'}
+                {submitting ? t('longTail.psa.PsaConnectionsPage.actions.deleting') : t('longTail.psa.PsaConnectionsPage.actions.deleteConnection')}
               </button>
             </div>
           </div>
@@ -372,9 +374,9 @@ export default function PsaConnectionsPage() {
       {modalMode === 'test' && selectedConnection && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
           <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-xs">
-            <h2 className="text-lg font-semibold">Connection Test Result</h2>
+            <h2 className="text-lg font-semibold">{t('longTail.psa.PsaConnectionsPage.test.title')}</h2>
             <p className="mt-1 text-sm text-muted-foreground">
-              Testing <span className="font-medium">{selectedConnection.name}</span>
+              {t('longTail.psa.PsaConnectionsPage.test.testing', { name: selectedConnection.name })}
             </p>
 
             <div className="mt-6">
@@ -394,9 +396,9 @@ export default function PsaConnectionsPage() {
                     />
                   </svg>
                   <div>
-                    <h3 className="font-medium text-green-800 dark:text-green-200">Connection successful</h3>
+                    <h3 className="font-medium text-green-800 dark:text-green-200">{t('longTail.psa.PsaConnectionsPage.test.successTitle')}</h3>
                     <p className="text-sm text-green-700 dark:text-green-300">
-                      {testResult.message || 'PSA credentials are valid.'}
+                      {testResult.message || t('longTail.psa.PsaConnectionsPage.test.successMessage')}
                     </p>
                   </div>
                 </div>
@@ -416,12 +418,12 @@ export default function PsaConnectionsPage() {
                     />
                   </svg>
                   <div>
-                    <h3 className="font-medium text-destructive">Connection failed</h3>
+                    <h3 className="font-medium text-destructive">{t('longTail.psa.PsaConnectionsPage.test.failedTitle')}</h3>
                     <p className="mt-1 text-sm text-destructive/90">
-                      {testResult?.error || 'Unable to connect to the PSA provider.'}
+                      {testResult?.error || t('longTail.psa.PsaConnectionsPage.test.failedMessage')}
                     </p>
                     <p className="mt-2 text-sm text-muted-foreground">
-                      Verify the credentials and API permissions for this connection.
+                      {t('longTail.psa.PsaConnectionsPage.test.verifyHelp')}
                     </p>
                   </div>
                 </div>
@@ -434,7 +436,7 @@ export default function PsaConnectionsPage() {
                 onClick={handleCloseModal}
                 className="h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
               >
-                Close
+                {t('common:actions.close')}
               </button>
             </div>
           </div>

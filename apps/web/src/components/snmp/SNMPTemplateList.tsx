@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Loader2, Pencil, PlusCircle, Trash2, Layers } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { navigateTo } from '@/lib/navigation';
@@ -69,6 +70,7 @@ export default function SNMPTemplateList({
   onCreateTemplate,
   refreshToken = 0
 }: Props = {}) {
+  const { t } = useTranslation('common');
   const { currentOrgId } = useOrgStore();
   const [templates, setTemplates] = useState<TemplateRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -96,7 +98,7 @@ export default function SNMPTemplateList({
       }
 
       if (!templatesResponse.ok) {
-        throw new Error('Failed to fetch SNMP templates');
+        throw new Error(t('longTail.snmp.SNMPTemplateList.errors.fetchTemplates'));
       }
 
       const templatesPayload = await templatesResponse.json();
@@ -118,11 +120,11 @@ export default function SNMPTemplateList({
       setTemplates(mappedTemplates);
     } catch (err) {
       setTemplates([]);
-      setError(err instanceof Error ? err.message : 'Failed to load SNMP templates');
+      setError(err instanceof Error ? err.message : t('longTail.snmp.SNMPTemplateList.errors.loadTemplates'));
     } finally {
       setLoading(false);
     }
-  }, [currentOrgId]);
+  }, [currentOrgId, t]);
 
   useEffect(() => {
     void fetchTemplates();
@@ -158,19 +160,19 @@ export default function SNMPTemplateList({
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}));
         const apiError = asRecord(payload)?.error;
-        throw new Error(typeof apiError === 'string' ? apiError : 'Failed to delete template');
+        throw new Error(typeof apiError === 'string' ? apiError : t('longTail.snmp.SNMPTemplateList.errors.deleteTemplate'));
       }
       await fetchTemplates();
-      showToast({ message: `Template "${deleteTarget.name}" deleted`, type: 'success' });
+      showToast({ message: t('longTail.snmp.SNMPTemplateList.toasts.templateDeleted', { name: deleteTarget.name }), type: 'success' });
       if (selectedTemplateId === deleteTarget.id) {
         onCreateTemplate?.();
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete template');
+      setError(err instanceof Error ? err.message : t('longTail.snmp.SNMPTemplateList.errors.deleteTemplate'));
     } finally {
       setDeletingId(null);
     }
-  }, [deleteTarget, fetchTemplates, onCreateTemplate, selectedTemplateId]);
+  }, [deleteTarget, fetchTemplates, onCreateTemplate, selectedTemplateId, t]);
 
   const sortedTemplates = useMemo(
     () => [...templates].sort((a, b) => a.name.localeCompare(b.name)),
@@ -182,7 +184,7 @@ export default function SNMPTemplateList({
       <span className="font-medium">{template.name}</span>
       {template.source === 'builtin' && (
         <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-          Built-in
+          {t('longTail.snmp.SNMPTemplateList.builtIn')}
         </span>
       )}
     </div>
@@ -203,7 +205,7 @@ export default function SNMPTemplateList({
         className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs"
       >
         <Pencil className="h-3 w-3" />
-        Edit
+        {t('common:actions.edit')}
       </button>
       {template.source === 'custom' && (
         <button
@@ -215,7 +217,7 @@ export default function SNMPTemplateList({
           className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs text-red-600 disabled:opacity-50"
         >
           {deletingId === template.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
-          Delete
+          {t('common:actions.delete')}
         </button>
       )}
     </>
@@ -226,7 +228,7 @@ export default function SNMPTemplateList({
       <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-center justify-center py-10 text-sm text-muted-foreground">
           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-          Loading SNMP templates...
+          {t('longTail.snmp.SNMPTemplateList.loading')}
         </div>
       </div>
     );
@@ -237,8 +239,8 @@ export default function SNMPTemplateList({
     <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-lg font-semibold">SNMP Templates</h2>
-          <p className="text-sm text-muted-foreground">{sortedTemplates.length} templates available</p>
+          <h2 className="text-lg font-semibold">{t('longTail.snmp.SNMPTemplateList.title')}</h2>
+          <p className="text-sm text-muted-foreground">{t('longTail.snmp.SNMPTemplateList.templatesAvailable', { count: sortedTemplates.length })}</p>
         </div>
         <button
           type="button"
@@ -246,7 +248,7 @@ export default function SNMPTemplateList({
           className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-xs"
         >
           <PlusCircle className="h-4 w-4" />
-          Add template
+          {t('longTail.snmp.SNMPTemplateList.addTemplate')}
         </button>
       </div>
 
@@ -262,19 +264,19 @@ export default function SNMPTemplateList({
           <table className="w-full text-sm">
             <thead className="bg-muted/40">
               <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                <th className="px-4 py-3">Name</th>
-                <th className="px-4 py-3">Vendor</th>
-                <th className="px-4 py-3">Device type</th>
-                <th className="px-4 py-3">OID count</th>
-                <th className="px-4 py-3">Usage</th>
-                <th className="px-4 py-3 text-right">Actions</th>
+                <th className="px-4 py-3">{t('common:labels.name')}</th>
+                <th className="px-4 py-3">{t('longTail.snmp.SNMPTemplateList.vendor')}</th>
+                <th className="px-4 py-3">{t('longTail.snmp.SNMPTemplateList.deviceType')}</th>
+                <th className="px-4 py-3">{t('longTail.snmp.SNMPTemplateList.oidCount')}</th>
+                <th className="px-4 py-3">{t('longTail.snmp.SNMPTemplateList.usage')}</th>
+                <th className="px-4 py-3 text-right">{t('common:labels.actions')}</th>
               </tr>
             </thead>
             <tbody className="divide-y">
               {sortedTemplates.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="px-4 py-8 text-center text-sm text-muted-foreground">
-                    No SNMP templates found.
+                    {t('longTail.snmp.SNMPTemplateList.empty')}
                   </td>
                 </tr>
               ) : (
@@ -297,7 +299,7 @@ export default function SNMPTemplateList({
         cards={
           sortedTemplates.length === 0 ? (
             <DataCard>
-              <span className="text-sm text-muted-foreground">No SNMP templates found.</span>
+              <span className="text-sm text-muted-foreground">{t('longTail.snmp.SNMPTemplateList.empty')}</span>
             </DataCard>
           ) : (
             sortedTemplates.map((template) => (
@@ -307,12 +309,12 @@ export default function SNMPTemplateList({
               >
                 <div className="mb-3">{renderName(template)}</div>
                 <div className="space-y-2">
-                  <CardField label="Vendor">
+                  <CardField label={t('longTail.snmp.SNMPTemplateList.vendor')}>
                     <span className="text-muted-foreground">{template.vendor || '—'}</span>
                   </CardField>
-                  <CardField label="Device type">{template.deviceType || '—'}</CardField>
-                  <CardField label="OID count">{template.oidCount}</CardField>
-                  <CardField label="Usage">{renderUsage(template)}</CardField>
+                  <CardField label={t('longTail.snmp.SNMPTemplateList.deviceType')}>{template.deviceType || '—'}</CardField>
+                  <CardField label={t('longTail.snmp.SNMPTemplateList.oidCount')}>{template.oidCount}</CardField>
+                  <CardField label={t('longTail.snmp.SNMPTemplateList.usage')}>{renderUsage(template)}</CardField>
                 </div>
                 <CardActions className="flex flex-wrap justify-end gap-2">
                   {renderActions(template)}
@@ -327,9 +329,9 @@ export default function SNMPTemplateList({
       open={deleteTarget !== null}
       onClose={() => setDeleteTarget(null)}
       onConfirm={handleConfirmDelete}
-      title="Delete SNMP Template"
-      message={`Are you sure you want to delete "${deleteTarget?.name}"? Any devices using this template will need to be reassigned.`}
-      confirmLabel="Delete Template"
+      title={t('longTail.snmp.SNMPTemplateList.deleteDialog.title')}
+      message={t('longTail.snmp.SNMPTemplateList.deleteDialog.message', { name: deleteTarget?.name })}
+      confirmLabel={t('longTail.snmp.SNMPTemplateList.deleteDialog.confirmLabel')}
       variant="destructive"
       isLoading={deletingId !== null}
     />

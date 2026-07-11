@@ -5,6 +5,7 @@ import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
 import { enrichCatalogItemRequest, type CatalogItemType, type EnrichResult } from '../../lib/api/catalog';
+import { useTranslation } from 'react-i18next';
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 
@@ -27,8 +28,12 @@ interface CatalogEnrichButtonProps {
 
 export default function CatalogEnrichButton({
   hint, disabled, idSuffix, onApply, helpText,
-  guidanceSuffix = '— enter your price below.',
+  guidanceSuffix,
 }: CatalogEnrichButtonProps) {
+  const { t } = useTranslation('common');
+  const resolvedGuidanceSuffix = guidanceSuffix === undefined
+    ? t('longTail.catalog.CatalogEnrichButton.defaultGuidanceSuffix')
+    : guidanceSuffix;
   const [query, setQuery] = useState('');
   const [busy, setBusy] = useState(false);
   const [guidance, setGuidance] = useState<string | null>(null);
@@ -41,7 +46,7 @@ export default function CatalogEnrichButton({
     try {
       const result = await runAction<EnrichResult>({
         request: () => enrichCatalogItemRequest(q, hint),
-        errorFallback: "Couldn't auto-fill — enter details manually.",
+        errorFallback: t('longTail.catalog.CatalogEnrichButton.errors.autoFill'),
         parseSuccess: (data) => (data as { data: EnrichResult }).data,
         onUnauthorized: UNAUTHORIZED,
       });
@@ -51,7 +56,7 @@ export default function CatalogEnrichButton({
       if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
       // runAction already toasted any non-401 ActionError; only cover the non-ActionError case.
       if (!(err instanceof ActionError)) {
-        showToast({ message: "Couldn't auto-fill — enter details manually.", type: 'error' });
+        showToast({ message: t('longTail.catalog.CatalogEnrichButton.errors.autoFill'), type: 'error' });
       }
     } finally {
       setBusy(false);
@@ -64,7 +69,7 @@ export default function CatalogEnrichButton({
         <input
           type="text"
           value={query}
-          placeholder="Product name or SKU"
+          placeholder={t('longTail.catalog.CatalogEnrichButton.placeholder')}
           disabled={disabled || busy}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void run(); } }}
@@ -80,17 +85,17 @@ export default function CatalogEnrichButton({
           className="inline-flex h-9 items-center gap-1.5 rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
         >
           {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />}
-          {busy ? 'Searching the web…' : '✨ Auto-fill from web'}
+          {busy ? t('longTail.catalog.CatalogEnrichButton.searching') : t('longTail.catalog.CatalogEnrichButton.autoFill')}
         </button>
       </div>
       {busy && (
         <p role="status" data-testid={`catalog-enrich-busy-${idSuffix}`} className="text-xs text-muted-foreground">
-          Looking up product details — usually 5–15 seconds.
+          {t('longTail.catalog.CatalogEnrichButton.busyMessage')}
         </p>
       )}
       {!busy && guidance && (
         <p data-testid={`catalog-enrich-guidance-${idSuffix}`} className="text-xs text-muted-foreground">
-          AI estimate: {guidance}{guidanceSuffix ? ` ${guidanceSuffix}` : ''}
+          {t('longTail.catalog.CatalogEnrichButton.aiEstimate', { guidance, suffix: resolvedGuidanceSuffix ? ` ${resolvedGuidanceSuffix}` : '' })}
         </p>
       )}
       {!busy && !guidance && helpText && (

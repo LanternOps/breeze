@@ -78,6 +78,7 @@
   },
   "aiContextBadge": { "context": "Context", "dashboard": "Dashboard" },
   "aiCostIndicator": {
+    "messageCount": "{{count}} msgs",
     "messageCount_one": "{{count}} msg",
     "messageCount_other": "{{count}} msgs"
   },
@@ -90,6 +91,7 @@
   },
   "aiPlanReviewCard": {
     "title": "Action Plan",
+    "stepCount": "{{count}} steps",
     "stepCount_one": "{{count}} step",
     "stepCount_other": "{{count}} steps",
     "approveAll": "Approve All",
@@ -257,6 +259,7 @@
     "ruleName": "Rule name",
     "regexPlaceholder": "Regular expression, e.g. PRJ-\\d{4}",
     "removeRule": "Remove rule",
+    "matchCount": "{{count}} matches in the sample",
     "matchCount_one": "{{count}} match in the sample",
     "matchCount_other": "{{count}} matches in the sample",
     "patternCompiles": "Pattern compiles — add a test sample above to see matches",
@@ -379,6 +382,7 @@
       "tokens": "Tokens (in/out)",
       "cost": "Cost"
     },
+    "rowCount": "{{count}} rows",
     "rowCount_one": "{{count}} row",
     "rowCount_other": "{{count}} rows",
     "empty": "No usage recorded in this range",

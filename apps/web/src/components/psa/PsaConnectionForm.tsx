@@ -3,11 +3,12 @@ import { useForm, useWatch } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { providerMeta, type PsaProvider } from './PsaConnectionList';
+import { useTranslation } from 'react-i18next';
 
-const psaConnectionSchema = z.object({
-  name: z.string().min(1, 'Connection name is required'),
+const createPsaConnectionSchema = (t: (key: string) => string) => z.object({
+  name: z.string().min(1, t('longTail.psa.PsaConnectionForm.validation.nameRequired')),
   provider: z.enum(['jira', 'servicenow', 'connectwise', 'autotask', 'freshservice', 'zendesk']),
-  baseUrl: z.string().url('Must be a valid URL').optional().or(z.literal('')),
+  baseUrl: z.string().url(t('longTail.psa.PsaConnectionForm.validation.validUrl')).optional().or(z.literal('')),
   defaultQueue: z.string().optional(),
   username: z.string().optional(),
   password: z.string().optional(),
@@ -21,7 +22,7 @@ const psaConnectionSchema = z.object({
   includeNotes: z.boolean()
 });
 
-export type PsaConnectionFormValues = z.infer<typeof psaConnectionSchema>;
+export type PsaConnectionFormValues = z.infer<ReturnType<typeof createPsaConnectionSchema>>;
 
 type PsaConnectionFormProps = {
   onSubmit?: (values: PsaConnectionFormValues) => void | Promise<void>;
@@ -39,45 +40,45 @@ type PsaConnectionFormProps = {
   };
 };
 
-const providerDescriptions: Record<PsaProvider, { hint: string; urlPlaceholder: string }> = {
+const providerDescriptions: Record<PsaProvider, { hintKey: string; urlPlaceholder: string }> = {
   jira: {
-    hint: 'Use an Atlassian API token and your Jira account email for authentication.',
+    hintKey: 'longTail.psa.PsaConnectionForm.providerHints.jira',
     urlPlaceholder: 'https://your-domain.atlassian.net'
   },
   servicenow: {
-    hint: 'Use a ServiceNow user with REST API permissions.',
+    hintKey: 'longTail.psa.PsaConnectionForm.providerHints.servicenow',
     urlPlaceholder: 'https://instance.service-now.com'
   },
   connectwise: {
-    hint: 'Use your ConnectWise Manage credentials or API keys.',
+    hintKey: 'longTail.psa.PsaConnectionForm.providerHints.connectwise',
     urlPlaceholder: 'https://api-na.myconnectwise.net'
   },
   autotask: {
-    hint: 'Use your Autotask API user credentials.',
+    hintKey: 'longTail.psa.PsaConnectionForm.providerHints.autotask',
     urlPlaceholder: 'https://webservices.autotask.net/atservices/1.6/atws.asmx'
   },
   freshservice: {
-    hint: 'Use your Freshservice API key or OAuth credentials.',
+    hintKey: 'longTail.psa.PsaConnectionForm.providerHints.freshservice',
     urlPlaceholder: 'https://your-domain.freshservice.com'
   },
   zendesk: {
-    hint: 'Use an API token or OAuth client credentials.',
+    hintKey: 'longTail.psa.PsaConnectionForm.providerHints.zendesk',
     urlPlaceholder: 'https://your-domain.zendesk.com'
   }
 };
 
-const syncIntervalLabels: Record<PsaConnectionFormValues['syncInterval'], string> = {
-  '15m': 'Every 15 minutes',
-  '30m': 'Every 30 minutes',
-  '1h': 'Every hour',
-  '6h': 'Every 6 hours',
-  '24h': 'Daily'
+const syncIntervalLabelKeys: Record<PsaConnectionFormValues['syncInterval'], string> = {
+  '15m': 'longTail.psa.PsaConnectionForm.syncIntervals.every15Minutes',
+  '30m': 'longTail.psa.PsaConnectionForm.syncIntervals.every30Minutes',
+  '1h': 'longTail.psa.PsaConnectionForm.syncIntervals.everyHour',
+  '6h': 'longTail.psa.PsaConnectionForm.syncIntervals.every6Hours',
+  '24h': 'longTail.psa.PsaConnectionForm.syncIntervals.daily'
 };
 
-const syncDirectionLabels: Record<PsaConnectionFormValues['syncDirection'], string> = {
-  inbound: 'PSA → Breeze',
-  outbound: 'Breeze → PSA',
-  bidirectional: 'Bidirectional'
+const syncDirectionLabelKeys: Record<PsaConnectionFormValues['syncDirection'], string> = {
+  inbound: 'longTail.psa.PsaConnectionForm.syncDirections.inbound',
+  outbound: 'longTail.psa.PsaConnectionForm.syncDirections.outbound',
+  bidirectional: 'longTail.psa.PsaConnectionForm.syncDirections.bidirectional'
 };
 
 export default function PsaConnectionForm({
@@ -85,12 +86,15 @@ export default function PsaConnectionForm({
   onCancel,
   onTestConnection,
   defaultValues,
-  submitLabel = 'Save connection',
+  submitLabel,
   loading,
   testingConnection,
   isEditing,
   hasCredentials
 }: PsaConnectionFormProps) {
+  const { t } = useTranslation('common');
+  const resolvedSubmitLabel = submitLabel ?? t('longTail.psa.PsaConnectionForm.defaultSubmitLabel');
+  const psaConnectionSchema = useMemo(() => createPsaConnectionSchema(t), [t]);
   const [showPassword, setShowPassword] = useState(false);
   const [showApiToken, setShowApiToken] = useState(false);
   const [showClientSecret, setShowClientSecret] = useState(false);
@@ -136,16 +140,16 @@ export default function PsaConnectionForm({
     >
       <div className="space-y-4">
         <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-          Basic Information
+          {t('longTail.psa.PsaConnectionForm.sections.basicInformation')}
         </h3>
         <div className="grid gap-6 md:grid-cols-2">
           <div className="space-y-2">
             <label htmlFor="connection-name" className="text-sm font-medium">
-              Connection name
+              {t('longTail.psa.PsaConnectionForm.fields.connectionName')}
             </label>
             <input
               id="connection-name"
-              placeholder="e.g., Jira Production"
+              placeholder={t('longTail.psa.PsaConnectionForm.placeholders.connectionName')}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('name')}
             />
@@ -154,7 +158,7 @@ export default function PsaConnectionForm({
 
           <div className="space-y-2">
             <label htmlFor="connection-provider" className="text-sm font-medium">
-              Provider
+              {t('longTail.psa.PsaConnectionForm.fields.provider')}
             </label>
             <select
               id="connection-provider"
@@ -167,19 +171,19 @@ export default function PsaConnectionForm({
                 </option>
               ))}
             </select>
-            <p className="text-xs text-muted-foreground">{credentialHint.hint}</p>
+            <p className="text-xs text-muted-foreground">{t(credentialHint.hintKey)}</p>
           </div>
         </div>
       </div>
 
       <div className="space-y-4 border-t pt-6">
         <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-          Connection Details
+          {t('longTail.psa.PsaConnectionForm.sections.connectionDetails')}
         </h3>
         <div className="grid gap-6 md:grid-cols-2">
           <div className="space-y-2 md:col-span-2">
             <label htmlFor="connection-url" className="text-sm font-medium">
-              Instance URL
+              {t('longTail.psa.PsaConnectionForm.fields.instanceUrl')}
             </label>
             <input
               id="connection-url"
@@ -193,16 +197,16 @@ export default function PsaConnectionForm({
 
           <div className="space-y-2 md:col-span-2">
             <label htmlFor="connection-default-queue" className="text-sm font-medium">
-              Default project or queue
+              {t('longTail.psa.PsaConnectionForm.fields.defaultQueue')}
             </label>
             <input
               id="connection-default-queue"
-              placeholder="e.g., IT Support"
+              placeholder={t('longTail.psa.PsaConnectionForm.placeholders.defaultQueue')}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('defaultQueue')}
             />
             <p className="text-xs text-muted-foreground">
-              Optional. Used when creating tickets from Breeze alerts.
+              {t('longTail.psa.PsaConnectionForm.help.defaultQueue')}
             </p>
           </div>
         </div>
@@ -210,16 +214,16 @@ export default function PsaConnectionForm({
 
       <div className="space-y-4 border-t pt-6">
         <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-          Credentials
+          {t('longTail.psa.PsaConnectionForm.sections.credentials')}
         </h3>
         <div className="grid gap-6 md:grid-cols-2">
           <div className="space-y-2">
             <label htmlFor="connection-username" className="text-sm font-medium">
-              Username or email
+              {t('longTail.psa.PsaConnectionForm.fields.username')}
             </label>
             <input
               id="connection-username"
-              placeholder="admin@example.com"
+              placeholder={t('longTail.psa.PsaConnectionForm.placeholders.username')}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('username')}
             />
@@ -227,16 +231,16 @@ export default function PsaConnectionForm({
 
           <div className="space-y-2">
             <label htmlFor="connection-password" className="text-sm font-medium">
-              Password
+              {t('longTail.psa.PsaConnectionForm.fields.password')}
               {isEditing && hasCredentials?.password && (
-                <span className="ml-2 text-xs text-muted-foreground">(leave blank to keep existing)</span>
+                <span className="ml-2 text-xs text-muted-foreground">{t('longTail.psa.PsaConnectionForm.keepExisting')}</span>
               )}
             </label>
             <div className="relative">
               <input
                 id="connection-password"
                 type={showPassword ? 'text' : 'password'}
-                placeholder={isEditing && hasCredentials?.password ? '********' : 'password'}
+                placeholder={isEditing && hasCredentials?.password ? t('longTail.psa.PsaConnectionForm.placeholders.existingCredential') : t('longTail.psa.PsaConnectionForm.placeholders.password')}
                 className="h-10 w-full rounded-md border bg-background px-3 pr-10 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 {...register('password')}
               />
@@ -261,16 +265,16 @@ export default function PsaConnectionForm({
 
           <div className="space-y-2">
             <label htmlFor="connection-api-token" className="text-sm font-medium">
-              API token or key
+              {t('longTail.psa.PsaConnectionForm.fields.apiToken')}
               {isEditing && hasCredentials?.apiToken && (
-                <span className="ml-2 text-xs text-muted-foreground">(leave blank to keep existing)</span>
+                <span className="ml-2 text-xs text-muted-foreground">{t('longTail.psa.PsaConnectionForm.keepExisting')}</span>
               )}
             </label>
             <div className="relative">
               <input
                 id="connection-api-token"
                 type={showApiToken ? 'text' : 'password'}
-                placeholder={isEditing && hasCredentials?.apiToken ? '********' : 'api-token'}
+                placeholder={isEditing && hasCredentials?.apiToken ? t('longTail.psa.PsaConnectionForm.placeholders.existingCredential') : t('longTail.psa.PsaConnectionForm.placeholders.apiToken')}
                 className="h-10 w-full rounded-md border bg-background px-3 pr-10 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 {...register('apiToken')}
               />
@@ -295,11 +299,11 @@ export default function PsaConnectionForm({
 
           <div className="space-y-2">
             <label htmlFor="connection-client-id" className="text-sm font-medium">
-              Client ID
+              {t('longTail.psa.PsaConnectionForm.fields.clientId')}
             </label>
             <input
               id="connection-client-id"
-              placeholder="oauth-client-id"
+              placeholder={t('longTail.psa.PsaConnectionForm.placeholders.clientId')}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('clientId')}
             />
@@ -307,16 +311,16 @@ export default function PsaConnectionForm({
 
           <div className="space-y-2">
             <label htmlFor="connection-client-secret" className="text-sm font-medium">
-              Client Secret
+              {t('longTail.psa.PsaConnectionForm.fields.clientSecret')}
               {isEditing && hasCredentials?.clientSecret && (
-                <span className="ml-2 text-xs text-muted-foreground">(leave blank to keep existing)</span>
+                <span className="ml-2 text-xs text-muted-foreground">{t('longTail.psa.PsaConnectionForm.keepExisting')}</span>
               )}
             </label>
             <div className="relative">
               <input
                 id="connection-client-secret"
                 type={showClientSecret ? 'text' : 'password'}
-                placeholder={isEditing && hasCredentials?.clientSecret ? '********' : 'client-secret'}
+                placeholder={isEditing && hasCredentials?.clientSecret ? t('longTail.psa.PsaConnectionForm.placeholders.existingCredential') : t('longTail.psa.PsaConnectionForm.placeholders.clientSecret')}
                 className="h-10 w-full rounded-md border bg-background px-3 pr-10 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 {...register('clientSecret')}
               />
@@ -343,7 +347,7 @@ export default function PsaConnectionForm({
 
       <div className="space-y-4 border-t pt-6">
         <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-          Sync Settings
+          {t('longTail.psa.PsaConnectionForm.sections.syncSettings')}
         </h3>
         <div className="space-y-4">
           <label className="flex items-start gap-3">
@@ -353,9 +357,9 @@ export default function PsaConnectionForm({
               {...register('syncEnabled')}
             />
             <div>
-              <span className="text-sm font-medium">Enable sync</span>
+              <span className="text-sm font-medium">{t('longTail.psa.PsaConnectionForm.sync.enable')}</span>
               <p className="text-xs text-muted-foreground">
-                Keep tickets and alert links up to date on a schedule.
+                {t('longTail.psa.PsaConnectionForm.sync.enableHelp')}
               </p>
             </div>
           </label>
@@ -363,7 +367,7 @@ export default function PsaConnectionForm({
           <div className="grid gap-6 md:grid-cols-2">
             <div className="space-y-2">
               <label htmlFor="sync-interval" className="text-sm font-medium">
-                Sync interval
+                {t('longTail.psa.PsaConnectionForm.fields.syncInterval')}
               </label>
               <select
                 id="sync-interval"
@@ -371,9 +375,9 @@ export default function PsaConnectionForm({
                 disabled={!syncEnabled}
                 {...register('syncInterval')}
               >
-                {Object.entries(syncIntervalLabels).map(([value, label]) => (
+                {Object.entries(syncIntervalLabelKeys).map(([value, labelKey]) => (
                   <option key={value} value={value}>
-                    {label}
+                    {t(labelKey)}
                   </option>
                 ))}
               </select>
@@ -381,7 +385,7 @@ export default function PsaConnectionForm({
 
             <div className="space-y-2">
               <label htmlFor="sync-direction" className="text-sm font-medium">
-                Sync direction
+                {t('longTail.psa.PsaConnectionForm.fields.syncDirection')}
               </label>
               <select
                 id="sync-direction"
@@ -389,9 +393,9 @@ export default function PsaConnectionForm({
                 disabled={!syncEnabled}
                 {...register('syncDirection')}
               >
-                {Object.entries(syncDirectionLabels).map(([value, label]) => (
+                {Object.entries(syncDirectionLabelKeys).map(([value, labelKey]) => (
                   <option key={value} value={value}>
-                    {label}
+                    {t(labelKey)}
                   </option>
                 ))}
               </select>
@@ -407,9 +411,9 @@ export default function PsaConnectionForm({
                 {...register('syncOnClose')}
               />
               <div>
-                <span className="text-sm font-medium">Auto-close PSA tickets</span>
+                <span className="text-sm font-medium">{t('longTail.psa.PsaConnectionForm.sync.autoClose')}</span>
                 <p className="text-xs text-muted-foreground">
-                  Close linked tickets when Breeze alerts are resolved.
+                  {t('longTail.psa.PsaConnectionForm.sync.autoCloseHelp')}
                 </p>
               </div>
             </label>
@@ -422,9 +426,9 @@ export default function PsaConnectionForm({
                 {...register('includeNotes')}
               />
               <div>
-                <span className="text-sm font-medium">Sync alert notes</span>
+                <span className="text-sm font-medium">{t('longTail.psa.PsaConnectionForm.sync.notes')}</span>
                 <p className="text-xs text-muted-foreground">
-                  Push Breeze comments and updates to the PSA ticket timeline.
+                  {t('longTail.psa.PsaConnectionForm.sync.notesHelp')}
                 </p>
               </div>
             </label>
@@ -442,14 +446,14 @@ export default function PsaConnectionForm({
           {testingConnection ? (
             <>
               <div className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
-              Testing...
+              {t('longTail.psa.PsaConnectionForm.actions.testing')}
             </>
           ) : (
             <>
               <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
-              Test connection
+              {t('longTail.psa.PsaConnectionForm.actions.testConnection')}
             </>
           )}
         </button>
@@ -460,14 +464,14 @@ export default function PsaConnectionForm({
             onClick={onCancel}
             className="h-11 w-full rounded-md border bg-background text-sm font-medium text-foreground transition hover:bg-muted sm:w-auto sm:px-6"
           >
-            Cancel
+            {t('common:actions.cancel')}
           </button>
           <button
             type="submit"
             disabled={isLoading}
             className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto sm:px-6"
           >
-            {isLoading ? 'Saving...' : submitLabel}
+            {isLoading ? t('common:states.saving') : resolvedSubmitLabel}
           </button>
         </div>
       </div>

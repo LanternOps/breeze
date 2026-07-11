@@ -13,6 +13,7 @@ import {
   AlertTriangle,
   Loader2,
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
@@ -64,39 +65,41 @@ interface C2CItem {
   itemDate: string | null;
 }
 
-function statusBadge(status: string) {
+function statusBadge(status: string, t: (key: string) => string) {
   const lower = status.toLowerCase();
+  const label = t(`longTail.c2c.C2CDashboard.status.${lower}`);
+  const displayStatus = label === `longTail.c2c.C2CDashboard.status.${lower}` ? status : label;
   if (lower === 'active' || lower === 'completed') {
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-600 dark:text-emerald-400">
-        <CheckCircle2 className="h-3 w-3" /> {status}
+        <CheckCircle2 className="h-3 w-3" /> {displayStatus}
       </span>
     );
   }
   if (lower === 'failed' || lower === 'error' || lower === 'revoked') {
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-red-500/15 px-2 py-0.5 text-xs font-medium text-red-600 dark:text-red-400">
-        <XCircle className="h-3 w-3" /> {status}
+        <XCircle className="h-3 w-3" /> {displayStatus}
       </span>
     );
   }
   if (lower === 'running' || lower === 'syncing') {
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-blue-500/15 px-2 py-0.5 text-xs font-medium text-blue-600 dark:text-blue-400">
-        <Loader2 className="h-3 w-3 animate-spin" /> {status}
+        <Loader2 className="h-3 w-3 animate-spin" /> {displayStatus}
       </span>
     );
   }
   if (lower === 'pending') {
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-600 dark:text-amber-400">
-        <Clock className="h-3 w-3" /> {status}
+        <Clock className="h-3 w-3" /> {displayStatus}
       </span>
     );
   }
   return (
     <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
-      {status}
+      {displayStatus}
     </span>
   );
 }
@@ -114,6 +117,7 @@ function formatDate(d: string | null): string {
 }
 
 export default function C2CDashboard() {
+  const { t } = useTranslation('common');
   const [activeTab, setActiveTab] = useState<C2CTab>('connections');
   const [connections, setConnections] = useState<C2CConnection[]>([]);
   const [configs, setConfigs] = useState<C2CConfig[]>([]);
@@ -133,7 +137,7 @@ export default function C2CDashboard() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get('c2c_connected') === 'true') {
-      setConsentSuccess('Microsoft 365 connection created successfully');
+      setConsentSuccess(t('longTail.c2c.C2CDashboard.consentSuccess'));
       // Clean URL params
       const url = new URL(window.location.href);
       url.searchParams.delete('c2c_connected');
@@ -147,40 +151,40 @@ export default function C2CDashboard() {
       url.searchParams.delete('c2c_error');
       window.history.replaceState({}, '', url.pathname);
     }
-  }, []);
+  }, [t]);
 
   const fetchConnections = useCallback(async () => {
     try {
       const res = await fetchWithAuth('/c2c/connections');
-      if (!res.ok) throw new Error('Failed to fetch connections');
+      if (!res.ok) throw new Error(t('longTail.c2c.C2CDashboard.errors.fetchConnections'));
       const data = await res.json();
       setConnections(data?.data ?? data?.connections ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load connections');
+      setError(err instanceof Error ? err.message : t('longTail.c2c.C2CDashboard.errors.loadConnections'));
     }
-  }, []);
+  }, [t]);
 
   const fetchConfigs = useCallback(async () => {
     try {
       const res = await fetchWithAuth('/c2c/configs');
-      if (!res.ok) throw new Error('Failed to fetch configs');
+      if (!res.ok) throw new Error(t('longTail.c2c.C2CDashboard.errors.fetchConfigs'));
       const data = await res.json();
       setConfigs(data?.data ?? data?.configs ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load configs');
+      setError(err instanceof Error ? err.message : t('longTail.c2c.C2CDashboard.errors.loadConfigs'));
     }
-  }, []);
+  }, [t]);
 
   const fetchJobs = useCallback(async () => {
     try {
       const res = await fetchWithAuth('/c2c/jobs');
-      if (!res.ok) throw new Error('Failed to fetch jobs');
+      if (!res.ok) throw new Error(t('longTail.c2c.C2CDashboard.errors.fetchJobs'));
       const data = await res.json();
       setJobs(data?.data ?? data?.jobs ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load jobs');
+      setError(err instanceof Error ? err.message : t('longTail.c2c.C2CDashboard.errors.loadJobs'));
     }
-  }, []);
+  }, [t]);
 
   const fetchItems = useCallback(async () => {
     try {
@@ -190,13 +194,13 @@ export default function C2CDashboard() {
       if (itemUserFilter) params.set('userEmail', itemUserFilter);
       const qs = params.toString();
       const res = await fetchWithAuth(`/c2c/items${qs ? `?${qs}` : ''}`);
-      if (!res.ok) throw new Error('Failed to fetch items');
+      if (!res.ok) throw new Error(t('longTail.c2c.C2CDashboard.errors.fetchItems'));
       const data = await res.json();
       setItems(data?.data ?? data?.items ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load items');
+      setError(err instanceof Error ? err.message : t('longTail.c2c.C2CDashboard.errors.loadItems'));
     }
-  }, [itemSearch, itemTypeFilter, itemUserFilter]);
+  }, [itemSearch, itemTypeFilter, itemUserFilter, t]);
 
   useEffect(() => {
     setLoading(true);
@@ -211,18 +215,24 @@ export default function C2CDashboard() {
   }, [fetchConnections, fetchConfigs]);
 
   const tabs: { id: C2CTab; label: string; icon: typeof Cloud }[] = [
-    { id: 'connections', label: 'Connections', icon: Link2 },
-    { id: 'configs', label: 'Configs', icon: Settings2 },
-    { id: 'jobs', label: 'Jobs', icon: History },
-    { id: 'items', label: 'Items', icon: Search },
+    { id: 'connections', label: t('longTail.c2c.C2CDashboard.tabs.connections'), icon: Link2 },
+    { id: 'configs', label: t('longTail.c2c.C2CDashboard.tabs.configs'), icon: Settings2 },
+    { id: 'jobs', label: t('longTail.c2c.C2CDashboard.tabs.jobs'), icon: History },
+    { id: 'items', label: t('longTail.c2c.C2CDashboard.tabs.items'), icon: Search },
   ];
+
+  const formatProvider = (provider: string) => {
+    if (provider === 'microsoft365' || provider === 'microsoft_365') return t('longTail.c2c.C2CDashboard.providers.microsoft365');
+    if (provider === 'google_workspace') return t('longTail.c2c.C2CDashboard.providers.googleWorkspace');
+    return provider;
+  };
 
   if (loading) {
     return (
       <div className="flex items-center justify-center py-16">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading cloud backup data...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('longTail.c2c.C2CDashboard.loading')}</p>
         </div>
       </div>
     );
@@ -230,7 +240,7 @@ export default function C2CDashboard() {
 
   return (
     <div className="space-y-6">
-      <AlphaBadge variant="banner" disclaimer="Cloud-to-cloud backup is in early access. Connection setup is available for evaluation, but sync and restore jobs are not yet implemented." />
+      <AlphaBadge variant="banner" disclaimer={t('longTail.c2c.C2CDashboard.alphaDisclaimer')} />
 
       {consentSuccess && (
         <div className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300">
@@ -245,7 +255,7 @@ export default function C2CDashboard() {
       {consentError && (
         <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300">
           <AlertTriangle className="h-4 w-4 shrink-0" />
-          M365 consent failed: {consentError}
+          {t('longTail.c2c.C2CDashboard.consentFailed', { error: consentError })}
           <button type="button" onClick={() => setConsentError(undefined)} className="ml-auto text-red-600 hover:text-red-800 dark:text-red-400">
             &times;
           </button>
@@ -254,9 +264,9 @@ export default function C2CDashboard() {
 
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Cloud-to-Cloud Backup</h1>
+          <h1 className="text-2xl font-bold tracking-tight">{t('longTail.c2c.C2CDashboard.title')}</h1>
           <p className="text-sm text-muted-foreground">
-            Set up cloud connections now; sync and restore execution is still in progress.
+            {t('longTail.c2c.C2CDashboard.description')}
           </p>
         </div>
         <button
@@ -264,7 +274,7 @@ export default function C2CDashboard() {
           onClick={() => setShowWizard(true)}
           className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          <Plus className="h-4 w-4" /> Add Connection
+          <Plus className="h-4 w-4" /> {t('longTail.c2c.C2CDashboard.addConnection')}
         </button>
       </div>
 
@@ -297,36 +307,36 @@ export default function C2CDashboard() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b bg-muted/50">
-                <th className="px-4 py-3 text-left font-medium">Provider</th>
-                <th className="px-4 py-3 text-left font-medium">Display Name</th>
-                <th className="px-4 py-3 text-left font-medium">Status</th>
-                <th className="px-4 py-3 text-left font-medium">Last Sync</th>
-                <th className="px-4 py-3 text-left font-medium">Created</th>
-                <th className="px-4 py-3 text-right font-medium">Actions</th>
+                <th className="px-4 py-3 text-left font-medium">{t('longTail.c2c.C2CDashboard.table.provider')}</th>
+                <th className="px-4 py-3 text-left font-medium">{t('longTail.c2c.C2CDashboard.table.displayName')}</th>
+                <th className="px-4 py-3 text-left font-medium">{t('common:labels.status')}</th>
+                <th className="px-4 py-3 text-left font-medium">{t('longTail.c2c.C2CDashboard.table.lastSync')}</th>
+                <th className="px-4 py-3 text-left font-medium">{t('common:labels.createdAt')}</th>
+                <th className="px-4 py-3 text-right font-medium">{t('common:labels.actions')}</th>
               </tr>
             </thead>
             <tbody>
               {connections.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="px-4 py-8 text-center text-muted-foreground">
-                    No connections configured yet. Click "Add Connection" to get started.
+                    {t('longTail.c2c.C2CDashboard.empty.connections')}
                   </td>
                 </tr>
               ) : (
                 connections.map((conn) => (
                   <tr key={conn.id} className="border-b last:border-0 hover:bg-muted/30">
                     <td className="px-4 py-3 font-medium">
-                      {conn.provider === 'microsoft365' || conn.provider === 'microsoft_365' ? 'Microsoft 365' : conn.provider === 'google_workspace' ? 'Google Workspace' : conn.provider}
+                      {formatProvider(conn.provider)}
                     </td>
                     <td className="px-4 py-3">{conn.displayName}</td>
-                    <td className="px-4 py-3">{statusBadge(conn.status)}</td>
+                    <td className="px-4 py-3">{statusBadge(conn.status, t)}</td>
                     <td className="px-4 py-3 text-muted-foreground">{formatDate(conn.lastSyncAt)}</td>
                     <td className="px-4 py-3 text-muted-foreground">{formatDate(conn.createdAt)}</td>
                     <td className="px-4 py-3 text-right">
                       <button
                         type="button"
                         className="cursor-not-allowed rounded p-1 opacity-50"
-                        title="Sync jobs are not yet implemented"
+                        title={t('longTail.c2c.C2CDashboard.syncNotImplemented')}
                         disabled
                       >
                         <RefreshCw className="h-4 w-4" />
@@ -345,18 +355,18 @@ export default function C2CDashboard() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b bg-muted/50">
-                <th className="px-4 py-3 text-left font-medium">Name</th>
-                <th className="px-4 py-3 text-left font-medium">Scope</th>
-                <th className="px-4 py-3 text-left font-medium">Target Users</th>
-                <th className="px-4 py-3 text-left font-medium">Active</th>
-                <th className="px-4 py-3 text-left font-medium">Created</th>
+                <th className="px-4 py-3 text-left font-medium">{t('common:labels.name')}</th>
+                <th className="px-4 py-3 text-left font-medium">{t('longTail.c2c.C2CDashboard.table.scope')}</th>
+                <th className="px-4 py-3 text-left font-medium">{t('longTail.c2c.C2CDashboard.table.targetUsers')}</th>
+                <th className="px-4 py-3 text-left font-medium">{t('common:states.active')}</th>
+                <th className="px-4 py-3 text-left font-medium">{t('common:labels.createdAt')}</th>
               </tr>
             </thead>
             <tbody>
               {configs.length === 0 ? (
                 <tr>
                   <td colSpan={5} className="px-4 py-8 text-center text-muted-foreground">
-                    No backup configs yet. Add a connection first, then configure backups.
+                    {t('longTail.c2c.C2CDashboard.empty.configs')}
                   </td>
                 </tr>
               ) : (
@@ -365,12 +375,12 @@ export default function C2CDashboard() {
                     <td className="px-4 py-3 font-medium">{cfg.name}</td>
                     <td className="px-4 py-3">{cfg.backupScope}</td>
                     <td className="px-4 py-3 text-muted-foreground">
-                      {Array.isArray(cfg.targetUsers) ? cfg.targetUsers.length : 0} user(s)
+                      {t('longTail.c2c.C2CDashboard.targetUsersCount', { count: Array.isArray(cfg.targetUsers) ? cfg.targetUsers.length : 0 })}
                     </td>
                     <td className="px-4 py-3">
                       {cfg.isActive
-                        ? <span className="text-emerald-600 dark:text-emerald-400">Yes</span>
-                        : <span className="text-muted-foreground">No</span>}
+                        ? <span className="text-emerald-600 dark:text-emerald-400">{t('common:labels.yes')}</span>
+                        : <span className="text-muted-foreground">{t('common:labels.no')}</span>}
                     </td>
                     <td className="px-4 py-3 text-muted-foreground">{formatDate(cfg.createdAt)}</td>
                   </tr>
@@ -386,26 +396,26 @@ export default function C2CDashboard() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b bg-muted/50">
-                <th className="px-4 py-3 text-left font-medium">Job ID</th>
-                <th className="px-4 py-3 text-left font-medium">Status</th>
-                <th className="px-4 py-3 text-left font-medium">Started</th>
-                <th className="px-4 py-3 text-left font-medium">Completed</th>
-                <th className="px-4 py-3 text-right font-medium">Items</th>
-                <th className="px-4 py-3 text-right font-medium">Transferred</th>
+                <th className="px-4 py-3 text-left font-medium">{t('longTail.c2c.C2CDashboard.table.jobId')}</th>
+                <th className="px-4 py-3 text-left font-medium">{t('common:labels.status')}</th>
+                <th className="px-4 py-3 text-left font-medium">{t('longTail.c2c.C2CDashboard.table.started')}</th>
+                <th className="px-4 py-3 text-left font-medium">{t('longTail.c2c.C2CDashboard.table.completed')}</th>
+                <th className="px-4 py-3 text-right font-medium">{t('longTail.c2c.C2CDashboard.tabs.items')}</th>
+                <th className="px-4 py-3 text-right font-medium">{t('longTail.c2c.C2CDashboard.table.transferred')}</th>
               </tr>
             </thead>
             <tbody>
               {jobs.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="px-4 py-8 text-center text-muted-foreground">
-                    No sync jobs have run yet.
+                    {t('longTail.c2c.C2CDashboard.empty.jobs')}
                   </td>
                 </tr>
               ) : (
                 jobs.map((job) => (
                   <tr key={job.id} className="border-b last:border-0 hover:bg-muted/30">
                     <td className="px-4 py-3 font-mono text-xs">{job.id.slice(0, 8)}</td>
-                    <td className="px-4 py-3">{statusBadge(job.status)}</td>
+                    <td className="px-4 py-3">{statusBadge(job.status, t)}</td>
                     <td className="px-4 py-3 text-muted-foreground">{formatDate(job.startedAt)}</td>
                     <td className="px-4 py-3 text-muted-foreground">{formatDate(job.completedAt)}</td>
                     <td className="px-4 py-3 text-right">{job.itemsProcessed}</td>
@@ -425,7 +435,7 @@ export default function C2CDashboard() {
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <input
                 type="text"
-                placeholder="Search items..."
+                placeholder={t('longTail.c2c.C2CDashboard.searchItemsPlaceholder')}
                 value={itemSearch}
                 onChange={(e) => setItemSearch(e.target.value)}
                 className="w-full rounded-md border bg-background py-2 pl-10 pr-3 text-sm"
@@ -436,16 +446,16 @@ export default function C2CDashboard() {
               onChange={(e) => setItemTypeFilter(e.target.value)}
               className="rounded-md border bg-background px-3 py-2 text-sm"
             >
-              <option value="">All types</option>
-              <option value="email">Email</option>
-              <option value="file">File</option>
-              <option value="calendar">Calendar</option>
-              <option value="contact">Contact</option>
-              <option value="chat">Chat</option>
+              <option value="">{t('longTail.c2c.C2CDashboard.filters.allTypes')}</option>
+              <option value="email">{t('longTail.c2c.C2CDashboard.itemTypes.email')}</option>
+              <option value="file">{t('longTail.c2c.C2CDashboard.itemTypes.file')}</option>
+              <option value="calendar">{t('longTail.c2c.C2CDashboard.itemTypes.calendar')}</option>
+              <option value="contact">{t('longTail.c2c.C2CDashboard.itemTypes.contact')}</option>
+              <option value="chat">{t('longTail.c2c.C2CDashboard.itemTypes.chat')}</option>
             </select>
             <input
               type="text"
-              placeholder="Filter by user email"
+              placeholder={t('longTail.c2c.C2CDashboard.filterByUserEmail')}
               value={itemUserFilter}
               onChange={(e) => setItemUserFilter(e.target.value)}
               className="rounded-md border bg-background px-3 py-2 text-sm"
@@ -455,14 +465,14 @@ export default function C2CDashboard() {
               onClick={fetchItems}
               className="inline-flex items-center gap-1 rounded-md border px-3 py-2 text-sm hover:bg-muted"
             >
-              <RefreshCw className="h-3.5 w-3.5" /> Refresh
+              <RefreshCw className="h-3.5 w-3.5" /> {t('common:actions.refresh')}
             </button>
             <button
               type="button"
               onClick={() => setShowRestore(true)}
               className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
             >
-              Restore Selected
+              {t('longTail.c2c.C2CDashboard.restoreSelected')}
             </button>
           </div>
 
@@ -470,19 +480,19 @@ export default function C2CDashboard() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b bg-muted/50">
-                  <th className="px-4 py-3 text-left font-medium">Type</th>
-                  <th className="px-4 py-3 text-left font-medium">Name / Subject</th>
-                  <th className="px-4 py-3 text-left font-medium">User</th>
-                  <th className="px-4 py-3 text-left font-medium">Path</th>
-                  <th className="px-4 py-3 text-right font-medium">Size</th>
-                  <th className="px-4 py-3 text-left font-medium">Date</th>
+                  <th className="px-4 py-3 text-left font-medium">{t('common:labels.type')}</th>
+                  <th className="px-4 py-3 text-left font-medium">{t('longTail.c2c.C2CDashboard.table.nameOrSubject')}</th>
+                  <th className="px-4 py-3 text-left font-medium">{t('common:labels.user')}</th>
+                  <th className="px-4 py-3 text-left font-medium">{t('longTail.c2c.C2CDashboard.table.path')}</th>
+                  <th className="px-4 py-3 text-right font-medium">{t('longTail.c2c.C2CDashboard.table.size')}</th>
+                  <th className="px-4 py-3 text-left font-medium">{t('longTail.c2c.C2CDashboard.table.date')}</th>
                 </tr>
               </thead>
               <tbody>
                 {items.length === 0 ? (
                   <tr>
                     <td colSpan={6} className="px-4 py-8 text-center text-muted-foreground">
-                      No items found. Run a sync to populate backup items.
+                      {t('longTail.c2c.C2CDashboard.empty.items')}
                     </td>
                   </tr>
                 ) : (

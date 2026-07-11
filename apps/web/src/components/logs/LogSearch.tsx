@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Download, Save, Search } from 'lucide-react';
 
 import { fetchWithAuth } from '../../stores/auth';
@@ -38,12 +39,7 @@ type SearchResponse = {
   nextCursor?: string | null;
 };
 
-const LEVELS: Array<{ value: EventLogRow['log']['level']; label: string }> = [
-  { value: 'info', label: 'Info' },
-  { value: 'warning', label: 'Warning' },
-  { value: 'error', label: 'Error' },
-  { value: 'critical', label: 'Critical' },
-];
+const LEVELS: EventLogRow['log']['level'][] = ['info', 'warning', 'error', 'critical'];
 
 function toDatetimeLocalInput(date: Date): string {
   const offsetMs = date.getTimezoneOffset() * 60_000;
@@ -51,6 +47,7 @@ function toDatetimeLocalInput(date: Date): string {
 }
 
 export default function LogSearch() {
+  const { t } = useTranslation('common');
   const [query, setQuery] = useState('');
   const [source, setSource] = useState('');
   const [selectedLevels, setSelectedLevels] = useState<Array<EventLogRow['log']['level']>>([]);
@@ -77,7 +74,7 @@ export default function LogSearch() {
 
   const fetchLogs = useCallback(async (nextOffset = 0) => {
     if (!canSearch) {
-      setError('Start time must be before end time.');
+      setError(t('longTail.logs.LogSearch.errors.invalidTimeRange'));
       return;
     }
 
@@ -107,7 +104,7 @@ export default function LogSearch() {
 
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
-        throw new Error(typeof body.error === 'string' ? body.error : 'Failed to search logs');
+        throw new Error(typeof body.error === 'string' ? body.error : t('longTail.logs.LogSearch.errors.searchFailed'));
       }
 
       const data: SearchResponse = await response.json();
@@ -115,11 +112,11 @@ export default function LogSearch() {
       setTotal(Number(data.total ?? 0));
       setOffset(nextOffset);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to search logs');
+      setError(err instanceof Error ? err.message : t('longTail.logs.LogSearch.errors.searchFailed'));
     } finally {
       setLoading(false);
     }
-  }, [canSearch, query, source, selectedLevels, startTime, endTime, limit]);
+  }, [canSearch, query, source, selectedLevels, startTime, endTime, limit, t]);
 
   useEffect(() => {
     fetchLogs(0);
@@ -132,7 +129,7 @@ export default function LogSearch() {
   };
 
   const saveQuery = async () => {
-    const name = window.prompt('Name this saved query:');
+    const name = window.prompt(t('longTail.logs.LogSearch.savePrompt'));
     if (!name || !name.trim()) {
       return;
     }
@@ -163,10 +160,10 @@ export default function LogSearch() {
 
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
-        throw new Error(typeof body.error === 'string' ? body.error : 'Failed to save query');
+        throw new Error(typeof body.error === 'string' ? body.error : t('longTail.logs.LogSearch.errors.saveFailed'));
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save query');
+      setError(err instanceof Error ? err.message : t('longTail.logs.LogSearch.errors.saveFailed'));
     } finally {
       setSaving(false);
     }
@@ -174,7 +171,7 @@ export default function LogSearch() {
 
   const exportCsv = () => {
     if (results.length === 0) {
-      setError('No rows to export.');
+      setError(t('longTail.logs.LogSearch.errors.noRowsExport'));
       return;
     }
 
@@ -218,33 +215,33 @@ export default function LogSearch() {
   return (
     <section className="space-y-4">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">Event Logs</h1>
-        <p className="text-sm text-muted-foreground">Search and analyze logs from your fleet.</p>
+        <h1 className="text-xl font-semibold tracking-tight">{t('longTail.logs.LogSearch.title')}</h1>
+        <p className="text-sm text-muted-foreground">{t('longTail.logs.LogSearch.description')}</p>
       </div>
       <div className="rounded-lg border bg-card p-4 shadow-xs">
         <div className="grid gap-3 lg:grid-cols-6">
           <div className="lg:col-span-2">
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">Search</label>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">{t('common:actions.search')}</label>
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="error code, source, stack trace..."
+              placeholder={t('longTail.logs.LogSearch.searchPlaceholder')}
               className="w-full rounded-md border px-3 py-2 text-sm"
             />
           </div>
 
           <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">Source</label>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">{t('longTail.logs.LogSearch.source')}</label>
             <input
               value={source}
               onChange={(event) => setSource(event.target.value)}
-              placeholder="e.g. kernel"
+              placeholder={t('longTail.logs.LogSearch.sourcePlaceholder')}
               className="w-full rounded-md border px-3 py-2 text-sm"
             />
           </div>
 
           <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">Start</label>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">{t('longTail.logs.LogSearch.start')}</label>
             <input
               type="datetime-local"
               value={startTime}
@@ -254,7 +251,7 @@ export default function LogSearch() {
           </div>
 
           <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">End</label>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">{t('longTail.logs.LogSearch.end')}</label>
             <input
               type="datetime-local"
               value={endTime}
@@ -264,7 +261,7 @@ export default function LogSearch() {
           </div>
 
           <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">Rows</label>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">{t('longTail.logs.LogSearch.rows')}</label>
             <select
               value={limit}
               onChange={(event) => setLimit(Number(event.target.value))}
@@ -278,14 +275,14 @@ export default function LogSearch() {
         </div>
 
         <div className="mt-3 flex flex-wrap gap-2">
-          {LEVELS.map((item) => (
-            <label key={item.value} className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm">
+          {LEVELS.map((level) => (
+            <label key={level} className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm">
               <input
                 type="checkbox"
-                checked={selectedLevels.includes(item.value)}
-                onChange={() => toggleLevel(item.value)}
+                checked={selectedLevels.includes(level)}
+                onChange={() => toggleLevel(level)}
               />
-              {item.label}
+              {t(`longTail.logs.LogSearch.levels.${level}`)}
             </label>
           ))}
         </div>
@@ -297,7 +294,7 @@ export default function LogSearch() {
             className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
           >
             <Search className="h-4 w-4" />
-            Search Fleet Logs
+            {t('longTail.logs.LogSearch.searchFleetLogs')}
           </button>
 
           <button
@@ -306,7 +303,7 @@ export default function LogSearch() {
             className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm disabled:opacity-50"
           >
             <Save className="h-4 w-4" />
-            Save Query
+            {t('longTail.logs.LogSearch.saveQuery')}
           </button>
 
           <button
@@ -315,7 +312,7 @@ export default function LogSearch() {
             className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm disabled:opacity-50"
           >
             <Download className="h-4 w-4" />
-            Export CSV
+            {t('longTail.logs.LogSearch.exportCsv')}
           </button>
         </div>
 
@@ -328,9 +325,11 @@ export default function LogSearch() {
 
       <div className="rounded-lg border bg-card shadow-xs">
         <div className="flex items-center justify-between border-b px-4 py-3">
-          <h2 className="text-sm font-semibold">Search Results</h2>
+          <h2 className="text-sm font-semibold">{t('longTail.logs.LogSearch.resultsTitle')}</h2>
           <span className="text-xs text-muted-foreground">
-            {loading ? 'Loading...' : `${results.length} shown of ${total} total`}
+            {loading
+              ? t('longTail.logs.LogSearch.loading')
+              : t('longTail.logs.LogSearch.resultsCount', { shown: results.length, total })}
           </span>
         </div>
 
@@ -338,12 +337,12 @@ export default function LogSearch() {
           <table className="w-full text-sm">
             <thead className="bg-muted/40">
               <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                <th className="px-3 py-2">Timestamp</th>
-                <th className="px-3 py-2">Level</th>
-                <th className="px-3 py-2">Category</th>
-                <th className="px-3 py-2">Source</th>
-                <th className="px-3 py-2">Message</th>
-                <th className="px-3 py-2">Device</th>
+                <th className="px-3 py-2">{t('longTail.logs.LogSearch.table.timestamp')}</th>
+                <th className="px-3 py-2">{t('longTail.logs.LogSearch.table.level')}</th>
+                <th className="px-3 py-2">{t('longTail.logs.LogSearch.table.category')}</th>
+                <th className="px-3 py-2">{t('longTail.logs.LogSearch.source')}</th>
+                <th className="px-3 py-2">{t('longTail.logs.LogSearch.table.message')}</th>
+                <th className="px-3 py-2">{t('common:labels.device')}</th>
               </tr>
             </thead>
             <tbody>
@@ -362,7 +361,7 @@ export default function LogSearch() {
                   <td className="max-w-[640px] px-3 py-2 text-xs leading-relaxed">{row.log.message}</td>
                   <td className="px-3 py-2 text-xs">
                     <div className="font-medium">{row.device?.hostname ?? row.log.deviceId}</div>
-                    <div className="text-muted-foreground">{row.site?.name ?? 'Unknown site'}</div>
+                    <div className="text-muted-foreground">{row.site?.name ?? t('longTail.logs.LogSearch.unknownSite')}</div>
                   </td>
                 </tr>
               ))}
@@ -370,7 +369,7 @@ export default function LogSearch() {
               {results.length === 0 && !loading && (
                 <tr>
                   <td colSpan={6} className="px-3 py-10 text-center text-sm text-muted-foreground">
-                    No logs matched the current filters.
+                    {t('longTail.logs.LogSearch.empty')}
                   </td>
                 </tr>
               )}
@@ -379,21 +378,21 @@ export default function LogSearch() {
         </div>
 
         <div className="flex items-center justify-between border-t px-4 py-3 text-sm">
-          <span className="text-muted-foreground">Page {currentPage} of {totalPages}</span>
+          <span className="text-muted-foreground">{t('longTail.logs.LogSearch.pageCount', { page: currentPage, totalPages })}</span>
           <div className="flex gap-2">
             <button
               onClick={() => fetchLogs(Math.max(0, offset - limit))}
               disabled={loading || offset === 0}
               className="rounded-md border px-3 py-1.5 disabled:opacity-50"
             >
-              Previous
+              {t('longTail.logs.LogSearch.previous')}
             </button>
             <button
               onClick={() => fetchLogs(offset + limit)}
               disabled={loading || (offset + limit) >= total}
               className="rounded-md border px-3 py-1.5 disabled:opacity-50"
             >
-              Next
+              {t('common:actions.next')}
             </button>
           </div>
         </div>

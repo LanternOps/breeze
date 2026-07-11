@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { BookOpen, ExternalLink, Loader2, X } from 'lucide-react';
 import { useHelpStore } from '@/stores/helpStore';
 import { isDocsEmbeddableOrigin } from '@/lib/docsEmbed';
 
 export default function HelpPanel() {
+  const { t } = useTranslation('common');
   const { isOpen, docsUrl, label, toggle, close } = useHelpStore();
   const [iframeLoaded, setIframeLoaded] = useState(false);
   const [iframeError, setIframeError] = useState(false);
@@ -80,16 +82,17 @@ export default function HelpPanel() {
               type="button"
               onClick={handleOpenInNewTab}
               className="flex items-center gap-1 rounded px-2 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              title="Open in new tab"
+              title={t('longTail.help.HelpPanel.openInNewTab')}
             >
               <ExternalLink className="h-4 w-4" />
-              <span>Open in new tab</span>
+              <span>{t('longTail.help.HelpPanel.openInNewTab')}</span>
             </button>
             <button
               type="button"
               onClick={close}
               className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              title="Close (Cmd+Shift+H)"
+              title={t('longTail.help.HelpPanel.closeShortcut')}
+              aria-label={t('longTail.help.HelpPanel.closeShortcut')}
             >
               <X className="h-4 w-4" />
             </button>
@@ -107,8 +110,8 @@ export default function HelpPanel() {
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-card">
               <p className="max-w-xs text-center text-sm text-muted-foreground">
                 {canEmbedDocs
-                  ? 'Could not load documentation in the side panel.'
-                  : 'Embedded docs are blocked on this app origin. Open the page in a new tab instead.'}
+                  ? t('longTail.help.HelpPanel.loadError')
+                  : t('longTail.help.HelpPanel.embedBlocked')}
               </p>
               {!canEmbedDocs && currentOrigin && (
                 <code className="rounded bg-muted px-2 py-1 text-xs text-muted-foreground">{currentOrigin}</code>
@@ -119,7 +122,7 @@ export default function HelpPanel() {
                 className="flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted"
               >
                 <ExternalLink className="h-3.5 w-3.5" />
-                Open in new tab
+                {t('longTail.help.HelpPanel.openInNewTab')}
               </button>
             </div>
           )}

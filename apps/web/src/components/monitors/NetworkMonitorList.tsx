@@ -22,6 +22,7 @@ import CreateMonitorForm from './CreateMonitorForm';
 import MonitorDetailModal from './MonitorDetailModal';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { showToast } from '../shared/Toast';
+import { useTranslation } from 'react-i18next';
 
 type NetworkMonitor = {
   id: string;
@@ -50,33 +51,33 @@ const typeIcons: Record<string, typeof Activity> = {
   dns_check: Network
 };
 
-const typeLabels: Record<string, string> = {
-  icmp_ping: 'ICMP Ping',
-  tcp_port: 'TCP Port',
-  http_check: 'HTTP',
-  dns_check: 'DNS'
+const typeLabelKeys: Record<string, string> = {
+  icmp_ping: 'longTail.monitors.NetworkMonitorList.types.icmpPing',
+  tcp_port: 'longTail.monitors.NetworkMonitorList.types.tcpPort',
+  http_check: 'longTail.monitors.NetworkMonitorList.types.httpCheck',
+  dns_check: 'longTail.monitors.NetworkMonitorList.types.dnsCheck'
 };
 
-const statusConfig: Record<string, { icon: typeof CheckCircle; color: string; label: string }> = {
-  online: { icon: CheckCircle, color: 'text-green-600 bg-green-500/20 border-green-500/40', label: 'Online' },
-  offline: { icon: XCircle, color: 'text-red-600 bg-red-500/20 border-red-500/40', label: 'Offline' },
-  degraded: { icon: AlertTriangle, color: 'text-yellow-600 bg-yellow-500/20 border-yellow-500/40', label: 'Degraded' },
-  unknown: { icon: HelpCircle, color: 'text-muted-foreground bg-muted border-muted', label: 'Unknown' }
+const statusConfig: Record<string, { icon: typeof CheckCircle; color: string; labelKey: string }> = {
+  online: { icon: CheckCircle, color: 'text-green-600 bg-green-500/20 border-green-500/40', labelKey: 'common:states.online' },
+  offline: { icon: XCircle, color: 'text-red-600 bg-red-500/20 border-red-500/40', labelKey: 'common:states.offline' },
+  degraded: { icon: AlertTriangle, color: 'text-yellow-600 bg-yellow-500/20 border-yellow-500/40', labelKey: 'longTail.monitors.NetworkMonitorList.status.degraded' },
+  unknown: { icon: HelpCircle, color: 'text-muted-foreground bg-muted border-muted', labelKey: 'common:states.unknown' }
 };
 
-function formatRelativeTime(dateString: string | null) {
-  if (!dateString) return 'Never';
+function formatRelativeTime(dateString: string | null, t: (key: string, options?: Record<string, unknown>) => string) {
+  if (!dateString) return t('longTail.monitors.NetworkMonitorList.time.never');
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
   const diffMins = Math.floor(diffMs / (1000 * 60));
-  if (diffMins < 1) return 'Just now';
-  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffMins < 1) return t('longTail.monitors.NetworkMonitorList.time.justNow');
+  if (diffMins < 60) return t('longTail.monitors.NetworkMonitorList.time.minutesAgo', { count: diffMins });
   const diffHours = Math.floor(diffMins / 60);
-  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffHours < 24) return t('longTail.monitors.NetworkMonitorList.time.hoursAgo', { count: diffHours });
   const diffDays = Math.floor(diffHours / 24);
-  return `${diffDays}d ago`;
+  return t('longTail.monitors.NetworkMonitorList.time.daysAgo', { count: diffDays });
 }
 
 function formatInterval(seconds: number) {
@@ -90,6 +91,7 @@ type NetworkMonitorListProps = {
 };
 
 export default function NetworkMonitorList({ assetId }: NetworkMonitorListProps) {
+  const { t } = useTranslation('common');
   const { currentOrgId } = useOrgStore();
   const [monitors, setMonitors] = useState<NetworkMonitor[]>([]);
   const [loading, setLoading] = useState(true);
@@ -117,15 +119,15 @@ export default function NetworkMonitorList({ assetId }: NetworkMonitorListProps)
       if (filterStatus) params.set('status', filterStatus);
       const qs = params.toString();
       const response = await fetchWithAuth(`/monitors${qs ? `?${qs}` : ''}`);
-      if (!response.ok) throw new Error('Failed to fetch monitors');
+      if (!response.ok) throw new Error(t('longTail.monitors.NetworkMonitorList.errors.fetchMonitors'));
       const data = await response.json();
       setMonitors(data.data ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('longTail.monitors.NetworkMonitorList.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [filterAssetId, currentOrgId, filterType, filterStatus]);
+  }, [filterAssetId, currentOrgId, filterType, filterStatus, t]);
 
   useEffect(() => {
     fetchMonitors();
@@ -137,11 +139,11 @@ export default function NetworkMonitorList({ assetId }: NetworkMonitorListProps)
       const res = await fetchWithAuth(`/monitors/${monitorId}/check`, { method: 'POST' });
       if (!res.ok) {
         const data = await res.json().catch(() => null);
-        throw new Error(data?.error ?? 'Failed to trigger check');
+        throw new Error(data?.error ?? t('longTail.monitors.NetworkMonitorList.errors.triggerCheck'));
       }
       setTimeout(() => fetchMonitors(), 3000);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('longTail.monitors.NetworkMonitorList.errors.generic'));
     } finally {
       setActionLoading(null);
     }
@@ -158,11 +160,11 @@ export default function NetworkMonitorList({ assetId }: NetworkMonitorListProps)
     setActionLoading(monitorId);
     try {
       const res = await fetchWithAuth(`/monitors/${monitorId}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error('Failed to delete monitor');
+      if (!res.ok) throw new Error(t('longTail.monitors.NetworkMonitorList.errors.deleteMonitor'));
       await fetchMonitors();
-      showToast({ message: 'Monitor deleted', type: 'success' });
+      showToast({ message: t('longTail.monitors.NetworkMonitorList.messages.monitorDeleted'), type: 'success' });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('longTail.monitors.NetworkMonitorList.errors.generic'));
     } finally {
       setActionLoading(null);
     }
@@ -173,7 +175,7 @@ export default function NetworkMonitorList({ assetId }: NetworkMonitorListProps)
       <div className="flex items-center justify-center rounded-lg border bg-card p-10 shadow-xs">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading monitors...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('longTail.monitors.NetworkMonitorList.loading')}</p>
         </div>
       </div>
     );
@@ -189,13 +191,13 @@ export default function NetworkMonitorList({ assetId }: NetworkMonitorListProps)
 
       {filterAssetId && (
         <div className="flex items-center justify-between rounded-md border bg-muted/20 px-4 py-2 text-sm">
-          <span className="text-muted-foreground">Filtering monitors to the selected asset.</span>
+          <span className="text-muted-foreground">{t('longTail.monitors.NetworkMonitorList.assetFilter')}</span>
           <button
             type="button"
             onClick={() => setFilterAssetId(null)}
             className="text-primary underline-offset-2 hover:underline"
           >
-            Clear
+            {t('common:actions.clear')}
           </button>
         </div>
       )}
@@ -207,22 +209,22 @@ export default function NetworkMonitorList({ assetId }: NetworkMonitorListProps)
             onChange={(e) => setFilterType(e.target.value)}
             className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
-            <option value="">All Types</option>
-            <option value="icmp_ping">ICMP Ping</option>
-            <option value="tcp_port">TCP Port</option>
-            <option value="http_check">HTTP Check</option>
-            <option value="dns_check">DNS Check</option>
+            <option value="">{t('longTail.monitors.NetworkMonitorList.filters.allTypes')}</option>
+            <option value="icmp_ping">{t('longTail.monitors.NetworkMonitorList.types.icmpPing')}</option>
+            <option value="tcp_port">{t('longTail.monitors.NetworkMonitorList.types.tcpPort')}</option>
+            <option value="http_check">{t('longTail.monitors.NetworkMonitorList.types.httpCheck')}</option>
+            <option value="dns_check">{t('longTail.monitors.NetworkMonitorList.types.dnsCheck')}</option>
           </select>
           <select
             value={filterStatus}
             onChange={(e) => setFilterStatus(e.target.value)}
             className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
-            <option value="">All Status</option>
-            <option value="online">Online</option>
-            <option value="offline">Offline</option>
-            <option value="degraded">Degraded</option>
-            <option value="unknown">Unknown</option>
+            <option value="">{t('longTail.monitors.NetworkMonitorList.filters.allStatus')}</option>
+            <option value="online">{t('common:states.online')}</option>
+            <option value="offline">{t('common:states.offline')}</option>
+            <option value="degraded">{t('longTail.monitors.NetworkMonitorList.status.degraded')}</option>
+            <option value="unknown">{t('common:states.unknown')}</option>
           </select>
         </div>
         <div className="flex items-center gap-2">
@@ -232,7 +234,7 @@ export default function NetworkMonitorList({ assetId }: NetworkMonitorListProps)
             className="flex h-9 items-center gap-2 rounded-md border px-3 text-sm text-muted-foreground hover:text-foreground"
           >
             <RefreshCw className="h-3.5 w-3.5" />
-            Refresh
+            {t('common:actions.refresh')}
           </button>
           <button
             type="button"
@@ -240,7 +242,7 @@ export default function NetworkMonitorList({ assetId }: NetworkMonitorListProps)
             className="flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
           >
             <Plus className="h-4 w-4" />
-            Add Monitor
+            {t('longTail.monitors.NetworkMonitorList.actions.addMonitor')}
           </button>
         </div>
       </div>
@@ -249,27 +251,27 @@ export default function NetworkMonitorList({ assetId }: NetworkMonitorListProps)
         <table className="min-w-full divide-y">
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <th className="px-4 py-3">Name</th>
-              <th className="px-4 py-3">Type</th>
-              <th className="px-4 py-3">Target</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3">Response</th>
-              <th className="px-4 py-3">Interval</th>
-              <th className="px-4 py-3">Last Checked</th>
-              <th className="px-4 py-3 text-right">Actions</th>
+              <th className="px-4 py-3">{t('common:labels.name')}</th>
+              <th className="px-4 py-3">{t('common:labels.type')}</th>
+              <th className="px-4 py-3">{t('longTail.monitors.NetworkMonitorList.headers.target')}</th>
+              <th className="px-4 py-3">{t('common:labels.status')}</th>
+              <th className="px-4 py-3">{t('longTail.monitors.NetworkMonitorList.headers.response')}</th>
+              <th className="px-4 py-3">{t('longTail.monitors.NetworkMonitorList.headers.interval')}</th>
+              <th className="px-4 py-3">{t('longTail.monitors.NetworkMonitorList.headers.lastChecked')}</th>
+              <th className="px-4 py-3 text-right">{t('common:labels.actions')}</th>
             </tr>
           </thead>
           <tbody className="divide-y">
             {monitors.length === 0 ? (
               <tr>
                 <td colSpan={8} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                  No network monitors configured.{' '}
+                  {t('longTail.monitors.NetworkMonitorList.empty.prefix')}{' '}
                   <button
                     type="button"
                     onClick={() => setShowCreateForm(true)}
                     className="text-primary underline-offset-2 hover:underline"
                   >
-                    Create one now.
+                    {t('longTail.monitors.NetworkMonitorList.empty.action')}
                   </button>
                 </td>
               </tr>
@@ -297,7 +299,7 @@ export default function NetworkMonitorList({ assetId }: NetworkMonitorListProps)
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-1.5">
                         <TypeIcon className="h-3.5 w-3.5 text-muted-foreground" />
-                        <span className="text-sm">{typeLabels[monitor.monitorType] ?? monitor.monitorType}</span>
+                        <span className="text-sm">{typeLabelKeys[monitor.monitorType] ? t(typeLabelKeys[monitor.monitorType]) : monitor.monitorType}</span>
                       </div>
                     </td>
                     <td className="px-4 py-3 text-sm font-mono text-muted-foreground max-w-[200px] truncate" title={monitor.target}>
@@ -306,7 +308,7 @@ export default function NetworkMonitorList({ assetId }: NetworkMonitorListProps)
                     <td className="px-4 py-3">
                       <span className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium ${sc.color}`}>
                         <StatusIcon className="h-3 w-3" />
-                        {sc.label}
+                        {t(sc.labelKey)}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">
@@ -316,7 +318,7 @@ export default function NetworkMonitorList({ assetId }: NetworkMonitorListProps)
                       {formatInterval(monitor.pollingInterval)}
                     </td>
                     <td className="px-4 py-3 text-xs text-muted-foreground">
-                      {formatRelativeTime(monitor.lastChecked)}
+                      {formatRelativeTime(monitor.lastChecked, t)}
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-end gap-1">
@@ -325,7 +327,7 @@ export default function NetworkMonitorList({ assetId }: NetworkMonitorListProps)
                           onClick={() => handleCheck(monitor.id)}
                           disabled={isLoadingAction}
                           className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted disabled:opacity-50"
-                          title="Run check now"
+                          title={t('longTail.monitors.NetworkMonitorList.actions.runCheckNow')}
                         >
                           {isLoadingAction ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
                         </button>
@@ -333,7 +335,7 @@ export default function NetworkMonitorList({ assetId }: NetworkMonitorListProps)
                           type="button"
                           onClick={() => setDetailMonitorId(monitor.id)}
                           className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted"
-                          title="View details"
+                          title={t('longTail.monitors.NetworkMonitorList.actions.viewDetails')}
                         >
                           <Settings className="h-4 w-4" />
                         </button>
@@ -342,7 +344,7 @@ export default function NetworkMonitorList({ assetId }: NetworkMonitorListProps)
                           onClick={() => handleDelete(monitor.id)}
                           disabled={isLoadingAction}
                           className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted hover:text-destructive disabled:opacity-50"
-                          title="Delete monitor"
+                          title={t('longTail.monitors.NetworkMonitorList.actions.deleteMonitor')}
                         >
                           <Trash2 className="h-4 w-4" />
                         </button>
@@ -383,9 +385,9 @@ export default function NetworkMonitorList({ assetId }: NetworkMonitorListProps)
         open={deleteTargetId !== null}
         onClose={() => setDeleteTargetId(null)}
         onConfirm={handleConfirmDelete}
-        title="Delete Network Monitor"
-        message={`Are you sure you want to delete this monitor? This will also remove all results and alert rules. This action cannot be undone.`}
-        confirmLabel="Delete Monitor"
+        title={t('longTail.monitors.NetworkMonitorList.delete.title')}
+        message={t('longTail.monitors.NetworkMonitorList.delete.message')}
+        confirmLabel={t('longTail.monitors.NetworkMonitorList.delete.confirmLabel')}
         variant="destructive"
         isLoading={actionLoading !== null}
       />

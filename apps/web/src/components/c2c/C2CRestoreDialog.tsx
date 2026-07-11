@@ -9,6 +9,7 @@ import {
   Undo2,
   X,
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { Dialog } from '../shared/Dialog';
@@ -38,14 +39,6 @@ type C2CRestoreDialogProps = {
   onComplete: () => void;
 };
 
-const ITEM_TYPE_LABELS: Record<string, string> = {
-  email: 'Email',
-  file: 'File',
-  calendar_event: 'Calendar',
-  contact: 'Contact',
-  chat_message: 'Chat',
-};
-
 function formatBytes(bytes: number | null): string {
   if (!bytes) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -58,9 +51,9 @@ function formatDate(value: string | null): string {
   return formatDateTime(value, { fallback: '-' });
 }
 
-function formatProvider(provider: string): string {
-  if (provider === 'microsoft_365' || provider === 'microsoft365') return 'Microsoft 365';
-  if (provider === 'google_workspace') return 'Google Workspace';
+function formatProvider(provider: string, t: (key: string) => string): string {
+  if (provider === 'microsoft_365' || provider === 'microsoft365') return t('longTail.c2c.C2CRestoreDialog.providers.microsoft365');
+  if (provider === 'google_workspace') return t('longTail.c2c.C2CRestoreDialog.providers.googleWorkspace');
   return provider;
 }
 
@@ -69,6 +62,7 @@ export default function C2CRestoreDialog({
   onClose,
   onComplete,
 }: C2CRestoreDialogProps) {
+  const { t } = useTranslation('common');
   const [items, setItems] = useState<C2CItem[]>(initialItems);
   const [connections, setConnections] = useState<C2CConnection[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -91,29 +85,29 @@ export default function C2CRestoreDialog({
       if (itemType) params.set('itemType', itemType);
       if (userEmail.trim()) params.set('userEmail', userEmail.trim());
       const response = await fetchWithAuth(`/c2c/items?${params.toString()}`);
-      if (!response.ok) throw new Error('Failed to load backup items');
+      if (!response.ok) throw new Error(t('longTail.c2c.C2CRestoreDialog.errors.loadBackupItems'));
       const payload = await response.json();
       setItems(payload?.data ?? payload?.items ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load backup items');
+      setError(err instanceof Error ? err.message : t('longTail.c2c.C2CRestoreDialog.errors.loadBackupItems'));
     } finally {
       setLoadingItems(false);
     }
-  }, [itemType, search, userEmail]);
+  }, [itemType, search, userEmail, t]);
 
   const fetchConnections = useCallback(async () => {
     try {
       setLoadingConnections(true);
       const response = await fetchWithAuth('/c2c/connections');
-      if (!response.ok) throw new Error('Failed to load restore targets');
+      if (!response.ok) throw new Error(t('longTail.c2c.C2CRestoreDialog.errors.loadRestoreTargets'));
       const payload = await response.json();
       setConnections(payload?.data ?? payload?.connections ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load restore targets');
+      setError(err instanceof Error ? err.message : t('longTail.c2c.C2CRestoreDialog.errors.loadRestoreTargets'));
     } finally {
       setLoadingConnections(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     setItems(initialItems);
@@ -162,29 +156,35 @@ export default function C2CRestoreDialog({
       });
       if (!response.ok) {
         const payload = await response.json().catch(() => null);
-        throw new Error(payload?.error ?? 'Failed to start restore');
+        throw new Error(payload?.error ?? t('longTail.c2c.C2CRestoreDialog.errors.startRestore'));
       }
       onComplete();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to start restore');
+      setError(err instanceof Error ? err.message : t('longTail.c2c.C2CRestoreDialog.errors.startRestore'));
     } finally {
       setSubmitting(false);
     }
-  }, [canSubmit, onComplete, selectedIds, targetConnectionId, targetMode]);
+  }, [canSubmit, onComplete, selectedIds, targetConnectionId, targetMode, t]);
+
+  const itemTypeLabel = (type: string) => {
+    const key = `longTail.c2c.C2CRestoreDialog.itemTypes.${type}`;
+    const label = t(key);
+    return label === key ? type : label;
+  };
 
   return (
     <Dialog
       open
       onClose={onClose}
-      title="Restore Cloud Items"
+      title={t('longTail.c2c.C2CRestoreDialog.title')}
       maxWidth="5xl"
       className="overflow-hidden"
     >
       <div className="flex items-center justify-between border-b px-6 py-4">
         <div>
-          <h2 className="text-lg font-semibold text-foreground">Restore Cloud Items</h2>
+          <h2 className="text-lg font-semibold text-foreground">{t('longTail.c2c.C2CRestoreDialog.title')}</h2>
           <p className="text-sm text-muted-foreground">
-            Search backed-up items now; restore execution is not yet implemented.
+            {t('longTail.c2c.C2CRestoreDialog.description')}
           </p>
         </div>
         <button type="button" onClick={onClose} className="rounded-md p-1 hover:bg-muted">
@@ -202,7 +202,7 @@ export default function C2CRestoreDialog({
         <section className="space-y-3 rounded-lg border bg-muted/20 p-4">
           <div className="flex items-center gap-2 text-sm font-medium text-primary">
             <Search className="h-4 w-4" />
-            Search items
+            {t('longTail.c2c.C2CRestoreDialog.searchItems')}
           </div>
           <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_180px_220px_auto_auto]">
             <label className="relative block">
@@ -211,7 +211,7 @@ export default function C2CRestoreDialog({
                 type="text"
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
-                placeholder="Search subject or file name"
+                placeholder={t('longTail.c2c.C2CRestoreDialog.searchPlaceholder')}
                 className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm"
               />
             </label>
@@ -220,18 +220,18 @@ export default function C2CRestoreDialog({
               onChange={(event) => setItemType(event.target.value)}
               className="h-10 rounded-md border bg-background px-3 text-sm"
             >
-              <option value="">All types</option>
-              <option value="email">Email</option>
-              <option value="file">File</option>
-              <option value="calendar_event">Calendar</option>
-              <option value="contact">Contact</option>
-              <option value="chat_message">Chat</option>
+              <option value="">{t('longTail.c2c.C2CRestoreDialog.allTypes')}</option>
+              <option value="email">{t('longTail.c2c.C2CRestoreDialog.itemTypes.email')}</option>
+              <option value="file">{t('longTail.c2c.C2CRestoreDialog.itemTypes.file')}</option>
+              <option value="calendar_event">{t('longTail.c2c.C2CRestoreDialog.itemTypes.calendar_event')}</option>
+              <option value="contact">{t('longTail.c2c.C2CRestoreDialog.itemTypes.contact')}</option>
+              <option value="chat_message">{t('longTail.c2c.C2CRestoreDialog.itemTypes.chat_message')}</option>
             </select>
             <input
               type="text"
               value={userEmail}
               onChange={(event) => setUserEmail(event.target.value)}
-              placeholder="Filter by user email"
+              placeholder={t('longTail.c2c.C2CRestoreDialog.filterByUserEmail')}
               className="h-10 rounded-md border bg-background px-3 text-sm"
             />
             <button
@@ -240,7 +240,7 @@ export default function C2CRestoreDialog({
               className="inline-flex h-10 items-center justify-center gap-2 rounded-md border px-3 text-sm font-medium hover:bg-muted"
             >
               {loadingItems ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-              Refresh
+              {t('common:actions.refresh')}
             </button>
             <button
               type="button"
@@ -257,7 +257,7 @@ export default function C2CRestoreDialog({
               className="inline-flex h-10 items-center justify-center gap-2 rounded-md border px-3 text-sm font-medium hover:bg-muted"
             >
               <Undo2 className="h-4 w-4" />
-              Reset
+              {t('longTail.c2c.C2CRestoreDialog.reset')}
             </button>
           </div>
         </section>
@@ -265,15 +265,15 @@ export default function C2CRestoreDialog({
         <section className="space-y-3">
           <div className="flex items-center justify-between">
             <div>
-              <h3 className="text-sm font-medium text-foreground">Select items</h3>
+              <h3 className="text-sm font-medium text-foreground">{t('longTail.c2c.C2CRestoreDialog.selectItems')}</h3>
               <p className="text-xs text-muted-foreground">
-                {items.length} result{items.length !== 1 ? 's' : ''}, {selectedIds.size} selected
+                {t('longTail.c2c.C2CRestoreDialog.resultCount', { count: items.length, selected: selectedIds.size })}
               </p>
             </div>
             {selectedIds.size > 0 && (
               <span className="inline-flex items-center gap-1 rounded-full bg-success/10 px-2.5 py-1 text-xs font-medium text-success">
                 <CheckCircle2 className="h-3.5 w-3.5" />
-                Restore set ready
+                {t('longTail.c2c.C2CRestoreDialog.restoreSetReady')}
               </span>
             )}
           </div>
@@ -282,12 +282,12 @@ export default function C2CRestoreDialog({
               <thead className="sticky top-0 bg-background">
                 <tr className="border-b bg-muted/50">
                   <th className="w-12 px-4 py-3 text-left font-medium" />
-                  <th className="px-4 py-3 text-left font-medium">Item</th>
-                  <th className="px-4 py-3 text-left font-medium">Type</th>
-                  <th className="px-4 py-3 text-left font-medium">User</th>
-                  <th className="px-4 py-3 text-left font-medium">Path</th>
-                  <th className="px-4 py-3 text-right font-medium">Size</th>
-                  <th className="px-4 py-3 text-left font-medium">Date</th>
+                  <th className="px-4 py-3 text-left font-medium">{t('longTail.c2c.C2CRestoreDialog.table.item')}</th>
+                  <th className="px-4 py-3 text-left font-medium">{t('common:labels.type')}</th>
+                  <th className="px-4 py-3 text-left font-medium">{t('common:labels.user')}</th>
+                  <th className="px-4 py-3 text-left font-medium">{t('longTail.c2c.C2CRestoreDialog.table.path')}</th>
+                  <th className="px-4 py-3 text-right font-medium">{t('longTail.c2c.C2CRestoreDialog.table.size')}</th>
+                  <th className="px-4 py-3 text-left font-medium">{t('longTail.c2c.C2CRestoreDialog.table.date')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -295,13 +295,13 @@ export default function C2CRestoreDialog({
                   <tr>
                     <td colSpan={7} className="px-4 py-10 text-center text-muted-foreground">
                       <Loader2 className="mx-auto h-5 w-5 animate-spin text-primary" />
-                      <span className="mt-2 block">Loading items...</span>
+                      <span className="mt-2 block">{t('longTail.c2c.C2CRestoreDialog.loadingItems')}</span>
                     </td>
                   </tr>
                 ) : items.length === 0 ? (
                   <tr>
                     <td colSpan={7} className="px-4 py-10 text-center text-muted-foreground">
-                      No backup items matched the current search.
+                      {t('longTail.c2c.C2CRestoreDialog.emptySearch')}
                     </td>
                   </tr>
                 ) : (
@@ -322,11 +322,11 @@ export default function C2CRestoreDialog({
                         />
                       </td>
                       <td className="max-w-[280px] px-4 py-3 font-medium text-foreground">
-                        <div className="truncate">{item.subjectOrName ?? 'Untitled item'}</div>
+                        <div className="truncate">{item.subjectOrName ?? t('longTail.c2c.C2CRestoreDialog.untitledItem')}</div>
                       </td>
                       <td className="px-4 py-3">
                         <span className="rounded bg-muted px-2 py-0.5 text-xs font-medium text-primary">
-                          {ITEM_TYPE_LABELS[item.itemType] ?? item.itemType}
+                          {itemTypeLabel(item.itemType)}
                         </span>
                       </td>
                       <td className="px-4 py-3 text-muted-foreground">{item.userEmail ?? '-'}</td>
@@ -347,7 +347,7 @@ export default function C2CRestoreDialog({
           <div className="space-y-3 rounded-lg border p-4">
             <div className="flex items-center gap-2 text-sm font-medium text-primary">
               <Server className="h-4 w-4" />
-              Restore target
+              {t('longTail.c2c.C2CRestoreDialog.restoreTarget')}
             </div>
             <div className="grid gap-3 md:grid-cols-2">
               <button
@@ -360,10 +360,10 @@ export default function C2CRestoreDialog({
               >
                 <div className="flex items-center gap-2 text-sm font-medium text-foreground">
                   <Undo2 className="h-4 w-4 text-primary" />
-                  Restore to original tenant
+                  {t('longTail.c2c.C2CRestoreDialog.restoreOriginalTenant')}
                 </div>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Use the source connection that originally protected the items.
+                  {t('longTail.c2c.C2CRestoreDialog.restoreOriginalDescription')}
                 </p>
               </button>
               <button
@@ -376,17 +376,17 @@ export default function C2CRestoreDialog({
               >
                 <div className="flex items-center gap-2 text-sm font-medium text-foreground">
                   <Cloud className="h-4 w-4 text-primary" />
-                  Restore to another connection
+                  {t('longTail.c2c.C2CRestoreDialog.restoreAnotherConnection')}
                 </div>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Redirect the selected items into a different active cloud target.
+                  {t('longTail.c2c.C2CRestoreDialog.restoreAnotherDescription')}
                 </p>
               </button>
             </div>
             {targetMode === 'alternate' && (
               <div>
                 <label htmlFor="restore-target" className="mb-1 block text-xs font-medium text-muted-foreground">
-                  Target connection
+                  {t('longTail.c2c.C2CRestoreDialog.targetConnection')}
                 </label>
                 <select
                   id="restore-target"
@@ -395,10 +395,10 @@ export default function C2CRestoreDialog({
                   disabled={loadingConnections}
                   className="h-10 w-full rounded-md border bg-background px-3 text-sm"
                 >
-                  <option value="">Select a connection</option>
+                  <option value="">{t('longTail.c2c.C2CRestoreDialog.selectConnection')}</option>
                   {availableTargets.map((connection) => (
                     <option key={connection.id} value={connection.id}>
-                      {connection.displayName} · {formatProvider(connection.provider)}
+                      {connection.displayName} · {formatProvider(connection.provider, t)}
                     </option>
                   ))}
                 </select>
@@ -409,25 +409,25 @@ export default function C2CRestoreDialog({
           <div className="space-y-3 rounded-lg border bg-muted/20 p-4">
             <div className="flex items-center gap-2 text-sm font-medium text-primary">
               <CheckCircle2 className="h-4 w-4" />
-              Confirm
+              {t('common:actions.confirm')}
             </div>
             <div className="rounded-md border bg-background px-3 py-2">
-              <p className="text-xs text-muted-foreground">Selected items</p>
+              <p className="text-xs text-muted-foreground">{t('longTail.c2c.C2CRestoreDialog.selectedItems')}</p>
               <p className="mt-1 text-lg font-semibold text-foreground">{selectedIds.size}</p>
             </div>
             <div className="rounded-md border bg-background px-3 py-2">
-              <p className="text-xs text-muted-foreground">Restore target</p>
+              <p className="text-xs text-muted-foreground">{t('longTail.c2c.C2CRestoreDialog.restoreTarget')}</p>
               <p className="mt-1 text-sm font-medium text-foreground">
                 {targetMode === 'original'
-                  ? 'Original connection'
-                  : availableTargets.find((connection) => connection.id === targetConnectionId)?.displayName ?? 'Select a target'}
+                  ? t('longTail.c2c.C2CRestoreDialog.originalConnection')
+                  : availableTargets.find((connection) => connection.id === targetConnectionId)?.displayName ?? t('longTail.c2c.C2CRestoreDialog.selectTarget')}
               </p>
             </div>
             {selectedItems.slice(0, 3).map((item) => (
               <div key={item.id} className="rounded-md bg-background px-3 py-2 text-xs text-muted-foreground">
-                <span className="font-medium text-foreground">{item.subjectOrName ?? 'Untitled item'}</span>
+                <span className="font-medium text-foreground">{item.subjectOrName ?? t('longTail.c2c.C2CRestoreDialog.untitledItem')}</span>
                 {' · '}
-                {item.userEmail ?? 'No user'}
+                {item.userEmail ?? t('longTail.c2c.C2CRestoreDialog.noUser')}
               </div>
             ))}
           </div>
@@ -436,7 +436,7 @@ export default function C2CRestoreDialog({
 
       <div className="flex items-center justify-between border-t px-6 py-4">
         <p className="text-xs text-muted-foreground">
-          Restore submission is disabled until cloud-to-cloud restore execution is implemented.
+          {t('longTail.c2c.C2CRestoreDialog.restoreDisabled')}
         </p>
         <div className="flex gap-3">
           <button
@@ -445,7 +445,7 @@ export default function C2CRestoreDialog({
             disabled={submitting}
             className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
           >
-            Cancel
+            {t('common:actions.cancel')}
           </button>
           <button
             type="button"
@@ -454,7 +454,7 @@ export default function C2CRestoreDialog({
             className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
           >
             {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Undo2 className="h-4 w-4" />}
-            Restore coming soon
+            {t('longTail.c2c.C2CRestoreDialog.restoreComingSoon')}
           </button>
         </div>
       </div>

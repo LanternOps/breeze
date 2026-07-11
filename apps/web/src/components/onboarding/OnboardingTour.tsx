@@ -1,36 +1,37 @@
 import { useState, useEffect, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import { X } from 'lucide-react';
 
 interface TourStep {
   target: string; // CSS selector for the target element
-  title: string;
-  description: string;
+  titleKey: string;
+  descriptionKey: string;
   position: 'bottom' | 'right' | 'left';
 }
 
 const TOUR_STEPS: TourStep[] = [
   {
     target: '[data-tour="sidebar-nav"]',
-    title: 'Navigate your tools',
-    description: 'Your most-used tools are always visible. Expand sections like Security or Operations to find more.',
+    titleKey: 'longTail.onboarding.OnboardingTour.steps.navigate.title',
+    descriptionKey: 'longTail.onboarding.OnboardingTour.steps.navigate.description',
     position: 'right'
   },
   {
     target: '[data-tour="search"]',
-    title: 'Search anything',
-    description: 'Press Cmd+K to instantly find devices, scripts, alerts, users, or settings.',
+    titleKey: 'longTail.onboarding.OnboardingTour.steps.search.title',
+    descriptionKey: 'longTail.onboarding.OnboardingTour.steps.search.description',
     position: 'bottom'
   },
   {
     target: '[data-tour="org-switcher"]',
-    title: 'Switch organizations',
-    description: 'Managing multiple clients? Switch between organizations here.',
+    titleKey: 'longTail.onboarding.OnboardingTour.steps.switchOrgs.title',
+    descriptionKey: 'longTail.onboarding.OnboardingTour.steps.switchOrgs.description',
     position: 'bottom'
   },
   {
     target: '[data-tour="ai-assistant"]',
-    title: 'AI-powered help',
-    description: 'Ask questions about your fleet, troubleshoot issues, or generate reports. Press Cmd+Shift+A anytime.',
+    titleKey: 'longTail.onboarding.OnboardingTour.steps.aiHelp.title',
+    descriptionKey: 'longTail.onboarding.OnboardingTour.steps.aiHelp.description',
     position: 'bottom'
   }
 ];
@@ -38,6 +39,7 @@ const TOUR_STEPS: TourStep[] = [
 const TOUR_STORAGE_KEY = 'breeze-onboarding-complete';
 
 export default function OnboardingTour() {
+  const { t } = useTranslation('common');
   const [currentStep, setCurrentStep] = useState(-1); // -1 = not started
   const [tooltipPos, setTooltipPos] = useState({ top: 0, left: 0 });
   const tooltipRef = useRef<HTMLDivElement>(null);
@@ -167,25 +169,26 @@ export default function OnboardingTour() {
         }}
       >
         <div className="flex items-start justify-between mb-2">
-          <h4 className="text-sm font-semibold text-foreground">{step.title}</h4>
+          <h4 className="text-sm font-semibold text-foreground">{t(step.titleKey)}</h4>
           <button
             onClick={handleDismiss}
             className="rounded p-0.5 text-muted-foreground hover:text-foreground transition-colors"
-            title="Skip tour"
+            title={t('longTail.onboarding.OnboardingTour.skipTour')}
+            aria-label={t('longTail.onboarding.OnboardingTour.skipTour')}
           >
             <X className="h-3.5 w-3.5" />
           </button>
         </div>
-        <p className="text-xs text-muted-foreground leading-relaxed mb-3">{step.description}</p>
+        <p className="text-xs text-muted-foreground leading-relaxed mb-3">{t(step.descriptionKey)}</p>
         <div className="flex items-center justify-between">
           <span className="text-xs text-muted-foreground/70">
-            {currentStep + 1} of {TOUR_STEPS.length}
+            {t('longTail.onboarding.OnboardingTour.progress', { current: currentStep + 1, total: TOUR_STEPS.length })}
           </span>
           <button
             onClick={handleNext}
             className="rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
           >
-            {isLast ? 'Got it' : 'Next'}
+            {isLast ? t('longTail.onboarding.OnboardingTour.gotIt') : t('common:actions.next')}
           </button>
         </div>
       </div>
