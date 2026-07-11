@@ -114,7 +114,6 @@ import {
   listMailboxConnections,
   probeMailbox,
   setConnectionStatus,
-  setConnectionTenant,
 } from './connectionService';
 
 const CONNECTION_ID = '11111111-1111-1111-1111-111111111111';
@@ -242,12 +241,6 @@ describe('ticket mailbox connection service', () => {
   it('prevents the generic status setter from activating a connection', async () => {
     await expect(setConnectionStatus(CONNECTION_ID, PARTNER_ID, 'connected', null))
       .rejects.toThrow(/bindVerifiedTenant/);
-    expect(dbMocks.updatedValues).toHaveLength(0);
-  });
-
-  it('fails closed without a database write through the deprecated tenant setter', async () => {
-    await expect(setConnectionTenant(CONNECTION_ID, PARTNER_ID, TENANT_ID))
-      .rejects.toThrow(/^Legacy mailbox tenant binding is disabled$/);
     expect(dbMocks.updatedValues).toHaveLength(0);
   });
 

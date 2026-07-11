@@ -167,16 +167,6 @@ export async function bindVerifiedTenant(
   });
 }
 
-/**
- * @deprecated Temporary compatibility bridge for the pre-verified callback route.
- * Use bindVerifiedTenant with verified Microsoft identity evidence instead.
- */
-export async function setConnectionTenant(
-  _id: string, _partnerId: string, _tenantId: string,
-): Promise<void> {
-  throw new Error('Legacy mailbox tenant binding is disabled');
-}
-
 export async function setConnectionStatus(
   id: string, partnerId: string, status: MailboxConnectionStatus, lastError: string | null,
 ): Promise<void> {
