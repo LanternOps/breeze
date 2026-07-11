@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '../../../lib/i18n';
 import { fetchWithAuth } from '../../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError, ActionError } from '../../../lib/runAction';
@@ -14,7 +16,6 @@ import {
   type Quote,
   type QuoteStatus,
   STATUS_ROLES,
-  statusLabel,
   formatDate,
   formatMoney,
   sumByCurrency,
@@ -34,16 +35,7 @@ interface Site {
   name: string;
 }
 
-const STATUS_OPTIONS: { value: '' | QuoteStatus; label: string }[] = [
-  { value: '', label: 'All statuses' },
-  { value: 'draft', label: 'Draft' },
-  { value: 'sent', label: 'Sent' },
-  { value: 'viewed', label: 'Viewed' },
-  { value: 'accepted', label: 'Accepted' },
-  { value: 'declined', label: 'Declined' },
-  { value: 'expired', label: 'Expired' },
-  { value: 'converted', label: 'Converted' },
-];
+const STATUS_OPTION_VALUES: ('' | QuoteStatus)[] = ['', 'draft', 'sent', 'viewed', 'accepted', 'declined', 'expired', 'converted'];
 
 type SortKey = 'created' | 'total';
 interface Sort { key: SortKey; dir: 'asc' | 'desc' }
@@ -61,7 +53,7 @@ function readFilters(): Filters {
   const status = params.get('status') ?? '';
   return {
     orgId: params.get('orgId') ?? '',
-    status: (STATUS_OPTIONS.some((o) => o.value === status) ? status : '') as Filters['status'],
+    status: (STATUS_OPTION_VALUES.some((value) => value === status) ? status : '') as Filters['status'],
   };
 }
 
@@ -81,20 +73,21 @@ const ts = (d: string | null) => (d ? new Date(d.length === 10 ? `${d}T00:00:00`
 // converted quote whose invoice carries a deposit shows the money state
 // (paid/unpaid, compared in cents); an unconverted quote with a deposit shows a
 // neutral "Deposit" marker.
-function quoteDepositBadge(q: Quote): { label: string; className: string } | null {
+function quoteDepositBadge(q: Quote, t: ReturnType<typeof useTranslation<'billing'>>['t']): { label: string; className: string } | null {
   if (q.status === 'converted' && q.invoiceDepositDue != null) {
     const paid = cents(q.invoiceAmountPaid) >= cents(q.invoiceDepositDue);
     return paid
-      ? { label: 'Deposit paid', className: 'bg-success/10 text-success' }
-      : { label: 'Deposit unpaid', className: 'bg-warning/10 text-warning' };
+      ? { label: t('quotes.page.deposit.paid'), className: 'bg-success/10 text-success' }
+      : { label: t('quotes.page.deposit.unpaid'), className: 'bg-warning/10 text-warning' };
   }
   if ((q.depositType ?? 'none') !== 'none') {
-    return { label: 'Deposit', className: 'bg-muted text-muted-foreground' };
+    return { label: t('quotes.page.deposit.deposit'), className: 'bg-muted text-muted-foreground' };
   }
   return null;
 }
 
 export function QuotesPage() {
+  const { t } = useTranslation('billing');
   const { can } = usePermissions();
   const canWrite = can('quotes', 'write');
   const bulk = useBulkSelection();
@@ -129,10 +122,10 @@ export function QuotesPage() {
   const loadOrgs = useCallback(async () => {
     const res = await fetchWithAuth('/orgs/organizations');
     if (res.status === 401) return UNAUTHORIZED();
-    if (!res.ok) { handleActionError(new Error(res.statusText), 'Failed to load organizations.'); return; }
+    if (!res.ok) { handleActionError(new Error(res.statusText), t('quotes.page.errors.loadOrganizations')); return; }
     const body = (await res.json()) as { data?: Organization[]; organizations?: Organization[] };
     setOrgs(body.data ?? body.organizations ?? []);
-  }, []);
+  }, [t]);
 
   const loadQuotes = useCallback(async (f: Filters) => {
     try {
@@ -142,15 +135,15 @@ export function QuotesPage() {
       const res = await listQuotes({ orgId: f.orgId || undefined, status: f.status || undefined });
       if (res.status === 401) return UNAUTHORIZED();
       if (res.status === 403) { setForbidden(true); return; }
-      if (!res.ok) throw new Error('Failed to load quotes');
+      if (!res.ok) throw new Error(t('quotes.page.errors.loadQuotes'));
       const body = (await res.json()) as { data: Quote[] };
       setQuotes(body.data ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load quotes');
+      setError(err instanceof Error ? err.message : t('quotes.page.errors.loadQuotes'));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => { void loadOrgs(); }, [loadOrgs]);
   useEffect(() => { void loadQuotes(filters); }, [loadQuotes, filters]);
@@ -193,10 +186,10 @@ export function QuotesPage() {
     if (!orgId) return;
     const res = await fetchWithAuth(`/orgs/sites?organizationId=${orgId}`);
     if (res.status === 401) return UNAUTHORIZED();
-    if (!res.ok) { handleActionError(new Error(res.statusText), 'Failed to load sites.'); return; }
+    if (!res.ok) { handleActionError(new Error(res.statusText), t('quotes.page.errors.loadSites')); return; }
     const body = (await res.json()) as { data?: Site[]; sites?: Site[] };
     setNewSites(body.data ?? body.sites ?? []);
-  }, []);
+  }, [t]);
 
   const openCreate = useCallback(() => {
     setNewOrgId(filters.orgId || '');
@@ -212,8 +205,8 @@ export function QuotesPage() {
     try {
       const result = await runAction<{ data: { id?: string; quote?: { id?: string } } }>({
         request: () => createQuote({ orgId: newOrgId, siteId: newSiteId || undefined, title: newTitle.trim() || undefined, currencyCode: 'USD' }),
-        errorFallback: 'Could not create a draft quote.',
-        successMessage: 'Draft quote created',
+        errorFallback: t('quotes.page.create.error'),
+        successMessage: t('quotes.page.create.success'),
         onUnauthorized: UNAUTHORIZED,
       });
       setCreateOpen(false);
@@ -222,11 +215,11 @@ export function QuotesPage() {
       if (newId) void navigateTo(`/billing/quotes/${newId}`);
       else void loadQuotes(filters);
     } catch (err) {
-      handleActionError(err, 'Could not create the quote.');
+      handleActionError(err, t('quotes.page.create.genericError'));
     } finally {
       setCreating(false);
     }
-  }, [creating, newOrgId, newSiteId, newTitle, filters, loadQuotes]);
+  }, [creating, newOrgId, newSiteId, newTitle, filters, loadQuotes, t]);
 
   const toggleSort = (key: SortKey) =>
     setSort((s) => (s?.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'desc' }));
@@ -282,37 +275,37 @@ export function QuotesPage() {
       const ids = Array.from(bulk.selectedIds);
       if (ids.length === 0) return;
       if (ids.length > BULK_ID_LIMIT) {
-        showToast({ type: 'warning', message: `Select up to ${BULK_ID_LIMIT} at a time.` });
+        showToast({ type: 'warning', message: t('quotes.page.bulk.limit', { limit: BULK_ID_LIMIT }) });
         return;
       }
       setBulkBusy(true);
       try {
         const result = await runAction<{ data: { succeeded: number; skipped: number; failed: number; skippedReasons?: Record<string, number> } }>({
           request: () => fetchWithAuth(path, { method: 'POST', body: JSON.stringify({ ids }) }),
-          errorFallback: `Bulk ${verb} failed. Retry.`,
+          errorFallback: t('quotes.page.bulk.failed', { verb }),
           onUnauthorized: UNAUTHORIZED,
         });
         const { succeeded, skipped, failed } = result.data;
         showToast(
           skipped + failed > 0
-            ? { type: 'warning', message: `${succeeded} ${verb}, ${skipped} skipped${failed ? `, ${failed} failed` : ''}` }
-            : { type: 'success', message: `${succeeded} ${verb}` }
+            ? { type: 'warning', message: t('quotes.page.bulk.partial', { succeeded, verb, skipped, failedText: failed ? `, ${failed} failed` : '' }) }
+            : { type: 'success', message: t('quotes.page.bulk.success', { succeeded, verb }) }
         );
         bulk.clear();
         void loadQuotes(filters);
       } catch (err) {
-        handleActionError(err, `Bulk ${verb} failed. Retry.`);
+        handleActionError(err, t('quotes.page.bulk.failed', { verb }));
       } finally {
         setBulkBusy(false);
       }
     },
-    [bulk, loadQuotes, filters],
+    [bulk, loadQuotes, filters, t],
   );
 
   if (forbidden) {
     return (
       <div className="space-y-5" data-testid="quotes-page">
-        <AccessDenied message="You don't have permission to view quotes." />
+        <AccessDenied message={t('quotes.page.accessDenied')} />
       </div>
     );
   }
@@ -321,9 +314,9 @@ export function QuotesPage() {
     <div className="space-y-5" data-testid="quotes-page">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold">Quotes</h1>
+          <h1 className="text-xl font-semibold">{t('quotes.page.title')}</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Build proposals with rich blocks and recurring pricing, then send them to customers.
+            {t('quotes.page.subtitle')}
           </p>
         </div>
         {canWrite && (
@@ -333,7 +326,7 @@ export function QuotesPage() {
             data-testid="quotes-create-open"
             className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
           >
-            New quote
+            {t('quotes.page.newQuote')}
           </button>
         )}
       </div>
@@ -343,16 +336,16 @@ export function QuotesPage() {
         <div className="flex flex-wrap gap-3" data-testid="quotes-outstanding-strip">
           {summary.awaitingCount > 0 && (
             <StatCard
-              label="Out for signature"
+              label={t('quotes.page.stats.outForSignature')}
               value={outForSignatureDisplay}
-              hint={`${summary.awaitingCount} awaiting`}
+              hint={t('quotes.page.stats.awaiting', { count: summary.awaitingCount })}
             />
           )}
           {summary.draftCount > 0 && (
             <StatCard
-              label="Drafts"
+              label={t('quotes.page.stats.drafts')}
               value={summary.draftCount}
-              hint="not yet sent"
+              hint={t('quotes.page.stats.notYetSent')}
               onClick={() => applyFilter({ status: 'draft' })}
               active={filters.status === 'draft'}
               testId="quotes-drafts-card"
@@ -366,8 +359,8 @@ export function QuotesPage() {
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search number or org"
-          aria-label="Search quotes"
+          placeholder={t('quotes.page.filters.searchPlaceholder')}
+          aria-label={t('quotes.page.filters.searchAria')}
           className="h-10 min-w-[12rem] flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           data-testid="quotes-search"
         />
@@ -375,10 +368,10 @@ export function QuotesPage() {
           value={filters.orgId}
           onChange={(e) => applyFilter({ orgId: e.target.value })}
           data-testid="quotes-filter-org"
-          aria-label="Filter by organization"
+          aria-label={t('quotes.page.filters.organizationAria')}
           className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         >
-          <option value="">All organizations</option>
+          <option value="">{t('quotes.page.filters.allOrganizations')}</option>
           {orgs.map((o) => (
             <option key={o.id} value={o.id}>{o.name}</option>
           ))}
@@ -387,11 +380,11 @@ export function QuotesPage() {
           value={filters.status}
           onChange={(e) => applyFilter({ status: e.target.value as Filters['status'] })}
           data-testid="quotes-filter-status"
-          aria-label="Filter by status"
+          aria-label={t('quotes.page.filters.statusAria')}
           className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         >
-          {STATUS_OPTIONS.map((s) => (
-            <option key={s.value} value={s.value}>{s.label}</option>
+          {STATUS_OPTION_VALUES.map((status) => (
+            <option key={status} value={status}>{status === '' ? t('quotes.page.filters.allStatuses') : t(`quotes.status.${status}`)}</option>
           ))}
         </select>
       </div>
@@ -418,28 +411,28 @@ export function QuotesPage() {
                 onClick={() => void loadQuotes(filters)}
                 className="mt-3 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
               >
-                Try again
+                {t('quotes.page.tryAgain')}
               </button>
             </div>
           </div>
         ) : rows.length === 0 ? (
           hasActiveFilters ? (
             <div className="px-4 py-12 text-center" data-testid="quotes-filtered-empty">
-              <p className="text-sm text-muted-foreground">No quotes match these filters.</p>
+              <p className="text-sm text-muted-foreground">{t('quotes.page.empty.filtered')}</p>
               <button
                 type="button"
                 onClick={clearFilters}
                 data-testid="quotes-clear-filters"
                 className="mt-3 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
               >
-                Clear filters
+                {t('quotes.page.empty.clearFilters')}
               </button>
             </div>
           ) : (
             <div className="px-4 py-14 text-center" data-testid="quotes-empty">
-              <h3 className="text-sm font-semibold">No quotes yet</h3>
+              <h3 className="text-sm font-semibold">{t('quotes.page.empty.title')}</h3>
               <p className="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">
-                Draft a proposal with headings, rich text, and a pricing table, then send it for acceptance.
+                {t('quotes.page.empty.description')}
               </p>
               {canWrite && (
                 <button
@@ -448,7 +441,7 @@ export function QuotesPage() {
                   className="mt-4 inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
                   data-testid="quotes-empty-new"
                 >
-                  New quote
+                  {t('quotes.page.newQuote')}
                 </button>
               )}
             </div>
@@ -462,17 +455,17 @@ export function QuotesPage() {
                     <th className="w-8 px-3 py-3">
                       <input
                         type="checkbox"
-                        aria-label="Select all quotes"
+                        aria-label={t('quotes.page.table.selectAll')}
                         data-testid="quotes-select-all"
                         checked={rows.length > 0 && rows.every((r) => bulk.has(r.id))}
                         onChange={(e) => (e.target.checked ? bulk.selectAll(rows.map((r) => r.id)) : bulk.clear())}
                       />
                     </th>
-                    <th className="px-3 py-3 font-medium">Number</th>
-                    <th className="px-3 py-3 font-medium">Organization</th>
-                    <th className="px-3 py-3 font-medium">Status</th>
-                    <SortableTh label="Total" sortKey="total" activeSort={sort?.key} direction={sort?.dir ?? 'desc'} onSort={toggleSort} align="right" testId="quotes-sort-total" />
-                    <SortableTh label="Created" sortKey="created" activeSort={sort?.key} direction={sort?.dir ?? 'desc'} onSort={toggleSort} testId="quotes-sort-created" />
+                    <th className="px-3 py-3 font-medium">{t('quotes.page.table.number')}</th>
+                    <th className="px-3 py-3 font-medium">{t('common:labels.organization')}</th>
+                    <th className="px-3 py-3 font-medium">{t('common:labels.status')}</th>
+                    <SortableTh label={t('quotes.page.table.total')} sortKey="total" activeSort={sort?.key} direction={sort?.dir ?? 'desc'} onSort={toggleSort} align="right" testId="quotes-sort-total" />
+                    <SortableTh label={t('quotes.page.table.created')} sortKey="created" activeSort={sort?.key} direction={sort?.dir ?? 'desc'} onSort={toggleSort} testId="quotes-sort-created" />
                   </tr>
                 </thead>
                 <tbody>
@@ -486,7 +479,7 @@ export function QuotesPage() {
                       <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
                         <input
                           type="checkbox"
-                          aria-label={`Select quote ${qt.quoteNumber ?? qt.id}`}
+                          aria-label={t('quotes.page.table.selectQuote', { quote: qt.quoteNumber ?? qt.id })}
                           data-testid={`quotes-select-${qt.id}`}
                           checked={bulk.has(qt.id)}
                           onChange={() => bulk.toggle(qt.id)}
@@ -501,7 +494,7 @@ export function QuotesPage() {
                           // already carries the "Draft" pill, so a DRAFT chip here
                           // was redundant). The dash is decorative — give the link
                           // an accessible name so it doesn't read as just "—".
-                          aria-label={qt.quoteNumber ? undefined : 'Draft quote'}
+                          aria-label={qt.quoteNumber ? undefined : t('quotes.page.table.draftQuote')}
                           className={ROW_LINK_CLASS}
                         >
                           {qt.quoteNumber ?? <span aria-hidden="true" className="text-muted-foreground">—</span>}
@@ -517,12 +510,12 @@ export function QuotesPage() {
                         <div className="flex flex-wrap items-center gap-1.5">
                           <StatusPill
                             role={STATUS_ROLES[qt.status].role}
-                            label={statusLabel(qt)}
+                            label={t(`quotes.status.${qt.status}`)}
                             className={STATUS_ROLES[qt.status].className}
                             testId={`quotes-status-${qt.id}`}
                           />
                           {(() => {
-                            const badge = quoteDepositBadge(qt);
+                            const badge = quoteDepositBadge(qt, t);
                             if (!badge) return null;
                             return (
                               <span
@@ -547,8 +540,8 @@ export function QuotesPage() {
               onClear={bulk.clear}
               testIdPrefix="quotes"
               actions={[
-                ...(can('quotes', 'send') ? [{ key: 'send', label: 'Send', disabled: bulkBusy, onClick: () => setSendOpen(true) }] : []),
-                ...(can('quotes', 'write') ? [{ key: 'delete', label: 'Delete drafts', variant: 'destructive' as const, disabled: bulkBusy, onClick: () => setDeleteOpen(true) }] : []),
+                ...(can('quotes', 'send') ? [{ key: 'send', label: t('quotes.page.bulk.send'), disabled: bulkBusy, onClick: () => setSendOpen(true) }] : []),
+                ...(can('quotes', 'write') ? [{ key: 'delete', label: t('quotes.page.bulk.deleteDrafts'), variant: 'destructive' as const, disabled: bulkBusy, onClick: () => setDeleteOpen(true) }] : []),
               ]}
             />
           </div>
@@ -558,21 +551,21 @@ export function QuotesPage() {
       <ConfirmDialog
         open={sendOpen}
         onClose={() => setSendOpen(false)}
-        onConfirm={() => { setSendOpen(false); void runBulkQuotes('/quotes/bulk-send', 'sent'); }}
-        title="Send quotes"
-        message={`Email ${bulk.size} selected proposal(s) to their customers? This can't be undone.`}
+        onConfirm={() => { setSendOpen(false); void runBulkQuotes('/quotes/bulk-send', t('quotes.page.bulk.sentVerb')); }}
+        title={t('quotes.page.bulkSend.title')}
+        message={t('quotes.page.bulkSend.message', { count: bulk.size })}
         variant="warning"
-        confirmLabel="Send"
+        confirmLabel={t('quotes.page.bulk.send')}
         confirmTestId="quotes-bulk-send-confirm"
       />
 
       <ConfirmDialog
         open={deleteOpen}
         onClose={() => setDeleteOpen(false)}
-        onConfirm={() => { setDeleteOpen(false); void runBulkQuotes('/quotes/bulk-delete', 'deleted'); }}
-        title="Delete draft quotes"
-        message={`Delete ${bulk.size} selected quote(s)? Only DRAFT quotes will be deleted; this cannot be undone.`}
-        confirmLabel="Delete drafts"
+        onConfirm={() => { setDeleteOpen(false); void runBulkQuotes('/quotes/bulk-delete', t('quotes.page.bulk.deletedVerb')); }}
+        title={t('quotes.page.bulkDelete.title')}
+        message={t('quotes.page.bulkDelete.message', { count: bulk.size })}
+        confirmLabel={t('quotes.page.bulk.deleteDrafts')}
         confirmTestId="quotes-bulk-delete-confirm"
       />
 
@@ -580,46 +573,46 @@ export function QuotesPage() {
       <Dialog
         open={createOpen}
         onClose={() => setCreateOpen(false)}
-        title="New quote"
+        title={t('quotes.page.create.title')}
         maxWidth="md"
         className="p-6"
       >
         <div className="space-y-4" data-testid="quotes-create-dialog">
           <div>
-            <h2 className="text-lg font-semibold">New quote</h2>
+            <h2 className="text-lg font-semibold">{t('quotes.page.create.title')}</h2>
             <p className="mt-1 text-sm text-muted-foreground">
-              Pick the customer this proposal is for. You can add blocks and pricing next.
+              {t('quotes.page.create.description')}
             </p>
           </div>
 
           <label className="flex flex-col gap-1 text-sm">
-            Organization
+            {t('common:labels.organization')}
             <select
               value={newOrgId}
               onChange={(e) => { setNewOrgId(e.target.value); void loadNewSites(e.target.value); }}
               data-testid="quotes-create-org"
               className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
-              <option value="">Select an organization…</option>
+              <option value="">{t('quotes.page.create.selectOrganization')}</option>
               {orgs.map((o) => (
                 <option key={o.id} value={o.id}>{o.name}</option>
               ))}
             </select>
           </label>
           <label className="flex flex-col gap-1 text-sm">
-            Title (optional)
+            {t('quotes.page.create.titleOptional')}
             <input
               type="text"
               value={newTitle}
               maxLength={200}
-              placeholder="e.g. Office network refresh"
+              placeholder={t('quotes.page.create.titlePlaceholder')}
               onChange={(e) => setNewTitle(e.target.value)}
               data-testid="quotes-create-title"
               className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
           </label>
           <label className="flex flex-col gap-1 text-sm">
-            Site (optional)
+            {t('quotes.page.create.siteOptional')}
             <select
               value={newSiteId}
               onChange={(e) => setNewSiteId(e.target.value)}
@@ -627,7 +620,7 @@ export function QuotesPage() {
               disabled={!newOrgId || newSites.length === 0}
               className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-50"
             >
-              <option value="">No specific site</option>
+              <option value="">{t('quotes.page.create.noSpecificSite')}</option>
               {newSites.map((s) => (
                 <option key={s.id} value={s.id}>{s.name}</option>
               ))}
@@ -640,7 +633,7 @@ export function QuotesPage() {
               onClick={() => setCreateOpen(false)}
               className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
             >
-              Cancel
+              {t('common:actions.cancel')}
             </button>
             <button
               type="button"
@@ -649,7 +642,7 @@ export function QuotesPage() {
               data-testid="quotes-create-submit"
               className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
             >
-              {creating ? 'Working…' : 'Create draft'}
+              {creating ? t('quotes.page.create.working') : t('quotes.page.create.submit')}
             </button>
           </div>
         </div>

@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { BULK_ID_LIMIT } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import '@/lib/i18n';
 import { runAction, handleActionError } from '../../lib/runAction';
 import {
   listContracts,
-  formatCadence,
   monthlyValue,
   CONTRACT_STATUS_ROLES,
   type ContractStatus,
@@ -30,12 +31,12 @@ interface Organization {
 }
 
 const STATUS_OPTIONS: { value: '' | ContractStatus; label: string }[] = [
-  { value: '', label: 'All statuses' },
-  { value: 'draft', label: 'Draft' },
-  { value: 'active', label: 'Active' },
-  { value: 'paused', label: 'Paused' },
-  { value: 'cancelled', label: 'Cancelled' },
-  { value: 'expired', label: 'Expired' },
+  { value: '', label: 'contracts.contractsList.filters.allStatuses' },
+  { value: 'draft', label: 'contracts.shared.status.draft' },
+  { value: 'active', label: 'contracts.shared.status.active' },
+  { value: 'paused', label: 'contracts.shared.status.paused' },
+  { value: 'cancelled', label: 'contracts.shared.status.cancelled' },
+  { value: 'expired', label: 'contracts.shared.status.expired' },
 ];
 
 // ---- hash filter state (key=value&key=value) ----------------------------
@@ -81,6 +82,7 @@ interface Props {
 }
 
 export function ContractsList({ lockedOrgId }: Props = {}) {
+  const { t } = useTranslation('billing');
   const { can } = usePermissions();
   const bulk = useBulkSelection();
   const [contracts, setContracts] = useState<ContractSummary[]>([]);
@@ -107,11 +109,11 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
   const loadOrgs = useCallback(async () => {
     const res = await fetchWithAuth('/orgs/organizations');
     if (res.status === 401) return UNAUTHORIZED();
-    if (!res.ok) { handleActionError(new Error(res.statusText), 'Failed to load organizations.'); return; }
+    if (!res.ok) { handleActionError(new Error(res.statusText), t('contracts.contractsList.errors.loadOrganizations')); return; }
     const body = (await res.json().catch(() => null)) as { data?: Organization[]; organizations?: Organization[] } | null;
     if (!body) return;
     setOrgs(body.data ?? body.organizations ?? []);
-  }, []);
+  }, [t]);
 
   const loadContracts = useCallback(async (f: Filters) => {
     try {
@@ -121,16 +123,16 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
       const res = await listContracts({ orgId: f.orgId || undefined, status: f.status || undefined });
       if (res.status === 401) return UNAUTHORIZED();
       if (res.status === 403) { setForbidden(true); return; }
-      if (!res.ok) throw new Error('Failed to load contracts');
+      if (!res.ok) throw new Error(t('contracts.contractsList.errors.loadContracts'));
       const body = (await res.json().catch(() => null)) as { data: ContractSummary[] } | null;
-      if (!body) throw new Error('Failed to load contracts');
+      if (!body) throw new Error(t('contracts.contractsList.errors.loadContracts'));
       setContracts(body.data ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load contracts');
+      setError(err instanceof Error ? err.message : t('contracts.contractsList.errors.loadContracts'));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => { void loadOrgs(); }, [loadOrgs]);
   useEffect(() => { void loadContracts(filters); }, [loadContracts, filters]);
@@ -239,37 +241,45 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
       const ids = Array.from(bulk.selectedIds);
       if (ids.length === 0) return;
       if (ids.length > BULK_ID_LIMIT) {
-        showToast({ type: 'warning', message: `Select up to ${BULK_ID_LIMIT} at a time.` });
+        showToast({ type: 'warning', message: t('contracts.contractsList.toast.bulkLimit', { limit: BULK_ID_LIMIT }) });
         return;
       }
       setBulkBusy(true);
       try {
         const result = await runAction<{ data: { succeeded: number; skipped: number; failed: number; skippedReasons?: Record<string, number> } }>({
           request: () => fetchWithAuth(path, { method: 'POST', body: JSON.stringify({ ids }) }),
-          errorFallback: `Bulk ${verb} failed. Retry.`,
+          errorFallback: t('contracts.contractsList.toast.bulkFailed', { verb }),
           onUnauthorized: UNAUTHORIZED,
         });
         const { succeeded, skipped, failed } = result.data;
         showToast(
           skipped + failed > 0
-            ? { type: 'warning', message: `${succeeded} ${verb}, ${skipped} skipped${failed ? `, ${failed} failed` : ''}` }
-            : { type: 'success', message: `${succeeded} ${verb}` }
+            ? {
+                type: 'warning',
+                message: t('contracts.contractsList.toast.bulkPartial', {
+                  succeeded,
+                  verb,
+                  skipped,
+                  failedText: failed ? t('contracts.contractsList.toast.failedSuffix', { failed }) : '',
+                }),
+              }
+            : { type: 'success', message: t('contracts.contractsList.toast.bulkSuccess', { succeeded, verb }) }
         );
         bulk.clear();
         void loadContracts(filters);
       } catch (err) {
-        handleActionError(err, `Bulk ${verb} failed. Retry.`);
+        handleActionError(err, t('contracts.contractsList.toast.bulkFailed', { verb }));
       } finally {
         setBulkBusy(false);
       }
     },
-    [bulk, loadContracts, filters],
+    [bulk, loadContracts, filters, t],
   );
 
   if (forbidden) {
     return (
       <div className="space-y-6" data-testid="contracts-page">
-        <AccessDenied message="You don't have permission to view contracts." />
+        <AccessDenied message={t('contracts.contractsList.accessDenied')} />
       </div>
     );
   }
@@ -279,12 +289,12 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           {lockedOrgId ? (
-            <h2 className="text-lg font-semibold">Contracts</h2>
+            <h2 className="text-lg font-semibold">{t('contracts.contractsList.title')}</h2>
           ) : (
-            <h1 className="text-xl font-semibold">Contracts</h1>
+            <h1 className="text-xl font-semibold">{t('contracts.contractsList.title')}</h1>
           )}
           <p className="mt-1 text-sm text-muted-foreground">
-            Recurring agreements that auto-generate draft invoices on a cadence.
+            {t('contracts.contractsList.description')}
           </p>
         </div>
         {can('contracts', 'write') && (
@@ -293,7 +303,7 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
             data-testid="new-contract-btn"
             className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
           >
-            New contract
+            {t('contracts.contractsList.newContract')}
           </a>
         )}
       </div>
@@ -303,21 +313,21 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search name or org"
-          aria-label="Search contracts"
+          placeholder={t('contracts.contractsList.filters.searchPlaceholder')}
+          aria-label={t('contracts.contractsList.filters.searchAria')}
           data-testid="contracts-search"
           className="h-10 min-w-[12rem] flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         />
         {!lockedOrgId && (
           <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-            Organization
+            {t('common:labels.organization')}
             <select
               value={filters.orgId}
               onChange={(e) => applyFilter({ orgId: e.target.value })}
               data-testid="contracts-filter-org"
               className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
-              <option value="">All organizations</option>
+              <option value="">{t('contracts.contractsList.filters.allOrganizations')}</option>
               {orgs.map((o) => (
                 <option key={o.id} value={o.id}>{o.name}</option>
               ))}
@@ -325,7 +335,7 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
           </label>
         )}
         <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-          Status
+          {t('common:labels.status')}
           <select
             value={filters.status}
             onChange={(e) => applyFilter({ status: e.target.value as Filters['status'] })}
@@ -333,7 +343,7 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
             className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
             {STATUS_OPTIONS.map((s) => (
-              <option key={s.value} value={s.value}>{s.label}</option>
+              <option key={s.value} value={s.value}>{t(s.label)}</option>
             ))}
           </select>
         </label>
@@ -342,9 +352,9 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
       {/* Estimated monthly recurring */}
       {!loading && !error && rows.length > 0 && (
         <StatCard
-          label="Est. monthly recurring"
+          label={t('contracts.contractsList.stats.estimatedMonthlyRecurring')}
           value={mrrDisplay}
-          hint={`${mrr.count} active contract${mrr.count === 1 ? '' : 's'}`}
+          hint={t('contracts.contractsList.stats.activeContractCount', { count: mrr.count })}
           className="inline-flex flex-col"
           testId="contracts-mrr-strip"
         />
@@ -363,28 +373,28 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
                 onClick={() => void loadContracts(filters)}
                 className="mt-3 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
               >
-                Try again
+                {t('contracts.contractsList.actions.tryAgain')}
               </button>
             </div>
           </div>
         ) : rows.length === 0 ? (
           hasActiveFilters ? (
             <div className="px-4 py-12 text-center" data-testid="contracts-empty">
-              <p className="text-sm text-muted-foreground">No contracts match these filters.</p>
+              <p className="text-sm text-muted-foreground">{t('contracts.contractsList.empty.noMatches')}</p>
               <button
                 type="button"
                 onClick={() => { setSearch(''); applyFilter(lockedOrgId ? { status: '' } : { status: '', orgId: '' }); }}
                 data-testid="contracts-clear-filters"
                 className="mt-3 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
               >
-                Clear filters
+                {t('contracts.contractsList.actions.clearFilters')}
               </button>
             </div>
           ) : (
             <div className="px-6 py-14 text-center" data-testid="contracts-empty">
-              <h3 className="text-sm font-semibold">No contracts yet</h3>
+              <h3 className="text-sm font-semibold">{t('contracts.contractsList.empty.title')}</h3>
               <p className="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">
-                Contracts bill an organization on a repeating cadence and auto-generate the invoices for you.
+                {t('contracts.contractsList.empty.description')}
               </p>
               {can('contracts', 'write') && (
                 <a
@@ -392,7 +402,7 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
                   data-testid="contracts-empty-cta"
                   className="mt-4 inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
                 >
-                  Create your first contract
+                  {t('contracts.contractsList.empty.createFirst')}
                 </a>
               )}
             </div>
@@ -409,21 +419,21 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
                     <th className="w-8 px-3 py-3">
                       <input
                         type="checkbox"
-                        aria-label="Select all contracts"
+                        aria-label={t('contracts.contractsList.table.selectAllAria')}
                         data-testid="contracts-select-all"
                         checked={rows.length > 0 && rows.every((r) => bulk.has(r.id))}
                         onChange={(e) => (e.target.checked ? bulk.selectAll(rows.map((r) => r.id)) : bulk.clear())}
                       />
                     </th>
-                    <SortableTh label="Name" sortKey="name" activeSort={sort?.key} direction={sort?.dir ?? 'asc'} onSort={toggleSort} testId="contracts-sort-name" />
+                    <SortableTh label={t('common:labels.name')} sortKey="name" activeSort={sort?.key} direction={sort?.dir ?? 'asc'} onSort={toggleSort} testId="contracts-sort-name" />
                     {!lockedOrgId && (
-                      <SortableTh label="Organization" sortKey="org" activeSort={sort?.key} direction={sort?.dir ?? 'asc'} onSort={toggleSort} testId="contracts-sort-org" />
+                      <SortableTh label={t('common:labels.organization')} sortKey="org" activeSort={sort?.key} direction={sort?.dir ?? 'asc'} onSort={toggleSort} testId="contracts-sort-org" />
                     )}
-                    <SortableTh label="Status" sortKey="status" activeSort={sort?.key} direction={sort?.dir ?? 'asc'} onSort={toggleSort} testId="contracts-sort-status" />
-                    <SortableTh label="Start date" sortKey="start" activeSort={sort?.key} direction={sort?.dir ?? 'asc'} onSort={toggleSort} testId="contracts-sort-start" />
-                    <th className="px-3 py-3 font-medium">Cadence</th>
-                    <th className="px-3 py-3 font-medium">Next bill</th>
-                    <SortableTh label="Est. / period" sortKey="estimate" activeSort={sort?.key} direction={sort?.dir ?? 'asc'} onSort={toggleSort} align="right" testId="contracts-sort-estimate" />
+                    <SortableTh label={t('common:labels.status')} sortKey="status" activeSort={sort?.key} direction={sort?.dir ?? 'asc'} onSort={toggleSort} testId="contracts-sort-status" />
+                    <SortableTh label={t('contracts.contractsList.table.startDate')} sortKey="start" activeSort={sort?.key} direction={sort?.dir ?? 'asc'} onSort={toggleSort} testId="contracts-sort-start" />
+                    <th className="px-3 py-3 font-medium">{t('contracts.contractsList.table.cadence')}</th>
+                    <th className="px-3 py-3 font-medium">{t('contracts.contractsList.table.nextBill')}</th>
+                    <SortableTh label={t('contracts.contractsList.table.estimatedPerPeriod')} sortKey="estimate" activeSort={sort?.key} direction={sort?.dir ?? 'asc'} onSort={toggleSort} align="right" testId="contracts-sort-estimate" />
                   </tr>
                 </thead>
                 <tbody>
@@ -437,7 +447,7 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
                       <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
                         <input
                           type="checkbox"
-                          aria-label={`Select contract ${ctr.name}`}
+                          aria-label={t('contracts.contractsList.table.selectContractAria', { name: ctr.name })}
                           data-testid={`contract-select-${ctr.id}`}
                           checked={bulk.has(ctr.id)}
                           onChange={() => bulk.toggle(ctr.id)}
@@ -457,13 +467,21 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
                       <td className="px-3 py-3">
                         <StatusPill
                           role={CONTRACT_STATUS_ROLES[ctr.status].role}
-                          label={CONTRACT_STATUS_ROLES[ctr.status].label}
+                          label={t(`contracts.shared.status.${ctr.status}`)}
                           className={CONTRACT_STATUS_ROLES[ctr.status].className}
                           testId={`contract-status-${ctr.id}`}
                         />
                       </td>
                       <td className="px-3 py-3">{formatDate(ctr.startDate)}</td>
-                      <td className="px-3 py-3">{formatCadence(ctr.intervalMonths)}</td>
+                      <td className="px-3 py-3">
+                        {ctr.intervalMonths === 1
+                          ? t('contracts.shared.cadence.monthly')
+                          : ctr.intervalMonths === 3
+                            ? t('contracts.shared.cadence.quarterly')
+                            : ctr.intervalMonths === 12
+                              ? t('contracts.shared.cadence.annual')
+                              : t('contracts.shared.cadence.custom', { count: ctr.intervalMonths })}
+                      </td>
                       <td className="px-3 py-3">{formatDate(ctr.nextBillingAt)}</td>
                       <td className="px-3 py-3 text-right tabular-nums" data-testid={`contract-estimate-${ctr.id}`}>
                         {ctr.estimatedPeriodValue != null ? formatMoney(ctr.estimatedPeriodValue, ctr.currencyCode) : '—'}
@@ -478,8 +496,8 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
               onClear={bulk.clear}
               testIdPrefix="contracts"
               actions={[
-                ...(can('contracts', 'manage') ? [{ key: 'cancel', label: 'Cancel', variant: 'destructive' as const, disabled: bulkBusy, onClick: () => setCancelOpen(true) }] : []),
-                ...(can('contracts', 'write') && selectedDraftCount > 0 ? [{ key: 'delete', label: `Delete draft${selectedDraftCount === 1 ? '' : 's'}`, variant: 'destructive' as const, disabled: bulkBusy, onClick: () => setDeleteOpen(true) }] : []),
+                ...(can('contracts', 'manage') ? [{ key: 'cancel', label: t('common:actions.cancel'), variant: 'destructive' as const, disabled: bulkBusy, onClick: () => setCancelOpen(true) }] : []),
+                ...(can('contracts', 'write') && selectedDraftCount > 0 ? [{ key: 'delete', label: t('contracts.contractsList.bulk.deleteDrafts', { count: selectedDraftCount }), variant: 'destructive' as const, disabled: bulkBusy, onClick: () => setDeleteOpen(true) }] : []),
               ]}
             />
           </div>
@@ -490,9 +508,9 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
         open={cancelOpen}
         onClose={() => setCancelOpen(false)}
         onConfirm={() => { setCancelOpen(false); void runBulkContracts('/contracts/bulk-cancel', 'cancelled'); }}
-        title="Cancel contracts"
-        message={`Cancel ${bulk.size} selected contract(s)? Active and paused contracts will be cancelled; this cannot be undone.`}
-        confirmLabel="Cancel contracts"
+        title={t('contracts.contractsList.cancelConfirm.title')}
+        message={t('contracts.contractsList.cancelConfirm.message', { count: bulk.size })}
+        confirmLabel={t('contracts.contractsList.cancelConfirm.confirm')}
         confirmTestId="contracts-bulk-cancel-confirm"
       />
 
@@ -500,9 +518,12 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
         open={deleteOpen}
         onClose={() => setDeleteOpen(false)}
         onConfirm={() => { setDeleteOpen(false); void runBulkContracts('/contracts/bulk-delete', 'deleted'); }}
-        title="Delete draft contracts"
-        message={`Delete ${selectedDraftCount} draft contract${selectedDraftCount === 1 ? '' : 's'}? Only drafts are deleted${bulk.size > selectedDraftCount ? ' — any active or paused contracts in your selection are left untouched' : ''}; this cannot be undone.`}
-        confirmLabel="Delete drafts"
+        title={t('contracts.contractsList.deleteConfirm.title')}
+        message={t('contracts.contractsList.deleteConfirm.message', {
+          count: selectedDraftCount,
+          untouched: bulk.size > selectedDraftCount ? t('contracts.contractsList.deleteConfirm.untouchedSuffix') : '',
+        })}
+        confirmLabel={t('contracts.contractsList.deleteConfirm.confirm')}
         confirmTestId="contracts-bulk-delete-confirm"
       />
     </div>

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import '@/lib/i18n';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
@@ -32,10 +34,10 @@ interface Site { id: string; name: string }
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
 const LINE_TYPE_LABELS: Record<ContractLineType, string> = {
-  flat: 'Flat fee',
-  per_device: 'Per device',
-  per_seat: 'Per seat',
-  manual: 'Manual quantity',
+  flat: 'contracts.shared.lineType.flat',
+  per_device: 'contracts.shared.lineType.perDevice',
+  per_seat: 'contracts.shared.lineType.perSeat',
+  manual: 'contracts.shared.lineType.manual',
 };
 
 // per_device / per_seat quantities are resolved by the generator at billing
@@ -43,9 +45,9 @@ const LINE_TYPE_LABELS: Record<ContractLineType, string> = {
 const AUTO_QTY_TYPES = new Set<ContractLineType>(['per_device', 'per_seat']);
 
 const INTERVAL_PRESETS = [
-  { value: 1, label: 'Monthly' },
-  { value: 3, label: 'Quarterly' },
-  { value: 12, label: 'Annual' },
+  { value: 1, label: 'contracts.shared.cadence.monthly' },
+  { value: 3, label: 'contracts.shared.cadence.quarterly' },
+  { value: 12, label: 'contracts.shared.cadence.annual' },
 ];
 
 // ── Save-grammar helpers (byte-similar local copies of the invoice/quote
@@ -53,7 +55,7 @@ const INTERVAL_PRESETS = [
 
 // Visually-hidden polite live region — announces a transient "Saved" to screen
 // readers, pairing with the amber→green dirty-ring cue sighted users see.
-function SrSaved({ show, label = 'Saved', testId }: { show: boolean; label?: string; testId?: string }) {
+function SrSaved({ show, label = '', testId }: { show: boolean; label?: string; testId?: string }) {
   // role="status" already implies aria-live="polite" — don't double it.
   return <span role="status" className="sr-only" data-testid={testId}>{show ? label : ''}</span>;
 }
@@ -75,6 +77,7 @@ interface Props {
 }
 
 export default function ContractEditor({ detail, presetOrgId, onChanged }: Props) {
+  const { t } = useTranslation('billing');
   const { can } = usePermissions();
   const canWrite = can('contracts', 'write');
   const isCreate = !detail;
@@ -224,11 +227,11 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   const loadOrgs = useCallback(async () => {
     const res = await fetchWithAuth('/orgs/organizations');
     if (res.status === 401) return UNAUTHORIZED();
-    if (!res.ok) { handleActionError(new Error(res.statusText), 'Failed to load organizations.'); return; }
+    if (!res.ok) { handleActionError(new Error(res.statusText), t('contracts.contractEditor.errors.loadOrganizations')); return; }
     const body = (await res.json().catch(() => null)) as { data?: Organization[]; organizations?: Organization[] } | null;
     if (!body) return;
     setOrgs(body.data ?? body.organizations ?? []);
-  }, []);
+  }, [t]);
 
   const loadCatalog = useCallback(async () => {
     const res = await listCatalog({ isActive: true, limit: 200 });
@@ -243,10 +246,10 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     if (!forOrg) { setSites([]); return; }
     const res = await fetchWithAuth(`/orgs/sites?organizationId=${forOrg}`);
     if (res.status === 401) return UNAUTHORIZED();
-    if (!res.ok) { handleActionError(new Error(res.statusText), 'Failed to load sites.'); setSites([]); return; }
+    if (!res.ok) { handleActionError(new Error(res.statusText), t('contracts.contractEditor.errors.loadSites')); setSites([]); return; }
     const body = await res.json().catch(() => null);
     setSites(Array.isArray(body?.data) ? body.data : Array.isArray(body) ? body : []);
-  }, []);
+  }, [t]);
 
   const loadEstimate = useCallback(async () => {
     if (!contract) return;
@@ -329,7 +332,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   const intervalValid = intervalCustom
     ? customMonths.trim() !== '' && Number.isInteger(effectiveMonths) && effectiveMonths >= 1 && effectiveMonths <= 60
     : intervalMonths >= 1 && intervalMonths <= 60;
-  const intervalError = intervalCustom && !intervalValid ? 'Enter the number of months' : null;
+  const intervalError = intervalCustom && !intervalValid ? t('contracts.contractEditor.validation.enterMonths') : null;
   const canSaveHeader = !!orgId && name.trim().length > 0 && !!startDate && intervalValid;
   const orgName = orgs.find((o) => o.id === orgId)?.name ?? orgId;
 
@@ -368,7 +371,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     setBusy(true);
     try {
       if (autoRenew && !renewalTermMonths) {
-        showToast({ type: 'error', message: 'Enter a renewal term (months) before saving.' });
+        showToast({ type: 'error', message: t('contracts.contractEditor.validation.enterRenewalTermBeforeSaving') });
         return;
       }
       const result = await runAction<{ data: { id: string } }>({
@@ -386,18 +389,18 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
           notes: notes.trim() || null,
           terms: terms.trim() || null,
         }),
-        errorFallback: 'Could not create the contract.',
-        successMessage: 'Contract created',
+        errorFallback: t('contracts.contractEditor.errors.createContract'),
+        successMessage: t('contracts.contractEditor.toast.contractCreated'),
         onUnauthorized: UNAUTHORIZED,
       });
       const newId = result?.data?.id;
       if (newId) void navigateTo(`/contracts/${newId}`);
     } catch (err) {
-      handleActionError(err, 'Could not create the contract.');
+      handleActionError(err, t('contracts.contractEditor.errors.createContract'));
     } finally {
       setBusy(false);
     }
-  }, [busy, canSaveHeader, orgId, name, billingTiming, effectiveMonths, startDate, endDate, autoIssue, autoRenew, renewalTermMonths, renewalNoticeDays, notes, terms]);
+  }, [busy, canSaveHeader, orgId, name, billingTiming, effectiveMonths, startDate, endDate, autoIssue, autoRenew, renewalTermMonths, renewalNoticeDays, notes, terms, t]);
 
   // ---- edit flow: per-field blur/change autosave ---------------------------
   // Each header field PATCHes independently (updateContractSchema is fully
@@ -414,14 +417,14 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     const ok = await runScoped(key, async () => {
       await runAction({
         request: () => updateContract(contract.id, patch),
-        errorFallback: 'Could not save the contract.',
+        errorFallback: t('contracts.contractEditor.errors.saveContract'),
         onUnauthorized: UNAUTHORIZED,
       });
       refresh();
-    }, 'Could not save the contract.');
+    }, t('contracts.contractEditor.errors.saveContract'));
     if (ok) flashSaved(key);
     return ok;
-  }, [contract, runScoped, refresh, flashSaved]);
+  }, [contract, runScoped, refresh, flashSaved, t]);
 
   // Per-field dirty cues compare the live value against the persisted contract so
   // a successful save (which reloads `detail`) auto-clears the amber ring.
@@ -441,17 +444,17 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     nameEdited.current = false; // committing — let the server value re-adopt next
     const next = name.trim();
     if (next === (contract?.name ?? '')) return;
-    if (!next) { handleActionError(new Error('empty name'), 'Enter a contract name.'); return; }
+    if (!next) { handleActionError(new Error('empty name'), t('contracts.contractEditor.validation.enterContractName')); return; }
     void savePatch({ name: next }, 'name');
-  }, [canWrite, isCreate, name, contract, savePatch]);
+  }, [canWrite, isCreate, name, contract, savePatch, t]);
 
   const commitStart = useCallback(() => {
     if (!canWrite || isCreate || !scheduleEditable) return;
     startEdited.current = false;
     if (startDate === (contract?.startDate ?? '')) return;
-    if (!startDate) { handleActionError(new Error('empty start'), 'Enter a start date.'); return; }
+    if (!startDate) { handleActionError(new Error('empty start'), t('contracts.contractEditor.validation.enterStartDate')); return; }
     void savePatch({ startDate }, 'startDate');
-  }, [canWrite, isCreate, scheduleEditable, startDate, contract, savePatch]);
+  }, [canWrite, isCreate, scheduleEditable, startDate, contract, savePatch, t]);
 
   const commitEnd = useCallback(() => {
     if (!canWrite || isCreate) return;
@@ -484,7 +487,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     if (renewalTermMonths === persistedTerm && !autoRenewPending) return;
     const n = renewalTermMonths === '' ? null : Number(renewalTermMonths);
     if (n !== null && (!Number.isInteger(n) || n < 1 || n > 120)) {
-      handleActionError(new Error('invalid term'), 'Enter a renewal term between 1 and 120 months.');
+      handleActionError(new Error('invalid term'), t('contracts.contractEditor.validation.renewalTermRange'));
       return;
     }
     if (autoRenewPending && n === null) return; // still waiting for a term
@@ -495,7 +498,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
         // typed term survives in state; re-checking the box restores the fields.)
         if (!ok && autoRenewPending) setAutoRenew(false);
       });
-  }, [canWrite, isCreate, autoRenew, contract, renewalTermMonths, persistedTerm, savePatch]);
+  }, [canWrite, isCreate, autoRenew, contract, renewalTermMonths, persistedTerm, savePatch, t]);
 
   const commitRenewalNotice = useCallback(() => {
     if (!canWrite || isCreate) return;
@@ -503,11 +506,11 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     if (renewalNoticeDays === persistedNotice) return;
     const n = renewalNoticeDays === '' ? null : Number(renewalNoticeDays);
     if (n !== null && (!Number.isInteger(n) || n < 0 || n > 365)) {
-      handleActionError(new Error('invalid notice'), 'Enter advance notice between 0 and 365 days.');
+      handleActionError(new Error('invalid notice'), t('contracts.contractEditor.validation.advanceNoticeRange'));
       return;
     }
     void savePatch({ renewalNoticeDays: n }, 'renewalNotice');
-  }, [canWrite, isCreate, renewalNoticeDays, persistedNotice, savePatch]);
+  }, [canWrite, isCreate, renewalNoticeDays, persistedNotice, savePatch, t]);
 
   const commitNotes = useCallback(() => {
     if (!canWrite || isCreate) return;
@@ -542,32 +545,32 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
           catalogItemId: lineCatalogId || undefined,
           taxable: lineTaxable,
         }),
-        errorFallback: 'Could not add the line.',
-        successMessage: 'Line added',
+        errorFallback: t('contracts.contractEditor.errors.addLine'),
+        successMessage: t('contracts.contractEditor.toast.lineAdded'),
         onUnauthorized: UNAUTHORIZED,
       });
       setLineDesc(''); setLinePrice('0.00'); setLineQty('1');
       setLineTaxable(false); setLineSiteId(''); setLineCatalogId('');
       refresh();
     } catch (err) {
-      handleActionError(err, 'Could not add the line.');
+      handleActionError(err, t('contracts.contractEditor.errors.addLine'));
     } finally {
       setBusy(false);
     }
-  }, [busy, contract, lineType, lineDesc, linePrice, lineQty, lineSiteId, lineCatalogId, lineTaxable, refresh]);
+  }, [busy, contract, lineType, lineDesc, linePrice, lineQty, lineSiteId, lineCatalogId, lineTaxable, refresh, t]);
 
   const removeLine = useCallback((lineId: string) =>
     runScoped(`remove-${lineId}`, async () => {
       if (!contract) return;
       await runAction({
         request: () => removeContractLine(contract.id, lineId),
-        errorFallback: 'Could not remove the line.',
-        successMessage: 'Line removed',
+        errorFallback: t('contracts.contractEditor.errors.removeLine'),
+        successMessage: t('contracts.contractEditor.toast.lineRemoved'),
         onUnauthorized: UNAUTHORIZED,
       });
       refresh();
-    }, 'Could not remove the line.'),
-  [runScoped, contract, refresh]);
+    }, t('contracts.contractEditor.errors.removeLine')),
+  [runScoped, contract, refresh, t]);
 
   const activate = useCallback(async () => {
     if (busy || !contract) return;
@@ -575,17 +578,17 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     try {
       await runAction({
         request: () => contractTransition(contract.id, 'activate'),
-        errorFallback: 'Could not activate the contract.',
-        successMessage: 'Contract activated',
+        errorFallback: t('contracts.contractEditor.errors.activateContract'),
+        successMessage: t('contracts.contractEditor.toast.contractActivated'),
         onUnauthorized: UNAUTHORIZED,
       });
       refresh();
     } catch (err) {
-      handleActionError(err, 'Could not activate the contract.');
+      handleActionError(err, t('contracts.contractEditor.errors.activateContract'));
     } finally {
       setBusy(false);
     }
-  }, [busy, contract, refresh]);
+  }, [busy, contract, refresh, t]);
 
   const siteName = useCallback(
     (id: string | null) => (id ? sites.find((s) => s.id === id)?.name ?? id.slice(0, 8) : null),
@@ -608,22 +611,22 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
           <div className="space-y-6 rounded-lg border bg-card p-4 shadow-xs" data-testid="contract-header-form">
             {/* Existing contracts blur-autosave per field; a single polite live
                 region announces the "Saved" that the amber→green ring shows. */}
-            <SrSaved show={!isCreate && savedKeys.size > 0} testId="contract-field-saved" />
+            <SrSaved show={!isCreate && savedKeys.size > 0} label={t('common:states.saved')} testId="contract-field-saved" />
 
             {/* ── Schedule ─────────────────────────────────────────────── */}
             <fieldset className="min-w-0" data-testid="contract-schedule-group">
-              <legend className={legendCls}>Schedule</legend>
+              <legend className={legendCls}>{t('contracts.contractEditor.schedule.title')}</legend>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 {isCreate ? (
                   <label className="flex flex-col gap-1 text-xs text-muted-foreground sm:col-span-2">
-                    Organization
+                    {t('common:labels.organization')}
                     <select
                       value={orgId}
                       onChange={(e) => setOrgId(e.target.value)}
                       data-testid="contract-form-org"
                       className={baseInput}
                     >
-                      <option value="">Select an organization…</option>
+                      <option value="">{t('contracts.contractEditor.schedule.selectOrganization')}</option>
                       {orgs.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
                     </select>
                   </label>
@@ -631,7 +634,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                   // Org is fixed at creation — the API never re-parents a contract,
                   // so it's a read-only display here.
                   <div className="flex flex-col gap-1 text-xs text-muted-foreground sm:col-span-2">
-                    Organization
+                    {t('common:labels.organization')}
                     <span
                       data-testid="contract-form-org-readonly"
                       className="inline-flex h-10 items-center rounded-md border bg-muted/40 px-3 text-sm text-foreground"
@@ -641,17 +644,17 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                   </div>
                 )}
                 <label className="flex flex-col gap-1 text-xs text-muted-foreground sm:col-span-2">
-                  Name
+                  {t('common:labels.name')}
                   <input
                     type="text" value={name} onChange={(e) => { setName(e.target.value); nameEdited.current = true; }} onBlur={commitName}
                     disabled={!canWrite}
-                    placeholder="e.g. Managed Services — Acme Co"
+                    placeholder={t('contracts.contractEditor.schedule.namePlaceholder')}
                     data-testid="contract-form-name"
                     className={`${baseInput} ${fieldRing(nameDirty, isSaved('name'))}`}
                   />
                 </label>
                 <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                  Billing timing
+                  {t('contracts.contractEditor.schedule.billingTiming')}
                   <select
                     value={billingTiming}
                     disabled={!canWrite || !scheduleEditable || isPending('timing')}
@@ -665,12 +668,12 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                     data-testid="contract-form-timing"
                     className={`${baseInput} ${fieldRing(false, isSaved('timing'))}`}
                   >
-                    <option value="advance">In advance</option>
-                    <option value="arrears">In arrears</option>
+                    <option value="advance">{t('contracts.shared.billingTiming.advance')}</option>
+                    <option value="arrears">{t('contracts.shared.billingTiming.arrears')}</option>
                   </select>
                 </label>
                 <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                  Billing cadence
+                  {t('contracts.contractEditor.schedule.billingCadence')}
                   <select
                     value={intervalCustom ? 'custom' : String(intervalMonths)}
                     disabled={!canWrite || !scheduleEditable || isPending('interval')}
@@ -687,13 +690,13 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                     data-testid="contract-form-interval"
                     className={`${baseInput} ${fieldRing(false, isSaved('interval'))}`}
                   >
-                    {INTERVAL_PRESETS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
-                    <option value="custom">Custom…</option>
+                    {INTERVAL_PRESETS.map((p) => <option key={p.value} value={p.value}>{t(p.label)}</option>)}
+                    <option value="custom">{t('contracts.contractEditor.schedule.customCadence')}</option>
                   </select>
                 </label>
                 {intervalCustom && (
                   <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                    Interval (months)
+                    {t('contracts.contractEditor.schedule.intervalMonths')}
                     <input
                       type="number" min="1" max="60" value={customMonths}
                       onChange={(e) => setCustomMonths(e.target.value)}
@@ -708,7 +711,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                   </label>
                 )}
                 <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                  Start date
+                  {t('contracts.contractEditor.schedule.startDate')}
                   <input
                     type="date" value={startDate} onChange={(e) => { setStartDate(e.target.value); startEdited.current = true; }} onBlur={commitStart}
                     disabled={!canWrite || !scheduleEditable}
@@ -721,10 +724,10 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
 
             {/* ── Renewal ──────────────────────────────────────────────── */}
             <fieldset className="min-w-0" data-testid="contract-renewal-group">
-              <legend className={legendCls}>Renewal</legend>
+              <legend className={legendCls}>{t('contracts.contractEditor.renewal.title')}</legend>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                  End date (optional)
+                  {t('contracts.contractEditor.renewal.endDateOptional')}
                   <input
                     type="date" value={endDate}
                     onChange={(e) => { setEndDate(e.target.value); endEdited.current = true; if (!e.target.value) setAutoRenew(false); }}
@@ -745,7 +748,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                     }}
                     data-testid="contract-form-auto-issue"
                   />
-                  Auto-issue generated invoices (otherwise they land as drafts)
+                  {t('contracts.contractEditor.renewal.autoIssue')}
                 </label>
                 <div className="sm:col-span-2">
                   <label className="flex items-center gap-2 text-sm" data-testid="contract-auto-renew-toggle">
@@ -773,12 +776,16 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                         }
                       }}
                     />
-                    <span>Auto-renew at end of term{!endDate ? ' (set an end date first)' : ''}</span>
+                    <span>
+                      {endDate
+                        ? t('contracts.contractEditor.renewal.autoRenewAtEnd')
+                        : t('contracts.contractEditor.renewal.autoRenewSetEndDate')}
+                    </span>
                   </label>
                   {autoRenew && (
                     <div className="mt-2 grid grid-cols-2 gap-3" data-testid="contract-renewal-fields">
                       <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                        Renewal term (months)
+                        {t('contracts.contractEditor.renewal.renewalTermMonths')}
                         <input
                           type="number" min={1} max={120} value={renewalTermMonths}
                           onChange={(e) => { setRenewalTermMonths(e.target.value); renewalTermEdited.current = true; }}
@@ -789,7 +796,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                         />
                       </label>
                       <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                        Advance notice (days)
+                        {t('contracts.contractEditor.renewal.advanceNoticeDays')}
                         <input
                           type="number" min={0} max={365} value={renewalNoticeDays}
                           onChange={(e) => { setRenewalNoticeDays(e.target.value); renewalNoticeEdited.current = true; }}
@@ -807,10 +814,10 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
 
             {/* ── Content ──────────────────────────────────────────────── */}
             <fieldset className="min-w-0" data-testid="contract-content-group">
-              <legend className={legendCls}>Content</legend>
+              <legend className={legendCls}>{t('contracts.contractEditor.content.title')}</legend>
               <div className="grid grid-cols-1 gap-3">
                 <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                  Notes (optional)
+                  {t('contracts.contractEditor.content.notesOptional')}
                   <textarea
                     value={notes} onChange={(e) => { setNotes(e.target.value); notesEdited.current = true; }} onBlur={commitNotes}
                     disabled={!canWrite} rows={2}
@@ -819,12 +826,12 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                   />
                 </label>
                 <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                  Terms (optional, shown on the invoice)
+                  {t('contracts.contractEditor.content.termsOptional')}
                   <textarea
                     value={terms} onChange={(e) => { setTerms(e.target.value); termsEdited.current = true; }} onBlur={commitTerms}
                     disabled={!canWrite} rows={2}
                     data-testid="contract-form-terms"
-                    placeholder="e.g. Net 30. Auto-renews unless cancelled 30 days prior."
+                    placeholder={t('contracts.contractEditor.content.termsPlaceholder')}
                     className={`${areaInput} ${fieldRing(termsDirty, isSaved('terms'))}`}
                   />
                 </label>
@@ -839,11 +846,11 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                 <table className="w-full text-sm" data-testid="contract-editor-lines">
                   <thead>
                     <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
-                      <th className="px-3 py-2 font-medium">Type</th>
-                      <th className="px-3 py-2 font-medium">Description</th>
-                      <th className="px-3 py-2 text-right font-medium">Unit price</th>
-                      <th className="px-3 py-2 text-right font-medium">Qty</th>
-                      <th className="px-3 py-2 text-center font-medium">Tax</th>
+                      <th className="px-3 py-2 font-medium">{t('common:labels.type')}</th>
+                      <th className="px-3 py-2 font-medium">{t('common:labels.description')}</th>
+                      <th className="px-3 py-2 text-right font-medium">{t('contracts.contractEditor.lines.unitPrice')}</th>
+                      <th className="px-3 py-2 text-right font-medium">{t('contracts.contractEditor.lines.qty')}</th>
+                      <th className="px-3 py-2 text-center font-medium">{t('contracts.contractEditor.lines.tax')}</th>
                       <th className="px-3 py-2" />
                     </tr>
                   </thead>
@@ -851,14 +858,14 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                     {lines.length === 0 ? (
                       <tr>
                         <td colSpan={6} className="px-3 py-8 text-center text-sm text-muted-foreground">
-                          No lines yet. Add a recurring line below.
+                          {t('contracts.contractEditor.lines.empty')}
                         </td>
                       </tr>
                     ) : (
                       lines.map((l, idx) => (
                         <tr key={l.id} className="border-t" data-testid={`line-row-${idx}`}>
                           <td className="px-3 py-2">
-                            {LINE_TYPE_LABELS[l.lineType]}
+                            {t(LINE_TYPE_LABELS[l.lineType])}
                             {l.lineType === 'per_device' && l.siteId
                               ? <span className="block text-xs text-muted-foreground">{siteName(l.siteId)}</span>
                               : null}
@@ -869,7 +876,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                             {AUTO_QTY_TYPES.has(l.lineType)
                               ? (estByLine.has(l.id)
                                   ? estByLine.get(l.id)
-                                  : <span className="text-muted-foreground">auto</span>)
+                                  : <span className="text-muted-foreground">{t('contracts.shared.values.auto')}</span>)
                               : (l.lineType === 'manual' ? (l.manualQuantity ?? '0') : '1')}
                           </td>
                           <td className="px-3 py-2 text-center">{l.taxable ? '✓' : '—'}</td>
@@ -880,7 +887,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                                 data-testid={`line-remove-${idx}`}
                                 className="rounded-md border border-destructive/40 px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
                               >
-                                Remove
+                                {t('common:actions.remove')}
                               </button>
                             )}
                           </td>
@@ -895,7 +902,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
               <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="contract-add-line">
                 {can('contracts', 'write') && (ecActive || pax8Active || (pax8IntegrationId && orgId)) && (
                   <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b pb-3">
-                    <span className="text-xs text-muted-foreground">Add from an integration — it pre-fills a line.</span>
+                    <span className="text-xs text-muted-foreground">{t('contracts.contractEditor.addLine.integrationHint')}</span>
                     <div className="flex flex-wrap items-center gap-2">
                       {pax8IntegrationId && orgId && (
                         <button
@@ -904,7 +911,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                           className="inline-flex h-8 shrink-0 items-center rounded-md border px-3 text-xs font-medium transition hover:bg-muted"
                           data-testid="contract-link-pax8"
                         >
-                          Link Pax8 subscription
+                          {t('contracts.contractEditor.addLine.linkPax8Subscription')}
                         </button>
                       )}
                       {pax8Active && (
@@ -914,7 +921,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                           className="inline-flex h-8 shrink-0 items-center rounded-md border px-3 text-xs font-medium transition hover:bg-muted"
                           data-testid="contract-import-pax8-catalog"
                         >
-                          Add from Pax8 catalog
+                          {t('contracts.contractEditor.addLine.addFromPax8Catalog')}
                         </button>
                       )}
                       {ecActive && (
@@ -924,7 +931,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                           className="inline-flex h-8 shrink-0 items-center rounded-md border px-3 text-xs font-medium transition hover:bg-muted"
                           data-testid="contract-import-distributor"
                         >
-                          Import from TD SYNNEX
+                          {t('contracts.contractEditor.addLine.importFromTdSynnex')}
                         </button>
                       )}
                     </div>
@@ -932,29 +939,29 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                 )}
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                    Line type
+                    {t('contracts.contractEditor.addLine.lineType')}
                     <select
                       value={lineType}
                       onChange={(e) => { setLineType(e.target.value as ContractLineType); setLineSiteId(''); }}
                       data-testid="contract-line-type"
                       className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
                     >
-                      {(Object.keys(LINE_TYPE_LABELS) as ContractLineType[]).map((t) => (
-                        <option key={t} value={t}>{LINE_TYPE_LABELS[t]}</option>
+                      {(Object.keys(LINE_TYPE_LABELS) as ContractLineType[]).map((type) => (
+                        <option key={type} value={type}>{t(LINE_TYPE_LABELS[type])}</option>
                       ))}
                     </select>
                   </label>
                   <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                    Description
+                    {t('common:labels.description')}
                     <input
                       type="text" value={lineDesc} onChange={(e) => setLineDesc(e.target.value)}
-                      placeholder="e.g. Workstation management"
+                      placeholder={t('contracts.contractEditor.addLine.descriptionPlaceholder')}
                       data-testid="contract-line-desc"
                       className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </label>
                   <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                    Unit price
+                    {t('contracts.contractEditor.addLine.unitPrice')}
                     <input
                       type="number" min="0" step="0.01" value={linePrice}
                       onChange={(e) => setLinePrice(e.target.value)}
@@ -964,7 +971,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                   </label>
                   {lineType === 'manual' && (
                     <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                      Quantity
+                      {t('contracts.contractEditor.addLine.quantity')}
                       <input
                         type="number" min="0" step="0.01" value={lineQty}
                         onChange={(e) => setLineQty(e.target.value)}
@@ -975,24 +982,24 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                   )}
                   {lineType === 'per_device' && (
                     <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                      Site (optional — scopes the device count)
+                      {t('contracts.contractEditor.addLine.siteOptional')}
                       <select
                         value={lineSiteId} onChange={(e) => setLineSiteId(e.target.value)}
                         data-testid="contract-line-site"
                         className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
                       >
-                        <option value="">All sites</option>
+                        <option value="">{t('contracts.contractEditor.addLine.allSites')}</option>
                         {sites.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
                       </select>
                     </label>
                   )}
                   {catalogItems.length > 0 && (
                     <div className="flex flex-col gap-1 text-xs text-muted-foreground">
-                      Link catalog item (optional)
+                      {t('contracts.contractEditor.addLine.linkCatalogItemOptional')}
                       {lineCatalogId ? (
                         <span className="inline-flex h-9 items-center gap-1.5 self-start rounded-md border bg-muted/40 px-2.5 text-sm text-foreground" data-testid="contract-line-catalog-picked">
-                          <span className="font-medium">{catalogItems.find((i) => i.id === lineCatalogId)?.name ?? 'Item'}</span>
-                          <button type="button" onClick={() => setLineCatalogId('')} aria-label="Clear catalog link" className="ml-1 text-muted-foreground hover:text-foreground">×</button>
+                          <span className="font-medium">{catalogItems.find((i) => i.id === lineCatalogId)?.name ?? t('contracts.contractEditor.addLine.itemFallback')}</span>
+                          <button type="button" onClick={() => setLineCatalogId('')} aria-label={t('contracts.contractEditor.addLine.clearCatalogLink')} className="ml-1 text-muted-foreground hover:text-foreground">×</button>
                         </span>
                       ) : (
                         <CatalogItemPicker
@@ -1004,7 +1011,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                             setLinePrice(it.unitPrice);
                           }}
                           testId="contract-line-catalog-picker"
-                          placeholder="Search catalog…"
+                          placeholder={t('contracts.contractEditor.addLine.searchCatalog')}
                         />
                       )}
                     </div>
@@ -1014,14 +1021,14 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                       type="checkbox" checked={lineTaxable} onChange={(e) => setLineTaxable(e.target.checked)}
                       data-testid="contract-line-taxable"
                     />
-                    Taxable
+                    {t('contracts.contractEditor.addLine.taxable')}
                   </label>
                 </div>
                 <div className="mt-3 flex items-center justify-between">
                   <span className="text-xs text-muted-foreground">
                     {newLineEstimate === null
-                      ? 'Quantity resolved automatically at billing time.'
-                      : `Line total: ${formatMoney(newLineEstimate, contract?.currencyCode)}`}
+                      ? t('contracts.contractEditor.addLine.quantityResolvedAutomatically')
+                      : t('contracts.contractEditor.addLine.lineTotal', { total: formatMoney(newLineEstimate, contract?.currencyCode) })}
                   </span>
                   {can('contracts', 'write') && (
                     <button
@@ -1029,7 +1036,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                       data-testid="add-line-btn"
                       className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
                     >
-                      Add line
+                      {t('contracts.contractEditor.addLine.addLine')}
                     </button>
                   )}
                 </div>
@@ -1041,9 +1048,9 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
         {/* ── summary + actions ───────────────────────────────────────── */}
         <div className="space-y-4">
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="contract-estimate">
-            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Estimated this period</h3>
+            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('contracts.contractEditor.estimate.title')}</h3>
             {isCreate ? (
-              <p className="text-sm text-muted-foreground">Save the contract, then add lines to see an estimate.</p>
+              <p className="text-sm text-muted-foreground">{t('contracts.contractEditor.estimate.saveFirst')}</p>
             ) : (
               <>
                 <p className="text-2xl font-semibold tabular-nums" data-testid="contract-estimate-total">
@@ -1051,18 +1058,20 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                     ? formatMoney(liveEstimate.periodTotal, contract?.currencyCode)
                     : formatMoney(estimate.known, contract?.currencyCode)}
                   {!liveEstimate && estimate.hasAuto && (
-                    <span className="ml-1 align-middle text-sm font-normal text-muted-foreground">+ auto</span>
+                    <span className="ml-1 align-middle text-sm font-normal text-muted-foreground">{t('contracts.contractEditor.estimate.plusAuto')}</span>
                   )}
                 </p>
                 {liveEstimate && liveEstimate.lines.some((l) => l.live) && (
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Includes live device / seat counts as of today.
+                    {t('contracts.contractEditor.estimate.includesLiveCounts')}
                   </p>
                 )}
                 {!liveEstimate && estimateFailed && (
                   <p className="mt-1 text-xs text-amber-600 dark:text-amber-500" data-testid="contract-estimate-stale">
-                    Couldn&rsquo;t load live counts{estimate.hasAuto ? ' — per-device/seat lines are not included in this total.' : '.'}{' '}
-                    <button type="button" onClick={() => void loadEstimate()} className="underline hover:text-foreground">Retry</button>
+                    {estimate.hasAuto
+                      ? t('contracts.contractEditor.estimate.loadLiveCountsFailedWithAuto')
+                      : t('contracts.contractEditor.estimate.loadLiveCountsFailed')}{' '}
+                    <button type="button" onClick={() => void loadEstimate()} className="underline hover:text-foreground">{t('common:actions.retry')}</button>
                   </p>
                 )}
               </>
@@ -1077,7 +1086,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                   data-testid="save-contract-btn"
                   className="inline-flex w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
                 >
-                  Create contract
+                  {t('contracts.contractEditor.actions.createContract')}
                 </button>
               )
             ) : (
@@ -1090,12 +1099,12 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                     data-testid="activate-contract-btn"
                     className="inline-flex w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
                   >
-                    Activate contract
+                    {t('contracts.contractEditor.actions.activateContract')}
                   </button>
                 )}
                 {contract?.status === 'draft' && lines.length === 0 && (
                   <p className="text-center text-xs text-muted-foreground" data-testid="contract-activate-hint">
-                    Add at least one line to activate.
+                    {t('contracts.contractEditor.actions.activateHint')}
                   </p>
                 )}
               </>
@@ -1140,13 +1149,13 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
           })();
         }}
         isLoading={pendingRemove ? isPending(`remove-${pendingRemove.id}`) : false}
-        title="Remove line"
+        title={t('contracts.contractEditor.removeLineConfirm.title')}
         message={
           pendingRemove
-            ? `This removes "${pendingRemove.description || 'this line'}" from the contract. This can't be undone.`
+            ? t('contracts.contractEditor.removeLineConfirm.message', { description: pendingRemove.description || t('contracts.contractEditor.removeLineConfirm.thisLine') })
             : ''
         }
-        confirmLabel="Remove line"
+        confirmLabel={t('contracts.contractEditor.removeLineConfirm.confirm')}
         confirmTestId="contract-line-remove-confirm"
       />
     </div>

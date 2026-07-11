@@ -1,0 +1,1125 @@
+{
+  "contracts": {
+    "shared": {
+      "status": {
+        "draft": "Rascunho",
+        "active": "Ativo",
+        "paused": "Pausado",
+        "cancelled": "Cancelado",
+        "expired": "Expirado"
+      },
+      "cadence": {
+        "monthly": "Mensal",
+        "quarterly": "Trimestral",
+        "annual": "Anual",
+        "custom": "A cada {{count}} meses"
+      },
+      "billingTiming": {
+        "advance": "Antecipado",
+        "arrears": "Em atraso"
+      },
+      "lineType": {
+        "flat": "Taxa fixa",
+        "perDevice": "Por dispositivo",
+        "perSeat": "Por assento",
+        "manual": "Quantidade manual"
+      },
+      "transition": {
+        "activate": "Ativar",
+        "pause": "Pausar",
+        "resume": "Retomar",
+        "cancel": "Cancelar"
+      },
+      "values": {
+        "auto": "auto"
+      }
+    },
+    "contractDetail": {
+      "fields": {
+        "billingTiming": "Momento de cobrança",
+        "cadence": "Cadência",
+        "startDate": "Data de início",
+        "endDate": "Data de término",
+        "nextBilling": "Próxima cobrança",
+        "autoIssue": "Emissão automática",
+        "renewal": "Renovação",
+        "estimatedPerPeriod": "Estim. / período",
+        "notes": "Observações"
+      },
+      "values": {
+        "noDrafts": "Não (rascunhos)"
+      },
+      "renewal": {
+        "autoRenews": "Renova automaticamente",
+        "everyMonths": "a cada {{count}} meses",
+        "currentTermEnds": "· termo atual termina em {{date}}",
+        "noticeDays": "· aviso de {{count}} dia(s)",
+        "doesNotAutoRenew": "Não renova automaticamente"
+      },
+      "table": {
+        "unitPrice": "Preço unitário",
+        "qty": "Qtd.",
+        "tax": "Imposto",
+        "empty": "Este contrato não tem linhas."
+      },
+      "billingHistory": {
+        "title": "Histórico de cobrança",
+        "period": "Período",
+        "generated": "Gerado",
+        "invoice": "Fatura",
+        "empty": "Nenhuma fatura foi gerada ainda.",
+        "viewInvoice": "Ver fatura"
+      },
+      "summary": {
+        "active": "Este contrato está ativo e gerará faturas na sua cadência.",
+        "inactive": "As faturas são geradas enquanto o contrato está ativo."
+      },
+      "actions": {
+        "generateInvoiceNow": "Gerar fatura agora",
+        "deleteDraft": "Excluir rascunho"
+      },
+      "errors": {
+        "transition": {
+          "activate": "Não foi possível ativar o contrato.",
+          "pause": "Não foi possível pausar o contrato.",
+          "resume": "Não foi possível retomar o contrato.",
+          "cancel": "Não foi possível cancelar o contrato."
+        },
+        "generateInvoice": "Não foi possível gerar uma fatura.",
+        "deleteDraft": "Não foi possível excluir o rascunho."
+      },
+      "toast": {
+        "transition": {
+          "activate": "Contrato ativado",
+          "pause": "Contrato pausado",
+          "resume": "Contrato retomado",
+          "cancel": "Contrato cancelado"
+        },
+        "invoiceGenerated": "Fatura gerada",
+        "draftDeleted": "Rascunho excluído"
+      },
+      "cancelConfirm": {
+        "title": "Cancelar este contrato?",
+        "message": "Cancelar interrompe todas as cobranças futuras deste contrato. Isso não pode ser desfeito — você teria que criar um novo contrato para retomar a cobrança.",
+        "confirm": "Cancelar contrato"
+      },
+      "deleteConfirm": {
+        "title": "Excluir contrato em rascunho",
+        "message": "Isso exclui permanentemente o contrato em rascunho. Esta ação não pode ser desfeita.",
+        "confirm": "Excluir rascunho"
+      }
+    },
+    "contractEditor": {
+      "validation": {
+        "enterMonths": "Informe o número de meses",
+        "enterRenewalTermBeforeSaving": "Informe um termo de renovação (meses) antes de salvar.",
+        "enterContractName": "Informe um nome para o contrato.",
+        "enterStartDate": "Informe uma data de início.",
+        "renewalTermRange": "Informe um termo de renovação entre 1 e 120 meses.",
+        "advanceNoticeRange": "Informe um aviso prévio entre 0 e 365 dias."
+      },
+      "errors": {
+        "loadOrganizations": "Falha ao carregar organizações.",
+        "loadSites": "Falha ao carregar sites.",
+        "createContract": "Não foi possível criar o contrato.",
+        "saveContract": "Não foi possível salvar o contrato.",
+        "addLine": "Não foi possível adicionar a linha.",
+        "removeLine": "Não foi possível remover a linha.",
+        "activateContract": "Não foi possível ativar o contrato."
+      },
+      "toast": {
+        "contractCreated": "Contrato criado",
+        "lineAdded": "Linha adicionada",
+        "lineRemoved": "Linha removida",
+        "contractActivated": "Contrato ativado"
+      },
+      "schedule": {
+        "title": "Agenda",
+        "selectOrganization": "Selecione uma organização…",
+        "namePlaceholder": "ex.: Serviços Gerenciados — Acme Co",
+        "billingTiming": "Momento de cobrança",
+        "billingCadence": "Cadência de cobrança",
+        "customCadence": "Personalizado…",
+        "intervalMonths": "Intervalo (meses)",
+        "startDate": "Data de início"
+      },
+      "renewal": {
+        "title": "Renovação",
+        "endDateOptional": "Data de término (opcional)",
+        "autoIssue": "Emitir faturas geradas automaticamente (caso contrário, elas ficam como rascunhos)",
+        "autoRenewAtEnd": "Renovar automaticamente no fim do termo",
+        "autoRenewSetEndDate": "Renovar automaticamente no fim do termo (defina uma data de término primeiro)",
+        "renewalTermMonths": "Termo de renovação (meses)",
+        "advanceNoticeDays": "Aviso prévio (dias)"
+      },
+      "content": {
+        "title": "Conteúdo",
+        "notesOptional": "Observações (opcional)",
+        "termsOptional": "Termos (opcional, exibidos na fatura)",
+        "termsPlaceholder": "ex.: 30 dias líquidos. Renova automaticamente salvo cancelamento 30 dias antes."
+      },
+      "lines": {
+        "unitPrice": "Preço unitário",
+        "qty": "Qtd.",
+        "tax": "Imposto",
+        "empty": "Ainda não há linhas. Adicione uma linha recorrente abaixo."
+      },
+      "addLine": {
+        "integrationHint": "Adicione de uma integração — ela preenche uma linha.",
+        "linkPax8Subscription": "Vincular assinatura Pax8",
+        "addFromPax8Catalog": "Adicionar do catálogo Pax8",
+        "importFromTdSynnex": "Importar da TD SYNNEX",
+        "lineType": "Tipo de linha",
+        "descriptionPlaceholder": "ex.: Gerenciamento de estações de trabalho",
+        "unitPrice": "Preço unitário",
+        "quantity": "Quantidade",
+        "siteOptional": "Site (opcional — limita a contagem de dispositivos)",
+        "allSites": "Todos os sites",
+        "linkCatalogItemOptional": "Vincular item do catálogo (opcional)",
+        "itemFallback": "Item",
+        "clearCatalogLink": "Limpar vínculo do catálogo",
+        "searchCatalog": "Pesquisar catálogo…",
+        "taxable": "Tributável",
+        "quantityResolvedAutomatically": "Quantidade resolvida automaticamente no momento da cobrança.",
+        "lineTotal": "Total da linha: {{total}}",
+        "addLine": "Adicionar linha"
+      },
+      "estimate": {
+        "title": "Estimado neste período",
+        "saveFirst": "Salve o contrato e adicione linhas para ver uma estimativa.",
+        "plusAuto": "+ auto",
+        "includesLiveCounts": "Inclui contagens ao vivo de dispositivos / assentos até hoje.",
+        "loadLiveCountsFailed": "Não foi possível carregar as contagens ao vivo.",
+        "loadLiveCountsFailedWithAuto": "Não foi possível carregar as contagens ao vivo — linhas por dispositivo/assento não estão incluídas neste total."
+      },
+      "actions": {
+        "createContract": "Criar contrato",
+        "activateContract": "Ativar contrato",
+        "activateHint": "Adicione pelo menos uma linha para ativar."
+      },
+      "removeLineConfirm": {
+        "title": "Remover linha",
+        "message": "Isso remove \"{{description}}\" do contrato. Esta ação não pode ser desfeita.",
+        "thisLine": "esta linha",
+        "confirm": "Remover linha"
+      }
+    },
+    "contractWorkspace": {
+      "errors": {
+        "missingContractId": "ID do contrato ausente",
+        "notFound": "Contrato não encontrado.",
+        "loadContract": "Falha ao carregar contrato",
+        "unavailable": "Contrato indisponível."
+      },
+      "backToContracts": "← Contratos",
+      "backToContractsText": "Voltar para contratos",
+      "newContract": "Novo contrato",
+      "doneEditing": "Concluir edição"
+    },
+    "contractsList": {
+      "title": "Contratos",
+      "description": "Acordos recorrentes que geram automaticamente faturas em rascunho conforme uma cadência.",
+      "newContract": "Novo contrato",
+      "accessDenied": "Você não tem permissão para visualizar contratos.",
+      "errors": {
+        "loadOrganizations": "Falha ao carregar organizações.",
+        "loadContracts": "Falha ao carregar contratos"
+      },
+      "filters": {
+        "allStatuses": "Todos os status",
+        "allOrganizations": "Todas as organizações",
+        "searchPlaceholder": "Pesquisar nome ou org.",
+        "searchAria": "Pesquisar contratos"
+      },
+      "stats": {
+        "estimatedMonthlyRecurring": "Recorrência mensal estim.",
+        "activeContractCount": "{{count}} contratos ativos",
+        "activeContractCount_one": "{{count}} contrato ativo",
+        "activeContractCount_other": "{{count}} contratos ativos"
+      },
+      "actions": {
+        "tryAgain": "Tentar novamente",
+        "clearFilters": "Limpar filtros"
+      },
+      "empty": {
+        "noMatches": "Nenhum contrato corresponde a estes filtros.",
+        "title": "Ainda não há contratos",
+        "description": "Contratos cobram uma organização em uma cadência recorrente e geram automaticamente as faturas para você.",
+        "createFirst": "Criar seu primeiro contrato"
+      },
+      "table": {
+        "selectAllAria": "Selecionar todos os contratos",
+        "startDate": "Data de início",
+        "cadence": "Cadência",
+        "nextBill": "Próxima cobrança",
+        "estimatedPerPeriod": "Estim. / período",
+        "selectContractAria": "Selecionar contrato {{name}}"
+      },
+      "bulk": {
+        "deleteDrafts": "Excluir rascunhos",
+        "deleteDrafts_one": "Excluir rascunho",
+        "deleteDrafts_other": "Excluir rascunhos"
+      },
+      "toast": {
+        "bulkLimit": "Selecione até {{limit}} por vez.",
+        "bulkFailed": "Falha na ação em massa {{verb}}. Tente novamente.",
+        "bulkPartial": "{{succeeded}} {{verb}}, {{skipped}} ignorados{{failedText}}",
+        "failedSuffix": ", {{failed}} falharam",
+        "bulkSuccess": "{{succeeded}} {{verb}}"
+      },
+      "cancelConfirm": {
+        "title": "Cancelar contratos",
+        "message": "Cancelar {{count}} contrato(s) selecionado(s)? Contratos ativos e pausados serão cancelados; isso não pode ser desfeito.",
+        "confirm": "Cancelar contratos"
+      },
+      "deleteConfirm": {
+        "title": "Excluir contratos em rascunho",
+        "message": "Excluir {{count}} contratos em rascunho? Somente rascunhos são excluídos{{untouched}}; isso não pode ser desfeito.",
+        "message_one": "Excluir {{count}} contrato em rascunho? Somente rascunhos são excluídos{{untouched}}; isso não pode ser desfeito.",
+        "message_other": "Excluir {{count}} contratos em rascunho? Somente rascunhos são excluídos{{untouched}}; isso não pode ser desfeito.",
+        "untouchedSuffix": " — quaisquer contratos ativos ou pausados na sua seleção não serão alterados",
+        "confirm": "Excluir rascunhos"
+      }
+    },
+    "contractPax8Drawer": {
+      "title": "Vincular uma assinatura Pax8",
+      "subtitlePicked": "Escolha uma linha neste contrato (ou crie uma) para vincular.",
+      "subtitleChoose": "Escolha uma assinatura sincronizada para adicionar a este contrato.",
+      "loadingSubscriptions": "Carregando assinaturas…",
+      "empty": "Nenhuma assinatura Pax8 foi sincronizada para esta organização ainda. Sincronize-as em Integrações → Pax8.",
+      "subscriptionFallback": "Assinatura Pax8",
+      "quantity": "qtd. {{quantity}}",
+      "priceEach": "{{currency}} {{price}}/un.",
+      "alreadyLinked": "já vinculada",
+      "relink": "Vincular novamente",
+      "link": "Vincular",
+      "errors": {
+        "loadSubscriptions": "Não foi possível carregar assinaturas Pax8 para esta organização."
+      }
+    }
+  },
+  "quotes": {
+    "editor": {
+      "actions": {
+        "addImage": "Adicionar imagem",
+        "addLine": "Adicionar linha",
+        "addSection": "Adicionar seção",
+        "adding": "Adicionando…",
+        "cancel": "Cancelar",
+        "fetch": "Buscar",
+        "fetchAddImage": "Buscar e adicionar imagem",
+        "fromUrl": "Da URL",
+        "hideCostMargin": "Ocultar custo e margem",
+        "moveLineDown": "Mover linha para baixo",
+        "moveLineTo": "Mover linha para",
+        "moveLineToAnotherTable": "Mover linha para outra tabela de preços",
+        "moveLineUp": "Mover linha para cima",
+        "moveSectionDown": "Mover seção para baixo",
+        "moveSectionUp": "Mover seção para cima",
+        "moveTo": "Mover para",
+        "remove": "Remover",
+        "removeImage": "Remover imagem",
+        "removeLine": "Remover linha",
+        "removeSection": "Remover seção",
+        "replaceImage": "Substituir imagem",
+        "showCostMargin": "Mostrar custo e margem",
+        "uploadAddImage": "Enviar e adicionar imagem",
+        "uploading": "Enviando…"
+      },
+      "addLine": {
+        "catalogItem": "Item do catálogo",
+        "manualLine": "Linha manual",
+        "searchDistributor": "Pesquisar distribuidor",
+        "searchPax8": "Pesquisar Pax8"
+      },
+      "addSection": {
+        "captionPlaceholder": "Legenda (opcional)",
+        "headingPlaceholder": "Texto do título",
+        "imageHelp": "PNG, JPEG ou WebP, até 5 MB.",
+        "imageUrlPlaceholder": "https://example.com/photo.png",
+        "richTextPlaceholder": "Texto da proposta…",
+        "title": "Adicionar seção",
+        "uploadFile": "Enviar arquivo"
+      },
+      "autoFill": {
+        "filledDescription": "descrição",
+        "filledEstimatedCost": "custo estimado {{amount}}",
+        "filledName": "nome",
+        "filledPriceWithDefaultMarkup": "preço {{amount}} (margem padrão de {{markup}}%)",
+        "filledTaxableOff": "tributável: desativado",
+        "filledTaxableOn": "tributável: ativado",
+        "help": "Pesquisa na web e preenche nome, descrição, imposto e um custo estimado. Você define o preço.",
+        "helpWithDefaultMarkup": "Pesquisa na web, preenche nome, descrição e imposto, estima seu custo e precifica a linha com sua margem padrão de {{markup}}%.",
+        "label": "Preenchido automaticamente:",
+        "review": "Revise e ajuste antes de adicionar."
+      },
+      "autosaveHint": "As alterações são salvas automaticamente enquanto você edita. Um contorno âmbar marca uma edição que ainda não foi salva.",
+      "block": {
+        "imageSectionPdf": "Seção de imagem (renderizada no PDF).",
+        "richTextContentAria": "Conteúdo de rich text"
+      },
+      "blockTypes": {
+        "heading": "Título",
+        "image": "Imagem",
+        "pricingTable": "Tabela de preços",
+        "richText": "Texto rico"
+      },
+      "catalog": {
+        "addSome": "Adicione alguns no Catálogo de Produtos",
+        "empty": "Nenhum item de catálogo.",
+        "loadError": "Não foi possível carregar o catálogo. Reabra o editor para tentar novamente — seus itens existentes estão seguros.",
+        "searchPlaceholder": "Pesquisar catálogo por nome ou SKU"
+      },
+      "categories": {
+        "hardware": "Hardware",
+        "other": "Outro",
+        "service": "Serviço",
+        "software": "Software"
+      },
+      "confirm": {
+        "removeLineMessage": "Isso remove \"{{name}}\" da cotação. Isso não pode ser desfeito.",
+        "removeLineTitle": "Remover linha",
+        "removeSectionMessage": "Isso remove esta seção. Isso não pode ser desfeito.",
+        "removeSectionTitle": "Remover seção",
+        "removeSectionWithLines_one": "Isso remove a tabela de preços e seu {{count}} item de linha. Isso não pode ser desfeito.",
+        "removeSectionWithLines_other": "Isso remove a tabela de preços e seus {{count}} itens de linha. Isso não pode ser desfeito.",
+        "thisLine": "esta linha",
+        "removeSectionWithLines": "Remove Section With Lines"
+      },
+      "deposit": {
+        "due": "Depósito devido",
+        "eligibleAria": "Elegível para depósito",
+        "label": "Depósito",
+        "none": "Sem depósito",
+        "percent": "Percentual",
+        "percentOfDue": "Percentual do valor devido na aceitação",
+        "selectedLines": "Linhas selecionadas",
+        "selectedLinesHelp": "Marque as linhas únicas elegíveis para depósito em cada tabela de preços.",
+        "short": "Depósito"
+      },
+      "emptyBlocks": "Ainda não há conteúdo. Adicione um título, rich text ou uma tabela de preços abaixo.",
+      "errors": {
+        "addCatalogItem": "Não foi possível adicionar o item do catálogo.",
+        "addDistributorItem": "Não foi possível adicionar o item do distribuidor.",
+        "addImageSection": "Não foi possível adicionar a seção de imagem.",
+        "addLine": "Não foi possível adicionar a linha.",
+        "addPax8Product": "Não foi possível adicionar o produto Pax8.",
+        "addSection": "Não foi possível adicionar a seção.",
+        "costZeroOrMore": "Informe um custo de 0 ou mais.",
+        "fetchImageFromUrl": "Não foi possível buscar a imagem dessa URL.",
+        "imageAddedSectionFailed": "Imagem adicionada, mas a adição da seção falhou.",
+        "imageTooLarge": "A imagem deve ter 5 MB ou menos.",
+        "importDistributorItem": "Não foi possível importar o item do distribuidor.",
+        "importPax8Product": "Não foi possível importar o produto Pax8.",
+        "lineAddedCatalogSaveFailed": "Linha adicionada, mas o salvamento no catálogo falhou.",
+        "lineNeedsNameOrDescription": "Uma linha precisa de um nome ou uma descrição.",
+        "moveLine": "Não foi possível mover a linha.",
+        "quantityWholeGreaterThanZero": "Informe uma quantidade inteira maior que 0.",
+        "removeLine": "Não foi possível remover a linha.",
+        "removeSection": "Não foi possível remover a seção.",
+        "reorderBlocks": "Não foi possível reordenar os blocos.",
+        "reorderLines": "Não foi possível reordenar as linhas.",
+        "reorderSections": "Não foi possível reordenar as seções.",
+        "saveTerms": "Não foi possível salvar os termos.",
+        "saveTitle": "Não foi possível salvar o título.",
+        "unitPriceZeroOrMore": "Informe um preço unitário de 0 ou mais.",
+        "updateBlock": "Não foi possível atualizar o bloco.",
+        "updateDeposit": "Não foi possível atualizar o depósito.",
+        "updateLine": "Não foi possível atualizar a linha.",
+        "updateSection": "Não foi possível atualizar a seção.",
+        "uploadImage": "Não foi possível enviar a imagem."
+      },
+      "image": {
+        "alt": "Imagem da cotação",
+        "previewUnavailable": "Prévia da imagem indisponível."
+      },
+      "internal": {
+        "full": "Interno · não mostrado ao cliente",
+        "short": "Interno"
+      },
+      "line": {
+        "billing": "Cobrança",
+        "billingFrequencyAria": "Frequência de cobrança",
+        "cost": "Custo",
+        "descriptionAria": "Descrição da linha",
+        "descriptionOptional": "Descrição (opcional)",
+        "enterCostFirstMarkup": "Informe um custo primeiro para definir a margem %",
+        "enterCostFirstMarkupSentence": "Informe um custo primeiro para definir a margem %.",
+        "imageUrlAria": "URL da imagem",
+        "markup": "Margem",
+        "markupPercent": "Margem %",
+        "nameAria": "Nome da linha",
+        "namePlaceholder": "Nome",
+        "partNumberAbbr": "PN",
+        "partNumberOptional": "Nº da peça (opcional)",
+        "profit": "Lucro",
+        "quantityAria": "Quantidade",
+        "saveToCatalog": "Salvar no catálogo",
+        "sku": "SKU",
+        "skuOptional": "SKU (opcional)",
+        "unitCost": "Custo unitário"
+      },
+      "liveTotals": {
+        "annualRecurring": "Recorrente anual",
+        "dueOnAcceptance": "Devido na aceitação",
+        "firstPeriodTotal": "Total do primeiro período (incl. recorrente)",
+        "monthlyRecurring": "Recorrente mensal",
+        "oneTime": "Único",
+        "srUpdated": "Totais atualizados. Único {{oneTime}}, recorrente mensal {{monthly}}, recorrente anual {{annual}}, devido na aceitação {{due}}.",
+        "srUpdatedWithTax": "Totais atualizados. Único {{oneTime}}, recorrente mensal {{monthly}}, recorrente anual {{annual}}, imposto {{tax}}, devido na aceitação {{due}}.",
+        "tax": "Imposto",
+        "taxRate": "Alíquota de imposto",
+        "taxRateHelp": "Aplica-se às linhas marcadas como tributáveis. Definido nas configurações de imposto da organização.",
+        "title": "Totais ao vivo"
+      },
+      "recurrence": {
+        "annual": "Anual",
+        "monthly": "Mensal",
+        "one_time": "Único"
+      },
+      "status": {
+        "saved": "Salvo"
+      },
+      "success": {
+        "imageSectionAdded": "Seção de imagem adicionada",
+        "itemAdded": "Item adicionado",
+        "lineAdded": "Linha adicionada",
+        "lineMoved": "Linha movida",
+        "lineRemoved": "Linha removida",
+        "savedToCatalog": "Salvo no catálogo",
+        "sectionAdded": "Seção adicionada",
+        "sectionRemoved": "Seção removida"
+      },
+      "symbols": {
+        "check": "✓",
+        "notAvailable": "—",
+        "percent": "%",
+        "plusSeparator": " + "
+      },
+      "table": {
+        "emptyLines": "Ainda não há linhas. Adicione um item de catálogo ou uma linha manual abaixo.",
+        "fallbackName": "Tabela de preços {{number}}",
+        "item": "Item",
+        "labelAria": "Rótulo da tabela de preços",
+        "labelPlaceholder": "Rótulo da tabela (opcional, ex.: Serviços mensais)",
+        "notTaxable": "Não tributável",
+        "qty": "Qtd.",
+        "recurrence": "Recorrência",
+        "scrollAria": "Tabela de preços — role lateralmente para imposto, total e ações da linha",
+        "tax": "Imposto",
+        "taxTitle": "Imposto por linha. O total de imposto do cabeçalho é autoritativo e pode diferir por um centavo de arredondamento.",
+        "taxable": "Tributável",
+        "total": "Total",
+        "unitPrice": "Preço unitário"
+      },
+      "terms": {
+        "placeholder": "Termos de pagamento, cláusulas de garantia, etc.",
+        "title": "Termos e Condições"
+      },
+      "title": {
+        "label": "Título da cotação",
+        "placeholder": "ex.: Atualização da rede do escritório"
+      },
+      "units": {
+        "perMonth": "/mês",
+        "perYear": "/ano"
+      }
+    },
+    "actions": {
+      "deleteConfirm": {
+        "message": "Esta ação exclui permanentemente a cotação em rascunho. Não é possível desfazê-la.",
+        "title": "Excluir cotação em rascunho"
+      },
+      "deleteDraft": "Excluir rascunho",
+      "deleteError": "Não foi possível excluir o rascunho.",
+      "deleteSuccess": "Rascunho excluído",
+      "downloadPdf": "Baixar PDF",
+      "emptyHint": "Adicione pelo menos um item antes de enviar.",
+      "savingHint": "Salvando alterações… O envio será liberado quando tudo estiver salvo.",
+      "savingTitle": "Salvando suas alterações — o envio será liberado quando tudo estiver salvo.",
+      "sendConfirm": {
+        "message": "Enviaremos esta proposta por e-mail para {{orgName}} e a marcaremos como Enviada — {{amount}} devidos na aceitação. Não é possível desfazer esta ação.",
+        "title": "Enviar esta proposta?"
+      },
+      "sendError": "Não foi possível enviar a proposta.",
+      "sendProposal": "Enviar proposta",
+      "sendSuccess": "Proposta enviada — ela será marcada como Visualizada e Aceita quando {{orgName}} abrir e assinar.",
+      "sending": "Enviando…"
+    },
+    "detail": {
+      "created": "Criada",
+      "customer": "Cliente",
+      "expires": "Expira em {{date}}",
+      "from": "De",
+      "imageUnavailable": "Imagem indisponível",
+      "issued": "Emitida",
+      "lifecycle": {
+        "accepted": "Aceito",
+        "declined": "Recusado",
+        "sent": "Enviado",
+        "viewed": "Visualizado"
+      },
+      "pricing": "Preços",
+      "proposalImageAlt": "Imagem da proposta",
+      "table": {
+        "item": "Item",
+        "noLines": "Nenhuma linha nesta tabela.",
+        "qty": "Qtd.",
+        "recurrence": "Recorrência",
+        "tax": "Imposto",
+        "total": "Total",
+        "unitPrice": "Preço unitário"
+      },
+      "tableScrollAria": "{{label}} — role para os lados para ver mais colunas",
+      "terms": "Termos",
+      "totals": {
+        "annualRecurring": "Recorrência anual",
+        "dueOnAcceptance": "Devido na aceitação",
+        "firstPeriod": "Total do primeiro período (inclui recorrência)",
+        "monthlyRecurring": "Recorrência mensal",
+        "oneTime": "Pagamento único",
+        "tax": "Imposto",
+        "title": "Totais"
+      },
+      "viewInvoice": "Ver fatura"
+    },
+    "distributorLookup": {
+      "available": "{{count}} disponíveis",
+      "cost": "custo {{currency}} {{amount}}",
+      "importAndAdd": "Importar e adicionar",
+      "lookupFailed": "Falha na consulta.",
+      "msrp": "MSRP {{amount}}",
+      "placeholder": "SKU da SYNNEX ou nº da peça do fabricante",
+      "searching": "Buscando…",
+      "sellPrice": "Preço de venda",
+      "sku": "SKU {{sku}}"
+    },
+    "document": {
+      "additionalItems": "Itens adicionais",
+      "draft": "Rascunho",
+      "empty": "Esta proposta ainda não tem conteúdo.",
+      "imageUnavailable": "Imagem indisponível",
+      "issued": "Emitida",
+      "preparedFor": "Preparado para",
+      "preview": {
+        "description": "Isto é o que o cliente vê no link da proposta.",
+        "downloadPdf": "Baixar PDF",
+        "preparing": "Preparando…"
+      },
+      "pricing": "Preços",
+      "pricingScrollAria": "Preços — role para os lados para ver mais colunas",
+      "proposal": "Proposta",
+      "proposalImageAlt": "Imagem da proposta",
+      "recurrence": {
+        "annual": "Anual",
+        "monthly": "Mensal"
+      },
+      "table": {
+        "amount": "Valor",
+        "description": "Descrição",
+        "qty": "Qtd.",
+        "tax": "Imposto",
+        "unitPrice": "Preço unitário"
+      },
+      "terms": "Termos",
+      "totals": {
+        "annualRecurring": "Recorrência anual",
+        "depositDue": "Entrada devida",
+        "dueOnAcceptance": "Devido na aceitação",
+        "monthlyRecurring": "Recorrência mensal",
+        "recurringNote": "Aceitar esta proposta fatura agora os encargos únicos. As linhas recorrentes são faturadas conforme sua própria programação.",
+        "remainingBalance": "Saldo restante",
+        "subtotal": "Subtotal",
+        "tax": "Imposto"
+      },
+      "validUntil": "Válida até"
+    },
+    "page": {
+      "accessDenied": "Você não tem permissão para visualizar cotações.",
+      "bulk": {
+        "deleteDrafts": "Excluir rascunhos",
+        "deletedVerb": "excluídas",
+        "failed": "Falha na operação em lote: {{verb}}. Tente novamente.",
+        "limit": "Selecione até {{limit}} por vez.",
+        "partial": "{{succeeded}} {{verb}}, {{skipped}} ignoradas{{failedText}}",
+        "send": "Enviar",
+        "sentVerb": "enviadas",
+        "success": "{{succeeded}} {{verb}}"
+      },
+      "bulkDelete": {
+        "message": "Excluir {{count}} cotação(ões) selecionada(s)? Somente cotações em RASCUNHO serão excluídas; esta ação não pode ser desfeita.",
+        "title": "Excluir cotações em rascunho"
+      },
+      "bulkSend": {
+        "message": "Enviar por e-mail {{count}} proposta(s) selecionada(s) aos clientes? Esta ação não pode ser desfeita.",
+        "title": "Enviar cotações"
+      },
+      "create": {
+        "description": "Escolha o cliente desta proposta. Em seguida, você poderá adicionar blocos e preços.",
+        "error": "Não foi possível criar uma cotação em rascunho.",
+        "genericError": "Não foi possível criar a cotação.",
+        "noSpecificSite": "Nenhum site específico",
+        "selectOrganization": "Selecione uma organização…",
+        "siteOptional": "Site (opcional)",
+        "submit": "Criar rascunho",
+        "success": "Cotação em rascunho criada",
+        "title": "Nova cotação",
+        "titleOptional": "Título (opcional)",
+        "titlePlaceholder": "ex.: Atualização da rede do escritório",
+        "working": "Processando…"
+      },
+      "deposit": {
+        "deposit": "Entrada",
+        "paid": "Entrada paga",
+        "unpaid": "Entrada não paga"
+      },
+      "empty": {
+        "clearFilters": "Limpar filtros",
+        "description": "Crie uma proposta com títulos, texto rico e uma tabela de preços e envie-a para aceitação.",
+        "filtered": "Nenhuma cotação corresponde a estes filtros.",
+        "title": "Nenhuma cotação ainda"
+      },
+      "errors": {
+        "loadOrganizations": "Falha ao carregar organizações.",
+        "loadQuotes": "Falha ao carregar cotações",
+        "loadSites": "Falha ao carregar sites."
+      },
+      "filters": {
+        "allOrganizations": "Todas as organizações",
+        "allStatuses": "Todos os status",
+        "organizationAria": "Filtrar por organização",
+        "searchAria": "Buscar cotações",
+        "searchPlaceholder": "Buscar número ou organização",
+        "statusAria": "Filtrar por status"
+      },
+      "newQuote": "Nova cotação",
+      "stats": {
+        "awaiting": "{{count}} aguardando",
+        "drafts": "Rascunhos",
+        "notYetSent": "ainda não enviadas",
+        "outForSignature": "Aguardando assinatura"
+      },
+      "subtitle": "Crie propostas com blocos ricos e preços recorrentes e envie-as aos clientes.",
+      "table": {
+        "created": "Criada",
+        "draftQuote": "Cotação em rascunho",
+        "number": "Número",
+        "selectAll": "Selecionar todas as cotações",
+        "selectQuote": "Selecionar cotação {{quote}}",
+        "total": "Total"
+      },
+      "title": "Cotações",
+      "tryAgain": "Tentar novamente"
+    },
+    "pax8ProductLookup": {
+      "cost": "custo {{currency}} {{amount}}",
+      "importAndAdd": "Importar e adicionar",
+      "option": "Opção {{number}}",
+      "placeholder": "Produto, fornecedor ou SKU",
+      "searchFailed": "Falha na busca.",
+      "searching": "Buscando…",
+      "sellPrice": "Preço de venda",
+      "term": "Prazo"
+    },
+    "workspace": {
+      "backLabel": "Cotações",
+      "backToQuotes": "Voltar para cotações",
+      "draftTitle": "Cotação em rascunho",
+      "errors": {
+        "loadFailed": "Falha ao carregar cotação",
+        "missingId": "ID da cotação ausente",
+        "notFound": "Cotação não encontrada.",
+        "unavailable": "Cotação indisponível."
+      },
+      "tabs": {
+        "editor": "Editor",
+        "preview": "Visualização",
+        "detail": "Detalhes"
+      }
+    },
+    "status": {
+      "draft": "Rascunho",
+      "sent": "Enviado",
+      "viewed": "Visualizado",
+      "accepted": "Aceito",
+      "declined": "Recusado",
+      "expired": "Expirado",
+      "converted": "Convertido"
+    }
+  },
+  "billingUi": {
+    "margin": {
+      "cost": "Custo",
+      "missingCost": "A estimativa de lucro está incompleta — {{count}} linha sem custo.",
+      "missingCost_one": "A estimativa de lucro está incompleta — {{count}} linha sem custo.",
+      "missingCost_other": "A estimativa de lucro está incompleta — {{count}} linhas sem custo.",
+      "profitAnnual": "Lucro (anual)",
+      "profitMonthly": "Lucro (mensal)",
+      "profitOneTime": "Lucro (pagamento único)",
+      "title": "Margem (interna)"
+    },
+    "recurringBillingNote": "Aceitar esta cotação fatura agora apenas os encargos únicos. As linhas recorrentes (mensais + anuais) são faturadas depois, conforme sua própria programação. O total do primeiro período combina os encargos únicos com o primeiro período de cada recorrência.",
+    "units": {
+      "perMonth": "/mês",
+      "perYear": "/ano"
+    },
+    "unsaved": "Não salvo"
+  },
+  "bulk": {
+    "bulkActionBar": {
+      "selected": "{{count}} selecionado(s)"
+    }
+  },
+  "invoice": {
+    "status": {
+      "draft": "Rascunho",
+      "sent": "Enviado",
+      "issued": "Emitida",
+      "partially_paid": "Parcialmente paga",
+      "overdue": "Vencida",
+      "paid": "Paga",
+      "void": "Anulada"
+    }
+  },
+  "invoiceActions": {
+    "deleteConfirm": {
+      "message": "Esta ação exclui permanentemente a fatura em rascunho. Não é possível desfazê-la.",
+      "title": "Excluir fatura em rascunho"
+    },
+    "deleteDraft": "Excluir rascunho",
+    "deleteError": "Não foi possível excluir o rascunho.",
+    "deleteSuccess": "Rascunho excluído",
+    "downloadPdf": "Baixar PDF",
+    "downloadPdfError": "Não foi possível baixar o PDF da fatura.",
+    "issue": "Emitir",
+    "issueAndSend": "Emitir e enviar",
+    "issueError": "Não foi possível emitir a fatura.",
+    "issueNoEmailWarning": "Fatura emitida — mas nenhum e-mail foi enviado (contato de cobrança/e-mail não configurado)",
+    "issueSendConfirm": {
+      "customerFallback": "o cliente",
+      "message": "Esta ação emite a fatura e a envia por e-mail para {{customer}} no valor de {{amount}}. Não é possível desfazê-la.",
+      "title": "Emitir e enviar esta fatura?"
+    },
+    "issueSendError": "Fatura emitida, mas houve falha no envio.",
+    "issueSentSuccess": "Fatura emitida e enviada",
+    "issueSuccess": "Fatura emitida",
+    "issuing": "Emitindo…",
+    "noVisibleLineHint": "Adicione pelo menos uma linha visível ao cliente para emitir.",
+    "preparing": "Preparando…"
+  },
+  "invoiceDetail": {
+    "accountingView": "Visão contábil (custo, margem e componentes ocultos)",
+    "deposit": {
+      "duePrefix": "Entrada de",
+      "dueSuffix": "devida — {{paid}} de {{total}} pagos.",
+      "paid": "Entrada paga — saldo restante de {{balance}}."
+    },
+    "dueDate": {
+      "aria": "Data de vencimento",
+      "display": "Vencimento em {{date}}",
+      "updateError": "Não foi possível atualizar a data de vencimento.",
+      "updateSuccess": "Data de vencimento atualizada"
+    },
+    "from": "De",
+    "lines": {
+      "cost": "Custo",
+      "description": "Descrição",
+      "hiddenMarker": " (oculta)",
+      "margin": "Margem",
+      "price": "Preço",
+      "qty": "Qtd.",
+      "tax": "Imposto",
+      "total": "Total"
+    },
+    "paymentMethods": {
+      "cash": "Dinheiro",
+      "check": "Cheque",
+      "bank_transfer": "Transferência bancária",
+      "card": "Cartão",
+      "other": "Outro"
+    },
+    "payments": {
+      "amount": "Valor",
+      "amountRequired": "Informe um valor de pagamento para registrá-lo",
+      "connectStripe": "Conecte o Stripe para aceitar pagamentos online.",
+      "date": "Data do pagamento",
+      "draftHint": "Emita esta fatura para registrar pagamentos.",
+      "empty": "Nenhum pagamento registrado.",
+      "linkCopied": "Link de pagamento copiado para a área de transferência",
+      "linkError": "Não foi possível criar um link de pagamento.",
+      "loadFailed": "Não foi possível carregar os pagamentos.",
+      "method": "Forma de pagamento",
+      "noLinkReturned": "Nenhum link de pagamento foi retornado. Tente novamente.",
+      "online": "Online",
+      "record": "Registrar pagamento",
+      "recordConfirm": {
+        "message": "Registrar um pagamento de {{amount}} ({{method}}) com data de {{date}}?",
+        "title": "Registrar pagamento"
+      },
+      "recordError": "Não foi possível registrar o pagamento.",
+      "recordSuccess": "Pagamento registrado",
+      "reference": "Referência",
+      "referencePlaceholder": "Referência (opcional)",
+      "reverse": "Estornar",
+      "reverseAria": "Estornar pagamento de {{amount}}",
+      "reverseConfirm": {
+        "label": "Estornar pagamento",
+        "message": "Esta ação estorna o pagamento de {{amount}} por {{method}} e o remove do saldo da fatura. Não é possível desfazê-la.",
+        "title": "Estornar este pagamento?"
+      },
+      "reverseError": "Não foi possível estornar o pagamento.",
+      "reverseSuccess": "Pagamento estornado",
+      "sendLink": "Enviar link de pagamento",
+      "setUp": "Configurar",
+      "shareLinkPrompt": "Compartilhe este link de pagamento com o cliente:",
+      "stripeNudge": "Conecte o Stripe para aceitar pagamentos online com cartão.",
+      "title": "Pagamentos",
+      "viaStripe": "via Stripe"
+    },
+    "requestPayment": {
+      "invoiceSent": "Fatura enviada",
+      "noEmailWarning": "Nenhum e-mail foi enviado (contato de cobrança/e-mail não configurado)",
+      "paymentRequestSent": "Solicitação de pagamento enviada",
+      "requestPayment": "Solicitar pagamento",
+      "sendError": "Não foi possível enviar a fatura.",
+      "sendInvoice": "Enviar fatura"
+    },
+    "summary": {
+      "balanceDue": "Saldo devedor",
+      "paid": "Paga",
+      "subtotal": "Subtotal",
+      "tax": "Imposto",
+      "total": "Total"
+    },
+    "terms": "Termos e condições",
+    "void": {
+      "button": "Anular fatura",
+      "description": "A anulação libera o trabalho faturado para que possa ser faturado novamente. Não é possível desfazer esta ação.",
+      "error": "Não foi possível anular a fatura.",
+      "reason": "Motivo",
+      "reissue": "Reemitir como novo rascunho",
+      "reissuedSuccess": "Fatura anulada e reemitida como rascunho",
+      "success": "Fatura anulada",
+      "title": "Anular fatura"
+    }
+  },
+  "invoiceDocument": {
+    "billTo": "Faturar para",
+    "documentType": "Fatura",
+    "due": "Vencimento",
+    "empty": "Esta fatura ainda não tem itens.",
+    "fallbackTitle": "Fatura",
+    "issued": "Emitida",
+    "preview": {
+      "description": "Isto é o que o cliente vê na fatura.",
+      "downloadError": "Não foi possível baixar o PDF da fatura.",
+      "downloadPdf": "Baixar PDF",
+      "preparing": "Preparando…"
+    },
+    "table": {
+      "amount": "Valor",
+      "description": "Descrição",
+      "qty": "Qtd.",
+      "tax": "Imposto",
+      "unitPrice": "Preço unitário"
+    },
+    "terms": "Termos e condições",
+    "totals": {
+      "amountDue": "Valor devido",
+      "paid": "Paga",
+      "subtotal": "Subtotal",
+      "tax": "Imposto",
+      "total": "Total"
+    }
+  },
+  "invoiceWorkspace": {
+    "backLabel": "Faturas",
+    "backToInvoices": "Voltar para faturas",
+    "draftTitle": "Fatura em rascunho",
+    "errors": {
+      "loadFailed": "Falha ao carregar fatura",
+      "missingId": "ID da fatura ausente",
+      "notFound": "Fatura não encontrada.",
+      "unavailable": "Fatura indisponível."
+    },
+    "tabs": {
+      "editor": "Editor",
+      "preview": "Visualização",
+      "detail": "Detalhes"
+    }
+  },
+  "invoicesPage": {
+    "accessDenied": "Você não tem permissão para visualizar faturas.",
+    "bulk": {
+      "deleteDrafts": "Excluir rascunhos",
+      "deletedVerb": "excluídas",
+      "failed": "Falha na operação em lote: {{verb}}. Tente novamente.",
+      "issue": "Emitir",
+      "issuedVerb": "emitidas",
+      "limit": "Selecione até {{limit}} por vez.",
+      "partial": "{{succeeded}} {{verb}}, {{skipped}} ignoradas{{failedText}}",
+      "success": "{{succeeded}} {{verb}}",
+      "void": "Anulada",
+      "voidedVerb": "anuladas"
+    },
+    "bulkDelete": {
+      "message": "Excluir {{count}} fatura(s) selecionada(s)? Somente faturas em RASCUNHO serão excluídas; esta ação não pode ser desfeita.",
+      "title": "Excluir faturas em rascunho"
+    },
+    "bulkVoid": {
+      "description": "A anulação libera o trabalho faturado para que possa ser faturado novamente. Não é possível desfazer esta ação.",
+      "reason": "Motivo",
+      "submit": "Anular faturas",
+      "title": "Anular faturas"
+    },
+    "deposit": {
+      "paid": "Entrada paga",
+      "unpaid": "Entrada não paga"
+    },
+    "dialog": {
+      "allSites": "Todos os sites",
+      "assemble": "Montar",
+      "assembleError": "Não foi possível montar uma fatura para esse período.",
+      "assembleFromWork": "Montar a partir do trabalho",
+      "assembleSuccess": "Fatura em rascunho montada",
+      "blankInvoice": "Fatura em branco",
+      "createDraft": "Criar rascunho",
+      "createError": "Não foi possível criar uma fatura em rascunho.",
+      "createGenericError": "Não foi possível criar a fatura.",
+      "createSuccess": "Fatura em rascunho criada",
+      "description": "Monte o trabalho não faturado em um rascunho ou inicie uma fatura em branco.",
+      "from": "De",
+      "selectOrganization": "Selecione uma organização…",
+      "siteOptional": "Site (opcional)",
+      "title": "Nova fatura",
+      "to": "Até",
+      "working": "Processando…"
+    },
+    "empty": {
+      "description": "Monte horas e peças não faturadas em um rascunho ou inicie uma fatura em branco.",
+      "filtered": "Nenhuma fatura corresponde a estes filtros.",
+      "title": "Nenhuma fatura ainda"
+    },
+    "errors": {
+      "loadInvoices": "Falha ao carregar faturas",
+      "loadOrganizations": "Falha ao carregar organizações.",
+      "loadSites": "Falha ao carregar sites."
+    },
+    "filters": {
+      "allOrganizations": "Todas as organizações",
+      "allStatuses": "Todos os status",
+      "issuedFrom": "Emitida a partir de",
+      "issuedTo": "Emitida até",
+      "organizationAria": "Filtrar por organização",
+      "searchAria": "Buscar faturas",
+      "searchPlaceholder": "Buscar número ou organização",
+      "statusAria": "Filtrar por status"
+    },
+    "newInvoice": "Nova fatura",
+    "stats": {
+      "drafts": "Rascunhos",
+      "needsFollowUp": "requer acompanhamento",
+      "notYetIssued": "ainda não emitidas",
+      "open": "{{count}} em aberto",
+      "outstanding": "Em aberto",
+      "overdue": "Vencida"
+    },
+    "subtitle": "Monte, emita e acompanhe faturas de clientes.",
+    "table": {
+      "balance": "Saldo",
+      "draftInvoice": "Fatura em rascunho",
+      "due": "Vencimento",
+      "issued": "Emitida",
+      "number": "Número",
+      "selectAll": "Selecionar todas as faturas",
+      "selectInvoice": "Selecionar fatura {{invoice}}",
+      "total": "Total"
+    },
+    "title": "Faturas",
+    "tryAgain": "Tentar novamente"
+  },
+  "orgBillingSettings": {
+    "address": {
+      "city": "Cidade",
+      "country": "País",
+      "line1": "Endereço - linha 1",
+      "line2": "Endereço - linha 2",
+      "postal": "CEP",
+      "region": "Região / estado",
+      "title": "Endereço de cobrança"
+    },
+    "contact": {
+      "description": "As cotações e faturas são enviadas para este endereço. Sem ele, enviar uma proposta a marca como Enviada, mas nenhum e-mail é enviado.",
+      "email": "E-mail do contato",
+      "emailInvalid": "Informe um endereço de e-mail válido",
+      "emailPlaceholder": "faturamento@cliente.exemplo",
+      "name": "Nome do contato",
+      "title": "Contato de cobrança"
+    },
+    "loadError": "Falha ao carregar as configurações de cobrança.",
+    "loading": "Carregando configurações de cobrança…",
+    "saveButton": "Salvar configurações de cobrança",
+    "saveError": "Falha ao salvar as configurações de cobrança da organização.",
+    "saveSuccess": "Configurações de cobrança da organização salvas",
+    "tax": {
+      "partnerDefault": "Padrão do parceiro",
+      "taxExempt": "Isento de impostos",
+      "taxId": "ID fiscal",
+      "taxRate": "Alíquota de imposto (%)",
+      "title": "Imposto"
+    }
+  },
+  "partnerBillingSettings": {
+    "company": {
+      "addressLine1": "Endereço - linha 1",
+      "addressLine2": "Endereço - linha 2",
+      "city": "Cidade",
+      "country": "País",
+      "defaultTerms": "Termos e condições padrão",
+      "defaultTermsPlaceholder": "Termos de pagamento, avisos legais, condições de garantia etc.",
+      "description": "Exibido como vendedor nas cotações e faturas.",
+      "name": "Nome da empresa",
+      "phone": "Telefone",
+      "postal": "CEP",
+      "region": "Estado / região",
+      "title": "Contato da empresa",
+      "website": "Site"
+    },
+    "defaults": {
+      "aiStyle": "Estilo dos textos de produtos por IA",
+      "aiStyleHelp": "Define como “Preencher automaticamente pela web” e “Aprimorar com IA” escrevem nomes e descrições de produtos em cotações, faturas e itens do catálogo. Deixe em branco para usar o formato padrão.",
+      "aiStylePlaceholder": "Padrão: o nome do item é um nome curto, genérico e adequado ao cliente (\"Ponto de acesso sem fio\"); a descrição começa com o nome completo do produto, seguido de especificações em tópicos, detalhadas o suficiente para conferir um pedido. Descreva aqui seu próprio estilo para substituí-lo.",
+      "autoTaxHardware": "Aplicar imposto automaticamente a itens de hardware",
+      "autoTaxHardwareHelp": "Itens de hardware recém-importados são marcados como tributáveis por padrão.",
+      "currencyCode": "Código da moeda",
+      "defaultMarkup": "Margem padrão (%)",
+      "defaultTaxRate": "Alíquota de imposto padrão (%)",
+      "description": "Moeda, impostos, numeração e termos aplicados a novas cotações e faturas de todos os clientes.",
+      "invoiceFooter": "Rodapé da fatura",
+      "invoiceFooterPlaceholder": "Instruções de pagamento, agradecimento etc.",
+      "invoiceNumberPrefix": "Prefixo do número da fatura",
+      "markupHelp": "Margem padrão sobre o custo do distribuidor, usada para preencher o preço de venda ao importar itens do catálogo. A margem bruta resultante é exibida durante a importação.",
+      "paymentTermsDays": "Prazo de pagamento (dias)",
+      "title": "Padrões de cobrança"
+    },
+    "loadError": "Falha ao carregar as configurações de cobrança.",
+    "loading": "Carregando configurações de cobrança…",
+    "saveButton": "Salvar configurações de cobrança",
+    "saveError": "Falha ao salvar as configurações de cobrança.",
+    "saveSuccess": "Configurações de cobrança salvas"
+  },
+  "shared": {
+    "documentWorkspace": {
+      "backAria": "Voltar para {{label}}"
+    },
+    "sortableTh": {
+      "ascending": "crescente",
+      "descending": "decrescente",
+      "sortBy": "Ordenar por {{label}}",
+      "sortByWithDirection": "Ordenar por {{label}}, {{direction}}"
+    },
+    "statusPill": {
+      "prefix": "Status:"
+    }
+  }
+}
