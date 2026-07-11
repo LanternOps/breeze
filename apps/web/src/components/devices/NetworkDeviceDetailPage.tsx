@@ -264,9 +264,10 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
   // `mapAsset` normalizes `type` to a valid key, but `approvalStatus` is passed
   // through raw — guard both lookups so an out-of-enum value from the API can't
   // throw during render (which, with no error boundary, would blank the page).
-  const typeMeta = typeConfig[asset.type] ?? { label: asset.type, color: typeConfig.unknown.color };
-  const approvalMeta = approvalStatusConfig[asset.approvalStatus] ??
-    { label: asset.approvalStatus, color: approvalStatusConfig.dismissed.color };
+  const typeMeta = typeConfig[asset.type];
+  const approvalMeta = approvalStatusConfig[asset.approvalStatus];
+  const typeLabel = typeMeta ? t(typeMeta.labelKey) : asset.type;
+  const approvalLabel = approvalMeta ? t(approvalMeta.labelKey) : asset.approvalStatus;
 
   return (
     <div className="space-y-6" data-testid="network-device-detail">
@@ -286,14 +287,14 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
               <h1 className="text-lg font-semibold" data-testid="network-device-name">{displayName}</h1>
               <span
                 data-testid="network-asset-type"
-                className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${typeMeta.color}`}
+                className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${typeMeta?.color ?? typeConfig.unknown.color}`}
               >
-                {typeMeta.label}
+                {typeLabel}
               </span>
               <span
-                className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${approvalMeta.color}`}
+                className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${approvalMeta?.color ?? approvalStatusConfig.dismissed.color}`}
               >
-                {approvalMeta.label}
+                {approvalLabel}
               </span>
               <span
                 data-testid="network-device-status"
@@ -368,8 +369,8 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
                       disabled={typeSaving}
                       onChange={(e) => void changeType(e.target.value as DiscoveredAssetType)}
                     >
-                      {(Object.keys(typeConfig) as DiscoveredAssetType[]).map((t) => (
-                        <option key={t} value={t}>{typeConfig[t].label}</option>
+                      {(Object.keys(typeConfig) as DiscoveredAssetType[]).map((type) => (
+                        <option key={type} value={type}>{t(typeConfig[type].labelKey)}</option>
                       ))}
                     </select>
                     {asset.typeSource === 'manual' && (
@@ -387,7 +388,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
                   {asset.typeSource === 'manual' && (
                     <p className="mt-1 text-[11px] text-muted-foreground">
                       {asset.detectedType
-                        ? t('networkDeviceDetailPage.manuallySetWithDetected', { type: typeConfig[asset.detectedType].label })
+                        ? t('networkDeviceDetailPage.manuallySetWithDetected', { type: t(typeConfig[asset.detectedType].labelKey) })
                         : t('networkDeviceDetailPage.manuallySet')}
                     </p>
                   )}

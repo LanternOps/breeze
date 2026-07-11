@@ -97,24 +97,24 @@ export type ApiDiscoveryAsset = {
 type DeviceOption = { id: string; name: string; online?: boolean };
 
 export const typeConfig: Record<DiscoveredAssetType, { labelKey: string; color: string }> = {
-  workstation: { labelKey: 'assetTypes.workstation', color: 'bg-indigo-500/20 text-indigo-700 border-indigo-500/40' },
-  server: { labelKey: 'assetTypes.server', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40' },
-  printer: { labelKey: 'assetTypes.printer', color: 'bg-orange-500/20 text-orange-700 border-orange-500/40' },
-  router: { labelKey: 'assetTypes.router', color: 'bg-emerald-500/20 text-emerald-700 border-emerald-500/40' },
-  switch: { labelKey: 'assetTypes.switch', color: 'bg-cyan-500/20 text-cyan-700 border-cyan-500/40' },
-  firewall: { labelKey: 'assetTypes.firewall', color: 'bg-red-500/20 text-red-700 border-red-500/40' },
-  access_point: { labelKey: 'assetTypes.accessPoint', color: 'bg-teal-500/20 text-teal-700 border-teal-500/40' },
-  phone: { labelKey: 'assetTypes.phone', color: 'bg-violet-500/20 text-violet-700 border-violet-500/40' },
-  iot: { labelKey: 'assetTypes.iot', color: 'bg-amber-500/20 text-amber-700 border-amber-500/40' },
-  camera: { labelKey: 'assetTypes.camera', color: 'bg-pink-500/20 text-pink-700 border-pink-500/40' },
-  nas: { labelKey: 'assetTypes.nas', color: 'bg-sky-500/20 text-sky-700 border-sky-500/40' },
-  unknown: { labelKey: 'assetTypes.unknown', color: 'bg-muted text-muted-foreground border-muted' }
+  workstation: { labelKey: 'discovery:assetTypes.workstation', color: 'bg-indigo-500/20 text-indigo-700 border-indigo-500/40' },
+  server: { labelKey: 'discovery:assetTypes.server', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40' },
+  printer: { labelKey: 'discovery:assetTypes.printer', color: 'bg-orange-500/20 text-orange-700 border-orange-500/40' },
+  router: { labelKey: 'discovery:assetTypes.router', color: 'bg-emerald-500/20 text-emerald-700 border-emerald-500/40' },
+  switch: { labelKey: 'discovery:assetTypes.switch', color: 'bg-cyan-500/20 text-cyan-700 border-cyan-500/40' },
+  firewall: { labelKey: 'discovery:assetTypes.firewall', color: 'bg-red-500/20 text-red-700 border-red-500/40' },
+  access_point: { labelKey: 'discovery:assetTypes.accessPoint', color: 'bg-teal-500/20 text-teal-700 border-teal-500/40' },
+  phone: { labelKey: 'discovery:assetTypes.phone', color: 'bg-violet-500/20 text-violet-700 border-violet-500/40' },
+  iot: { labelKey: 'discovery:assetTypes.iot', color: 'bg-amber-500/20 text-amber-700 border-amber-500/40' },
+  camera: { labelKey: 'discovery:assetTypes.camera', color: 'bg-pink-500/20 text-pink-700 border-pink-500/40' },
+  nas: { labelKey: 'discovery:assetTypes.nas', color: 'bg-sky-500/20 text-sky-700 border-sky-500/40' },
+  unknown: { labelKey: 'discovery:assetTypes.unknown', color: 'bg-muted text-muted-foreground border-muted' }
 };
 
 export const approvalStatusConfig: Record<DiscoveredAssetApprovalStatus, { labelKey: string; color: string }> = {
-  pending:   { labelKey: 'approvalStatus.pending',   color: 'bg-amber-500/20 text-amber-700 border-amber-500/40' },
-  approved:  { labelKey: 'approvalStatus.approved',  color: 'bg-success/15 text-success border-success/30' },
-  dismissed: { labelKey: 'approvalStatus.dismissed', color: 'bg-muted text-muted-foreground border-muted' }
+  pending:   { labelKey: 'discovery:approvalStatus.pending',   color: 'bg-amber-500/20 text-amber-700 border-amber-500/40' },
+  approved:  { labelKey: 'discovery:approvalStatus.approved',  color: 'bg-success/15 text-success border-success/30' },
+  dismissed: { labelKey: 'discovery:approvalStatus.dismissed', color: 'bg-muted text-muted-foreground border-muted' }
 };
 
 const assetTypeMap: Record<string, DiscoveredAssetType> = {
@@ -602,11 +602,11 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
             {filterDivider}
             <FilterChipGroup
               label={t('common:labels.type')}
-              chips={(Object.keys(typeConfig) as DiscoveredAssetType[]).map(t => ({
-                key: t,
-                label: t(typeConfig[t].labelKey),
-                count: typeCounts[t] ?? 0,
-                color: typeConfig[t].color,
+              chips={(Object.keys(typeConfig) as DiscoveredAssetType[]).map(assetType => ({
+                key: assetType,
+                label: t(typeConfig[assetType].labelKey),
+                count: typeCounts[assetType] ?? 0,
+                color: typeConfig[assetType].color,
               }))}
               activeKey={typeFilter === 'all' ? null : typeFilter}
               onToggle={key => setTypeFilter(typeFilter === key ? 'all' : key)}

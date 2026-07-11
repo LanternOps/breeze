@@ -441,12 +441,12 @@ export default function FileManager({
       ));
     } catch (error) {
       console.error('[FileManager] Download failed:', error);
-      setTransfers(prev => prev.map(t =>
-        t.id === transferId ? {
-          ...t,
+      setTransfers(prev => prev.map(transfer =>
+        transfer.id === transferId ? {
+          ...transfer,
           status: 'failed',
           error: error instanceof Error ? error.message : t('fileManager.errors.download')
-        } : t
+        } : transfer
       ));
     }
   }, [deviceId]);

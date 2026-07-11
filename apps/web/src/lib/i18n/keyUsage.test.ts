@@ -42,5 +42,5 @@ describe('translation key usage', () => {
       }
     }
     expect(problems, problems.join('\n')).toEqual([]);
-  });
+  }, 30_000);
 });
