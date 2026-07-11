@@ -359,7 +359,7 @@ const partnerSettingsSchema = z.object({
   timezone: z.string().refine(isValidIanaTimezone, 'Invalid IANA timezone').optional(),
   dateFormat: z.enum(['MM/DD/YYYY', 'DD/MM/YYYY', 'YYYY-MM-DD']).optional(),
   timeFormat: z.enum(['12h', '24h']).optional(),
-  language: z.literal('en').optional(),
+  language: z.enum(['en', 'pt-BR']).optional(),
   businessHours: z.object({
     preset: z.enum(['24/7', 'business', 'extended', 'custom']),
     custom: z.record(z.string(), dayScheduleSchema).optional()

@@ -11,6 +11,7 @@ import {
 import { extractApiError } from '@/lib/apiError';
 import {
   applyAppearancePreferences,
+  applyResolvedLocalePreferences,
   type Density,
   type FontPreference,
   type LocalePreference,
@@ -939,6 +940,7 @@ export async function fetchAndApplyPreferences(): Promise<void> {
       useAuthStore.getState().updateUser({ preferences: data.preferences });
       applyAppearancePreferences(data.preferences);
     }
+    applyResolvedLocalePreferences(data.preferences?.locale, data.partnerDefaultLocale);
   } catch {
     // Non-critical — localStorage still has the cached theme
   }

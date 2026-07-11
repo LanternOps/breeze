@@ -43,6 +43,7 @@ export const DENSITY_STORAGE_KEY = 'breeze.density';
 export const FONT_STORAGE_KEY = 'breeze.font';
 export const TIME_FORMAT_STORAGE_KEY = 'breeze.timeFormat';
 export const LOCALE_STORAGE_KEY = 'breeze.locale';
+export const PARTNER_LOCALE_STORAGE_KEY = 'breeze.partnerLocale';
 export const LINKED_PROFILE_COLLAPSE_STORAGE_KEY = 'breeze.collapseLinkedProfiles';
 
 export function isValidTheme(value: unknown): value is ThemePreference {
@@ -115,6 +116,17 @@ function writeStorageValue(key: string, value: string): void {
   }
 }
 
+function removeStorageValue(key: string): void {
+  if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') {
+    return;
+  }
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    // Storage unavailable: the runtime resolution still uses browser defaults.
+  }
+}
+
 export function readThemePreference(): ThemePreference {
   return normalizeTheme(readStorageValue(THEME_STORAGE_KEY)) ?? DEFAULT_THEME;
 }
@@ -133,6 +145,10 @@ export function readTimeFormatPreference(): TimeFormatPreference | undefined {
 
 export function readLocalePreference(): LocalePreference | undefined {
   return normalizeLocale(readStorageValue(LOCALE_STORAGE_KEY));
+}
+
+export function readPartnerLocalePreference(): LocalePreference | undefined {
+  return normalizeLocale(readStorageValue(PARTNER_LOCALE_STORAGE_KEY));
 }
 
 export function readLinkedProfileCollapsePreference(): LinkedProfileCollapsePreference {
@@ -178,7 +194,7 @@ export function detectBrowserLocale(): LocalePreference {
 }
 
 export function readResolvedLocalePreference(): LocalePreference {
-  return readLocalePreference() ?? detectBrowserLocale();
+  return readLocalePreference() ?? readPartnerLocalePreference() ?? detectBrowserLocale();
 }
 
 export function applyThemePreference(value: ThemePreference): void {
@@ -231,6 +247,43 @@ export function writeLocalePreference(value: LocalePreference): void {
   if (!isValidLocale(value)) return;
   writeStorageValue(LOCALE_STORAGE_KEY, value);
   notifyLocale(value);
+}
+
+/** Cache the current partner default without turning it into a user choice. */
+export function writePartnerLocalePreference(value: LocalePreference | undefined): void {
+  if (value === undefined) {
+    removeStorageValue(PARTNER_LOCALE_STORAGE_KEY);
+  } else if (isValidLocale(value)) {
+    writeStorageValue(PARTNER_LOCALE_STORAGE_KEY, value);
+  } else {
+    return;
+  }
+  notifyLocale(readResolvedLocalePreference());
+}
+
+/**
+ * Synchronize server-owned locale state after authentication.
+ *
+ * An absent user locale deliberately clears a previous account's cached user
+ * choice before resolving the partner default, preventing cross-account locale
+ * leakage on shared browsers.
+ */
+export function applyResolvedLocalePreferences(
+  userLocale: unknown,
+  partnerLocale: unknown,
+): LocalePreference {
+  const normalizedUser = normalizeLocale(userLocale);
+  const normalizedPartner = normalizeLocale(partnerLocale);
+
+  if (normalizedUser) writeStorageValue(LOCALE_STORAGE_KEY, normalizedUser);
+  else removeStorageValue(LOCALE_STORAGE_KEY);
+
+  if (normalizedPartner) writeStorageValue(PARTNER_LOCALE_STORAGE_KEY, normalizedPartner);
+  else removeStorageValue(PARTNER_LOCALE_STORAGE_KEY);
+
+  const resolved = normalizedUser ?? normalizedPartner ?? detectBrowserLocale();
+  notifyLocale(resolved);
+  return resolved;
 }
 
 export function writeLinkedProfileCollapsePreference(value: LinkedProfileCollapsePreference): void {

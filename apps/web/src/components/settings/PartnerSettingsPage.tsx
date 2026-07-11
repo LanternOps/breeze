@@ -29,7 +29,7 @@ import PartnerBrandingTab from './PartnerBrandingTab';
 import PartnerAiBudgetsTab from './PartnerAiBudgetsTab';
 import PartnerRemoteAccessTab from './PartnerRemoteAccessTab';
 import PartnerCompanyTab from './PartnerCompanyTab';
-import PartnerRegionalTab, { DEFAULT_BUSINESS_HOURS } from './PartnerRegionalTab';
+import PartnerRegionalTab, { DEFAULT_BUSINESS_HOURS, type PartnerLocale } from './PartnerRegionalTab';
 import LoginBrandingCard from './LoginBrandingCard';
 import type {
   PartnerSettings,
@@ -175,6 +175,7 @@ export default function PartnerSettingsPage() {
   const [timezone, setTimezone] = useState('UTC');
   const [dateFormat, setDateFormat] = useState<DateFormat>('MM/DD/YYYY');
   const [timeFormat, setTimeFormat] = useState<TimeFormat>('12h');
+  const [language, setLanguage] = useState<PartnerLocale>('en');
   const [businessHoursPreset, setBusinessHoursPreset] = useState<BusinessHoursPreset>('business');
   const [customHours, setCustomHours] = useState<Record<string, DaySchedule>>(DEFAULT_BUSINESS_HOURS);
   const [contactName, setContactName] = useState('');
@@ -204,7 +205,7 @@ export default function PartnerSettingsPage() {
   // Drives the disabled-when-clean Save button and the per-tab dots in the nav.
   const currentSnapshot: Snapshot = useMemo(() => ({
     company: JSON.stringify({ companyName, address, contactName, contactEmail, contactPhone, contactWebsite }),
-    regional: JSON.stringify({ timezone, dateFormat, timeFormat, businessHoursPreset, customHours }),
+    regional: JSON.stringify({ timezone, dateFormat, timeFormat, language, businessHoursPreset, customHours }),
     security: JSON.stringify(securityData),
     notifications: JSON.stringify(notificationsData),
     eventLogs: JSON.stringify(eventLogsData),
@@ -214,7 +215,7 @@ export default function PartnerSettingsPage() {
     remoteAccess: JSON.stringify(remoteAccessData),
   }), [
     companyName, address, contactName, contactEmail, contactPhone, contactWebsite,
-    timezone, dateFormat, timeFormat, businessHoursPreset, customHours,
+    timezone, dateFormat, timeFormat, language, businessHoursPreset, customHours,
     securityData, notificationsData, eventLogsData, defaultsData, brandingData,
     aiBudgetsData, remoteAccessData,
   ]);
@@ -268,6 +269,7 @@ export default function PartnerSettingsPage() {
       setTimezone(settings.timezone || data.timezone || 'UTC');
       setDateFormat(settings.dateFormat || 'MM/DD/YYYY');
       setTimeFormat(settings.timeFormat || '12h');
+      setLanguage((settings.language as string) === 'pt-BR' ? 'pt-BR' : 'en');
       setBusinessHoursPreset(settings.businessHours?.preset || 'business');
       if (settings.businessHours?.custom) {
         setCustomHours({ ...DEFAULT_BUSINESS_HOURS, ...settings.businessHours.custom });
@@ -366,7 +368,7 @@ export default function PartnerSettingsPage() {
     setError(undefined);
 
     const settings: Record<string, unknown> = {
-      timezone, dateFormat, timeFormat, language: 'en',
+      timezone, dateFormat, timeFormat, language,
       businessHours: {
         preset: businessHoursPreset,
         ...(businessHoursPreset === 'custom' ? { custom: customHours } : {})
@@ -573,11 +575,13 @@ export default function PartnerSettingsPage() {
               timezone={timezone}
               dateFormat={dateFormat}
               timeFormat={timeFormat}
+              language={language}
               businessHoursPreset={businessHoursPreset}
               customHours={customHours}
               onTimezoneChange={setTimezone}
               onDateFormatChange={setDateFormat}
               onTimeFormatChange={setTimeFormat}
+              onLanguageChange={setLanguage}
               onBusinessHoursPresetChange={setBusinessHoursPreset}
               onCustomHoursChange={updateCustomHours}
             />

@@ -6,7 +6,7 @@ import { and, eq, or } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import { nanoid } from 'nanoid';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { users, partnerUsers, organizationUsers, roles, organizations, permissions, rolePermissions } from '../db/schema';
+import { users, partnerUsers, organizationUsers, roles, organizations, partners, permissions, rolePermissions } from '../db/schema';
 import { authMiddleware, hasSatisfiedMfa, requireMfa, requirePermission } from '../middleware/auth';
 import {
   MAX_AVATAR_SIZE_BYTES,
@@ -468,6 +468,20 @@ userRoutes.get('/me', async (c) => {
 
   const requiresSetup = userRequiresSetup(user);
 
+  // The partner default is derived only from the authenticated tenant context.
+  // Do not accept a partner id from query/body input here: doing so would let a
+  // caller probe another tenant's settings while loading their own profile.
+  let partnerDefaultLocale: 'en' | 'pt-BR' | null = null;
+  if (auth.partnerId) {
+    const [partner] = await db
+      .select({ settings: partners.settings })
+      .from(partners)
+      .where(eq(partners.id, auth.partnerId))
+      .limit(1);
+    const language = (partner?.settings as { language?: unknown } | null | undefined)?.language;
+    partnerDefaultLocale = language === 'en' || language === 'pt-BR' ? language : null;
+  }
+
   // Surface the user's effective permission grants so the web app can hide nav
   // items and action buttons the user can't use. This is UX only — every route
   // still enforces requirePermission server-side.
@@ -487,6 +501,7 @@ userRoutes.get('/me', async (c) => {
     partnerId: auth.partnerId,
     orgId: auth.orgId,
     scope: auth.scope,
+    partnerDefaultLocale,
     permissions: userPerms?.permissions ?? [],
     requiresSetup
   });

@@ -21,6 +21,8 @@ vi.mock('./BrandHeader', () => ({ default: () => null }));
 
 import Sidebar, { navSections, topLevelNav } from './Sidebar';
 import { i18n } from '../../lib/i18n';
+import en from '../../locales/en/common.json';
+import ptBR from '../../locales/pt-BR/common.json';
 
 beforeEach(async () => {
   localStorage.clear();
@@ -139,6 +141,55 @@ describe('sidebar i18n seed', () => {
       expect(i18n.t(item.labelKey!, { lng: 'pt-BR' })).not.toBe(item.labelKey);
       expect(i18n.t(item.labelKey!, { lng: 'en' })).toBe(item.name);
     }
+  });
+
+  it('gives every section and nested item a key that resolves in both locales', () => {
+    for (const navSection of navSections) {
+      expect(navSection.labelKey, `missing labelKey for section ${navSection.label}`).toBeTruthy();
+      expect(i18n.t(navSection.labelKey!, { lng: 'en' })).toBe(navSection.label);
+      expect(i18n.t(navSection.labelKey!, { lng: 'pt-BR' })).not.toBe(navSection.labelKey);
+
+      for (const item of navSection.items) {
+        expect(item.labelKey, `missing labelKey for ${navSection.label} > ${item.name}`).toBeTruthy();
+        expect(i18n.t(item.labelKey!, { lng: 'en' })).toBe(item.name);
+        expect(i18n.t(item.labelKey!, { lng: 'pt-BR' })).not.toBe(item.labelKey);
+      }
+    }
+  });
+
+  it('keeps the English and pt-BR navigation keys in exact parity', () => {
+    expect(Object.keys(ptBR.nav).sort()).toEqual(Object.keys(en.nav).sort());
+  });
+
+  it('keeps hrefs and permission identifiers stable while translating labels', async () => {
+    const navigationContract = [...topLevelNav, ...navSections.flatMap((navSection) => navSection.items)]
+      .map((item) => ({
+        name: item.name,
+        href: item.href,
+        requiredPermission: item.requiredPermission,
+      }));
+
+    for (const locale of ['en', 'pt-BR']) {
+      await i18n.changeLanguage(locale);
+      for (const item of [...topLevelNav, ...navSections.flatMap((navSection) => navSection.items)]) {
+        i18n.t(item.labelKey!);
+      }
+
+      expect([...topLevelNav, ...navSections.flatMap((navSection) => navSection.items)].map((item) => ({
+        name: item.name,
+        href: item.href,
+        requiredPermission: item.requiredPermission,
+      }))).toEqual(navigationContract);
+    }
+  });
+
+  it('renders a translated nested item without changing its href', async () => {
+    await i18n.changeLanguage('pt-BR');
+    render(<Sidebar currentPath="/monitoring" />);
+
+    const nestedLink = await screen.findByText('Monitoramento de Rede');
+    expect(nestedLink.closest('a')).toHaveAttribute('href', '/monitoring');
+    expect(screen.queryByText('Network Monitor')).not.toBeInTheDocument();
   });
 
   it('switches an already-mounted sidebar when the language changes', async () => {

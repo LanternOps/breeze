@@ -195,9 +195,9 @@ export const navSections: NavSection[] = [
     labelKey: 'nav.sectionAiFleet',
     icon: BrainCircuit,
     items: [
-      { name: 'Fleet', href: '/fleet', icon: BrainCircuit },
-      { name: 'AI Workspace', href: '/workspace', icon: MessagesSquare },
-      { name: 'AI for Office', href: '/ai-for-office', icon: FileSpreadsheet, partnerScopeOnly: true, requiresAiForOffice: true },
+      { name: 'Fleet', labelKey: 'nav.fleet', href: '/fleet', icon: BrainCircuit },
+      { name: 'AI Workspace', labelKey: 'nav.aiWorkspace', href: '/workspace', icon: MessagesSquare },
+      { name: 'AI for Office', labelKey: 'nav.aiForOffice', href: '/ai-for-office', icon: FileSpreadsheet, partnerScopeOnly: true, requiresAiForOffice: true },
     ],
   },
   {
@@ -207,8 +207,8 @@ export const navSections: NavSection[] = [
     icon: Activity,
     // Both surfaces read device/network state, gated on devices:read server-side.
     items: [
-      { name: 'Network Monitor', href: '/monitoring', icon: Activity, requiredPermission: { resource: 'devices', action: 'read' } },
-      { name: 'Network Discovery', href: '/discovery', icon: Network, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Network Monitor', labelKey: 'nav.networkMonitor', href: '/monitoring', icon: Activity, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Network Discovery', labelKey: 'nav.networkDiscovery', href: '/discovery', icon: Network, requiredPermission: { resource: 'devices', action: 'read' } },
     ],
   },
   {
@@ -219,18 +219,18 @@ export const navSections: NavSection[] = [
     // The security suite is built on device posture/scan data (devices:read).
     // A billing-only role has no devices:read grant, so the whole section hides.
     items: [
-      { name: 'Security', href: '/security', icon: ShieldCheck, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Security', labelKey: 'nav.security', href: '/security', icon: ShieldCheck, requiredPermission: { resource: 'devices', action: 'read' } },
       ...(ENABLE_EDR_INTEGRATIONS
-        ? [{ name: 'EDR', href: '/security/edr', icon: ShieldAlert, requiredPermission: { resource: 'devices', action: 'read' } } satisfies NavItem]
+        ? [{ name: 'EDR', labelKey: 'nav.edr', href: '/security/edr', icon: ShieldAlert, requiredPermission: { resource: 'devices', action: 'read' } } satisfies NavItem]
         : []),
-      { name: 'DNS Security', href: '/dns-security', icon: Network, requiredPermission: { resource: 'devices', action: 'read' } },
-      { name: 'PAM', href: '/pam', icon: KeyRound, requiredPermission: { resource: 'devices', action: 'read' } },
-      { name: 'User Risk', href: '/security/user-risk', icon: UserCheck, requiredPermission: { resource: 'devices', action: 'read' } },
-      { name: 'Sensitive Data', href: '/sensitive-data', icon: ScanSearch, requiredPermission: { resource: 'devices', action: 'read' } },
-      { name: 'Peripherals', href: '/peripherals', icon: Usb, requiredPermission: { resource: 'devices', action: 'read' } },
-      { name: 'AI Risk Engine', href: '/ai-risk', icon: BrainCircuit, requiredPermission: { resource: 'devices', action: 'read' } },
-      { name: 'CIS Benchmarks', href: '/cis-hardening', icon: ClipboardCheck, requiredPermission: { resource: 'devices', action: 'read' } },
-      { name: 'Compliance Baselines', href: '/audit-baselines', icon: ListChecks, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'DNS Security', labelKey: 'nav.dnsSecurity', href: '/dns-security', icon: Network, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'PAM', labelKey: 'nav.pam', href: '/pam', icon: KeyRound, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'User Risk', labelKey: 'nav.userRisk', href: '/security/user-risk', icon: UserCheck, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Sensitive Data', labelKey: 'nav.sensitiveData', href: '/sensitive-data', icon: ScanSearch, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Peripherals', labelKey: 'nav.peripherals', href: '/peripherals', icon: Usb, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'AI Risk Engine', labelKey: 'nav.aiRiskEngine', href: '/ai-risk', icon: BrainCircuit, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'CIS Benchmarks', labelKey: 'nav.cisBenchmarks', href: '/cis-hardening', icon: ClipboardCheck, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Compliance Baselines', labelKey: 'nav.complianceBaselines', href: '/audit-baselines', icon: ListChecks, requiredPermission: { resource: 'devices', action: 'read' } },
     ],
   },
   {
@@ -239,15 +239,15 @@ export const navSections: NavSection[] = [
     labelKey: 'nav.sectionOperations',
     icon: Layers,
     items: [
-      { name: 'Quotes', href: '/billing/quotes', icon: FileText, partnerScopeOnly: true, requiredPermission: { resource: 'quotes', action: 'read' } },
-      { name: 'Invoices', href: '/billing/invoices', icon: Receipt, partnerScopeOnly: true, requiredPermission: { resource: 'invoices', action: 'read' } },
-      { name: 'Contracts', href: '/contracts', icon: FileSignature, partnerScopeOnly: true, requiredPermission: { resource: 'contracts', action: 'read' } },
-      { name: 'Timesheets', href: '/timesheet', icon: Clock, requiredPermission: { resource: 'time_entries', action: 'read' } },
-      { name: 'Product Catalog', href: '/settings/catalog', icon: Tags, partnerScopeOnly: true, requiredPermission: { resource: 'catalog', action: 'read' } },
-      { name: 'Software Library', href: '/software', icon: Package, requiredPermission: { resource: 'devices', action: 'read' } },
-      { name: 'Software Policies', href: '/software-inventory', icon: Package, requiredPermission: { resource: 'devices', action: 'read' } },
-      { name: 'Config Policies', href: '/configuration-policies', icon: Layers, requiredPermission: { resource: 'devices', action: 'read' } },
-      { name: 'Integrations', href: '/integrations', icon: Plug },
+      { name: 'Quotes', labelKey: 'nav.quotes', href: '/billing/quotes', icon: FileText, partnerScopeOnly: true, requiredPermission: { resource: 'quotes', action: 'read' } },
+      { name: 'Invoices', labelKey: 'nav.invoices', href: '/billing/invoices', icon: Receipt, partnerScopeOnly: true, requiredPermission: { resource: 'invoices', action: 'read' } },
+      { name: 'Contracts', labelKey: 'nav.contracts', href: '/contracts', icon: FileSignature, partnerScopeOnly: true, requiredPermission: { resource: 'contracts', action: 'read' } },
+      { name: 'Timesheets', labelKey: 'nav.timesheets', href: '/timesheet', icon: Clock, requiredPermission: { resource: 'time_entries', action: 'read' } },
+      { name: 'Product Catalog', labelKey: 'nav.productCatalog', href: '/settings/catalog', icon: Tags, partnerScopeOnly: true, requiredPermission: { resource: 'catalog', action: 'read' } },
+      { name: 'Software Library', labelKey: 'nav.softwareLibrary', href: '/software', icon: Package, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Software Policies', labelKey: 'nav.softwarePolicies', href: '/software-inventory', icon: Package, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Config Policies', labelKey: 'nav.configPolicies', href: '/configuration-policies', icon: Layers, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Integrations', labelKey: 'nav.integrations', href: '/integrations', icon: Plug },
     ],
   },
   {
@@ -257,9 +257,9 @@ export const navSections: NavSection[] = [
     icon: HardDrive,
     // Backup/recovery surfaces are gated on the backup:read grant.
     items: [
-      { name: 'Backup', href: '/backup', icon: HardDrive, requiredPermission: { resource: 'backup', action: 'read' } },
-      { name: 'Cloud Backup', href: '/c2c', icon: Cloud, requiredPermission: { resource: 'backup', action: 'read' } },
-      { name: 'Disaster Recovery', href: '/dr', icon: ShieldEllipsis, requiredPermission: { resource: 'backup', action: 'read' } },
+      { name: 'Backup', labelKey: 'nav.backup', href: '/backup', icon: HardDrive, requiredPermission: { resource: 'backup', action: 'read' } },
+      { name: 'Cloud Backup', labelKey: 'nav.cloudBackup', href: '/c2c', icon: Cloud, requiredPermission: { resource: 'backup', action: 'read' } },
+      { name: 'Disaster Recovery', labelKey: 'nav.disasterRecovery', href: '/dr', icon: ShieldEllipsis, requiredPermission: { resource: 'backup', action: 'read' } },
     ],
   },
   {
@@ -268,10 +268,10 @@ export const navSections: NavSection[] = [
     labelKey: 'nav.sectionReporting',
     icon: BarChart3,
     items: [
-      { name: 'Reports', href: '/reports', icon: FileText, requiredPermission: { resource: 'reports', action: 'read' } },
-      { name: 'Analytics', href: '/analytics', icon: BarChart3, requiredPermission: { resource: 'reports', action: 'read' } },
-      { name: 'Audit Trail', href: '/audit', icon: FileText, requiredPermission: { resource: 'audit', action: 'read' } },
-      { name: 'Event Logs', href: '/logs', icon: ScrollText, requiredPermission: { resource: 'audit', action: 'read' } },
+      { name: 'Reports', labelKey: 'nav.reports', href: '/reports', icon: FileText, requiredPermission: { resource: 'reports', action: 'read' } },
+      { name: 'Analytics', labelKey: 'nav.analytics', href: '/analytics', icon: BarChart3, requiredPermission: { resource: 'reports', action: 'read' } },
+      { name: 'Audit Trail', labelKey: 'nav.auditTrail', href: '/audit', icon: FileText, requiredPermission: { resource: 'audit', action: 'read' } },
+      { name: 'Event Logs', labelKey: 'nav.eventLogs', href: '/logs', icon: ScrollText, requiredPermission: { resource: 'audit', action: 'read' } },
     ],
   },
   {
@@ -280,21 +280,21 @@ export const navSections: NavSection[] = [
     labelKey: 'nav.sectionSettings',
     icon: Building,
     items: [
-      { name: 'Partner', href: '/settings/partner', icon: Building, partnerScopeOnly: true },
-      { name: 'Organizations', href: '/settings/organizations', icon: Building2, requiredPermission: { resource: 'organizations', action: 'read' } },
-      { name: 'AI Usage & Budget', href: '/settings/ai-usage', icon: BrainCircuit, partnerScopeOnly: true },
-      { name: 'Custom Fields', href: '/settings/custom-fields', icon: ListChecks, requiredPermission: { resource: 'organizations', action: 'read' } },
-      { name: 'Saved Filters', href: '/settings/filters', icon: Filter },
+      { name: 'Partner', labelKey: 'nav.partner', href: '/settings/partner', icon: Building, partnerScopeOnly: true },
+      { name: 'Organizations', labelKey: 'nav.organizations', href: '/settings/organizations', icon: Building2, requiredPermission: { resource: 'organizations', action: 'read' } },
+      { name: 'AI Usage & Budget', labelKey: 'nav.aiUsageBudget', href: '/settings/ai-usage', icon: BrainCircuit, partnerScopeOnly: true },
+      { name: 'Custom Fields', labelKey: 'nav.customFields', href: '/settings/custom-fields', icon: ListChecks, requiredPermission: { resource: 'organizations', action: 'read' } },
+      { name: 'Saved Filters', labelKey: 'nav.savedFilters', href: '/settings/filters', icon: Filter },
       // Users + Roles are both served by the users routes (users:read).
-      { name: 'Users', href: '/settings/users', icon: Users, requiredPermission: { resource: 'users', action: 'read' } },
-      { name: 'Roles', href: '/settings/roles', icon: KeyRound, requiredPermission: { resource: 'users', action: 'read' } },
-      { name: 'SSO', href: '/settings/sso', icon: Fingerprint, requiredPermission: { resource: 'sso', action: 'admin' } },
-      { name: 'Access Reviews', href: '/settings/access-reviews', icon: FileCheck, requiredPermission: { resource: 'users', action: 'read' } },
-      { name: 'Enrollment Keys', href: '/settings/enrollment-keys', icon: Key, requiredPermission: { resource: 'devices', action: 'read' } },
-      { name: 'Deletion requests', href: '/admin/account-deletion-requests', icon: UserX, badgeKind: 'deletion-requests', platformAdminOnly: true },
-      { name: 'Quarantined Devices', href: '/admin/quarantined', icon: Ban, platformAdminOnly: true },
-      { name: 'Third-Party Catalog', href: '/admin/third-party-catalog', icon: Boxes, platformAdminOnly: true },
-      { name: 'Connected Apps (admin)', href: '/admin/connected-apps', icon: Plug, platformAdminOnly: true },
+      { name: 'Users', labelKey: 'nav.users', href: '/settings/users', icon: Users, requiredPermission: { resource: 'users', action: 'read' } },
+      { name: 'Roles', labelKey: 'nav.roles', href: '/settings/roles', icon: KeyRound, requiredPermission: { resource: 'users', action: 'read' } },
+      { name: 'SSO', labelKey: 'nav.sso', href: '/settings/sso', icon: Fingerprint, requiredPermission: { resource: 'sso', action: 'admin' } },
+      { name: 'Access Reviews', labelKey: 'nav.accessReviews', href: '/settings/access-reviews', icon: FileCheck, requiredPermission: { resource: 'users', action: 'read' } },
+      { name: 'Enrollment Keys', labelKey: 'nav.enrollmentKeys', href: '/settings/enrollment-keys', icon: Key, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Deletion requests', labelKey: 'nav.deletionRequests', href: '/admin/account-deletion-requests', icon: UserX, badgeKind: 'deletion-requests', platformAdminOnly: true },
+      { name: 'Quarantined Devices', labelKey: 'nav.quarantinedDevices', href: '/admin/quarantined', icon: Ban, platformAdminOnly: true },
+      { name: 'Third-Party Catalog', labelKey: 'nav.thirdPartyCatalog', href: '/admin/third-party-catalog', icon: Boxes, platformAdminOnly: true },
+      { name: 'Connected Apps (admin)', labelKey: 'nav.connectedAppsAdmin', href: '/admin/connected-apps', icon: Plug, platformAdminOnly: true },
     ],
   },
 ];

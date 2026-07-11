@@ -2,12 +2,16 @@ import { describe, expect, it, beforeEach, vi, afterEach } from 'vitest';
 import {
   LOCALE_OPTIONS,
   LOCALE_STORAGE_KEY,
+  PARTNER_LOCALE_STORAGE_KEY,
   isValidLocale,
   normalizeLocale,
   readLocalePreference,
+  readPartnerLocalePreference,
   detectBrowserLocale,
   readResolvedLocalePreference,
   writeLocalePreference,
+  writePartnerLocalePreference,
+  applyResolvedLocalePreferences,
   subscribeLocale,
   applyAppearancePreferences,
 } from '../appearance';
@@ -63,6 +67,34 @@ describe('locale preference', () => {
     expect(readResolvedLocalePreference()).toBe('pt-BR');
     writeLocalePreference('en');
     expect(readResolvedLocalePreference()).toBe('en');
+  });
+
+  it('resolves user preference over partner default over browser locale', () => {
+    vi.stubGlobal('navigator', { languages: ['en'], language: 'en' });
+    writePartnerLocalePreference('pt-BR');
+    expect(readPartnerLocalePreference()).toBe('pt-BR');
+    expect(readResolvedLocalePreference()).toBe('pt-BR');
+
+    writeLocalePreference('en');
+    expect(readResolvedLocalePreference()).toBe('en');
+  });
+
+  it('synchronizes authenticated locale state without leaking a previous user choice', () => {
+    window.localStorage.setItem(LOCALE_STORAGE_KEY, 'en');
+    expect(applyResolvedLocalePreferences(undefined, 'pt-BR')).toBe('pt-BR');
+    expect(window.localStorage.getItem(LOCALE_STORAGE_KEY)).toBeNull();
+    expect(window.localStorage.getItem(PARTNER_LOCALE_STORAGE_KEY)).toBe('pt-BR');
+
+    expect(applyResolvedLocalePreferences('en', 'pt-BR')).toBe('en');
+    expect(window.localStorage.getItem(LOCALE_STORAGE_KEY)).toBe('en');
+  });
+
+  it('clears a stale partner default and falls back to the browser', () => {
+    vi.stubGlobal('navigator', { languages: ['pt-BR'], language: 'pt-BR' });
+    writePartnerLocalePreference('en');
+    writePartnerLocalePreference(undefined);
+    expect(window.localStorage.getItem(PARTNER_LOCALE_STORAGE_KEY)).toBeNull();
+    expect(readResolvedLocalePreference()).toBe('pt-BR');
   });
 
   it('notifies subscribers on write and supports unsubscribe', () => {
