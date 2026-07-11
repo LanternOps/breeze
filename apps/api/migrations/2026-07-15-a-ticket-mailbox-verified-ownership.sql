@@ -30,24 +30,21 @@ CREATE TABLE IF NOT EXISTS ticket_mailbox_consent_sessions (
 DO $$
 DECLARE affected bigint;
 BEGIN
-  UPDATE ticket_mailbox_connections
-  SET status = 'reauth_required', tenant_id = NULL, delta_link = NULL,
-      last_error = NULL, updated_at = now()
-  WHERE status <> 'disabled' OR tenant_id IS NOT NULL OR delta_link IS NOT NULL;
-  GET DIAGNOSTICS affected = ROW_COUNT;
-  RAISE WARNING 'ticket mailbox hardening marked % legacy connection(s) reauth_required and cleared tenant/cursor state', affected;
-END $$;
-
-DO $$
-BEGIN
   IF EXISTS (
     SELECT 1
     FROM information_schema.columns
     WHERE table_schema = 'public'
       AND table_name = 'ticket_mailbox_connections'
       AND column_name = 'tenant_id'
-      AND data_type <> 'uuid'
+      AND data_type = 'text'
   ) THEN
+    UPDATE ticket_mailbox_connections
+    SET status = 'reauth_required', tenant_id = NULL, delta_link = NULL,
+        last_error = NULL, updated_at = now()
+    WHERE status <> 'disabled' OR tenant_id IS NOT NULL OR delta_link IS NOT NULL;
+    GET DIAGNOSTICS affected = ROW_COUNT;
+    RAISE WARNING 'ticket mailbox hardening marked % legacy connection(s) reauth_required and cleared tenant/cursor state', affected;
+
     ALTER TABLE ticket_mailbox_connections
       ALTER COLUMN tenant_id TYPE uuid USING tenant_id::uuid;
   END IF;

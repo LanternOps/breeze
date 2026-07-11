@@ -110,8 +110,37 @@ async function verifyMigrationCleanup() {
     expect(rows[0]?.deltaLink).toBeNull();
     expect(rows[0]?.lastError).toBeNull();
 
+    // Once the column is hardened to UUID, replay must not revoke a valid
+    // verified binding or discard its active delta cursor.
+    const verifiedTenantId = randomUUID();
+    const verifiedConnectionId = randomUUID();
+    const deltaLink = 'https://graph.example/verified-delta';
+    await adminDb.execute(sql`
+      INSERT INTO ticket_mailbox_tenant_ownerships
+        (tenant_id, partner_id, verified_microsoft_oid)
+      VALUES (${verifiedTenantId}, ${partner.id}, ${randomUUID()})
+    `);
+    await adminDb.execute(sql`
+      INSERT INTO ticket_mailbox_connections
+        (id, partner_id, tenant_id, mailbox_address, status, delta_link)
+      VALUES (${verifiedConnectionId}, ${partner.id}, ${verifiedTenantId},
+              'verified@example.com', 'connected', ${deltaLink})
+    `);
+
     // The migration is additive/idempotent, including the UUID type guard.
     await expect(adminDb.execute(sql.raw(readFileSync(MIGRATION_FILE, 'utf8')))).resolves.toBeDefined();
+
+    const preservedRows = await adminDb.execute(sql`
+      SELECT status, tenant_id AS "tenantId", delta_link AS "deltaLink"
+      FROM ticket_mailbox_connections WHERE id = ${verifiedConnectionId}
+    `) as unknown as Array<{
+      status: string;
+      tenantId: string | null;
+      deltaLink: string | null;
+    }>;
+    expect(preservedRows[0]?.status).toBe('connected');
+    expect(preservedRows[0]?.tenantId).toBe(verifiedTenantId);
+    expect(preservedRows[0]?.deltaLink).toBe(deltaLink);
 }
 
 async function verifyConnectedOwnershipGuard() {
