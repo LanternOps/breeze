@@ -117,7 +117,13 @@ describe('getDeviceOrgDenormalizedTables() coverage', () => {
     // Sanity: a denormalized device table that is neither cascade-deleted
     // nor detached on permanent delete is a bug elsewhere; flag it here so
     // we don't ship a half-managed table.
-    const orphans = deviceOrgDenormalizedTables.filter((t) => !managedSet.has(t));
+    // Core tables only: extension-declared tables prove device management in
+    // their own migrations (DB-level FK actions, e.g. ON DELETE SET NULL) and
+    // integration tests — the app-level cascade/detach lists don't see them.
+    const coreSet = new Set<string>(DEVICE_ORG_DENORMALIZED_TABLES);
+    const orphans = deviceOrgDenormalizedTables.filter(
+      (t) => coreSet.has(t) && !managedSet.has(t)
+    );
     expect(
       orphans,
       `These tables are in getDeviceOrgDenormalizedTables() but missing from both ` +
