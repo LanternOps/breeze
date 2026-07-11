@@ -52,17 +52,21 @@ export function loadSignalConfig(): Record<string, number> {
   return cfg;
 }
 
+function cfgValue(cfg: Record<string, number>, key: string): number {
+  return cfg[key] ?? SIGNAL_DEFAULTS[key] ?? 0;
+}
+
 export function scoreToSeverity(score: number, cfg: Record<string, number>): AbuseSeverity {
-  if (score >= cfg['severity.alert_score']) return 'alert';
-  if (score >= cfg['severity.watch_score']) return 'watch';
+  if (score >= cfgValue(cfg, 'severity.alert_score')) return 'alert';
+  if (score >= cfgValue(cfg, 'severity.watch_score')) return 'watch';
   return 'info';
 }
 
 /** 1.0 for partners younger than young_full_weight_days, linearly decaying to 0 at young_zero_weight_days. */
 export function youngWeight(partnerCreatedAt: Date, now: Date, cfg: Record<string, number>): number {
   const ageDays = (now.getTime() - partnerCreatedAt.getTime()) / 86_400_000;
-  const full = cfg['sweep.young_full_weight_days'];
-  const zero = cfg['sweep.young_zero_weight_days'];
+  const full = cfgValue(cfg, 'sweep.young_full_weight_days');
+  const zero = cfgValue(cfg, 'sweep.young_zero_weight_days');
   if (ageDays <= full) return 1;
   if (ageDays >= zero) return 0;
   return (zero - ageDays) / (zero - full);
