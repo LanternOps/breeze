@@ -102,6 +102,7 @@ export async function graphFetch(
   method: 'GET' | 'PATCH' | 'POST' | 'DELETE',
   path: string,
   body?: unknown,
+  opts?: { headers?: Record<string, string> },
 ): Promise<DirectInvokeResult> {
   let resp: Response;
   try {
@@ -122,6 +123,7 @@ export async function graphFetch(
       headers: {
         Authorization: `Bearer ${token}`,
         ...(body ? { 'Content-Type': 'application/json' } : {}),
+        ...(opts?.headers ?? {}),
       },
       body: body ? JSON.stringify(body) : undefined,
       signal: AbortSignal.timeout(GRAPH_HTTP_TIMEOUT_MS),

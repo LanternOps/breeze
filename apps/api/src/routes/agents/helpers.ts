@@ -2779,7 +2779,17 @@ async function resolveDeviceOnedriveSettings(deviceId: string): Promise<Onedrive
   const normalizeGuid = (g: string) => g.replace(/^\{|\}$/g, '').toLowerCase();
   const allowedByLib = new Map<string, string[]>();
   if (graphRules.length > 0 && upns.length > 0) {
+    // Aggregate deadline: per-call timeouts bound each round-trip, but 16 UPNs
+    // × (token + up to 5 membership pages) can still sum past the agent's
+    // heartbeat client timeout — which would drop the WHOLE response including
+    // already-claimed commands. Past the budget, remaining UPNs stay untagged
+    // this cycle (fail closed) and retry next heartbeat against a warm cache.
+    const taggingDeadline = Date.now() + 15_000;
     for (const upn of upns) {
+      if (Date.now() > taggingDeadline) {
+        console.warn(`[agents] graph_group tagging: time budget exhausted for device ${deviceId}; remaining UPNs untagged this cycle`);
+        break;
+      }
       const res = await resolveUserGroupMembershipCached(device.orgId, upn);
       if (res.kind !== 'ok') {
         // Deliberately no UPN in the log line — it's end-user PII; the code +

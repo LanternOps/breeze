@@ -194,6 +194,17 @@ describe('resolveUserGroupMembership', () => {
     const calledPath = (graphFetch as any).mock.calls[0][2] as string;
     expect(calledPath).toContain('/users/');
     expect(calledPath).toContain('transitiveMemberOf');
+    // The OData group cast is an advanced query: Graph 400s without
+    // ConsistencyLevel: eventual + $count=true.
+    expect(calledPath).toContain('$count=true');
+    expect((graphFetch as any).mock.calls[0][4]).toEqual({ headers: { ConsistencyLevel: 'eventual' } });
+  });
+
+  it('a 2xx with no value array is an error, not an empty membership', async () => {
+    (graphFetch as any).mockResolvedValueOnce({ kind: 'ok', data: null });
+    const res = await resolveUserGroupMembership('org-1', 'u@c.com');
+    expect(res.kind).toBe('error');
+    expect((res as any).code).toBe('graph_malformed_response');
   });
 
   it('rejects an empty upn before calling Graph', async () => {

@@ -126,15 +126,23 @@ export async function resolveUserGroupMembership(
   if ('kind' in tok) return tok;
 
   // transitiveMemberOf so nested group membership counts; only group objects, ids only.
+  // The microsoft.graph.group OData cast is an advanced query: Graph requires
+  // ConsistencyLevel: eventual + $count=true (on every page) or it can 400.
+  const advancedQuery = { headers: { ConsistencyLevel: 'eventual' } };
   const groupIds: string[] = [];
   let path: string | null =
-    `/users/${encodeURIComponent(upn)}/transitiveMemberOf/microsoft.graph.group?$select=id&$top=200`;
+    `/users/${encodeURIComponent(upn)}/transitiveMemberOf/microsoft.graph.group?$select=id&$top=200&$count=true`;
   for (let page = 0; page < GROUP_MEMBERSHIP_MAX_PAGES && path; page++) {
-    const res = await graphFetch(tok.token, 'GET', path);
+    const res = await graphFetch(tok.token, 'GET', path, undefined, advancedQuery);
     if (res.kind === 'error') return res;
     const data = res.data as { value?: unknown; '@odata.nextLink'?: unknown };
-    const rows = Array.isArray(data?.value) ? data.value : [];
-    for (const g of rows) {
+    if (!Array.isArray(data?.value)) {
+      // A 2xx with no value array (truncated body, parse failure upstream,
+      // shape drift) must NOT read as "member of nothing" — that would cache
+      // a false denial for the full TTL. Error → uncached → retried.
+      return { kind: 'error', code: 'graph_malformed_response', message: 'Graph membership response has no value array.' };
+    }
+    for (const g of data.value) {
       const id = (g as { id?: unknown })?.id;
       if (typeof id === 'string') groupIds.push(id);
     }

@@ -595,8 +595,15 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         },
       });
     } catch (err) {
-      console.error(`[agents] failed to upsert onedrive device state for ${agentId}:`, err);
-      captureException(err);
+      // Drizzle query errors serialize the bound params — including the
+      // signedInUpns jsonb (end-user PII) — into their message. Log/report
+      // only the underlying driver message, never the wrapped query error.
+      const cause = (err as { cause?: { message?: unknown } })?.cause;
+      const safeMsg = typeof cause?.message === 'string'
+        ? cause.message
+        : (err instanceof Error ? err.constructor.name : 'unknown error');
+      console.error(`[agents] failed to upsert onedrive device state for ${agentId}: ${safeMsg}`);
+      captureException(new Error(`onedrive device state upsert failed: ${safeMsg}`));
     }
   }
 
