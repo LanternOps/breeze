@@ -212,7 +212,11 @@ export const heartbeatSchema = z.object({
     kfmFolderStates: z.record(z.string(), z.string()).default({}),
     mountedLibraries: z.array(z.string().max(1024)).default([]),
     entitledLibraries: z.array(z.string().max(1024)).default([]),
-    signedInUpns: z.array(z.string().max(320)).max(16).default([]),
+    // Cap mirrored by the agent (onedrivehelper_windows.go readDeviceState) —
+    // lowering it silently degrades reports from already-shipped agents. The
+    // field-level .catch([]) means a violating value (17+ UPNs, oversized
+    // string, non-array) drops ONLY the UPNs, not the whole device-state block.
+    signedInUpns: z.array(z.string().max(320)).max(16).default([]).catch([]),
     driftEntries: z.array(z.record(z.string(), z.unknown())).default([]),
   }).optional().catch(undefined),
 });

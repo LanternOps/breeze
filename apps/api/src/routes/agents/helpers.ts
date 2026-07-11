@@ -2765,21 +2765,31 @@ async function resolveDeviceOnedriveSettings(deviceId: string): Promise<Onedrive
   const graphRules = libs.filter((l) => l.targetingMode === 'graph_group' && l.groupId);
   // Guard the jsonb shape: a corrupt/non-array signedInUpns value degrades to
   // no-tagging (delivery of non-graph libraries must survive) instead of throwing.
+  // zod validates ingest, so a non-array here means an out-of-band write — worth a log.
   const rawUpns = state?.signedInUpns;
+  if (rawUpns != null && !Array.isArray(rawUpns)) {
+    console.warn(`[agents] graph_group tagging: signed_in_upns is not an array for device ${deviceId}; treating as empty`);
+  }
   const upns = (Array.isArray(rawUpns) ? rawUpns : []).filter(
     (u): u is string => typeof u === 'string' && u.length > 0
   );
+  // Group ids are GUIDs from two sources (Graph responses vs. the stored rule,
+  // which future entry paths may brace/uppercase) — normalize both sides so a
+  // formatting mismatch can't silently fail-close the library forever.
+  const normalizeGuid = (g: string) => g.replace(/^\{|\}$/g, '').toLowerCase();
   const allowedByLib = new Map<string, string[]>();
   if (graphRules.length > 0 && upns.length > 0) {
     for (const upn of upns) {
       const res = await resolveUserGroupMembershipCached(device.orgId, upn);
       if (res.kind !== 'ok') {
+        // Deliberately no UPN in the log line — it's end-user PII; the code +
+        // deviceId is enough to triage.
         console.warn(`[agents] graph_group tagging: membership lookup failed for device ${deviceId}: ${res.code}`);
         continue;
       }
-      const groupIds = new Set(((res.data as { groupIds: string[] }).groupIds ?? []));
+      const groupIds = new Set(res.data.groupIds.map(normalizeGuid));
       for (const rule of graphRules) {
-        if (rule.groupId && groupIds.has(rule.groupId)) {
+        if (rule.groupId && groupIds.has(normalizeGuid(rule.groupId))) {
           const arr = allowedByLib.get(rule.id) ?? [];
           arr.push(upn);
           allowedByLib.set(rule.id, arr);
