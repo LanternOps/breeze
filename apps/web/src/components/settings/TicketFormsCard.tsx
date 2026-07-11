@@ -296,15 +296,23 @@ export default function TicketFormsCard() {
     const base: Record<string, unknown> = {
       name: d.name.trim(),
       fields: built,
-      categoryId: d.categoryId ? d.categoryId : null,
       showInPortal: d.showInPortal,
       isActive: d.isActive,
       sortOrder: d.sortOrder
     };
-    if (d.description.trim()) base.description = d.description.trim();
-    if (d.titleTemplate.trim()) base.titleTemplate = d.titleTemplate.trim();
-    if (d.descriptionIntro.trim()) base.descriptionIntro = d.descriptionIntro.trim();
-    if (d.defaultPriority) base.defaultPriority = d.defaultPriority;
+    // Clearable optionals: on CREATE, empty means "not set" — omit the key.
+    // On EDIT, the update schema is .partial(), so an omitted key silently
+    // keeps the stored value — a cleared input must send an explicit null.
+    const setOptional = (key: string, value: string) => {
+      const v = value.trim();
+      if (v) base[key] = v;
+      else if (!isCreate) base[key] = null;
+    };
+    setOptional('description', d.description);
+    setOptional('categoryId', d.categoryId);
+    setOptional('titleTemplate', d.titleTemplate);
+    setOptional('descriptionIntro', d.descriptionIntro);
+    setOptional('defaultPriority', d.defaultPriority);
 
     try {
       if (isCreate) {
@@ -566,12 +574,14 @@ export default function TicketFormsCard() {
                         <input
                           className={inputCls}
                           placeholder="Field label"
+                          aria-label="Field label"
                           value={f.label}
                           onChange={(e) => patchField(i, { label: e.target.value })}
                           data-testid={`ticket-form-field-label-${i}`}
                         />
                         <select
                           className="rounded-md border bg-background px-2 py-1.5 text-sm"
+                          aria-label="Field type"
                           value={f.type}
                           onChange={(e) => patchField(i, { type: e.target.value as TicketFormFieldType })}
                           data-testid={`ticket-form-field-type-${i}`}

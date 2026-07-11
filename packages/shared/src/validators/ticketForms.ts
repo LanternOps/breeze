@@ -49,12 +49,15 @@ export const createTicketFormSchema = z.object({
   ownerScope: z.enum(['organization', 'partner']).optional(),
   orgId: z.string().guid().optional(),
   name: z.string().min(1).max(200),
-  description: z.string().max(2000).optional(),
+  // All clearable optionals accept explicit null: the update schema is
+  // .partial(), so the web editor must SEND null to clear a stored value —
+  // omitting the key on an update silently keeps the old one.
+  description: z.string().max(2000).nullable().optional(),
   categoryId: z.string().guid().nullable().optional(),
   fields: ticketFormFieldsSchema,
-  titleTemplate: z.string().max(300).optional(),
-  descriptionIntro: z.string().max(5000).optional(),
-  defaultPriority: ticketPrioritySchema.optional(),
+  titleTemplate: z.string().max(300).nullable().optional(),
+  descriptionIntro: z.string().max(5000).nullable().optional(),
+  defaultPriority: ticketPrioritySchema.nullable().optional(),
   defaultTags: z.array(z.string().min(1).max(100)).max(20).default([]),
   showInPortal: z.boolean().default(true),
   isActive: z.boolean().default(true),

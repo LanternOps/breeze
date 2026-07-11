@@ -87,10 +87,20 @@ describe('TicketFormsCard', () => {
     });
   });
 
-  it('updates an existing form via PUT with no ownerScope/orgId in the body', async () => {
+  it('updates an existing form via PUT with no ownerScope/orgId, sending explicit nulls for cleared optionals', async () => {
+    // Previously-set optionals: clearing them must send explicit null — the
+    // update schema is .partial(), so an omitted key silently keeps the old value.
+    const filledForm = {
+      ...FORM,
+      description: 'Old description',
+      categoryId: 'cat-1',
+      titleTemplate: 'Old {{affected_user}}',
+      descriptionIntro: 'Old intro',
+      defaultPriority: 'high'
+    };
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
-      if (url === '/ticket-forms' && (!init || !init.method)) return makeJsonResponse({ data: [FORM] });
+      if (url === '/ticket-forms' && (!init || !init.method)) return makeJsonResponse({ data: [filledForm] });
       if (url === '/ticket-forms/f-1' && init?.method === 'PUT') return makeJsonResponse({ data: FORM });
       if (url === '/orgs/organizations?limit=100') return makeJsonResponse({ data: [{ id: 'org-a', name: 'Org A' }] });
       if (url === '/ticket-categories') return makeJsonResponse({ data: [{ id: 'cat-1', name: 'Hardware', isActive: true }] });
@@ -102,6 +112,12 @@ describe('TicketFormsCard', () => {
     // Ownership fieldset is create-only — hidden when editing.
     expect(screen.queryByTestId('ticket-form-owner-partner')).toBeNull();
     fireEvent.change(screen.getByTestId('ticket-form-name'), { target: { value: 'Onboarding v2' } });
+    // Clear every previously-set optional.
+    fireEvent.change(screen.getByTestId('ticket-form-description'), { target: { value: '' } });
+    fireEvent.change(screen.getByTestId('ticket-form-category'), { target: { value: '' } });
+    fireEvent.change(screen.getByTestId('ticket-form-title-template'), { target: { value: '' } });
+    fireEvent.change(screen.getByTestId('ticket-form-description-intro'), { target: { value: '' } });
+    fireEvent.change(screen.getByTestId('ticket-form-priority'), { target: { value: '' } });
     fireEvent.click(screen.getByTestId('ticket-form-save'));
     await waitFor(() => {
       const put = fetchMock.mock.calls.find(([u, i]) => String(u) === '/ticket-forms/f-1' && (i as RequestInit)?.method === 'PUT');
@@ -110,6 +126,29 @@ describe('TicketFormsCard', () => {
       expect(body.name).toBe('Onboarding v2');
       expect(body).not.toHaveProperty('ownerScope');
       expect(body).not.toHaveProperty('orgId');
+      expect(body.description).toBeNull();
+      expect(body.categoryId).toBeNull();
+      expect(body.titleTemplate).toBeNull();
+      expect(body.descriptionIntro).toBeNull();
+      expect(body.defaultPriority).toBeNull();
+    });
+  });
+
+  it('create omits empty optionals from the POST body (no nulls on create)', async () => {
+    render(<TicketFormsCard />);
+    await screen.findByTestId('ticket-form-row-f-1');
+    fireEvent.click(screen.getByTestId('ticket-form-create'));
+    fireEvent.change(screen.getByTestId('ticket-form-name'), { target: { value: 'Bare' } });
+    fireEvent.click(screen.getByTestId('ticket-form-save'));
+    await waitFor(() => {
+      const post = fetchMock.mock.calls.find(([u, i]) => String(u) === '/ticket-forms' && (i as RequestInit)?.method === 'POST');
+      expect(post).toBeTruthy();
+      const body = JSON.parse(String((post![1] as RequestInit).body));
+      expect(body).not.toHaveProperty('description');
+      expect(body).not.toHaveProperty('titleTemplate');
+      expect(body).not.toHaveProperty('descriptionIntro');
+      expect(body).not.toHaveProperty('defaultPriority');
+      expect(body).not.toHaveProperty('categoryId');
     });
   });
 

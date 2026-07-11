@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-const { authRef, dbRowsMock, insertReturningMock, updateReturningMock, deleteWhereMock, listForOrgMock, writeRouteAuditMock, selectWhereArgs } = vi.hoisted(() => ({
+const { authRef, dbRowsMock, insertReturningMock, updateReturningMock, updateSetMock, deleteWhereMock, listForOrgMock, writeRouteAuditMock, selectWhereArgs } = vi.hoisted(() => ({
   /** Every db.select()...where(...) arg, so tests can assert fetch conditions. */
   selectWhereArgs: [] as unknown[],
   authRef: {
@@ -19,6 +19,8 @@ const { authRef, dbRowsMock, insertReturningMock, updateReturningMock, deleteWhe
   dbRowsMock: vi.fn(),
   insertReturningMock: vi.fn(),
   updateReturningMock: vi.fn(),
+  /** Captures every db.update().set(arg) so tests can assert null pass-through. */
+  updateSetMock: vi.fn(),
   deleteWhereMock: vi.fn(),
   listForOrgMock: vi.fn(),
   writeRouteAuditMock: vi.fn()
@@ -62,7 +64,7 @@ vi.mock('../../db', () => ({
       }))
     })),
     insert: vi.fn(() => ({ values: vi.fn(() => ({ returning: vi.fn(() => insertReturningMock()) })) })),
-    update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn(() => updateReturningMock()) })) })) })),
+    update: vi.fn(() => ({ set: vi.fn((setArg: unknown) => { updateSetMock(setArg); return { where: vi.fn(() => ({ returning: vi.fn(() => updateReturningMock()) })) }; }) })),
     delete: vi.fn(() => ({ where: vi.fn((...a) => { deleteWhereMock(...a); return Promise.resolve(); } ) }))
   }
 }));
@@ -190,6 +192,24 @@ describe('PUT/DELETE partner-wide gating', () => {
     const body = await res.json();
     expect(body.data.version).toBe(2);
     expect(writeRouteAuditMock).toHaveBeenCalled();
+  });
+
+  it('accepts explicit null to clear an optional field, passing it through to the update set', async () => {
+    dbRowsMock.mockResolvedValue([{ id: FORM_ID, orgId: ORG_ID, partnerId: null, version: 1, fields: [] }]);
+    updateReturningMock.mockResolvedValue([{ id: FORM_ID, orgId: ORG_ID, partnerId: null, version: 1, fields: [], name: 'Onboarding', description: null }]);
+    const res = await makeApp().request(`/ticket-forms/${FORM_ID}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ description: null })
+    });
+    expect(res.status).toBe(200);
+    const setArg = updateSetMock.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(setArg).toBeTruthy();
+    expect('description' in setArg).toBe(true);
+    expect(setArg.description).toBeNull();
+    // description is cosmetic — no version bump, and null must not trip the
+    // category revalidation (clearing a category needs no partner check).
+    expect('version' in setArg).toBe(false);
   });
 
   it('404s when the form does not exist', async () => {

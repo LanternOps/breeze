@@ -45,6 +45,29 @@ describe('createTicketFormSchema / updateTicketFormSchema', () => {
     }
   });
 
+  it('accepts explicit nulls for all clearable optional fields (create + update)', () => {
+    // The web editor clears an optional on EDIT by sending an explicit null —
+    // omitting the key on a .partial() update schema is a silent keep-old-value.
+    const nulls = {
+      description: null,
+      categoryId: null,
+      titleTemplate: null,
+      descriptionIntro: null,
+      defaultPriority: null
+    };
+    const u = updateTicketFormSchema.safeParse(nulls);
+    expect(u.success).toBe(true);
+    if (u.success) {
+      expect(u.data.description).toBeNull();
+      expect(u.data.categoryId).toBeNull();
+      expect(u.data.titleTemplate).toBeNull();
+      expect(u.data.descriptionIntro).toBeNull();
+      expect(u.data.defaultPriority).toBeNull();
+    }
+    const c = createTicketFormSchema.safeParse({ name: 'n', fields, ...nulls });
+    expect(c.success).toBe(true);
+  });
+
   it('update schema refuses ownerScope and orgId', () => {
     const r = updateTicketFormSchema.safeParse({ ownerScope: 'partner', orgId: '3f2f1d8e-1111-4222-8333-444455556666', name: 'x' });
     // .omit() strips the keys from the schema; strict() makes them errors — we use strip semantics, so keys are silently dropped
