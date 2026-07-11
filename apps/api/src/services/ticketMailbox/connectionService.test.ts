@@ -10,6 +10,7 @@ const { dbMocks, contextMocks } = vi.hoisted(() => ({
     conflictUpdates: [] as Record<string, unknown>[],
     updatedValues: [] as Record<string, unknown>[],
     updateWheres: [] as unknown[],
+    selectWheres: [] as unknown[],
     innerJoins: [] as Array<{ table: unknown; condition: unknown }>,
     transactionCalls: [] as string[],
     transaction: vi.fn(),
@@ -27,7 +28,10 @@ vi.mock('../../db', () => {
       from: vi.fn(() => {
         const finish = () => dbMocks.selectResults.shift() ?? [];
         const joined = {
-          where: vi.fn(async () => finish()),
+          where: vi.fn(async (condition: unknown) => {
+            dbMocks.selectWheres.push(condition);
+            return finish();
+          }),
         };
         return {
           where: vi.fn(() => ({
@@ -154,6 +158,7 @@ describe('ticket mailbox connection service', () => {
     dbMocks.conflictUpdates.length = 0;
     dbMocks.updatedValues.length = 0;
     dbMocks.updateWheres.length = 0;
+    dbMocks.selectWheres.length = 0;
     dbMocks.innerJoins.length = 0;
     dbMocks.transactionCalls.length = 0;
     fetchMock.mockReset();
@@ -316,6 +321,9 @@ describe('ticket mailbox connection service', () => {
         ],
       },
     }]);
+    expect(dbMocks.selectWheres).toEqual([
+      { op: 'eq', column: ticketMailboxConnections.status, value: 'connected' },
+    ]);
     expect(Object.keys(dbMocks.selectedFields[0] ?? {})).toEqual([
       'id', 'partnerId', 'tenantId', 'mailboxAddress', 'deltaLink',
     ]);

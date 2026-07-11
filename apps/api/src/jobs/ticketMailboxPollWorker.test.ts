@@ -44,13 +44,7 @@ const conn = (over: Partial<any> = {}) => ({
 describe('runMailboxSweep', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it.each([
-    'reauth-required mailboxes',
-    'disabled mailboxes',
-    'connected mailboxes without verified ownership',
-  ])('does no token or Graph work when verified active selection excludes %s', async () => {
-    // listConnectedMailboxes owns status + ownership filtering. These states are
-    // therefore represented by the real service contract: no selected rows.
+  it('does no token or Graph work when verified active selection is empty', async () => {
     vi.mocked(listConnectedMailboxes).mockResolvedValue([]);
 
     await runMailboxSweep();
