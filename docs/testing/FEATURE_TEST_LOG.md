@@ -3560,10 +3560,10 @@ tests never exercised the real browser payloads** — worth a validator/UI-contr
 ## Web console i18n Phase 2 extraction (en / pt-BR) — 2026-07-11
 
 **Branch:** `worktree-web-i18n-phase1`
-**Commit:** `b47ab13ca`
+**Commit:** `0b17bf3b7`
 **Tested by:** Codex
-**Result:** PARTIAL
-**Plan progress:** 33 of 34 executable items complete (97%); automated implementation and verification complete, manual browser validation pending.
+**Result:** PASS
+**Plan progress:** 34 of 34 executable items complete (100%).
 
 ### What was tested
 
@@ -3572,19 +3572,22 @@ tests never exercised the real browser payloads** — worth a validator/UI-contr
 - [x] Partner-default locale API coverage and precedence behavior.
 - [x] Astro type/static analysis and production web build.
 - [x] Post-wave visible-string residue audit, including multiline UI, CSV, and printable-report copy.
-- [ ] Manual pt-BR click-through of the top 10 pages: an isolated seeded Compose stack started successfully, but this Codex session had no connected browser backend; the stack was removed after the attempt.
+- [x] Manual pt-BR click-through of the top 10 pages on an isolated, seeded OrbStack worktree stack: Dashboard, Profile, Devices, Alerts, Tickets, Remote Access, Scripts, Patches, Vulnerabilities, and Reports. Locale persistence, `<html lang>`, navigation, browser titles, and representative content were re-verified after fixes.
 
 ### Evidence
 
-- Full web suite: 417 files / 3,257 tests passed.
+- Full web suite: 425 files / 3,270 tests passed.
 - API org/user route suites: 2 files / 214 tests passed.
-- Astro check: 1,324 files, 0 errors (existing hints only).
+- Astro check: 1,334 files, 0 errors (existing hints only).
 - Production build: passed; pt-BR remains emitted through lazy locale chunks.
+- Live browser recheck passed for the confirmed residue fixes: localized metadata/help/profile copy, dashboard/device/alert relative times, Devices filters/table labels, Alerts tabs, Remote/Vulnerabilities landing copy, and Reports diacritics.
+- Fresh-tab pt-BR recheck passed with zero hydration/runtime console errors after deferring the persisted locale switch until Astro's initial islands finish hydrating.
 - Worktree diff and whitespace checks: clean.
 
 ### Issues Found
 
 - Automated verification found and fixed structural enum/state values that had been translated by mechanical extraction, two callback variables shadowing `t()`, cross-namespace device metadata labels, and several post-wave literal-string misses.
+- The live walkthrough found and fixed remaining runtime-only residues that unit/static checks could not expose, including a duplicate Devices quick-filter rendering path.
+- The live walkthrough also exposed and fixed a stored-locale hydration race that could render pt-BR before English SSR islands hydrated.
 - Final read-only code review found no unresolved Critical or Important issues after runtime, enforcement, formatter, and copy-quality remediation.
 - Brazilian Portuguese copy remains machine-drafted and should receive native-speaker review before production rollout.
-- Live locale persistence/navigation smoke remains pending until a browser-capable test session is available.

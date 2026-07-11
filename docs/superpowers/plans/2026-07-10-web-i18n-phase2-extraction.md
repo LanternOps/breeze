@@ -633,7 +633,7 @@ Rough total: ~520 files, ~180k lines, est. 3,500–7,000 keys. **Each wave is a 
 - [x] **Wave 6** — billing/integrations/policies/discovery
 - [x] **Wave 7** — long tail
 - [x] **Post-wave residue sweep:** static visible-string residue hunt, with stragglers fixed and enforcement coverage expanded
-- [ ] **Manual validation:** pt-BR click-through of the top 10 pages (worktree-stack), filing any stragglers as follow-ups
+- [x] **Manual validation:** pt-BR click-through of the top 10 pages (OrbStack worktree stack), with confirmed stragglers fixed and re-verified
 
 Per-wave execution notes for the orchestrator:
 - Fan out subagents ~10–15 files each **within one namespace/wave at a time**; parallel agents must not edit the same `<ns>.json` — have each agent return its key/value pairs and let a single merge step write the JSON files, or assign each agent a distinct top-level key prefix.
