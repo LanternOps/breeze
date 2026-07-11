@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 import { ArrowLeft, Eye, BarChart3, Play } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
@@ -9,9 +11,9 @@ import BaselineApplyTab from './BaselineApplyTab';
 import Breadcrumbs from '../layout/Breadcrumbs';
 
 const tabs = [
-  { id: 'overview', label: 'Overview', icon: Eye },
-  { id: 'compliance', label: 'Compliance', icon: BarChart3 },
-  { id: 'apply', label: 'Apply', icon: Play },
+  { id: 'overview', labelKey: 'overview', icon: Eye },
+  { id: 'compliance', labelKey: 'compliance', icon: BarChart3 },
+  { id: 'apply', labelKey: 'apply', icon: Play },
 ] as const;
 
 type TabId = (typeof tabs)[number]['id'];
@@ -21,6 +23,7 @@ type Props = {
 };
 
 export default function BaselineDetailPage({ baselineId }: Props) {
+  const { t } = useTranslation('security');
   const [activeTab, setActiveTab] = useState<TabId>('overview');
   const [baseline, setBaseline] = useState<Baseline | null>(null);
   const [loading, setLoading] = useState(true);
@@ -32,14 +35,14 @@ export default function BaselineDetailPage({ baselineId }: Props) {
       setLoading(true);
       setError(undefined);
       const response = await fetchWithAuth(`/audit-baselines?id=${baselineId}`);
-      if (!response.ok) throw new Error('Failed to fetch baseline');
+      if (!response.ok) throw new Error(t('auditBaselinesBaselineDetailPage.messages.fetchFailed'));
       const data = await response.json();
       const items = Array.isArray(data.data) ? data.data : Array.isArray(data) ? data : [];
       const found = items.find((b: Baseline) => b.id === baselineId);
-      if (!found) throw new Error('Baseline not found');
+      if (!found) throw new Error(t('auditBaselinesBaselineDetailPage.messages.notFound'));
       setBaseline(found);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('auditBaselinesBaselineDetailPage.messages.genericError'));
     } finally {
       setLoading(false);
     }
@@ -54,7 +57,7 @@ export default function BaselineDetailPage({ baselineId }: Props) {
       <div className="flex items-center justify-center py-12">
         <div className="text-center">
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading baseline...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('auditBaselinesBaselineDetailPage.loading')}</p>
         </div>
       </div>
     );
@@ -68,16 +71,16 @@ export default function BaselineDetailPage({ baselineId }: Props) {
           className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
         >
           <ArrowLeft className="h-4 w-4" />
-          Back to Audit Baselines
+          {t('auditBaselinesBaselineDetailPage.backToAuditBaselines')}
         </a>
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
-          <p className="text-sm text-destructive">{error ?? 'Baseline not found'}</p>
+          <p className="text-sm text-destructive">{error ?? t('auditBaselinesBaselineDetailPage.messages.notFound')}</p>
           <button
             type="button"
             onClick={fetchBaseline}
             className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
           >
-            Try again
+            {t('auditBaselinesBaselineDetailPage.actions.tryAgain')}
           </button>
         </div>
       </div>
@@ -87,8 +90,8 @@ export default function BaselineDetailPage({ baselineId }: Props) {
   return (
     <div className="space-y-6">
       <Breadcrumbs items={[
-        { label: 'Audit Baselines', href: '/audit-baselines' },
-        { label: baseline.name || 'Baseline' }
+        { label: t('auditBaselinesBaselineDetailPage.breadcrumbs.auditBaselines'), href: '/audit-baselines' },
+        { label: baseline.name || t('auditBaselinesBaselineDetailPage.breadcrumbs.baseline') }
       ]} />
 
       <div className="flex items-center justify-between">
@@ -103,7 +106,9 @@ export default function BaselineDetailPage({ baselineId }: Props) {
                   : 'bg-gray-500/15 text-gray-600 border-gray-500/30'
               )}
             >
-              {baseline.isActive ? 'Active' : 'Inactive'}
+              {baseline.isActive
+                ? t('auditBaselinesBaselineDetailPage.status.active')
+                : t('auditBaselinesBaselineDetailPage.status.inactive')}
             </span>
             <span className="text-sm text-muted-foreground">
               {baseline.osType} &middot; {baseline.profile}
@@ -129,7 +134,7 @@ export default function BaselineDetailPage({ baselineId }: Props) {
               )}
             >
               <Icon className="h-4 w-4" />
-              {tab.label}
+              {t(`auditBaselinesBaselineDetailPage.tabs.${tab.labelKey}`)}
             </button>
           );
         })}

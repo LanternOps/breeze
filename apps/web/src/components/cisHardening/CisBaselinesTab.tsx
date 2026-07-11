@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 import { Loader2, Pencil, Play, Plus } from 'lucide-react';
 import { cn, friendlyFetchError } from '@/lib/utils';
 import { extractApiError } from '@/lib/apiError';
@@ -18,6 +20,7 @@ interface CisBaselinesTabProps {
 }
 
 export default function CisBaselinesTab({ refreshKey, onMutate }: CisBaselinesTabProps) {
+  const { t } = useTranslation('security');
   const [baselines, setBaselines] = useState<Baseline[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -66,7 +69,7 @@ export default function CisBaselinesTab({ refreshKey, onMutate }: CisBaselinesTa
         throw new Error(extractApiError(data, `${res.status} ${res.statusText}`));
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to trigger scan');
+      setError(err instanceof Error ? err.message : t('cisHardeningCisBaselinesTab.messages.triggerScanFailed'));
     } finally {
       setScanningId(null);
     }
@@ -95,14 +98,14 @@ export default function CisBaselinesTab({ refreshKey, onMutate }: CisBaselinesTa
       )}
 
       <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold">Baselines</h3>
+        <h3 className="text-lg font-semibold">{t('cisHardeningCisBaselinesTab.title')}</h3>
         <button
           type="button"
           onClick={() => setEditBaseline(null)}
           className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
           <Plus className="h-4 w-4" />
-          New Baseline
+          {t('cisHardeningCisBaselinesTab.actions.newBaseline')}
         </button>
       </div>
 
@@ -110,13 +113,13 @@ export default function CisBaselinesTab({ refreshKey, onMutate }: CisBaselinesTa
         <table className="min-w-full divide-y">
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <th className="px-4 py-3">Name</th>
-              <th className="px-4 py-3">OS</th>
-              <th className="px-4 py-3">Level</th>
-              <th className="px-4 py-3">Version</th>
-              <th className="px-4 py-3">Schedule</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3">Actions</th>
+              <th className="px-4 py-3">{t('cisHardeningCisBaselinesTab.table.name')}</th>
+              <th className="px-4 py-3">{t('cisHardeningCisBaselinesTab.table.os')}</th>
+              <th className="px-4 py-3">{t('cisHardeningCisBaselinesTab.table.level')}</th>
+              <th className="px-4 py-3">{t('cisHardeningCisBaselinesTab.table.version')}</th>
+              <th className="px-4 py-3">{t('cisHardeningCisBaselinesTab.table.schedule')}</th>
+              <th className="px-4 py-3">{t('cisHardeningCisBaselinesTab.table.status')}</th>
+              <th className="px-4 py-3">{t('cisHardeningCisBaselinesTab.table.actions')}</th>
             </tr>
           </thead>
           <tbody className="divide-y">
@@ -125,14 +128,14 @@ export default function CisBaselinesTab({ refreshKey, onMutate }: CisBaselinesTa
                 <td colSpan={7} className="px-4 py-8 text-center text-sm text-muted-foreground">
                   <span className="inline-flex items-center gap-2">
                     <Loader2 className="h-4 w-4 animate-spin" />
-                    Loading baselines...
+                    {t('cisHardeningCisBaselinesTab.loading')}
                   </span>
                 </td>
               </tr>
             ) : baselines.length === 0 ? (
               <tr>
                 <td colSpan={7} className="px-4 py-8 text-center text-sm text-muted-foreground">
-                  No baselines configured.
+                  {t('cisHardeningCisBaselinesTab.empty')}
                 </td>
               </tr>
             ) : (
@@ -147,14 +150,14 @@ export default function CisBaselinesTab({ refreshKey, onMutate }: CisBaselinesTa
                         levelBadge[bl.level] ?? levelBadge.custom
                       )}
                     >
-                      {bl.level}
+                      {t(`cisHardeningCisBaselinesTab.levels.${bl.level}`, { defaultValue: bl.level })}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-muted-foreground">{bl.benchmarkVersion}</td>
                   <td className="px-4 py-3 text-muted-foreground">
                     {bl.scanSchedule?.enabled
-                      ? `Every ${bl.scanSchedule.intervalHours}h`
-                      : 'Manual'}
+                      ? t('cisHardeningCisBaselinesTab.schedule.everyHours', { hours: bl.scanSchedule.intervalHours })
+                      : t('cisHardeningCisBaselinesTab.schedule.manual')}
                   </td>
                   <td className="px-4 py-3">
                     <span
@@ -165,7 +168,9 @@ export default function CisBaselinesTab({ refreshKey, onMutate }: CisBaselinesTa
                           : 'bg-gray-500/20 text-gray-700 border-gray-500/30'
                       )}
                     >
-                      {bl.isActive ? 'Active' : 'Inactive'}
+                      {bl.isActive
+                        ? t('cisHardeningCisBaselinesTab.status.active')
+                        : t('cisHardeningCisBaselinesTab.status.inactive')}
                     </span>
                   </td>
                   <td className="px-4 py-3">
@@ -174,7 +179,7 @@ export default function CisBaselinesTab({ refreshKey, onMutate }: CisBaselinesTa
                         type="button"
                         onClick={() => setEditBaseline(bl)}
                         className="rounded-md p-1.5 hover:bg-muted"
-                        title="Edit"
+                        title={t('cisHardeningCisBaselinesTab.actions.edit')}
                       >
                         <Pencil className="h-4 w-4 text-muted-foreground" />
                       </button>
@@ -183,7 +188,7 @@ export default function CisBaselinesTab({ refreshKey, onMutate }: CisBaselinesTa
                         onClick={() => handleTriggerScan(bl.id)}
                         disabled={scanningId === bl.id || !bl.isActive}
                         className="rounded-md p-1.5 hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
-                        title="Trigger Scan"
+                        title={t('cisHardeningCisBaselinesTab.actions.triggerScan')}
                       >
                         {scanningId === bl.id ? (
                           <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />

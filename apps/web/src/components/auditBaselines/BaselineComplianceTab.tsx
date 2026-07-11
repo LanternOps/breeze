@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
@@ -31,6 +33,7 @@ function scoreColor(score: number): string {
 }
 
 export default function BaselineComplianceTab({ baseline }: Props) {
+  const { t } = useTranslation('security');
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
   const [summary, setSummary] = useState<ComplianceSummary | null>(null);
   const [loading, setLoading] = useState(true);
@@ -45,11 +48,11 @@ export default function BaselineComplianceTab({ baseline }: Props) {
       params.set('baselineId', baseline.id);
       if (currentOrgId) params.set('orgId', currentOrgId);
       const response = await fetchWithAuth(`/audit-baselines/compliance?${params.toString()}`);
-      if (!response.ok) throw new Error('Failed to fetch compliance data');
+      if (!response.ok) throw new Error(t('auditBaselinesBaselineComplianceTab.messages.fetchFailed'));
       const data: ComplianceSummary = await response.json();
       setSummary(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('auditBaselinesBaselineComplianceTab.messages.genericError'));
     } finally {
       setLoading(false);
     }
@@ -64,7 +67,7 @@ export default function BaselineComplianceTab({ baseline }: Props) {
       <div className="flex items-center justify-center py-12">
         <div className="text-center">
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading compliance results...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('auditBaselinesBaselineComplianceTab.loading')}</p>
         </div>
       </div>
     );
@@ -79,7 +82,7 @@ export default function BaselineComplianceTab({ baseline }: Props) {
           onClick={fetchResults}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Try again
+          {t('auditBaselinesBaselineComplianceTab.actions.tryAgain')}
         </button>
       </div>
     );
@@ -90,10 +93,10 @@ export default function BaselineComplianceTab({ baseline }: Props) {
   if (!summary || !baselineSummary || baselineSummary.total === 0) {
     return (
       <div className="rounded-lg border bg-card p-8 text-center shadow-xs">
-        <h3 className="text-sm font-semibold">No compliance results</h3>
+        <h3 className="text-sm font-semibold">{t('auditBaselinesBaselineComplianceTab.empty.title')}</h3>
         <p className="mt-1 text-sm text-muted-foreground">
-          No devices have been evaluated against this baseline yet.
-          {!baseline.isActive && ' Activate this baseline to begin drift evaluation.'}
+          {t('auditBaselinesBaselineComplianceTab.empty.description')}
+          {!baseline.isActive && t('auditBaselinesBaselineComplianceTab.empty.inactiveSuffix')}
         </p>
       </div>
     );
@@ -103,11 +106,11 @@ export default function BaselineComplianceTab({ baseline }: Props) {
     <div className="space-y-6">
       <div className="grid gap-4 sm:grid-cols-3">
         <div className="rounded-lg border bg-card p-4 shadow-xs">
-          <p className="text-xs text-muted-foreground">Devices Evaluated</p>
+          <p className="text-xs text-muted-foreground">{t('auditBaselinesBaselineComplianceTab.cards.devicesEvaluated')}</p>
           <p className="mt-1 text-xl font-semibold">{baselineSummary.total}</p>
         </div>
         <div className="rounded-lg border bg-card p-4 shadow-xs">
-          <p className="text-xs text-muted-foreground">Compliant</p>
+          <p className="text-xs text-muted-foreground">{t('auditBaselinesBaselineComplianceTab.cards.compliant')}</p>
           <p className="mt-1 text-xl font-semibold text-green-600">
             {baselineSummary.compliant}
             <span className="ml-1 text-sm font-normal text-muted-foreground">
@@ -118,7 +121,7 @@ export default function BaselineComplianceTab({ baseline }: Props) {
           </p>
         </div>
         <div className="rounded-lg border bg-card p-4 shadow-xs">
-          <p className="text-xs text-muted-foreground">Average Score</p>
+          <p className="text-xs text-muted-foreground">{t('auditBaselinesBaselineComplianceTab.cards.averageScore')}</p>
           <p className={cn('mt-1 text-xl font-semibold', scoreColor(baselineSummary.averageScore))}>
             {baselineSummary.averageScore}
           </p>
@@ -127,7 +130,7 @@ export default function BaselineComplianceTab({ baseline }: Props) {
 
       <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold">Device Results</h3>
+          <h3 className="text-sm font-semibold">{t('auditBaselinesBaselineComplianceTab.deviceResults')}</h3>
           <div className="flex gap-1 rounded-md border bg-muted/40 p-0.5">
             {(['all', 'compliant', 'non-compliant'] as const).map((f) => (
               <button
@@ -141,16 +144,17 @@ export default function BaselineComplianceTab({ baseline }: Props) {
                     : 'text-muted-foreground hover:text-foreground'
                 )}
               >
-                {f === 'all' ? 'All' : f === 'compliant' ? 'Compliant' : 'Non-Compliant'}
+                {t(`auditBaselinesBaselineComplianceTab.filters.${f === 'non-compliant' ? 'nonCompliant' : f}`)}
               </button>
             ))}
           </div>
         </div>
 
         <p className="mt-4 text-sm text-muted-foreground">
-          Summary shows {baselineSummary.compliant} compliant and{' '}
-          {baselineSummary.nonCompliant} non-compliant devices.
-          Click a device in the Devices page to see per-device audit baseline details.
+          {t('auditBaselinesBaselineComplianceTab.summary', {
+            compliant: baselineSummary.compliant,
+            nonCompliant: baselineSummary.nonCompliant,
+          })}
         </p>
       </div>
     </div>

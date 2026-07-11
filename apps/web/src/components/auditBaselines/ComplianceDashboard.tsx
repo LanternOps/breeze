@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 import { Monitor, CheckCircle2, AlertTriangle, BarChart3 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
@@ -22,7 +24,7 @@ type ComplianceData = {
   baselines: BaselineSummary[];
 };
 
-const osLabel: Record<string, string> = { windows: 'Windows', macos: 'macOS', linux: 'Linux' };
+const osLabelKey: Record<string, string> = { windows: 'windows', macos: 'macos', linux: 'linux' };
 const osBadge: Record<string, string> = {
   windows: 'bg-blue-500/15 text-blue-700 border-blue-500/30',
   macos: 'bg-purple-500/15 text-purple-700 border-purple-500/30',
@@ -42,6 +44,7 @@ function scoreBarColor(score: number): string {
 }
 
 export default function ComplianceDashboard() {
+  const { t } = useTranslation('security');
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
   const [data, setData] = useState<ComplianceData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -54,11 +57,11 @@ export default function ComplianceDashboard() {
       const params = new URLSearchParams();
       if (currentOrgId) params.set('orgId', currentOrgId);
       const response = await fetchWithAuth(`/audit-baselines/compliance?${params.toString()}`);
-      if (!response.ok) throw new Error('Failed to fetch compliance summary');
+      if (!response.ok) throw new Error(t('auditBaselinesComplianceDashboard.messages.fetchFailed'));
       const json = await response.json();
       setData(json);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('auditBaselinesComplianceDashboard.messages.genericError'));
     } finally {
       setLoading(false);
     }
@@ -73,7 +76,7 @@ export default function ComplianceDashboard() {
       <div className="flex items-center justify-center py-12">
         <div className="text-center">
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading compliance data...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('auditBaselinesComplianceDashboard.loading')}</p>
         </div>
       </div>
     );
@@ -88,7 +91,7 @@ export default function ComplianceDashboard() {
           onClick={fetchData}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Try again
+          {t('auditBaselinesComplianceDashboard.actions.tryAgain')}
         </button>
       </div>
     );
@@ -98,9 +101,9 @@ export default function ComplianceDashboard() {
     return (
       <div className="rounded-lg border bg-card p-8 text-center shadow-xs">
         <BarChart3 className="mx-auto h-10 w-10 text-muted-foreground" />
-        <h3 className="mt-4 text-sm font-semibold">No compliance data yet</h3>
+        <h3 className="mt-4 text-sm font-semibold">{t('auditBaselinesComplianceDashboard.empty.title')}</h3>
         <p className="mt-1 text-sm text-muted-foreground">
-          Activate a baseline and wait for the next drift evaluation cycle to see results here.
+          {t('auditBaselinesComplianceDashboard.empty.description')}
         </p>
       </div>
     );
@@ -119,7 +122,7 @@ export default function ComplianceDashboard() {
               <Monitor className="h-4 w-4 text-muted-foreground" />
             </div>
             <div>
-              <p className="text-xs text-muted-foreground">Devices Evaluated</p>
+              <p className="text-xs text-muted-foreground">{t('auditBaselinesComplianceDashboard.cards.devicesEvaluated')}</p>
               <p className="text-xl font-semibold">{data.totalDevices}</p>
             </div>
           </div>
@@ -131,7 +134,7 @@ export default function ComplianceDashboard() {
               <CheckCircle2 className="h-4 w-4 text-green-500" />
             </div>
             <div>
-              <p className="text-xs text-muted-foreground">Compliant</p>
+              <p className="text-xs text-muted-foreground">{t('auditBaselinesComplianceDashboard.cards.compliant')}</p>
               <p className="text-xl font-semibold">
                 {compliantPct}%
                 <span className="ml-1 text-sm font-normal text-muted-foreground">
@@ -148,7 +151,7 @@ export default function ComplianceDashboard() {
               <AlertTriangle className="h-4 w-4 text-red-500" />
             </div>
             <div>
-              <p className="text-xs text-muted-foreground">Non-Compliant</p>
+              <p className="text-xs text-muted-foreground">{t('auditBaselinesComplianceDashboard.cards.nonCompliant')}</p>
               <p className="text-xl font-semibold">{data.nonCompliant}</p>
             </div>
           </div>
@@ -160,7 +163,7 @@ export default function ComplianceDashboard() {
               <BarChart3 className="h-4 w-4 text-muted-foreground" />
             </div>
             <div>
-              <p className="text-xs text-muted-foreground">Average Score</p>
+              <p className="text-xs text-muted-foreground">{t('auditBaselinesComplianceDashboard.cards.averageScore')}</p>
               <p className={cn('text-xl font-semibold', scoreColor(data.averageScore))}>
                 {data.averageScore}
               </p>
@@ -171,15 +174,15 @@ export default function ComplianceDashboard() {
 
       {data.baselines.length > 0 && (
         <div className="rounded-lg border bg-card p-6 shadow-xs">
-          <h3 className="text-sm font-semibold">Compliance by Baseline</h3>
+          <h3 className="text-sm font-semibold">{t('auditBaselinesComplianceDashboard.byBaseline')}</h3>
           <table className="mt-4 w-full text-sm">
             <thead className="bg-muted/40">
               <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                <th className="px-4 py-3">Baseline</th>
-                <th className="px-4 py-3">OS</th>
-                <th className="px-4 py-3 text-right">Devices</th>
-                <th className="px-4 py-3 text-right">Avg Score</th>
-                <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3">{t('auditBaselinesComplianceDashboard.table.baseline')}</th>
+                <th className="px-4 py-3">{t('auditBaselinesComplianceDashboard.table.os')}</th>
+                <th className="px-4 py-3 text-right">{t('auditBaselinesComplianceDashboard.table.devices')}</th>
+                <th className="px-4 py-3 text-right">{t('auditBaselinesComplianceDashboard.table.avgScore')}</th>
+                <th className="px-4 py-3">{t('auditBaselinesComplianceDashboard.table.status')}</th>
               </tr>
             </thead>
             <tbody>
@@ -200,7 +203,7 @@ export default function ComplianceDashboard() {
                         osBadge[bl.osType] ?? ''
                       )}
                     >
-                      {osLabel[bl.osType] ?? bl.osType}
+                      {osLabelKey[bl.osType] ? t(`auditBaselinesComplianceDashboard.os.${osLabelKey[bl.osType]}`) : bl.osType}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-right">{bl.total}</td>
@@ -218,7 +221,10 @@ export default function ComplianceDashboard() {
                         />
                       </div>
                       <span className="text-xs text-muted-foreground">
-                        {bl.compliant}/{bl.total} compliant
+                        {t('auditBaselinesComplianceDashboard.compliantRatio', {
+                          compliant: bl.compliant,
+                          total: bl.total,
+                        })}
                       </span>
                     </div>
                   </td>

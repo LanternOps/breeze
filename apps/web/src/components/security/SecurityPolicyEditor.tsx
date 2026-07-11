@@ -1,16 +1,16 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { CalendarClock, Loader2, Plus, Save, Trash2 } from 'lucide-react';
-import { fetchWithAuth } from '../../stores/auth';
-import { useOrgStore } from '../../stores/orgStore';
-import { getJwtClaims } from '@/lib/authScope';
-
+import { useTranslation } from "react-i18next";
+import "@/lib/i18n";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { CalendarClock, Loader2, Plus, Save, Trash2 } from "lucide-react";
+import { fetchWithAuth } from "../../stores/auth";
+import { useOrgStore } from "../../stores/orgStore";
+import { getJwtClaims } from "@/lib/authScope";
 type ToggleRowProps = {
   label: string;
   description: string;
   checked: boolean;
   onChange: (next: boolean) => void;
 };
-
 function ToggleRow({ label, description, checked, onChange }: ToggleRowProps) {
   return (
     <div className="flex items-center justify-between rounded-md border bg-background px-4 py-3">
@@ -21,76 +21,79 @@ function ToggleRow({ label, description, checked, onChange }: ToggleRowProps) {
       <button
         type="button"
         onClick={() => onChange(!checked)}
-        className={`relative inline-flex h-6 w-11 items-center rounded-full border transition ${checked ? 'bg-emerald-500/80' : 'bg-muted'}`}
+        className={`relative inline-flex h-6 w-11 items-center rounded-full border transition ${checked ? "bg-emerald-500/80" : "bg-muted"}`}
       >
         <span
-          className={`inline-block h-5 w-5 rounded-full bg-white transition ${checked ? 'translate-x-5' : 'translate-x-1'}`}
+          className={`inline-block h-5 w-5 rounded-full bg-white transition ${checked ? "translate-x-5" : "translate-x-1"}`}
         />
       </button>
     </div>
   );
 }
-
 type SecurityPolicy = {
   id: string;
   name: string;
   description?: string;
   providerId?: string;
-  scanSchedule: 'daily' | 'weekly' | 'monthly' | 'manual';
+  scanSchedule: "daily" | "weekly" | "monthly" | "manual";
   realTimeProtection: boolean;
   autoQuarantine: boolean;
-  severityThreshold: 'low' | 'medium' | 'high' | 'critical';
+  severityThreshold: "low" | "medium" | "high" | "critical";
   exclusions: string[];
   createdAt: string;
   updatedAt: string;
 };
-
 type SecurityPolicyEditorProps = {
   policyId?: string;
   onSave?: (policy: SecurityPolicy) => void;
 };
-
-const minuteOptions = ['0', '15', '30', '45'];
-const hourOptions = ['0', '2', '6', '12', '18'];
-const dayOfMonthOptions = ['*', '1', '15'];
+const minuteOptions = ["0", "15", "30", "45"];
+const hourOptions = ["0", "2", "6", "12", "18"];
+const dayOfMonthOptions = ["*", "1", "15"];
 const dayOfWeekOptions = [
-  { label: '*', value: '*' },
-  { label: 'Mon', value: '1' },
-  { label: 'Tue', value: '2' },
-  { label: 'Wed', value: '3' },
-  { label: 'Thu', value: '4' },
-  { label: 'Fri', value: '5' },
-  { label: 'Sat', value: '6' },
-  { label: 'Sun', value: '0' }
+  { labelKey: null, value: "*" },
+  { labelKey: "securitySecurityPolicyEditor.mon", value: "1" },
+  { labelKey: "securitySecurityPolicyEditor.tue", value: "2" },
+  { labelKey: "securitySecurityPolicyEditor.wed", value: "3" },
+  { labelKey: "securitySecurityPolicyEditor.thu", value: "4" },
+  { labelKey: "securitySecurityPolicyEditor.fri", value: "5" },
+  { labelKey: "securitySecurityPolicyEditor.sat", value: "6" },
+  { labelKey: "securitySecurityPolicyEditor.sun", value: "0" },
 ];
-
-const scanScheduleFromCron = (minute: string, hour: string, dayOfMonth: string, dayOfWeek: string): 'daily' | 'weekly' | 'monthly' | 'manual' => {
-  if (dayOfMonth !== '*') return 'monthly';
-  if (dayOfWeek !== '*') return 'weekly';
-  if (hour !== '*') return 'daily';
-  return 'manual';
+const scanScheduleFromCron = (
+  _minute: string,
+  hour: string,
+  dayOfMonth: string,
+  dayOfWeek: string,
+): "daily" | "weekly" | "monthly" | "manual" => {
+  if (dayOfMonth !== "*") return "monthly";
+  if (dayOfWeek !== "*") return "weekly";
+  if (hour !== "*") return "daily";
+  return "manual";
 };
-
-export default function SecurityPolicyEditor({ policyId, onSave }: SecurityPolicyEditorProps) {
+export default function SecurityPolicyEditor({
+  policyId,
+  onSave,
+}: SecurityPolicyEditorProps) {
+  const { t } = useTranslation("security");
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
-  const [policyName, setPolicyName] = useState('');
-  const [description, setDescription] = useState('');
+  const [policyName, setPolicyName] = useState("");
+  const [description, setDescription] = useState("");
   const [realTimeEnabled, setRealTimeEnabled] = useState(true);
   const [behavioralEnabled, setBehavioralEnabled] = useState(true);
   const [cloudLookupEnabled, setCloudLookupEnabled] = useState(true);
   const [scheduledEnabled, setScheduledEnabled] = useState(true);
-  const [scanMinute, setScanMinute] = useState('0');
-  const [scanHour, setScanHour] = useState('2');
-  const [scanDayOfMonth, setScanDayOfMonth] = useState('*');
-  const [scanDayOfWeek, setScanDayOfWeek] = useState('*');
+  const [scanMinute, setScanMinute] = useState("0");
+  const [scanHour, setScanHour] = useState("2");
+  const [scanDayOfMonth, setScanDayOfMonth] = useState("*");
+  const [scanDayOfWeek, setScanDayOfWeek] = useState("*");
   const [autoQuarantine, setAutoQuarantine] = useState(true);
   const [notifyUser, setNotifyUser] = useState(true);
   const [blockUsb, setBlockUsb] = useState(false);
   const [exclusions, setExclusions] = useState<string[]>([]);
-  const [newExclusion, setNewExclusion] = useState('');
-
+  const [newExclusion, setNewExclusion] = useState("");
   // Ownership axis (#2127, mirrors software/config policies): partner-scope
   // creators may own the baseline partner-wide ("all orgs"). Gate on the JWT
   // scope; default to partner-wide when viewing All orgs. Create-only —
@@ -98,155 +101,174 @@ export default function SecurityPolicyEditor({ policyId, onSave }: SecurityPolic
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
   const allOrgs = useOrgStore((s) => s.allOrgs);
   const { scope: jwtScope, partnerId: jwtPartnerId } = getJwtClaims();
-  const isPartnerScope = jwtScope === 'partner' && !!jwtPartnerId;
-  const [ownerScope, setOwnerScope] = useState<'organization' | 'partner'>(
-    isPartnerScope && (allOrgs || !currentOrgId) ? 'partner' : 'organization'
+  const isPartnerScope = jwtScope === "partner" && !!jwtPartnerId;
+  const [ownerScope, setOwnerScope] = useState<"organization" | "partner">(
+    isPartnerScope && (allOrgs || !currentOrgId) ? "partner" : "organization",
   );
-
   const fetchPolicy = useCallback(async () => {
     if (!policyId) return;
-
     setLoading(true);
     setError(undefined);
-
     try {
-      const response = await fetchWithAuth('/security/policies');
+      const response = await fetchWithAuth("/security/policies");
       if (!response.ok) {
         throw new Error(`${response.status} ${response.statusText}`);
       }
       const json = await response.json();
       const policies: SecurityPolicy[] = json.data || [];
       const policy = policies.find((p) => p.id === policyId);
-
       if (policy) {
         setPolicyName(policy.name);
-        setDescription(policy.description || '');
+        setDescription(policy.description || "");
         setRealTimeEnabled(policy.realTimeProtection);
         setAutoQuarantine(policy.autoQuarantine);
         setExclusions(policy.exclusions || []);
-        setScheduledEnabled(policy.scanSchedule !== 'manual');
+        setScheduledEnabled(policy.scanSchedule !== "manual");
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load policy');
+      setError(
+        err instanceof Error
+          ? err.message
+          : t("securitySecurityPolicyEditor.failedToLoadPolicy"),
+      );
     } finally {
       setLoading(false);
     }
   }, [policyId]);
-
   useEffect(() => {
     fetchPolicy();
   }, [fetchPolicy]);
-
   const handleSavePolicy = async () => {
     setSaving(true);
     setError(undefined);
-
     const scanSchedule = scheduledEnabled
-      ? scanScheduleFromCron(scanMinute, scanHour, scanDayOfMonth, scanDayOfWeek)
-      : 'manual';
-
+      ? scanScheduleFromCron(
+          scanMinute,
+          scanHour,
+          scanDayOfMonth,
+          scanDayOfWeek,
+        )
+      : "manual";
     const payload = {
       name: policyName,
       // Create-only intent; the server derives the partner from the token.
-      ...(policyId ? {} : { ownerScope: isPartnerScope ? ownerScope : undefined }),
+      ...(policyId
+        ? {}
+        : { ownerScope: isPartnerScope ? ownerScope : undefined }),
       description,
       scanSchedule,
       realTimeProtection: realTimeEnabled,
       autoQuarantine,
-      severityThreshold: 'medium' as const,
-      exclusions
+      severityThreshold: "medium" as const,
+      exclusions,
     };
-
     try {
-      const url = policyId ? `/security/policies/${policyId}` : '/security/policies';
-      const method = policyId ? 'PUT' : 'POST';
-
+      const url = policyId
+        ? `/security/policies/${policyId}`
+        : "/security/policies";
+      const method = policyId ? "PUT" : "POST";
       const response = await fetchWithAuth(url, {
         method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
       });
-
       if (!response.ok) {
         throw new Error(`${response.status} ${response.statusText}`);
       }
-
       const json = await response.json();
       onSave?.(json.data || json);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save policy');
+      setError(
+        err instanceof Error
+          ? err.message
+          : t("securitySecurityPolicyEditor.failedToSavePolicy"),
+      );
     } finally {
       setSaving(false);
     }
   };
-
   const cronExpression = useMemo(
     () => `${scanMinute} ${scanHour} ${scanDayOfMonth} * ${scanDayOfWeek}`,
-    [scanMinute, scanHour, scanDayOfMonth, scanDayOfWeek]
+    [scanMinute, scanHour, scanDayOfMonth, scanDayOfWeek],
   );
-
   const handleAddExclusion = () => {
     const trimmed = newExclusion.trim();
     if (!trimmed || exclusions.includes(trimmed)) return;
-    setExclusions(prev => [...prev, trimmed]);
-    setNewExclusion('');
+    setExclusions((prev) => [...prev, trimmed]);
+    setNewExclusion("");
   };
-
   const handleRemoveExclusion = (value: string) => {
-    setExclusions(prev => prev.filter(item => item !== value));
+    setExclusions((prev) => prev.filter((item) => item !== value));
   };
-
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-2">
-        <h2 className="text-lg font-semibold">Security Policy Editor</h2>
-        <p className="text-sm text-muted-foreground">Tune protection settings for device groups.</p>
+        <h2 className="text-lg font-semibold">
+          {t("securitySecurityPolicyEditor.securityPolicyEditor")}
+        </h2>
+        <p className="text-sm text-muted-foreground">
+          {t(
+            "securitySecurityPolicyEditor.tuneProtectionSettingsForDeviceGroups",
+          )}
+        </p>
       </div>
 
       <div className="rounded-lg border bg-card p-6 shadow-xs">
         {!policyId && isPartnerScope && (
-          <fieldset className="mb-4 space-y-2 rounded-md border p-4" data-testid="security-policy-owner">
-            <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">Scope</legend>
+          <fieldset
+            className="mb-4 space-y-2 rounded-md border p-4"
+            data-testid="security-policy-owner"
+          >
+            <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
+              {t("securitySecurityPolicyEditor.scope")}
+            </legend>
             <label className="flex items-center gap-2 text-sm">
               <input
                 type="radio"
                 name="securityPolicyOwnerScope"
                 value="partner"
-                checked={ownerScope === 'partner'}
-                onChange={() => setOwnerScope('partner')}
+                checked={ownerScope === "partner"}
+                onChange={() => setOwnerScope("partner")}
                 data-testid="security-policy-owner-partner"
               />
-              All organizations <span className="text-muted-foreground">(partner-wide template)</span>
+              {t("securitySecurityPolicyEditor.allOrganizations")}
+              <span className="text-muted-foreground">
+                {t("securitySecurityPolicyEditor.partnerWideTemplate")}
+              </span>
             </label>
             <label className="flex items-center gap-2 text-sm">
               <input
                 type="radio"
                 name="securityPolicyOwnerScope"
                 value="organization"
-                checked={ownerScope === 'organization'}
-                onChange={() => setOwnerScope('organization')}
+                checked={ownerScope === "organization"}
+                onChange={() => setOwnerScope("organization")}
                 data-testid="security-policy-owner-org"
               />
-              This organization only
+              {t("securitySecurityPolicyEditor.thisOrganizationOnly")}
             </label>
           </fieldset>
         )}
         <div className="grid gap-4 md:grid-cols-2">
           <div>
-            <label className="text-xs uppercase text-muted-foreground">Policy name</label>
+            <label className="text-xs uppercase text-muted-foreground">
+              {t("securitySecurityPolicyEditor.policyName")}
+            </label>
             <input
               type="text"
               value={policyName}
-              onChange={event => setPolicyName(event.target.value)}
+              onChange={(event) => setPolicyName(event.target.value)}
               className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
           </div>
           <div>
-            <label className="text-xs uppercase text-muted-foreground">Description</label>
+            <label className="text-xs uppercase text-muted-foreground">
+              {t("securitySecurityPolicyEditor.description")}
+            </label>
             <input
               type="text"
               value={description}
-              onChange={event => setDescription(event.target.value)}
+              onChange={(event) => setDescription(event.target.value)}
               className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
           </div>
@@ -256,23 +278,31 @@ export default function SecurityPolicyEditor({ policyId, onSave }: SecurityPolic
       <div className="grid gap-6 lg:grid-cols-2">
         <div className="space-y-6">
           <div className="rounded-lg border bg-card p-6 shadow-xs">
-            <h3 className="text-base font-semibold">Real-time Protection</h3>
+            <h3 className="text-base font-semibold">
+              {t("securitySecurityPolicyEditor.realTimeProtection")}
+            </h3>
             <div className="mt-4 space-y-3">
               <ToggleRow
-                label="Real-time file monitoring"
-                description="Scan new and modified files continuously."
+                label={t("securitySecurityPolicyEditor.realTimeFileMonitoring")}
+                description={t(
+                  "securitySecurityPolicyEditor.scanNewAndModifiedFilesContinuously",
+                )}
                 checked={realTimeEnabled}
                 onChange={setRealTimeEnabled}
               />
               <ToggleRow
-                label="Behavioral monitoring"
-                description="Detect suspicious process behavior and scripts."
+                label={t("securitySecurityPolicyEditor.behavioralMonitoring")}
+                description={t(
+                  "securitySecurityPolicyEditor.detectSuspiciousProcessBehaviorAndScripts",
+                )}
                 checked={behavioralEnabled}
                 onChange={setBehavioralEnabled}
               />
               <ToggleRow
-                label="Cloud threat lookup"
-                description="Use cloud reputation for new indicators."
+                label={t("securitySecurityPolicyEditor.cloudThreatLookup")}
+                description={t(
+                  "securitySecurityPolicyEditor.useCloudReputationForNewIndicators",
+                )}
                 checked={cloudLookupEnabled}
                 onChange={setCloudLookupEnabled}
               />
@@ -281,26 +311,34 @@ export default function SecurityPolicyEditor({ policyId, onSave }: SecurityPolic
 
           <div className="rounded-lg border bg-card p-6 shadow-xs">
             <div className="flex items-center justify-between">
-              <h3 className="text-base font-semibold">Scheduled Scans</h3>
+              <h3 className="text-base font-semibold">
+                {t("securitySecurityPolicyEditor.scheduledScans")}
+              </h3>
               <button
                 type="button"
                 onClick={() => setScheduledEnabled(!scheduledEnabled)}
-                className={`rounded-full border px-3 py-1 text-xs font-semibold ${scheduledEnabled ? 'bg-emerald-500/15 text-emerald-700' : 'bg-muted text-muted-foreground'}`}
+                className={`rounded-full border px-3 py-1 text-xs font-semibold ${scheduledEnabled ? "bg-emerald-500/15 text-emerald-700" : "bg-muted text-muted-foreground"}`}
               >
-                {scheduledEnabled ? 'Enabled' : 'Disabled'}
+                {scheduledEnabled
+                  ? t("securitySecurityPolicyEditor.enabled")
+                  : t("securitySecurityPolicyEditor.disabled")}
               </button>
             </div>
-            <div className={`mt-4 space-y-3 ${scheduledEnabled ? '' : 'opacity-50'}`}>
+            <div
+              className={`mt-4 space-y-3 ${scheduledEnabled ? "" : "opacity-50"}`}
+            >
               <div className="grid gap-3 sm:grid-cols-2">
                 <div>
-                  <label className="text-xs uppercase text-muted-foreground">Minute</label>
+                  <label className="text-xs uppercase text-muted-foreground">
+                    {t("securitySecurityPolicyEditor.minute")}
+                  </label>
                   <select
                     disabled={!scheduledEnabled}
                     value={scanMinute}
-                    onChange={event => setScanMinute(event.target.value)}
+                    onChange={(event) => setScanMinute(event.target.value)}
                     className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   >
-                    {minuteOptions.map(option => (
+                    {minuteOptions.map((option) => (
                       <option key={option} value={option}>
                         {option}
                       </option>
@@ -308,29 +346,33 @@ export default function SecurityPolicyEditor({ policyId, onSave }: SecurityPolic
                   </select>
                 </div>
                 <div>
-                  <label className="text-xs uppercase text-muted-foreground">Hour</label>
+                  <label className="text-xs uppercase text-muted-foreground">
+                    {t("securitySecurityPolicyEditor.hour")}
+                  </label>
                   <select
                     disabled={!scheduledEnabled}
                     value={scanHour}
-                    onChange={event => setScanHour(event.target.value)}
+                    onChange={(event) => setScanHour(event.target.value)}
                     className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   >
-                    {hourOptions.map(option => (
+                    {hourOptions.map((option) => (
                       <option key={option} value={option}>
-                        {option.padStart(2, '0')}:00
+                        {option.padStart(2, "0")}:00
                       </option>
                     ))}
                   </select>
                 </div>
                 <div>
-                  <label className="text-xs uppercase text-muted-foreground">Day of month</label>
+                  <label className="text-xs uppercase text-muted-foreground">
+                    {t("securitySecurityPolicyEditor.dayOfMonth")}
+                  </label>
                   <select
                     disabled={!scheduledEnabled}
                     value={scanDayOfMonth}
-                    onChange={event => setScanDayOfMonth(event.target.value)}
+                    onChange={(event) => setScanDayOfMonth(event.target.value)}
                     className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   >
-                    {dayOfMonthOptions.map(option => (
+                    {dayOfMonthOptions.map((option) => (
                       <option key={option} value={option}>
                         {option}
                       </option>
@@ -338,16 +380,18 @@ export default function SecurityPolicyEditor({ policyId, onSave }: SecurityPolic
                   </select>
                 </div>
                 <div>
-                  <label className="text-xs uppercase text-muted-foreground">Day of week</label>
+                  <label className="text-xs uppercase text-muted-foreground">
+                    {t("securitySecurityPolicyEditor.dayOfWeek")}
+                  </label>
                   <select
                     disabled={!scheduledEnabled}
                     value={scanDayOfWeek}
-                    onChange={event => setScanDayOfWeek(event.target.value)}
+                    onChange={(event) => setScanDayOfWeek(event.target.value)}
                     className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   >
-                    {dayOfWeekOptions.map(option => (
+                    {dayOfWeekOptions.map((option) => (
                       <option key={option.value} value={option.value}>
-                        {option.label}
+                        {option.labelKey ? t(option.labelKey) : option.value}
                       </option>
                     ))}
                   </select>
@@ -355,7 +399,10 @@ export default function SecurityPolicyEditor({ policyId, onSave }: SecurityPolic
               </div>
               <div className="flex items-center gap-2 rounded-md border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
                 <CalendarClock className="h-4 w-4" />
-                Cron: <span className="font-mono text-foreground">{cronExpression}</span>
+                {t("securitySecurityPolicyEditor.cron")}
+                <span className="font-mono text-foreground">
+                  {cronExpression}
+                </span>
               </div>
             </div>
           </div>
@@ -363,14 +410,20 @@ export default function SecurityPolicyEditor({ policyId, onSave }: SecurityPolic
 
         <div className="space-y-6">
           <div className="rounded-lg border bg-card p-6 shadow-xs">
-            <h3 className="text-base font-semibold">Exclusions</h3>
-            <p className="text-sm text-muted-foreground">Skip trusted locations during scans.</p>
+            <h3 className="text-base font-semibold">
+              {t("securitySecurityPolicyEditor.exclusions")}
+            </h3>
+            <p className="text-sm text-muted-foreground">
+              {t(
+                "securitySecurityPolicyEditor.skipTrustedLocationsDuringScans",
+              )}
+            </p>
             <div className="mt-4 flex gap-2">
               <input
                 type="text"
                 value={newExclusion}
-                onChange={event => setNewExclusion(event.target.value)}
-                placeholder="Add path or process"
+                onChange={(event) => setNewExclusion(event.target.value)}
+                placeholder={t("securitySecurityPolicyEditor.addPathOrProcess")}
                 className="h-10 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
               <button
@@ -379,12 +432,15 @@ export default function SecurityPolicyEditor({ policyId, onSave }: SecurityPolic
                 className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm font-medium hover:bg-muted"
               >
                 <Plus className="h-4 w-4" />
-                Add
+                {t("securitySecurityPolicyEditor.add")}
               </button>
             </div>
             <div className="mt-4 space-y-2">
-              {exclusions.map(item => (
-                <div key={item} className="flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2 text-sm">
+              {exclusions.map((item) => (
+                <div
+                  key={item}
+                  className="flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2 text-sm"
+                >
                   <span className="truncate">{item}</span>
                   <button
                     type="button"
@@ -399,23 +455,33 @@ export default function SecurityPolicyEditor({ policyId, onSave }: SecurityPolic
           </div>
 
           <div className="rounded-lg border bg-card p-6 shadow-xs">
-            <h3 className="text-base font-semibold">Actions</h3>
+            <h3 className="text-base font-semibold">
+              {t("securitySecurityPolicyEditor.actions")}
+            </h3>
             <div className="mt-4 space-y-3">
               <ToggleRow
-                label="Auto-quarantine"
-                description="Move threats to quarantine immediately."
+                label={t("securitySecurityPolicyEditor.autoQuarantine")}
+                description={t(
+                  "securitySecurityPolicyEditor.moveThreatsToQuarantineImmediately",
+                )}
                 checked={autoQuarantine}
                 onChange={setAutoQuarantine}
               />
               <ToggleRow
-                label="Notify user on detection"
-                description="Send device notifications when threats are found."
+                label={t("securitySecurityPolicyEditor.notifyUserOnDetection")}
+                description={t(
+                  "securitySecurityPolicyEditor.sendDeviceNotificationsWhenThreatsAreFound",
+                )}
                 checked={notifyUser}
                 onChange={setNotifyUser}
               />
               <ToggleRow
-                label="Block untrusted USB devices"
-                description="Prevent unknown removable media."
+                label={t(
+                  "securitySecurityPolicyEditor.blockUntrustedUSBDevices",
+                )}
+                description={t(
+                  "securitySecurityPolicyEditor.preventUnknownRemovableMedia",
+                )}
                 checked={blockUsb}
                 onChange={setBlockUsb}
               />
@@ -437,8 +503,14 @@ export default function SecurityPolicyEditor({ policyId, onSave }: SecurityPolic
           disabled={saving || loading}
           className="inline-flex items-center gap-2 rounded-md border bg-background px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
         >
-          {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-          {saving ? 'Saving...' : 'Save policy'}
+          {saving ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Save className="h-4 w-4" />
+          )}
+          {saving
+            ? t("securitySecurityPolicyEditor.saving")
+            : t("securitySecurityPolicyEditor.savePolicy")}
         </button>
       </div>
     </div>

@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 import { Loader2 } from 'lucide-react';
 import { cn, friendlyFetchError, formatRelativeTime } from '@/lib/utils';
 import { fetchWithAuth } from '@/stores/auth';
@@ -33,15 +35,12 @@ const approvalBadge: Record<string, string> = {
   rejected: 'bg-red-500/20 text-red-700 border-red-500/40',
 };
 
-function formatStatus(value: string): string {
-  return value.replace(/_/g, ' ');
-}
-
 interface CisRemediationsTabProps {
   refreshKey: number;
 }
 
 export default function CisRemediationsTab({ refreshKey }: CisRemediationsTabProps) {
+  const { t } = useTranslation('security');
   const [remediations, setRemediations] = useState<Remediation[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -90,21 +89,21 @@ export default function CisRemediationsTab({ refreshKey }: CisRemediationsTabPro
 
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-semibold">
-          Remediations
-          <HelpTooltip text="Automated fixes for failed CIS checks. Each must be approved before execution on the target device." />
+          {t('cisHardeningCisRemediationsTab.title')}
+          <HelpTooltip text={t('cisHardeningCisRemediationsTab.tooltip')} />
         </h3>
         <select
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
           className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         >
-          <option value="all">All statuses</option>
-          <option value="pending_approval">Pending Approval</option>
-          <option value="queued">Queued</option>
-          <option value="in_progress">In Progress</option>
-          <option value="completed">Completed</option>
-          <option value="failed">Failed</option>
-          <option value="cancelled">Cancelled</option>
+          <option value="all">{t('cisHardeningCisRemediationsTab.filters.allStatuses')}</option>
+          <option value="pending_approval">{t('cisHardeningCisRemediationsTab.status.pendingApproval')}</option>
+          <option value="queued">{t('cisHardeningCisRemediationsTab.status.queued')}</option>
+          <option value="in_progress">{t('cisHardeningCisRemediationsTab.status.inProgress')}</option>
+          <option value="completed">{t('cisHardeningCisRemediationsTab.status.completed')}</option>
+          <option value="failed">{t('cisHardeningCisRemediationsTab.status.failed')}</option>
+          <option value="cancelled">{t('cisHardeningCisRemediationsTab.status.cancelled')}</option>
         </select>
       </div>
 
@@ -112,14 +111,14 @@ export default function CisRemediationsTab({ refreshKey }: CisRemediationsTabPro
         <table className="min-w-full divide-y">
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <th className="px-4 py-3">Check ID</th>
-              <th className="px-4 py-3">Device</th>
-              <th className="px-4 py-3">Baseline</th>
-              <th className="px-4 py-3">Action</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3">Approval</th>
-              <th className="px-4 py-3">Requested</th>
-              <th className="px-4 py-3">Completed</th>
+              <th className="px-4 py-3">{t('cisHardeningCisRemediationsTab.table.checkId')}</th>
+              <th className="px-4 py-3">{t('cisHardeningCisRemediationsTab.table.device')}</th>
+              <th className="px-4 py-3">{t('cisHardeningCisRemediationsTab.table.baseline')}</th>
+              <th className="px-4 py-3">{t('cisHardeningCisRemediationsTab.table.action')}</th>
+              <th className="px-4 py-3">{t('cisHardeningCisRemediationsTab.table.status')}</th>
+              <th className="px-4 py-3">{t('cisHardeningCisRemediationsTab.table.approval')}</th>
+              <th className="px-4 py-3">{t('cisHardeningCisRemediationsTab.table.requested')}</th>
+              <th className="px-4 py-3">{t('cisHardeningCisRemediationsTab.table.completed')}</th>
             </tr>
           </thead>
           <tbody className="divide-y">
@@ -128,14 +127,14 @@ export default function CisRemediationsTab({ refreshKey }: CisRemediationsTabPro
                 <td colSpan={8} className="px-4 py-8 text-center text-sm text-muted-foreground">
                   <span className="inline-flex items-center gap-2">
                     <Loader2 className="h-4 w-4 animate-spin" />
-                    Loading remediations...
+                    {t('cisHardeningCisRemediationsTab.loading')}
                   </span>
                 </td>
               </tr>
             ) : remediations.length === 0 ? (
               <tr>
                 <td colSpan={8} className="px-4 py-8 text-center text-sm text-muted-foreground">
-                  No remediations found.
+                  {t('cisHardeningCisRemediationsTab.empty')}
                 </td>
               </tr>
             ) : (
@@ -146,7 +145,9 @@ export default function CisRemediationsTab({ refreshKey }: CisRemediationsTabPro
                   </td>
                   <td className="px-4 py-3 font-medium">{rem.deviceHostname}</td>
                   <td className="px-4 py-3 text-muted-foreground">{rem.baselineName ?? '-'}</td>
-                  <td className="px-4 py-3 capitalize text-muted-foreground">{rem.action}</td>
+                  <td className="px-4 py-3 capitalize text-muted-foreground">
+                    {t(`cisHardeningCisRemediationsTab.actions.${rem.action}`, { defaultValue: rem.action })}
+                  </td>
                   <td className="px-4 py-3">
                     <span
                       className={cn(
@@ -154,7 +155,9 @@ export default function CisRemediationsTab({ refreshKey }: CisRemediationsTabPro
                         statusBadge[rem.status] ?? statusBadge.cancelled
                       )}
                     >
-                      {formatStatus(rem.status)}
+                      {t(`cisHardeningCisRemediationsTab.status.${rem.status}`, {
+                        defaultValue: rem.status.replace(/_/g, ' '),
+                      })}
                     </span>
                   </td>
                   <td className="px-4 py-3">
@@ -164,7 +167,9 @@ export default function CisRemediationsTab({ refreshKey }: CisRemediationsTabPro
                         approvalBadge[rem.approvalStatus] ?? approvalBadge.pending
                       )}
                     >
-                      {formatStatus(rem.approvalStatus)}
+                      {t(`cisHardeningCisRemediationsTab.approval.${rem.approvalStatus}`, {
+                        defaultValue: rem.approvalStatus.replace(/_/g, ' '),
+                      })}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-xs text-muted-foreground">

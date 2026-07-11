@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 import { Loader2, Search } from 'lucide-react';
 import { friendlyFetchError } from '@/lib/utils';
 import { fetchWithAuth } from '@/stores/auth';
@@ -10,6 +12,7 @@ interface CisComplianceTabProps {
 }
 
 export default function CisComplianceTab({ refreshKey }: CisComplianceTabProps) {
+  const { t } = useTranslation('security');
   const [entries, setEntries] = useState<ComplianceEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -72,7 +75,7 @@ export default function CisComplianceTab({ refreshKey }: CisComplianceTabProps) 
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <input
             type="search"
-            placeholder="Search hostname or baseline..."
+            placeholder={t('cisHardeningCisComplianceTab.searchPlaceholder')}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
@@ -83,10 +86,10 @@ export default function CisComplianceTab({ refreshKey }: CisComplianceTabProps) 
           onChange={(e) => setOsFilter(e.target.value)}
           className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         >
-          <option value="all">All OS types</option>
-          <option value="windows">Windows</option>
-          <option value="macos">macOS</option>
-          <option value="linux">Linux</option>
+          <option value="all">{t('cisHardeningCisComplianceTab.os.all')}</option>
+          <option value="windows">{t('cisHardeningCisComplianceTab.os.windows')}</option>
+          <option value="macos">{t('cisHardeningCisComplianceTab.os.macos')}</option>
+          <option value="linux">{t('cisHardeningCisComplianceTab.os.linux')}</option>
         </select>
       </div>
 
@@ -95,12 +98,12 @@ export default function CisComplianceTab({ refreshKey }: CisComplianceTabProps) 
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               <th className="w-8 px-4 py-3" />
-              <th className="px-4 py-3">Device</th>
-              <th className="px-4 py-3">Baseline</th>
-              <th className="px-4 py-3">OS</th>
-              <th className="px-4 py-3">Score</th>
-              <th className="px-4 py-3">Failed Checks</th>
-              <th className="px-4 py-3">Last Scanned</th>
+              <th className="px-4 py-3">{t('cisHardeningCisComplianceTab.table.device')}</th>
+              <th className="px-4 py-3">{t('cisHardeningCisComplianceTab.table.baseline')}</th>
+              <th className="px-4 py-3">{t('cisHardeningCisComplianceTab.table.os')}</th>
+              <th className="px-4 py-3">{t('cisHardeningCisComplianceTab.table.score')}</th>
+              <th className="px-4 py-3">{t('cisHardeningCisComplianceTab.table.failedChecks')}</th>
+              <th className="px-4 py-3">{t('cisHardeningCisComplianceTab.table.lastScanned')}</th>
             </tr>
           </thead>
           <tbody className="divide-y">
@@ -109,14 +112,14 @@ export default function CisComplianceTab({ refreshKey }: CisComplianceTabProps) 
                 <td colSpan={7} className="px-4 py-8 text-center text-sm text-muted-foreground">
                   <span className="inline-flex items-center gap-2">
                     <Loader2 className="h-4 w-4 animate-spin" />
-                    Loading compliance data...
+                    {t('cisHardeningCisComplianceTab.loading')}
                   </span>
                 </td>
               </tr>
             ) : filtered.length === 0 ? (
               <tr>
                 <td colSpan={7} className="px-4 py-8 text-center text-sm text-muted-foreground">
-                  No compliance results found.
+                  {t('cisHardeningCisComplianceTab.empty')}
                 </td>
               </tr>
             ) : (

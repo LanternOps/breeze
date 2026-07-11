@@ -1,12 +1,14 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 import { Plus, Pencil, Trash2, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import BaselineFormModal, { type Baseline } from './BaselineFormModal';
 
-const osLabel: Record<string, string> = { windows: 'Windows', macos: 'macOS', linux: 'Linux' };
-const profileLabel: Record<string, string> = { cis_l1: 'CIS L1', cis_l2: 'CIS L2', custom: 'Custom' };
+const osLabelKey: Record<string, string> = { windows: 'windows', macos: 'macos', linux: 'linux' };
+const profileLabelKey: Record<string, string> = { cis_l1: 'cisL1', cis_l2: 'cisL2', custom: 'custom' };
 const osBadge: Record<string, string> = {
   windows: 'bg-blue-500/15 text-blue-700 border-blue-500/30',
   macos: 'bg-purple-500/15 text-purple-700 border-purple-500/30',
@@ -14,6 +16,7 @@ const osBadge: Record<string, string> = {
 };
 
 export default function BaselineList() {
+  const { t } = useTranslation('security');
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
   const [baselines, setBaselines] = useState<Baseline[]>([]);
   const [loading, setLoading] = useState(true);
@@ -29,11 +32,11 @@ export default function BaselineList() {
       const params = new URLSearchParams();
       if (currentOrgId) params.set('orgId', currentOrgId);
       const response = await fetchWithAuth(`/audit-baselines?${params.toString()}`);
-      if (!response.ok) throw new Error('Failed to fetch baselines');
+      if (!response.ok) throw new Error(t('auditBaselinesBaselineList.messages.fetchFailed'));
       const data = await response.json();
       setBaselines(Array.isArray(data.data) ? data.data : Array.isArray(data) ? data : []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('auditBaselinesBaselineList.messages.genericError'));
     } finally {
       setLoading(false);
     }
@@ -50,11 +53,11 @@ export default function BaselineList() {
       const response = await fetchWithAuth(`/audit-baselines/${deleteTarget.id}`, {
         method: 'DELETE',
       });
-      if (!response.ok) throw new Error('Failed to delete baseline');
+      if (!response.ok) throw new Error(t('auditBaselinesBaselineList.messages.deleteFailed'));
       await fetchBaselines();
       setDeleteTarget(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('auditBaselinesBaselineList.messages.genericError'));
     } finally {
       setDeleting(false);
     }
@@ -75,10 +78,10 @@ export default function BaselineList() {
         method: 'POST',
         body: JSON.stringify(body),
       });
-      if (!response.ok) throw new Error('Failed to toggle baseline');
+      if (!response.ok) throw new Error(t('auditBaselinesBaselineList.messages.toggleFailed'));
       await fetchBaselines();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('auditBaselinesBaselineList.messages.genericError'));
     }
   };
 
@@ -87,7 +90,7 @@ export default function BaselineList() {
       <div className="flex items-center justify-center py-12">
         <div className="text-center">
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading baselines...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('auditBaselinesBaselineList.loading')}</p>
         </div>
       </div>
     );
@@ -102,7 +105,7 @@ export default function BaselineList() {
           onClick={fetchBaselines}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Try again
+          {t('auditBaselinesBaselineList.actions.tryAgain')}
         </button>
       </div>
     );
@@ -112,7 +115,7 @@ export default function BaselineList() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <p className="text-sm text-muted-foreground">
-          {baselines.length} baseline{baselines.length !== 1 ? 's' : ''}
+          {t('auditBaselinesBaselineList.baselineCount', { count: baselines.length })}
         </p>
         <button
           type="button"
@@ -120,7 +123,7 @@ export default function BaselineList() {
           className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
         >
           <Plus className="h-4 w-4" />
-          New Baseline
+          {t('auditBaselinesBaselineList.actions.newBaseline')}
         </button>
       </div>
 
@@ -134,19 +137,19 @@ export default function BaselineList() {
         <table className="w-full text-sm">
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <th className="px-4 py-3">Name</th>
-              <th className="px-4 py-3">OS</th>
-              <th className="px-4 py-3">Profile</th>
-              <th className="px-4 py-3">Active</th>
-              <th className="px-4 py-3">Updated</th>
-              <th className="px-4 py-3 text-right">Actions</th>
+              <th className="px-4 py-3">{t('auditBaselinesBaselineList.table.name')}</th>
+              <th className="px-4 py-3">{t('auditBaselinesBaselineList.table.os')}</th>
+              <th className="px-4 py-3">{t('auditBaselinesBaselineList.table.profile')}</th>
+              <th className="px-4 py-3">{t('auditBaselinesBaselineList.table.active')}</th>
+              <th className="px-4 py-3">{t('auditBaselinesBaselineList.table.updated')}</th>
+              <th className="px-4 py-3 text-right">{t('auditBaselinesBaselineList.table.actions')}</th>
             </tr>
           </thead>
           <tbody>
             {baselines.length === 0 ? (
               <tr>
                 <td colSpan={6} className="px-4 py-8 text-center text-muted-foreground">
-                  No baselines found. Create one to get started.
+                  {t('auditBaselinesBaselineList.empty')}
                 </td>
               </tr>
             ) : (
@@ -167,12 +170,12 @@ export default function BaselineList() {
                         osBadge[bl.osType] ?? ''
                       )}
                     >
-                      {osLabel[bl.osType] ?? bl.osType}
+                      {osLabelKey[bl.osType] ? t(`auditBaselinesBaselineList.os.${osLabelKey[bl.osType]}`) : bl.osType}
                     </span>
                   </td>
                   <td className="px-4 py-3">
                     <span className="inline-flex rounded-full border bg-muted/30 px-2.5 py-0.5 text-xs font-medium">
-                      {profileLabel[bl.profile] ?? bl.profile}
+                      {profileLabelKey[bl.profile] ? t(`auditBaselinesBaselineList.profiles.${profileLabelKey[bl.profile]}`) : bl.profile}
                     </span>
                   </td>
                   <td className="px-4 py-3">
@@ -192,7 +195,9 @@ export default function BaselineList() {
                           bl.isActive ? 'bg-green-500' : 'bg-gray-400'
                         )}
                       />
-                      {bl.isActive ? 'Active' : 'Inactive'}
+                      {bl.isActive
+                        ? t('auditBaselinesBaselineList.status.active')
+                        : t('auditBaselinesBaselineList.status.inactive')}
                     </button>
                   </td>
                   <td className="px-4 py-3 text-muted-foreground">
@@ -204,7 +209,7 @@ export default function BaselineList() {
                         type="button"
                         onClick={() => setModalBaseline(bl)}
                         className="rounded-md p-1.5 text-muted-foreground transition hover:bg-muted hover:text-foreground"
-                        title="Edit"
+                        title={t('auditBaselinesBaselineList.actions.edit')}
                       >
                         <Pencil className="h-4 w-4" />
                       </button>
@@ -212,7 +217,7 @@ export default function BaselineList() {
                         type="button"
                         onClick={() => setDeleteTarget(bl)}
                         className="rounded-md p-1.5 text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive"
-                        title="Delete"
+                        title={t('auditBaselinesBaselineList.actions.delete')}
                       >
                         <Trash2 className="h-4 w-4" />
                       </button>
@@ -239,11 +244,11 @@ export default function BaselineList() {
       {deleteTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
           <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
-            <h2 className="text-lg font-semibold">Delete Baseline</h2>
+            <h2 className="text-lg font-semibold">{t('auditBaselinesBaselineList.deleteModal.title')}</h2>
             <p className="mt-2 text-sm text-muted-foreground">
-              Are you sure you want to delete{' '}
-              <span className="font-medium">{deleteTarget.name}</span>? This will also remove all
-              compliance results. This action cannot be undone.
+              {t('auditBaselinesBaselineList.deleteModal.confirmPrefix')}{' '}
+              <span className="font-medium">{deleteTarget.name}</span>
+              {t('auditBaselinesBaselineList.deleteModal.confirmSuffix')}
             </p>
             <div className="mt-6 flex justify-end gap-3">
               <button
@@ -251,7 +256,7 @@ export default function BaselineList() {
                 onClick={() => setDeleteTarget(null)}
                 className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
               >
-                Cancel
+                {t('auditBaselinesBaselineList.actions.cancel')}
               </button>
               <button
                 type="button"
@@ -262,10 +267,10 @@ export default function BaselineList() {
                 {deleting ? (
                   <>
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Deleting...
+                    {t('auditBaselinesBaselineList.actions.deleting')}
                   </>
                 ) : (
-                  'Delete'
+                  t('auditBaselinesBaselineList.actions.delete')
                 )}
               </button>
             </div>

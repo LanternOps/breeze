@@ -1,5 +1,7 @@
+import '@/lib/i18n';
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Search, ChevronLeft, ChevronRight } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import {
   DETECTION_CLASSES,
@@ -34,6 +36,7 @@ type Pagination = {
 };
 
 export default function FindingsTab() {
+  const { t } = useTranslation('security');
   const [findings, setFindings] = useState<Finding[]>([]);
   const [pagination, setPagination] = useState<Pagination>({ page: 1, limit: 25, total: 0, totalPages: 1 });
   const [loading, setLoading] = useState(true);
@@ -59,17 +62,27 @@ export default function FindingsTab() {
       if (status) params.set('status', status);
 
       const res = await fetchWithAuth(`/sensitive-data/report?${params}`);
-      if (!res.ok) throw new Error('Failed to fetch findings');
+      if (!res.ok) {
+        throw new Error(
+          t('sensitiveDataFindingsTab.errors.fetchFindings', {
+            defaultValue: 'Failed to fetch findings',
+          }),
+        );
+      }
       const json = await res.json();
       setFindings(json.data ?? []);
       setPagination(json.pagination ?? { page: 1, limit: 25, total: 0, totalPages: 1 });
       setSelectedIds(new Set());
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(
+        err instanceof Error
+          ? err.message
+          : t('sensitiveDataFindingsTab.errors.generic', { defaultValue: 'An error occurred' }),
+      );
     } finally {
       setLoading(false);
     }
-  }, [dataType, risk, status, pagination.limit]);
+  }, [dataType, risk, status, pagination.limit, t]);
 
   useEffect(() => {
     fetchFindings(1);
@@ -117,10 +130,20 @@ export default function FindingsTab() {
         method: 'POST',
         body: JSON.stringify({ findingIds: [findingId], action }),
       });
-      if (!res.ok) throw new Error('Failed to update finding');
+      if (!res.ok) {
+        throw new Error(
+          t('sensitiveDataFindingsTab.errors.updateFinding', {
+            defaultValue: 'Failed to update finding',
+          }),
+        );
+      }
       await fetchFindings(pagination.page);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Action failed');
+      setError(
+        err instanceof Error
+          ? err.message
+          : t('sensitiveDataFindingsTab.errors.actionFailed', { defaultValue: 'Action failed' }),
+      );
     }
   };
 
@@ -135,15 +158,15 @@ export default function FindingsTab() {
       {/* Filters */}
       <div className="flex flex-wrap gap-3">
         <select value={dataType} onChange={(e) => setDataType(e.target.value)} className="h-9 rounded-md border bg-background px-3 text-sm">
-          <option value="">All Types</option>
+          <option value="">{t('sensitiveDataFindingsTab.filters.allTypes', { defaultValue: 'All Types' })}</option>
           {DETECTION_CLASSES.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
         </select>
         <select value={risk} onChange={(e) => setRisk(e.target.value)} className="h-9 rounded-md border bg-background px-3 text-sm">
-          <option value="">All Risks</option>
+          <option value="">{t('sensitiveDataFindingsTab.filters.allRisks', { defaultValue: 'All Risks' })}</option>
           {RISK_LEVELS.map((r) => <option key={r} value={r} className="capitalize">{r}</option>)}
         </select>
         <select value={status} onChange={(e) => setStatus(e.target.value)} className="h-9 rounded-md border bg-background px-3 text-sm">
-          <option value="">All Statuses</option>
+          <option value="">{t('sensitiveDataFindingsTab.filters.allStatuses', { defaultValue: 'All Statuses' })}</option>
           {FINDING_STATUSES.map((s) => <option key={s} value={s} className="capitalize">{s.replace('_', ' ')}</option>)}
         </select>
         <div className="relative">
@@ -151,7 +174,9 @@ export default function FindingsTab() {
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search file paths..."
+            placeholder={t('sensitiveDataFindingsTab.filters.searchPlaceholder', {
+              defaultValue: 'Search file paths...',
+            })}
             className="h-9 rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
         </div>
@@ -161,7 +186,10 @@ export default function FindingsTab() {
             onClick={() => setShowRemediation(true)}
             className="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
           >
-            Remediate ({selectedIds.size})
+            {t('sensitiveDataFindingsTab.actions.remediateSelected', {
+              defaultValue: 'Remediate ({{count}})',
+              count: selectedIds.size,
+            })}
           </button>
         )}
       </div>
@@ -183,15 +211,15 @@ export default function FindingsTab() {
                   className="rounded border-border"
                 />
               </th>
-              <th className="px-4 py-3">File Path</th>
-              <th className="px-4 py-3">Type</th>
-              <th className="px-4 py-3">Pattern</th>
-              <th className="px-4 py-3">Risk</th>
-              <th className="px-4 py-3">Confidence</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3">Device</th>
-              <th className="px-4 py-3">Found</th>
-              <th className="px-4 py-3 text-right">Actions</th>
+              <th className="px-4 py-3">{t('sensitiveDataFindingsTab.table.filePath', { defaultValue: 'File Path' })}</th>
+              <th className="px-4 py-3">{t('sensitiveDataFindingsTab.table.type', { defaultValue: 'Type' })}</th>
+              <th className="px-4 py-3">{t('sensitiveDataFindingsTab.table.pattern', { defaultValue: 'Pattern' })}</th>
+              <th className="px-4 py-3">{t('sensitiveDataFindingsTab.table.risk', { defaultValue: 'Risk' })}</th>
+              <th className="px-4 py-3">{t('sensitiveDataFindingsTab.table.confidence', { defaultValue: 'Confidence' })}</th>
+              <th className="px-4 py-3">{t('sensitiveDataFindingsTab.table.status', { defaultValue: 'Status' })}</th>
+              <th className="px-4 py-3">{t('sensitiveDataFindingsTab.table.device', { defaultValue: 'Device' })}</th>
+              <th className="px-4 py-3">{t('sensitiveDataFindingsTab.table.found', { defaultValue: 'Found' })}</th>
+              <th className="px-4 py-3 text-right">{t('sensitiveDataFindingsTab.table.actions', { defaultValue: 'Actions' })}</th>
             </tr>
           </thead>
           <tbody className="divide-y">
@@ -206,8 +234,12 @@ export default function FindingsTab() {
               <tr>
                 <td colSpan={10} className="px-4 py-8 text-center text-sm text-muted-foreground">
                   {findings.length === 0
-                    ? 'No findings match the current filters.'
-                    : 'No findings on this page match your search.'}
+                    ? t('sensitiveDataFindingsTab.empty.noFilterMatches', {
+                        defaultValue: 'No findings match the current filters.',
+                      })
+                    : t('sensitiveDataFindingsTab.empty.noSearchMatches', {
+                        defaultValue: 'No findings on this page match your search.',
+                      })}
                 </td>
               </tr>
             )}
@@ -253,17 +285,21 @@ export default function FindingsTab() {
                             type="button"
                             onClick={() => handleQuickAction(f.id, 'accept_risk')}
                             className="rounded border px-2 py-1 text-xs hover:bg-muted"
-                            title="Accept Risk"
+                            title={t('sensitiveDataFindingsTab.actions.acceptRiskTitle', {
+                              defaultValue: 'Accept Risk',
+                            })}
                           >
-                            Accept
+                            {t('sensitiveDataFindingsTab.actions.accept', { defaultValue: 'Accept' })}
                           </button>
                           <button
                             type="button"
                             onClick={() => handleQuickAction(f.id, 'false_positive')}
                             className="rounded border px-2 py-1 text-xs hover:bg-muted"
-                            title="Mark False Positive"
+                            title={t('sensitiveDataFindingsTab.actions.markFalsePositiveTitle', {
+                              defaultValue: 'Mark False Positive',
+                            })}
                           >
-                            FP
+                            {t('sensitiveDataFindingsTab.actions.fp', { defaultValue: 'FP' })}
                           </button>
                         </>
                       )}
@@ -279,8 +315,18 @@ export default function FindingsTab() {
       <div className="flex items-center justify-between text-sm">
         <span className="text-muted-foreground">
           {search
-            ? `Showing ${visibleFindings.length} of ${findings.length} on this page (${pagination.total} total)`
-            : `Showing ${visibleFindings.length} of ${pagination.total} findings`}
+            ? t('sensitiveDataFindingsTab.pagination.showingSearch', {
+                defaultValue:
+                  'Showing {{visible}} of {{pageCount}} on this page ({{total}} total)',
+                visible: visibleFindings.length,
+                pageCount: findings.length,
+                total: pagination.total,
+              })
+            : t('sensitiveDataFindingsTab.pagination.showingTotal', {
+                defaultValue: 'Showing {{visible}} of {{total}} findings',
+                visible: visibleFindings.length,
+                total: pagination.total,
+              })}
         </span>
         <div className="flex items-center gap-2">
           <button
@@ -291,7 +337,13 @@ export default function FindingsTab() {
           >
             <ChevronLeft className="h-4 w-4" />
           </button>
-          <span>Page {pagination.page} of {pagination.totalPages}</span>
+          <span>
+            {t('sensitiveDataFindingsTab.pagination.pageOf', {
+              defaultValue: 'Page {{page}} of {{totalPages}}',
+              page: pagination.page,
+              totalPages: pagination.totalPages,
+            })}
+          </span>
           <button
             type="button"
             disabled={pagination.page >= pagination.totalPages}

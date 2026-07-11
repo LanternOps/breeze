@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 import { ShieldAlert, ShieldCheck, Activity, AlertTriangle } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
@@ -20,6 +22,7 @@ interface TopBlockedEntry {
 }
 
 export default function DnsSecurityOverviewTab() {
+  const { t } = useTranslation('security');
   const [stats, setStats] = useState<DnsStats | null>(null);
   const [topBlocked, setTopBlocked] = useState<TopBlockedEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -57,11 +60,11 @@ export default function DnsSecurityOverviewTab() {
       }
 
       if (!statsRes.ok && !topRes.ok) {
-        throw new Error('Failed to load overview');
+        throw new Error(t('dnsSecurityDnsSecurityOverviewTab.messages.loadFailed'));
       }
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') return;
-      setError(err instanceof Error ? err.message : 'Failed to load overview');
+      setError(err instanceof Error ? err.message : t('dnsSecurityDnsSecurityOverviewTab.messages.loadFailed'));
     } finally {
       if (!signal?.aborted) setLoading(false);
     }
@@ -83,27 +86,27 @@ export default function DnsSecurityOverviewTab() {
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
-          label="Total queries"
+          label={t('dnsSecurityDnsSecurityOverviewTab.stats.totalQueries')}
           value={stats?.total ?? 0}
           icon={<Activity className="h-4 w-4" />}
           loading={loading}
         />
         <StatCard
-          label="Blocked"
+          label={t('dnsSecurityDnsSecurityOverviewTab.stats.blocked')}
           value={stats?.blocked ?? 0}
           icon={<ShieldAlert className="h-4 w-4" />}
           tone="destructive"
           loading={loading}
         />
         <StatCard
-          label="Allowed"
+          label={t('dnsSecurityDnsSecurityOverviewTab.stats.allowed')}
           value={stats?.allowed ?? 0}
           icon={<ShieldCheck className="h-4 w-4" />}
           tone="success"
           loading={loading}
         />
         <StatCard
-          label="Redirected"
+          label={t('dnsSecurityDnsSecurityOverviewTab.stats.redirected')}
           value={stats?.redirected ?? 0}
           icon={<AlertTriangle className="h-4 w-4" />}
           tone="warning"
@@ -112,15 +115,15 @@ export default function DnsSecurityOverviewTab() {
       </div>
 
       <div className="rounded-lg border bg-card p-4">
-        <h3 className="mb-3 text-sm font-semibold">Top blocked domains</h3>
+        <h3 className="mb-3 text-sm font-semibold">{t('dnsSecurityDnsSecurityOverviewTab.topBlocked.title')}</h3>
         {loading && topBlocked.length === 0 ? (
           <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
             <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-            Loading…
+            {t('dnsSecurityDnsSecurityOverviewTab.loading')}
           </div>
         ) : topBlocked.length === 0 ? (
           <p className="py-4 text-center text-xs text-muted-foreground italic">
-            No blocked domains in the current window.
+            {t('dnsSecurityDnsSecurityOverviewTab.topBlocked.empty')}
           </p>
         ) : (
           <ol className="space-y-1 text-sm">

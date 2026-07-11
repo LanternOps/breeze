@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useId, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
@@ -18,6 +20,7 @@ interface AddDnsPolicyModalProps {
 }
 
 export default function AddDnsPolicyModal({ onClose, onCreated }: AddDnsPolicyModalProps) {
+  const { t } = useTranslation('security');
   const [integrations, setIntegrations] = useState<IntegrationOption[]>([]);
   const [loadingIntegrations, setLoadingIntegrations] = useState(true);
   const [integrationId, setIntegrationId] = useState('');
@@ -43,7 +46,7 @@ export default function AddDnsPolicyModal({ onClose, onCreated }: AddDnsPolicyMo
           void navigateTo('/login', { replace: true });
           return;
         }
-        setError(`Failed to load integrations (HTTP ${res.status})`);
+        setError(t('dnsSecurityAddDnsPolicyModal.messages.loadIntegrationsHttpError', { status: res.status }));
         return;
       }
       const body = await res.json();
@@ -60,7 +63,7 @@ export default function AddDnsPolicyModal({ onClose, onCreated }: AddDnsPolicyMo
       // Match the sibling-tab pattern: silent on AbortError, otherwise
       // surface to the dialog's inline error UI. (Todd #847 review.)
       if (err instanceof Error && err.name === 'AbortError') return;
-      setError(err instanceof Error ? err.message : 'Failed to load integrations');
+      setError(err instanceof Error ? err.message : t('dnsSecurityAddDnsPolicyModal.messages.loadIntegrationsFailed'));
     } finally {
       setLoadingIntegrations(false);
     }
@@ -74,7 +77,7 @@ export default function AddDnsPolicyModal({ onClose, onCreated }: AddDnsPolicyMo
     e.preventDefault();
     if (submitting) return;
     if (!integrationId) {
-      setError('Pick an integration first');
+      setError(t('dnsSecurityAddDnsPolicyModal.messages.pickIntegrationFirst'));
       return;
     }
     setSubmitting(true);
@@ -109,8 +112,8 @@ export default function AddDnsPolicyModal({ onClose, onCreated }: AddDnsPolicyMo
             isActive: true,
           }),
         }),
-        errorFallback: 'Failed to create policy',
-        successMessage: `Policy "${name}" created`,
+        errorFallback: t('dnsSecurityAddDnsPolicyModal.messages.createFailed'),
+        successMessage: t('dnsSecurityAddDnsPolicyModal.messages.createSuccess', { name }),
         onUnauthorized: () => void navigateTo('/login', { replace: true }),
       });
       onCreated();
@@ -120,7 +123,7 @@ export default function AddDnsPolicyModal({ onClose, onCreated }: AddDnsPolicyMo
         if (err.status === 401) return;
         setError(err.message);
       } else {
-        setError(err instanceof Error ? err.message : 'Network error');
+        setError(err instanceof Error ? err.message : t('dnsSecurityAddDnsPolicyModal.messages.networkError'));
       }
     } finally {
       setSubmitting(false);
@@ -131,26 +134,26 @@ export default function AddDnsPolicyModal({ onClose, onCreated }: AddDnsPolicyMo
     <Dialog
       open
       onClose={onClose}
-      title="New DNS Policy"
+      title={t('dnsSecurityAddDnsPolicyModal.title')}
       maxWidth="lg"
       className="p-6 max-h-[90vh] overflow-y-auto"
     >
       <div className="relative">
-        <h2 className="text-lg font-semibold">New DNS Policy</h2>
+        <h2 className="text-lg font-semibold">{t('dnsSecurityAddDnsPolicyModal.title')}</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Blocklist or allowlist domains pushed to your DNS provider on the next sync cycle.
+          {t('dnsSecurityAddDnsPolicyModal.description')}
         </p>
 
         <form onSubmit={handleSubmit} className="mt-4 space-y-4">
           <div>
             <label htmlFor={integrationFieldId} className="mb-1 block text-sm font-medium">
-              Integration
+              {t('dnsSecurityAddDnsPolicyModal.fields.integration')}
             </label>
             {loadingIntegrations ? (
-              <p className="text-xs text-muted-foreground">Loading integrations…</p>
+              <p className="text-xs text-muted-foreground">{t('dnsSecurityAddDnsPolicyModal.loadingIntegrations')}</p>
             ) : integrations.length === 0 ? (
               <p className="text-xs text-destructive">
-                No integrations configured. Add one on the Integrations tab first.
+                {t('dnsSecurityAddDnsPolicyModal.noIntegrations')}
               </p>
             ) : (
               <select
@@ -170,7 +173,7 @@ export default function AddDnsPolicyModal({ onClose, onCreated }: AddDnsPolicyMo
 
           <div>
             <label htmlFor={nameFieldId} className="mb-1 block text-sm font-medium">
-              Policy name
+              {t('dnsSecurityAddDnsPolicyModal.fields.policyName')}
             </label>
             <input
               id={nameFieldId}
@@ -179,14 +182,14 @@ export default function AddDnsPolicyModal({ onClose, onCreated }: AddDnsPolicyMo
               onChange={(e) => setName(e.target.value)}
               maxLength={200}
               required
-              placeholder="e.g. Threat blocklist"
+              placeholder={t('dnsSecurityAddDnsPolicyModal.placeholders.policyName')}
               className="h-9 w-full rounded-md border bg-background px-2 text-sm"
             />
           </div>
 
           <div>
             <label htmlFor={typeFieldId} className="mb-1 block text-sm font-medium">
-              Type
+              {t('dnsSecurityAddDnsPolicyModal.fields.type')}
             </label>
             <select
               id={typeFieldId}
@@ -194,14 +197,14 @@ export default function AddDnsPolicyModal({ onClose, onCreated }: AddDnsPolicyMo
               onChange={(e) => setType(e.target.value as PolicyType)}
               className="h-9 w-full rounded-md border bg-background px-2 text-sm"
             >
-              <option value="blocklist">Blocklist (deny)</option>
-              <option value="allowlist">Allowlist (permit)</option>
+              <option value="blocklist">{t('dnsSecurityAddDnsPolicyModal.policyTypes.blocklist')}</option>
+              <option value="allowlist">{t('dnsSecurityAddDnsPolicyModal.policyTypes.allowlist')}</option>
             </select>
           </div>
 
           <div>
             <label htmlFor={descFieldId} className="mb-1 block text-sm font-medium">
-              Description (optional)
+              {t('dnsSecurityAddDnsPolicyModal.fields.descriptionOptional')}
             </label>
             <textarea
               id={descFieldId}
@@ -215,9 +218,9 @@ export default function AddDnsPolicyModal({ onClose, onCreated }: AddDnsPolicyMo
 
           <div>
             <label htmlFor={domainsFieldId} className="mb-1 block text-sm font-medium">
-              Initial domains (optional)
+              {t('dnsSecurityAddDnsPolicyModal.fields.initialDomainsOptional')}
               <span className="ml-1 font-normal text-muted-foreground">
-                (one per line, comma-separated, or paste a list — up to 500)
+                {t('dnsSecurityAddDnsPolicyModal.initialDomainsHelp')}
               </span>
             </label>
             <textarea
@@ -225,7 +228,7 @@ export default function AddDnsPolicyModal({ onClose, onCreated }: AddDnsPolicyMo
               value={domainsText}
               onChange={(e) => setDomainsText(e.target.value)}
               rows={4}
-              placeholder={'malware.example.com\nphish.example.com\nc2.example.org'}
+              placeholder={t('dnsSecurityAddDnsPolicyModal.placeholders.domains')}
               className="w-full rounded-md border bg-background px-2 py-1.5 font-mono text-xs"
             />
           </div>
@@ -242,14 +245,16 @@ export default function AddDnsPolicyModal({ onClose, onCreated }: AddDnsPolicyMo
               onClick={onClose}
               className="rounded-md border bg-background px-3 py-1.5 text-sm font-medium hover:bg-muted"
             >
-              Cancel
+              {t('dnsSecurityAddDnsPolicyModal.actions.cancel')}
             </button>
             <button
               type="submit"
               disabled={submitting || !name.trim() || !integrationId}
               className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
             >
-              {submitting ? 'Creating…' : 'Create policy'}
+              {submitting
+                ? t('dnsSecurityAddDnsPolicyModal.actions.creating')
+                : t('dnsSecurityAddDnsPolicyModal.actions.createPolicy')}
             </button>
           </div>
         </form>

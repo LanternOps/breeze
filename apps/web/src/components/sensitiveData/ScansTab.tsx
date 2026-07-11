@@ -1,5 +1,7 @@
+import '@/lib/i18n';
 import { useState, useEffect, useCallback } from 'react';
 import { Plus, RefreshCw } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { SCAN_STATUS_COLORS } from './constants';
 import CreateScanModal from './CreateScanModal';
@@ -21,6 +23,7 @@ type Scan = {
 };
 
 export default function ScansTab() {
+  const { t } = useTranslation('security');
   const [scans, setScans] = useState<Scan[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -32,15 +35,23 @@ export default function ScansTab() {
       setError(undefined);
 
       const res = await fetchWithAuth('/sensitive-data/scans');
-      if (!res.ok) throw new Error('Failed to fetch scans');
+      if (!res.ok) {
+        throw new Error(
+          t('sensitiveDataScansTab.errors.fetchScans', { defaultValue: 'Failed to fetch scans' }),
+        );
+      }
       const json = await res.json();
       setScans(json.data ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(
+        err instanceof Error
+          ? err.message
+          : t('sensitiveDataScansTab.errors.generic', { defaultValue: 'An error occurred' }),
+      );
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     fetchRecentScans();
@@ -53,7 +64,7 @@ export default function ScansTab() {
 
   const formatDuration = (start: string | null, end: string | null): string => {
     if (!start) return '-';
-    if (!end) return 'Running...';
+    if (!end) return t('sensitiveDataScansTab.duration.running', { defaultValue: 'Running...' });
     const ms = new Date(end).getTime() - new Date(start).getTime();
     if (ms < 1000) return `${ms}ms`;
     if (ms < 60000) return `${formatNumber(ms / 1000, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}s`;
@@ -63,21 +74,23 @@ export default function ScansTab() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">Scans</h2>
+        <h2 className="text-lg font-semibold">
+          {t('sensitiveDataScansTab.heading', { defaultValue: 'Scans' })}
+        </h2>
         <div className="flex gap-2">
           <button
             type="button"
             onClick={fetchRecentScans}
             className="inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium hover:bg-muted"
           >
-            <RefreshCw className="h-4 w-4" /> Refresh
+            <RefreshCw className="h-4 w-4" /> {t('common:actions.refresh', { defaultValue: 'Refresh' })}
           </button>
           <button
             type="button"
             onClick={() => setShowCreateModal(true)}
             className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
           >
-            <Plus className="h-4 w-4" /> New Scan
+            <Plus className="h-4 w-4" /> {t('sensitiveDataScansTab.actions.newScan', { defaultValue: 'New Scan' })}
           </button>
         </div>
       </div>
@@ -90,12 +103,12 @@ export default function ScansTab() {
         <table className="min-w-full divide-y">
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <th className="px-4 py-3">Scan ID</th>
-              <th className="px-4 py-3">Device</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3">Findings</th>
-              <th className="px-4 py-3">Started</th>
-              <th className="px-4 py-3">Duration</th>
+              <th className="px-4 py-3">{t('sensitiveDataScansTab.table.scanId', { defaultValue: 'Scan ID' })}</th>
+              <th className="px-4 py-3">{t('sensitiveDataScansTab.table.device', { defaultValue: 'Device' })}</th>
+              <th className="px-4 py-3">{t('sensitiveDataScansTab.table.status', { defaultValue: 'Status' })}</th>
+              <th className="px-4 py-3">{t('sensitiveDataScansTab.table.findings', { defaultValue: 'Findings' })}</th>
+              <th className="px-4 py-3">{t('sensitiveDataScansTab.table.started', { defaultValue: 'Started' })}</th>
+              <th className="px-4 py-3">{t('sensitiveDataScansTab.table.duration', { defaultValue: 'Duration' })}</th>
             </tr>
           </thead>
           <tbody className="divide-y">
@@ -109,7 +122,9 @@ export default function ScansTab() {
             {!loading && scans.length === 0 && (
               <tr>
                 <td colSpan={6} className="px-4 py-8 text-center text-sm text-muted-foreground">
-                  No scans yet. Create a new scan to get started.
+                  {t('sensitiveDataScansTab.empty', {
+                    defaultValue: 'No scans yet. Create a new scan to get started.',
+                  })}
                 </td>
               </tr>
             )}

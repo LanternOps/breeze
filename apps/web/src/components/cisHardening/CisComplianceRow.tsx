@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { cn, formatRelativeTime } from '@/lib/utils';
 import type { ComplianceEntry } from './types';
@@ -15,6 +17,7 @@ interface CisComplianceRowProps {
 }
 
 export default function CisComplianceRow({ entry }: CisComplianceRowProps) {
+  const { t } = useTranslation('security');
   const [expanded, setExpanded] = useState(false);
   const { result, baseline, device } = entry;
   const scoreColor = result.score >= 80 ? 'bg-emerald-500' : result.score >= 60 ? 'bg-amber-500' : 'bg-red-500';
@@ -70,7 +73,9 @@ export default function CisComplianceRow({ entry }: CisComplianceRowProps) {
                       severityBadge[finding.severity ?? 'medium'] ?? severityBadge.medium
                     )}
                   >
-                    {finding.severity ?? 'medium'}
+                    {t(`cisHardeningCisComplianceRow.severity.${finding.severity ?? 'medium'}`, {
+                      defaultValue: finding.severity ?? 'medium',
+                    })}
                   </span>
                   <code className="font-mono text-xs text-muted-foreground">{finding.checkId}</code>
                   <span className="flex-1">{finding.title}</span>
@@ -86,7 +91,7 @@ export default function CisComplianceRow({ entry }: CisComplianceRowProps) {
       {expanded && failedFindings.length === 0 && (
         <tr>
           <td colSpan={7} className="bg-muted/20 px-4 py-3 text-center text-sm text-muted-foreground">
-            No failed findings.
+            {t('cisHardeningCisComplianceRow.noFailedFindings')}
           </td>
         </tr>
       )}

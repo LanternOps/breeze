@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 import { BarChart3, ListChecks, ShieldCheck } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import ComplianceDashboard from './ComplianceDashboard';
@@ -6,14 +8,15 @@ import BaselineList from './BaselineList';
 import BaselineApplyTab from './BaselineApplyTab';
 
 const tabs = [
-  { id: 'dashboard', label: 'Dashboard', icon: BarChart3 },
-  { id: 'baselines', label: 'Baselines', icon: ListChecks },
-  { id: 'approvals', label: 'Approvals', icon: ShieldCheck },
+  { id: 'dashboard', labelKey: 'dashboard', icon: BarChart3 },
+  { id: 'baselines', labelKey: 'baselines', icon: ListChecks },
+  { id: 'approvals', labelKey: 'approvals', icon: ShieldCheck },
 ] as const;
 
 type TabId = (typeof tabs)[number]['id'];
 
 export default function AuditBaselinesPage() {
+  const { t } = useTranslation('security');
   const [activeTab, setActiveTab] = useState<TabId>(() => {
     if (typeof window !== 'undefined') {
       const hash = window.location.hash.replace('#', '') as TabId;
@@ -39,9 +42,9 @@ export default function AuditBaselinesPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">Audit Baselines</h1>
+        <h1 className="text-xl font-semibold tracking-tight">{t('auditBaselinesAuditBaselinesPage.title')}</h1>
         <p className="text-muted-foreground">
-          Define compliance baselines, evaluate device drift, and remediate with approval-gated workflows.
+          {t('auditBaselinesAuditBaselinesPage.description')}
         </p>
       </div>
 
@@ -62,7 +65,7 @@ export default function AuditBaselinesPage() {
               )}
             >
               <Icon className="h-4 w-4" />
-              {tab.label}
+              {t(`auditBaselinesAuditBaselinesPage.tabs.${tab.labelKey}`)}
             </button>
           );
         })}
