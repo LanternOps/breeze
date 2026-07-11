@@ -14,8 +14,9 @@
  *      keep working.)
  *
  * audit_logs is append-only: the trigger blocks DELETE/TRUNCATE. setup.ts
- * cleans it between tests via `session_replication_role = replica` + DELETE,
- * which is the same lever we'd use for manual cleanup here.
+ * cleans it between tests by disabling audit_log_block_truncate around a
+ * single TRUNCATE ... CASCADE (#2205); suites that need mid-file manual
+ * cleanup use `session_replication_role = replica` + DELETE instead.
  */
 import './setup';
 import { describe, it, expect, beforeEach, afterAll, beforeAll } from 'vitest';

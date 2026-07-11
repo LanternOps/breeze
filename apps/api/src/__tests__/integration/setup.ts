@@ -265,8 +265,10 @@ async function cleanupAppendOnlyMlFeedbackEvents() {
 
 // Tables reset by cleanupDatabase(). Order is irrelevant — they are truncated
 // in a single TRUNCATE ... CASCADE statement (see below), which resolves the
-// FK graph itself. The list only needs to name the ROOTS (plus global tables
-// not reached by any cascade); FK-children are covered by CASCADE.
+// FK graph itself. Strictly only the ROOTS (plus global tables not reached by
+// any cascade) need naming, but many FK-children are listed deliberately:
+// redundant entries are harmless in a single TRUNCATE, and belt-and-braces if
+// an FK is ever dropped. Don't prune the list to "just roots".
 const CLEANUP_TABLES = [
   'device_commands',
   'device_group_memberships',
@@ -362,9 +364,10 @@ export async function cleanupDatabase() {
   //
   // PERF: this is ONE TRUNCATE statement, not a per-table loop. Each CASCADE
   // truncate resolves + locks its whole FK closure; doing that ~35 times per
-  // test added ~2s/test once the tenant-root truncates started succeeding
-  // (~24 min across the ~690-test CI run — over the job's 55-min ceiling). A
-  // single statement takes one pass over the union of the same lock set.
+  // test added ~2s/test once the tenant-root truncates started succeeding —
+  // ~24 min across the ~690-test CI run, pushing the ~50-min Integration
+  // Tests job past its 55-min ceiling. A single statement takes one pass
+  // over the union of the same lock set.
   await testClient`ALTER TABLE audit_logs DISABLE TRIGGER audit_log_block_truncate`;
   try {
     await testClient`TRUNCATE TABLE ${testClient(tablesToTruncate)} CASCADE`;

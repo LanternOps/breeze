@@ -202,11 +202,13 @@ describe.skipIf(!SHOULD_RUN)('OAuth introspection client-binding', () => {
 
   // A victim client + token set, and a separate attacker client. Minted
   // per-test (NOT in beforeAll): setup.ts's global beforeEach cleanupDatabase()
-  // TRUNCATEs partners/users CASCADE before every test, which wipes the whole
-  // oauth_* table family (they FK to partners/users). Since #2205 fixed the
-  // silently failing truncate, beforeAll-minted fixtures no longer survive to
-  // the tests — client auth would 401 and the cross-client assertions would go
-  // vacuous (introspecting a nonexistent token also reports active:false).
+  // TRUNCATEs partners/users CASCADE before every test, which wipes the
+  // oauth_* tables that FK to partners/users/oauth_clients — clients, codes,
+  // tokens, grants, sessions (everything but the FK-less oauth_interactions).
+  // Since #2205 fixed the silently failing truncate, beforeAll-minted fixtures
+  // no longer survive to the tests — client auth would 401 and the
+  // cross-client assertions would go vacuous (introspecting a nonexistent
+  // token also reports active:false).
   beforeEach(async () => {
     victim = await mintTokensForNewClient(live.url);
     attackerClientId = await dcr(live.url, 'https://attacker.example/cb');
