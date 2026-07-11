@@ -4,6 +4,7 @@ import { configurationPolicies, configPolicyFeatureLinks, configPolicyAssignment
 import { eq, and, desc, isNull, isNotNull, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
+import { onedriveHelperInlineSettingsSchema } from '@breeze/shared/validators';
 import {
   resolveEffectiveConfig,
   previewEffectiveConfig,
@@ -31,6 +32,28 @@ import {
 
 function getOrgId(auth: AuthContext): string | null {
   return auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
+}
+
+/**
+ * addFeatureLink/updateFeatureLink keep the feature link's inlineSettings JSONB
+ * as a compatibility/UI mirror alongside the normalized settings tables. For
+ * onedrive_helper, decomposeInlineSettings runs the raw input back through
+ * onedriveHelperInlineSettingsSchema.parse when writing the normalized row, so
+ * that row always carries schema defaults — but the JSONB mirror gets whatever
+ * was passed in. Without pre-normalizing here, the AI path would leave the
+ * mirror storing un-defaulted raw input while the normalized row (and every
+ * other write path) gets defaults filled in. Mirrors validateRingAutoApprove's
+ * shape (aiToolsPolicyPrereqs.ts).
+ */
+function validateOnedriveHelperInlineSettings(
+  raw: unknown
+): { value: unknown } | { error: string } {
+  const parsed = onedriveHelperInlineSettingsSchema.safeParse(raw);
+  if (!parsed.success) {
+    const message = parsed.error.issues[0]?.message ?? 'Invalid onedrive_helper inline settings.';
+    return { error: message };
+  }
+  return { value: parsed.data };
 }
 
 function safeHandler(
@@ -642,6 +665,7 @@ Inline settings shapes by feature type:
 - helper: { enabled: true, showOpenPortal: true, showDeviceInfo: true, showRequestSupport: true, portalUrl?: "" }
 - pam: inlineSettings {uacInterceptionEnabled: boolean} — Windows UAC elevation prompt capture (default false / opt-in: capture is OFF when no policy assigns this feature). PAM rules/approvals are managed separately in the /pam console, not via config policies.
 - vulnerability: inlineSettings {enabled: boolean} — per-device CVE correlation / vulnerability scanning (default false / opt-in: devices with no policy are NOT scanned). Findings appear in the /vulnerabilities console; correlation runs daily.
+- onedrive_helper: { silentAccountConfig?, filesOnDemand?, kfmSilentOptIn?, kfmFolders? (Desktop/Documents/Pictures), kfmBlockOptOut?, tenantAssociationId?, restartOnChange?, libraries?: [{ libraryId, displayName, targetingMode (everyone|graph_group|local_ad_group), groupId?, groupName?, siteUrl? }] }
 
 For link-only types, set featurePolicyId instead of inlineSettings:
 - software_policy: featurePolicyId → existing software policy UUID
@@ -660,7 +684,7 @@ For link-only types, set featurePolicyId instead of inlineSettings:
               'patch', 'alert_rule', 'backup', 'security', 'monitoring',
               'maintenance', 'compliance', 'automation', 'event_log',
               'software_policy', 'sensitive_data', 'peripheral_control',
-              'warranty', 'helper', 'remote_access', 'pam', 'vulnerability',
+              'warranty', 'helper', 'remote_access', 'pam', 'onedrive_helper', 'vulnerability',
             ],
             description: 'Feature type (required for add)',
           },
@@ -705,6 +729,13 @@ For link-only types, set featurePolicyId instead of inlineSettings:
           });
         }
 
+        let inlineSettings: unknown = input.inlineSettings;
+        if (featureType === 'onedrive_helper' && inlineSettings !== undefined && inlineSettings !== null) {
+          const validated = validateOnedriveHelperInlineSettings(inlineSettings);
+          if ('error' in validated) return JSON.stringify({ error: validated.error });
+          inlineSettings = validated.value;
+        }
+
         // addFeatureLink returns null (instead of throwing) on a duplicate —
         // see the comment on its onConflictDoNothing insert in
         // configurationPolicy.ts for why the raised-violation catch pattern
@@ -713,7 +744,7 @@ For link-only types, set featurePolicyId instead of inlineSettings:
           configPolicyId,
           featureType as any,
           (input.featurePolicyId as string) ?? null,
-          input.inlineSettings ?? null
+          inlineSettings ?? null
         );
         if (!link) {
           return JSON.stringify({ error: `Feature type "${featureType}" already exists on this policy. Use update action instead.` });
@@ -727,7 +758,23 @@ For link-only types, set featurePolicyId instead of inlineSettings:
 
         const updates: { featurePolicyId?: string | null; inlineSettings?: unknown } = {};
         if (input.featurePolicyId !== undefined) updates.featurePolicyId = input.featurePolicyId as string | null;
-        if (input.inlineSettings !== undefined) updates.inlineSettings = input.inlineSettings;
+        if (input.inlineSettings !== undefined) {
+          let inlineSettings: unknown = input.inlineSettings;
+          // update doesn't take featureType, so look up the existing link's
+          // type to know whether onedrive_helper's normalize-via-schema
+          // applies (same reasoning as the 'add' branch above).
+          const [existingLink] = await db
+            .select({ featureType: configPolicyFeatureLinks.featureType })
+            .from(configPolicyFeatureLinks)
+            .where(and(eq(configPolicyFeatureLinks.id, featureLinkId), eq(configPolicyFeatureLinks.configPolicyId, configPolicyId)))
+            .limit(1);
+          if (existingLink?.featureType === 'onedrive_helper' && inlineSettings !== null) {
+            const validated = validateOnedriveHelperInlineSettings(inlineSettings);
+            if ('error' in validated) return JSON.stringify({ error: validated.error });
+            inlineSettings = validated.value;
+          }
+          updates.inlineSettings = inlineSettings;
+        }
 
         const updated = await updateFeatureLink(featureLinkId, updates, configPolicyId);
         if (!updated) return JSON.stringify({ error: 'Feature link not found' });

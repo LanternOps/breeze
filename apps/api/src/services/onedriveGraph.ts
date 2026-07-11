@@ -7,6 +7,34 @@ function encodeSiteId(id: string): string {
   return encodeURIComponent(id).replace(/%2C/g, ',');
 }
 
+/** Percent-encode a site URL for the TenantAutoMount composite. SharePoint's own
+ * "Copy library ID" encodes aggressively (`_` → `%5F`), beyond encodeURIComponent's
+ * unreserved set — match it byte-for-byte so our values are indistinguishable from
+ * sync-client-produced ones. (Live spike 2026-06-19 doc records what OneDrive accepts.) */
+function encodeWebUrl(url: string): string {
+  // encodeURIComponent, plus the chars SharePoint's encoder escapes that
+  // encodeURIComponent leaves literal (`_` → %5F in the ground-truth sample).
+  // Dots/hyphens stay literal — the real-world value keeps them unencoded.
+  return encodeURIComponent(url).replace(/[!'()*_]/g, (c) =>
+    '%' + c.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0'));
+}
+
+const stripBraces = (g: string) => g.replace(/^\{|\}$/g, '');
+
+/** Build the `HKCU\...\TenantAutoMount` registry composite value from Graph-sourced
+ * IDs. Pure — no I/O. See docs/superpowers/spikes/2026-06-19-tenant-automount-library-id.md
+ * for the format's provenance and the construction formula this implements. */
+export function buildTenantAutoMountValue(ids: {
+  tenantId: string; siteId: string; webId: string; listId: string; siteUrl: string;
+}): string {
+  return `tenantId=${stripBraces(ids.tenantId)}`
+    + `&siteId={${stripBraces(ids.siteId)}}`
+    + `&webId={${stripBraces(ids.webId)}}`
+    + `&listId={${stripBraces(ids.listId)}}`
+    + `&webUrl=${encodeWebUrl(ids.siteUrl)}`
+    + `&version=1`;
+}
+
 export async function listSharePointLibraries(orgId: string): Promise<DirectInvokeResult> {
   const tok = await getToken(orgId);
   if ('kind' in tok) return tok; // error result
@@ -32,7 +60,7 @@ export async function listSharePointLibraries(orgId: string): Promise<DirectInvo
     const drives = await graphFetch(
       token,
       'GET',
-      `/sites/${encodeSiteId(siteId)}/drives?$select=id,name,list`,
+      `/sites/${encodeSiteId(siteId)}/drives?$select=id,name&$expand=list($select=id,sharePointIds)`,
     );
     if (drives.kind === 'error') {
       if (drives.code !== 'forbidden') {
@@ -52,13 +80,28 @@ export async function listSharePointLibraries(orgId: string): Promise<DirectInvo
     for (const d of driveRows) {
       const driveId = typeof d?.id === 'string' ? d.id : null;
       if (!driveId) continue; // malformed drive row — skip rather than ship a NULL/garbage library_id downstream
+
+      const sp = (d.list?.sharePointIds ?? {}) as Record<string, unknown>;
+      const spStr = (k: string) => (typeof sp[k] === 'string' ? (sp[k] as string) : '');
+      const tenantId = spStr('tenantId');
+      const spSiteId = spStr('siteId');
+      const webId = spStr('webId');
+      const spListId = spStr('listId') || (typeof d.list?.id === 'string' ? d.list.id : '');
+      const spSiteUrl = spStr('siteUrl') || (typeof site.webUrl === 'string' ? site.webUrl : '');
+      const complete = Boolean(tenantId && spSiteId && webId && spListId && spSiteUrl);
       libraries.push({
         siteId,
         siteName: typeof site.displayName === 'string' ? site.displayName : '',
         siteUrl: typeof site.webUrl === 'string' ? site.webUrl : '',
         driveId,
-        listId: typeof d.list?.id === 'string' ? d.list.id : '',
+        listId: spListId,
         libraryName: typeof d.name === 'string' ? d.name : '',
+        tenantId,
+        webId,
+        spSiteId,
+        autoMountValue: complete
+          ? buildTenantAutoMountValue({ tenantId, siteId: spSiteId, webId, listId: spListId, siteUrl: spSiteUrl })
+          : '',
       });
     }
   }
