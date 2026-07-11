@@ -6,6 +6,7 @@ import {
   ChevronUp,
   ChevronDown,
   ArrowUpDown,
+  CornerDownRight,
   MoreHorizontal,
   MoreVertical,
   Filter,
@@ -201,6 +202,13 @@ export type Device = {
    * groupLinkedDevices in linkedDevices.ts.
    */
   linkGroupId?: string | null;
+  /**
+   * vm_host link groups (#2308). 'host' = this record is the host server of a
+   * vm_host group; 'guest' = a guest VM nested under that host. null/undefined
+   * for unlinked devices and multiboot members (peers). A non-null role
+   * implies the group's kind is 'vm_host' — no group fetch needed.
+   */
+  linkGroupRole?: 'host' | 'guest' | null;
 };
 
 // Columns that only make sense for the network arm (#1322); hidden unless
@@ -510,6 +518,10 @@ export default function DeviceList({
     );
   useEffect(() => subscribeLinkedProfileCollapse(setLinkedCollapse), []);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  // vm_host nesting (#2308): link-group ids whose guest rows are collapsed
+  // beneath their host. Transient per-visit presentation state (default:
+  // expanded, guests visible) — deliberately NOT persisted/hash-encoded.
+  const [collapsedVmGroups, setCollapsedVmGroups] = useState<Set<string>>(new Set());
   const [bulkMenuOpen, setBulkMenuOpen] = useState(false);
   const [rowMenuOpenId, setRowMenuOpenId] = useState<string | null>(null);
   // Flip the row dropdown direction when the click happens close to the
@@ -806,10 +818,18 @@ export default function DeviceList({
     () => groupLinkedDevices(paginatedDevices, linkedCollapse === "on"),
     [paginatedDevices, linkedCollapse],
   );
+  // vm_host nesting (#2308): drop guest rows whose group is collapsed. The
+  // host row renders a "N guests hidden" strip in their place.
+  const visibleRows = useMemo(
+    () => displayRows.filter(r => !(r.vmRole === 'guest' && r.vmGroupId && collapsedVmGroups.has(r.vmGroupId))),
+    [displayRows, collapsedVmGroups]
+  );
   // Strips are NOT selectable rows — bulk selection only sees real full rows.
+  // Collapsed (hidden) vm_host guests are likewise excluded: select-all must
+  // never silently pick up rows the user cannot see.
   const selectablePageDevices = useMemo(
-    () => displayRows.map((r) => r.device),
-    [displayRows],
+    () => visibleRows.map((r) => r.device),
+    [visibleRows],
   );
   // Only offer the toggle when the fleet actually has linked profiles.
   const hasLinkedDevices = useMemo(
@@ -1953,6 +1973,16 @@ export default function DeviceList({
                     {t("deviceList.linkAsMultiBoot")}{" "}
                   </button>
                 )}
+                {selectedIds.size >= 2 && (
+                  <button
+                    type="button"
+                    data-testid="bulk-link-vm-host"
+                    onClick={() => handleBulkAction('link-vm-host')}
+                    className="w-full px-4 py-2 text-left text-sm hover:bg-muted"
+                  >
+                    Link as VM host + guests
+                  </button>
+                )}
                 <hr className="my-1" />
                 <button
                   type="button"
@@ -2010,7 +2040,7 @@ export default function DeviceList({
                 </td>
               </tr>
             ) : (
-              displayRows.map(({ device, inactiveSiblings, offlineGroup }) => (
+              visibleRows.map(({ device, inactiveSiblings, offlineGroup, vmRole, vmGroupId, vmGuestCount }) => (
                 <Fragment key={device.id}>
                   <tr
                     onClick={() => onSelect?.(device)}
@@ -2024,7 +2054,7 @@ export default function DeviceList({
                     className="cursor-pointer transition hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-hidden"
                   >
                     <td
-                      className={`px-3 py-3 ${offlineGroup ? "border-l-2 border-l-primary/40" : ""}`}
+                      className={`px-3 py-3 ${offlineGroup || vmRole ? "border-l-2 border-l-primary/40" : ""}`}
                       {...(offlineGroup
                         ? {
                             "data-testid": `device-${device.id}-group-bar`,
@@ -2034,16 +2064,56 @@ export default function DeviceList({
                           }
                         : {})}
                     >
-                      <input
-                        type="checkbox"
-                        checked={selectedIds.has(device.id)}
-                        aria-label={t("deviceList.selectDevice", { hostname: device.hostname })}
-                        onClick={(e) => e.stopPropagation()}
-                        onChange={(e) =>
-                          handleSelectOne(device.id, e.target.checked)
-                        }
-                        className="h-4 w-4 rounded border-border"
-                      />
+                      <div className="flex items-center gap-1">
+                        {/* vm_host (#2308): expand/collapse toggle on the host row. */}
+                        {vmRole === "host" && vmGroupId && (
+                          <button
+                            type="button"
+                            data-testid={`device-${device.id}-vm-toggle`}
+                            aria-label={
+                              collapsedVmGroups.has(vmGroupId)
+                                ? `Show ${vmGuestCount ?? 0} guest VMs of ${device.hostname}`
+                                : `Hide guest VMs of ${device.hostname}`
+                            }
+                            aria-expanded={!collapsedVmGroups.has(vmGroupId)}
+                            title={`VM host — ${vmGuestCount ?? 0} guest VM${vmGuestCount === 1 ? "" : "s"} on this page`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setCollapsedVmGroups((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(vmGroupId)) next.delete(vmGroupId);
+                                else next.add(vmGroupId);
+                                return next;
+                              });
+                            }}
+                            className="-ml-1 flex h-5 w-5 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+                          >
+                            {collapsedVmGroups.has(vmGroupId) ? (
+                              <ChevronRight className="h-3.5 w-3.5" />
+                            ) : (
+                              <ChevronDown className="h-3.5 w-3.5" />
+                            )}
+                          </button>
+                        )}
+                        {/* vm_host (#2308): nesting glyph on guest rows. */}
+                        {vmRole === "guest" && (
+                          <CornerDownRight
+                            data-testid={`device-${device.id}-vm-guest-glyph`}
+                            aria-hidden
+                            className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                          />
+                        )}
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.has(device.id)}
+                          aria-label={t("deviceList.selectDevice", { hostname: device.hostname })}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={(e) =>
+                            handleSelectOne(device.id, e.target.checked)
+                          }
+                          className="h-4 w-4 rounded border-border"
+                        />
+                      </div>
                     </td>
                     {renderedColumns.map((id) => columnDefs[id].cell(device))}
                     <td
@@ -2224,6 +2294,48 @@ export default function DeviceList({
                       )}
                     </td>
                   </tr>
+                  {/* vm_host (#2308): when a host's guests are collapsed, a thin
+                      strip stands in for them — click to expand. */}
+                  {vmRole === "host" &&
+                    vmGroupId &&
+                    collapsedVmGroups.has(vmGroupId) && (
+                      <tr
+                        data-testid={`device-${device.id}-vm-collapsed-strip`}
+                        onClick={() =>
+                          setCollapsedVmGroups((prev) => {
+                            const next = new Set(prev);
+                            next.delete(vmGroupId);
+                            return next;
+                          })
+                        }
+                        tabIndex={0}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            setCollapsedVmGroups((prev) => {
+                              const next = new Set(prev);
+                              next.delete(vmGroupId);
+                              return next;
+                            });
+                          }
+                        }}
+                        className="cursor-pointer bg-muted/30 transition hover:bg-muted/50 focus-visible:bg-muted/50 focus-visible:outline-hidden"
+                      >
+                        <td
+                          colSpan={
+                            renderedColumns.length + 2 /* checkbox + Actions */
+                          }
+                          className="border-l-2 border-l-primary/40 px-3 py-1.5"
+                        >
+                          <div className="flex items-center gap-1.5 pl-7 text-xs text-muted-foreground">
+                            <CornerDownRight className="h-3.5 w-3.5" aria-hidden />
+                            <span>
+                              {vmGuestCount} guest VM{vmGuestCount === 1 ? "" : "s"} hidden — click to expand
+                            </span>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
                   {/* Linked multi-boot: expected-offline boot profiles tucked
                     beneath their online sibling as thin muted strips (#2138).
                     Clickable through to the device's own detail page; NOT

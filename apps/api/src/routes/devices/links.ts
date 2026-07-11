@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
-import { and, eq, inArray, isNull, or } from 'drizzle-orm';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { db } from '../../db';
 import { deviceLinkGroups, devices } from '../../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../../middleware/auth';
@@ -52,7 +52,7 @@ class LinkRaceError extends Error {
   }
 }
 
-/** Client-facing shape of one boot profile in a link group. */
+/** Client-facing shape of one member (boot profile / host / guest) in a link group. */
 interface LinkGroupMember {
   deviceId: string;
   hostname: string;
@@ -62,6 +62,8 @@ interface LinkGroupMember {
   agentVersion: string;
   status: string;
   lastSeenAt: Date | null;
+  /** 'host' | 'guest' within a vm_host group (#2308); null for multiboot peers. */
+  role: string | null;
 }
 
 /**
@@ -89,6 +91,7 @@ async function loadMembers(
       agentVersion: devices.agentVersion,
       status: devices.status,
       lastSeenAt: devices.lastSeenAt,
+      role: devices.linkGroupRole,
     })
     .from(devices)
     .where(inArray(devices.linkGroupId, groupIds));
@@ -106,6 +109,7 @@ async function loadMembers(
       agentVersion: r.agentVersion,
       status: r.status,
       lastSeenAt: r.lastSeenAt,
+      role: r.role ?? null,
     });
     byGroup.set(r.linkGroupId, list);
   }
@@ -144,7 +148,9 @@ linksRoutes.get(
   },
 );
 
-// POST /devices/link-groups — link 2+ devices as boot profiles of one machine.
+// POST /devices/link-groups — link 2+ devices as boot profiles of one machine
+// (kind='multiboot') or as one host server plus its guest VMs (kind='vm_host',
+// #2308: hostDeviceId names the host; every other member becomes a guest).
 linksRoutes.post(
   '/link-groups',
   requireScope('organization', 'partner', 'system'),
@@ -153,7 +159,7 @@ linksRoutes.post(
   zValidator('json', createLinkGroupSchema),
   async (c) => {
     const auth = c.get('auth');
-    const { name, deviceIds } = c.req.valid('json');
+    const { kind, name, deviceIds, hostDeviceId } = c.req.valid('json');
 
     const uniqueIds = [...new Set(deviceIds)];
     if (uniqueIds.length < 2) {
@@ -190,7 +196,7 @@ linksRoutes.post(
       await db.transaction(async (tx) => {
         const [group] = await tx
           .insert(deviceLinkGroups)
-          .values({ orgId, name: name ?? null, createdBy: auth.user.id })
+          .values({ orgId, kind, name: name ?? null, createdBy: auth.user.id })
           .returning({ id: deviceLinkGroups.id });
         groupId = group!.id;
         // Self-guarding claim: only devices STILL unlinked take the group id.
@@ -198,13 +204,28 @@ linksRoutes.post(
         // link could have claimed a device in between (TOCTOU) — without the
         // guard the winner's group would silently lose the device. A row-count
         // mismatch aborts the whole link with a 409 instead.
-        const claimed = await tx
-          .update(devices)
-          .set({ linkGroupId: groupId, updatedAt: new Date() })
-          .where(and(inArray(devices.id, uniqueIds), isNull(devices.linkGroupId)))
-          .returning({ id: devices.id });
-        if (claimed.length !== uniqueIds.length) {
-          throw new LinkRaceError();
+        //
+        // vm_host (#2308) claims in two batches purely because the role value
+        // differs per member (host vs guests); the guard semantics are the
+        // same — total claimed rows must equal the requested membership.
+        // Multiboot members are peers, so role stays NULL (set explicitly to
+        // self-heal any stale value, though unlink paths always clear it).
+        const batches: Array<{ ids: string[]; role: string | null }> =
+          kind === 'vm_host'
+            ? [
+                { ids: [hostDeviceId!], role: 'host' },
+                { ids: uniqueIds.filter((id) => id !== hostDeviceId), role: 'guest' },
+              ]
+            : [{ ids: uniqueIds, role: null }];
+        for (const batch of batches) {
+          const claimed = await tx
+            .update(devices)
+            .set({ linkGroupId: groupId, linkGroupRole: batch.role, updatedAt: new Date() })
+            .where(and(inArray(devices.id, batch.ids), isNull(devices.linkGroupId)))
+            .returning({ id: devices.id });
+          if (claimed.length !== batch.ids.length) {
+            throw new LinkRaceError();
+          }
         }
       });
     } catch (err) {
@@ -220,14 +241,12 @@ linksRoutes.post(
       resourceType: 'device_link_group',
       resourceId: groupId!,
       resourceName: name ?? null,
-      details: { deviceIds: uniqueIds },
+      details: { kind, deviceIds: uniqueIds, ...(hostDeviceId ? { hostDeviceId } : {}) },
     });
 
     const members = await loadMembers([groupId!], auth);
     return c.json(
-      // kind is 'multiboot' for every group creatable today; surfaced so the
-      // client shape is stable when future kinds (e.g. vm_host) land.
-      { id: groupId!, orgId, kind: 'multiboot', name: name ?? null, members: members.get(groupId!) ?? [] },
+      { id: groupId!, orgId, kind, name: name ?? null, members: members.get(groupId!) ?? [] },
       201,
     );
   },
@@ -347,10 +366,11 @@ linksRoutes.patch(
             .where(eq(deviceLinkGroups.id, groupId));
         }
         if (toRemove.length > 0) {
-          // Only unlink devices actually in THIS group.
+          // Only unlink devices actually in THIS group. Role is cleared with
+          // the membership — it is meaningless outside a group (#2308).
           await tx
             .update(devices)
-            .set({ linkGroupId: null, updatedAt: new Date() })
+            .set({ linkGroupId: null, linkGroupRole: null, updatedAt: new Date() })
             .where(and(inArray(devices.id, toRemove), eq(devices.linkGroupId, groupId)));
         }
         if (toAdd.length > 0) {
@@ -358,20 +378,36 @@ linksRoutes.patch(
           // only devices still unlinked — or already in this group — take the
           // group id. A concurrent link stealing one of them aborts with 409
           // instead of silently succeeding with fewer members.
-          const claimed = await tx
+          //
+          // Two batches so a no-op RE-add of an existing member keeps its role
+          // (#2308: overwriting would demote a vm_host group's host to guest
+          // and dissolve the group). Batch 1 touches only rows already in this
+          // group; batch 2 only still-unlinked rows — disjoint by WHERE, so
+          // the combined row count is the same guard as the single update.
+          const reAdded = await tx
             .update(devices)
             .set({ linkGroupId: groupId, updatedAt: new Date() })
-            .where(and(
-              inArray(devices.id, toAdd),
-              or(isNull(devices.linkGroupId), eq(devices.linkGroupId, groupId)),
-            ))
+            .where(and(inArray(devices.id, toAdd), eq(devices.linkGroupId, groupId)))
             .returning({ id: devices.id });
-          if (claimed.length !== toAdd.length) {
+          // vm_host (#2308): a group's host is fixed at create time, so every
+          // newly linked member is a guest. Multiboot members are peers (NULL).
+          const claimed = await tx
+            .update(devices)
+            .set({
+              linkGroupId: groupId,
+              linkGroupRole: group.kind === 'vm_host' ? 'guest' : null,
+              updatedAt: new Date(),
+            })
+            .where(and(inArray(devices.id, toAdd), isNull(devices.linkGroupId)))
+            .returning({ id: devices.id });
+          if (reAdded.length + claimed.length !== toAdd.length) {
             throw new LinkRaceError();
           }
         }
         // A group that fell below the minimum after removals is meaningless —
-        // dissolve it (unlink the lone survivor, delete the row).
+        // dissolve it (unlink the lone survivor, delete the row). For vm_host
+        // this also dissolves a group whose HOST was just removed: guests
+        // without their nesting anchor are a headless group (#2308).
         dissolved = await dissolveLinkGroupIfBelowMinimum(tx, groupId);
       });
     } catch (err) {

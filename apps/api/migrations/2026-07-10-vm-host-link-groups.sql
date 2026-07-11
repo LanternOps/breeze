@@ -1,0 +1,27 @@
+-- 2026-07-10: vm_host link groups (#2308) — member-role column on devices.
+--
+-- Extends the #2138 device_link_groups mechanism with an asymmetric kind:
+-- 'vm_host' groups one host server record with its guest-VM device records so
+-- the guests nest under the host in the device list. Unlike multiboot (peer
+-- boot profiles, only one online at a time), host + guests are concurrently
+-- online — the grouping is hierarchical organization, not offline-noise
+-- suppression, and guests stay fully managed endpoints.
+--
+-- The 2026-07-09 migration reserved exactly this design: kind='vm_host' on
+-- device_link_groups (varchar, no CHECK — app-enforced, same as 'multiboot')
+-- plus a member-role column on devices. This adds that column:
+--   link_group_role: NULL for unlinked devices and for members of symmetric
+--   kinds (multiboot); 'host' | 'guest' for members of a vm_host group
+--   (app-enforced values, matching the kind convention). Invariant:
+--   link_group_id IS NULL => link_group_role IS NULL — every unlink path
+--   (PATCH remove, group delete/dissolve, move-org) clears both together.
+--
+-- Tenancy: no RLS changes. `devices` already carries the standard org policies
+-- and the composite FK devices(link_group_id, org_id) ->
+-- device_link_groups(id, org_id) from 2026-07-09 keeps enforcing the same-org
+-- invariant; a role tag on the membership column changes nothing about scope.
+--
+-- Idempotent: ADD COLUMN IF NOT EXISTS. autoMigrate wraps the file in one
+-- transaction — no inner BEGIN/COMMIT.
+
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS link_group_role varchar(16);

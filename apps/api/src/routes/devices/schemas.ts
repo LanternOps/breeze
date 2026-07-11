@@ -184,13 +184,33 @@ export const createGroupSchema = z.object({
 
 export const updateGroupSchema = createGroupSchema.partial().omit({ orgId: true });
 
-// Linked device profiles for multi-boot systems (#2138). A link group ties 2+
-// device records together as boot profiles of one physical machine. Sizes track
+// Device link groups (#2138 multiboot, #2308 vm_host). A link group ties 2+
+// device records together — as peer boot profiles of one physical machine
+// (multiboot) or as one host server plus its guest VMs (vm_host). Sizes track
 // MIN_LINK_GROUP_SIZE / MAX_LINK_GROUP_SIZE in services/deviceLinkGroups.ts.
-export const createLinkGroupSchema = z.object({
-  name: z.string().min(1).max(255).optional(),
-  deviceIds: z.array(z.string().guid()).min(2).max(10),
-});
+export const LINK_GROUP_KINDS = ['multiboot', 'vm_host'] as const;
+
+export const createLinkGroupSchema = z
+  .object({
+    // Defaults to 'multiboot' so pre-#2308 clients keep working unchanged.
+    kind: z.enum(LINK_GROUP_KINDS).default('multiboot'),
+    name: z.string().min(1).max(255).optional(),
+    deviceIds: z.array(z.string().guid()).min(2).max(10),
+    // vm_host only: which member is the host server. Required for vm_host
+    // (the asymmetry is the whole point), rejected for multiboot (peers).
+    hostDeviceId: z.string().guid().optional(),
+  })
+  .superRefine((d, ctx) => {
+    if (d.kind === 'vm_host') {
+      if (!d.hostDeviceId) {
+        ctx.addIssue({ code: 'custom', path: ['hostDeviceId'], message: 'A vm_host group requires hostDeviceId' });
+      } else if (!d.deviceIds.includes(d.hostDeviceId)) {
+        ctx.addIssue({ code: 'custom', path: ['hostDeviceId'], message: 'hostDeviceId must be one of deviceIds' });
+      }
+    } else if (d.hostDeviceId !== undefined) {
+      ctx.addIssue({ code: 'custom', path: ['hostDeviceId'], message: 'hostDeviceId only applies to vm_host groups' });
+    }
+  });
 
 export const updateLinkGroupSchema = z
   .object({

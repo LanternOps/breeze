@@ -119,3 +119,77 @@ describe('groupLinkedDevices', () => {
     expect(out.find((r) => r.device.id === 'b-lin')!.offlineGroup).toBe(true);
   });
 });
+
+describe('groupLinkedDevices — vm_host nesting (#2308)', () => {
+  it('nests guests directly beneath their host, in page order, as full marked rows', () => {
+    const before = mk('before');
+    const vm1 = mk('vm1', { os: 'linux', linkGroupId: 'gVM', linkGroupRole: 'guest', status: 'online' });
+    const host = mk('hv', { linkGroupId: 'gVM', linkGroupRole: 'host', status: 'online' });
+    const vm2 = mk('vm2', { linkGroupId: 'gVM', linkGroupRole: 'guest', status: 'offline' });
+    const after = mk('after');
+
+    const out = groupLinkedDevices([before, vm1, host, vm2, after], true);
+
+    // Guests are reordered to follow the host; nothing is hidden or stripped.
+    expect(out.map((r) => r.device.id)).toEqual(['before', 'hv', 'vm1', 'vm2', 'after']);
+    const hostRow = out.find((r) => r.device.id === 'hv')!;
+    expect(hostRow.vmRole).toBe('host');
+    expect(hostRow.vmGroupId).toBe('gVM');
+    expect(hostRow.vmGuestCount).toBe(2);
+    for (const id of ['vm1', 'vm2']) {
+      const guestRow = out.find((r) => r.device.id === id)!;
+      expect(guestRow.vmRole).toBe('guest');
+      expect(guestRow.vmGroupId).toBe('gVM');
+      expect(guestRow.inactiveSiblings).toHaveLength(0);
+      expect(guestRow.offlineGroup).toBe(false);
+    }
+  });
+
+  it('never applies the multiboot offline heuristics to a vm_host group', () => {
+    // One online member + offline guests would strip-collapse under the
+    // multiboot rules — vm_host members must stay full rows regardless.
+    const host = mk('hv', { linkGroupId: 'gVM', linkGroupRole: 'host', status: 'online' });
+    const vm1 = mk('vm1', { linkGroupId: 'gVM', linkGroupRole: 'guest', status: 'offline' });
+
+    const out = groupLinkedDevices([host, vm1], true);
+    expect(out.map((r) => r.device.id)).toEqual(['hv', 'vm1']);
+    expect(out.every((r) => r.inactiveSiblings.length === 0 && !r.offlineGroup)).toBe(true);
+  });
+
+  it('renders guests ungrouped when the host is not on this page (pagination caveat)', () => {
+    const vm1 = mk('vm1', { linkGroupId: 'gVM', linkGroupRole: 'guest' });
+    const vm2 = mk('vm2', { linkGroupId: 'gVM', linkGroupRole: 'guest' });
+
+    const out = groupLinkedDevices([vm1, vm2], true);
+    expect(out.map((r) => r.device.id)).toEqual(['vm1', 'vm2']);
+    expect(out.every((r) => r.vmRole === undefined)).toBe(true);
+  });
+
+  it('leaves a lone host row unmarked when its guests are on another page', () => {
+    const host = mk('hv', { linkGroupId: 'gVM', linkGroupRole: 'host' });
+    const out = groupLinkedDevices([host], true);
+    expect(out).toHaveLength(1);
+    expect(out[0]!.vmRole).toBeUndefined();
+  });
+
+  it('returns a flat unmarked list when the toggle is off', () => {
+    const host = mk('hv', { linkGroupId: 'gVM', linkGroupRole: 'host' });
+    const vm1 = mk('vm1', { linkGroupId: 'gVM', linkGroupRole: 'guest' });
+    const out = groupLinkedDevices([host, vm1], false);
+    expect(out.map((r) => r.device.id)).toEqual(['hv', 'vm1']);
+    expect(out.every((r) => r.vmRole === undefined)).toBe(true);
+  });
+
+  it('handles a vm_host group and a multiboot group on the same page independently', () => {
+    const host = mk('hv', { linkGroupId: 'gVM', linkGroupRole: 'host', status: 'online' });
+    const vm1 = mk('vm1', { linkGroupId: 'gVM', linkGroupRole: 'guest', status: 'online' });
+    const mbWin = mk('mb-win', { linkGroupId: 'gMB', status: 'online' });
+    const mbLin = mk('mb-lin', { os: 'linux', linkGroupId: 'gMB', status: 'offline' });
+
+    const out = groupLinkedDevices([mbWin, host, mbLin, vm1], true);
+    expect(out.map((r) => r.device.id)).toEqual(['mb-win', 'hv', 'vm1']);
+    expect(out.find((r) => r.device.id === 'mb-win')!.inactiveSiblings.map((d) => d.id)).toEqual(['mb-lin']);
+    expect(out.find((r) => r.device.id === 'hv')!.vmRole).toBe('host');
+    expect(out.find((r) => r.device.id === 'vm1')!.vmRole).toBe('guest');
+  });
+});

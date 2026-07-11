@@ -568,6 +568,10 @@ coreRoutes.get(
         // Linked multi-boot profiles (#2138): null => unlinked. The web list
         // groups rows client-side by this id (inactive strips / group bar).
         linkGroupId: devices.linkGroupId,
+        // vm_host member role (#2308): 'host' | 'guest' | null. Lets the web
+        // list nest guest rows under their host without joining the group
+        // table — a non-null role implies the group's kind is 'vm_host'.
+        linkGroupRole: devices.linkGroupRole,
         createdAt: devices.createdAt,
         updatedAt: devices.updatedAt,
         // Hardware summary
@@ -688,6 +692,7 @@ coreRoutes.get(
         batteryStatus: d.batteryStatus ?? null,
         activeVpns: d.activeVpns ?? null,
         linkGroupId: d.linkGroupId ?? null,
+        linkGroupRole: d.linkGroupRole ?? null,
         createdAt: d.createdAt,
         updatedAt: d.updatedAt,
         cpuPercent: latestMetrics?.cpuPercent ?? 0,

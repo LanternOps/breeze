@@ -143,8 +143,11 @@ moveOrgRoutes.post(
             // of a machine in the OLD org. Unlink it here; the composite FK
             // (link_group_id, org_id) -> device_link_groups(id, org_id) would
             // otherwise fail the org flip. The source group is dissolved below
-            // if it drops below the two-profile minimum.
+            // if it drops below the two-profile minimum (or, for vm_host
+            // groups, if this device WAS the host — #2308). Role travels with
+            // membership, so it clears too.
             linkGroupId: null,
+            linkGroupRole: null,
             updatedAt: new Date(),
           })
           .where(eq(devices.id, deviceId))

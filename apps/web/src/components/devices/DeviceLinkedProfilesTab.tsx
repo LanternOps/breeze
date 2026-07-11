@@ -5,7 +5,7 @@ import { runAction, handleActionError } from "../../lib/runAction";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
 
-/** One boot profile (device record) in a linked multi-boot group. */
+/** One member (boot profile, host server, or guest VM) of a link group. */
 export interface LinkedProfile {
   deviceId: string;
   hostname: string;
@@ -15,10 +15,12 @@ export interface LinkedProfile {
   agentVersion: string;
   status: string;
   lastSeenAt: string | null;
+  /** vm_host groups (#2308): 'host' | 'guest'. null for multiboot peers. */
+  role?: string | null;
 }
 
 interface LinkGroupResponse {
-  group: { id: string; name: string | null } | null;
+  group: { id: string; kind?: string; name: string | null } | null;
   members: LinkedProfile[];
 }
 
@@ -81,7 +83,11 @@ export default function DeviceLinkedProfilesTab({
   }, [load]);
 
   const group = data?.group ?? null;
-  const members = data?.members ?? [];
+  const isVmHost = group?.kind === 'vm_host';
+  // vm_host (#2308): host first, then guests, preserving API order within each.
+  const members = isVmHost
+    ? [...(data?.members ?? [])].sort((a, b) => (a.role === 'host' ? -1 : 0) - (b.role === 'host' ? -1 : 0))
+    : data?.members ?? [];
 
   const unlinkThisDevice = async () => {
     if (!group) return;
@@ -184,6 +190,11 @@ export default function DeviceLinkedProfilesTab({
           </span>{" "}
           {t("deviceLinkedProfilesTab.toGroupThemWhenOnlyOne")}{" "}
         </p>
+        <p className="mt-2 max-w-prose text-sm text-muted-foreground">
+          For a virtualization host and its guest VMs, choose
+          <span className="font-medium"> Link as VM host + guests</span> instead — the guests nest under
+          the host server&apos;s row in the device list while remaining fully managed endpoints.
+        </p>
       </div>
     );
   }
@@ -194,10 +205,13 @@ export default function DeviceLinkedProfilesTab({
         <div className="flex items-center gap-2">
           <Link2 className="h-4 w-4 text-muted-foreground" />
           <h3 className="text-sm font-semibold">
-            {group.name || "Linked boot profiles"}
+            {group.name ||
+              (isVmHost ? "VM host + guests" : "Linked boot profiles")}
           </h3>
           <span className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground">
-            {members.length} {t("deviceLinkedProfilesTab.profiles")}{" "}
+            {isVmHost
+              ? `${members.filter((m) => m.role === "guest").length} guests`
+              : `${members.length} ${t("deviceLinkedProfilesTab.profiles")}`}
           </span>
         </div>
         <div className="flex items-center gap-2">
@@ -206,6 +220,11 @@ export default function DeviceLinkedProfilesTab({
             disabled={busy}
             onClick={() => void unlinkThisDevice()}
             data-testid="linked-profiles-unlink-self"
+            title={
+              isVmHost && members.find((m) => m.deviceId === deviceId)?.role === 'host'
+                ? 'This device is the host — unlinking it removes the whole group (guests are unlinked too).'
+                : undefined
+            }
             className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm hover:bg-muted disabled:opacity-50"
           >
             <Link2Off className="h-3.5 w-3.5" />
@@ -228,8 +247,9 @@ export default function DeviceLinkedProfilesTab({
           <thead className="bg-muted/50 text-left text-xs uppercase text-muted-foreground">
             <tr>
               <th className="px-3 py-2 font-medium">
-                {t("deviceLinkedProfilesTab.profile")}
+                {isVmHost ? "Device" : t("deviceLinkedProfilesTab.profile")}
               </th>
+              {isVmHost && <th className="px-3 py-2 font-medium">Role</th>}
               <th className="px-3 py-2 font-medium">
                 {t("deviceLinkedProfilesTab.os")}
               </th>
@@ -267,6 +287,17 @@ export default function DeviceLinkedProfilesTab({
                       {m.hostname}
                     </div>
                   </td>
+                  {isVmHost && (
+                    <td className="px-3 py-2" data-testid={`linked-profile-${m.deviceId}-role`}>
+                      <span
+                        className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${
+                          m.role === 'host' ? 'border-primary/40 text-primary' : 'text-muted-foreground'
+                        }`}
+                      >
+                        {m.role === 'host' ? 'Host' : 'Guest'}
+                      </span>
+                    </td>
+                  )}
                   <td className="px-3 py-2 capitalize">
                     {m.osType}{" "}
                     <span className="text-xs text-muted-foreground">

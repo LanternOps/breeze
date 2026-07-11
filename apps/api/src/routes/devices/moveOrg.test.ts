@@ -246,6 +246,9 @@ describe('POST /devices/:id/move-org', () => {
         orgId: TARGET_ORG,
         siteId: TARGET_SITE,
         linkGroupId: null,
+        // #2308 - role travels with membership: a stale host/guest value
+        // left behind would poison the device's next link in the new org.
+        linkGroupRole: null,
       });
 
       // Two audit events, one per org

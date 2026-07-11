@@ -76,6 +76,14 @@ export const devices = pgTable('devices', {
   // matching the users(org_id, partner_id) composite-FK convention — pins every
   // member of a group to the group's org (same-org invariant).
   linkGroupId: uuid('link_group_id'),
+  // Member role within an ASYMMETRIC link group (#2308). NULL for unlinked
+  // devices and for members of symmetric kinds (multiboot — all peers). For a
+  // kind='vm_host' group exactly one member is 'host' (the hypervisor/server
+  // record) and the rest are 'guest' (its VMs). Values are app-enforced
+  // ('host' | 'guest'), matching kind's varchar-without-CHECK convention.
+  // Invariant: link_group_id IS NULL => link_group_role IS NULL (every unlink
+  // path clears both together).
+  linkGroupRole: varchar('link_group_role', { length: 16 }),
   tags: text('tags').array().default([]),
   customFields: jsonb('custom_fields').default({}),
   managementPosture: jsonb('management_posture'),
@@ -129,10 +137,10 @@ export const devices = pgTable('devices', {
 export const deviceLinkGroups = pgTable('device_link_groups', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
-  // What the link MEANS. 'multiboot' (v1): members are peer boot profiles of
-  // one physical machine. Reserved future value: 'vm_host' (VM guests nested
-  // under their host server) — schema accommodation only; a future asymmetric
-  // kind adds a member-role column on devices (multiboot members are peers).
+  // What the link MEANS. 'multiboot' (v1, #2138): members are peer boot
+  // profiles of one physical machine. 'vm_host' (#2308): asymmetric — one
+  // member is the host server (devices.link_group_role = 'host') and the rest
+  // are its guest VMs ('guest'), nested under the host in the device list.
   kind: varchar('kind', { length: 32 }).notNull().default('multiboot'),
   name: varchar('name', { length: 255 }),
   createdBy: uuid('created_by').references(() => users.id),
