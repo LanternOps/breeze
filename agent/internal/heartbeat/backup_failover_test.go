@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/filetransfer"
@@ -17,6 +18,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/httputil"
 	"github.com/breeze-rmm/agent/internal/tunnel"
 	"github.com/breeze-rmm/agent/internal/websocket"
+	"github.com/breeze-rmm/agent/internal/workerpool"
 	"github.com/spf13/viper"
 )
 
@@ -332,5 +334,55 @@ func TestHeartbeatFailureStreakResetPreventsProbe(t *testing.T) {
 	}
 	if got := h.serverURL(); got != deadURL {
 		t.Fatalf("server URL changed without probe: %q", got)
+	}
+}
+
+// TestProbeCommandResultsGoToPromotedURL pins the promote-before-process
+// ordering: a command delivered in the backup PROBE's response must submit
+// its result to the just-promoted backup URL — never to the dead primary,
+// which is where results went when the response was processed before the
+// swap (commands stranded 'sent' server-side, operator retries duplicated
+// the side effect).
+func TestProbeCommandResultsGoToPromotedURL(t *testing.T) {
+	const (
+		deadURL   = "https://primary.invalid"
+		backupURL = "https://backup.invalid"
+	)
+	resultHost := make(chan string, 1)
+
+	cfg := swapTestConfig(t, deadURL, backupURL)
+	h := newFailoverTestHeartbeat(cfg, failoverRoundTripper(func(req *http.Request) (*http.Response, error) {
+		if strings.HasSuffix(req.URL.Path, "/result") {
+			select {
+			case resultHost <- req.URL.Host:
+			default:
+			}
+			return failoverResponse(req, http.StatusOK, `{}`), nil
+		}
+		if req.URL.Host != "backup.invalid" {
+			return nil, errors.New("unexpected heartbeat host: " + req.URL.Host)
+		}
+		return failoverResponse(req, http.StatusOK, `{
+			"commands":[{"id":"probe-cmd-1","type":"set_auto_update","payload":{"enabled":false}}]
+		}`), nil
+	}))
+	h.pool = workerpool.New(1, 4)
+	h.accepting.Store(true)
+	payload := &HeartbeatPayload{Status: "ok", AgentVersion: "test"}
+
+	for range backupProbeThreshold {
+		h.recordHeartbeatFailure(payload)
+	}
+
+	select {
+	case host := <-resultHost:
+		if host != "backup.invalid" {
+			t.Fatalf("command result submitted to %q, want promoted backup host", host)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("probe-delivered command result was never submitted")
+	}
+	if got := h.serverURL(); got != backupURL {
+		t.Fatalf("server URL after probe = %q, want %q", got, backupURL)
 	}
 }

@@ -500,11 +500,23 @@ func runWatchdog(stopCh <-chan struct{}) {
 				pendingVerify = nil
 			}
 			if failoverClient == nil && tokenStore.Reveal() != "" {
+				// Re-read the on-disk config at every failover-window start:
+				// the agent may have promote-swapped server_url since this
+				// process booted (or since the last failover window), and a
+				// client built from the stale startup URL would keep working
+				// against the rolled-back control plane if that URL answers —
+				// the failure-only reload path below would then never run.
+				failoverBaseURL := cfg.ServerURL
+				if reloaded, rerr := config.Load(""); rerr == nil && reloaded.ServerURL != "" {
+					failoverBaseURL = reloaded.ServerURL
+				} else if rerr != nil {
+					journal.Log(watchdog.LevelWarn, "failover.config_reload_failed", map[string]any{"error": rerr.Error()})
+				}
 				failoverClient = watchdog.NewFailoverClient(
-					cfg.ServerURL, cfg.AgentID, tokenStore.Reveal(), nil,
+					failoverBaseURL, cfg.AgentID, tokenStore.Reveal(), nil,
 				)
-				lastDiskServerURL = cfg.ServerURL
-				journal.Log(watchdog.LevelInfo, "failover.start", nil)
+				lastDiskServerURL = failoverBaseURL
+				journal.Log(watchdog.LevelInfo, "failover.start", map[string]any{"server": failoverBaseURL})
 
 				// Send initial failover heartbeat.
 				stats := currentRestartStats(recovery, cfg.Watchdog.MaxRestartsPer24h)

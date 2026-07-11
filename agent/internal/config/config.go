@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/viper"
@@ -340,12 +341,23 @@ func Load(cfgFile string) (*Config, error) {
 	return cfg, nil
 }
 
+// persistMu serializes every config-file persist (SetAndPersist,
+// SetAllAndPersist, SetSecretAndPersist, SaveTo). All of them mutate the
+// package-global viper state and rewrite the same files; concurrent callers
+// (e.g. a set_auto_update command worker racing a backup-URL promotion)
+// previously raced viper's internal maps and each other's writes.
+// (config.Load's inline-secret migration writes outside this lock — a
+// pre-existing, startup-dominated path.)
+var persistMu sync.Mutex
+
 // SetAllAndPersist updates several non-secret config keys in viper and writes
 // them to the config file in a SINGLE write, so related keys (e.g. the
 // server_url/backup_server_url swap on backup promotion, #2288) can never be
 // torn across two file writes by a crash between them. Secret keys are routed
 // to secrets.yaml exactly as in SetAndPersist.
 func SetAllAndPersist(kv map[string]any) error {
+	persistMu.Lock()
+	defer persistMu.Unlock()
 	path := viper.ConfigFileUsed()
 
 	if path != "" {
@@ -361,7 +373,7 @@ func SetAllAndPersist(kv map[string]any) error {
 
 	for key, value := range kv {
 		if isSecretConfigKey(key) {
-			if err := SetSecretAndPersist(key, value); err != nil {
+			if err := setSecretAndPersistLocked(key, value); err != nil {
 				return err
 			}
 			viper.Set(key, nil)
@@ -385,6 +397,8 @@ func SetAllAndPersist(kv map[string]any) error {
 // to the existing config file. Any legacy inline secrets are migrated to
 // secrets.yaml and scrubbed from agent.yaml after the write.
 func SetAndPersist(key string, value any) error {
+	persistMu.Lock()
+	defer persistMu.Unlock()
 	path := viper.ConfigFileUsed()
 
 	// SECURITY: move any legacy inline secrets out of the on-disk agent.yaml into
@@ -406,7 +420,7 @@ func SetAndPersist(key string, value any) error {
 	}
 
 	if isSecretConfigKey(key) {
-		if err := SetSecretAndPersist(key, value); err != nil {
+		if err := setSecretAndPersistLocked(key, value); err != nil {
 			return err
 		}
 		viper.Set(key, nil)
@@ -428,6 +442,14 @@ func SetAndPersist(key string, value any) error {
 }
 
 func SetSecretAndPersist(key string, value any) error {
+	persistMu.Lock()
+	defer persistMu.Unlock()
+	return setSecretAndPersistLocked(key, value)
+}
+
+// setSecretAndPersistLocked is SetSecretAndPersist's body; callers must hold
+// persistMu.
+func setSecretAndPersistLocked(key string, value any) error {
 	path := secretsFilePath()
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
@@ -472,6 +494,8 @@ func Save(cfg *Config) error {
 }
 
 func SaveTo(cfg *Config, cfgFile string) error {
+	persistMu.Lock()
+	defer persistMu.Unlock()
 	viper.Set("agent_id", cfg.AgentID)
 	viper.Set("server_url", cfg.ServerURL)
 	viper.Set("backup_server_url", cfg.BackupServerURL)

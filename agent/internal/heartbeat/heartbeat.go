@@ -2555,10 +2555,25 @@ func (h *Heartbeat) recordHeartbeatFailure(payload *HeartbeatPayload) {
 		return
 	}
 	log.Warn("primary server unreachable, probing backup", "failures", failures, "backupServerUrl", backup)
-	if h.postHeartbeat(backup, payload) {
-		h.promoteBackupServerURL(backup)
-		h.resetHeartbeatFailures()
+	response, ok := h.doHeartbeatPost(backup, payload)
+	if !ok {
+		return
 	}
+	// Promote BEFORE processing the response: its directives (commands,
+	// upgrades, token/cert rotation) must run against the control plane that
+	// issued them, and their result/rotation requests read h.serverURL().
+	// Promotion is synchronous (in-memory swap + single-write persist), so by
+	// the time any directive runs, the probed URL is current everywhere.
+	h.promoteBackupServerURL(backup)
+	h.resetHeartbeatFailures()
+	// Drop the probe response's own backup_server_url directive: promotion
+	// just installed the old primary as the rollback backup, and letting the
+	// probe clear/replace it one cycle earlier than the next regular
+	// heartbeat buys nothing while costing the rollback if this promotion
+	// turns out to be a false positive.
+	delete(response.ConfigUpdate, "backup_server_url")
+	delete(response.ConfigUpdate, "backupServerUrl")
+	h.processHeartbeatResponse(response)
 }
 
 // promoteBackupServerURL swaps probedURL — the backup that just answered a
@@ -2796,12 +2811,32 @@ func (h *Heartbeat) sendHeartbeat() {
 	h.recordHeartbeatFailure(&payload)
 }
 
+// postHeartbeat POSTs the payload to baseURL and, on an authenticated 2xx,
+// processes the full response (configUpdate, commands, upgrades, rotation).
+// The regular heartbeat path uses this; the backup PROBE path must NOT — it
+// uses doHeartbeatPost + processHeartbeatResponse separately so promotion
+// runs between validation and side effects (see recordHeartbeatFailure).
 func (h *Heartbeat) postHeartbeat(baseURL string, payload *HeartbeatPayload) bool {
+	response, ok := h.doHeartbeatPost(baseURL, payload)
+	if !ok {
+		return false
+	}
+	h.processHeartbeatResponse(response)
+	return true
+}
+
+// doHeartbeatPost sends the heartbeat and validates the response up to and
+// including the JSON decode — the authenticated-2xx gate — WITHOUT executing
+// any of the response's directives. Side effects (commands, upgrades, token
+// and cert rotation, configUpdate) live in processHeartbeatResponse: a backup
+// probe must promote the probed URL first, so those directives run against
+// the control plane that actually issued them.
+func (h *Heartbeat) doHeartbeatPost(baseURL string, payload *HeartbeatPayload) (*HeartbeatResponse, bool) {
 	payload.ServerURL = baseURL
 	body, err := json.Marshal(payload)
 	if err != nil {
 		log.Error("failed to marshal heartbeat", "error", err.Error())
-		return false
+		return nil, false
 	}
 
 	url := fmt.Sprintf("%s/api/v1/agents/%s/heartbeat", baseURL, h.config.AgentID)
@@ -2817,7 +2852,7 @@ func (h *Heartbeat) postHeartbeat(baseURL string, payload *HeartbeatPayload) boo
 	if err != nil {
 		log.Error("failed to send heartbeat", "server", baseURL, "error", err.Error())
 		h.healthMon.Update("heartbeat", health.Unhealthy, err.Error())
-		return false
+		return nil, false
 	}
 	defer resp.Body.Close()
 
@@ -2827,13 +2862,13 @@ func (h *Heartbeat) postHeartbeat(baseURL string, payload *HeartbeatPayload) boo
 		if h.authMon != nil {
 			h.authMon.RecordAuthFailure()
 		}
-		return false
+		return nil, false
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		log.Warn("heartbeat returned non-OK status", "server", baseURL, "status", resp.StatusCode)
 		h.healthMon.Update("heartbeat", health.Degraded, fmt.Sprintf("status %d", resp.StatusCode))
-		return false
+		return nil, false
 	}
 
 	h.healthMon.Update("heartbeat", health.Healthy, "")
@@ -2861,9 +2896,18 @@ func (h *Heartbeat) postHeartbeat(baseURL string, payload *HeartbeatPayload) boo
 	var response HeartbeatResponse
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
 		log.Error("failed to decode heartbeat response", "error", err.Error())
-		return false
+		return nil, false
 	}
+	return &response, true
+}
 
+// processHeartbeatResponse executes the directives carried by a validated
+// heartbeat response: configUpdate, manifest trust keys, commands, upgrades,
+// cert/token rotation, tunnel policy, and helper settings. Callers must have
+// already made the response's origin the current server URL (the regular
+// path trivially has; the probe path promotes first) so that command results
+// and rotation requests go back to the control plane that issued them.
+func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 	if len(response.ConfigUpdate) > 0 {
 		h.applyConfigUpdate(response.ConfigUpdate)
 	}
@@ -3001,8 +3045,6 @@ func (h *Heartbeat) postHeartbeat(baseURL string, payload *HeartbeatPayload) boo
 			PortalUrl:          response.HelperSettings.PortalUrl,
 		})
 	}
-
-	return true
 }
 
 // IsHelperEnabled returns whether the helper chat is enabled for this device's org.

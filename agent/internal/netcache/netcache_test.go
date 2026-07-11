@@ -22,16 +22,39 @@ func newTestCache(t *testing.T) (*Cache, *[]string) {
 		*dialed = append(*dialed, addr)
 		return fakeConn{}, nil
 	}
+	c.lookup = func(_ context.Context, host string) ([]string, error) {
+		t.Fatalf("unexpected lookup for %q", host)
+		return nil, nil
+	}
 	return c, dialed
 }
 
-func TestSuccessfulDialPersistsIPs(t *testing.T) {
-	c, _ := newTestCache(t)
+// dnsFailDial returns a dial stub that fails hostname-form addresses with a
+// *net.DNSError (what net.Dialer surfaces when resolution fails) and
+// delegates IP-literal addresses to onIP.
+func dnsFailDial(dialed *[]string, onIP func(addr string) (net.Conn, error)) func(context.Context, string, string) (net.Conn, error) {
+	return func(_ context.Context, _, addr string) (net.Conn, error) {
+		*dialed = append(*dialed, addr)
+		host, _, err := net.SplitHostPort(addr)
+		if err == nil && net.ParseIP(host) == nil {
+			return nil, &net.OpError{Op: "dial", Net: "tcp", Err: &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}}
+		}
+		return onIP(addr)
+	}
+}
+
+func TestSuccessfulDialUsesHostnameAndPersistsIPs(t *testing.T) {
+	c, dialed := newTestCache(t)
 	c.lookup = func(_ context.Context, host string) ([]string, error) {
 		return []string{"203.0.113.10"}, nil
 	}
 	if _, err := c.DialContext(context.Background(), "tcp", "api.example.com:443"); err != nil {
 		t.Fatal(err)
+	}
+	// The dial must receive the HOSTNAME (stock resolver + Happy Eyeballs
+	// preserved), never a pre-resolved IP.
+	if want := []string{"api.example.com:443"}; !reflect.DeepEqual(*dialed, want) {
+		t.Fatalf("dialed %v, want hostname passthrough %v", *dialed, want)
 	}
 	// Fresh Cache reading the same file sees the persisted entry.
 	c2 := New(c.path)
@@ -43,21 +66,24 @@ func TestSuccessfulDialPersistsIPs(t *testing.T) {
 func TestDNSErrorFallsBackToCache(t *testing.T) {
 	c, dialed := newTestCache(t)
 	c.entries["api.example.com"] = []string{"203.0.113.10"}
-	c.lookup = func(_ context.Context, host string) ([]string, error) {
-		return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
-	}
+	c.dial = dnsFailDial(dialed, func(_ string) (net.Conn, error) {
+		return fakeConn{}, nil
+	})
 	if _, err := c.DialContext(context.Background(), "tcp", "api.example.com:443"); err != nil {
 		t.Fatal(err)
 	}
-	if len(*dialed) != 1 || (*dialed)[0] != "203.0.113.10:443" {
-		t.Fatalf("dialed %v, want cached ip", *dialed)
+	want := []string{"api.example.com:443", "203.0.113.10:443"}
+	if !reflect.DeepEqual(*dialed, want) {
+		t.Fatalf("dialed %v, want hostname attempt then cached ip", *dialed)
 	}
 }
 
 func TestDNSErrorWithEmptyCacheSurfacesOriginalError(t *testing.T) {
-	c, _ := newTestCache(t)
-	dnsErr := &net.DNSError{Err: "no such host", Name: "api.example.com", IsNotFound: true}
-	c.lookup = func(_ context.Context, _ string) ([]string, error) { return nil, dnsErr }
+	c, dialed := newTestCache(t)
+	c.dial = dnsFailDial(dialed, func(_ string) (net.Conn, error) {
+		t.Fatal("no cached IP should be dialed")
+		return nil, nil
+	})
 	_, err := c.DialContext(context.Background(), "tcp", "api.example.com:443")
 	var got *net.DNSError
 	if !errors.As(err, &got) {
@@ -68,9 +94,6 @@ func TestDNSErrorWithEmptyCacheSurfacesOriginalError(t *testing.T) {
 func TestConnectErrorDoesNotConsultCache(t *testing.T) {
 	c, dialed := newTestCache(t)
 	c.entries["api.example.com"] = []string{"203.0.113.10"}
-	c.lookup = func(_ context.Context, _ string) ([]string, error) {
-		return []string{"198.51.100.7"}, nil // DNS fine
-	}
 	connRefused := errors.New("connect: connection refused")
 	c.dial = func(_ context.Context, _, addr string) (net.Conn, error) {
 		*dialed = append(*dialed, addr)
@@ -89,14 +112,20 @@ func TestConnectErrorDoesNotConsultCache(t *testing.T) {
 
 func TestIPLiteralBypassesResolutionAndCache(t *testing.T) {
 	c, dialed := newTestCache(t)
-	c.lookup = func(_ context.Context, _ string) ([]string, error) {
-		t.Fatal("lookup called for IP literal")
-		return nil, nil
-	}
 	if _, err := c.DialContext(context.Background(), "tcp", "192.0.2.5:443"); err != nil {
 		t.Fatal(err)
 	}
 	if (*dialed)[0] != "192.0.2.5:443" {
+		t.Fatalf("dialed %v", *dialed)
+	}
+}
+
+func TestIPv6LiteralBypassesResolutionAndCache(t *testing.T) {
+	c, dialed := newTestCache(t)
+	if _, err := c.DialContext(context.Background(), "tcp", "[2001:db8::1]:443"); err != nil {
+		t.Fatal(err)
+	}
+	if (*dialed)[0] != "[2001:db8::1]:443" {
 		t.Fatalf("dialed %v", *dialed)
 	}
 }
@@ -113,36 +142,22 @@ func TestCorruptCacheFileIsIgnored(t *testing.T) {
 	}
 }
 
-func TestFreshDNSIPsAreTriedInOrder(t *testing.T) {
-	c, dialed := newTestCache(t)
+func TestFailedRefreshLookupKeepsPreviousEntry(t *testing.T) {
+	c, _ := newTestCache(t)
+	c.entries["api.example.com"] = []string{"203.0.113.10"}
 	c.lookup = func(_ context.Context, _ string) ([]string, error) {
-		return []string{"198.51.100.7", "203.0.113.10"}, nil
+		return nil, errors.New("resolver hiccup after successful dial")
 	}
-	firstErr := errors.New("first IP unavailable")
-	c.dial = func(_ context.Context, _, addr string) (net.Conn, error) {
-		*dialed = append(*dialed, addr)
-		if addr == "198.51.100.7:443" {
-			return nil, firstErr
-		}
-		return fakeConn{}, nil
-	}
-
 	if _, err := c.DialContext(context.Background(), "tcp", "api.example.com:443"); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"198.51.100.7:443", "203.0.113.10:443"}
-	if !reflect.DeepEqual(*dialed, want) {
-		t.Fatalf("dialed %v, want %v", *dialed, want)
+	if got := c.cachedIPs("api.example.com"); len(got) != 1 || got[0] != "203.0.113.10" {
+		t.Fatalf("cached ips = %v, want previous entry retained", got)
 	}
 }
 
 func TestUnsplittableAddressPassesThrough(t *testing.T) {
 	c, dialed := newTestCache(t)
-	c.lookup = func(_ context.Context, _ string) ([]string, error) {
-		t.Fatal("lookup called for unsplittable address")
-		return nil, nil
-	}
-
 	if _, err := c.DialContext(context.Background(), "tcp", "api.example.com"); err != nil {
 		t.Fatal(err)
 	}
@@ -151,21 +166,19 @@ func TestUnsplittableAddressPassesThrough(t *testing.T) {
 	}
 }
 
-func TestCacheFallbackFailureSurfacesOriginalDNSError(t *testing.T) {
+func TestCacheFallbackTriesIPsInOrderAndSurfacesOriginalDNSError(t *testing.T) {
 	c, dialed := newTestCache(t)
 	c.entries["api.example.com"] = []string{"203.0.113.10", "198.51.100.7"}
-	dnsErr := &net.DNSError{Err: "no such host", Name: "api.example.com", IsNotFound: true}
-	c.lookup = func(_ context.Context, _ string) ([]string, error) { return nil, dnsErr }
-	c.dial = func(_ context.Context, _, addr string) (net.Conn, error) {
-		*dialed = append(*dialed, addr)
+	c.dial = dnsFailDial(dialed, func(_ string) (net.Conn, error) {
 		return nil, errors.New("cached IP unavailable")
-	}
+	})
 
 	_, err := c.DialContext(context.Background(), "tcp", "api.example.com:443")
-	if err != dnsErr {
-		t.Fatalf("error = %v, want original DNS error %v", err, dnsErr)
+	var got *net.DNSError
+	if !errors.As(err, &got) || got.Name != "api.example.com" {
+		t.Fatalf("error = %v, want the original DNS error", err)
 	}
-	want := []string{"203.0.113.10:443", "198.51.100.7:443"}
+	want := []string{"api.example.com:443", "203.0.113.10:443", "198.51.100.7:443"}
 	if !reflect.DeepEqual(*dialed, want) {
 		t.Fatalf("dialed %v, want %v", *dialed, want)
 	}
@@ -218,4 +231,38 @@ func TestConcurrentStoreAndReadDoNotSerializeOnDisk(t *testing.T) {
 		}
 	}
 	<-done
+}
+
+// TestConcurrentStoresNeverRegressPersistedFile pins the snapshot-ordering
+// fix: two writers updating different hosts concurrently must both survive
+// in the final on-disk file — an earlier writer's stale snapshot may never
+// erase a later writer's entry.
+func TestConcurrentStoresNeverRegressPersistedFile(t *testing.T) {
+	c, _ := newTestCache(t)
+
+	done := make(chan struct{}, 2)
+	go func() {
+		for i := 0; i < 50; i++ {
+			c.store("a.example.com", []string{"203.0.113.10"})
+			c.store("a.example.com", []string{"203.0.113.11"})
+		}
+		done <- struct{}{}
+	}()
+	go func() {
+		for i := 0; i < 50; i++ {
+			c.store("b.example.com", []string{"198.51.100.7"})
+			c.store("b.example.com", []string{"198.51.100.8"})
+		}
+		done <- struct{}{}
+	}()
+	<-done
+	<-done
+
+	c2 := New(c.path)
+	if got := c2.cachedIPs("a.example.com"); len(got) == 0 {
+		t.Fatal("host a missing from persisted cache after concurrent stores")
+	}
+	if got := c2.cachedIPs("b.example.com"); len(got) == 0 {
+		t.Fatal("host b missing from persisted cache after concurrent stores")
+	}
 }

@@ -1,7 +1,9 @@
 // Package netcache provides a last-known-good DNS→IP cache at the TCP dial
-// layer (#2288). Fresh DNS always wins; the cache is consulted ONLY when
-// resolution fails with *net.DNSError, so a pure DNS outage doesn't sever the
-// control plane (or trigger a false backup-URL failover). TLS is untouched:
+// layer (#2288). The normal path hands the ORIGINAL hostname to the stock
+// dialer, so Go's resolver behavior — including dual-stack Happy Eyeballs
+// racing — is fully preserved; the cache is consulted ONLY when that dial
+// fails with a *net.DNSError, so a pure DNS outage doesn't sever the control
+// plane (or trigger a false backup-URL failover). TLS is untouched:
 // http.Transport / websocket.Dialer still verify certificates against the URL
 // hostname, so a stale or hijacked cached IP fails the handshake — the cache
 // changes only where we dial, never what we trust.
@@ -24,6 +26,10 @@ import (
 
 var log = logging.L("netcache")
 
+// fallbackPerIPTimeout caps each cached-IP dial attempt so a short list of
+// stale addresses cannot serially exhaust the caller's whole context.
+const fallbackPerIPTimeout = 5 * time.Second
+
 type Cache struct {
 	path    string
 	mu      sync.Mutex
@@ -36,6 +42,9 @@ type Cache struct {
 	// persistFailLogged latches the first persist failure so a permanently
 	// read-only data dir is visible without per-dial spam. Guarded by mu.
 	persistFailLogged bool
+	// persistMu serializes snapshot+write so an earlier writer's stale
+	// snapshot can never land after (and erase) a later writer's entry.
+	persistMu sync.Mutex
 }
 
 func New(path string) *Cache {
@@ -74,51 +83,61 @@ func (c *Cache) DialContext(ctx context.Context, network, addr string) (net.Conn
 		return c.dial(ctx, network, addr)
 	}
 
-	ips, lookupErr := c.lookup(ctx, host)
-	if lookupErr == nil && len(ips) > 0 {
-		conn, dialErr := c.dialFirst(ctx, network, ips, port)
-		if dialErr == nil {
-			c.store(host, ips)
-			c.noteDNSRecovered(host)
-			return conn, nil
-		}
-		return nil, dialErr
+	// Normal path: dial the HOSTNAME so the stock dialer keeps its resolver
+	// semantics (Happy Eyeballs dual-stack racing, address ordering). We only
+	// intercept the outcome.
+	conn, dialErr := c.dial(ctx, network, addr)
+	if dialErr == nil {
+		c.refresh(ctx, host)
+		c.noteDNSRecovered(host)
+		return conn, nil
 	}
 
-	// A lookup that succeeds with zero addresses is intentionally NOT served
-	// from the cache: the record was answered (and is empty), not unreachable.
+	// Cache is consulted ONLY for resolution failures; connect errors (and
+	// anything else) surface untouched.
 	var dnsErr *net.DNSError
-	if lookupErr == nil || !errors.As(lookupErr, &dnsErr) {
-		if lookupErr != nil {
-			return nil, lookupErr
-		}
-		return nil, &net.DNSError{Err: "lookup returned no addresses", Name: host}
+	if !errors.As(dialErr, &dnsErr) {
+		return nil, dialErr
 	}
 
 	cached := c.cachedIPs(host)
 	if len(cached) == 0 {
-		return nil, lookupErr
+		return nil, dialErr
 	}
-	conn, dialErr := c.dialFirst(ctx, network, cached, port)
-	if dialErr != nil {
-		// Surface the ORIGINAL DNS error; the dial error is logged as the
-		// only evidence distinguishing "stale cache" from "server down".
-		log.Debug("cached-IP dial also failed", "host", host, "dialError", dialErr.Error())
-		return nil, lookupErr
+	conn, fallbackErr := c.dialFirst(ctx, network, cached, port)
+	if fallbackErr != nil {
+		// Surface the ORIGINAL DNS error; the fallback error is logged as
+		// the only evidence distinguishing "stale cache" from "server down".
+		log.Debug("cached-IP dial also failed", "host", host, "dialError", fallbackErr.Error())
+		return nil, dialErr
 	}
-	c.noteFallbackEngaged(host, lookupErr)
+	c.noteFallbackEngaged(host, dialErr)
 	return conn, nil
+}
+
+// refresh best-effort resolves host and stores the answer as the new
+// last-known-good IP set. Called only after a successful hostname dial, so
+// resolution is expected to work; any failure is skipped silently (the cache
+// simply keeps its previous entry).
+func (c *Cache) refresh(ctx context.Context, host string) {
+	lookupCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	ips, err := c.lookup(lookupCtx, host)
+	if err != nil || len(ips) == 0 {
+		return
+	}
+	c.store(host, ips)
 }
 
 // noteFallbackEngaged warn-logs once per outage streak that this host is
 // surviving on cached IPs — essential forensic context during a DNS outage.
-func (c *Cache) noteFallbackEngaged(host string, lookupErr error) {
+func (c *Cache) noteFallbackEngaged(host string, dnsErr error) {
 	c.mu.Lock()
 	first := !c.fallbackActive[host]
 	c.fallbackActive[host] = true
 	c.mu.Unlock()
 	if first {
-		log.Warn("DNS resolution failed; using last-known-good cached IP", "host", host, "error", lookupErr.Error())
+		log.Warn("DNS resolution failed; using last-known-good cached IP", "host", host, "error", dnsErr.Error())
 	}
 }
 
@@ -133,14 +152,22 @@ func (c *Cache) noteDNSRecovered(host string) {
 	}
 }
 
+// dialFirst tries the cached IPs in order, capping each attempt so a stale
+// list cannot serially exhaust the caller's context (this path only runs
+// during a DNS outage; the normal path keeps the dialer's own racing).
 func (c *Cache) dialFirst(ctx context.Context, network string, ips []string, port string) (net.Conn, error) {
 	var lastErr error
 	for _, ip := range ips {
-		conn, err := c.dial(ctx, network, net.JoinHostPort(ip, port))
+		attemptCtx, cancel := context.WithTimeout(ctx, fallbackPerIPTimeout)
+		conn, err := c.dial(attemptCtx, network, net.JoinHostPort(ip, port))
+		cancel()
 		if err == nil {
 			return conn, nil
 		}
 		lastErr = err
+		if ctx.Err() != nil {
+			break
+		}
 	}
 	return nil, lastErr
 }
@@ -176,14 +203,10 @@ func (c *Cache) store(host string, ips []string) {
 	}
 
 	c.entries[host] = append([]string(nil), ips...)
-	snapshot := make(map[string][]string, len(c.entries))
-	for key, value := range c.entries {
-		snapshot[key] = append([]string(nil), value...)
-	}
-	// Release before disk I/O — persist works on the snapshot, so readers
-	// (cachedIPs, other DialContext calls) never block on a file write.
+	// Release before disk I/O — readers (cachedIPs, other DialContext calls)
+	// never block on a file write.
 	c.mu.Unlock()
-	c.persist(snapshot)
+	c.persist()
 }
 
 func (c *Cache) load() {
@@ -199,11 +222,22 @@ func (c *Cache) load() {
 
 // persist replaces the cache file via tmp+rename — safe against process
 // crash mid-write (no fsync: power loss may leave a corrupt file, which
-// load() tolerates and ignores). Best-effort: failures never affect the
-// dial, but the first one is warn-logged (latched) so a permanently broken
-// data dir is visible.
-func (c *Cache) persist(entries map[string][]string) {
-	err := c.persistOnce(entries)
+// load() tolerates and ignores). Snapshots are taken UNDER persistMu so
+// writes land in update order — an earlier writer's snapshot (taken after a
+// later writer's entries update) can never regress the file. Best-effort:
+// failures never affect the dial, but the first one is warn-logged (latched)
+// so a permanently broken data dir is visible.
+func (c *Cache) persist() {
+	c.persistMu.Lock()
+	c.mu.Lock()
+	snapshot := make(map[string][]string, len(c.entries))
+	for key, value := range c.entries {
+		snapshot[key] = append([]string(nil), value...)
+	}
+	c.mu.Unlock()
+	err := c.persistOnce(snapshot)
+	c.persistMu.Unlock()
+
 	c.mu.Lock()
 	logIt := err != nil && !c.persistFailLogged
 	c.persistFailLogged = err != nil
