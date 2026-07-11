@@ -63,45 +63,47 @@ vi.mock('../db', () => ({
 }));
 
 import {
-  ORG_CASCADE_DELETE_ORDER,
+  getOrgCascadeDeleteOrder,
   cascadeDeleteOrg,
   topologicalCascadeOrder,
   __testOnly,
 } from './tenantCascade';
 import { db } from '../db';
 
-describe('ORG_CASCADE_DELETE_ORDER', () => {
+const cascadeOrder = getOrgCascadeDeleteOrder();
+
+describe('getOrgCascadeDeleteOrder()', () => {
   it('has every entry as a safe identifier', () => {
-    for (const t of ORG_CASCADE_DELETE_ORDER) {
+    for (const t of cascadeOrder) {
       expect(t).toMatch(/^[a-z_][a-z0-9_]*$/);
     }
   });
 
   it('has no duplicates', () => {
-    const set = new Set(ORG_CASCADE_DELETE_ORDER);
-    expect(set.size).toBe(ORG_CASCADE_DELETE_ORDER.length);
+    const set = new Set(cascadeOrder);
+    expect(set.size).toBe(cascadeOrder.length);
   });
 
   it('places `organizations` last (it is the id-keyed root)', () => {
-    expect(ORG_CASCADE_DELETE_ORDER.at(-1)).toBe('organizations');
+    expect(cascadeOrder.at(-1)).toBe('organizations');
   });
 
   it('includes topology_layout in localeCompare order', () => {
-    expect(ORG_CASCADE_DELETE_ORDER).toContain('topology_layout');
-    const sorted = [...ORG_CASCADE_DELETE_ORDER].sort((a, b) => a.localeCompare(b));
+    expect(cascadeOrder).toContain('topology_layout');
+    const sorted = [...cascadeOrder].sort((a, b) => a.localeCompare(b));
     // organizations is intentionally last; ignore it for the order check
-    const withoutOrgs = ORG_CASCADE_DELETE_ORDER.filter((t) => t !== 'organizations');
+    const withoutOrgs = cascadeOrder.filter((t) => t !== 'organizations');
     const sortedWithoutOrgs = sorted.filter((t) => t !== 'organizations');
     expect(withoutOrgs).toEqual(sortedWithoutOrgs);
   });
 
   it('routes append-only ML feedback labels through the audit-admin delete path', () => {
-    expect(ORG_CASCADE_DELETE_ORDER).toContain('ml_feedback_events');
+    expect(cascadeOrder).toContain('ml_feedback_events');
     expect(__testOnly.AUDIT_ADMIN_REQUIRED_TABLES.has('ml_feedback_events')).toBe(true);
   });
 
   it('includes the canonical tenant tables', () => {
-    const set = new Set(ORG_CASCADE_DELETE_ORDER);
+    const set = new Set(cascadeOrder);
     for (const required of [
       'devices',
       'users',
@@ -124,11 +126,11 @@ describe('topologicalCascadeOrder', () => {
     mockState.fkEdges = [];
   });
 
-  it('returns the same set as ORG_CASCADE_DELETE_ORDER', async () => {
+  it('returns the same set as getOrgCascadeDeleteOrder()', async () => {
     mockState.fkEdges = []; // no FKs → any order is valid, default is alpha
     const order = await topologicalCascadeOrder();
-    expect(new Set(order)).toEqual(new Set(ORG_CASCADE_DELETE_ORDER));
-    expect(order.length).toBe(ORG_CASCADE_DELETE_ORDER.length);
+    expect(new Set(order)).toEqual(new Set(cascadeOrder));
+    expect(order.length).toBe(cascadeOrder.length);
   });
 
   it('places a child before its parent when an FK edge exists', async () => {
@@ -155,7 +157,7 @@ describe('topologicalCascadeOrder', () => {
       { child_table: 'devices', parent_table: 'also_not_in_list' },
     ];
     const order = await topologicalCascadeOrder();
-    expect(order.length).toBe(ORG_CASCADE_DELETE_ORDER.length);
+    expect(order.length).toBe(cascadeOrder.length);
   });
 });
 
@@ -180,7 +182,7 @@ describe('cascadeDeleteOrg', () => {
     // tablesDeleted should contain every cascade table (plus device_commands).
     expect(Object.keys(stats.tablesDeleted)).toEqual(
       expect.arrayContaining([
-        ...ORG_CASCADE_DELETE_ORDER,
+        ...cascadeOrder,
         'device_commands',
       ]),
     );
@@ -195,14 +197,14 @@ describe('cascadeDeleteOrg', () => {
     // device_commands is cleared first then the cascade walk begins.
     mockState.executeResponses = [
       { rowCount: 5 }, // device_commands
-      ...Array(ORG_CASCADE_DELETE_ORDER.length).fill({ rowCount: 3 }),
+      ...Array(cascadeOrder.length).fill({ rowCount: 3 }),
     ];
     const stats = await cascadeDeleteOrg(
       '00000000-0000-0000-0000-000000000001',
       '00000000-0000-0000-0000-000000000002',
     );
     // 5 from device_commands + 3 per cascade table.
-    expect(stats.totalRowsDeleted).toBe(5 + 3 * ORG_CASCADE_DELETE_ORDER.length);
+    expect(stats.totalRowsDeleted).toBe(5 + 3 * cascadeOrder.length);
   });
 
   it('tolerates a missing associated system-scoped table (42P01)', async () => {

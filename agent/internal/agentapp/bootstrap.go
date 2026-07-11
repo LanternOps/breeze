@@ -23,6 +23,7 @@ var bootstrapInstallData string
 
 type bootstrapResult struct {
 	ServerURL        string `json:"serverUrl"`
+	BackupServerURL  string `json:"backupServerUrl"`
 	EnrollmentKey    string `json:"enrollmentKey"`
 	EnrollmentSecret string `json:"enrollmentSecret"`
 	SiteID           string `json:"siteId"`
@@ -123,6 +124,7 @@ func runBootstrap() {
 	// the resolved key — the server derives the site from the (child) key and
 	// returns it in the enroll response (cfg.SiteID = enrollResp.SiteID).
 	serverURL = res.ServerURL
+	backupServerURL = res.BackupServerURL
 	enrollmentSecret = res.EnrollmentSecret
 	enrollDevice(res.EnrollmentKey)
 }

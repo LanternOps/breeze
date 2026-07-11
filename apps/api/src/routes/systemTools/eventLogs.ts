@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../../lib/validation';
 import { authMiddleware, requireScope } from '../../middleware/auth';
 import { executeCommand, CommandTypes } from '../../services/commandQueue';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED, getPagination, asRecord, asString, asNumber, asOptionalNumber } from './helpers';

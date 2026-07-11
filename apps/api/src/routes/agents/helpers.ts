@@ -30,6 +30,7 @@ import {
   configPolicyMonitoringWatches,
   configPolicyOnedriveSettings,
   configPolicyOnedriveLibraries,
+  onedriveDeviceState,
   pamOrgConfig,
   agentVersions,
 } from '../../db/schema';
@@ -54,6 +55,7 @@ import {
 } from '../../services/filesystemAnalysis';
 import { recordSoftwarePolicyAudit } from '../../services/softwarePolicyService';
 import { resolvePatchConfigForDevice } from '../../services/featureConfigResolver';
+import { resolveUserGroupMembershipCached } from '../../services/onedriveGraph';
 import { captureException } from '../../services/sentry';
 import { CloudflareMtlsService } from '../../services/cloudflareMtls';
 import { isAllowedPolicyConfigProbe } from './policyProbeSafety';
@@ -2655,6 +2657,7 @@ export interface OnedriveConfigUpdate {
     groupId: string | null;
     groupName: string | null;
     hiveScope: string;
+    allowedUpns: string[];
   }>;
 }
 
@@ -2748,6 +2751,75 @@ async function resolveDeviceOnedriveSettings(deviceId: string): Promise<Onedrive
     ))
     .orderBy(configPolicyOnedriveLibraries.sortOrder);
 
+  const [state] = libs.length > 0
+    ? await db
+      .select()
+      .from(onedriveDeviceState)
+      .where(eq(onedriveDeviceState.deviceId, deviceId))
+      .limit(1)
+    : [];
+
+  // Phase 4: tag enabled graph_group libraries with the reported UPNs whose
+  // transitive Entra membership includes the rule's groupId. Fail closed:
+  // no UPNs / no groupId / Graph error → no tag → the agent never mounts it.
+  const graphRules = libs.filter((l) => l.targetingMode === 'graph_group' && l.groupId);
+  // Guard the jsonb shape: a corrupt/non-array signedInUpns value degrades to
+  // no-tagging (delivery of non-graph libraries must survive) instead of throwing.
+  // zod validates ingest, so a non-array here means an out-of-band write — worth a log.
+  const rawUpns = state?.signedInUpns;
+  if (rawUpns != null && !Array.isArray(rawUpns)) {
+    console.warn(`[agents] graph_group tagging: signed_in_upns is not an array for device ${deviceId}; treating as empty`);
+  }
+  const reportedUpns = (Array.isArray(rawUpns) ? rawUpns : []).filter(
+    (u): u is string => typeof u === 'string' && u.length > 0
+  );
+  // Dedupe case-insensitively, keeping the first occurrence's casing: the agent already
+  // dedupes case-insensitively via EqualFold before reporting, so which casing survives
+  // here is cosmetic. This is defense-in-depth against a stale agent version or an
+  // out-of-band write — each duplicate otherwise costs a Graph resolution and produces
+  // duplicate allowedUpns entries on the wire.
+  const seenUpns = new Set<string>();
+  const upns = reportedUpns.filter((u) => {
+    const key = u.toLowerCase();
+    if (seenUpns.has(key)) return false;
+    seenUpns.add(key);
+    return true;
+  });
+  // Group ids are GUIDs from two sources (Graph responses vs. the stored rule,
+  // which future entry paths may brace/uppercase) — normalize both sides so a
+  // formatting mismatch can't silently fail-close the library forever.
+  const normalizeGuid = (g: string) => g.replace(/^\{|\}$/g, '').toLowerCase();
+  const allowedByLib = new Map<string, string[]>();
+  if (graphRules.length > 0 && upns.length > 0) {
+    // Aggregate deadline: per-call timeouts bound each round-trip, but 16 UPNs
+    // × (token + up to 5 membership pages) can still sum past the agent's
+    // heartbeat client timeout — which would drop the WHOLE response including
+    // already-claimed commands. Past the budget, remaining UPNs stay untagged
+    // this cycle (fail closed) and retry next heartbeat against a warm cache.
+    const taggingDeadline = Date.now() + 15_000;
+    for (const upn of upns) {
+      if (Date.now() > taggingDeadline) {
+        console.warn(`[agents] graph_group tagging: time budget exhausted for device ${deviceId}; remaining UPNs untagged this cycle`);
+        break;
+      }
+      const res = await resolveUserGroupMembershipCached(device.orgId, upn);
+      if (res.kind !== 'ok') {
+        // Deliberately no UPN in the log line — it's end-user PII; the code +
+        // deviceId is enough to triage.
+        console.warn(`[agents] graph_group tagging: membership lookup failed for device ${deviceId}: ${res.code}`);
+        continue;
+      }
+      const groupIds = new Set(res.data.groupIds.map(normalizeGuid));
+      for (const rule of graphRules) {
+        if (rule.groupId && groupIds.has(normalizeGuid(rule.groupId))) {
+          const arr = allowedByLib.get(rule.id) ?? [];
+          arr.push(upn);
+          allowedByLib.set(rule.id, arr);
+        }
+      }
+    }
+  }
+
   return {
     base: {
       silentAccountConfig: winner.silentAccountConfig,
@@ -2766,6 +2838,7 @@ async function resolveDeviceOnedriveSettings(deviceId: string): Promise<Onedrive
       groupId: l.groupId,
       groupName: l.groupName,
       hiveScope: l.hiveScope,
+      allowedUpns: allowedByLib.get(l.id) ?? [],
     })),
   };
 }

@@ -896,6 +896,7 @@ describe('agent routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.configUpdate).toEqual({
+        backup_server_url: '',
         event_log_settings: {
           max_events_per_cycle: 100,
           collect_categories: ['security', 'hardware', 'application', 'system'],
@@ -1012,6 +1013,7 @@ describe('agent routes', () => {
       expect(body.commands).toHaveLength(1);
       expect(body.commands[0].type).toBe('filesystem_analysis');
       expect(body.configUpdate).toEqual({
+        backup_server_url: '',
         event_log_settings: {
           max_events_per_cycle: 100,
           collect_categories: ['security', 'hardware', 'application', 'system'],

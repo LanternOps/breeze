@@ -23,7 +23,7 @@ import {
   quoteImageUrl,
 } from '../../../lib/api/quotes';
 import type { QuoteBlockInput } from '@breeze/shared';
-import { computeQuoteTotals, computeQuoteProfit, computeLineTotal, markupPct, priceFromMarkup, toCents, fromCents, type QuoteLineForMath, type QuoteProfit, type QuoteTotals, type QuoteDepositType, type QuoteDepositConfig } from '@breeze/shared';
+import { computeQuoteTotals, computeQuoteProfit, computeLineTotal, markupPct, priceFromMarkup, toCents, fromCents, toQuoteDepositConfig, type QuoteLineForMath, type QuoteProfit, type QuoteTotals, type QuoteDepositType, type QuoteDepositConfig } from '@breeze/shared';
 import { listCatalog, createCatalogItem, catalogItemImagePath, type CatalogItem } from '../../../lib/api/catalog';
 import { ecExpressStatus, ecExpressImport, type EcProduct, type EcStatus, pax8Status, pax8Import, type Pax8Product, type Pax8PriceOption } from '../../../lib/api/distributors';
 import CatalogItemPicker from '../../catalog/CatalogItemPicker';
@@ -557,10 +557,9 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
     [lines, lineDrafts],
   );
   const depositConfig = useMemo<QuoteDepositConfig>(
-    () => ({
-      type: depositType,
-      percent: depositType === 'percent' && depositPercentDraft.trim() !== '' ? Number(depositPercentDraft) : null,
-    }),
+    // A blank percent draft normalizes to NaN, which computeQuoteTotals treats
+    // as "no deposit" — the live rail simply shows no deposit row mid-edit.
+    () => toQuoteDepositConfig(depositType, depositPercentDraft.trim()),
     [depositType, depositPercentDraft],
   );
   const liveDepositTotals = useMemo(

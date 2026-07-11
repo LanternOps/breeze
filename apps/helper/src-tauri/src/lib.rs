@@ -404,6 +404,16 @@ async fn ensure_http_state() -> Result<(), String> {
     Ok(())
 }
 
+/// Drop the cached HTTP client + agent config so the next request re-reads
+/// agent.yaml (#2288). Called on transport-level failures: after a backup
+/// server promotion the agent rewrites server_url, and re-reading is how the
+/// helper follows the swap without a restart.
+async fn invalidate_http_state() {
+    let lock = get_http_state_lock();
+    let mut guard = lock.lock().await;
+    *guard = None;
+}
+
 // ---------------------------------------------------------------------------
 // Window helpers (tray integration)
 // ---------------------------------------------------------------------------
@@ -705,11 +715,22 @@ async fn helper_fetch(
             state.config.api_url.clone(),
         )
     };
-    let token = ipc_token.unwrap_or(file_token);
 
     // Validate that the request URL targets the configured API server.
     // This prevents SSRF and token leakage to arbitrary hosts.
     request_url_allowed(&api_url, &request.url)?;
+
+    let configured_url = reqwest::Url::parse(&api_url)
+        .map_err(|e| format!("Configured API URL is invalid: {}", e))?;
+    let requested_url =
+        reqwest::Url::parse(&request.url).map_err(|e| format!("Request URL is invalid: {}", e))?;
+    let configured_path = configured_url.path().trim_end_matches('/');
+    let relative_path = requested_url
+        .path()
+        .strip_prefix(configured_path)
+        .unwrap_or(requested_url.path())
+        .to_string();
+    let request_query = requested_url.query().map(str::to_string);
 
     // Build the request
     let method: Method = request
@@ -719,11 +740,9 @@ async fn helper_fetch(
         .parse()
         .map_err(|e| format!("Invalid HTTP method: {}", e))?;
 
-    let mut req_builder = client.request(method, &request.url);
-
     // Apply caller-specified headers (excluding Authorization which is always set by us)
+    let mut header_map = HeaderMap::new();
     if let Some(hdrs) = &request.headers {
-        let mut header_map = HeaderMap::new();
         for (k, v) in hdrs {
             // Prevent overriding the Authorization header
             if k.eq_ignore_ascii_case("authorization") {
@@ -737,20 +756,94 @@ async fn helper_fetch(
                 .map_err(|e| format!("Invalid header value for '{}': {}", k, e))?;
             header_map.insert(name, val);
         }
-        req_builder = req_builder.headers(header_map);
     }
 
-    // Set Authorization header last so it cannot be overridden
-    req_builder = req_builder.header("Authorization", format!("Bearer {}", token));
-
-    if let Some(body) = &request.body {
-        req_builder = req_builder.body(body.clone());
+    enum SendError {
+        Url(String),
+        Request { error: reqwest::Error, url: String },
     }
 
-    let response = req_builder.send().await.map_err(|e| {
-        log_helper_error(&format!("HTTP request to {} failed: {}", request.url, e));
-        "Cannot connect to the Breeze server. Check your network connection.".to_string()
-    })?;
+    // Construct the URL and request from the supplied state snapshot on every
+    // call. The retry supplies a snapshot loaded after invalidation, so both
+    // the client and URL use the freshly re-read agent.yaml.
+    let send_once = |client: Client, file_token: String, api_url: String| {
+        let ipc_token = ipc_token.clone();
+        let method = method.clone();
+        let header_map = header_map.clone();
+        let body = request.body.clone();
+        let relative_path = relative_path.clone();
+        let request_query = request_query.clone();
+
+        async move {
+            let mut url = reqwest::Url::parse(&api_url)
+                .map_err(|e| SendError::Url(format!("Configured API URL is invalid: {}", e)))?;
+            let base_path = url.path().trim_end_matches('/');
+            url.set_path(&format!("{}{}", base_path, relative_path));
+            url.set_query(request_query.as_deref());
+            let request_url = url.to_string();
+            request_url_allowed(&api_url, &request_url).map_err(SendError::Url)?;
+            let token = ipc_token.unwrap_or(file_token);
+
+            let mut req_builder = client.request(method, url).headers(header_map);
+
+            // Set Authorization header last so it cannot be overridden.
+            req_builder = req_builder.header("Authorization", format!("Bearer {}", token));
+
+            if let Some(body) = body {
+                req_builder = req_builder.body(body);
+            }
+
+            req_builder
+                .send()
+                .await
+                .map_err(|error| SendError::Request {
+                    error,
+                    url: request_url,
+                })
+        }
+    };
+
+    let response = match send_once(client, file_token, api_url).await {
+        Ok(response) => response,
+        Err(SendError::Request { error, .. }) if error.is_connect() || error.is_timeout() => {
+            // Transport failure — the agent may have swapped server_url.
+            // Re-read agent.yaml and retry exactly once.
+            invalidate_http_state().await;
+            ensure_http_state().await?;
+
+            let (fresh_client, fresh_file_token, fresh_api_url) = {
+                let lock = get_http_state_lock();
+                let guard = lock.lock().await;
+                let state = guard
+                    .as_ref()
+                    .ok_or_else(|| "HTTP state not initialized".to_string())?;
+                (
+                    state.client.clone(),
+                    state.config.token.clone(),
+                    state.config.api_url.clone(),
+                )
+            };
+
+            match send_once(fresh_client, fresh_file_token, fresh_api_url).await {
+                Ok(response) => response,
+                Err(SendError::Url(message)) => return Err(message),
+                Err(SendError::Request { error, url }) => {
+                    log_helper_error(&format!("HTTP request to {} failed: {}", url, error));
+                    return Err(
+                        "Cannot connect to the Breeze server. Check your network connection."
+                            .to_string(),
+                    );
+                }
+            }
+        }
+        Err(SendError::Url(message)) => return Err(message),
+        Err(SendError::Request { error, url }) => {
+            log_helper_error(&format!("HTTP request to {} failed: {}", url, error));
+            return Err(
+                "Cannot connect to the Breeze server. Check your network connection.".to_string(),
+            );
+        }
+    };
 
     let status = response.status().as_u16();
 

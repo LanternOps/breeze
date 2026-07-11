@@ -37,6 +37,7 @@
     "@anthropic-ai/sdk": "^0.105.0",
     "@aws-sdk/client-s3": "^3.1076.0",
     "@aws-sdk/s3-request-presigner": "^3.1030.0",
+    "@breeze/extension-api": "workspace:*",
     "@breeze/shared": "workspace:*",
     "@elastic/elasticsearch": "^9.3.2",
     "@fastify/busboy": "^3.2.0",

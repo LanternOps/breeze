@@ -5,7 +5,7 @@ import { invoices } from '../db/schema/invoices';
 import { organizations, partners } from '../db/schema/orgs';
 import { catalogItems } from '../db/schema/catalog';
 import { computeLineTotal, resolveEffectiveTaxRate } from './invoiceMath';
-import { computeQuoteTotals, validateQuoteDeposit, type QuoteLineForMath } from './quoteMath';
+import { computeQuoteTotals, validateQuoteDeposit, toQuoteDepositConfig, type QuoteLineForMath } from './quoteMath';
 import { QuoteServiceError, type QuoteActor } from './quoteTypes';
 import { allocateQuoteCounter, formatQuoteNumber } from './quoteNumbers';
 import type {
@@ -65,7 +65,7 @@ async function recomputeAndPersist(quoteId: string): Promise<void> {
     depositEligible: quoteLines.depositEligible,
     itemType: quoteLines.itemType,
   }).from(quoteLines).where(eq(quoteLines.quoteId, quoteId));
-  const deposit = { type: q?.depositType ?? 'none', percent: q?.depositPercent ?? null } as const;
+  const deposit = toQuoteDepositConfig(q?.depositType, q?.depositPercent);
   const totals = computeQuoteTotals(lines as QuoteLineForMath[], q?.taxRate ? parseFloat(q.taxRate) : null, deposit);
   await db.update(quotes).set({
     subtotal: totals.subtotal,
@@ -177,7 +177,7 @@ export async function getQuote(id: string, actor: QuoteActor) {
   const totals = computeQuoteTotals(
     lines as QuoteLineForMath[],
     q.taxRate ? parseFloat(q.taxRate) : null,
-    { type: q.depositType, percent: q.depositPercent },
+    toQuoteDepositConfig(q.depositType, q.depositPercent),
   );
   return {
     quote: {
@@ -245,9 +245,11 @@ export async function updateQuote(id: string, input: UpdateQuoteInput, actor: Qu
     // validated against the stale persisted rate could pass here and then fail
     // (or silently mis-total) once the new tax rate lands via recomputeAndPersist.
     const effectiveTaxRate = (input.taxRate !== undefined ? input.taxRate : (q.taxRate ? parseFloat(q.taxRate) : null));
-    const check = validateQuoteDeposit(lines as QuoteLineForMath[], effectiveTaxRate === null ? null : Number(effectiveTaxRate), {
-      type: nextType, percent: nextPercent,
-    });
+    const check = validateQuoteDeposit(
+      lines as QuoteLineForMath[],
+      effectiveTaxRate === null ? null : Number(effectiveTaxRate),
+      toQuoteDepositConfig(nextType, nextPercent),
+    );
     if (!check.ok) throw new QuoteServiceError(check.message, 400, check.code);
     set.depositType = nextType;
     set.depositPercent = nextType === 'percent' && nextPercent != null ? Number(nextPercent).toFixed(2) : null;

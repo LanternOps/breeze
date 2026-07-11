@@ -8,9 +8,17 @@
  */
 
 import { Job, Queue, Worker } from 'bullmq';
-import { and, eq, inArray, isNull, or } from 'drizzle-orm';
+import { and, eq, isNull, or } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { automations, configPolicyAutomations, devices, deviceGroupMemberships, organizations } from '../db/schema';
+import {
+  automations,
+  configPolicyAutomations,
+  configPolicyFeatureLinks,
+  configurationPolicies,
+  devices,
+  deviceGroupMemberships,
+  organizations,
+} from '../db/schema';
 import { type BreezeEvent, getEventBus } from '../services/eventBus';
 import {
   type AutomationTrigger,
@@ -504,56 +512,125 @@ async function processExecuteRun(data: ExecuteRunJobData): Promise<{ runId: stri
 async function resolveDeviceIdsForAssignment(
   assignmentLevel: string,
   assignmentTargetId: string,
+  // null for partner-owned library policies (#1724, #2280) — they have no
+  // single owning org and may carry a partner-level assignment (resolved
+  // across all the partner's orgs) AND/OR org/site/group/device-level SUBSET
+  // assignments into individual orgs under the partner.
+  policyOrgId: string | null,
+  // The policy's own partnerId (set for partner-owned policies, null for
+  // org-owned ones). Used ONLY to re-clamp subset (org/site/group/device)
+  // resolution below when policyOrgId is null — see the comment above the
+  // switch for why this exists (#2286, mirroring the patch-scheduler fix in
+  // PR #2285).
+  policyPartnerId: string | null,
 ): Promise<string[]> {
+  if (assignmentLevel === 'partner') {
+    // A partner-wide policy (policyOrgId null, #1724) resolves EVERY device
+    // under the assigned partner. A legacy org-owned policy at partner level
+    // (now rejected at assign time) still clamps to its own org as a backstop.
+    const conditions = [eq(organizations.partnerId, assignmentTargetId)];
+    if (policyOrgId) conditions.push(eq(devices.orgId, policyOrgId));
+    const partnerDevices = await db
+      .select({ id: devices.id })
+      .from(devices)
+      .innerJoin(organizations, eq(devices.orgId, organizations.id))
+      .where(and(...conditions));
+    return partnerDevices.map((d) => d.id);
+  }
+
+  // Every remaining level is org/site/group/device-scoped. For an org-owned
+  // policy, policyOrgId clamps the target to the policy's own org as
+  // defense-in-depth. For a partner-owned library policy (#2280) resolving a
+  // SUBSET assignment — org/site/group/device, not the partner-wide 'partner'
+  // level above — policyOrgId is null: there is no single owning org to clamp
+  // to, since the same policy can carry subset assignments into several of the
+  // partner's orgs. The target itself was partner-scoped at ASSIGN time
+  // (validateAssignmentTarget), but that check is a point-in-time snapshot —
+  // if the target org is later reparented to a different partner, the stale
+  // assignment row would otherwise still resolve those devices (TOCTOU). So
+  // every subset branch below re-clamps to the policy's partner on every run
+  // via an inner join on organizations, the same re-verification the
+  // 'partner' branch above already does for assignmentTargetId (#2286).
+  const needsPartnerClamp = !policyOrgId && Boolean(policyPartnerId);
+
   switch (assignmentLevel) {
     case 'device': {
-      // Verify device exists
+      if (needsPartnerClamp) {
+        const [device] = await db
+          .select({ id: devices.id })
+          .from(devices)
+          .innerJoin(organizations, eq(devices.orgId, organizations.id))
+          .where(and(eq(devices.id, assignmentTargetId), eq(organizations.partnerId, policyPartnerId!)))
+          .limit(1);
+        return device ? [device.id] : [];
+      }
+      const conditions = [eq(devices.id, assignmentTargetId)];
+      if (policyOrgId) conditions.push(eq(devices.orgId, policyOrgId));
       const [device] = await db
         .select({ id: devices.id })
         .from(devices)
-        .where(eq(devices.id, assignmentTargetId))
+        .where(and(...conditions))
         .limit(1);
       return device ? [device.id] : [];
     }
 
     case 'device_group': {
+      if (needsPartnerClamp) {
+        const members = await db
+          .select({ deviceId: deviceGroupMemberships.deviceId })
+          .from(deviceGroupMemberships)
+          .innerJoin(organizations, eq(deviceGroupMemberships.orgId, organizations.id))
+          .where(
+            and(
+              eq(deviceGroupMemberships.groupId, assignmentTargetId),
+              eq(organizations.partnerId, policyPartnerId!),
+            ),
+          );
+        return members.map((m) => m.deviceId);
+      }
+      const conditions = [eq(deviceGroupMemberships.groupId, assignmentTargetId)];
+      if (policyOrgId) conditions.push(eq(deviceGroupMemberships.orgId, policyOrgId));
       const members = await db
         .select({ deviceId: deviceGroupMemberships.deviceId })
         .from(deviceGroupMemberships)
-        .where(eq(deviceGroupMemberships.groupId, assignmentTargetId));
+        .where(and(...conditions));
       return members.map((m) => m.deviceId);
     }
 
     case 'site': {
+      if (needsPartnerClamp) {
+        const siteDevices = await db
+          .select({ id: devices.id })
+          .from(devices)
+          .innerJoin(organizations, eq(devices.orgId, organizations.id))
+          .where(and(eq(devices.siteId, assignmentTargetId), eq(organizations.partnerId, policyPartnerId!)));
+        return siteDevices.map((d) => d.id);
+      }
+      const conditions = [eq(devices.siteId, assignmentTargetId)];
+      if (policyOrgId) conditions.push(eq(devices.orgId, policyOrgId));
       const siteDevices = await db
         .select({ id: devices.id })
         .from(devices)
-        .where(eq(devices.siteId, assignmentTargetId));
+        .where(and(...conditions));
       return siteDevices.map((d) => d.id);
     }
 
     case 'organization': {
+      if (needsPartnerClamp) {
+        const orgDevices = await db
+          .select({ id: devices.id })
+          .from(devices)
+          .innerJoin(organizations, eq(devices.orgId, organizations.id))
+          .where(and(eq(devices.orgId, assignmentTargetId), eq(organizations.partnerId, policyPartnerId!)));
+        return orgDevices.map((d) => d.id);
+      }
+      const conditions = [eq(devices.orgId, assignmentTargetId)];
+      if (policyOrgId) conditions.push(eq(devices.orgId, policyOrgId));
       const orgDevices = await db
         .select({ id: devices.id })
         .from(devices)
-        .where(eq(devices.orgId, assignmentTargetId));
+        .where(and(...conditions));
       return orgDevices.map((d) => d.id);
-    }
-
-    case 'partner': {
-      // Get all orgs for this partner, then all devices for those orgs
-      const partnerOrgs = await db
-        .select({ id: organizations.id })
-        .from(organizations)
-        .where(eq(organizations.partnerId, assignmentTargetId));
-      const orgIds = partnerOrgs.map((o) => o.id);
-      if (orgIds.length === 0) return [];
-
-      const partnerDevices = await db
-        .select({ id: devices.id })
-        .from(devices)
-        .where(inArray(devices.orgId, orgIds));
-      return partnerDevices.map((d) => d.id);
     }
 
     default:
@@ -576,6 +653,25 @@ async function processTriggerConfigPolicySchedule(
     return { skipped: 'config_policy_automation_not_found_or_disabled' };
   }
 
+  // Re-load the owning policy's ownership (orgId/partnerId) at RUN time — not
+  // from the queued job data — so device resolution below re-verifies against
+  // current truth. The assignment targets were only partner/org-scoped at
+  // ASSIGN time; without this clamp a target reparented to a different partner
+  // after assignment would still resolve its devices (TOCTOU, #2286).
+  const [policyOwner] = await db
+    .select({
+      orgId: configurationPolicies.orgId,
+      partnerId: configurationPolicies.partnerId,
+    })
+    .from(configPolicyFeatureLinks)
+    .innerJoin(configurationPolicies, eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id))
+    .where(eq(configPolicyFeatureLinks.id, cpAutomation.featureLinkId))
+    .limit(1);
+
+  if (!policyOwner) {
+    return { skipped: 'config_policy_not_found' };
+  }
+
   const assignmentTargets =
     data.assignmentTargets && data.assignmentTargets.length > 0
       ? data.assignmentTargets
@@ -590,7 +686,12 @@ async function processTriggerConfigPolicySchedule(
   // Resolve target devices across all assignment targets, then deduplicate.
   const allDeviceIdSet = new Set<string>();
   for (const target of assignmentTargets) {
-    const ids = await resolveDeviceIdsForAssignment(target.level, target.targetId);
+    const ids = await resolveDeviceIdsForAssignment(
+      target.level,
+      target.targetId,
+      policyOwner.orgId,
+      policyOwner.partnerId,
+    );
     for (const id of ids) {
       allDeviceIdSet.add(id);
     }
@@ -894,3 +995,10 @@ export async function shutdownAutomationWorker(): Promise<void> {
 
   console.log('[AutomationWorker] Automation worker shut down');
 }
+
+// Exported for unit/integration tests of config-policy assignment device
+// resolution (#2286). Internal helper, not part of the worker's public surface.
+export const __testOnly = {
+  resolveDeviceIdsForAssignment,
+  processTriggerConfigPolicySchedule,
+};

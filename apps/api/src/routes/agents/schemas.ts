@@ -154,6 +154,8 @@ export const heartbeatSchema = z.object({
   // recovers to monitoring — previously only watchdog FAILOVER heartbeats wrote
   // it, leaving the dashboard stale and the server re-sending watchdogUpgradeTo.
   watchdogVersion: z.string().max(20).optional().catch(undefined),
+  // #2288 — the control-plane base URL the agent used for this heartbeat.
+  serverUrl: z.string().max(512).optional().catch(undefined),
   ipHistoryUpdate: z.object({
     deviceId: z.string().optional().catch(undefined),
     currentIPs: z.array(ipEntrySchema).max(100).nullish().catch(undefined),
@@ -212,6 +214,11 @@ export const heartbeatSchema = z.object({
     kfmFolderStates: z.record(z.string(), z.string()).default({}),
     mountedLibraries: z.array(z.string().max(1024)).default([]),
     entitledLibraries: z.array(z.string().max(1024)).default([]),
+    // Cap mirrored by the agent (onedrivehelper_windows.go readDeviceState) —
+    // lowering it silently degrades reports from already-shipped agents. The
+    // field-level .catch([]) means a violating value (17+ UPNs, oversized
+    // string, non-array) drops ONLY the UPNs, not the whole device-state block.
+    signedInUpns: z.array(z.string().max(320)).max(16).default([]).catch([]),
     driftEntries: z.array(z.record(z.string(), z.unknown())).default([]),
   }).optional().catch(undefined),
 });

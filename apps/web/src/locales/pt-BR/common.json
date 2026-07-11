@@ -9,6 +9,7 @@
     "scripts": "Scripts",
     "patches": "Correções",
     "vulnerabilities": "Vulnerabilidades",
+    "oneDrive": "OneDrive",
     "fleet": "Frota",
     "aiWorkspace": "Espaço de Trabalho de IA",
     "aiForOffice": "IA para Office",

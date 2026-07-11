@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../../lib/validation';
 import { and, eq, gte, like, sql, desc, inArray, type SQL } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import { createHash, randomBytes } from 'crypto';
@@ -53,6 +53,10 @@ import { sendCommandToAgent, isAgentConnected, disconnectAgent } from '../agentW
 import { terminateDeviceRemoteSessions, TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
 import { CommandTypes } from '../../services/commandQueue';
 import { getGlobalEnrollmentSecret } from '../agents/enrollment';
+import {
+  withExtensionDeviceCascade,
+  withExtensionDeviceOrgDenormalized,
+} from '../../extensions/tenancyRegistry';
 
 /**
  * Tables where linked_device_id (not device_id) references devices.id.
@@ -72,7 +76,7 @@ export const DEVICE_LINKED_DEVICE_ID_TABLES = [
 export const DEVICE_DETACH_DEVICE_ID_TABLES = ['tickets'] as const;
 
 /**
- * Subset of {@link DEVICE_CASCADE_DELETE_TABLES} ∪
+ * Subset of {@link getDeviceCascadeDeleteTables} ∪
  * {@link DEVICE_DETACH_DEVICE_ID_TABLES} whose rows denormalize
  * `org_id` for RLS performance. When a device moves between orgs, every
  * one of these tables must have its `org_id` rewritten inside the same
@@ -89,7 +93,7 @@ export const DEVICE_DETACH_DEVICE_ID_TABLES = ['tickets'] as const;
  *   file_transfers, patch_job_results, patch_rollbacks,
  *   psa_ticket_mappings, software_compliance_status
  */
-export const DEVICE_ORG_DENORMALIZED_TABLES = [
+const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'agent_logs', 'ai_screenshots', 'ai_sessions', 'alerts', 'asset_checkouts',
   'audit_baseline_results', 'audit_policy_states',
   'automation_run_device_results',
@@ -127,9 +131,16 @@ export const DEVICE_ORG_DENORMALIZED_TABLES = [
   'tickets', 'time_series_metrics', 'tunnel_sessions',
 ] as const;
 
+export function getDeviceOrgDenormalizedTables(): readonly string[] {
+  return withExtensionDeviceOrgDenormalized(CORE_DEVICE_ORG_DENORMALIZED_TABLES);
+}
+
+/** @deprecated Static core-only snapshot retained for call sites that predate extensions. */
+export const DEVICE_ORG_DENORMALIZED_TABLES = CORE_DEVICE_ORG_DENORMALIZED_TABLES;
+
 /**
  * Tables that denormalize `org_id` for RLS but have NO `device_id` column,
- * so the generic {@link DEVICE_ORG_DENORMALIZED_TABLES} rewrite loop in
+ * so the generic {@link getDeviceOrgDenormalizedTables} rewrite loop in
  * moveOrg.ts (which keys on `WHERE device_id = ...`) cannot reach them.
  * Each table here gets a dedicated, hand-written UPDATE inside the move-org
  * transaction — e.g. `ticket_alert_links` is rewritten via its alert_id
@@ -167,7 +178,7 @@ export const DEVICE_SITE_DENORMALIZED_TABLES = [
  * IMPORTANT: When you add a new table with a device_id FK, add it here.
  * The test in cascadeDelete.test.ts will fail CI if you forget.
  */
-export const DEVICE_CASCADE_DELETE_TABLES = [
+const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   // recovery_tokens & backup_chains FK to backup_snapshots (no cascade),
   // so delete them first, then restore_jobs → backup_snapshots → backup_jobs
   'recovery_tokens', 'backup_chains',
@@ -231,6 +242,13 @@ export const DEVICE_CASCADE_DELETE_TABLES = [
   // OneDrive helper — persisted device state (PK = device_id; leaf table, no children)
   'onedrive_device_state',
 ] as const;
+
+export function getDeviceCascadeDeleteTables(): readonly string[] {
+  return withExtensionDeviceCascade(CORE_DEVICE_CASCADE_DELETE_TABLES);
+}
+
+/** @deprecated Static core-only snapshot retained for call sites that predate extensions. */
+export const DEVICE_CASCADE_DELETE_TABLES = CORE_DEVICE_CASCADE_DELETE_TABLES;
 
 export const coreRoutes = new Hono();
 
@@ -532,6 +550,7 @@ coreRoutes.get(
         architecture: devices.architecture,
         agentVersion: devices.agentVersion,
         watchdogVersion: devices.watchdogVersion,
+        agentServerUrl: devices.agentServerUrl,
         status: devices.status,
         watchdogStatus: devices.watchdogStatus,
         mainAgentSilentSince: devices.mainAgentSilentSince,
@@ -653,6 +672,7 @@ coreRoutes.get(
         architecture: d.architecture,
         agentVersion: d.agentVersion,
         watchdogVersion: d.watchdogVersion,
+        agentServerUrl: d.agentServerUrl ?? null,
         status: d.status,
         watchdogStatus: d.watchdogStatus,
         mainAgentSilentSince: d.mainAgentSilentSince,
@@ -1361,7 +1381,7 @@ coreRoutes.delete(
           await tx.execute(sql`UPDATE ${sql.identifier(detachTable)} SET device_id = NULL WHERE device_id = ${deviceId}`);
         }
 
-        const tables = DEVICE_CASCADE_DELETE_TABLES;
+        const tables = getDeviceCascadeDeleteTables();
         for (const table of tables) {
           await tx.execute(sql`DELETE FROM ${sql.identifier(table)} WHERE device_id = ${deviceId}`);
         }

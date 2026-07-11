@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../../lib/validation';
 import { and, desc, eq, notInArray } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import {
@@ -173,7 +173,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
 
   const scoped = await withDbAccessContext(
     dbContext,
-    async (): Promise<Response | { deviceOrgId: string; mainResponse: Record<string, unknown> }> => {
+    async (): Promise<Response | { deviceOrgId: string; deviceId: string; mainResponse: Record<string, unknown> }> => {
 
   const [device] = await db
     .select()
@@ -408,6 +408,25 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     deviceUpdates.watchdogVersion = data.watchdogVersion;
   }
 
+  // #2288 — active control-plane URL. Absent (old agent) leaves the stored
+  // value untouched; a malformed value is dropped, never a heartbeat failure.
+  // http(s) only: this is agent-reported telemetry that gets echoed into the
+  // web UI, so exotic-but-parseable schemes (javascript:, file:, data:) are
+  // rejected too. The drop is logged — a real agent only ever reports the
+  // URL it just POSTed to, so garbage here means an agent-side bug.
+  if (data.serverUrl) {
+    try {
+      const parsed = new URL(data.serverUrl);
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+        deviceUpdates.agentServerUrl = data.serverUrl;
+      } else {
+        console.warn(`[heartbeat] dropping non-http(s) serverUrl from device ${agent.deviceId}`);
+      }
+    } catch {
+      console.warn(`[heartbeat] dropping malformed serverUrl from device ${agent.deviceId}`);
+    }
+  }
+
   // Orthogonal virtualization attribute (issue #1387). Old agents omit
   // isVirtual entirely (undefined) — leave the stored value untouched in that
   // case. A present value (true/false) is authoritative; the platform is
@@ -575,6 +594,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         kfmFolderStates: s.kfmFolderStates,
         mountedLibraries: s.mountedLibraries,
         entitledLibraries: s.entitledLibraries,
+        signedInUpns: s.signedInUpns,
         driftEntries: s.driftEntries,
         lastReportedAt: new Date(),
         updatedAt: new Date(),
@@ -587,14 +607,22 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
           kfmFolderStates: s.kfmFolderStates,
           mountedLibraries: s.mountedLibraries,
           entitledLibraries: s.entitledLibraries,
+          signedInUpns: s.signedInUpns,
           driftEntries: s.driftEntries,
           lastReportedAt: new Date(),
           updatedAt: new Date(),
         },
       });
     } catch (err) {
-      console.error(`[agents] failed to upsert onedrive device state for ${agentId}:`, err);
-      captureException(err);
+      // Drizzle query errors serialize the bound params — including the
+      // signedInUpns jsonb (end-user PII) — into their message. Log/report
+      // only the underlying driver message, never the wrapped query error.
+      const cause = (err as { cause?: { message?: unknown } })?.cause;
+      const safeMsg = typeof cause?.message === 'string'
+        ? cause.message
+        : (err instanceof Error ? err.constructor.name : 'unknown error');
+      console.error(`[agents] failed to upsert onedrive device state for ${agentId}: ${safeMsg}`);
+      captureException(new Error(`onedrive device state upsert failed: ${safeMsg}`));
     }
   }
 
@@ -778,13 +806,11 @@ if (latestHelper) {
     captureException(err);
   }
 
-  let onedriveSettings: OnedriveConfigUpdate | null = null;
-  try {
-    onedriveSettings = await buildOnedriveHelperConfigUpdate(device.id);
-  } catch (err) {
-    console.error(`[agents] failed to build onedrive_helper config update for ${agentId}:`, err);
-    captureException(err);
-  }
+  // #1105 — onedrive_helper config is built AFTER this org transaction closes
+  // (see the post-scoped section below), because Phase 4 per-UPN Graph
+  // resolution can make uncached external HTTP round-trips. Building it here
+  // would hold a pooled connection in the open org transaction across those
+  // calls. Mirrors buildPolicyProbeConfigUpdate's placement.
 
   // #1872: sole-patch-source enforcement. Omit the block on a resolver error so
   // a transient failure never reverts an endpoint already under enforcement;
@@ -797,21 +823,23 @@ if (latestHelper) {
     captureException(err);
   }
 
-  let mergedConfigUpdate: Record<string, unknown> | null = null;
-  if (eventLogSettings || monitoringSettings || onedriveSettings || patchSourceSettings) {
-    mergedConfigUpdate = {};
-    if (eventLogSettings) {
-      mergedConfigUpdate.event_log_settings = eventLogSettings;
-    }
-    if (monitoringSettings) {
-      mergedConfigUpdate.monitoring_settings = monitoringSettings;
-    }
-    if (onedriveSettings) {
-      mergedConfigUpdate.onedrive_helper_settings = onedriveSettings;
-    }
-    if (patchSourceSettings) {
-      mergedConfigUpdate.patch_source_settings = patchSourceSettings;
-    }
+  // #2288 — backup control-plane URL. ALWAYS present: the configured value,
+  // or '' so agents clear a previously-pushed backup (absent = old API =
+  // no change; '' = authoritative clear). Always non-null, so the final
+  // configUpdate assembly below always carries the key.
+  // onedrive_helper_settings is NOT merged here — it is built post-scoped and
+  // merged into the final configUpdate below (#1105 hoist).
+  const mergedConfigUpdate: Record<string, unknown> = {
+    backup_server_url: (process.env.AGENT_BACKUP_SERVER_URL ?? '').trim(),
+  };
+  if (eventLogSettings) {
+    mergedConfigUpdate.event_log_settings = eventLogSettings;
+  }
+  if (monitoringSettings) {
+    mergedConfigUpdate.monitoring_settings = monitoringSettings;
+  }
+  if (patchSourceSettings) {
+    mergedConfigUpdate.patch_source_settings = patchSourceSettings;
   }
 
   const authenticatedWithPreviousToken = c.get('agentTokenRotationRequired') === true;
@@ -832,6 +860,7 @@ if (latestHelper) {
   // context closes (see below).
   return {
     deviceOrgId: device.orgId,
+    deviceId: device.id,
     mainResponse: {
       commands: decryptCommandsForDelivery(commands.map(cmd => ({
         id: cmd.id,
@@ -887,9 +916,33 @@ if (latestHelper) {
     console.error(`[agents] failed to build policy probe config update for ${agentId}:`, err);
   }
 
+  // #1105 — onedrive_helper config is built OUTSIDE the org transaction too.
+  // Phase 4 added per-UPN Graph resolution inside resolveDeviceOnedriveSettings,
+  // where an uncached miss makes sequential external HTTP round-trips (token +
+  // Graph, each bounded by AbortSignal.timeout), per UPN — exactly the
+  // conn-hold class #1105 warns about. resolveDeviceOnedriveSettings filters
+  // every query explicitly (eq(configurationPolicies.orgId, device.orgId),
+  // deviceId-keyed state read, and the org-keyed m365_connections read inside
+  // the Graph token helper), so the system context here is org-safe and cannot
+  // pivot tenants (same guarantee as the policy-probe pattern above). The
+  // onedrive_device_state upsert happened inside scoped (ingest), and this
+  // build runs later, so the ingest-before-delivery ordering is preserved.
+  let onedriveSettings: OnedriveConfigUpdate | null = null;
+  try {
+    onedriveSettings = await withSystemDbAccessContext(() =>
+      buildOnedriveHelperConfigUpdate(scoped.deviceId)
+    );
+  } catch (err) {
+    console.error(`[agents] failed to build onedrive_helper config update for ${agentId}:`, err);
+    captureException(err);
+  }
+  const onedriveConfigUpdate = onedriveSettings
+    ? { onedrive_helper_settings: onedriveSettings }
+    : null;
+
   const scopedConfigUpdate = scoped.mainResponse.configUpdate as Record<string, unknown> | null;
-  const configUpdate = policyProbeConfig || scopedConfigUpdate
-    ? { ...(policyProbeConfig ?? {}), ...(scopedConfigUpdate ?? {}) }
+  const configUpdate = policyProbeConfig || scopedConfigUpdate || onedriveConfigUpdate
+    ? { ...(policyProbeConfig ?? {}), ...(scopedConfigUpdate ?? {}), ...(onedriveConfigUpdate ?? {}) }
     : null;
 
   return c.json({ ...scoped.mainResponse, configUpdate, manifestTrustKeys });

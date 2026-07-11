@@ -11,6 +11,9 @@ import {
   Trash2,
   HardDrive,
   RotateCcw,
+  ChevronLeft,
+  ChevronRight,
+  Loader2,
   type LucideIcon,
 } from "lucide-react";
 import { formatDateTime } from "@/lib/dateTimeFormat";
@@ -31,12 +34,17 @@ type ActivityEvent = {
 type DeviceActivityFeedProps = {
   deviceId: string;
   timezone?: string;
-  // 'rail' is the right-column card (default). 'strip' is the full-width
-  // placement used when the parent collapses the rail; its empty state is a
-  // single compact line rather than the stacked heading/paragraph/link.
-  layout?: "rail" | "strip";
+  // When true (and on lg+ screens), the pane renders as a thin vertical bar
+  // showing the item count instead of the full card. The parent owns this state
+  // and animates the rail width; below lg the full card always renders.
+  collapsed?: boolean;
+  // Toggles the collapsed state. Wired to both the collapsed bar (expand) and
+  // the header chevron in the expanded card (collapse). Omit to disable the
+  // affordance entirely.
+  onToggleCollapse?: () => void;
   // Reports whether the pane has anything worth showing (events or active
-  // alerts) so the parent can collapse the rail when it's empty.
+  // alerts) so the parent can pick the data-driven default (open when there's
+  // content, collapsed when empty).
   onHasContentChange?: (hasContent: boolean) => void;
 };
 
@@ -124,7 +132,8 @@ function absoluteTime(value?: string, timezone?: string): string | undefined {
 export default function DeviceActivityFeed({
   deviceId,
   timezone,
-  layout = "rail",
+  collapsed = false,
+  onToggleCollapse,
   onHasContentChange,
 }: DeviceActivityFeedProps) {
   const { t } = useTranslation("devices");
@@ -255,13 +264,72 @@ export default function DeviceActivityFeed({
 
   const visible = events;
 
+  // Total noteworthy items for the collapsed-bar badge: recent actions plus any
+  // active alerts (an alert with no events is still worth surfacing).
+  const itemCount = events.length + activeAlerts;
+  const countLabel = itemCount > 99 ? '99+' : `${itemCount}${hasMore ? '+' : ''}`;
+
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-xs">
-      <div className="flex items-center gap-2">
-        <Activity className="h-4 w-4 text-muted-foreground" />
-        <h3 className="text-lg font-semibold">
-          {t("deviceActivityFeed.activity")}
-        </h3>
+    <>
+      {/* Collapsed state — a thin vertical handle (desktop only; below lg the
+          full card always renders). Clicking it expands the rail. */}
+      {collapsed && (
+        <button
+          type="button"
+          onClick={onToggleCollapse}
+          data-testid="activity-rail-collapsed"
+          aria-label={`${t("deviceActivityFeed.activity")}${
+            activeAlerts > 0
+              ? `, ${activeAlerts} ${t("deviceActivityFeed.activeAlert")}${
+                  activeAlerts === 1 ? "" : t("deviceActivityFeed.s")
+                }`
+              : ""
+          }`}
+          className={`hidden w-full flex-col items-center gap-3 rounded-lg border bg-card py-4 shadow-xs transition hover:bg-muted/50 lg:flex lg:h-full ${
+            activeAlerts > 0 ? 'border-warning/40' : ''
+          }`}
+        >
+          <Activity className={`h-4 w-4 ${activeAlerts > 0 ? 'text-warning' : 'text-muted-foreground'}`} />
+          {loading ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" aria-hidden="true" />
+          ) : itemCount > 0 ? (
+            <span
+              className={`rounded-full px-1.5 py-0.5 text-xs font-semibold tabular-nums ${
+                activeAlerts > 0 ? 'bg-warning/15 text-warning' : 'bg-primary/10 text-primary'
+              }`}
+            >
+              {countLabel}
+            </span>
+          ) : null}
+          <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground [writing-mode:vertical-rl]">
+            {t("deviceActivityFeed.activity")}
+          </span>
+          <ChevronLeft className="mt-auto h-4 w-4 text-muted-foreground" aria-hidden="true" />
+        </button>
+      )}
+
+      {/* Expanded card — hidden on desktop while collapsed so it never overflows
+          the 44px rail; always visible below lg. */}
+      <div className={`rounded-lg border bg-card p-6 shadow-xs ${collapsed ? 'lg:hidden' : ''}`}>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Activity className="h-4 w-4 text-muted-foreground" />
+          <h3 className="text-lg font-semibold">
+            {t("deviceActivityFeed.activity")}
+          </h3>
+        </div>
+        {onToggleCollapse && (
+          <button
+            type="button"
+            onClick={onToggleCollapse}
+            aria-label={`${t("common:filters.collapse")} ${t(
+              "deviceActivityFeed.activity",
+            ).toLocaleLowerCase()}`}
+            className="hidden rounded-md p-1 text-muted-foreground transition hover:bg-muted hover:text-foreground lg:inline-flex"
+          >
+            <ChevronRight className="h-4 w-4" aria-hidden="true" />
+          </button>
+        )}
       </div>
 
       {/* Pinned alert summary — only when this device has active alerts. */}
@@ -306,24 +374,9 @@ export default function DeviceActivityFeed({
             </button>
           </p>
         ) : visible.length === 0 ? (
-          layout === "strip" ? (
-            <div
-              data-testid="activity-empty-strip"
-              className="flex flex-wrap items-center gap-x-2 text-sm text-muted-foreground"
-            >
-              <span>{t("deviceActivityFeed.noRecentActionsOnThisDevice")}</span>
-              <a
-                href="#activities"
-                className="font-medium text-primary hover:underline"
-              >
-                {t("deviceActivityFeed.viewAllActivity")}{" "}
-              </a>
-            </div>
-          ) : (
-            <p className="text-sm text-muted-foreground">
-              {t("deviceActivityFeed.noRecentActionsOnThisDevice")}
-            </p>
-          )
+          <p className="text-sm text-muted-foreground">
+            {t("deviceActivityFeed.noRecentActionsOnThisDevice")}
+          </p>
         ) : (
           <ul className="space-y-3">
             {visible.map((e) => {
@@ -419,7 +472,7 @@ export default function DeviceActivityFeed({
         )}
       </div>
 
-      {!loading && !error && !(layout === "strip" && visible.length === 0) && (
+      {!loading && !error && (
         <a
           href="#activities"
           className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
@@ -428,6 +481,7 @@ export default function DeviceActivityFeed({
           <span aria-hidden="true">{t("deviceActivityFeed.text")}</span>
         </a>
       )}
-    </div>
+      </div>
+    </>
   );
 }

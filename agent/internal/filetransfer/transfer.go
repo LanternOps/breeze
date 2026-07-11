@@ -58,6 +58,20 @@ func NewManager(cfg *Config) *Manager {
 	}
 }
 
+// SetServerURL updates the control-plane base URL after a backup promotion
+// (#2288). File transfers build request URLs per call from this value.
+func (m *Manager) SetServerURL(u string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.config.ServerURL = u
+}
+
+func (m *Manager) serverURL() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.config.ServerURL
+}
+
 // HandleTransfer processes a file transfer command
 func (m *Manager) HandleTransfer(payload map[string]any) map[string]any {
 	transferID, _ := payload["transferId"].(string)
@@ -194,7 +208,7 @@ func (m *Manager) uploadChunk(transferID string, chunkNum int, data []byte, isFi
 	part.Write(data)
 	writer.Close()
 
-	url := fmt.Sprintf("%s/api/v1/remote/transfers/%s/chunks", m.config.ServerURL, transferID)
+	url := fmt.Sprintf("%s/api/v1/remote/transfers/%s/chunks", m.serverURL(), transferID)
 	req, err := http.NewRequest("POST", url, &body)
 	if err != nil {
 		return err
@@ -230,7 +244,7 @@ func (m *Manager) download(transfer *Transfer) error {
 	}
 
 	// Download file
-	url := fmt.Sprintf("%s/api/v1/remote/transfers/%s/download", m.config.ServerURL, transfer.ID)
+	url := fmt.Sprintf("%s/api/v1/remote/transfers/%s/download", m.serverURL(), transfer.ID)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return err
@@ -302,7 +316,7 @@ func (m *Manager) reportProgress(transfer *Transfer) {
 		log.Warn("failed to marshal transfer progress", "transferId", transfer.ID, "error", err)
 		return
 	}
-	url := fmt.Sprintf("%s/api/v1/remote/transfers/%s/progress", m.config.ServerURL, transfer.ID)
+	url := fmt.Sprintf("%s/api/v1/remote/transfers/%s/progress", m.serverURL(), transfer.ID)
 
 	req, err := http.NewRequest("PUT", url, bytes.NewReader(body))
 	if err != nil {

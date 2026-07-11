@@ -15,6 +15,12 @@ type FeatureTabShellProps = {
    */
   configuredButInactive?: boolean;
   saving: boolean;
+  /**
+   * When true, the Save (and Override) button is disabled independent of the
+   * saving state — used by tabs with client-side validation (e.g. an invalid
+   * library targeting row) to block a save the server would 400 on anyway.
+   */
+  saveDisabled?: boolean;
   error?: string;
   onSave: () => void;
   onRemove?: () => void;
@@ -33,6 +39,7 @@ export default function FeatureTabShell({
   isConfigured,
   configuredButInactive,
   saving,
+  saveDisabled,
   error,
   onSave,
   onRemove,
@@ -99,7 +106,8 @@ export default function FeatureTabShell({
               <button
                 type="button"
                 onClick={onOverride}
-                className="inline-flex items-center gap-2 rounded-md border border-primary/40 px-3 py-2 text-sm font-medium text-primary transition hover:bg-primary/10"
+                disabled={saveDisabled}
+                className="inline-flex items-center gap-2 rounded-md border border-primary/40 px-3 py-2 text-sm font-medium text-primary transition hover:bg-primary/10 disabled:opacity-50"
               >
                 <PenLine className="h-4 w-4" />
                 {i18n.t(
@@ -136,7 +144,7 @@ export default function FeatureTabShell({
             <button
               type="button"
               onClick={onSave}
-              disabled={saving}
+              disabled={saving || saveDisabled}
               className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
             >
               {saving && <Loader2 className="h-4 w-4 animate-spin" />}

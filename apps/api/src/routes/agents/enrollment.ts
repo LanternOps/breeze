@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../../lib/validation';
 import { and, eq, inArray, ne, sql } from 'drizzle-orm';
 import { createHash, timingSafeEqual } from 'crypto';
 import { db, withSystemDbAccessContext } from '../../db';
@@ -826,6 +826,7 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
       helperAuthToken: helperApiKey,
       orgId: key.orgId,
       siteId: key.siteId,
+      backupServerUrl: (process.env.AGENT_BACKUP_SERVER_URL ?? '').trim() || undefined,
       config: {
         heartbeatIntervalSeconds: 60,
         metricsCollectionIntervalSeconds: 30

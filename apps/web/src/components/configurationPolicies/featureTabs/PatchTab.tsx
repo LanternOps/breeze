@@ -501,10 +501,63 @@ export default function PatchTab({
         )}
       </div>
 
-      <PatchAppRulesSection
-        apps={settings.apps}
-        onChange={(apps) => update("apps", apps)}
-      />
+      {/* Patch Sources — #1428 removed the source checkboxes intending them to
+          "live on Update Rings only", but the ring has no sources control and its
+          sources column never reaches the approval evaluator; the value that IS
+          evaluated is this policy's settings.sources, which was left stranded at
+          the default ['os']. That made third-party (winget/Homebrew) patches
+          impossible to enable through the UI — the evaluator source-filters them
+          out at patchApprovalEvaluator before app rules or ring auto-approve run.
+          Restore the switch so techs can actually opt in. OS stays always-on to
+          honour the schema's min(1) sources constraint. */}
+      <div className="mt-6">
+        <h3 className="text-sm font-semibold">
+          {i18n.t(
+            "policies:configurationPolicies.featureTabs.patchTab.patchSources",
+          )}
+        </h3>
+        <p className="mt-1 text-xs text-muted-foreground">
+          {i18n.t(
+            "policies:configurationPolicies.featureTabs.patchTab.patchSourcesDescription",
+          )}
+        </p>
+        <div className="mt-2 flex items-center justify-between rounded-md border bg-background px-4 py-3">
+          <div className="pr-4">
+            <p className="text-sm font-medium">
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.patchTab.includeThirdPartySoftwareUpdates",
+              )}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.patchTab.thirdPartySoftwareUpdatesDescription",
+              )}
+            </p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={settings.sources.includes('third_party')}
+            data-testid="patch-third-party-sources-toggle"
+            onClick={() =>
+              update('sources', settings.sources.includes('third_party') ? ['os'] : ['os', 'third_party'])
+            }
+            className={cn(
+              'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition',
+              settings.sources.includes('third_party') ? 'bg-emerald-500/80' : 'bg-muted'
+            )}
+          >
+            <span
+              className={cn(
+                'inline-block h-5 w-5 rounded-full bg-white transition',
+                settings.sources.includes('third_party') ? 'translate-x-5' : 'translate-x-1'
+              )}
+            />
+          </button>
+        </div>
+      </div>
+
+      <PatchAppRulesSection apps={settings.apps} onChange={(apps) => update('apps', apps)} />
 
       {/* Schedule */}
       <div className="mt-6">

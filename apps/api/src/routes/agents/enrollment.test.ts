@@ -143,7 +143,83 @@ function mockSelectRows(rows: Record<string, unknown>[]) {
   } as any);
 }
 
+async function enrollOk(): Promise<Record<string, unknown>> {
+  vi.mocked(manifestSigning.getActiveTrustKeyset).mockResolvedValue([]);
+  mockKeyLookup({
+    id: 'key-backup-url',
+    orgId: 'org-backup-url',
+    siteId: 'site-backup-url',
+    keySecretHash: null,
+    expiresAt: new Date(Date.now() + 3600_000),
+    maxUsage: 10,
+    usageCount: 0,
+  });
+  mockSelectRows([{ partnerId: 'partner-backup-url' }]);
+  mockSelectRows([{ maxDevices: null }]);
+  mockSelectRows([]);
+
+  vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
+    const fakeTx = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ count: 0 }]),
+        }),
+      }),
+      insert: vi.fn().mockReturnValue({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{
+            id: 'device-backup-url',
+            orgId: 'org-backup-url',
+            siteId: 'site-backup-url',
+            hostname: 'host-1',
+          }]),
+          onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
+        }),
+      }),
+      update: vi.fn().mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'key-backup-url' }]),
+          }),
+        }),
+      }),
+      delete: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(undefined),
+      }),
+    };
+    return fn(fakeTx);
+  });
+
+  const resp = await buildApp().request('/agents/enroll', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(baseEnrollBody),
+  });
+  expect(resp.status).toBe(201);
+  return await resp.json() as Record<string, unknown>;
+}
+
 // ---------- tests ----------
+
+describe('POST /agents/enroll — backup server URL delivery (#2288)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env.AGENT_ENROLLMENT_SECRET;
+    delete process.env.AGENT_BACKUP_SERVER_URL;
+    process.env.NODE_ENV = 'test';
+  });
+
+  it('includes backupServerUrl when AGENT_BACKUP_SERVER_URL is set', async () => {
+    process.env.AGENT_BACKUP_SERVER_URL = 'https://new.example.com';
+    const body = await enrollOk();
+    expect(body.backupServerUrl).toBe('https://new.example.com');
+  });
+
+  it('omits/empty backupServerUrl when env unset', async () => {
+    const body = await enrollOk();
+    expect(body.backupServerUrl ?? '').toBe('');
+  });
+});
 
 describe('POST /agents/enroll — tenant-status gate', () => {
   beforeEach(() => {

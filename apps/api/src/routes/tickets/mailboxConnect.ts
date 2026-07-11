@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../../lib/validation';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
 import { authMiddleware, requireScope, requireMfa, type AuthContext } from '../../middleware/auth';

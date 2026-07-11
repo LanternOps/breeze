@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../../lib/validation';
 import { and, eq, asc } from 'drizzle-orm';
 import { db } from '../../db';
 import { ticketResponseTemplates } from '../../db/schema';

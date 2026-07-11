@@ -17,6 +17,7 @@
     "jsxImportSource": "react",
     "baseUrl": ".",
     "paths": {
+      "@breeze/extension-api": ["./packages/extension-api/src"],
       "@breeze/shared": ["./packages/shared/src"]
     }
   },

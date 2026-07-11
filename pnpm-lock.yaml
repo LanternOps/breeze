@@ -88,6 +88,9 @@ importers:
       '@aws-sdk/s3-request-presigner':
         specifier: ^3.1030.0
         version: 3.1030.0
+      '@breeze/extension-api':
+        specifier: workspace:*
+        version: link:../../packages/extension-api
       '@breeze/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -914,6 +917,22 @@ importers:
       vitest:
         specifier: ^4.1.10
         version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@8.0.16(@types/node@26.1.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.48.0)(tsx@4.23.0)(yaml@2.9.0))
+
+  packages/extension-api:
+    dependencies:
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+    devDependencies:
+      hono:
+        specifier: ^4.12.28
+        version: 4.12.28
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.9
+        version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@8.1.3(@types/node@26.1.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.48.0)(tsx@4.23.0)(yaml@2.9.0))
 
   packages/office-addin-core:
     dependencies:

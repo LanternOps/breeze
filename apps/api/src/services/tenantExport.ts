@@ -1,7 +1,7 @@
 /**
  * Tenant Export Service (Task 30 — GDPR Right-of-Access export)
  *
- * Streams a single ZIP containing one JSON file per `ORG_CASCADE_DELETE_ORDER`
+ * Streams a single ZIP containing one JSON file per `getOrgCascadeDeleteOrder()`
  * table for the requested org, plus a `manifest.json` with sha256 checksums.
  *
  * Reuses the cascade list as the source of truth — every table that holds
@@ -22,7 +22,7 @@ import { createHash } from 'node:crypto';
 import archiver from 'archiver';
 import { sql } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { ORG_CASCADE_DELETE_ORDER } from './tenantCascade';
+import { getOrgCascadeDeleteOrder } from './tenantCascade';
 import { createAuditLog } from './auditService';
 
 export interface ExportManifestEntry {
@@ -48,7 +48,7 @@ export interface TenantExportResult {
 /**
  * Build a ZIP buffer containing the org's data export.
  *
- * Reads every table in `ORG_CASCADE_DELETE_ORDER` (skipping tables that
+ * Reads every table in `getOrgCascadeDeleteOrder()` (skipping tables that
  * don't exist in this deployment) and emits each as `<table>.json`.
  * Adds a `manifest.json` with sha256 per file at the end.
  */
@@ -71,7 +71,7 @@ export async function buildOrgExportZip(
 
   // Fetch + append each table sequentially. Sequential keeps memory bounded
   // and gives a deterministic file ordering inside the ZIP.
-  for (const table of ORG_CASCADE_DELETE_ORDER) {
+  for (const table of getOrgCascadeDeleteOrder()) {
     let rows: unknown[];
     try {
       rows = await dbModule.withSystemDbAccessContext(async () => {

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 // ---------- mocks ----------
@@ -110,6 +110,11 @@ vi.mock('./helpers', () => ({
   buildHelperConfigUpdate: vi.fn(() => undefined),
   buildPamConfigUpdate: vi.fn(async () => ({ uacInterceptionEnabled: false })),
   buildPatchSourceConfigUpdate: vi.fn(async () => ({ exclusiveWindowsUpdate: false })),
+  // Null = no onedrive policy for the device. Tests that exercise delivery
+  // override this per-test. Omitting it entirely would make every heartbeat
+  // test silently exercise only the builder-throws path (undefined is not a
+  // function) — which is how the delivery merge went untested pre-#2322-review.
+  buildOnedriveHelperConfigUpdate: vi.fn(async () => null),
   // Permissive default (staged + no window = upgrade anytime) and no version
   // pins (issue #2124), so the upgrade gating is transparent to tests that don't
   // care about the org policy. The heartbeat resolves BOTH from this one call.
@@ -226,6 +231,16 @@ const minimalHeartbeatBody = {
   },
 };
 
+const originalAgentBackupServerUrl = process.env.AGENT_BACKUP_SERVER_URL;
+
+afterEach(() => {
+  if (originalAgentBackupServerUrl === undefined) {
+    delete process.env.AGENT_BACKUP_SERVER_URL;
+  } else {
+    process.env.AGENT_BACKUP_SERVER_URL = originalAgentBackupServerUrl;
+  }
+});
+
 describe('POST /agents/:id/heartbeat — manifestTrustKeys delivery (#639)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -300,6 +315,38 @@ describe('POST /agents/:id/heartbeat — manifestTrustKeys delivery (#639)', () 
     expect(resp.status).toBe(200);
     const body = (await resp.json()) as Record<string, unknown>;
     expect(body.manifestTrustKeys).toEqual([]);
+  });
+
+  it('always includes backup_server_url in configUpdate — value when env set', async () => {
+    process.env.AGENT_BACKUP_SERVER_URL = 'https://new.example.com';
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    const configUpdate = body.configUpdate as Record<string, unknown>;
+    expect(configUpdate.backup_server_url).toBe('https://new.example.com');
+  });
+
+  it('always includes backup_server_url in configUpdate — empty string when env unset (clear signal)', async () => {
+    delete process.env.AGENT_BACKUP_SERVER_URL;
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    const configUpdate = body.configUpdate as Record<string, unknown>;
+    expect(configUpdate.backup_server_url).toBe('');
   });
 
   it('#1105: fetches the trust keyset AFTER the org DB context is released (not while holding the tx)', async () => {
@@ -1270,6 +1317,54 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
     const configUpdate = body.configUpdate as Record<string, unknown> | null;
     expect(configUpdate?.patch_source_settings).toBeUndefined();
   });
+
+  it('delivers onedrive_helper_settings in configUpdate alongside other config (post-#1105 hoist merge)', async () => {
+    const { buildOnedriveHelperConfigUpdate, buildPatchSourceConfigUpdate } = await import('./helpers');
+    const settings = {
+      base: {
+        silentAccountConfig: true, filesOnDemand: true, kfmSilentOptIn: false,
+        kfmFolders: [], kfmBlockOptOut: false, tenantAssociationId: null, restartOnChange: true,
+      },
+      libraries: [{
+        libraryId: 'lib-1', displayName: 'Docs', siteUrl: null, targetingMode: 'graph_group',
+        groupId: 'g-1', groupName: null, hiveScope: 'hkcu', allowedUpns: ['u@contoso.com'],
+      }],
+    };
+    vi.mocked(buildOnedriveHelperConfigUpdate).mockResolvedValueOnce(settings as any);
+    vi.mocked(buildPatchSourceConfigUpdate).mockResolvedValueOnce({ exclusiveWindowsUpdate: true });
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    const configUpdate = body.configUpdate as Record<string, unknown> | null;
+    // The exact wire key the agent reads — a rename here darkens the feature fleet-wide.
+    expect(configUpdate?.onedrive_helper_settings).toEqual(settings);
+    // And the three-way spread must compose, not replace, the other config.
+    expect(configUpdate?.patch_source_settings).toEqual({ exclusiveWindowsUpdate: true });
+  });
+
+  it('omits onedrive_helper_settings when the builder throws — heartbeat still 200 with other config intact', async () => {
+    const { buildOnedriveHelperConfigUpdate, buildPatchSourceConfigUpdate } = await import('./helpers');
+    vi.mocked(buildOnedriveHelperConfigUpdate).mockRejectedValueOnce(new Error('graph down'));
+    vi.mocked(buildPatchSourceConfigUpdate).mockResolvedValueOnce({ exclusiveWindowsUpdate: true });
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    const configUpdate = body.configUpdate as Record<string, unknown> | null;
+    expect(configUpdate?.onedrive_helper_settings).toBeUndefined();
+    expect(configUpdate?.patch_source_settings).toEqual({ exclusiveWindowsUpdate: true });
+  });
 });
 
 // ---------------------------------------------------------------------
@@ -1667,6 +1762,65 @@ describe('POST /agents/:id/heartbeat — watchdogVersion telemetry (#1802)', () 
     expect(resp.status).toBe(200);
     const body = await resp.json() as { watchdogUpgradeTo?: string | null };
     expect(body.watchdogUpgradeTo).toBe('0.66.0');
+  });
+});
+
+// ---------------------------------------------------------------------
+// #2288 — active control-plane URL persistence
+// ---------------------------------------------------------------------
+
+describe('POST /agents/:id/heartbeat — active server URL telemetry (#2288)', () => {
+  const deviceRow = {
+    id: 'device-1', orgId: 'org-1', siteId: 'site-1', hostname: 'host',
+    osType: 'windows', architecture: 'amd64', agentVersion: '0.66.0',
+    deviceRoleSource: 'auto', lastSeenAt: new Date(), mainAgentSilentSince: null,
+  };
+
+  let capturedDeviceUpdate: Record<string, unknown>;
+
+  function arrange() {
+    vi.clearAllMocks();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
+    selectMock.mockReturnValue(selectChainResolving([]));
+    updateMock.mockReturnValue({
+      set: vi.fn((values: Record<string, unknown>) => {
+        capturedDeviceUpdate = values;
+        return { where: vi.fn().mockResolvedValue(undefined) };
+      }),
+    });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+  }
+
+  async function postHeartbeat(body: Record<string, unknown>) {
+    arrange();
+    return buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it('persists a valid serverUrl to devices.agent_server_url', async () => {
+    await postHeartbeat({ ...minimalHeartbeatBody, serverUrl: 'https://old.example.com' });
+    expect(capturedDeviceUpdate.agentServerUrl).toBe('https://old.example.com');
+  });
+
+  it('ignores a malformed serverUrl instead of failing the heartbeat', async () => {
+    const res = await postHeartbeat({ ...minimalHeartbeatBody, serverUrl: 'not a url' });
+    expect(res.status).toBe(200);
+    expect(capturedDeviceUpdate.agentServerUrl).toBeUndefined();
+  });
+
+  it('drops parseable-but-non-http(s) serverUrl schemes (value is echoed into the web UI)', async () => {
+    const res = await postHeartbeat({ ...minimalHeartbeatBody, serverUrl: 'javascript:alert(1)' });
+    expect(res.status).toBe(200);
+    expect(capturedDeviceUpdate.agentServerUrl).toBeUndefined();
+  });
+
+  it('leaves stored value untouched when serverUrl absent (old agent)', async () => {
+    await postHeartbeat(minimalHeartbeatBody);
+    expect(Object.hasOwn(capturedDeviceUpdate, 'agentServerUrl')).toBe(false);
   });
 });
 

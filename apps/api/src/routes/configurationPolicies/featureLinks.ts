@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../../lib/validation';
 import type { AuthContext } from '../../middleware/auth';
 import { hasSatisfiedMfa, requirePermission, requireScope } from '../../middleware/auth';
-import { backupInlineSettingsSchema, patchInlineSettingsSchema } from '@breeze/shared/validators';
+import { backupInlineSettingsSchema, onedriveHelperInlineSettingsSchema, patchInlineSettingsSchema } from '@breeze/shared/validators';
 import { ORG_SCOPED_ONLY_FEATURE_TYPES } from '@breeze/shared/constants';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { PERMISSIONS } from '../../services/permissions';
@@ -162,6 +162,17 @@ featureLinkRoutes.post(
       data.inlineSettings = parsed.data;
     }
 
+    if (data.featureType === 'onedrive_helper' && data.inlineSettings) {
+      const parsed = onedriveHelperInlineSettingsSchema.safeParse(data.inlineSettings);
+      if (!parsed.success) {
+        return c.json(
+          { error: 'Invalid onedrive_helper settings', details: parsed.error.flatten(), issues: parsed.error.issues },
+          400
+        );
+      }
+      data.inlineSettings = parsed.data;
+    }
+
     // Reject offline alert rules whose duration exceeds the re-eval horizon —
     // such a rule could never fire (issue #1982).
     if (data.featureType === 'alert_rule' && data.inlineSettings) {
@@ -278,6 +289,16 @@ featureLinkRoutes.patch(
         if (!parsed.success) {
           return c.json(
             { error: 'Invalid remote access settings', details: parsed.error.flatten(), issues: parsed.error.issues },
+            400
+          );
+        }
+        data.inlineSettings = parsed.data;
+      }
+      if (existingLink.featureType === 'onedrive_helper') {
+        const parsed = onedriveHelperInlineSettingsSchema.safeParse(data.inlineSettings);
+        if (!parsed.success) {
+          return c.json(
+            { error: 'Invalid onedrive_helper settings', details: parsed.error.flatten(), issues: parsed.error.issues },
             400
           );
         }

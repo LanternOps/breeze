@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, eq, or, count, inArray, sql } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';

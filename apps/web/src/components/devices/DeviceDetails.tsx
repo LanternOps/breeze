@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import {
   Monitor,
   Cpu,
@@ -27,6 +27,7 @@ import {
   HeartPulse,
   ShieldCheck,
   Link2,
+  Cloud,
 } from "lucide-react";
 import { formatPercent } from "@/lib/i18n/format";
 import { formatUptime } from "../../lib/utils";
@@ -38,6 +39,7 @@ import DeviceHardwareInventory from "./DeviceHardwareInventory";
 import DeviceSoftwareInventory from "./DeviceSoftwareInventory";
 import DevicePatchStatusTab from "./DevicePatchStatusTab";
 import DeviceVulnerabilitiesTab from "./DeviceVulnerabilitiesTab";
+import DeviceOneDriveTab from "./DeviceOneDriveTab";
 import DeviceSecurityTab from "./DeviceSecurityTab";
 import DeviceAlertHistory from "./DeviceAlertHistory";
 import DeviceActivityFeed from "./DeviceActivityFeed";
@@ -78,6 +80,7 @@ type Tab =
   | "security"
   | "management"
   | "effective-config"
+  | "onedrive"
   | "alerts"
   | "anomalies"
   | "scripts"
@@ -153,6 +156,7 @@ const VALID_TABS: Tab[] = [
   "security",
   "management",
   "effective-config",
+  "onedrive",
   "alerts",
   "scripts",
   "performance",
@@ -196,10 +200,33 @@ export default function DeviceDetails({
   const [focusedAnomalyId, setFocusedAnomalyId] = useState<string | undefined>(
     getAnomalyIdFromHash,
   );
-  // Whether the Overview Activity pane has anything to show. Defaults to true so
-  // the common (populated) layout never flashes; the feed reports false to
-  // collapse the right rail and place Activity as a full-width bottom strip.
-  const [activityHasContent, setActivityHasContent] = useState(true);
+  // Whether the Overview Activity rail is collapsed to its thin vertical bar.
+  // Starts collapsed so the page paints at full width during the async load and
+  // never flashes a rail that then vanishes (the v0.85.0 stretch bug). Once the
+  // feed loads, the data-driven default opens it when there's content; an empty
+  // device simply stays collapsed with zero motion.
+  const [activityCollapsed, setActivityCollapsed] = useState(true);
+  // Set once the user clicks the collapse/expand affordance, so a manual choice
+  // wins over the data-driven default for the rest of this device's view. Reset
+  // per device below (no cross-device persistence).
+  const activityUserToggled = useRef(false);
+
+  const handleActivityHasContent = useCallback((hasContent: boolean) => {
+    if (activityUserToggled.current) return;
+    setActivityCollapsed(!hasContent);
+  }, []);
+
+  const toggleActivityCollapsed = useCallback(() => {
+    activityUserToggled.current = true;
+    setActivityCollapsed((c) => !c);
+  }, []);
+
+  // Re-derive the rail state for each device: forget any manual toggle and drop
+  // back to the collapsed-during-load default until the new device's feed reports.
+  useEffect(() => {
+    activityUserToggled.current = false;
+    setActivityCollapsed(true);
+  }, [device.id]);
 
   useEffect(() => {
     const onHashChange = () => {
@@ -340,6 +367,12 @@ export default function DeviceDetails({
       title: t("deviceDetails.resolvedConfigurationFromAllAssignedPolicies"),
     },
     {
+      id: "onedrive",
+      label: "OneDrive",
+      icon: <Cloud className="h-4 w-4" />,
+      title: "OneDrive",
+    },
+    {
       id: "security",
       label: t("deviceDetails.security"),
       icon: <Shield className="h-4 w-4" />,
@@ -448,16 +481,8 @@ export default function DeviceDetails({
       />
 
       {activeTab === "overview" && (
-        <div
-          className={
-            activityHasContent
-              ? t("deviceDetails.gridGap6LgGridCols")
-              : t("deviceDetails.spaceY6")
-          }
-        >
-          <div
-            className={`space-y-6 ${activityHasContent ? t("deviceDetails.lgColSpan2") : ""}`}
-          >
+        <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
+          <div className="min-w-0 flex-1 space-y-6">
             {/* Two groups — Health (CPU/RAM/Uptime) and Activity (Last Seen/
                 User/Idle) — divided on ≥sm. Stats are content-sized (flex, not
                 an equal-width grid) with non-wrapping labels and values so e.g.
@@ -538,12 +563,19 @@ export default function DeviceDetails({
             <DeviceWarrantyCard deviceId={device.id} compact />
           </div>
 
-          <DeviceActivityFeed
-            deviceId={device.id}
-            timezone={effectiveTimezone}
-            layout={activityHasContent ? "rail" : "strip"}
-            onHasContentChange={setActivityHasContent}
-          />
+          <div
+            className={`w-full shrink-0 overflow-hidden transition-[width] duration-300 ease-in-out ${
+              activityCollapsed ? "lg:w-11 lg:self-stretch" : "lg:w-80"
+            }`}
+          >
+            <DeviceActivityFeed
+              deviceId={device.id}
+              timezone={effectiveTimezone}
+              collapsed={activityCollapsed}
+              onToggleCollapse={toggleActivityCollapsed}
+              onHasContentChange={handleActivityHasContent}
+            />
+          </div>
         </div>
       )}
 
@@ -611,6 +643,10 @@ export default function DeviceDetails({
 
       {activeTab === "management" && (
         <DeviceManagementTab deviceId={device.id} />
+      )}
+
+      {activeTab === "onedrive" && (
+        <DeviceOneDriveTab deviceId={device.id} />
       )}
 
       {activeTab === "effective-config" && (

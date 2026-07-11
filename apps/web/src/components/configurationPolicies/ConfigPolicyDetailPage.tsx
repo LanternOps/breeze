@@ -21,6 +21,7 @@ import {
   LifeBuoy,
   Monitor,
   ListChecks,
+  Cloud,
   Info,
 } from "lucide-react";
 import Breadcrumbs from "../layout/Breadcrumbs";
@@ -34,30 +35,32 @@ import { i18n } from "@/lib/i18n";
 // `/reportPdf` subpath (see apps/web/vitest.config.ts + tsconfig.json) — the
 // `/constants` subpath isn't wired up here, so import from the root, which
 // re-exports it.
-import { ORG_SCOPED_ONLY_FEATURE_TYPES } from "@breeze/shared";
-import type { FeatureType, FeatureLink } from "./featureTabs/types";
-import { FEATURE_META } from "./featureTabs/types";
-import { useFeatureLink } from "./featureTabs/useFeatureLink";
-import AssignmentsTab from "./AssignmentsTab";
-import PatchTab from "./featureTabs/PatchTab";
-import AlertRuleTab from "./featureTabs/AlertRuleTab";
-import BackupTab from "./featureTabs/BackupTab";
-import SecurityTab from "./featureTabs/SecurityTab";
-import MaintenanceTab from "./featureTabs/MaintenanceTab";
-import ComplianceTab from "./featureTabs/ComplianceTab";
-import AutomationTab from "./featureTabs/AutomationTab";
-import EventLogTab from "./featureTabs/EventLogTab";
-import SoftwarePolicyTab from "./featureTabs/SoftwarePolicyTab";
-import SensitiveDataTab from "./featureTabs/SensitiveDataTab";
-import PeripheralControlTab from "./featureTabs/PeripheralControlTab";
-import MonitoringTab from "./featureTabs/MonitoringTab";
-import WarrantyTab from "./featureTabs/WarrantyTab";
-import HelperTab from "./featureTabs/HelperTab";
-import RemoteAccessTab from "./featureTabs/RemoteAccessTab";
-import PamTab from "./featureTabs/PamTab";
-import VulnerabilityTab from "./featureTabs/VulnerabilityTab";
-import ComplianceStatusTab from "./ComplianceStatusTab";
-type Tab = "overview" | FeatureType | "assignments" | "compliance_status";
+import { ORG_SCOPED_ONLY_FEATURE_TYPES } from '@breeze/shared';
+import type { FeatureType, FeatureLink } from './featureTabs/types';
+import { FEATURE_META } from './featureTabs/types';
+import { useFeatureLink } from './featureTabs/useFeatureLink';
+import AssignmentsTab from './AssignmentsTab';
+import PatchTab from './featureTabs/PatchTab';
+import AlertRuleTab from './featureTabs/AlertRuleTab';
+import BackupTab from './featureTabs/BackupTab';
+import SecurityTab from './featureTabs/SecurityTab';
+import MaintenanceTab from './featureTabs/MaintenanceTab';
+import ComplianceTab from './featureTabs/ComplianceTab';
+import AutomationTab from './featureTabs/AutomationTab';
+import EventLogTab from './featureTabs/EventLogTab';
+import SoftwarePolicyTab from './featureTabs/SoftwarePolicyTab';
+import SensitiveDataTab from './featureTabs/SensitiveDataTab';
+import PeripheralControlTab from './featureTabs/PeripheralControlTab';
+import MonitoringTab from './featureTabs/MonitoringTab';
+import WarrantyTab from './featureTabs/WarrantyTab';
+import HelperTab from './featureTabs/HelperTab';
+import RemoteAccessTab from './featureTabs/RemoteAccessTab';
+import PamTab from './featureTabs/PamTab';
+import VulnerabilityTab from './featureTabs/VulnerabilityTab';
+import OneDriveHelperTab from './featureTabs/OneDriveHelperTab';
+import ComplianceStatusTab from './ComplianceStatusTab';
+
+type Tab = 'overview' | FeatureType | 'assignments' | 'compliance_status';
 type PolicyDetail = {
   id: string;
   name: string;
@@ -113,6 +116,7 @@ const featureTabIcons: Record<FeatureType, React.ReactNode> = {
   remote_access: <Monitor className="h-4 w-4" />,
   pam: <KeyRound className="h-4 w-4" />,
   vulnerability: <ShieldAlert className="h-4 w-4" />,
+  onedrive_helper: <Cloud className="h-4 w-4" />,
 };
 // Which feature tabs the editor renders, in display order. Derived from
 // FEATURE_META keys (not a hand-listed subset) so it stays in lockstep with the
@@ -399,42 +403,27 @@ export default function ConfigPolicyDetailPage({
       onLinkChanged: handleLinkChanged,
       linkedPolicyId,
       parentLink: parentLinkFor(ft),
+      orgId: policy?.orgId ?? null,
     };
     switch (ft) {
-      case "patch":
-        return <PatchTab {...props} />;
-      case "alert_rule":
-        return <AlertRuleTab {...props} />;
-      case "backup":
-        return <BackupTab {...props} />;
-      case "security":
-        return <SecurityTab {...props} />;
-      case "maintenance":
-        return <MaintenanceTab {...props} />;
-      case "compliance":
-        return <ComplianceTab {...props} />;
-      case "automation":
-        return <AutomationTab {...props} />;
-      case "event_log":
-        return <EventLogTab {...props} />;
-      case "software_policy":
-        return <SoftwarePolicyTab {...props} />;
-      case "sensitive_data":
-        return <SensitiveDataTab {...props} />;
-      case "monitoring":
-        return <MonitoringTab {...props} />;
-      case "peripheral_control":
-        return <PeripheralControlTab {...props} />;
-      case "warranty":
-        return <WarrantyTab {...props} />;
-      case "helper":
-        return <HelperTab {...props} />;
-      case "remote_access":
-        return <RemoteAccessTab {...props} />;
-      case "pam":
-        return <PamTab {...props} />;
-      case "vulnerability":
-        return <VulnerabilityTab {...props} />;
+      case 'patch': return <PatchTab {...props} />;
+      case 'alert_rule': return <AlertRuleTab {...props} />;
+      case 'backup': return <BackupTab {...props} />;
+      case 'security': return <SecurityTab {...props} />;
+      case 'maintenance': return <MaintenanceTab {...props} />;
+      case 'compliance': return <ComplianceTab {...props} />;
+      case 'automation': return <AutomationTab {...props} />;
+      case 'event_log': return <EventLogTab {...props} />;
+      case 'software_policy': return <SoftwarePolicyTab {...props} />;
+      case 'sensitive_data': return <SensitiveDataTab {...props} />;
+      case 'monitoring': return <MonitoringTab {...props} />;
+      case 'peripheral_control': return <PeripheralControlTab {...props} />;
+      case 'warranty': return <WarrantyTab {...props} />;
+      case 'helper': return <HelperTab {...props} />;
+      case 'remote_access': return <RemoteAccessTab {...props} />;
+      case 'pam': return <PamTab {...props} />;
+      case 'vulnerability': return <VulnerabilityTab {...props} />;
+      case 'onedrive_helper': return <OneDriveHelperTab {...props} />;
     }
   };
   return (

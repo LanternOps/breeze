@@ -333,6 +333,38 @@ describe('validateConfig', () => {
     });
   });
 
+  describe('AGENT_BACKUP_SERVER_URL', () => {
+    it('accepts a valid https URL', () => {
+      withEnv({ ...validEnv, AGENT_BACKUP_SERVER_URL: 'https://new.example.com' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it('accepts http for localhost (dev)', () => {
+      withEnv({ ...validEnv, AGENT_BACKUP_SERVER_URL: 'http://localhost:3001' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it('refuses http for non-localhost', () => {
+      withEnv({ ...validEnv, AGENT_BACKUP_SERVER_URL: 'http://new.example.com' }, () => {
+        expect(() => validateConfig()).toThrow('AGENT_BACKUP_SERVER_URL');
+      });
+    });
+
+    it('refuses a malformed value (never silently ignored)', () => {
+      withEnv({ ...validEnv, AGENT_BACKUP_SERVER_URL: 'not a url' }, () => {
+        expect(() => validateConfig()).toThrow('AGENT_BACKUP_SERVER_URL');
+      });
+    });
+
+    it('unset is fine', () => {
+      withEnv({ ...validEnv, AGENT_BACKUP_SERVER_URL: '' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+  });
+
   it('accepts documented 32-byte base64 encryption keys in production', () => {
     withEnv({
       ...validEnv,

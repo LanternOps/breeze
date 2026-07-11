@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/netcache"
 )
 
 // FailoverCommand is a command returned by the API during failover polling.
@@ -35,6 +38,7 @@ type RestartStats struct {
 
 // FailoverClient is an HTTP client for API communication during failover mode.
 type FailoverClient struct {
+	mu      sync.RWMutex
 	baseURL string
 	agentID string
 	token   string
@@ -44,7 +48,9 @@ type FailoverClient struct {
 // NewFailoverClient creates a FailoverClient with a 30-second timeout. If
 // tlsConfig is non-nil it is applied to the underlying transport.
 func NewFailoverClient(baseURL, agentID, token string, tlsConfig *tls.Config) *FailoverClient {
-	transport := &http.Transport{}
+	// Dials go through the last-known-good DNS cache (#2288) so a pure DNS
+	// outage doesn't blind the watchdog; TLS hostname verification unchanged.
+	transport := &http.Transport{DialContext: netcache.Shared().DialContext}
 	if tlsConfig != nil {
 		transport.TLSClientConfig = tlsConfig
 	}
@@ -61,13 +67,32 @@ func NewFailoverClient(baseURL, agentID, token string, tlsConfig *tls.Config) *F
 
 // UpdateToken replaces the auth token used for subsequent requests.
 func (c *FailoverClient) UpdateToken(token string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.token = token
+}
+
+// BaseURL returns the base URL used for subsequent requests.
+func (c *FailoverClient) BaseURL() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.baseURL
+}
+
+// SetBaseURL replaces the base URL used for subsequent requests.
+func (c *FailoverClient) SetBaseURL(baseURL string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.baseURL = baseURL
 }
 
 // setHeaders attaches the standard watchdog headers to req.
 func (c *FailoverClient) setHeaders(req *http.Request) {
+	c.mu.RLock()
+	token := c.token
+	c.mu.RUnlock()
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("X-Breeze-Role", "watchdog")
 }
 
@@ -95,7 +120,7 @@ func (c *FailoverClient) SendHeartbeat(watchdogVersion, currentState string, jou
 		return nil, fmt.Errorf("failover: marshal heartbeat: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/api/v1/agents/%s/heartbeat", c.baseURL, c.agentID)
+	url := fmt.Sprintf("%s/api/v1/agents/%s/heartbeat", c.BaseURL(), c.agentID)
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("failover: build heartbeat request: %w", err)
@@ -122,7 +147,7 @@ func (c *FailoverClient) SendHeartbeat(watchdogVersion, currentState string, jou
 
 // PollCommands GETs pending commands from the API with role=watchdog.
 func (c *FailoverClient) PollCommands() ([]FailoverCommand, error) {
-	url := fmt.Sprintf("%s/api/v1/agents/%s/commands?role=watchdog", c.baseURL, c.agentID)
+	url := fmt.Sprintf("%s/api/v1/agents/%s/commands?role=watchdog", c.BaseURL(), c.agentID)
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failover: build poll request: %w", err)
@@ -164,7 +189,7 @@ func (c *FailoverClient) SubmitCommandResult(commandID, status string, result an
 		return fmt.Errorf("failover: marshal command result: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/api/v1/agents/%s/commands/%s/result", c.baseURL, c.agentID, commandID)
+	url := fmt.Sprintf("%s/api/v1/agents/%s/commands/%s/result", c.BaseURL(), c.agentID, commandID)
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("failover: build result request: %w", err)
@@ -191,7 +216,7 @@ func (c *FailoverClient) ShipLogs(entries []JournalEntry) error {
 		return fmt.Errorf("failover: marshal logs: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/api/v1/agents/%s/logs", c.baseURL, c.agentID)
+	url := fmt.Sprintf("%s/api/v1/agents/%s/logs", c.BaseURL(), c.agentID)
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("failover: build logs request: %w", err)

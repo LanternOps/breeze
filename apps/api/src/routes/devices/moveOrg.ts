@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../../lib/validation';
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices, sites, organizations } from '../../db/schema';
@@ -17,7 +17,7 @@ import {
 } from './helpers';
 import { moveOrgSchema } from './schemas';
 import { writeRouteAudit } from '../../services/auditEvents';
-import { DEVICE_ORG_DENORMALIZED_TABLES, DEVICE_SITE_DENORMALIZED_TABLES } from './core';
+import { getDeviceOrgDenormalizedTables, DEVICE_SITE_DENORMALIZED_TABLES } from './core';
 import { dissolveLinkGroupIfBelowMinimum } from '../../services/deviceLinkGroups';
 import { disconnectAgent } from '../agentWs';
 import { captureException } from '../../services/sentry';
@@ -46,7 +46,7 @@ moveOrgRoutes.use('*', authMiddleware);
  * system scope can move a device across partner boundaries.
  *
  * RLS hazard: 64 device-scoped tables denormalize `org_id` for RLS perf
- * (see DEVICE_ORG_DENORMALIZED_TABLES). All of them MUST be rewritten in
+ * (see getDeviceOrgDenormalizedTables()). All of them MUST be rewritten in
  * the same transaction or pre-existing rows for this device will be
  * visible only to the OLD org and invisible to the NEW one. Tables that
  * denormalize org_id but have no device_id column (CUSTOM_ORG_REWRITE_TABLES)
@@ -159,7 +159,7 @@ moveOrgRoutes.post(
 
         // Rewrite the denormalized org_id on every device-scoped table.
         // Skipping any of these strands pre-existing rows under RLS.
-        for (const table of DEVICE_ORG_DENORMALIZED_TABLES) {
+        for (const table of getDeviceOrgDenormalizedTables()) {
           await tx.execute(
             sql`UPDATE ${sql.identifier(table)} SET org_id = ${targetOrgId}::uuid WHERE device_id = ${deviceId}::uuid`,
           );
@@ -168,7 +168,7 @@ moveOrgRoutes.post(
         // ticket_alert_links denormalizes org_id for RLS but has no
         // device_id column, so the generic loop above can't reach it —
         // rewrite via the alert join instead. Excluded from
-        // DEVICE_ORG_DENORMALIZED_TABLES; tracked in
+        // getDeviceOrgDenormalizedTables(); tracked in
         // CUSTOM_ORG_REWRITE_TABLES (core.ts).
         await tx.execute(
           sql`UPDATE ${sql.identifier('ticket_alert_links')} SET org_id = ${targetOrgId}::uuid WHERE alert_id IN (SELECT id FROM alerts WHERE device_id = ${deviceId}::uuid)`,

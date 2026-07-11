@@ -416,10 +416,11 @@ describe('AssetDetailModal — server error surfaced on save/reset (#1424)', () 
     expect(await screen.findByText('Asset not found')).toBeInTheDocument();
   });
 
-  // @hono/zod-validator's default 400 hook emits the bare ZodError object as
-  // `error`. zod v4 hides `issues` from JSON.stringify, so the wire shape is
-  // {name:'ZodError', message:'<stringified issues>'} — the exact body behind
-  // the "[object Object]" report in #2198.
+  // Legacy pre-#2201 shape: @hono/zod-validator's default 400 hook emitted the
+  // bare ZodError object as `error`. zod v4 hides `issues` from JSON.stringify,
+  // so the wire shape is {name:'ZodError', message:'<stringified issues>'} —
+  // the exact body behind the "[object Object]" report in #2198. Kept as a
+  // regression test for older deployed APIs.
   const zodErrorBody = {
     success: false,
     error: {

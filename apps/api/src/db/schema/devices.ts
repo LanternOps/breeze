@@ -103,6 +103,9 @@ export const devices = pgTable('devices', {
   watchdogStatus: watchdogStatusEnum('watchdog_status'),
   watchdogLastSeen: timestamp('watchdog_last_seen'),
   watchdogVersion: varchar('watchdog_version', { length: 50 }),
+  // #2288 — the control-plane URL the agent last heartbeated to. Reported by
+  // the agent; shows fleet position during a server URL migration.
+  agentServerUrl: varchar('agent_server_url', { length: 512 }),
   // Asymmetry detector (#800): set when the watchdog is still reporting
   // in but the main agent has gone silent past the offline threshold.
   // Cleared when the main agent next heartbeats. Distinct from
