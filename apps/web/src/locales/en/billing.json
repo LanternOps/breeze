@@ -723,6 +723,11 @@
       "sellPrice": "Sell price",
       "term": "Term"
     },
+    "recurrence": {
+      "one_time": "One-time",
+      "monthly": "Monthly",
+      "annual": "Annual"
+    },
     "status": {
       "draft": "Draft",
       "sent": "Sent",

@@ -125,7 +125,7 @@ export default function DeviceVaultStatus({ deviceId }: { deviceId: string }) {
         </div>
       </div>
       <div className="mt-2 text-xs text-muted-foreground">
-        {vault.snapshotCount ?? 0} {t('deviceVaultStatus.snapshot')}{(vault.snapshotCount ?? 0) !== 1 ? 's' : ''} {t('deviceVaultStatus.stored')} </div>
+        {t('deviceVaultStatus.snapshotCount', { count: vault.snapshotCount ?? 0 })} </div>
     </div>
   );
 }

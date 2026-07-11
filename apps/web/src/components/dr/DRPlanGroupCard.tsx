@@ -63,7 +63,7 @@ export default function DRPlanGroupCard({
               {group.name.trim() || `Recovery group ${index + 1}`}
             </p>
             <p className="text-xs text-muted-foreground">
-              {group.deviceIds.length} {t('dRPlanGroupCard.device')}{group.deviceIds.length !== 1 ? 's' : ''}
+              {t('dRPlanGroupCard.deviceCount', { count: group.deviceIds.length })}
             </p>
           </div>
         </div>

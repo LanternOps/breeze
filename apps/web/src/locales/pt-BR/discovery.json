@@ -96,6 +96,12 @@
       "loadStatus": "Falha ao carregar o status do monitoramento"
     },
     "loading": "Carregando status do monitoramento...",
+    "monitorTypes": {
+      "icmp_ping": "Ping ICMP",
+      "tcp_port": "Porta TCP",
+      "http_check": "Verificação HTTP",
+      "dns_check": "Verificação DNS"
+    },
     "networkMonitorsTitle": "Monitores de rede ({{count}})",
     "noChecks": "Nenhuma verificação de rede configurada",
     "snmpSummary": "{{version}} · a cada {{seconds}}s",
@@ -181,6 +187,14 @@
       "subnet": "Sub-rede"
     },
     "loading": "Carregando trabalhos de descoberta...",
+    "status": {
+      "scheduled": "Agendado",
+      "running": "Em execução",
+      "completed": "Concluído",
+      "failed": "Falhou",
+      "cancelled": "Cancelado",
+      "pending": "Pendente"
+    },
     "title": "Trabalhos de descoberta",
     "tryAgain": "Tentar novamente",
     "unknownProfile": "Perfil desconhecido"
@@ -260,6 +274,9 @@
   },
   "discoveryProfileForm": {
     "alerting": {
+      "alertOnChanged": "Dispositivos alterados",
+      "alertOnDisappeared": "Dispositivos desaparecidos",
+      "alertOnNew": "Novos dispositivos",
       "description": "Alerte quando dispositivos novos ou alterados forem detectados nesta sub-rede.",
       "enable": "Habilitar alertas de rede",
       "title": "Alertas de rede"
@@ -270,6 +287,15 @@
       "interval": "Intervalo personalizado",
       "monthly": "Mensalmente",
       "weekly": "Semanalmente"
+    },
+    "days": {
+      "monday": "Segunda-feira",
+      "tuesday": "Terça-feira",
+      "wednesday": "Quarta-feira",
+      "thursday": "Quinta-feira",
+      "friday": "Sexta-feira",
+      "saturday": "Sábado",
+      "sunday": "Domingo"
     },
     "fields": {
       "authPassphrase": "Frase secreta de autenticação",
@@ -354,6 +380,12 @@
     "nextRun": "Próxima: {{time}}",
     "notRunYet": "Ainda não executado",
     "scheduleHint": "Os agendamentos são executados automaticamente ou sob demanda",
+    "status": {
+      "active": "Ativo",
+      "paused": "Pausado",
+      "draft": "Rascunho",
+      "error": "Erro"
+    },
     "title": "Perfis de descoberta",
     "tryAgain": "Tentar novamente"
   },

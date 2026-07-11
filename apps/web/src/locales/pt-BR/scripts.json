@@ -971,6 +971,11 @@
       "low": "Baixa",
       "info": "Informação",
       "__suppress__": "Suprimir alerta"
+    },
+    "os": {
+      "windows": "Windows",
+      "macos": "macOS",
+      "linux": "Linux"
     }
   },
   "scriptList": {

@@ -12,7 +12,7 @@ import {
 import { buildInstallCommands } from "@/lib/installCommands";
 import { navigateTo } from "@/lib/navigation";
 import { useTranslation } from "react-i18next";
-import "../../lib/i18n";
+import { i18n } from "@/lib/i18n";
 
 function detectUserOS(): "windows" | "macos" | "linux" {
   if (typeof navigator === "undefined") return "linux";
@@ -75,10 +75,12 @@ function formatTokenExpiry(iso: string): string {
   const diffMinutes = Math.round((expiresMs - Date.now()) / 60000);
   if (diffMinutes <= 0) return "shortly";
   if (diffMinutes < 60)
-    return `in about ${diffMinutes} minute${diffMinutes === 1 ? "" : "s"}`;
+    return i18n.t("devices:addDeviceModal.expiryMinutes", {
+      count: diffMinutes,
+    });
   const diffHours = Math.round(diffMinutes / 60);
   if (diffHours < 48)
-    return `in about ${diffHours} hour${diffHours === 1 ? "" : "s"}`;
+    return i18n.t("devices:addDeviceModal.expiryHours", { count: diffHours });
   return `on ${formatDateTime(expiresMs)}`;
 }
 

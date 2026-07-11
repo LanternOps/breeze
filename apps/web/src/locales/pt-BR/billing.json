@@ -723,6 +723,11 @@
       "sellPrice": "Preço de venda",
       "term": "Prazo"
     },
+    "recurrence": {
+      "one_time": "Único",
+      "monthly": "Mensal",
+      "annual": "Anual"
+    },
     "workspace": {
       "backLabel": "Cotações",
       "backToQuotes": "Voltar para cotações",

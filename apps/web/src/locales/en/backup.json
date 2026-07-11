@@ -40,7 +40,9 @@
     "snapshotId": "Snapshot ID",
     "policyId": "Policy ID",
     "featureLinkId": "Feature Link ID",
-    "errorLog": "Error Log"
+    "errorLog": "Error Log",
+    "errorCount_one": "{{count}} error",
+    "errorCount_other": "{{count}} errors"
   },
   "backupOverviewContent": {
     "noProviderTimelineAvailableYet": "No provider timeline available yet.",
@@ -194,7 +196,9 @@
     "expires2": "Expires",
     "protection2": "Protection",
     "hold": "Hold",
-    "standard": "Standard"
+    "standard": "Standard",
+    "restorePointCount_one": "{{count}} restore point",
+    "restorePointCount_other": "{{count}} restore points"
   },
   "deviceVaultStatus": {
     "loadingVaultStatus": "Loading vault status...",
@@ -206,7 +210,9 @@
     "lastSync": "Last Sync",
     "status": "Status",
     "snapshot": "snapshot",
-    "stored": "stored"
+    "stored": "stored",
+    "snapshotCount_one": "{{count}} snapshot stored",
+    "snapshotCount_other": "{{count}} snapshots stored"
   },
   "encryptionKeyList": {
     "loadingEncryptionKeys": "Loading encryption keys...",
@@ -419,7 +425,34 @@
     "preview": "Preview",
     "revoke": "Revoke",
     "plaintextTokenHandling": "Plaintext token handling",
-    "theServerNeverReShowsThePlaintextToken": "The server never re-shows the plaintext token. This tab preserves it only while you keep the freshly created token in the current browser session, so copy the exact command immediately after creation."
+    "theServerNeverReShowsThePlaintextToken": "The server never re-shows the plaintext token. This tab preserves it only while you keep the freshly created token in the current browser session, so copy the exact command immediately after creation.",
+    "restoreTypeLabelFull": "Full restore",
+    "restoreTypeLabelSelective": "Selective restore",
+    "restoreTypeLabelBareMetal": "Bare metal",
+    "restoreTypeLabelUnknown": "Unknown",
+    "revokeTokenConfirm": "Revoke this recovery token? The recovery agent will no longer be able to use it.",
+    "failedToLoadRecoveryBundles": "Failed to load recovery bundles",
+    "failedToLoadBootableRecoveryMedia": "Failed to load bootable recovery media",
+    "failedToLoadSnapshots": "Failed to load snapshots",
+    "failedToLoadRecoveryTokens": "Failed to load recovery tokens",
+    "failedToRefreshRecoveryArtifacts": "Failed to refresh recovery artifacts",
+    "failedToCreateRecoveryToken": "Failed to create recovery token",
+    "failedToLoadToken": "Failed to load token",
+    "failedToRefreshToken": "Failed to refresh token",
+    "failedToPreviewBootstrap": "Failed to preview bootstrap",
+    "failedToRevokeToken": "Failed to revoke token",
+    "failedToCopyToClipboard": "Failed to copy to clipboard.",
+    "failedToCreateRecoveryBundle": "Failed to create recovery bundle",
+    "failedToDownloadRecoveryBundle": "Failed to download recovery bundle",
+    "failedToCreateBootableRecoveryMedia": "Failed to create bootable recovery media",
+    "failedToDownloadRecoveryBundleSignature": "Failed to download recovery bundle signature",
+    "failedToDownloadBootMediaSignature": "Failed to download boot media signature",
+    "failedToDownloadBootableRecoveryMedia": "Failed to download bootable recovery media",
+    "copied": "Copied",
+    "copyCommand": "Copy command",
+    "noRecoveryTokensFound": "No recovery tokens found",
+    "tokensLoadedCount_one": "{{count}} token loaded",
+    "tokensLoadedCount_other": "{{count}} tokens loaded"
   },
   "restoreWizard": {
     "loadingRestoreOptions": "Loading restore options...",
@@ -683,7 +716,9 @@
     "deviceProgress": "Device progress",
     "complete": "% complete",
     "executionDetailsAreUnavailable": "Execution details are unavailable.",
-    "abortDisasterRecoveryExecution": "Abort disaster recovery execution?"
+    "abortDisasterRecoveryExecution": "Abort disaster recovery execution?",
+    "deviceCount_one": "{{count}} device",
+    "deviceCount_other": "{{count}} devices"
   },
   "dRPlanEditor": {
     "defineRecoveryObjectivesSequenceGroupsAndAssignDevices": "Define recovery objectives, sequence groups, and assign devices in restore order.",
@@ -709,7 +744,11 @@
     "covering": "covering",
     "uniqueDevice": "unique device",
     "cancel": "Cancel",
-    "savePlan": "Save plan"
+    "savePlan": "Save plan",
+    "groupCount_one": "{{count}} group",
+    "groupCount_other": "{{count}} groups",
+    "uniqueDeviceCount_one": "{{count}} unique device",
+    "uniqueDeviceCount_other": "{{count}} unique devices"
   },
   "dRPlanGroupCard": {
     "device": "device",
@@ -722,6 +761,8 @@
     "dependency": "Dependency",
     "noDependency": "No dependency",
     "deviceSelection": "Device selection",
-    "noDevicesAvailableToAssign": "No devices available to assign."
+    "noDevicesAvailableToAssign": "No devices available to assign.",
+    "deviceCount_one": "{{count}} device",
+    "deviceCount_other": "{{count}} devices"
   }
 }

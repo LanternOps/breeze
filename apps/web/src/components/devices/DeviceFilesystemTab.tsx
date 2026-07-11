@@ -568,7 +568,7 @@ export default function DeviceFilesystemTab({
               className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
             >
               <RefreshCw
-                className={`h-3.5 w-3.5 ${refreshing ? t("deviceFilesystemTab.animateSpin") : ""}`}
+                className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`}
               />
               {t("deviceFilesystemTab.refresh")}{" "}
             </button>

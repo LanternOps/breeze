@@ -1403,7 +1403,11 @@
       "startsAfterApproval": "Inicia após aprovação.",
       "creatingDeployment2": "Criando implantação...",
       "createDeployment": "Criar implantação",
-      "review2": "review"
+      "review2": "review",
+      "deviceCount_one": "{{count}} dispositivo",
+      "deviceCount_other": "{{count}} dispositivos",
+      "groupCount_one": "{{count}} grupo",
+      "groupCount_other": "{{count}} grupos"
     },
     "detectionRulesEditor": {
       "detectionRules": "Regras de detecção",

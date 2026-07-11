@@ -1020,7 +1020,9 @@
     "back": "Voltar",
     "next": "Próximo",
     "creating": "Criando...",
-    "createReview": "Criar revisão"
+    "createReview": "Criar revisão",
+    "reviewersSelectedCount_one": "{{count}} revisor selecionado.",
+    "reviewersSelectedCount_other": "{{count}} revisores selecionados."
   },
   "accessReviewList": {
     "noDeadline": "Sem prazo",
@@ -2064,7 +2066,8 @@
     "fontSelection": "Seleção de fonte",
     "timeFormat": "Formato de hora",
     "themingPreferencesSaved": "Preferências de tema salvas.",
-    "failedToSaveThemingPreferences": "Falha ao salvar preferências de tema"
+    "failedToSaveThemingPreferences": "Falha ao salvar preferências de tema",
+    "languageLoadFailed": "Preferência salva, mas o idioma não foi carregado — exibindo em inglês. Verifique sua conexão e tente novamente."
   },
   "ticketCategoriesPage": {
     "sLAMinutesAndHourlyRateMustBeNumbers": "Os minutos de SLA e a taxa horária devem ser números.",

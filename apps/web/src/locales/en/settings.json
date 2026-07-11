@@ -1020,7 +1020,9 @@
     "back": "Back",
     "next": "Next",
     "creating": "Creating...",
-    "createReview": "Create Review"
+    "createReview": "Create Review",
+    "reviewersSelectedCount_one": "{{count}} reviewer selected.",
+    "reviewersSelectedCount_other": "{{count}} reviewers selected."
   },
   "accessReviewList": {
     "noDeadline": "No deadline",
@@ -2064,7 +2066,8 @@
     "fontSelection": "Font selection",
     "timeFormat": "Time format",
     "themingPreferencesSaved": "Theming preferences saved.",
-    "failedToSaveThemingPreferences": "Failed to save theming preferences"
+    "failedToSaveThemingPreferences": "Failed to save theming preferences",
+    "languageLoadFailed": "Preference saved, but the language failed to load — showing English. Check your connection and try again."
   },
   "ticketCategoriesPage": {
     "sLAMinutesAndHourlyRateMustBeNumbers": "SLA minutes and hourly rate must be numbers.",

@@ -559,7 +559,9 @@
     "loading": "Carregando…",
     "loadCustomers": "Carregar clientes",
     "importing": "Importando…",
-    "importSelected": "Importar {{count}} selecionados"
+    "importSelected": "Importar {{count}} selecionados",
+    "customerFailedCount_one": "{{count}} cliente não pôde ser importado",
+    "customerFailedCount_other": "{{count}} clientes não puderam ser importados"
   },
   "quickbooksIntegration": {
     "quickbooksConnected": "QuickBooks conectados.",

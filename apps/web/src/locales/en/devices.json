@@ -15,8 +15,6 @@
     "commandCopiedToClipboard": "Command copied to clipboard",
     "failedToCopyCommand": "Failed to copy command",
     "addNewDevice": "Add New Device",
-    "borderPrimaryTextPrimary": "border-primary text-primary",
-    "borderTransparentTextMutedForegroundHover": "border-transparent text-muted-foreground hover:text-foreground",
     "downloadInstaller": "Download Installer",
     "cliCommands": "CLI Commands",
     "noSitesAvailablePlease": "No sites available. Please",
@@ -24,8 +22,6 @@
     "first": "first.",
     "site": "Site",
     "platform": "Platform",
-    "bgPrimaryTextPrimaryForegroundBorder": "bg-primary text-primary-foreground border-primary",
-    "textMutedForegroundHoverBgMuted": "text-muted-foreground hover:bg-muted hover:text-foreground border-border",
     "windowsMsi": "Windows (.msi)",
     "macosZip": "macOS (.zip)",
     "forLinuxUseTheCliCommands": "For Linux, use the CLI Commands tab.",
@@ -69,8 +65,6 @@
     "windows2": "Windows",
     "linuxMacos": "Linux/macOS",
     "step2RunTheInstallCommand": "Step 2 — Run the install command",
-    "bgPrimaryTextPrimaryForeground": "bg-primary text-primary-foreground",
-    "textMutedForegroundHoverBgMuted2": "text-muted-foreground hover:bg-muted hover:text-foreground",
     "runAsAdministratorInPowershell": "Run as Administrator in PowerShell",
     "runInTerminal": "Run in Terminal",
     "step3WaitForConnection": "Step 3 — Wait for connection",
@@ -79,7 +73,11 @@
     "needToUninstall": "Need to uninstall?",
     "macos2": "macOS:",
     "linux2": "Linux:",
-    "done": "Done"
+    "done": "Done",
+    "expiryMinutes_one": "in about {{count}} minute",
+    "expiryMinutes_other": "in about {{count}} minutes",
+    "expiryHours_one": "in about {{count}} hour",
+    "expiryHours_other": "in about {{count}} hours"
   },
   "changeSiteModal": {
     "failedToLoadSites": "Failed to load sites",
@@ -101,8 +99,6 @@
     "name": "Name",
     "eGProductionServers": "e.g. Production Servers",
     "type": "Type",
-    "bgPrimaryTextPrimaryForeground": "bg-primary text-primary-foreground",
-    "bgBackgroundHoverBgMuted": "bg-background hover:bg-muted",
     "static": "Static",
     "dynamic": "Dynamic",
     "manuallyAddAndRemoveDevicesAfter": "Manually add and remove devices after creation.",
@@ -186,8 +182,6 @@
     "retry": "Retry",
     "noRecentActionsOnThisDevice": "No recent actions on this device.",
     "viewAllActivity": "View all activity →",
-    "bgDestructive10TextDestructive": "bg-destructive/10 text-destructive",
-    "bgMutedTextMutedForeground": "bg-muted text-muted-foreground",
     "automated": "Automated",
     "failed": "· Failed",
     "loading": "Loading…",
@@ -228,8 +222,6 @@
     "v1Only": "v1 only",
     "v0Only": "v0 only",
     "overlapRate": "Overlap rate",
-    "p4": "p-4",
-    "p6": "p-6",
     "metricAnomalies": "Metric Anomalies",
     "anomalyDetectionIsDisabledForThis": "Anomaly detection is disabled for this organization.",
     "anomalyDetectionDisabled": "Anomaly detection disabled",
@@ -242,7 +234,6 @@
     "linkedAnomalyNotFound": "Linked anomaly not found",
     "noOpenAnomalies": "No open anomalies",
     "recentMetricRollupsAreWithinBaseline": "Recent metric rollups are within baseline.",
-    "borderPrimary60BgPrimary5": "border-primary/60 bg-primary/5 ring-2 ring-primary/20",
     "linkedFromAlert": "Linked from alert",
     "observed": "Observed",
     "baseline": "Baseline",
@@ -262,8 +253,6 @@
     "noBootPerformanceData": "No Boot Performance Data",
     "bootMetricsWillAppearAfterThe": "Boot metrics will appear after the agent collects them during a reboot cycle.",
     "collectNow": "Collect Now",
-    "borderEmerald50040BgEmerald": "border-emerald-500/40 bg-emerald-500/10 text-emerald-700",
-    "borderDestructive40BgDestructive10": "border-destructive/40 bg-destructive/10 text-destructive",
     "bootPerformance": "Boot Performance",
     "bootTimeTrendsPhaseBreakdownAnd": "Boot time trends, phase breakdown, and startup item analysis.",
     "refresh": "Refresh",
@@ -279,8 +268,6 @@
     "cpuTime": "CPU Time",
     "diskIO": "Disk I/O",
     "impact": "Impact",
-    "bgEmerald50020TextEmerald": "bg-emerald-500/20 text-emerald-700 border-emerald-500/40",
-    "bgMutedTextMutedForegroundBorder": "bg-muted text-muted-foreground border-muted",
     "enabled": "Enabled",
     "disabled": "Disabled",
     "text": "—",
@@ -301,21 +288,18 @@
     "settings": "Settings",
     "restore": "Restore",
     "decommission": "Decommission",
-    "textDestructive": "text-destructive",
-    "textWarning": "text-warning",
-    "textSuccess": "text-success",
     "loadingTrend": "Loading trend...",
     "trendUnavailable": "Trend unavailable",
     "noTrendData": "No trend data",
     "lastSeen": "Last seen"
   },
   "deviceClassSegment": {
-    "segments": { "all": "All", "agent": "Agent", "network": "Network" },
-    "filterByDeviceClass": "Filter by device class",
-    "bgBackgroundTextForegroundShadowSm": "bg-background text-foreground shadow-sm",
-    "textMutedForegroundHoverTextForeground": "text-muted-foreground hover:text-foreground",
-    "bgPrimary10TextPrimary": "bg-primary/10 text-primary",
-    "bgMutedTextMutedForeground": "bg-muted text-muted-foreground"
+    "segments": {
+      "all": "All",
+      "agent": "Agent",
+      "network": "Network"
+    },
+    "filterByDeviceClass": "Filter by device class"
   },
   "deviceCompare": {
     "failedToLoadDevices": "Failed to load devices",
@@ -333,19 +317,11 @@
     "chooseTheDevicesYouWantTo": "Choose the devices you want to compare. Shareable URLs update automatically.",
     "searchByHostname": "Search by hostname",
     "noDevicesMatchYourSearch": "No devices match your search.",
-    "borderPrimary50BgPrimary5": "border-primary/50 bg-primary/5",
-    "borderMutedHoverBorderPrimary30": "border-muted hover:border-primary/30 hover:bg-muted/40",
-    "opacity50": "opacity-50",
-    "bgGreen500": "bg-green-500",
-    "bgYellow500": "bg-yellow-500",
-    "bgRed500": "bg-red-500",
     "limitReached": "Limit reached",
     "add": "Add",
     "selectedDevices": "Selected devices",
     "clearAll": "Clear all",
     "selectAtLeastTwoDevicesTo": "Select at least two devices to start comparing.",
-    "borderEmerald50040BgEmerald": "border-emerald-500/40 bg-emerald-500/10 text-emerald-700",
-    "borderMutedTextMutedForeground": "border-muted text-muted-foreground",
     "selectAtLeastTwoDevicesTo2": "Select at least two devices to unlock comparison views.",
     "fetchingComparisonData": "Fetching comparison data...",
     "specsAtAGlance": "Specs at a glance",
@@ -375,20 +351,13 @@
     "missing3": "Missing",
     "pending2": "Pending",
     "unknown": "Unknown",
-    "textEmerald700": "text-emerald-700",
-    "textRed700": "text-red-700",
-    "textAmber700": "text-amber-700",
-    "textMutedForeground": "text-muted-foreground",
     "configurationDiff": "Configuration diff",
     "compareConfigurationValuesAcrossDevices": "Compare configuration values across devices.",
     "showAllKeys": "Show all keys",
     "key": "Key",
     "noConfigurationDifferencesDetected": "No configuration differences detected.",
-    "bgMuted30": "bg-muted/30",
     "performanceComparison": "Performance comparison",
     "compareCpuRamAndDiskUtilization": "Compare CPU, RAM, and disk utilization trends.",
-    "bgPrimaryTextPrimaryForeground": "bg-primary text-primary-foreground",
-    "textMutedForegroundHoverTextForeground": "text-muted-foreground hover:text-foreground",
     "noPerformanceDataAvailable": "No performance data available.",
     "selectAtLeastTwoDevicesTo3": "Select at least two devices to access comparison details.",
     "sharePrompt": "Copy this link to share the comparison:",
@@ -542,9 +511,6 @@
     "theOsReportsAPendingReboot": "The OS reports a pending reboot (Windows registry / Linux reboot-required markers).",
     "rebootPending": "Reboot pending",
     "agentV": "Agent v",
-    "gridGap6LgGridCols": "grid gap-6 lg:grid-cols-3",
-    "spaceY6": "space-y-6",
-    "lgColSpan2": "lg:col-span-2",
     "uptime": "Uptime",
     "lastSeen": "Last Seen",
     "loggedInUser": "Logged-in User",
@@ -609,13 +575,8 @@
     "all": "All",
     "success": "Success",
     "failed": "Failed",
-    "bgPrimary10TextPrimary": "bg-primary/10 text-primary",
-    "textMutedForegroundHoverTextForeground": "text-muted-foreground hover:text-foreground",
     "loadingActivities": "Loading activities...",
     "noActivitiesMatchTheCurrentFilters": "No activities match the current filters.",
-    "borderRed50030BgRed": "border-red-500/30 bg-red-500/10 text-red-600",
-    "borderYellow50030BgYellow": "border-yellow-500/30 bg-yellow-500/10 text-yellow-600",
-    "rotate180": "rotate-180",
     "action": "Action",
     "result": "Result",
     "actor": "Actor",
@@ -642,7 +603,6 @@
     "be1DiskCleanupIntelligence": "BE-1: Disk Cleanup Intelligence",
     "analyzeNow": "Analyze Now",
     "cleanupPreview": "Cleanup Preview",
-    "animateSpin": "animate-spin",
     "refresh": "Refresh",
     "openFileManager": "Open File Manager",
     "scanRunning": "Scan running (",
@@ -689,13 +649,7 @@
   "deviceFilterToolbar": {
     "searchDevices": "Search devices",
     "quickFilters": "Quick filters",
-    "borderPrimaryBgPrimaryTextPrimary": "border-primary bg-primary text-primary-foreground hover:bg-primary/90",
-    "hoverBgMuted": "hover:bg-muted",
-    "borderSolidBgMutedTextForeground": "border-solid bg-muted text-foreground",
-    "textMutedForeground": "text-muted-foreground",
     "addFilter": "Add filter",
-    "bgMutedTextForeground": "bg-muted text-foreground",
-    "textMutedForegroundHoverBgMuted": "text-muted-foreground hover:bg-muted hover:text-foreground",
     "advanced": "Advanced",
     "clear": "Clear"
   },
@@ -747,8 +701,6 @@
     "autoMembershipRules": "Auto-membership rules",
     "matches": "Matches",
     "noRulesDefined": "No rules defined.",
-    "borderPrimary60BgPrimary5": "border-primary/60 bg-primary/5",
-    "borderMutedForeground30BgMuted": "border-muted-foreground/30 bg-muted/20",
     "devices": "Devices",
     "dragDevicesBetweenGroups": "Drag devices between groups",
     "dropDevicesHereOrAssignThem": "Drop devices here or assign them in the group editor.",
@@ -763,8 +715,6 @@
     "description": "Description",
     "optionalDescriptionToHelpYourTeam": "Optional description to help your team.",
     "groupType": "Group Type",
-    "borderPrimaryBgPrimary10Text": "border-primary bg-primary/10 text-primary",
-    "hoverBgMuted": "hover:bg-muted",
     "autoMembershipFilter": "Auto-membership Filter",
     "devicesMatchingTheseConditionsWillAutomatically": "Devices matching these conditions will automatically join the group.",
     "manualDeviceAssignment": "Manual Device Assignment",
@@ -828,8 +778,6 @@
     "displayNameSaved": "Display name saved",
     "yes": "Yes",
     "no": "No",
-    "borderPrimaryBgPrimary10Text": "border-primary bg-primary/10 text-primary",
-    "bgMutedTextMutedForeground": "bg-muted text-muted-foreground",
     "select": "Select...",
     "loadingDeviceDetails": "Loading device details...",
     "retry": "Retry",
@@ -839,7 +787,6 @@
     "leaveBlankToClear": "Leave blank to clear",
     "save": "Save",
     "cancel": "Cancel",
-    "textMutedForegroundItalic": "text-muted-foreground italic",
     "editDisplayName": "Edit display name",
     "serialNumber": "Serial Number",
     "manufacturer": "Manufacturer",
@@ -931,8 +878,6 @@
     "status": "Status",
     "noIpAssignmentsMatchYourFilters": "No IP assignments match your filters.",
     "noIpHistoryReportedYet": "No IP history reported yet.",
-    "bgGreen50010TextGreen": "bg-green-500/10 text-green-600",
-    "bgMutedTextMutedForeground": "bg-muted text-muted-foreground",
     "active": "Active",
     "inactive": "Inactive",
     "showing": "Showing",
@@ -960,10 +905,7 @@
     "status": "Status",
     "agent": "Agent",
     "lastSeen": "Last seen",
-    "textMutedForeground": "text-muted-foreground",
-    "bgMuted30": "bg-muted/30",
     "thisDevice": "(this device)",
-    "textSuccess": "text-success",
     "fillSuccess": "fill-success",
     "fillMutedForeground": "fill-muted-foreground",
     "online": "Online"
@@ -992,22 +934,45 @@
       "lastSeen": "Sort by last seen time"
     },
     "statuses": {
-      "compact": { "online": "Up", "offline": "Down", "maintenance": "Maint", "decommissioned": "Decom", "quarantined": "Quar", "updating": "Updating", "pending": "Pend" },
-      "full": { "online": "Online", "offline": "Offline", "maintenance": "Maintenance", "decommissioned": "Decommissioned", "quarantined": "Quarantined", "updating": "Updating", "pending": "Pending" }
+      "compact": {
+        "online": "Up",
+        "offline": "Down",
+        "maintenance": "Maint",
+        "decommissioned": "Decom",
+        "quarantined": "Quar",
+        "updating": "Updating",
+        "pending": "Pend"
+      },
+      "full": {
+        "online": "Online",
+        "offline": "Offline",
+        "maintenance": "Maintenance",
+        "decommissioned": "Decommissioned",
+        "quarantined": "Quarantined",
+        "updating": "Updating",
+        "pending": "Pending"
+      }
     },
     "roles": {
-      "workstation": "Workstation", "server": "Server", "printer": "Printer", "router": "Router", "switch": "Switch", "firewall": "Firewall", "access_point": "Access Point", "phone": "Phone", "iot": "IoT", "camera": "Camera", "nas": "NAS", "unknown": "Unknown"
+      "workstation": "Workstation",
+      "server": "Server",
+      "printer": "Printer",
+      "router": "Router",
+      "switch": "Switch",
+      "firewall": "Firewall",
+      "access_point": "Access Point",
+      "phone": "Phone",
+      "iot": "IoT",
+      "camera": "Camera",
+      "nas": "NAS",
+      "unknown": "Unknown"
     },
     "selectDevice": "Select {{hostname}}",
     "desc": "desc",
     "asc": "asc",
-    "textRight": "text-right",
     "none": "none",
     "ascending": "ascending",
     "descending": "descending",
-    "bgDestructive": "bg-destructive",
-    "bgWarning": "bg-warning",
-    "bgPrimary70": "bg-primary/70",
     "text": "—",
     "nA": "N/A",
     "improving": "Improving",
@@ -1017,8 +982,6 @@
     "onBatteryPower": "On battery power",
     "networkDiscoveredDevice": "Network-discovered device",
     "agentManagedEndpoint": "Agent-managed endpoint",
-    "bgInfo15TextInfoBorder": "bg-info/15 text-info border-info/30",
-    "bgPrimary10TextPrimaryBorder": "bg-primary/10 text-primary border-primary/30",
     "network": "Network",
     "agent": "Agent",
     "yes": "Yes",
@@ -1026,25 +989,17 @@
     "agentSilent": "Agent silent ·",
     "theOsReportsAPendingReboot": "The OS reports a pending reboot (Windows registry / Linux reboot-required markers).",
     "rebootPending": "Reboot pending",
-    "textDestructive": "text-destructive",
-    "textSuccess": "text-success",
-    "textMutedForeground": "text-muted-foreground",
-    "fontMediumTextDestructiveTabularNums": "font-medium text-destructive tabular-nums",
-    "tabularNums": "tabular-nums",
     "text2": "+",
     "of": "of",
     "devices": "devices",
     "advancedFilterActive": "Advanced filter active",
     "filterByDeviceClass": "Filter by device class",
-    "bgPrimaryTextPrimaryForeground": "bg-primary text-primary-foreground",
-    "textMutedForegroundHoverBgMuted": "text-muted-foreground hover:bg-muted",
     "filterByVpn": "Filter by VPN",
     "allVpn": "All VPN",
     "anyActiveVpn": "Any active VPN",
     "off": "off",
     "on": "on",
     "multiBootMachinesTuckExpectedOffline": "Multi-boot machines: tuck expected-offline boot profiles beneath their online sibling as thin strips. Off = flat list.",
-    "borderPrimary40BgPrimary10": "border-primary/40 bg-primary/10 text-primary",
     "collapseLinkedInactiveProfiles": "Collapse linked inactive profiles",
     "columns": "Columns",
     "visibleInOrder": "Visible (in order)",
@@ -1066,7 +1021,6 @@
     "selectAllDevicesOnThisPage": "Select all devices on this page",
     "actions": "Actions",
     "noDevicesFoundTryAdjustingYour": "No devices found. Try adjusting your search or filters.",
-    "borderL2BorderLPrimary": "border-l-2 border-l-primary/40",
     "linkedMultiBootProfileAllBoot": "Linked multi-boot profile — all boot profiles of this machine are offline.",
     "view": "View",
     "deviceActions": "Device actions",
@@ -1101,8 +1055,6 @@
     "eGComAppleOpendirectoryd": "e.g. com.apple.opendirectoryd",
     "eGSshd": "e.g. sshd",
     "eGSourceName": "e.g. source name",
-    "borderPrimaryBgPrimary10Text": "border-primary bg-primary/10 text-primary",
-    "borderMutedTextMutedForegroundHover": "border-muted text-muted-foreground hover:border-muted-foreground hover:text-foreground",
     "startDate": "Start Date",
     "endDate": "End Date",
     "deviceLogs": "Device Logs",
@@ -1112,8 +1064,6 @@
     "noDeviceLogsRecordedYet": "No device logs recorded yet."
   },
   "deviceManagementTab": {
-    "textForeground": "text-foreground",
-    "textMutedForeground": "text-muted-foreground",
     "loadingManagementPosture": "Loading management posture...",
     "retry": "Retry",
     "noManagementData": "No Management Data",
@@ -1145,12 +1095,6 @@
     "performance": "Performance",
     "performanceMetrics": "Performance Metrics",
     "realTimeSystemResourceUtilization": "Real-time system resource utilization",
-    "borderBlue500BgBlue500": "border-blue-500 bg-blue-500/10 text-blue-700",
-    "borderMutedTextMutedForegroundHover": "border-muted text-muted-foreground hover:border-blue-500/50",
-    "borderGreen500BgGreen500": "border-green-500 bg-green-500/10 text-green-700",
-    "borderMutedTextMutedForegroundHover2": "border-muted text-muted-foreground hover:border-green-500/50",
-    "borderPurple500BgPurple500": "border-purple-500 bg-purple-500/10 text-purple-700",
-    "borderMutedTextMutedForegroundHover3": "border-muted text-muted-foreground hover:border-purple-500/50",
     "disk": "Disk",
     "current": "current"
   },
@@ -1791,7 +1735,76 @@
     "addFilter": "Add filter",
     "newGroup": "New group…",
     "noMatchingFields": "No matching fields",
-    "searchPlaceholder": "Search fields..."
+    "searchPlaceholder": "Search fields...",
+    "categories": {
+      "core": "Core",
+      "os": "OS",
+      "hardware": "Hardware",
+      "network": "Network",
+      "metrics": "Metrics",
+      "software": "Software",
+      "hierarchy": "Hierarchy",
+      "computed": "Computed",
+      "custom": "Custom Fields"
+    },
+    "fields": {
+      "hostname": "Hostname",
+      "displayName": "Display Name",
+      "status": "Status",
+      "agentVersion": "Agent Version",
+      "enrolledAt": "Enrolled At",
+      "lastSeenAt": "Last Seen At",
+      "tags": "Tags",
+      "deviceRole": "Device Role",
+      "lastUser": "Last User",
+      "isHeadless": "Headless",
+      "uptimeSeconds": "Uptime (seconds)",
+      "watchdogStatus": "Watchdog Status",
+      "quarantinedAt": "Quarantined At",
+      "osType": "OS Type",
+      "osVersion": "OS Version",
+      "osBuild": "OS Build",
+      "architecture": "Architecture",
+      "lastSeenIp": "Last Seen IP",
+      "orgId": "Organization",
+      "siteId": "Site",
+      "groupId": "Device Group",
+      "daysSinceLastSeen": "Days Since Last Seen",
+      "daysSinceEnrolled": "Days Since Enrolled",
+      "patches": {
+        "pending": "Needs Patches"
+      },
+      "alerts": {
+        "critical": "Critical Alert Active"
+      },
+      "system": {
+        "rebootRequired": "Reboot Required"
+      },
+      "hardware": {
+        "manufacturer": "Manufacturer",
+        "model": "Model",
+        "serialNumber": "Serial Number",
+        "cpuModel": "CPU Model",
+        "cpuCores": "CPU Cores",
+        "ramTotalMb": "RAM (MB)",
+        "diskTotalGb": "Disk Size (GB)",
+        "gpuModel": "GPU Model"
+      },
+      "network": {
+        "ipAddress": "IP Address",
+        "publicIp": "Public IP",
+        "macAddress": "MAC Address"
+      },
+      "metrics": {
+        "cpuPercent": "CPU %",
+        "ramPercent": "RAM %",
+        "diskPercent": "Disk %"
+      },
+      "software": {
+        "installed": "Has Software Installed",
+        "notInstalled": "Missing Software"
+      }
+    }
   },
   "filterChipBar": {
     "advanced": "Advanced",
@@ -1801,7 +1814,65 @@
     "clearAll": "Clear all",
     "removeField": "Remove {{field}}",
     "showShortcuts": "Show filter shortcuts",
-    "unknownField": "unknown: {{field}}"
+    "unknownField": "unknown: {{field}}",
+    "fields": {
+      "hostname": "Hostname",
+      "displayName": "Display Name",
+      "status": "Status",
+      "agentVersion": "Agent Version",
+      "enrolledAt": "Enrolled At",
+      "lastSeenAt": "Last Seen At",
+      "tags": "Tags",
+      "deviceRole": "Device Role",
+      "lastUser": "Last User",
+      "isHeadless": "Headless",
+      "uptimeSeconds": "Uptime (seconds)",
+      "watchdogStatus": "Watchdog Status",
+      "quarantinedAt": "Quarantined At",
+      "osType": "OS Type",
+      "osVersion": "OS Version",
+      "osBuild": "OS Build",
+      "architecture": "Architecture",
+      "lastSeenIp": "Last Seen IP",
+      "orgId": "Organization",
+      "siteId": "Site",
+      "groupId": "Device Group",
+      "daysSinceLastSeen": "Days Since Last Seen",
+      "daysSinceEnrolled": "Days Since Enrolled",
+      "patches": {
+        "pending": "Needs Patches"
+      },
+      "alerts": {
+        "critical": "Critical Alert Active"
+      },
+      "system": {
+        "rebootRequired": "Reboot Required"
+      },
+      "hardware": {
+        "manufacturer": "Manufacturer",
+        "model": "Model",
+        "serialNumber": "Serial Number",
+        "cpuModel": "CPU Model",
+        "cpuCores": "CPU Cores",
+        "ramTotalMb": "RAM (MB)",
+        "diskTotalGb": "Disk Size (GB)",
+        "gpuModel": "GPU Model"
+      },
+      "network": {
+        "ipAddress": "IP Address",
+        "publicIp": "Public IP",
+        "macAddress": "MAC Address"
+      },
+      "metrics": {
+        "cpuPercent": "CPU %",
+        "ramPercent": "RAM %",
+        "diskPercent": "Disk %"
+      },
+      "software": {
+        "installed": "Has Software Installed",
+        "notInstalled": "Missing Software"
+      }
+    }
   },
   "filterHelpPopover": {
     "ariaLabel": "Filter keyboard shortcuts",
@@ -1828,7 +1899,65 @@
     "noConditions": "No conditions yet.",
     "removeCondition": "Remove condition",
     "removeGroup": "Remove group",
-    "reset": "Reset"
+    "reset": "Reset",
+    "fields": {
+      "hostname": "Hostname",
+      "displayName": "Display Name",
+      "status": "Status",
+      "agentVersion": "Agent Version",
+      "enrolledAt": "Enrolled At",
+      "lastSeenAt": "Last Seen At",
+      "tags": "Tags",
+      "deviceRole": "Device Role",
+      "lastUser": "Last User",
+      "isHeadless": "Headless",
+      "uptimeSeconds": "Uptime (seconds)",
+      "watchdogStatus": "Watchdog Status",
+      "quarantinedAt": "Quarantined At",
+      "osType": "OS Type",
+      "osVersion": "OS Version",
+      "osBuild": "OS Build",
+      "architecture": "Architecture",
+      "lastSeenIp": "Last Seen IP",
+      "orgId": "Organization",
+      "siteId": "Site",
+      "groupId": "Device Group",
+      "daysSinceLastSeen": "Days Since Last Seen",
+      "daysSinceEnrolled": "Days Since Enrolled",
+      "patches": {
+        "pending": "Needs Patches"
+      },
+      "alerts": {
+        "critical": "Critical Alert Active"
+      },
+      "system": {
+        "rebootRequired": "Reboot Required"
+      },
+      "hardware": {
+        "manufacturer": "Manufacturer",
+        "model": "Model",
+        "serialNumber": "Serial Number",
+        "cpuModel": "CPU Model",
+        "cpuCores": "CPU Cores",
+        "ramTotalMb": "RAM (MB)",
+        "diskTotalGb": "Disk Size (GB)",
+        "gpuModel": "GPU Model"
+      },
+      "network": {
+        "ipAddress": "IP Address",
+        "publicIp": "Public IP",
+        "macAddress": "MAC Address"
+      },
+      "metrics": {
+        "cpuPercent": "CPU %",
+        "ramPercent": "RAM %",
+        "diskPercent": "Disk %"
+      },
+      "software": {
+        "installed": "Has Software Installed",
+        "notInstalled": "Missing Software"
+      }
+    }
   },
   "filterValueEditor": {
     "any": "Any",
@@ -1923,6 +2052,10 @@
       "networkReachability": "Network Reachability",
       "openPorts": "Open Ports",
       "snmpData": "SNMP Data"
+    },
+    "tabs": {
+      "overview": "Overview",
+      "monitoring": "Monitoring"
     },
     "toasts": {
       "typeReset": "Type Reset",

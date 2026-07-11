@@ -144,7 +144,9 @@ function getSelectedTargetSummary(
   if (targetMode === "tree") {
     const count = selectedDevices.size;
     return {
-      headline: `${count} device${count === 1 ? "" : "s"}`,
+      headline: i18n.t("policies:software.deploymentWizard.deviceCount", {
+        count,
+      }),
       detail: i18n.t(
         "policies:software.deploymentWizard.selectedDirectlyFromTheHierarchy",
       ),

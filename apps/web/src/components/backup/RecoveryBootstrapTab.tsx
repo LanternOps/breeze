@@ -19,7 +19,7 @@ import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatTime } from './backupDashboardHelpers';
 import { useTranslation } from 'react-i18next';
-import '../../lib/i18n';
+import { i18n } from '@/lib/i18n';
 
 type RecoveryTokenStatus = 'active' | 'revoked' | 'expired' | 'used' | 'completed' | string;
 type RecoveryTokenRestoreType = 'full' | 'selective' | 'bare_metal' | string;
@@ -431,13 +431,15 @@ function statusClassName(status?: string | null): string {
 function restoreTypeLabel(type?: string | null): string {
   switch (type) {
     case 'full':
-      return 'Full restore';
+      return i18n.t('backup:recoveryBootstrapTab.restoreTypeLabelFull');
     case 'selective':
-      return 'Selective restore';
+      return i18n.t('backup:recoveryBootstrapTab.restoreTypeLabelSelective');
     case 'bare_metal':
-      return 'Bare metal';
+      return i18n.t('backup:recoveryBootstrapTab.restoreTypeLabelBareMetal');
     default:
-      return type ? type.replace(/_/g, ' ') : 'Unknown';
+      return type
+        ? type.replace(/_/g, ' ')
+        : i18n.t('backup:recoveryBootstrapTab.restoreTypeLabelUnknown');
   }
 }
 
@@ -493,10 +495,10 @@ export default function RecoveryBootstrapTab() {
       fetchWithAuth('/backup/bmr/boot-media?limit=100'),
     ]);
     if (!mediaResponse.ok) {
-      throw new Error('Failed to load recovery bundles');
+      throw new Error(t('recoveryBootstrapTab.failedToLoadRecoveryBundles'));
     }
     if (!bootMediaResponse.ok) {
-      throw new Error('Failed to load bootable recovery media');
+      throw new Error(t('recoveryBootstrapTab.failedToLoadBootableRecoveryMedia'));
     }
 
     const mediaPayload = await mediaResponse.json();
@@ -544,10 +546,10 @@ export default function RecoveryBootstrapTab() {
           fetchWithAuth('/backup/bmr/tokens?limit=100'),
         ]);
         if (!snapshotsResponse.ok) {
-          throw new Error('Failed to load snapshots');
+          throw new Error(t('recoveryBootstrapTab.failedToLoadSnapshots'));
         }
         if (!tokensResponse.ok) {
-          throw new Error('Failed to load recovery tokens');
+          throw new Error(t('recoveryBootstrapTab.failedToLoadRecoveryTokens'));
         }
         const payload = normalizeApiResponse(await snapshotsResponse.json());
         const list = Array.isArray(payload.snapshots)
@@ -605,7 +607,7 @@ export default function RecoveryBootstrapTab() {
         await refreshArtifacts();
       } catch (err) {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Failed to load snapshots');
+          setError(err instanceof Error ? err.message : t('recoveryBootstrapTab.failedToLoadSnapshots'));
         }
       } finally {
         if (!cancelled) setLoadingSnapshots(false);
@@ -639,7 +641,7 @@ export default function RecoveryBootstrapTab() {
 
     const timer = window.setInterval(() => {
       void refreshArtifacts().catch((err) => {
-        setError(err instanceof Error ? err.message : 'Failed to refresh recovery artifacts');
+        setError(err instanceof Error ? err.message : t('recoveryBootstrapTab.failedToRefreshRecoveryArtifacts'));
       });
     }, 10000);
 
@@ -748,7 +750,7 @@ export default function RecoveryBootstrapTab() {
 
       if (!response.ok) {
         const body = await response.json().catch(() => null);
-        throw new Error(body?.error ?? 'Failed to create recovery token');
+        throw new Error(body?.error ?? t('recoveryBootstrapTab.failedToCreateRecoveryToken'));
       }
 
       const payload = normalizeApiResponse(await response.json());
@@ -762,7 +764,7 @@ export default function RecoveryBootstrapTab() {
       setCreateTargetConfig('');
       setCreateExpiresInHours('24');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create recovery token');
+      setError(err instanceof Error ? err.message : t('recoveryBootstrapTab.failedToCreateRecoveryToken'));
     } finally {
       setCreating(false);
     }
@@ -782,7 +784,7 @@ export default function RecoveryBootstrapTab() {
       const response = await fetchWithAuth(`/backup/bmr/tokens/${encodeURIComponent(tokenId)}`);
       if (!response.ok) {
         const body = await response.json().catch(() => null);
-        throw new Error(body?.error ?? 'Failed to load token');
+        throw new Error(body?.error ?? t('recoveryBootstrapTab.failedToLoadToken'));
       }
       const payload = normalizeApiResponse(await response.json());
       const token = toTokenRecord(payload, { id: tokenId });
@@ -790,7 +792,7 @@ export default function RecoveryBootstrapTab() {
       setLoadTokenId('');
       setTokenMessage('Recovery token metadata loaded.');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load token');
+      setError(err instanceof Error ? err.message : t('recoveryBootstrapTab.failedToLoadToken'));
     } finally {
       setRefreshingTokenId(null);
     }
@@ -803,12 +805,12 @@ export default function RecoveryBootstrapTab() {
         const response = await fetchWithAuth(`/backup/bmr/tokens/${encodeURIComponent(tokenId)}`);
         if (!response.ok) {
           const body = await response.json().catch(() => null);
-          throw new Error(body?.error ?? 'Failed to refresh token');
+          throw new Error(body?.error ?? t('recoveryBootstrapTab.failedToRefreshToken'));
         }
         const payload = normalizeApiResponse(await response.json());
         updateToken(tokenId, (current) => toTokenRecord(payload, current));
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to refresh token');
+        setError(err instanceof Error ? err.message : t('recoveryBootstrapTab.failedToRefreshToken'));
       } finally {
         setRefreshingTokenId(null);
       }
@@ -833,7 +835,7 @@ export default function RecoveryBootstrapTab() {
         });
         if (!response.ok) {
           const body = await response.json().catch(() => null);
-          throw new Error(body?.error ?? 'Failed to preview bootstrap');
+          throw new Error(body?.error ?? t('recoveryBootstrapTab.failedToPreviewBootstrap'));
         }
 
         const payload = normalizeApiResponse(await response.json());
@@ -853,7 +855,7 @@ export default function RecoveryBootstrapTab() {
         setSelectedTokenId(tokenId);
         setTokenMessage('Bootstrap preview loaded. The token has been authenticated for the recovery session.');
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to preview bootstrap');
+        setError(err instanceof Error ? err.message : t('recoveryBootstrapTab.failedToPreviewBootstrap'));
       } finally {
         setPreviewingTokenId(null);
       }
@@ -865,7 +867,7 @@ export default function RecoveryBootstrapTab() {
     async (tokenId: string) => {
       const ok = typeof window === 'undefined'
         ? true
-        : window.confirm('Revoke this recovery token? The recovery agent will no longer be able to use it.');
+        : window.confirm(t('recoveryBootstrapTab.revokeTokenConfirm'));
       if (!ok) return;
 
       try {
@@ -876,7 +878,7 @@ export default function RecoveryBootstrapTab() {
         });
         if (!response.ok) {
           const body = await response.json().catch(() => null);
-          throw new Error(body?.error ?? 'Failed to revoke token');
+          throw new Error(body?.error ?? t('recoveryBootstrapTab.failedToRevokeToken'));
         }
         updateToken(tokenId, (current) => ({ ...current, status: 'revoked' }));
         setMediaCatalog((prev) =>
@@ -886,7 +888,7 @@ export default function RecoveryBootstrapTab() {
         );
         setTokenMessage('Recovery token revoked.');
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to revoke token');
+        setError(err instanceof Error ? err.message : t('recoveryBootstrapTab.failedToRevokeToken'));
       } finally {
         setRefreshingTokenId(null);
       }
@@ -900,7 +902,7 @@ export default function RecoveryBootstrapTab() {
       setCopyStatusId(id);
       window.setTimeout(() => setCopyStatusId((current) => (current === id ? null : current)), 1500);
     } catch {
-      setError('Failed to copy to clipboard.');
+      setError(t('recoveryBootstrapTab.failedToCopyToClipboard'));
     }
   }, []);
 
@@ -923,7 +925,7 @@ export default function RecoveryBootstrapTab() {
       });
       if (!response.ok) {
         const body = await response.json().catch(() => null);
-        throw new Error(body?.error ?? 'Failed to create recovery bundle');
+        throw new Error(body?.error ?? t('recoveryBootstrapTab.failedToCreateRecoveryBundle'));
       }
       const payload = normalizeApiResponse(await response.json());
       if (isRecord(payload)) {
@@ -939,7 +941,7 @@ export default function RecoveryBootstrapTab() {
       setTokenMessage('Recovery bundle build started.');
       await refreshArtifacts();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create recovery bundle');
+      setError(err instanceof Error ? err.message : t('recoveryBootstrapTab.failedToCreateRecoveryBundle'));
     } finally {
       setCreatingMedia(false);
     }
@@ -953,7 +955,7 @@ export default function RecoveryBootstrapTab() {
       const response = await fetchWithAuth(artifact.downloadPath);
       if (!response.ok) {
         const body = await response.json().catch(() => null);
-        throw new Error(body?.error ?? 'Failed to download recovery bundle');
+        throw new Error(body?.error ?? t('recoveryBootstrapTab.failedToDownloadRecoveryBundle'));
       }
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
@@ -965,7 +967,7 @@ export default function RecoveryBootstrapTab() {
       anchor.remove();
       window.URL.revokeObjectURL(url);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to download recovery bundle');
+      setError(err instanceof Error ? err.message : t('recoveryBootstrapTab.failedToDownloadRecoveryBundle'));
     } finally {
       setLoadingMedia(false);
     }
@@ -1016,7 +1018,7 @@ export default function RecoveryBootstrapTab() {
       });
       if (!response.ok) {
         const body = await response.json().catch(() => null);
-        throw new Error(body?.error ?? 'Failed to create bootable recovery media');
+        throw new Error(body?.error ?? t('recoveryBootstrapTab.failedToCreateBootableRecoveryMedia'));
       }
       const payload = normalizeApiResponse(await response.json());
       if (isRecord(payload)) {
@@ -1032,7 +1034,7 @@ export default function RecoveryBootstrapTab() {
       setTokenMessage('Bootable recovery media build started.');
       await refreshArtifacts();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create bootable recovery media');
+      setError(err instanceof Error ? err.message : t('recoveryBootstrapTab.failedToCreateBootableRecoveryMedia'));
     } finally {
       setCreatingBootMedia(false);
     }
@@ -1225,7 +1227,9 @@ export default function RecoveryBootstrapTab() {
                             ) : (
                               <Copy className="h-3.5 w-3.5" />
                             )}
-                            {copyStatusId === selectedToken.id ? 'Copied' : 'Copy command'}
+                            {copyStatusId === selectedToken.id
+                              ? t('recoveryBootstrapTab.copied')
+                              : t('recoveryBootstrapTab.copyCommand')}
                           </button>
                         </>
                       ) : null}
@@ -1338,7 +1342,7 @@ export default function RecoveryBootstrapTab() {
                                     void handleDownloadArtifact(
                                       artifact.signatureDownloadPath!,
                                       `${artifact.platform}-${artifact.architecture}-recovery-bundle.tar.gz.minisig`,
-                                      'Failed to download recovery bundle signature'
+                                      t('recoveryBootstrapTab.failedToDownloadRecoveryBundleSignature')
                                     )
                                   }
                                   disabled={loadingMedia}
@@ -1437,7 +1441,7 @@ export default function RecoveryBootstrapTab() {
                                     void handleDownloadArtifact(
                                       artifact.signatureDownloadPath!,
                                       `${artifact.platform}-${artifact.architecture}.${artifact.mediaType}.minisig`,
-                                      'Failed to download boot media signature'
+                                      t('recoveryBootstrapTab.failedToDownloadBootMediaSignature')
                                     )
                                   }
                                   disabled={loadingMedia}
@@ -1453,7 +1457,7 @@ export default function RecoveryBootstrapTab() {
                                     void handleDownloadArtifact(
                                       artifact.downloadPath!,
                                       `breeze-recovery-${artifact.platform}-${artifact.architecture}.${artifact.mediaType}`,
-                                      'Failed to download bootable recovery media'
+                                      t('recoveryBootstrapTab.failedToDownloadBootableRecoveryMedia')
                                     )
                                   }
                                   disabled={loadingMedia}
@@ -1659,7 +1663,9 @@ export default function RecoveryBootstrapTab() {
             <div className="flex items-center justify-between gap-3">
               <h3 className="text-lg font-semibold text-foreground">{t('recoveryBootstrapTab.tokenCatalog')}</h3>
               <div className="text-xs text-muted-foreground">
-                {catalog.length === 0 ? 'No recovery tokens found' : `${catalog.length} token${catalog.length === 1 ? '' : 's'} loaded`}
+                {catalog.length === 0
+                  ? t('recoveryBootstrapTab.noRecoveryTokensFound')
+                  : t('recoveryBootstrapTab.tokensLoadedCount', { count: catalog.length })}
               </div>
             </div>
 

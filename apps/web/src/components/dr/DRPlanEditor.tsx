@@ -465,7 +465,7 @@ export default function DRPlanEditor({
       <div className="flex items-center justify-between border-t px-6 py-4">
         <div className="flex items-center gap-3 text-xs text-muted-foreground">
           <Layers3 className="h-4 w-4 text-primary" />
-          {groups.length} {t('dRPlanEditor.group')}{groups.length !== 1 ? 's' : ''} {t('dRPlanEditor.covering')} {selectedDeviceCount} {t('dRPlanEditor.uniqueDevice')} {selectedDeviceCount !== 1 ? 's' : ''}
+          {t('dRPlanEditor.groupCount', { count: groups.length })} {t('dRPlanEditor.covering')} {t('dRPlanEditor.uniqueDeviceCount', { count: selectedDeviceCount })}
         </div>
         <div className="flex gap-3">
           <button

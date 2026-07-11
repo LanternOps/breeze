@@ -547,7 +547,7 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
                 {t('deviceBackupTab.manageSnapshotProtectionForThisDeviceWithoutLeaving')} </p>
             </div>
             <span className="text-xs text-muted-foreground">
-              {snapshots.length} {t('deviceBackupTab.restorePoint')}{snapshots.length === 1 ? '' : 's'}
+              {t('deviceBackupTab.restorePointCount', { count: snapshots.length })}
             </span>
           </div>
 

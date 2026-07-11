@@ -1692,7 +1692,10 @@
       "approved": "aprovado",
       "rejected": "rejeitado"
     },
-    "actions": {},
+    "actions": {
+      "apply": "aplicar",
+      "rollback": "reverter"
+    },
     "table": {
       "checkId": "ID da verificação",
       "device": "Dispositivo",

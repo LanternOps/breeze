@@ -35,8 +35,10 @@ type OsDistributionPoint = {
   value: number;
 };
 
+type AlertSeverityKey = 'critical' | 'high' | 'medium' | 'low' | 'acknowledged';
+
 type AlertRow = {
-  severity: string;
+  severity: AlertSeverityKey;
   count: number;
 };
 
@@ -206,9 +208,7 @@ const normalizeOsDistribution = (raw: unknown): OsDistributionPoint[] => {
     .filter(item => item.name);
 };
 
-type Translate = (key: string, options?: Record<string, unknown>) => string;
-
-const buildAlertStats = (raw: unknown, t: Translate) => {
+const buildAlertStats = (raw: unknown) => {
   const record = getRecord(raw);
   const source = isRecord(record.data) ? record.data : record;
   const bySeverity = getRecord(source.bySeverity);
@@ -219,14 +219,14 @@ const buildAlertStats = (raw: unknown, t: Translate) => {
   const acknowledged = pickOptionalNumber(source.acknowledged, bySeverity.acknowledged);
 
   const rows: AlertRow[] = [
-    { severity: t('analytics.analyticsPage.alertSeverity.critical'), count: critical },
-    { severity: t('analytics.analyticsPage.alertSeverity.high'), count: high },
-    { severity: t('analytics.analyticsPage.alertSeverity.medium'), count: medium },
-    { severity: t('analytics.analyticsPage.alertSeverity.low'), count: low }
+    { severity: 'critical', count: critical },
+    { severity: 'high', count: high },
+    { severity: 'medium', count: medium },
+    { severity: 'low', count: low }
   ];
 
   if (acknowledged !== undefined) {
-    rows.push({ severity: t('analytics.analyticsPage.alertSeverity.acknowledged'), count: acknowledged });
+    rows.push({ severity: 'acknowledged', count: acknowledged });
   }
 
   return {
@@ -463,7 +463,7 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
         (async () => {
           try {
             const alertData = await fetchJson(withQuery('/alerts/summary'));
-            const { rows, summary } = buildAlertStats(alertData, t);
+            const { rows, summary } = buildAlertStats(alertData);
             setAlertRows(rows);
             alertSummary = summary;
           } catch (err) {
@@ -643,7 +643,10 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
             { key: 'severity', label: t('analytics.analyticsPage.widgets.alertTable.severity'), sortable: true },
             { key: 'count', label: t('analytics.analyticsPage.widgets.alertTable.count'), sortable: true, className: 'text-right' }
           ],
-          data: alertRows
+          data: alertRows.map(row => ({
+            ...row,
+            severity: t(/* i18n-dynamic */ `analytics.analyticsPage.alertSeverity.${row.severity}`)
+          }))
         }
       },
       {

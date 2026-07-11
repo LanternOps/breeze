@@ -1774,7 +1774,7 @@ export default function DeviceList({
                 title={t("deviceList.multiBootMachinesTuckExpectedOffline")}
                 className={`flex h-10 items-center gap-1.5 whitespace-nowrap rounded-md border px-3 text-sm font-medium ${
                   linkedCollapse === "on"
-                    ? "border-primary/40 bg-primary/10"
+                    ? "border-primary/40 bg-primary/10 text-primary"
                     : "text-muted-foreground hover:bg-muted"
                 }`}
               >

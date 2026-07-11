@@ -356,7 +356,7 @@ export default function DRExecutionView({
                               {group.sequence + 1}. {group.name}
                             </p>
                             <p className="text-xs text-muted-foreground">
-                              {group.devices.length} {t('dRExecutionView.device')}{group.devices.length !== 1 ? 's' : ''} · {group.estimatedDurationMinutes ?? '—'} {t('dRExecutionView.minEstimate')} </p>
+                              {t('dRExecutionView.deviceCount', { count: group.devices.length })} · {group.estimatedDurationMinutes ?? '—'} {t('dRExecutionView.minEstimate')} </p>
                           </div>
                         </div>
                         <span className="rounded-full bg-muted px-3 py-1 text-xs font-medium capitalize text-foreground">

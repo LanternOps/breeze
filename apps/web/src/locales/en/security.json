@@ -1692,7 +1692,10 @@
       "approved": "approved",
       "rejected": "rejected"
     },
-    "actions": {},
+    "actions": {
+      "apply": "apply",
+      "rollback": "rollback"
+    },
     "table": {
       "checkId": "Check ID",
       "device": "Device",

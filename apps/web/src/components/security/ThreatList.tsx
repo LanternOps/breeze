@@ -71,10 +71,8 @@ export default function ThreatList({ timezone }: ThreatListProps) {
     try {
       const params = new URLSearchParams({ limit: "100" });
       if (query.trim()) params.set("search", query.trim());
-      if (severityFilter !== t("securityThreatList.all"))
-        params.set("severity", severityFilter);
-      if (statusFilter !== t("securityThreatList.all"))
-        params.set("status", statusFilter);
+      if (severityFilter !== "all") params.set("severity", severityFilter);
+      if (statusFilter !== "all") params.set("status", statusFilter);
       if (startDate) params.set("startDate", new Date(startDate).toISOString());
       if (endDate) {
         const end = new Date(endDate);
@@ -91,7 +89,7 @@ export default function ThreatList({ timezone }: ThreatListProps) {
       let nextThreats: Threat[] = Array.isArray(payload.data)
         ? payload.data
         : [];
-      if (deviceFilter !== t("securityThreatList.all")) {
+      if (deviceFilter !== "all") {
         nextThreats = nextThreats.filter(
           (threat) => threat.deviceName === deviceFilter,
         );

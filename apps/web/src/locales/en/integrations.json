@@ -559,7 +559,9 @@
     "loading": "Loading…",
     "loadCustomers": "Load customers",
     "importing": "Importing…",
-    "importSelected": "Import {{count}} selected"
+    "importSelected": "Import {{count}} selected",
+    "customerFailedCount_one": "{{count}} customer failed to import",
+    "customerFailedCount_other": "{{count}} customers failed to import"
   },
   "quickbooksIntegration": {
     "quickbooksConnected": "QuickBooks connected.",

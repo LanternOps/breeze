@@ -15,7 +15,7 @@ import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatNumber } from '@/lib/i18n/format';
 import { useTranslation } from 'react-i18next';
-import '../../lib/i18n';
+import { i18n } from '@/lib/i18n';
 
 type JobStatus = 'completed' | 'running' | 'failed' | 'queued' | 'cancelled';
 
@@ -157,7 +157,7 @@ function mapJob(raw: BackupJobRaw): BackupJob {
         ? `${raw.errorLog.slice(0, 57)}...`
         : raw.errorLog
       : raw.errorCount
-        ? `${raw.errorCount} error${raw.errorCount !== 1 ? 's' : ''}`
+        ? i18n.t('backup:backupJobList.errorCount', { count: raw.errorCount })
         : '-'
   };
 }

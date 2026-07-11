@@ -230,7 +230,7 @@ export default function AccessReviewForm({
                 </div>
                 {reviewerIds.length > 0 && (
                   <p className="text-xs text-muted-foreground">
-                    {reviewerIds.length} {t('accessReviewForm.reviewer')}{reviewerIds.length === 1 ? '' : 's'} {t('accessReviewForm.selected')}</p>
+                    {t('accessReviewForm.reviewersSelectedCount', { count: reviewerIds.length })}</p>
                 )}
               </div>
             </>

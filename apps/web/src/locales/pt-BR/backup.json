@@ -40,7 +40,9 @@
     "snapshotId": "ID do snapshot",
     "policyId": "ID da política",
     "featureLinkId": "ID do link de recurso",
-    "errorLog": "Log de erros"
+    "errorLog": "Log de erros",
+    "errorCount_one": "{{count}} erro",
+    "errorCount_other": "{{count}} erros"
   },
   "backupOverviewContent": {
     "noProviderTimelineAvailableYet": "Nenhuma linha do tempo de provedor disponível ainda.",
@@ -194,7 +196,9 @@
     "expires2": "Expira",
     "protection2": "Proteção",
     "hold": "Retenção",
-    "standard": "Padrão"
+    "standard": "Padrão",
+    "restorePointCount_one": "{{count}} ponto de restauração",
+    "restorePointCount_other": "{{count}} pontos de restauração"
   },
   "deviceVaultStatus": {
     "loadingVaultStatus": "Carregando status do vault...",
@@ -206,7 +210,9 @@
     "lastSync": "Última sincronização",
     "status": "Status",
     "snapshot": "instantâneo",
-    "stored": "armazenado"
+    "stored": "armazenado",
+    "snapshotCount_one": "{{count}} instantâneo armazenado",
+    "snapshotCount_other": "{{count}} instantâneos armazenados"
   },
   "encryptionKeyList": {
     "loadingEncryptionKeys": "Carregando chaves de criptografia...",
@@ -419,7 +425,34 @@
     "preview": "Prévia",
     "revoke": "Revogar",
     "plaintextTokenHandling": "Tratamento do token em texto claro",
-    "theServerNeverReShowsThePlaintextToken": "O servidor nunca reexibe o token em texto claro. Esta aba o preserva apenas enquanto você mantiver o token recém-criado na sessão atual do navegador, então copie o comando exato imediatamente após a criação."
+    "theServerNeverReShowsThePlaintextToken": "O servidor nunca reexibe o token em texto claro. Esta aba o preserva apenas enquanto você mantiver o token recém-criado na sessão atual do navegador, então copie o comando exato imediatamente após a criação.",
+    "restoreTypeLabelFull": "Restauração completa",
+    "restoreTypeLabelSelective": "Restauração seletiva",
+    "restoreTypeLabelBareMetal": "Máquina física",
+    "restoreTypeLabelUnknown": "Desconhecido",
+    "revokeTokenConfirm": "Revogar este token de recuperação? O agente de recuperação não poderá mais utilizá-lo.",
+    "failedToLoadRecoveryBundles": "Falha ao carregar pacotes de recuperação",
+    "failedToLoadBootableRecoveryMedia": "Falha ao carregar mídia de recuperação inicializável",
+    "failedToLoadSnapshots": "Falha ao carregar snapshots",
+    "failedToLoadRecoveryTokens": "Falha ao carregar tokens de recuperação",
+    "failedToRefreshRecoveryArtifacts": "Falha ao atualizar os artefatos de recuperação",
+    "failedToCreateRecoveryToken": "Falha ao criar token de recuperação",
+    "failedToLoadToken": "Falha ao carregar token",
+    "failedToRefreshToken": "Falha ao atualizar token",
+    "failedToPreviewBootstrap": "Falha ao pré-visualizar o bootstrap",
+    "failedToRevokeToken": "Falha ao revogar token",
+    "failedToCopyToClipboard": "Falha ao copiar para a área de transferência.",
+    "failedToCreateRecoveryBundle": "Falha ao criar pacote de recuperação",
+    "failedToDownloadRecoveryBundle": "Falha ao baixar pacote de recuperação",
+    "failedToCreateBootableRecoveryMedia": "Falha ao criar mídia de recuperação inicializável",
+    "failedToDownloadRecoveryBundleSignature": "Falha ao baixar a assinatura do pacote de recuperação",
+    "failedToDownloadBootMediaSignature": "Falha ao baixar a assinatura da mídia de inicialização",
+    "failedToDownloadBootableRecoveryMedia": "Falha ao baixar a mídia de recuperação inicializável",
+    "copied": "Copiado",
+    "copyCommand": "Copiar comando",
+    "noRecoveryTokensFound": "Nenhum token de recuperação encontrado",
+    "tokensLoadedCount_one": "{{count}} token carregado",
+    "tokensLoadedCount_other": "{{count}} tokens carregados"
   },
   "restoreWizard": {
     "loadingRestoreOptions": "Carregando opções de restauração...",
@@ -683,7 +716,9 @@
     "deviceProgress": "Progresso do dispositivo",
     "complete": "% concluído",
     "executionDetailsAreUnavailable": "Os detalhes da execução estão indisponíveis.",
-    "abortDisasterRecoveryExecution": "Abortar execução de recuperação de desastre?"
+    "abortDisasterRecoveryExecution": "Abortar execução de recuperação de desastre?",
+    "deviceCount_one": "{{count}} dispositivo",
+    "deviceCount_other": "{{count}} dispositivos"
   },
   "dRPlanEditor": {
     "defineRecoveryObjectivesSequenceGroupsAndAssignDevices": "Defina objetivos de recuperação, sequencie grupos e atribua dispositivos na ordem de restauração.",
@@ -709,7 +744,11 @@
     "covering": "cobrindo",
     "uniqueDevice": "dispositivo único",
     "cancel": "Cancelar",
-    "savePlan": "Salvar plano"
+    "savePlan": "Salvar plano",
+    "groupCount_one": "{{count}} grupo",
+    "groupCount_other": "{{count}} grupos",
+    "uniqueDeviceCount_one": "{{count}} dispositivo único",
+    "uniqueDeviceCount_other": "{{count}} dispositivos únicos"
   },
   "dRPlanGroupCard": {
     "device": "dispositivo",
@@ -722,6 +761,8 @@
     "dependency": "Dependência",
     "noDependency": "Nenhuma dependência",
     "deviceSelection": "Seleção de dispositivos",
-    "noDevicesAvailableToAssign": "Nenhum dispositivo disponível para atribuir."
+    "noDevicesAvailableToAssign": "Nenhum dispositivo disponível para atribuir.",
+    "deviceCount_one": "{{count}} dispositivo",
+    "deviceCount_other": "{{count}} dispositivos"
   }
 }

@@ -560,7 +560,7 @@ export default function DeviceEventLogViewer({
                           )}
 
                           <ChevronDown
-                            className={`h-4 w-4 text-muted-foreground transition-transform ${isExpanded ? t("deviceEventLogViewer.rotate180") : ""}`}
+                            className={`h-4 w-4 text-muted-foreground transition-transform ${isExpanded ? "rotate-180" : ""}`}
                           />
                         </div>
                       </div>

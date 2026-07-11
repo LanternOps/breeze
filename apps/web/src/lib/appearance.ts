@@ -143,12 +143,31 @@ export function readTimeFormatPreference(): TimeFormatPreference | undefined {
   return normalizeTimeFormat(readStorageValue(TIME_FORMAT_STORAGE_KEY));
 }
 
+// Warn at most once per storage key per session so a persistently corrupt
+// value (rather than a transient one-off) doesn't spam the console on every
+// read (readResolvedLocalePreference is called on most navigations).
+const warnedCorruptLocaleKeys = new Set<string>();
+
+function readLocaleStorageValue(key: string): LocalePreference | undefined {
+  const raw = readStorageValue(key);
+  if (raw === null || raw === '') return undefined;
+
+  const normalized = normalizeLocale(raw);
+  if (normalized === undefined && !warnedCorruptLocaleKeys.has(key)) {
+    warnedCorruptLocaleKeys.add(key);
+    console.warn(
+      `[appearance] Discarding unsupported locale value stored in localStorage["${key}"]: ${JSON.stringify(raw)}`
+    );
+  }
+  return normalized;
+}
+
 export function readLocalePreference(): LocalePreference | undefined {
-  return normalizeLocale(readStorageValue(LOCALE_STORAGE_KEY));
+  return readLocaleStorageValue(LOCALE_STORAGE_KEY);
 }
 
 export function readPartnerLocalePreference(): LocalePreference | undefined {
-  return normalizeLocale(readStorageValue(PARTNER_LOCALE_STORAGE_KEY));
+  return readLocaleStorageValue(PARTNER_LOCALE_STORAGE_KEY);
 }
 
 export function readLinkedProfileCollapsePreference(): LinkedProfileCollapsePreference {

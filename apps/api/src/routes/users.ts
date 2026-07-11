@@ -472,13 +472,25 @@ userRoutes.get('/me', async (c) => {
   // The partner default is derived only from the authenticated tenant context.
   // Do not accept a partner id from query/body input here: doing so would let a
   // caller probe another tenant's settings while loading their own profile.
+  //
+  // Read under a SYSTEM context: org-scoped sessions get accessiblePartnerIds
+  // = [] (computeAccessiblePartnerIds in middleware/auth.ts), so the ambient
+  // request context's `breeze_has_partner_access` RLS policy would filter this
+  // row out and silently leave partnerDefaultLocale null for the majority of
+  // logins. auth.partnerId comes from the verified JWT, never client input, so
+  // escalating this single hard-scoped-by-id lookup is safe.
   let partnerDefaultLocale: SupportedLocale | null = null;
   if (auth.partnerId) {
-    const [partner] = await db
-      .select({ settings: partners.settings })
-      .from(partners)
-      .where(eq(partners.id, auth.partnerId))
-      .limit(1);
+    const partnerId = auth.partnerId;
+    const [partner] = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() =>
+        db
+          .select({ settings: partners.settings })
+          .from(partners)
+          .where(eq(partners.id, partnerId))
+          .limit(1)
+      )
+    );
     const language = (partner?.settings as { language?: unknown } | null | undefined)?.language;
     partnerDefaultLocale = language === 'en' || language === 'pt-BR' ? language : null;
   }

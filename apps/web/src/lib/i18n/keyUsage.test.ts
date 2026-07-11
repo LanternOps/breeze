@@ -14,6 +14,25 @@ const DYNAMIC_KEY_MARKER = /\/\*\s*i18n-dynamic\s*\*\//;
 type NamespaceBindings = Map<ts.Node, Map<string, string[]>>;
 type Exists = (key: string, namespace: string) => boolean;
 
+/**
+ * Resolves whether `prefix` (a dot-path, e.g. "networkDeviceDetailPage.tabs")
+ * names a non-empty object in the en catalog for `namespace`. Used to catch
+ * dynamic-key template literals (`t(/* i18n-dynamic *\/ \`ns.group.${x}\`)`)
+ * whose static prefix names a group that doesn't exist — the group renders as
+ * a raw key string for every value of `x` since none of them can resolve.
+ */
+function defaultExistsGroup(prefix: string, namespace: string): boolean {
+  const bundle = i18n.getResourceBundle('en', namespace) as unknown;
+  if (typeof bundle !== 'object' || bundle === null) return false;
+  let current: unknown = bundle;
+  for (const segment of prefix.split('.')) {
+    if (typeof current !== 'object' || current === null || Array.isArray(current)) return false;
+    current = (current as Record<string, unknown>)[segment];
+  }
+  return typeof current === 'object' && current !== null && !Array.isArray(current)
+    && Object.keys(current as Record<string, unknown>).length > 0;
+}
+
 function isI18nTranslationCall(node: ts.CallExpression): boolean {
   return ts.isPropertyAccessExpression(node.expression)
     && ts.isIdentifier(node.expression.expression)
@@ -119,10 +138,39 @@ function hasCountOption(argument: ts.Expression | undefined): boolean {
   });
 }
 
+/** Reads a JSX attribute's value when it's a plain string literal (`attr="x"` or `attr={"x"}`). */
+function jsxStringAttribute(attributes: ts.JsxAttributes, name: string): string | undefined {
+  for (const prop of attributes.properties) {
+    if (!ts.isJsxAttribute(prop) || prop.name.getText() !== name) continue;
+    if (!prop.initializer) return undefined;
+    if (ts.isStringLiteral(prop.initializer)) return prop.initializer.text;
+    if (ts.isJsxExpression(prop.initializer) && prop.initializer.expression
+      && ts.isStringLiteral(prop.initializer.expression)) {
+      return prop.initializer.expression.text;
+    }
+    return undefined;
+  }
+  return undefined;
+}
+
+/** Reads a JSX attribute's value when it's a bare identifier expression (`attr={identifier}`). */
+function jsxIdentifierAttribute(attributes: ts.JsxAttributes, name: string): string | undefined {
+  for (const prop of attributes.properties) {
+    if (!ts.isJsxAttribute(prop) || prop.name.getText() !== name) continue;
+    if (prop.initializer && ts.isJsxExpression(prop.initializer) && prop.initializer.expression
+      && ts.isIdentifier(prop.initializer.expression)) {
+      return prop.initializer.expression.text;
+    }
+    return undefined;
+  }
+  return undefined;
+}
+
 function translationProblems(
   source: string,
   file: string,
   exists: Exists = (key, namespace) => i18n.exists(key, { ns: namespace, lng: 'en' }),
+  existsGroup: Exists = defaultExistsGroup,
 ): string[] {
   const problems: string[] = [];
   const sourceFile = ts.createSourceFile(
@@ -151,6 +199,23 @@ function translationProblems(
             : source.slice(node.expression.end, node.end);
           if (!DYNAMIC_KEY_MARKER.test(leadingTrivia)) {
             problems.push(`${location}: dynamic translation key requires /* i18n-dynamic */ before the argument`);
+          } else if (argument && ts.isTemplateExpression(argument) && argument.head.text.endsWith('.')) {
+            // The static prefix up to the first interpolation (e.g.
+            // "networkDeviceDetailPage.tabs." from `networkDeviceDetailPage.tabs.${tab}`)
+            // must name a non-empty group in the catalog — otherwise every
+            // value of the interpolation resolves to a missing key and
+            // renders as a raw key string at runtime.
+            const prefixPath = argument.head.text.slice(0, -1);
+            const [explicitNamespace, keyPrefix] = prefixPath.includes(':')
+              ? prefixPath.split(':', 2)
+              : [undefined, prefixPath];
+            const namespaces = explicitNamespace
+              ? [explicitNamespace]
+              : localNamespaces ?? (isLegacyT ? fileNamespaces : ['common']);
+            const foundGroup = namespaces.some(namespace => existsGroup(keyPrefix, namespace));
+            if (!foundGroup) {
+              problems.push(`${location}: t(\`${prefixPath}.\${...}\`) → missing en ${namespaces.join('|')}:${keyPrefix} group`);
+            }
           }
         } else {
           const raw = argument.text;
@@ -169,6 +234,36 @@ function translationProblems(
           if (!found) {
             problems.push(`${location}: t('${raw}') → missing en ${namespaces.join('|')}:${key}`);
           }
+        }
+      }
+    }
+    if ((ts.isJsxSelfClosingElement(node) || ts.isJsxOpeningElement(node))
+      && ts.isIdentifier(node.tagName) && node.tagName.text === 'Trans') {
+      const i18nKeyValue = jsxStringAttribute(node.attributes, 'i18nKey');
+      // A dynamic (non-literal) i18nKey isn't in scope here — only
+      // string-literal Trans keys are checked, same as literal t() keys.
+      if (i18nKeyValue !== undefined) {
+        const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+        const location = `${file.replace(srcDir, 'src')}:${line + 1}`;
+        const [explicitNamespace, key] = i18nKeyValue.includes(':')
+          ? i18nKeyValue.split(':', 2)
+          : [undefined, i18nKeyValue];
+        let namespaces: string[];
+        if (explicitNamespace) {
+          namespaces = [explicitNamespace];
+        } else {
+          const nsAttr = jsxStringAttribute(node.attributes, 'ns');
+          if (nsAttr) {
+            namespaces = [nsAttr];
+          } else {
+            const tIdentifier = jsxIdentifierAttribute(node.attributes, 't');
+            const localNamespaces = tIdentifier ? resolveNamespaces(node, tIdentifier, bindings) : undefined;
+            namespaces = localNamespaces ?? fileNamespaces;
+          }
+        }
+        const found = namespaces.some(namespace => exists(key, namespace));
+        if (!found) {
+          problems.push(`${location}: <Trans i18nKey="${i18nKeyValue}"> → missing en ${namespaces.join('|')}:${key}`);
         }
       }
     }

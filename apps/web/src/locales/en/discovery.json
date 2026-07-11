@@ -96,6 +96,12 @@
       "loadStatus": "Failed to load monitoring status"
     },
     "loading": "Loading monitoring status...",
+    "monitorTypes": {
+      "icmp_ping": "ICMP Ping",
+      "tcp_port": "TCP Port",
+      "http_check": "HTTP Check",
+      "dns_check": "DNS Check"
+    },
     "networkMonitorsTitle": "Network Monitors ({{count}})",
     "noChecks": "No network checks configured",
     "snmpSummary": "{{version}} · every {{seconds}}s",
@@ -181,6 +187,14 @@
       "subnet": "Subnet"
     },
     "loading": "Loading discovery jobs...",
+    "status": {
+      "scheduled": "Scheduled",
+      "running": "Running",
+      "completed": "Completed",
+      "failed": "Failed",
+      "cancelled": "Cancelled",
+      "pending": "Pending"
+    },
     "title": "Discovery Jobs",
     "tryAgain": "Try again",
     "unknownProfile": "Unknown profile"
@@ -260,6 +274,9 @@
   },
   "discoveryProfileForm": {
     "alerting": {
+      "alertOnChanged": "Changed devices",
+      "alertOnDisappeared": "Disappeared devices",
+      "alertOnNew": "New devices",
       "description": "Alert when new or changed devices are detected on this subnet.",
       "enable": "Enable network alerting",
       "title": "Network Alerting"
@@ -270,6 +287,15 @@
       "interval": "Custom interval",
       "monthly": "Monthly",
       "weekly": "Weekly"
+    },
+    "days": {
+      "monday": "Monday",
+      "tuesday": "Tuesday",
+      "wednesday": "Wednesday",
+      "thursday": "Thursday",
+      "friday": "Friday",
+      "saturday": "Saturday",
+      "sunday": "Sunday"
     },
     "fields": {
       "authPassphrase": "Auth passphrase",
@@ -354,6 +380,12 @@
     "nextRun": "Next: {{time}}",
     "notRunYet": "Not run yet",
     "scheduleHint": "Schedules run automatically or on demand",
+    "status": {
+      "active": "Active",
+      "paused": "Paused",
+      "draft": "Draft",
+      "error": "Error"
+    },
     "title": "Discovery Profiles",
     "tryAgain": "Try again"
   },

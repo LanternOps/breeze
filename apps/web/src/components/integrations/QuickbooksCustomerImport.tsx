@@ -214,9 +214,9 @@ export default function QuickbooksCustomerImport({ onUnauthorized }: Props) {
               data-testid="quickbooks-import-failures"
             >
               <p className="text-sm font-medium text-red-800">
-                {failures.length} {t("quickbooksCustomerImport.customer")}
-                {failures.length === 1 ? "" : "s"}{" "}
-                {t("quickbooksCustomerImport.failedToImport")}
+                {t("quickbooksCustomerImport.customerFailedCount", {
+                  count: failures.length,
+                })}
               </p>
               <ul className="mt-2 space-y-1 text-xs text-red-700">
                 {failures.map((f) => (

@@ -684,6 +684,64 @@ describe('user routes', () => {
       expect(await res.json()).toMatchObject({ partnerDefaultLocale: null });
       expect(db.select).toHaveBeenCalledTimes(1);
     });
+
+    it('returns the partner default locale for an org-scoped session via a system DB context', async () => {
+      // Regression test: org-scoped sessions get accessiblePartnerIds = []
+      // (computeAccessiblePartnerIds in middleware/auth.ts), so reading
+      // `partners` under the ambient (org-scoped) request context would be
+      // filtered to zero rows by RLS. The handler must escalate to a system
+      // context via runOutsideDbContext + withSystemDbAccessContext, exactly
+      // like removeMembershipForScope elsewhere in this file.
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'organization',
+          partnerId: 'partner-123',
+          orgId: 'org-1',
+          user: { id: 'user-123', email: 'admin@example.com' },
+        });
+        return next();
+      });
+
+      const user = {
+        id: 'user-123',
+        email: 'admin@example.com',
+        name: 'Admin',
+        avatarUrl: null,
+        status: 'active',
+        mfaEnabled: false,
+        isPlatformAdmin: false,
+        createdAt: new Date(),
+        lastLoginAt: new Date(),
+        setupCompletedAt: new Date(),
+        passwordChangedAt: new Date(),
+        preferences: {},
+      };
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([user]),
+            }),
+          }),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ settings: { language: 'pt-BR' } }]),
+            }),
+          }),
+        } as any);
+
+      const res = await app.request('/users/me', {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ partnerDefaultLocale: 'pt-BR' });
+      expect(eq).toHaveBeenCalledWith({ __column: 'partners.id' }, 'partner-123');
+      expect(runOutsideDbContext).toHaveBeenCalled();
+      expect(withSystemDbAccessContext).toHaveBeenCalled();
+    });
   });
 
   describe('PATCH /users/me validation', () => {
