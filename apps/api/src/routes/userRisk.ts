@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../lib/validation';
 
 import { authMiddleware, requirePermission, requireScope, resolveOrgAccess } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';

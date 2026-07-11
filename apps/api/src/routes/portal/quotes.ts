@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../../lib/validation';
 import { and, desc, eq, ne } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { quotes, quoteBlocks, quoteLines } from '../../db/schema/quotes';

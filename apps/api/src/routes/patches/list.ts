@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../../lib/validation';
 import { and, eq, sql, asc, desc, type SQL, type Column } from 'drizzle-orm';
 import { requireScope } from '../../middleware/auth';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';

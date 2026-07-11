@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../../lib/validation';
 import { and, eq, lte, gte, asc, desc } from 'drizzle-orm';
 import { db } from '../../db';
 import { deviceProcessSamples } from '../../db/schema';

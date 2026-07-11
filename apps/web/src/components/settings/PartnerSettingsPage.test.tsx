@@ -83,9 +83,10 @@ describe('runPartnerSave', () => {
   // Regression for #1976: a partner-settings save that fails server-side Zod
   // validation must surface the specific field message — not collapse into the
   // generic "Failed to save settings" fallback. The save flows through runAction,
-  // which (via extractApiError) recovers issues from @hono/zod-validator's default
-  // 400 body. Under zod v4 the ZodError's `issues` are non-enumerable, so they are
-  // JSON-stringified into `error.message`; this mirrors that exact wire shape.
+  // which (via extractApiError) recovers issues from the legacy pre-#2201
+  // @hono/zod-validator default 400 body (kept for older deployed APIs). Under
+  // zod v4 the ZodError's `issues` are non-enumerable, so they are
+  // JSON-stringified into `error.message`; this mirrors that legacy wire shape.
   it('surfaces the specific Zod validation message (not the generic fallback) on a 400', async () => {
     const zodValidatorBody = {
       success: false,

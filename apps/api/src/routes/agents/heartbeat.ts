@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../../lib/validation';
 import { and, desc, eq, notInArray } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import {

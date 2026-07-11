@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../../lib/validation';
 import { and, eq, gte, like, sql, desc, inArray, type SQL } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import { createHash, randomBytes } from 'crypto';

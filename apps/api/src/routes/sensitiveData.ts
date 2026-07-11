@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../lib/validation';
 import { and, desc, eq, gte, inArray, sql, type SQL } from 'drizzle-orm';
 
 import { db } from '../db';

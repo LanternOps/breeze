@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../lib/validation';
 import { and, desc, eq, gte, lte, sql, type SQL } from 'drizzle-orm';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { db } from '../db';

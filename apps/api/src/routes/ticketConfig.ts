@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import type { Context, Next } from 'hono';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { authMiddleware, requireScope, requirePermission } from '../middleware/auth';
 import type { AuthContext } from '../middleware/auth';

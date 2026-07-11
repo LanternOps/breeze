@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { eq, desc, inArray, and, sql, gte } from 'drizzle-orm';
 import { z } from 'zod';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../../lib/validation';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { patches, devicePatches, patchApprovals, deviceCommands, users } from '../../db/schema';
 import { authMiddleware, requireMfa, requireScope, requirePermission } from '../../middleware/auth';
