@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/netcache"
 )
 
 // FailoverCommand is a command returned by the API during failover polling.
@@ -44,7 +46,9 @@ type FailoverClient struct {
 // NewFailoverClient creates a FailoverClient with a 30-second timeout. If
 // tlsConfig is non-nil it is applied to the underlying transport.
 func NewFailoverClient(baseURL, agentID, token string, tlsConfig *tls.Config) *FailoverClient {
-	transport := &http.Transport{}
+	// Dials go through the last-known-good DNS cache (#2288) so a pure DNS
+	// outage doesn't blind the watchdog; TLS hostname verification unchanged.
+	transport := &http.Transport{DialContext: netcache.Shared().DialContext}
 	if tlsConfig != nil {
 		transport.TLSClientConfig = tlsConfig
 	}

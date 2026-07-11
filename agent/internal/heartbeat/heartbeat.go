@@ -37,6 +37,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/mgmtdetect"
 	"github.com/breeze-rmm/agent/internal/monitoring"
 	"github.com/breeze-rmm/agent/internal/mtls"
+	"github.com/breeze-rmm/agent/internal/netcache"
 	"github.com/breeze-rmm/agent/internal/observability"
 	"github.com/breeze-rmm/agent/internal/patching"
 	"github.com/breeze-rmm/agent/internal/peripheral"
@@ -364,11 +365,14 @@ func New(cfg *config.Config) *Heartbeat {
 }
 
 func newHeartbeatHTTPClient(tlsCfg *tls.Config) *http.Client {
-	client := &http.Client{Timeout: 30 * time.Second}
+	// Dials go through the last-known-good DNS cache (#2288); TLS (including
+	// the mTLS client cert) sits above it, so hostname verification is
+	// unchanged — the cache alters where we dial, never what we trust.
+	transport := &http.Transport{DialContext: netcache.Shared().DialContext}
 	if tlsCfg != nil {
-		client.Transport = &http.Transport{TLSClientConfig: tlsCfg}
+		transport.TLSClientConfig = tlsCfg
 	}
-	return client
+	return &http.Client{Timeout: 30 * time.Second, Transport: transport}
 }
 
 func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureString, tlsCfg *tls.Config) *Heartbeat {

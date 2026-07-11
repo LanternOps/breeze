@@ -14,6 +14,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/netcache"
 	"github.com/breeze-rmm/agent/internal/observability"
 	"github.com/breeze-rmm/agent/internal/secmem"
 )
@@ -185,6 +186,9 @@ func (c *Client) connect() error {
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 10 * time.Second,
 		TLSClientConfig:  c.currentTLSConfig(),
+		// Last-known-good DNS cache (#2288) — TCP dial layer only; the TLS
+		// handshake above still verifies the URL hostname.
+		NetDialContext: netcache.Shared().DialContext,
 	}
 	headers := http.Header{
 		"Authorization": {"Bearer " + c.config.AuthToken.Reveal()},
