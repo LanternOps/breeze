@@ -10,7 +10,7 @@ import { elevationRequests, elevationAudit } from '../db/schema/elevations';
 import { aiToolExecutions, aiSessions } from '../db/schema/ai';
 import { delegantM365Connections } from '../db/schema/delegant';
 import { auditLogs } from '../db/schema/audit';
-import { buildApprovalPush, getUserPushTokens, sendExpoPush } from '../services/expoPush';
+import { dispatchApprovalPush } from '../services/expoPush';
 import { revokeUserOauthClient } from './lifecycle';
 import { assertApprovalAssurance, StepUpRequiredError, ReauthRequiredError } from '../services/authenticatorAssurance';
 import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
@@ -113,39 +113,18 @@ approvalRoutes.post('/dev/seed', zValidator('json', seedSchema), async (c) => {
   }
 
   // Push is best-effort — seed must succeed even with no registered token.
-  let tokensFound = 0;
-  let dispatched = 0;
-  const errors: string[] = [];
-  try {
-    const tokens = await getUserPushTokens(userId);
-    tokensFound = tokens.length;
-    if (tokens.length > 0) {
-      const tickets = await sendExpoPush(
-        tokens.map((to) => ({
-          to,
-          ...buildApprovalPush({
-            approvalId: row.id,
-            actionLabel: row.actionLabel,
-            requestingClientLabel: row.requestingClientLabel,
-          }),
-        }))
-      );
-      dispatched = tickets.filter((t) => t.status === 'ok').length;
-      for (const t of tickets) {
-        if (t.status === 'error') {
-          errors.push(t.message ?? 'unknown');
-        }
-      }
-    }
-  } catch (err) {
-    console.error('[approvals] dev/seed push dispatch failed:', err);
-    errors.push(err instanceof Error ? err.message : String(err));
-  }
+  // dispatchApprovalPush fans out across every provider (Expo relay + native
+  // APNs) and never throws.
+  const push = await dispatchApprovalPush(userId, {
+    approvalId: row.id,
+    actionLabel: row.actionLabel,
+    requestingClientLabel: row.requestingClientLabel,
+  });
 
   return c.json(
     {
       approval: serialize(row),
-      push: { tokensFound, dispatched, errors },
+      push,
     },
     201
   );

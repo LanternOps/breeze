@@ -18,8 +18,9 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../services/expoPush', () => ({
+  dispatchApprovalPush: vi.fn(async () => ({ tokensFound: 1, dispatched: 1, errors: 0 })),
   sendExpoPush: vi.fn(async () => [{ status: 'ok', id: 'tk' }]),
-  getUserPushTokens: vi.fn(async () => ['ExponentPushToken[abc]']),
+  getUserPushTokens: vi.fn(async () => []),
   buildApprovalPush: vi.fn(() => ({
     title: 'Approval requested',
     body: 'Dev Seed: x',
@@ -1285,7 +1286,7 @@ describe('POST /approvals/dev/seed', () => {
       expect(res.status).toBe(201);
       const body = await res.json();
       expect(body.approval.id).toBe('seed-1');
-      expect(body.push).toEqual({ tokensFound: 1, dispatched: 1, errors: [] });
+      expect(body.push).toEqual({ tokensFound: 1, dispatched: 1, errors: 0 });
     } finally {
       process.env.NODE_ENV = orig;
     }

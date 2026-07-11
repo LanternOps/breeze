@@ -43,23 +43,22 @@ vi.mock('../../db/schema/approvals', async (importActual) => ({
   },
 }));
 
-const getUserPushTokensMock = vi.fn(async (_uid: string) => [] as string[]);
-const sendExpoPushMock = vi.fn(async (msgs: unknown[]) =>
-  msgs.map(() => ({ status: 'ok' as const, id: 'ticket-1' })),
+const dispatchApprovalPushMock = vi.fn(
+  async (
+    _userId: string,
+    _args: { approvalId: string; actionLabel: string; requestingClientLabel: string },
+  ) => ({
+    tokensFound: 0,
+    dispatched: 0,
+    errors: 0,
+  }),
 );
 
 vi.mock('../../services/expoPush', () => ({
-  buildApprovalPush: vi.fn(() => ({
-    title: 'Approval requested',
-    body: 'Breeze (test trigger): Approve a test request from Breeze.',
-    data: { type: 'approval', approvalId: 'approval-test-1' },
-    sound: 'default',
-    priority: 'high',
-    channelId: 'approvals',
-    ttl: 60,
-  })),
-  getUserPushTokens: (uid: string) => getUserPushTokensMock(uid),
-  sendExpoPush: (msgs: unknown[]) => sendExpoPushMock(msgs),
+  dispatchApprovalPush: (
+    userId: string,
+    args: { approvalId: string; actionLabel: string; requestingClientLabel: string },
+  ) => dispatchApprovalPushMock(userId, args),
 }));
 
 vi.mock('../../services', () => ({
@@ -117,20 +116,18 @@ describe('POST /auth/me/test-approval', () => {
     vi.mocked(rateLimiter).mockResolvedValue({ allowed: true } as any);
     vi.mocked(getRedis).mockReturnValue({} as any);
     insertReturningMock.mockClear();
-    getUserPushTokensMock.mockReset().mockResolvedValue([]);
-    sendExpoPushMock
+    dispatchApprovalPushMock
       .mockReset()
-      .mockImplementation(async (msgs: unknown[]) =>
-        (msgs as unknown[]).map(() => ({ status: 'ok' as const, id: 'ticket-1' })),
-      );
+      .mockResolvedValue({ tokensFound: 0, dispatched: 0, errors: 0 });
     buildInsertChain();
   });
 
   it('happy path: inserts approval row with expected fields, dispatches push, returns 201', async () => {
-    getUserPushTokensMock.mockResolvedValueOnce([
-      'ExponentPushToken[abc]',
-      'ExponentPushToken[def]',
-    ]);
+    dispatchApprovalPushMock.mockResolvedValueOnce({
+      tokensFound: 2,
+      dispatched: 2,
+      errors: 0,
+    });
 
     const res = await postTrigger();
     expect(res.status).toBe(201);
@@ -140,7 +137,7 @@ describe('POST /auth/me/test-approval', () => {
       approvalId: 'approval-test-1',
       pushSentToDeviceCount: 2,
       registeredDeviceCount: 2,
-      errors: [],
+      errors: 0,
     });
     expect(typeof body.expiresAt).toBe('string');
 
@@ -160,7 +157,15 @@ describe('POST /auth/me/test-approval', () => {
     expect(valuesCall.actionArguments).toMatchObject({ note: expect.any(String) });
     expect(valuesCall.expiresAt).toBeInstanceOf(Date);
 
-    expect(sendExpoPushMock).toHaveBeenCalledTimes(1);
+    expect(dispatchApprovalPushMock).toHaveBeenCalledTimes(1);
+    expect(dispatchApprovalPushMock).toHaveBeenCalledWith(
+      'u-1',
+      expect.objectContaining({
+        approvalId: 'approval-test-1',
+        actionLabel: 'Approve a test request from Breeze.',
+        requestingClientLabel: 'Breeze (test trigger)',
+      }),
+    );
     expect(writeAuthAudit).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
@@ -181,11 +186,11 @@ describe('POST /auth/me/test-approval', () => {
     const body = await res.json();
     expect(body.error).toMatch(/too many/i);
     expect(insertReturningMock).not.toHaveBeenCalled();
-    expect(sendExpoPushMock).not.toHaveBeenCalled();
+    expect(dispatchApprovalPushMock).not.toHaveBeenCalled();
   });
 
   it('still creates the approval and reports zero devices when the user has no registered mobile push tokens', async () => {
-    getUserPushTokensMock.mockResolvedValueOnce([]);
+    dispatchApprovalPushMock.mockResolvedValueOnce({ tokensFound: 0, dispatched: 0, errors: 0 });
 
     const res = await postTrigger();
     expect(res.status).toBe(201);
@@ -195,9 +200,8 @@ describe('POST /auth/me/test-approval', () => {
       approvalId: 'approval-test-1',
       pushSentToDeviceCount: 0,
       registeredDeviceCount: 0,
-      errors: [],
+      errors: 0,
     });
-    expect(sendExpoPushMock).not.toHaveBeenCalled();
     expect(insertReturningMock).toHaveBeenCalledTimes(1);
   });
 });

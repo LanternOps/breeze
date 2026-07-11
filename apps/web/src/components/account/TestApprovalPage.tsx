@@ -7,7 +7,8 @@ interface TriggerResponse {
   expiresAt: string;
   pushSentToDeviceCount: number;
   registeredDeviceCount: number;
-  errors: string[];
+  // Count of tokens that failed to dispatch across all push providers.
+  errors: number;
 }
 
 type TriggerState =

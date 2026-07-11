@@ -24,7 +24,11 @@ import { evaluatePamBridge, type PamBridgeVerdict } from '../../services/pamBrid
 import { evaluatePamRules, type PamRuleMatch } from '../../services/pamRuleEngine';
 import { publishEvent, type EventType } from '../../services/eventBus';
 import { resolveElevationApprovers } from '../../services/pamApprovers';
-import { buildApprovalPush, getUserPushTokens, sendExpoPush } from '../../services/expoPush';
+import {
+  dispatchApprovalPushToTokens,
+  getUserPushTokens,
+  type TaggedPushToken,
+} from '../../services/expoPush';
 import type { RiskTier } from '@breeze/shared';
 
 // PAM Track 3: agent-side endpoint that records UAC consent.exe observations
@@ -196,7 +200,7 @@ async function fanOutMobileApprovals(args: {
       const approverIds = await resolveElevationApprovers(device.orgId);
       if (approverIds.length === 0) return [];
 
-      const targets: Array<{ approvalId: string; actionLabel: string; tokens: string[] }> = [];
+      const targets: Array<{ approvalId: string; actionLabel: string; tokens: TaggedPushToken[] }> = [];
       for (const userId of approverIds) {
         let approvalId: string;
         try {
@@ -234,22 +238,22 @@ async function fanOutMobileApprovals(args: {
     }),
   );
 
-  // Expo network calls run OUTSIDE the system DB context (no open transaction
+  // Push network calls run OUTSIDE the system DB context (no open transaction
   // held across the HTTP round-trip). Push is best-effort per approver — a dead
-  // token or Expo outage must not block the remaining approvers or the 201.
+  // token or provider outage must not block the remaining approvers or the 201.
+  // dispatchApprovalPushToTokens fans each approver's pre-resolved tokens out
+  // across every provider (Expo relay + native APNs) and never throws.
   for (const { approvalId, actionLabel: label, tokens } of pushTargets) {
     if (tokens.length === 0) continue;
+    // dispatchApprovalPushToTokens is best-effort and does not throw, but keep
+    // a defensive swallow so one unexpected failure can't drop the remaining
+    // approvers.
     try {
-      await sendExpoPush(
-        tokens.map((to) => ({
-          to,
-          ...buildApprovalPush({
-            approvalId,
-            actionLabel: label,
-            requestingClientLabel: 'Breeze Agent',
-          }),
-        })),
-      );
+      await dispatchApprovalPushToTokens(tokens, {
+        approvalId,
+        actionLabel: label,
+        requestingClientLabel: 'Breeze Agent',
+      });
     } catch (err) {
       console.error(
         `[ElevationRequests] mobile push failed for approval=${approvalId}:`,
