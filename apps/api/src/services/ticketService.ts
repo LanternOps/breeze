@@ -8,6 +8,7 @@ import { createAuditLogAsync } from './auditService';
 import { resolveSlaTargets } from './ticketSla';
 import { getOrgSlaOverride, getPartnerPrioritySla, getSystemStatusId, getTicketStatusById } from './ticketConfigService';
 import { emitTicketTriageFeedback } from './mlFeedbackEmitters';
+import { applyIntakeForm, getTicketFormForOrg, TicketFormError } from './ticketFormService';
 
 export type TicketStatus = (typeof ticketStatusEnum.enumValues)[number];
 export type TicketSource = (typeof ticketSourceEnum.enumValues)[number];
@@ -229,13 +230,15 @@ async function assertCategoryInPartner(categoryId: string, partnerId: string | n
 
 interface BaseCreateTicketInput {
   orgId: string;
-  subject: string;
+  subject?: string;
   description?: string;
   deviceId?: string;
   categoryId?: string;
   priority?: 'low' | 'normal' | 'high' | 'urgent';
   dueDate?: Date;
   assigneeId?: string;
+  formId?: string;
+  formResponses?: Record<string, unknown>;
 }
 
 // portal source carries the requester; the worker emails submitterEmail on public replies/resolution.
@@ -262,6 +265,26 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
   const org = orgRows[0];
   if (!org) throw new TicketServiceError('Organization not found', 404);
 
+  // Intake form (spec 2026-07-10): resolve + validate first so the composed
+  // category feeds the existing assertCategoryInPartner guard below.
+  let intake: ReturnType<typeof applyIntakeForm> | null = null;
+  if (input.formId) {
+    try {
+      const form = await getTicketFormForOrg(input.formId, { id: org.id, partnerId: org.partnerId });
+      intake = applyIntakeForm(form, input.formResponses ?? {});
+    } catch (err) {
+      if (err instanceof TicketFormError) throw new TicketServiceError(err.message, err.status as TicketServiceErrorStatus);
+      throw err;
+    }
+  }
+
+  const rawSubject = input.subject?.trim() || intake?.subjectFromForm;
+  if (!rawSubject) throw new TicketServiceError('Subject is required', 400);
+  // DB column is varchar(255) — a form's rendered title template can exceed it
+  // (long field responses interpolated into the title); truncate before insert
+  // rather than let the DB reject the create.
+  const subject = rawSubject.slice(0, 255);
+
   // Cross-org guard: a deviceId must reference a device in the ticket's org.
   // Mirrors the same-org check in linkAlertToTicket. Validated before number
   // allocation so a rejected create doesn't burn a counter value.
@@ -282,9 +305,10 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
     await assertAssigneeInPartner(input.assigneeId, org.partnerId);
   }
 
+  const effectiveCategoryId = input.categoryId ?? intake?.categoryId ?? undefined;
   let category: Awaited<ReturnType<typeof assertCategoryInPartner>> | null = null;
-  if (input.categoryId) {
-    category = await assertCategoryInPartner(input.categoryId, org.partnerId);
+  if (effectiveCategoryId) {
+    category = await assertCategoryInPartner(effectiveCategoryId, org.partnerId);
   }
 
   // Resolve the requester before number allocation (a rejected requester must
@@ -316,7 +340,7 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
     resolvedSubmitterEmail = null;
   }
 
-  const priority = input.priority ?? 'normal';
+  const priority = input.priority ?? intake?.defaultPriority ?? 'normal';
   const initialCoreStatus: TicketStatus = input.assigneeId ? 'open' : 'new';
 
   const [orgSla, partnerSla, statusId] = await Promise.all([
@@ -342,10 +366,10 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
     partnerId: org.partnerId,
     ticketNumber: generateLegacyTicketNumber(),
     internalNumber,
-    subject: input.subject,
-    description: input.description ?? null,
+    subject,
+    description: [input.description?.trim(), intake?.descriptionBlock].filter(Boolean).join('\n\n') || null,
     deviceId: input.deviceId ?? null,
-    categoryId: input.categoryId ?? null,
+    categoryId: effectiveCategoryId ?? null,
     priority,
     dueDate: input.dueDate ?? null,
     assignedTo: input.assigneeId ?? null,
@@ -357,7 +381,9 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
     submitterName: resolvedSubmitterName,
     category: null,
     responseSlaMinutes: slaTargets.responseMinutes,
-    resolutionSlaMinutes: slaTargets.resolutionMinutes
+    resolutionSlaMinutes: slaTargets.resolutionMinutes,
+    tags: intake?.defaultTags.length ? intake.defaultTags : undefined,
+    customFields: intake ? intake.intakeSnapshot : undefined
   } satisfies typeof tickets.$inferInsert;
 
   const inserted = await db
@@ -373,7 +399,7 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
     orgId: input.orgId,
     partnerId: org.partnerId ?? null,
     actorUserId: actor.userId,
-    payload: { internalNumber, subject: input.subject, assigneeId: input.assigneeId ?? null, source: input.source }
+    payload: { internalNumber, subject, assigneeId: input.assigneeId ?? null, source: input.source }
   });
   await createAuditLogAsync({
     orgId: input.orgId,

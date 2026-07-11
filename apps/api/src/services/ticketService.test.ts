@@ -5,7 +5,7 @@ const valuesMock = vi.fn();
 const setMock = vi.fn();
 const whereMock = vi.fn();
 
-const { emitMock, emitTriageFeedbackMock, auditMock, allocateMock, dbMocks, configMocks } = vi.hoisted(() => {
+const { emitMock, emitTriageFeedbackMock, auditMock, allocateMock, dbMocks, configMocks, formMocks } = vi.hoisted(() => {
   const insertReturning = vi.fn();
   const updateReturning = vi.fn();
   const selectResult = vi.fn();
@@ -22,6 +22,14 @@ const { emitMock, emitTriageFeedbackMock, auditMock, allocateMock, dbMocks, conf
       getPartnerPrioritySla: vi.fn().mockResolvedValue({ responseMinutes: null, resolutionMinutes: null }),
       getSystemStatusId: vi.fn().mockResolvedValue(null),
       getTicketStatusById: vi.fn().mockResolvedValue(null),
+    },
+    // Intake form (Task 5): getTicketFormForOrg/applyIntakeForm are mocked as a
+    // unit here — their own behavior is covered by ticketFormService.test.ts.
+    // This lets createTicket's orchestration (subject/category/priority/tags
+    // precedence, subject truncation) be exercised without a form-schema fixture.
+    formMocks: {
+      getTicketFormForOrg: vi.fn(),
+      applyIntakeForm: vi.fn(),
     }
   };
 });
@@ -36,6 +44,14 @@ vi.mock('./ticketConfigService', () => ({
   getSystemStatusId: (...args: unknown[]) => configMocks.getSystemStatusId(...args),
   getTicketStatusById: (...args: unknown[]) => configMocks.getTicketStatusById(...args),
 }));
+vi.mock('./ticketFormService', async () => {
+  const actual = await vi.importActual<typeof import('./ticketFormService')>('./ticketFormService');
+  return {
+    ...actual,
+    getTicketFormForOrg: (...args: unknown[]) => formMocks.getTicketFormForOrg(...args),
+    applyIntakeForm: (...args: unknown[]) => formMocks.applyIntakeForm(...args),
+  };
+});
 
 vi.mock('../db', () => ({
   // Context helpers are passthroughs: the service routes its validation reads
@@ -467,6 +483,101 @@ describe('createTicket', () => {
       submitterName: null,
       submittedBy: null,
     });
+  });
+});
+
+describe('createTicket — intake form (formId)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    valuesMock.mockClear();
+    setMock.mockClear();
+    allocateMock.mockResolvedValue('T-2026-0042');
+  });
+
+  it('composes subject/category/priority/tags/customFields from the form and TRUNCATES a subject over 255 chars', async () => {
+    dbMocks.selectResult.mockResolvedValue([{ id: 'o-1', partnerId: 'p-1' }]); // org lookup only — form is mocked
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-form-1', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
+
+    const longTitle = 'X'.repeat(300);
+    formMocks.getTicketFormForOrg.mockResolvedValue({ id: 'form-1', name: 'Intake', version: 1 });
+    formMocks.applyIntakeForm.mockReturnValue({
+      responses: { affected_user: 'jdoe' },
+      subjectFromForm: longTitle,
+      descriptionBlock: 'Affected user: jdoe',
+      categoryId: 'cat-form-1',
+      defaultPriority: 'high',
+      defaultTags: ['intake'],
+      intakeSnapshot: { intakeForm: { formId: 'form-1', formName: 'Intake', formVersion: 1, responses: { affected_user: 'jdoe' } } }
+    });
+
+    await createTicket(
+      { orgId: 'o-1', source: 'manual', formId: 'form-1', formResponses: { affected_user: 'jdoe' } },
+      actor
+    );
+
+    expect(formMocks.getTicketFormForOrg).toHaveBeenCalledWith('form-1', { id: 'o-1', partnerId: 'p-1' });
+    expect(formMocks.applyIntakeForm).toHaveBeenCalledWith(
+      { id: 'form-1', name: 'Intake', version: 1 },
+      { affected_user: 'jdoe' }
+    );
+
+    const insertPayload = valuesMock.mock.calls[0]![0];
+    expect(insertPayload.subject).toHaveLength(255);
+    expect(insertPayload.subject).toBe(longTitle.slice(0, 255));
+    expect(insertPayload).toMatchObject({
+      categoryId: 'cat-form-1',
+      priority: 'high',
+      tags: ['intake'],
+      customFields: { intakeForm: { formId: 'form-1', formName: 'Intake', formVersion: 1, responses: { affected_user: 'jdoe' } } }
+    });
+    expect(insertPayload.description).toBe('Affected user: jdoe');
+  });
+
+  it('an explicit subject/priority/categoryId wins over the form default (precedence: explicit → form → fallback)', async () => {
+    dbMocks.selectResult.mockResolvedValue([{ id: 'o-1', partnerId: 'p-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-form-2', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
+
+    formMocks.getTicketFormForOrg.mockResolvedValue({ id: 'form-1', name: 'Intake', version: 1 });
+    formMocks.applyIntakeForm.mockReturnValue({
+      responses: {},
+      subjectFromForm: 'Form-derived subject',
+      descriptionBlock: 'form block',
+      categoryId: 'cat-form-1',
+      defaultPriority: 'high',
+      defaultTags: [],
+      intakeSnapshot: { intakeForm: { formId: 'form-1', formName: 'Intake', formVersion: 1, responses: {} } }
+    });
+
+    await createTicket(
+      {
+        orgId: 'o-1',
+        source: 'manual',
+        formId: 'form-1',
+        formResponses: {},
+        subject: 'Explicit subject',
+        priority: 'low',
+        categoryId: 'cat-explicit'
+      },
+      actor
+    );
+
+    const insertPayload = valuesMock.mock.calls[0]![0];
+    expect(insertPayload).toMatchObject({ subject: 'Explicit subject', priority: 'low', categoryId: 'cat-explicit' });
+  });
+
+  it('maps a TicketFormError (e.g. inactive/wrong-org form) to a TicketServiceError and writes nothing', async () => {
+    dbMocks.selectResult.mockResolvedValue([{ id: 'o-1', partnerId: 'p-1' }]);
+    const { TicketFormError } = await vi.importActual<typeof import('./ticketFormService')>('./ticketFormService');
+    formMocks.getTicketFormForOrg.mockRejectedValue(new TicketFormError('Ticket form is not available for this organization', 400));
+
+    const err = await createTicket(
+      { orgId: 'o-1', source: 'manual', formId: 'form-x', formResponses: {} }, actor
+    ).catch(e => e);
+
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(400);
+    expect(err.message).toMatch(/not available for this organization/i);
+    expect(valuesMock).not.toHaveBeenCalled();
   });
 });
 
