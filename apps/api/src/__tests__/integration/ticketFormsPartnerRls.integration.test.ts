@@ -29,7 +29,7 @@ import './setup';
 import { afterEach, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
-import { ticketForms } from '../../db/schema';
+import { ticketForms, ticketFormOrgLinks } from '../../db/schema';
 import { listTicketFormsForOrg } from '../../services/ticketFormService';
 import { createOrganization, createPartner } from './db-utils';
 
@@ -141,5 +141,65 @@ describe('ticket_forms partner RLS', () => {
 
     const forOtherOrg = await listTicketFormsForOrg({ id: otherOrg.id, partnerId: otherPartner.id });
     expect(forOtherOrg.map((f) => f.name)).toEqual(['Other partner']);
+  });
+
+  it('org link rows are invisible cross-partner and writable only by the owning partner (42501)', async () => {
+    const partnerA = await createPartner();
+    const partnerB = await createPartner();
+    const orgA = await createOrganization({ partnerId: partnerA.id });
+    const orgA2 = await createOrganization({ partnerId: partnerA.id });
+
+    const [form] = await withDbAccessContext(systemContext(), () =>
+      db.insert(ticketForms).values({ ...baseForm, partnerId: partnerA.id, orgId: null }).returning()
+    );
+    if (!form) throw new Error('insert returned no row');
+    created.push(form.id);
+
+    const [link] = await withDbAccessContext(systemContext(), () =>
+      db.insert(ticketFormOrgLinks).values({ formId: form.id, orgId: orgA.id }).returning()
+    );
+    if (!link) throw new Error('insert returned no row');
+
+    // Partner B cannot see partner A's link row (parent-join predicate denies).
+    const visibleToPartnerB = await withDbAccessContext(partnerContext(partnerB.id, []), () =>
+      db.select().from(ticketFormOrgLinks).where(eq(ticketFormOrgLinks.id, link.id))
+    );
+    expect(visibleToPartnerB).toEqual([]);
+
+    // Partner B forging a link onto partner A's (invisible) form is rejected
+    // at the DB layer — a distinct org so this doesn't collide with the
+    // unique constraint instead of RLS.
+    await expect(
+      withDbAccessContext(partnerContext(partnerB.id, []), () =>
+        db.insert(ticketFormOrgLinks).values({ formId: form.id, orgId: orgA2.id }).returning()
+      )
+    ).rejects.toMatchObject({ cause: { code: '42501' } });
+
+    // The owning partner CAN see + would be permitted to write its own link row.
+    const visibleToPartnerA = await withDbAccessContext(partnerContext(partnerA.id, [orgA.id, orgA2.id]), () =>
+      db.select().from(ticketFormOrgLinks).where(eq(ticketFormOrgLinks.id, link.id))
+    );
+    expect(visibleToPartnerA).toEqual([link]);
+  });
+
+  it('link unique constraint rejects duplicates (23505)', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+
+    const [form] = await withDbAccessContext(systemContext(), () =>
+      db.insert(ticketForms).values({ ...baseForm, partnerId: partner.id, orgId: null }).returning()
+    );
+    if (!form) throw new Error('insert returned no row');
+    created.push(form.id);
+
+    await withDbAccessContext(systemContext(), () =>
+      db.insert(ticketFormOrgLinks).values({ formId: form.id, orgId: org.id }).returning()
+    );
+
+    await expect(
+      withDbAccessContext(systemContext(), () =>
+        db.insert(ticketFormOrgLinks).values({ formId: form.id, orgId: org.id }).returning()
+      )
+    ).rejects.toMatchObject({ cause: { code: '23505' } });
   });
 });
