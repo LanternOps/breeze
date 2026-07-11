@@ -890,13 +890,14 @@ if (latestHelper) {
   // #1105 — onedrive_helper config is built OUTSIDE the org transaction too.
   // Phase 4 added per-UPN Graph resolution inside resolveDeviceOnedriveSettings,
   // where an uncached miss makes sequential external HTTP round-trips (token +
-  // Graph) with no timeout, per UPN — exactly the conn-hold class #1105 warns
-  // about. resolveDeviceOnedriveSettings filters every query explicitly
-  // (eq(configurationPolicies.orgId, device.orgId), deviceId-keyed state read),
-  // so the system context here is org-safe and cannot pivot tenants (same
-  // guarantee as the policy-probe pattern above). The onedrive_device_state
-  // upsert happened inside scoped (ingest), and this build runs later, so the
-  // ingest-before-delivery ordering is preserved.
+  // Graph, each bounded by AbortSignal.timeout), per UPN — exactly the
+  // conn-hold class #1105 warns about. resolveDeviceOnedriveSettings filters
+  // every query explicitly (eq(configurationPolicies.orgId, device.orgId),
+  // deviceId-keyed state read, and the org-keyed m365_connections read inside
+  // the Graph token helper), so the system context here is org-safe and cannot
+  // pivot tenants (same guarantee as the policy-probe pattern above). The
+  // onedrive_device_state upsert happened inside scoped (ingest), and this
+  // build runs later, so the ingest-before-delivery ordering is preserved.
   let onedriveSettings: OnedriveConfigUpdate | null = null;
   try {
     onedriveSettings = await withSystemDbAccessContext(() =>

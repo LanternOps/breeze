@@ -21,7 +21,7 @@ import './setup';
 import { createHash } from 'node:crypto';
 import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { Hono } from 'hono';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
   configPolicyOnedriveSettings,
@@ -486,6 +486,122 @@ describe('buildOnedriveHelperConfigUpdate', () => {
     const cfg = await withSystemDbAccessContext(() => buildOnedriveHelperConfigUpdate(deviceId));
 
     expect(cfg!.libraries[0]!.allowedUpns).toEqual(['member@contoso.com']);
+  });
+
+  runDb('multiple matching UPNs all land in allowedUpns', async () => {
+    const { deviceId, orgId } = await seedDeviceWithOnedrivePolicy({
+      base: {},
+      libraries: [
+        { libraryId: 'lib-fin', displayName: 'Finance', targetingMode: 'graph_group', groupId: 'g-fin' },
+      ],
+    });
+    await seedSignedInUpns(deviceId, orgId, ['a@contoso.com', 'b@contoso.com']);
+    vi.mocked(resolveUserGroupMembershipCached).mockResolvedValue({
+      kind: 'ok', data: { groupIds: ['g-fin'] },
+    });
+
+    const cfg = await withSystemDbAccessContext(() => buildOnedriveHelperConfigUpdate(deviceId));
+
+    expect(cfg!.libraries[0]!.allowedUpns).toEqual(['a@contoso.com', 'b@contoso.com']);
+  });
+
+  runDb('group id matching is brace/case-insensitive (stored {UPPER} vs Graph lower)', async () => {
+    const { deviceId, orgId } = await seedDeviceWithOnedrivePolicy({
+      base: {},
+      libraries: [
+        {
+          libraryId: 'lib-fin', displayName: 'Finance', targetingMode: 'graph_group',
+          groupId: '{ABCDEF01-2345-6789-ABCD-EF0123456789}',
+        },
+      ],
+    });
+    await seedSignedInUpns(deviceId, orgId, ['todd@contoso.com']);
+    vi.mocked(resolveUserGroupMembershipCached).mockResolvedValue({
+      kind: 'ok', data: { groupIds: ['abcdef01-2345-6789-abcd-ef0123456789'] },
+    });
+
+    const cfg = await withSystemDbAccessContext(() => buildOnedriveHelperConfigUpdate(deviceId));
+
+    expect(cfg!.libraries[0]!.allowedUpns).toEqual(['todd@contoso.com']);
+  });
+
+  runDb('corrupt (non-array) signed_in_upns jsonb degrades to no tagging without throwing', async () => {
+    const { deviceId, orgId } = await seedDeviceWithOnedrivePolicy({
+      base: {},
+      libraries: [
+        { libraryId: 'lib-fin', displayName: 'Finance', targetingMode: 'graph_group', groupId: 'g-fin' },
+        { libraryId: 'lib-all', displayName: 'Company', targetingMode: 'everyone' },
+      ],
+    });
+    // zod protects ingest, so corrupt the column out-of-band.
+    await seedSignedInUpns(deviceId, orgId, []);
+    await withSystemDbAccessContext(() =>
+      db.execute(sql`UPDATE onedrive_device_state SET signed_in_upns = '"oops"'::jsonb WHERE device_id = ${deviceId}`)
+    );
+
+    const cfg = await withSystemDbAccessContext(() => buildOnedriveHelperConfigUpdate(deviceId));
+
+    expect(resolveUserGroupMembershipCached).not.toHaveBeenCalled();
+    expect(cfg!.libraries).toHaveLength(2); // delivery of the everyone library survives
+    expect(cfg!.libraries.every((l) => l.allowedUpns.length === 0)).toBe(true);
+  });
+});
+
+// ============================================================================
+// Full round-trip: heartbeat reports UPNs AND receives tagged delivery in the
+// same response (proves the ingest-before-delivery ordering across the
+// #1105 post-transaction hoist, and pins the onedrive_helper_settings wire key).
+// ============================================================================
+
+describe('heartbeat round-trip: UPN ingest → tagged config delivery', () => {
+  beforeEach(() => {
+    vi.mocked(resolveUserGroupMembershipCached).mockReset();
+  });
+
+  runDb('response configUpdate carries allowedUpns derived from the UPNs reported in that same heartbeat', async () => {
+    const { agentId, agentToken } = await seedDeviceWithOnedrivePolicy({
+      base: {},
+      libraries: [
+        { libraryId: 'lib-fin', displayName: 'Finance', targetingMode: 'graph_group', groupId: 'g-fin' },
+        { libraryId: 'lib-all', displayName: 'Company', targetingMode: 'everyone' },
+      ],
+    });
+    vi.mocked(resolveUserGroupMembershipCached).mockResolvedValue({
+      kind: 'ok', data: { groupIds: ['g-fin'] },
+    });
+
+    const app = buildHeartbeatApp();
+    const res = await app.request(`/${agentId}/heartbeat`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${agentToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        status: 'ok',
+        agentVersion: '1.0.0-test',
+        onedriveDeviceState: {
+          signedIn: true,
+          filesOnDemandOn: true,
+          kfmFolderStates: {},
+          mountedLibraries: [],
+          entitledLibraries: [],
+          driftEntries: [],
+          signedInUpns: ['todd@contoso.com'],
+        },
+      }),
+    });
+
+    expect(res.status, `heartbeat returned ${res.status}: ${await res.clone().text()}`).toBe(200);
+    const body = (await res.json()) as {
+      configUpdate: { onedrive_helper_settings?: { libraries: Array<{ libraryId: string; allowedUpns: string[] }> } } | null;
+    };
+    const settings = body.configUpdate?.onedrive_helper_settings;
+    expect(settings, 'configUpdate must carry onedrive_helper_settings').toBeDefined();
+    const fin = settings!.libraries.find((l) => l.libraryId === 'lib-fin')!;
+    expect(fin.allowedUpns).toEqual(['todd@contoso.com']);
+    const all = settings!.libraries.find((l) => l.libraryId === 'lib-all')!;
+    expect(all.allowedUpns).toEqual([]);
   });
 });
 
