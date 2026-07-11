@@ -77,6 +77,12 @@ export type Device = {
   siteName: string;
   agentVersion: string;
   watchdogVersion?: string | null;
+  /**
+   * Control-plane URL the agent last heartbeated to (devices.agent_server_url,
+   * #2288). The opt-in Server column renders only its hostname. Absent on
+   * responses from older API versions or agents that never failed over.
+   */
+  agentServerUrl?: string | null;
   tags: string[];
   lastUser?: string;
   uptimeSeconds?: number;
@@ -273,6 +279,17 @@ const statusSortRank: Record<DeviceStatus, number> = {
 // union on every render.
 const nameCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
 
+// Hostname of the agent's active control-plane URL (#2288); null on
+// missing/malformed values so the cell falls back to the dash.
+function serverHost(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  try {
+    return new URL(raw).hostname;
+  } catch {
+    return null;
+  }
+}
+
 // One comparable value per column, mirroring what the cell displays.
 // `null` means "renders as a dash" — those rows sort last in BOTH
 // directions so blanks never bury the real data. Strings compare with
@@ -317,6 +334,7 @@ const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
   lastSeen: d => new Date(d.lastSeen).getTime() || null,
   agentVersion: d => d.agentVersion || null,
   watchdogVersion: d => d.watchdogVersion?.trim() || null,
+  serverUrl: d => serverHost(d.agentServerUrl),
   tags: d => (d.tags && d.tags.length > 0 ? d.tags.join(', ') : null),
   lastUser: d => d.lastUser || null,
   uptime: d => (d.status === 'online' && d.uptimeSeconds != null ? d.uptimeSeconds : null),
@@ -1083,6 +1101,19 @@ export default function DeviceList({
       cell: (device) => (
         <td key="watchdogVersion" className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
           {agentCell(device, fmtWatchdogVersion(device.watchdogVersion))}
+        </td>
+      ),
+    },
+    serverUrl: {
+      header: () => sortHeader('serverUrl', 'Server', 'Sort by server URL'),
+      cell: (device) => (
+        <td
+          key="serverUrl"
+          className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap"
+          title={device.agentServerUrl ?? undefined}
+          data-testid={`device-${device.id}-server-url`}
+        >
+          {serverHost(device.agentServerUrl) || dash}
         </td>
       ),
     },

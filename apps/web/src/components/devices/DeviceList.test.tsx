@@ -706,6 +706,38 @@ describe('DeviceList — sortable columns (every column sorts on header click)',
     expect(cell.textContent).toContain(glyph);
     expect(screen.getByLabelText(label)).toBeInTheDocument();
   });
+
+  it('renders the Server column with the hostname of agentServerUrl (#2288)', () => {
+    seedColumns('serverUrl');
+    const device: Device = {
+      ...baseDevice,
+      id: 'd8d8d8d8-0000-0000-0000-000000000001',
+      hostname: 'host-server',
+      agentServerUrl: 'https://old.example.com:8443',
+    };
+
+    render(<DeviceList devices={[device]} />);
+
+    const cell = screen.getByTestId('device-d8d8d8d8-0000-0000-0000-000000000001-server-url');
+    // Hostname only in the cell; the full URL lives in the title tooltip.
+    expect(cell).toHaveTextContent('old.example.com');
+    expect(cell).toHaveAttribute('title', 'https://old.example.com:8443');
+  });
+
+  it('renders a dash in the Server column when agentServerUrl is missing or malformed (#2288)', () => {
+    seedColumns('serverUrl');
+    const devices: Device[] = [
+      { ...baseDevice, id: 'd9d9d9d9-0000-0000-0000-000000000001', hostname: 'host-null', agentServerUrl: null },
+      { ...baseDevice, id: 'd9d9d9d9-0000-0000-0000-000000000002', hostname: 'host-bad', agentServerUrl: 'not a url' },
+    ];
+
+    render(<DeviceList devices={devices} />);
+
+    // Em-dash dash cell for both the null and the unparseable URL — asserted
+    // exactly so the cell never leaks a raw/blank value.
+    expect(screen.getByTestId('device-d9d9d9d9-0000-0000-0000-000000000001-server-url').textContent).toBe('—');
+    expect(screen.getByTestId('device-d9d9d9d9-0000-0000-0000-000000000002-server-url').textContent).toBe('—');
+  });
 });
 
 describe('DeviceList — pending reboot badge', () => {

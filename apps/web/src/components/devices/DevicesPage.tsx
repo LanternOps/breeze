@@ -308,6 +308,7 @@ export default function DevicesPage() {
           siteName: '', // Will be resolved from sites
           agentVersion: (d.agentVersion ?? '') as string,
           watchdogVersion: (d.watchdogVersion ?? null) as string | null,
+          agentServerUrl: (d.agentServerUrl ?? null) as string | null,
           tags: (d.tags ?? []) as string[],
           deviceRole: d.deviceRole as DeviceRole | undefined,
           deviceRoleSource: d.deviceRoleSource as string | undefined,
