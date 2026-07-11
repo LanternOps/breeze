@@ -12,6 +12,9 @@ export type FontPreference = (typeof FONT_OPTIONS)[number];
 export const TIME_FORMAT_OPTIONS = ['12h', '24h'] as const satisfies readonly TimeFormat[];
 export type TimeFormatPreference = TimeFormat;
 
+export const LOCALE_OPTIONS = ['en', 'pt-BR'] as const;
+export type LocalePreference = (typeof LOCALE_OPTIONS)[number];
+
 /**
  * Devices-list presentation of linked multi-boot profiles (#2138). 'on' =
  * when exactly one profile of a link group is online, its offline siblings
@@ -27,6 +30,7 @@ export type AppearancePreferences = {
   density?: Density;
   font?: FontPreference;
   timeFormat?: TimeFormatPreference;
+  locale?: LocalePreference;
 };
 
 export const DEFAULT_THEME: ThemePreference = 'system';
@@ -38,6 +42,7 @@ export const THEME_STORAGE_KEY = 'theme';
 export const DENSITY_STORAGE_KEY = 'breeze.density';
 export const FONT_STORAGE_KEY = 'breeze.font';
 export const TIME_FORMAT_STORAGE_KEY = 'breeze.timeFormat';
+export const LOCALE_STORAGE_KEY = 'breeze.locale';
 export const LINKED_PROFILE_COLLAPSE_STORAGE_KEY = 'breeze.collapseLinkedProfiles';
 
 export function isValidTheme(value: unknown): value is ThemePreference {
@@ -54,6 +59,10 @@ export function isValidFont(value: unknown): value is FontPreference {
 
 export function isValidTimeFormat(value: unknown): value is TimeFormatPreference {
   return typeof value === 'string' && (TIME_FORMAT_OPTIONS as readonly string[]).includes(value);
+}
+
+export function isValidLocale(value: unknown): value is LocalePreference {
+  return typeof value === 'string' && (LOCALE_OPTIONS as readonly string[]).includes(value);
 }
 
 export function isValidLinkedProfileCollapse(value: unknown): value is LinkedProfileCollapsePreference {
@@ -74,6 +83,10 @@ export function normalizeFont(value: unknown): FontPreference | undefined {
 
 export function normalizeTimeFormat(value: unknown): TimeFormatPreference | undefined {
   return isValidTimeFormat(value) ? value : undefined;
+}
+
+export function normalizeLocale(value: unknown): LocalePreference | undefined {
+  return isValidLocale(value) ? value : undefined;
 }
 
 export function normalizeLinkedProfileCollapse(value: unknown): LinkedProfileCollapsePreference | undefined {
@@ -118,6 +131,10 @@ export function readTimeFormatPreference(): TimeFormatPreference | undefined {
   return normalizeTimeFormat(readStorageValue(TIME_FORMAT_STORAGE_KEY));
 }
 
+export function readLocalePreference(): LocalePreference | undefined {
+  return normalizeLocale(readStorageValue(LOCALE_STORAGE_KEY));
+}
+
 export function readLinkedProfileCollapsePreference(): LinkedProfileCollapsePreference {
   return normalizeLinkedProfileCollapse(readStorageValue(LINKED_PROFILE_COLLAPSE_STORAGE_KEY))
     ?? DEFAULT_LINKED_PROFILE_COLLAPSE;
@@ -138,6 +155,30 @@ export function detectBrowserTimeFormat(): TimeFormatPreference {
 
 export function readResolvedTimeFormatPreference(): TimeFormatPreference {
   return readTimeFormatPreference() ?? detectBrowserTimeFormat();
+}
+
+export function detectBrowserLocale(): LocalePreference {
+  if (typeof navigator === 'undefined') {
+    return 'en';
+  }
+  const candidates = [...(navigator.languages ?? []), navigator.language].filter(
+    (v): v is string => typeof v === 'string' && v.length > 0
+  );
+  for (const candidate of candidates) {
+    const match = LOCALE_OPTIONS.find(
+      (option) =>
+        option.toLowerCase() === candidate.toLowerCase() ||
+        option.split('-')[0].toLowerCase() === candidate.split('-')[0].toLowerCase()
+    );
+    if (match) {
+      return match;
+    }
+  }
+  return 'en';
+}
+
+export function readResolvedLocalePreference(): LocalePreference {
+  return readLocalePreference() ?? detectBrowserLocale();
 }
 
 export function applyThemePreference(value: ThemePreference): void {
@@ -186,6 +227,12 @@ export function writeTimeFormatPreference(value: TimeFormatPreference): void {
   notifyTimeFormat(value);
 }
 
+export function writeLocalePreference(value: LocalePreference): void {
+  if (!isValidLocale(value)) return;
+  writeStorageValue(LOCALE_STORAGE_KEY, value);
+  notifyLocale(value);
+}
+
 export function writeLinkedProfileCollapsePreference(value: LinkedProfileCollapsePreference): void {
   if (!isValidLinkedProfileCollapse(value)) return;
   writeStorageValue(LINKED_PROFILE_COLLAPSE_STORAGE_KEY, value);
@@ -205,12 +252,16 @@ export function applyAppearancePreferences(preferences: AppearancePreferences): 
   if (preferences.timeFormat) {
     writeTimeFormatPreference(preferences.timeFormat);
   }
+  if (preferences.locale) {
+    writeLocalePreference(preferences.locale);
+  }
 }
 
 const themeSubscribers = new Set<(value: ThemePreference) => void>();
 const densitySubscribers = new Set<(value: Density) => void>();
 const fontSubscribers = new Set<(value: FontPreference) => void>();
 const timeFormatSubscribers = new Set<(value: TimeFormatPreference) => void>();
+const localeSubscribers = new Set<(value: LocalePreference) => void>();
 const linkedProfileCollapseSubscribers = new Set<(value: LinkedProfileCollapsePreference) => void>();
 
 function notifyTheme(value: ThemePreference): void {
@@ -245,6 +296,16 @@ function notifyFont(value: FontPreference): void {
 
 function notifyTimeFormat(value: TimeFormatPreference): void {
   for (const fn of timeFormatSubscribers) {
+    try {
+      fn(value);
+    } catch {
+      // Subscriber errors must not break setter.
+    }
+  }
+}
+
+function notifyLocale(value: LocalePreference): void {
+  for (const fn of localeSubscribers) {
     try {
       fn(value);
     } catch {
@@ -288,6 +349,13 @@ export function subscribeTimeFormat(fn: (value: TimeFormatPreference) => void): 
   timeFormatSubscribers.add(fn);
   return () => {
     timeFormatSubscribers.delete(fn);
+  };
+}
+
+export function subscribeLocale(fn: (value: LocalePreference) => void): () => void {
+  localeSubscribers.add(fn);
+  return () => {
+    localeSubscribers.delete(fn);
   };
 }
 
