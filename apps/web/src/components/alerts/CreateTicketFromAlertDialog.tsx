@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 import { AlertTriangle, X } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
@@ -60,6 +62,7 @@ type CreateTicketFromAlertDialogProps = {
 export default function CreateTicketFromAlertDialog({
   alertId, alertTitle, alertSeverity, initialDescription = '', openTicketNumber, duplicateCheckFailed = false, onClose, onCreated
 }: CreateTicketFromAlertDialogProps) {
+  const { t } = useTranslation('alerts');
   const [subject, setSubject] = useState(alertTitle);
   const [description, setDescription] = useState(initialDescription);
   const [priority, setPriority] = useState<Priority>(SEVERITY_TO_PRIORITY[alertSeverity] ?? 'normal');
@@ -100,8 +103,10 @@ export default function CreateTicketFromAlertDialog({
             ...(categoryId ? { categoryId } : {})
           })
         }),
-        errorFallback: 'Failed to create ticket',
-        successMessage: (r) => r?.data?.internalNumber ? `Ticket ${r.data.internalNumber} created` : 'Ticket created',
+        errorFallback: t('createTicketFromAlertDialog.failedToCreateTicket'),
+        successMessage: (r) => r?.data?.internalNumber
+          ? t('createTicketFromAlertDialog.ticketCreatedWithNumber', { ticket: r.data.internalNumber })
+          : t('createTicketFromAlertDialog.ticketCreated'),
         onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
       onCreated();
@@ -110,14 +115,14 @@ export default function CreateTicketFromAlertDialog({
     } finally {
       setSubmitting(false);
     }
-  }, [subject, description, priority, categoryId, submitting, alertId, onCreated]);
+  }, [subject, description, priority, categoryId, submitting, alertId, onCreated, t]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" data-testid="alert-ticket-dialog">
       <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-lg">
         <div className="flex items-start justify-between">
-          <h2 className="text-lg font-semibold">Create ticket from alert</h2>
-          <button type="button" onClick={onClose} aria-label="Close" className="text-muted-foreground hover:text-foreground">
+          <h2 className="text-lg font-semibold">{t('createTicketFromAlertDialog.createTicketFromAlert')}</h2>
+          <button type="button" onClick={onClose} aria-label={t('createTicketFromAlertDialog.close')} className="text-muted-foreground hover:text-foreground">
             <X className="h-4 w-4" />
           </button>
         </div>
@@ -128,7 +133,7 @@ export default function CreateTicketFromAlertDialog({
             data-testid="alert-ticket-duplicate-warning"
           >
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            <span>This alert already has open ticket {openTicketNumber}. Creating another is allowed but may duplicate work.</span>
+            <span>{t('createTicketFromAlertDialog.openTicketWarning', { ticket: openTicketNumber })}</span>
           </div>
         ) : duplicateCheckFailed ? (
           <div
@@ -136,13 +141,13 @@ export default function CreateTicketFromAlertDialog({
             data-testid="alert-ticket-duplicate-check-failed"
           >
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            <span>Couldn&apos;t check for existing tickets on this alert — a duplicate may already be open.</span>
+            <span>{t('createTicketFromAlertDialog.couldnTCheckForExistingTicketsOn')}</span>
           </div>
         ) : null}
 
         <div className="mt-4 space-y-3">
           <div>
-            <label className="text-sm font-medium" htmlFor="alert-ticket-subject">Subject</label>
+            <label className="text-sm font-medium" htmlFor="alert-ticket-subject">{t('createTicketFromAlertDialog.subject')}</label>
             <input
               id="alert-ticket-subject"
               value={subject}
@@ -153,7 +158,7 @@ export default function CreateTicketFromAlertDialog({
             />
           </div>
           <div>
-            <label className="text-sm font-medium" htmlFor="alert-ticket-description">Description</label>
+            <label className="text-sm font-medium" htmlFor="alert-ticket-description">{t('createTicketFromAlertDialog.description')}</label>
             <textarea
               id="alert-ticket-description"
               value={description}
@@ -166,7 +171,7 @@ export default function CreateTicketFromAlertDialog({
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="text-sm font-medium" htmlFor="alert-ticket-priority">Priority</label>
+              <label className="text-sm font-medium" htmlFor="alert-ticket-priority">{t('createTicketFromAlertDialog.priority')}</label>
               <select
                 id="alert-ticket-priority"
                 value={priority}
@@ -175,12 +180,12 @@ export default function CreateTicketFromAlertDialog({
                 data-testid="alert-ticket-priority"
               >
                 {PRIORITIES.map((p) => (
-                  <option key={p} value={p}>{p.charAt(0).toUpperCase() + p.slice(1)}</option>
+                  <option key={p} value={p}>{t(`createTicketFromAlertDialog.priorityOption.${p}`)}</option>
                 ))}
               </select>
             </div>
             <div>
-              <label className="text-sm font-medium" htmlFor="alert-ticket-category">Category</label>
+              <label className="text-sm font-medium" htmlFor="alert-ticket-category">{t('createTicketFromAlertDialog.category')}</label>
               <select
                 id="alert-ticket-category"
                 value={categoryId}
@@ -188,16 +193,16 @@ export default function CreateTicketFromAlertDialog({
                 className="mt-1 w-full rounded-md border bg-background px-2.5 py-1.5 text-sm"
                 data-testid="alert-ticket-category"
               >
-                <option value="">None</option>
+                <option value="">{t('createTicketFromAlertDialog.none')}</option>
                 {orderCategoriesForSelect(categories).map((c) => (
                   <option key={c.id} value={c.id}>{c.depth === 1 ? `— ${c.name}` : c.name}</option>
                 ))}
               </select>
               {categoriesFailed && (
                 <p className="mt-1 text-xs text-muted-foreground" data-testid="alert-ticket-categories-failed">
-                  Categories couldn&apos;t be loaded.{' '}
+                  {t('createTicketFromAlertDialog.categoriesCouldnTBeLoaded')}{' '}
                   <button type="button" onClick={() => void loadCategories()} className="underline hover:text-foreground">
-                    Retry
+                    {t('createTicketFromAlertDialog.retry')}
                   </button>
                 </p>
               )}
@@ -212,7 +217,7 @@ export default function CreateTicketFromAlertDialog({
             className="rounded-md border px-3 py-1.5 text-sm font-medium"
             data-testid="alert-ticket-cancel"
           >
-            Cancel
+            {t('createTicketFromAlertDialog.cancel')}
           </button>
           <button
             type="button"
@@ -221,7 +226,7 @@ export default function CreateTicketFromAlertDialog({
             className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
             data-testid="alert-ticket-submit"
           >
-            {submitting ? 'Creating…' : 'Create ticket'}
+            {submitting ? t('createTicketFromAlertDialog.creating') : t('createTicketFromAlertDialog.createTicket')}
           </button>
         </div>
       </div>

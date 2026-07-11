@@ -1,4 +1,7 @@
 import { useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
+import '../../lib/i18n';
 import { useForm, useFieldArray, Controller } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -52,8 +55,8 @@ const pushoverConfigSchema = z.object({
   sound: z.string().max(40).optional()
 });
 
-const notificationChannelSchema = z.object({
-  name: z.string().min(1, 'Channel name is required'),
+const createNotificationChannelSchema = (t: TFunction<'alerts'>) => z.object({
+  name: z.string().min(1, t('notificationChannelForm.validation.channelNameRequired')),
   type: z.enum(NOTIFICATION_CHANNEL_TYPES),
   enabled: z.boolean(),
   // Config fields (validated conditionally based on type)
@@ -87,21 +90,21 @@ const notificationChannelSchema = z.object({
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['pushoverUser'],
-        message: 'User key must be 30 characters or fewer'
+        message: t('notificationChannelForm.validation.userKeyTooLong')
       });
     }
     if (data.pushoverToken && data.pushoverToken.length > 30) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['pushoverToken'],
-        message: 'Token must be 30 characters or fewer'
+        message: t('notificationChannelForm.validation.tokenTooLong')
       });
     }
     if (data.pushoverDevice && data.pushoverDevice.length > 25) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['pushoverDevice'],
-        message: 'Device name must be 25 characters or fewer'
+        message: t('notificationChannelForm.validation.deviceNameTooLong')
       });
     }
   }
@@ -118,7 +121,7 @@ const notificationChannelSchema = z.object({
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['smsPhoneNumbers'],
-      message: 'At least one phone number is required'
+      message: t('notificationChannelForm.validation.phoneRequired')
     });
     return;
   }
@@ -130,7 +133,7 @@ const notificationChannelSchema = z.object({
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['smsPhoneNumbers', index, 'value'],
-        message: 'Phone number must be in E.164 format (e.g. +1234567890)'
+        message: t('notificationChannelForm.validation.phoneFormat')
       });
     }
   }
@@ -139,7 +142,7 @@ const notificationChannelSchema = z.object({
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['smsPhoneNumbers'],
-      message: 'All SMS phone numbers must use E.164 format (e.g. +1234567890)'
+      message: t('notificationChannelForm.validation.allPhoneFormat')
     });
   }
 
@@ -148,12 +151,12 @@ const notificationChannelSchema = z.object({
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['smsFrom'],
-      message: 'From number must be in E.164 format (e.g. +1234567890)'
+      message: t('notificationChannelForm.validation.fromPhoneFormat')
     });
   }
 });
 
-export type NotificationChannelFormValues = z.infer<typeof notificationChannelSchema>;
+export type NotificationChannelFormValues = z.infer<ReturnType<typeof createNotificationChannelSchema>>;
 
 type NotificationChannelFormProps = {
   onSubmit?: (values: NotificationChannelFormValues) => void | Promise<void>;
@@ -163,23 +166,25 @@ type NotificationChannelFormProps = {
   loading?: boolean;
 };
 
-const channelTypeOptions: { value: NotificationChannelType; label: string; icon: typeof Mail; description: string }[] = [
-  { value: 'email', label: 'Email', icon: Mail, description: 'Send alerts via email' },
-  { value: 'slack', label: 'Slack', icon: MessageSquare, description: 'Post alerts to Slack channel' },
-  { value: 'teams', label: 'Microsoft Teams', icon: MessageSquare, description: 'Post alerts to Teams channel' },
-  { value: 'pagerduty', label: 'PagerDuty', icon: Bell, description: 'Create PagerDuty incidents' },
-  { value: 'webhook', label: 'Webhook', icon: Webhook, description: 'Send to custom HTTP endpoint' },
-  { value: 'sms', label: 'SMS', icon: Phone, description: 'Send SMS notifications' },
-  { value: 'pushover', label: 'Pushover', icon: Smartphone, description: 'Push to phones via Pushover (emergency-priority capable)' }
+const channelTypeOptions: { value: NotificationChannelType; icon: typeof Mail }[] = [
+  { value: 'email', icon: Mail },
+  { value: 'slack', icon: MessageSquare },
+  { value: 'teams', icon: MessageSquare },
+  { value: 'pagerduty', icon: Bell },
+  { value: 'webhook', icon: Webhook },
+  { value: 'sms', icon: Phone },
+  { value: 'pushover', icon: Smartphone }
 ];
 
 export default function NotificationChannelForm({
   onSubmit,
   onCancel,
   defaultValues,
-  submitLabel = 'Save channel',
+  submitLabel,
   loading
 }: NotificationChannelFormProps) {
+  const { t } = useTranslation('alerts');
+  const notificationChannelSchema = useMemo(() => createNotificationChannelSchema(t), [t]);
   const {
     register,
     handleSubmit,
@@ -262,11 +267,11 @@ export default function NotificationChannelForm({
       <div className="grid gap-6 md:grid-cols-2">
         <div className="space-y-2">
           <label htmlFor="channel-name" className="text-sm font-medium">
-            Channel name
+            {t('notificationChannelForm.channelName')}
           </label>
           <input
             id="channel-name"
-            placeholder="Production Alerts"
+            placeholder={t('notificationChannelForm.productionAlerts')}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('name')}
           />
@@ -274,7 +279,7 @@ export default function NotificationChannelForm({
         </div>
 
         <div className="space-y-2">
-          <label className="text-sm font-medium">Enabled</label>
+          <label className="text-sm font-medium">{t('notificationChannelForm.enabled')}</label>
           <Controller
             name="enabled"
             control={control}
@@ -286,7 +291,7 @@ export default function NotificationChannelForm({
                   onChange={e => field.onChange(e.target.checked)}
                   className="h-4 w-4 rounded border-border"
                 />
-                <span className="text-sm">Enable this notification channel</span>
+                <span className="text-sm">{t('notificationChannelForm.enableThisNotificationChannel')}</span>
               </label>
             )}
           />
@@ -295,7 +300,7 @@ export default function NotificationChannelForm({
 
       {/* Channel Type Selection */}
       <div className="space-y-2">
-        <label className="text-sm font-medium">Channel Type</label>
+        <label className="text-sm font-medium">{t('notificationChannelForm.channelType')}</label>
         <Controller
           name="type"
           control={control}
@@ -324,8 +329,8 @@ export default function NotificationChannelForm({
                       <Icon className="h-5 w-5" />
                     </div>
                     <div>
-                      <p className="text-sm font-medium">{opt.label}</p>
-                      <p className="text-xs text-muted-foreground">{opt.description}</p>
+                      <p className="text-sm font-medium">{t(`notificationChannelForm.channelTypeOption.${opt.value}.label`)}</p>
+                      <p className="text-xs text-muted-foreground">{t(`notificationChannelForm.channelTypeOption.${opt.value}.description`)}</p>
                     </div>
                   </button>
                 );
@@ -339,21 +344,21 @@ export default function NotificationChannelForm({
       {watchType === 'email' && (
         <div className="rounded-md border bg-muted/20 p-4">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-sm font-semibold">Email Configuration</h3>
+            <h3 className="text-sm font-semibold">{t('notificationChannelForm.emailConfiguration')}</h3>
             <button
               type="button"
               onClick={() => appendEmail({ value: '' })}
               className="inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted"
             >
               <Plus className="h-4 w-4" />
-              Add Recipient
+              {t('notificationChannelForm.addRecipient')}
             </button>
           </div>
           <div className="space-y-3">
             {emailFields.map((field, index) => (
               <div key={field.id} className="flex items-center gap-2">
                 <input
-                  placeholder="email@example.com"
+                  placeholder={t('notificationChannelForm.emailExampleCom')}
                   className="h-10 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   {...register(`emailRecipients.${index}.value`)}
                 />
@@ -375,34 +380,34 @@ export default function NotificationChannelForm({
       {/* Slack Configuration */}
       {watchType === 'slack' && (
         <div className="rounded-md border bg-muted/20 p-4">
-          <h3 className="text-sm font-semibold mb-4">Slack Configuration</h3>
+          <h3 className="text-sm font-semibold mb-4">{t('notificationChannelForm.slackConfiguration')}</h3>
           <div className="space-y-4">
             <div className="space-y-2">
               <label htmlFor="slack-webhook" className="text-sm font-medium">
-                Webhook URL
+                {t('notificationChannelForm.webhookUrl')}
               </label>
               <input
                 id="slack-webhook"
-                placeholder="https://hooks.slack.com/services/..."
+                placeholder={t('notificationChannelForm.httpsHooksSlackComServices')}
                 className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 {...register('slackWebhookUrl')}
               />
               <p className="text-xs text-muted-foreground">
-                Create a Slack Incoming Webhook and paste the URL here
+                {t('notificationChannelForm.createASlackIncomingWebhookAndPaste')}
               </p>
             </div>
             <div className="space-y-2">
               <label htmlFor="slack-channel" className="text-sm font-medium">
-                Channel (optional)
+                {t('notificationChannelForm.channelOptional')}
               </label>
               <input
                 id="slack-channel"
-                placeholder="#alerts"
+                placeholder={t('notificationChannelForm.alerts')}
                 className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 {...register('slackChannel')}
               />
               <p className="text-xs text-muted-foreground">
-                Override the default channel configured in the webhook
+                {t('notificationChannelForm.overrideTheDefaultChannelConfiguredInThe')}
               </p>
             </div>
           </div>
@@ -412,19 +417,19 @@ export default function NotificationChannelForm({
       {/* Teams Configuration */}
       {watchType === 'teams' && (
         <div className="rounded-md border bg-muted/20 p-4">
-          <h3 className="text-sm font-semibold mb-4">Microsoft Teams Configuration</h3>
+          <h3 className="text-sm font-semibold mb-4">{t('notificationChannelForm.microsoftTeamsConfiguration')}</h3>
           <div className="space-y-2">
             <label htmlFor="teams-webhook" className="text-sm font-medium">
-              Webhook URL
+              {t('notificationChannelForm.webhookUrl')}
             </label>
             <input
               id="teams-webhook"
-              placeholder="https://outlook.office.com/webhook/..."
+              placeholder={t('notificationChannelForm.httpsOutlookOfficeComWebhook')}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('teamsWebhookUrl')}
             />
             <p className="text-xs text-muted-foreground">
-              Create an Incoming Webhook connector in your Teams channel
+              {t('notificationChannelForm.createAnIncomingWebhookConnectorInYour')}
             </p>
           </div>
         </div>
@@ -433,36 +438,36 @@ export default function NotificationChannelForm({
       {/* PagerDuty Configuration */}
       {watchType === 'pagerduty' && (
         <div className="rounded-md border bg-muted/20 p-4">
-          <h3 className="text-sm font-semibold mb-4">PagerDuty Configuration</h3>
+          <h3 className="text-sm font-semibold mb-4">{t('notificationChannelForm.pagerdutyConfiguration')}</h3>
           <div className="space-y-4">
             <div className="space-y-2">
               <label htmlFor="pagerduty-key" className="text-sm font-medium">
-                Integration Key
+                {t('notificationChannelForm.integrationKey')}
               </label>
               <input
                 id="pagerduty-key"
                 type="password"
-                placeholder="Enter your PagerDuty integration key"
+                placeholder={t('notificationChannelForm.enterYourPagerdutyIntegrationKey')}
                 className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 {...register('pagerdutyIntegrationKey')}
               />
               <p className="text-xs text-muted-foreground">
-                Find this in your PagerDuty service's Integrations tab
+                {t('notificationChannelForm.findThisInYourPagerdutyServiceS')}
               </p>
             </div>
             <div className="space-y-2">
               <label htmlFor="pagerduty-severity" className="text-sm font-medium">
-                Default Severity
+                {t('notificationChannelForm.defaultSeverity')}
               </label>
               <select
                 id="pagerduty-severity"
                 className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 {...register('pagerdutySeverity')}
               >
-                <option value="critical">Critical</option>
-                <option value="error">Error</option>
-                <option value="warning">Warning</option>
-                <option value="info">Info</option>
+                <option value="critical">{t('notificationChannelForm.critical')}</option>
+                <option value="error">{t('notificationChannelForm.error')}</option>
+                <option value="warning">{t('notificationChannelForm.warning')}</option>
+                <option value="info">{t('notificationChannelForm.info')}</option>
               </select>
             </div>
           </div>
@@ -472,17 +477,17 @@ export default function NotificationChannelForm({
       {/* Pushover Configuration */}
       {watchType === 'pushover' && (
         <div className="rounded-md border bg-muted/20 p-4">
-          <h3 className="text-sm font-semibold mb-4">Pushover Configuration</h3>
+          <h3 className="text-sm font-semibold mb-4">{t('notificationChannelForm.pushoverConfiguration')}</h3>
           <div className="space-y-4">
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <label htmlFor="pushover-token" className="text-sm font-medium">
-                  Application Token
+                  {t('notificationChannelForm.applicationToken')}
                 </label>
                 <input
                   id="pushover-token"
                   type="password"
-                  placeholder="Leave blank to inherit from partner"
+                  placeholder={t('notificationChannelForm.leaveBlankToInheritFromPartner')}
                   maxLength={30}
                   className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   {...register('pushoverToken')}
@@ -491,18 +496,18 @@ export default function NotificationChannelForm({
                   <p className="text-xs text-destructive">{errors.pushoverToken.message}</p>
                 ) : (
                   <p className="text-xs text-muted-foreground">
-                    30-char app key from your Pushover application. Blank uses partner default.
+                    {t('notificationChannelForm.value30CharAppKeyFromYourPushover')}
                   </p>
                 )}
               </div>
               <div className="space-y-2">
                 <label htmlFor="pushover-user" className="text-sm font-medium">
-                  User or Group Key
+                  {t('notificationChannelForm.userOrGroupKey')}
                 </label>
                 <input
                   id="pushover-user"
                   type="text"
-                  placeholder="Leave blank to inherit from partner"
+                  placeholder={t('notificationChannelForm.leaveBlankToInheritFromPartner')}
                   maxLength={30}
                   className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   {...register('pushoverUser')}
@@ -511,7 +516,7 @@ export default function NotificationChannelForm({
                   <p className="text-xs text-destructive">{errors.pushoverUser.message}</p>
                 ) : (
                   <p className="text-xs text-muted-foreground">
-                    30-char user/group key. Blank uses partner default.
+                    {t('notificationChannelForm.value30CharUserGroupKeyBlankUses')}
                   </p>
                 )}
               </div>
@@ -519,12 +524,12 @@ export default function NotificationChannelForm({
             <div className="grid gap-4 sm:grid-cols-3">
               <div className="space-y-2">
                 <label htmlFor="pushover-device" className="text-sm font-medium">
-                  Device (optional)
+                  {t('notificationChannelForm.deviceOptional')}
                 </label>
                 <input
                   id="pushover-device"
                   type="text"
-                  placeholder="iphone-bdunn"
+                  placeholder={t('notificationChannelForm.iphoneBdunn')}
                   maxLength={25}
                   className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   {...register('pushoverDevice')}
@@ -535,36 +540,36 @@ export default function NotificationChannelForm({
               </div>
               <div className="space-y-2">
                 <label htmlFor="pushover-priority" className="text-sm font-medium">
-                  Priority
+                  {t('notificationChannelForm.priority')}
                 </label>
                 <select
                   id="pushover-priority"
                   className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   {...register('pushoverPriority', { valueAsNumber: true })}
                 >
-                  <option value={-2}>Lowest (no notification UI)</option>
-                  <option value={-1}>Low (silent)</option>
-                  <option value={0}>Normal</option>
-                  <option value={1}>High (bypass quiet hours)</option>
-                  <option value={2}>Emergency (repeats until ack)</option>
+                  <option value={-2}>{t('notificationChannelForm.lowestNoNotificationUi')}</option>
+                  <option value={-1}>{t('notificationChannelForm.lowSilent')}</option>
+                  <option value={0}>{t('notificationChannelForm.normal')}</option>
+                  <option value={1}>{t('notificationChannelForm.highBypassQuietHours')}</option>
+                  <option value={2}>{t('notificationChannelForm.emergencyRepeatsUntilAck')}</option>
                 </select>
                 <p className="text-xs text-muted-foreground">
-                  Falls back to alert severity mapping when unset.
+                  {t('notificationChannelForm.fallsBackToAlertSeverityMappingWhen')}
                 </p>
               </div>
               <div className="space-y-2">
                 <label htmlFor="pushover-sound" className="text-sm font-medium">
-                  Sound (optional)
+                  {t('notificationChannelForm.soundOptional')}
                 </label>
                 <input
                   id="pushover-sound"
                   type="text"
-                  placeholder="pushover"
+                  placeholder={t('notificationChannelForm.pushover')}
                   className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   {...register('pushoverSound')}
                 />
                 <p className="text-xs text-muted-foreground">
-                  Built-in name (pushover, bike, bugle, …) or your custom sound.
+                  {t('notificationChannelForm.builtInNamePushoverBikeBugleOr')}
                 </p>
               </div>
             </div>
@@ -575,32 +580,32 @@ export default function NotificationChannelForm({
       {/* Webhook Configuration */}
       {watchType === 'webhook' && (
         <div className="rounded-md border bg-muted/20 p-4">
-          <h3 className="text-sm font-semibold mb-4">Webhook Configuration</h3>
+          <h3 className="text-sm font-semibold mb-4">{t('notificationChannelForm.webhookConfiguration')}</h3>
           <div className="space-y-4">
             <div className="grid gap-4 sm:grid-cols-3">
               <div className="space-y-2 sm:col-span-2">
                 <label htmlFor="webhook-url" className="text-sm font-medium">
-                  URL
+                  {t('notificationChannelForm.url')}
                 </label>
                 <input
                   id="webhook-url"
-                  placeholder="https://api.example.com/alerts"
+                  placeholder={t('notificationChannelForm.httpsApiExampleComAlerts')}
                   className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   {...register('webhookUrl')}
                 />
               </div>
               <div className="space-y-2">
                 <label htmlFor="webhook-method" className="text-sm font-medium">
-                  Method
+                  {t('notificationChannelForm.method')}
                 </label>
                 <select
                   id="webhook-method"
                   className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   {...register('webhookMethod')}
                 >
-                  <option value="POST">POST</option>
-                  <option value="PUT">PUT</option>
-                  <option value="PATCH">PATCH</option>
+                  <option value="POST">{t('notificationChannelForm.post')}</option>
+                  <option value="PUT">{t('notificationChannelForm.put')}</option>
+                  <option value="PATCH">{t('notificationChannelForm.patch')}</option>
                 </select>
               </div>
             </div>
@@ -608,14 +613,14 @@ export default function NotificationChannelForm({
             {/* Headers */}
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <label className="text-sm font-medium">Headers</label>
+                <label className="text-sm font-medium">{t('notificationChannelForm.headers')}</label>
                 <button
                   type="button"
                   onClick={() => appendHeader({ key: '', value: '' })}
                   className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
                 >
                   <Plus className="h-3 w-3" />
-                  Add Header
+                  {t('notificationChannelForm.addHeader')}
                 </button>
               </div>
               {headerFields.length > 0 ? (
@@ -623,12 +628,12 @@ export default function NotificationChannelForm({
                   {headerFields.map((field, index) => (
                     <div key={field.id} className="flex items-center gap-2">
                       <input
-                        placeholder="Header key"
+                        placeholder={t('notificationChannelForm.headerKey')}
                         className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                         {...register(`webhookHeaders.${index}.key`)}
                       />
                       <input
-                        placeholder="Header value"
+                        placeholder={t('notificationChannelForm.headerValue')}
                         className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                         {...register(`webhookHeaders.${index}.value`)}
                       />
@@ -643,20 +648,20 @@ export default function NotificationChannelForm({
                   ))}
                 </div>
               ) : (
-                <p className="text-xs text-muted-foreground">No custom headers configured</p>
+                <p className="text-xs text-muted-foreground">{t('notificationChannelForm.noCustomHeadersConfigured')}</p>
               )}
             </div>
 
             {/* Authentication */}
             <div className="space-y-2">
-              <label className="text-sm font-medium">Authentication</label>
+              <label className="text-sm font-medium">{t('notificationChannelForm.authentication')}</label>
               <select
                 className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 {...register('webhookAuthType')}
               >
-                <option value="none">No Authentication</option>
-                <option value="basic">Basic Auth</option>
-                <option value="bearer">Bearer Token</option>
+                <option value="none">{t('notificationChannelForm.noAuthentication')}</option>
+                <option value="basic">{t('notificationChannelForm.basicAuth')}</option>
+                <option value="bearer">{t('notificationChannelForm.bearerToken')}</option>
               </select>
             </div>
 
@@ -664,7 +669,7 @@ export default function NotificationChannelForm({
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
                   <label htmlFor="webhook-username" className="text-sm font-medium">
-                    Username
+                    {t('notificationChannelForm.username')}
                   </label>
                   <input
                     id="webhook-username"
@@ -674,7 +679,7 @@ export default function NotificationChannelForm({
                 </div>
                 <div className="space-y-2">
                   <label htmlFor="webhook-password" className="text-sm font-medium">
-                    Password
+                    {t('notificationChannelForm.password')}
                   </label>
                   <input
                     id="webhook-password"
@@ -689,7 +694,7 @@ export default function NotificationChannelForm({
             {watchAuthType === 'bearer' && (
               <div className="space-y-2">
                 <label htmlFor="webhook-token" className="text-sm font-medium">
-                  Bearer Token
+                  {t('notificationChannelForm.bearerToken')}
                 </label>
                 <input
                   id="webhook-token"
@@ -707,14 +712,14 @@ export default function NotificationChannelForm({
       {watchType === 'sms' && (
         <div className="rounded-md border bg-muted/20 p-4">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-sm font-semibold">SMS Configuration</h3>
+            <h3 className="text-sm font-semibold">{t('notificationChannelForm.smsConfiguration')}</h3>
             <button
               type="button"
               onClick={() => appendSms({ value: '' })}
               className="inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted"
             >
               <Plus className="h-4 w-4" />
-              Add Number
+              {t('notificationChannelForm.addNumber')}
             </button>
           </div>
           <div className="space-y-3">
@@ -738,12 +743,12 @@ export default function NotificationChannelForm({
             ))}
           </div>
           <p className="mt-2 text-xs text-muted-foreground">
-            Enter phone numbers in international format (e.g., +1234567890)
+            {t('notificationChannelForm.enterPhoneNumbersInInternationalFormatE')}
           </p>
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <label htmlFor="sms-from" className="text-sm font-medium">
-                Twilio From Number (optional)
+                {t('notificationChannelForm.twilioFromNumberOptional')}
               </label>
               <input
                 id="sms-from"
@@ -752,22 +757,22 @@ export default function NotificationChannelForm({
                 {...register('smsFrom')}
               />
               <p className="text-xs text-muted-foreground">
-                Optional override for sender number when not using a messaging service
+                {t('notificationChannelForm.optionalOverrideForSenderNumberWhenNot')}
               </p>
               {errors.smsFrom && <p className="text-sm text-destructive">{errors.smsFrom.message}</p>}
             </div>
             <div className="space-y-2">
               <label htmlFor="sms-messaging-service" className="text-sm font-medium">
-                Twilio Messaging Service SID (optional)
+                {t('notificationChannelForm.twilioMessagingServiceSidOptional')}
               </label>
               <input
                 id="sms-messaging-service"
-                placeholder="MGXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+                placeholder={t('notificationChannelForm.mgxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx')}
                 className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 {...register('smsMessagingServiceSid')}
               />
               <p className="text-xs text-muted-foreground">
-                Optional override for Twilio messaging service per channel
+                {t('notificationChannelForm.optionalOverrideForTwilioMessagingServicePer')}
               </p>
             </div>
           </div>
@@ -779,33 +784,32 @@ export default function NotificationChannelForm({
 
       {/* Per-Channel Message Templates */}
       <div className="rounded-md border bg-muted/20 p-4">
-        <h3 className="text-sm font-semibold mb-1">Custom Message Templates</h3>
+        <h3 className="text-sm font-semibold mb-1">{t('notificationChannelForm.customMessageTemplates')}</h3>
         <p className="text-xs text-muted-foreground mb-4">
-          Override default notification messages. Use {'{{variable}}'} syntax for dynamic values:
-          {' '}{'{{deviceName}}'}, {'{{severity}}'}, {'{{metric}}'}, {'{{actualValue}}'}, {'{{threshold}}'}, {'{{operator}}'}.
-          Leave blank to use defaults.
+          {t('notificationChannelForm.overrideDefaultNotificationMessagesUse')} {'{{variable}}'} {t('notificationChannelForm.syntaxForDynamicValues')}
+          {' '}{'{{deviceName}}'}, {'{{severity}}'}, {'{{metric}}'}, {'{{actualValue}}'}, {'{{threshold}}'}, {'{{operator}}'}{t('notificationChannelForm.leaveBlankToUseDefaults')}
         </p>
         <div className="space-y-4">
           <div className="space-y-2">
             <label htmlFor="template-triggered" className="text-sm font-medium">
-              Alert Triggered Template
+              {t('notificationChannelForm.alertTriggeredTemplate')}
             </label>
             <textarea
               id="template-triggered"
               rows={3}
-              placeholder="Alert: {{deviceName}} - {{metric}} is {{actualValue}} (threshold: {{operator}} {{threshold}})"
+              placeholder={t('notificationChannelForm.alertValueValueIsValueThresholdValue')}
               className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('templateTriggered')}
             />
           </div>
           <div className="space-y-2">
             <label htmlFor="template-resolved" className="text-sm font-medium">
-              Alert Resolved Template
+              {t('notificationChannelForm.alertResolvedTemplate')}
             </label>
             <textarea
               id="template-resolved"
               rows={3}
-              placeholder="Resolved: {{deviceName}} - {{metric}} has returned to normal"
+              placeholder={t('notificationChannelForm.resolvedValueValueHasReturnedToNormal')}
               className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('templateResolved')}
             />
@@ -820,14 +824,14 @@ export default function NotificationChannelForm({
           onClick={onCancel}
           className="h-11 w-full rounded-md border bg-background text-sm font-medium text-foreground transition hover:bg-muted sm:w-auto sm:px-6"
         >
-          Cancel
+          {t('notificationChannelForm.cancel')}
         </button>
         <button
           type="submit"
           disabled={isLoading}
           className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto sm:px-6"
         >
-          {isLoading ? 'Saving...' : submitLabel}
+          {isLoading ? t('common:states.saving') : (submitLabel ?? t('notificationChannelForm.saveChannel'))}
         </button>
       </div>
     </form>

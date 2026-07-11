@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import '@/lib/i18n';
+import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
@@ -34,14 +36,6 @@ interface OrgOption {
   name: string;
 }
 
-const FRIENDLY_CODES: Record<string, string> = {
-  ORG_NOT_ACCESSIBLE: 'That organization is not available under your partner.',
-  INBOUND_ROW_NOT_FOUND: 'That inbound email is no longer available.',
-  INBOUND_ROW_ALREADY_RESOLVED: 'That inbound email was already handled. Refreshing the list.',
-  INBOUND_ROW_NO_SENDER:
-    'This email has no usable sender address, so it cannot become a ticket. Dismiss it or follow up out-of-band.',
-};
-const friendlyCode = (code: string): string | undefined => FRIENDLY_CODES[code];
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 
 const PAGE_SIZE = 50;
@@ -53,6 +47,7 @@ interface InboundReviewQueueProps {
 }
 
 export default function InboundReviewQueue({ onTotalChange }: InboundReviewQueueProps) {
+  const { t } = useTranslation('tickets');
   const [rows, setRows] = useState<QueueRow[]>([]);
   const [orgs, setOrgs] = useState<OrgOption[]>([]);
   const [page, setPage] = useState(1);
@@ -62,6 +57,16 @@ export default function InboundReviewQueue({ onTotalChange }: InboundReviewQueue
   const [forbidden, setForbidden] = useState(false);
   const [convertOpenId, setConvertOpenId] = useState<string | null>(null);
   const [convertOrgId, setConvertOrgId] = useState('');
+
+  const friendlyCode = useCallback((code: string): string | undefined => {
+    const friendlyCodes: Record<string, string> = {
+      ORG_NOT_ACCESSIBLE: t('inboundReviewQueue.friendly.orgNotAccessible'),
+      INBOUND_ROW_NOT_FOUND: t('inboundReviewQueue.friendly.rowNotFound'),
+      INBOUND_ROW_ALREADY_RESOLVED: t('inboundReviewQueue.friendly.rowAlreadyResolved'),
+      INBOUND_ROW_NO_SENDER: t('inboundReviewQueue.friendly.noSender'),
+    };
+    return friendlyCodes[code];
+  }, [t]);
 
   const loadQueue = useCallback(
     async (p: number) => {
@@ -113,7 +118,7 @@ export default function InboundReviewQueue({ onTotalChange }: InboundReviewQueue
   const convert = useCallback(
     async (id: string) => {
       if (!convertOrgId) {
-        showToast({ type: 'error', message: 'Pick an organization first.' });
+        showToast({ type: 'error', message: t('inboundReviewQueue.pickOrgFirst') });
         return;
       }
       try {
@@ -123,20 +128,20 @@ export default function InboundReviewQueue({ onTotalChange }: InboundReviewQueue
               method: 'POST',
               body: JSON.stringify({ orgId: convertOrgId }),
             }),
-          errorFallback: 'Convert to ticket failed. Retry.',
-          successMessage: 'Ticket created from email',
+          errorFallback: t('inboundReviewQueue.convertFailed'),
+          successMessage: t('inboundReviewQueue.ticketCreated'),
           friendly: friendlyCode,
           onUnauthorized: UNAUTHORIZED,
         });
         setConvertOpenId(null);
         await loadQueue(page);
       } catch (err) {
-        handleActionError(err, 'Convert to ticket failed. Retry.');
+        handleActionError(err, t('inboundReviewQueue.convertFailed'));
         // An already-resolved row (409) means the list is stale — refresh so it clears.
         await loadQueue(page);
       }
     },
-    [convertOrgId, page, loadQueue],
+    [convertOrgId, friendlyCode, page, loadQueue, t],
   );
 
   const dismiss = useCallback(
@@ -145,18 +150,18 @@ export default function InboundReviewQueue({ onTotalChange }: InboundReviewQueue
         await runAction({
           request: () =>
             fetchWithAuth(`/ticket-config/email-inbound/${id}/dismiss`, { method: 'PATCH' }),
-          errorFallback: 'Dismiss failed. Retry.',
-          successMessage: 'Inbound email dismissed',
+          errorFallback: t('inboundReviewQueue.dismissFailed'),
+          successMessage: t('inboundReviewQueue.dismissed'),
           friendly: friendlyCode,
           onUnauthorized: UNAUTHORIZED,
         });
         await loadQueue(page);
       } catch (err) {
-        handleActionError(err, 'Dismiss failed. Retry.');
+        handleActionError(err, t('inboundReviewQueue.dismissFailed'));
         await loadQueue(page);
       }
     },
-    [page, loadQueue],
+    [friendlyCode, page, loadQueue, t],
   );
 
   const totalPages = useMemo(() => Math.max(1, Math.ceil(total / PAGE_SIZE)), [total]);
@@ -171,37 +176,37 @@ export default function InboundReviewQueue({ onTotalChange }: InboundReviewQueue
   if (loading)
     return (
       <p className="mt-6 text-center text-sm text-muted-foreground" data-testid="inbound-review-loading">
-        Loading.
+        {t('inboundReviewQueue.loading')}
       </p>
     );
   if (error)
     return (
       <p className="mt-6 text-center text-sm text-muted-foreground" data-testid="inbound-review-error">
-        Review queue failed to load.{' '}
+        {t('inboundReviewQueue.loadFailed')}{' '}
         <button
           type="button"
           onClick={() => void loadAll(1)}
           className="underline hover:text-foreground"
           data-testid="inbound-review-retry"
         >
-          Retry
+          {t('common:actions.retry')}
         </button>
       </p>
     );
 
   return (
     <section className="rounded-lg border p-4" data-testid="inbound-review-queue">
-      <h2 className="mb-1 text-sm font-semibold">Review queue</h2>
+      <h2 className="mb-1 text-sm font-semibold">{t('inboundReviewQueue.title')}</h2>
       <p className="mb-3 text-xs text-muted-foreground">
-        Quarantined (unknown sender) and failed inbound emails. Convert to a ticket or dismiss.
+        {t('inboundReviewQueue.description')}
       </p>
       {forbidden ? (
         <p className="text-sm text-muted-foreground" data-testid="inbound-review-forbidden">
-          The review queue is available to admins only.
+          {t('inboundReviewQueue.adminsOnly')}
         </p>
       ) : rows.length === 0 ? (
         <p className="text-sm text-muted-foreground" data-testid="inbound-review-empty">
-          Nothing to review.
+          {t('inboundReviewQueue.empty')}
         </p>
       ) : (
         <table className="min-w-full divide-y text-sm">
@@ -209,10 +214,10 @@ export default function InboundReviewQueue({ onTotalChange }: InboundReviewQueue
             {rows.map((r) => (
               <tr key={r.id} data-testid={`inbound-row-${r.id}`}>
                 <td className="px-2 py-2 align-top">
-                  <div className="font-medium">{r.fromAddress ?? '(unknown sender)'}</div>
-                  <div className="text-muted-foreground">{r.subject ?? '(no subject)'}</div>
+                  <div className="font-medium">{r.fromAddress ?? t('inboundReviewQueue.unknownSender')}</div>
+                  <div className="text-muted-foreground">{r.subject ?? t('inboundReviewQueue.noSubject')}</div>
                   <div className="mt-0.5 text-xs text-muted-foreground">
-                    <span className="rounded border px-1 py-0.5">{r.parseStatus}</span>{' '}
+                    <span className="rounded border px-1 py-0.5">{t(`inboundReviewQueue.parseStatus.${r.parseStatus}`)}</span>{' '}
                     {formatDateTime(r.createdAt)}
                     {r.parseStatus === 'failed' && r.error && (
                       <span className="ml-2 text-red-600">{r.error}</span>
@@ -229,7 +234,7 @@ export default function InboundReviewQueue({ onTotalChange }: InboundReviewQueue
                         className="rounded-md border bg-background px-2 py-1 text-sm"
                         data-testid={`inbound-convert-org-${r.id}`}
                       >
-                        <option value="">Select organization…</option>
+                        <option value="">{t('inboundReviewQueue.selectOrganization')}</option>
                         {orgs.map((o) => (
                           <option key={o.id} value={o.id}>
                             {o.name}
@@ -243,14 +248,14 @@ export default function InboundReviewQueue({ onTotalChange }: InboundReviewQueue
                         className="rounded-md bg-primary px-2.5 py-1 text-sm text-white disabled:opacity-50"
                         data-testid={`inbound-convert-submit-${r.id}`}
                       >
-                        Create ticket
+                        {t('inboundReviewQueue.createTicket')}
                       </button>
                       <button
                         type="button"
                         onClick={() => setConvertOpenId(null)}
                         className="rounded-md border px-2.5 py-1 text-sm"
                       >
-                        Cancel
+                        {t('common:actions.cancel')}
                       </button>
                     </div>
                   )}
@@ -265,7 +270,7 @@ export default function InboundReviewQueue({ onTotalChange }: InboundReviewQueue
                     className="text-muted-foreground hover:text-foreground"
                     data-testid={`inbound-convert-${r.id}`}
                   >
-                    Convert to ticket
+                    {t('inboundReviewQueue.convertToTicket')}
                   </button>
                   <button
                     type="button"
@@ -273,7 +278,7 @@ export default function InboundReviewQueue({ onTotalChange }: InboundReviewQueue
                     className="text-muted-foreground hover:text-foreground"
                     data-testid={`inbound-dismiss-${r.id}`}
                   >
-                    Dismiss
+                    {t('inboundReviewQueue.dismiss')}
                   </button>
                 </td>
               </tr>
@@ -293,10 +298,10 @@ export default function InboundReviewQueue({ onTotalChange }: InboundReviewQueue
             className="rounded-md border px-2.5 py-1 disabled:opacity-40"
             data-testid="inbound-page-prev"
           >
-            Prev
+            {t('inboundReviewQueue.prev')}
           </button>
           <span className="text-muted-foreground">
-            Page {page} of {totalPages}
+            {t('inboundReviewQueue.pageOf', { page, totalPages })}
           </span>
           <button
             type="button"
@@ -305,7 +310,7 @@ export default function InboundReviewQueue({ onTotalChange }: InboundReviewQueue
             className="rounded-md border px-2.5 py-1 disabled:opacity-40"
             data-testid="inbound-page-next"
           >
-            Next
+            {t('common:actions.next')}
           </button>
         </div>
       )}

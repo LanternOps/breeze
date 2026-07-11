@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 import { Pencil, Plus, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
@@ -35,6 +37,7 @@ const severityStyles: Record<AlertSeverity, { label: string; className: string }
 };
 
 export default function AlertTemplateList() {
+  const { t } = useTranslation('alerts');
   const { organizations } = useOrgStore();
   const [templates, setTemplates] = useState<AlertTemplate[]>([]);
   const [severityFilter, setSeverityFilter] = useState('all');
@@ -62,18 +65,18 @@ export default function AlertTemplateList() {
 
   const handleDelete = async (template: AlertTemplate) => {
     if (template.isBuiltIn) return;
-    if (!window.confirm(`Delete template "${template.name}"? This cannot be undone.`)) return;
+    if (!window.confirm(t('alertTemplateList.deleteConfirm', { name: template.name }))) return;
     try {
       await runAction({
         request: () => fetchWithAuth(`/alert-templates/templates/${template.id}`, { method: 'DELETE' }),
-        errorFallback: 'Could not delete template.',
-        successMessage: 'Template deleted',
+        errorFallback: t('alertTemplateList.deleteFailed'),
+        successMessage: t('alertTemplateList.deleted'),
         onUnauthorized: UNAUTHORIZED,
       });
       void fetchTemplates();
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
-      handleActionError(err, 'Could not delete template.');
+      handleActionError(err, t('alertTemplateList.deleteFailed'));
     }
   };
 
@@ -111,7 +114,7 @@ export default function AlertTemplateList() {
         <div className="flex h-48 flex-col items-center justify-center gap-2 text-muted-foreground" data-testid="alert-template-list-error">
           <p>{error}</p>
           <button type="button" onClick={() => void fetchTemplates()} className="text-sm text-primary hover:underline">
-            Try again
+            {t('alertTemplateList.tryAgain')}
           </button>
         </div>
       </div>
@@ -123,11 +126,11 @@ export default function AlertTemplateList() {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <div className="flex flex-wrap items-center gap-3">
-            <h2 className="text-lg font-semibold">Alert Templates</h2>
+            <h2 className="text-lg font-semibold">{t('alertTemplateList.alertTemplates')}</h2>
             <PageScopeIndicator pathname={typeof window !== 'undefined' ? window.location.pathname : '/settings/alert-templates'} />
           </div>
           <p className="text-sm text-muted-foreground">
-            {filteredTemplates.length} of {templates.length} templates
+            {filteredTemplates.length} {t('alertTemplateList.of')} {templates.length} {t('alertTemplateList.templates')}
           </p>
         </div>
         <button
@@ -137,7 +140,7 @@ export default function AlertTemplateList() {
           className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
         >
           <Plus className="h-4 w-4" />
-          Add template
+          {t('alertTemplateList.addTemplate')}
         </button>
       </div>
 
@@ -147,12 +150,12 @@ export default function AlertTemplateList() {
           onChange={event => setSeverityFilter(event.target.value)}
           className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-40"
         >
-          <option value="all">All severity</option>
-          <option value="critical">Critical</option>
-          <option value="high">High</option>
-          <option value="medium">Medium</option>
-          <option value="low">Low</option>
-          <option value="info">Info</option>
+          <option value="all">{t('alertTemplateList.allSeverity')}</option>
+          <option value="critical">{t('alertTemplateList.critical')}</option>
+          <option value="high">{t('alertTemplateList.high')}</option>
+          <option value="medium">{t('alertTemplateList.medium')}</option>
+          <option value="low">{t('alertTemplateList.low')}</option>
+          <option value="info">{t('alertTemplateList.info')}</option>
         </select>
         <select
           value={scopeFilter}
@@ -160,10 +163,10 @@ export default function AlertTemplateList() {
           data-testid="alert-template-scope-filter"
           className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-44"
         >
-          <option value="all">All scopes</option>
-          <option value="partner">Partner-wide</option>
-          <option value="org">Organization</option>
-          <option value="built-in">Built-in</option>
+          <option value="all">{t('alertTemplateList.allScopes')}</option>
+          <option value="partner">{t('alertTemplateList.partnerWide')}</option>
+          <option value="org">{t('alertTemplateList.organization')}</option>
+          <option value="built-in">{t('alertTemplateList.builtIn')}</option>
         </select>
       </div>
 
@@ -171,18 +174,18 @@ export default function AlertTemplateList() {
         <table className="min-w-full divide-y">
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <th className="px-4 py-3">Name</th>
-              <th className="px-4 py-3">Scope</th>
-              <th className="px-4 py-3">Severity</th>
-              <th className="px-4 py-3">Category</th>
-              <th className="px-4 py-3 text-right">Actions</th>
+              <th className="px-4 py-3">{t('alertTemplateList.name')}</th>
+              <th className="px-4 py-3">{t('alertTemplateList.scope')}</th>
+              <th className="px-4 py-3">{t('alertTemplateList.severity')}</th>
+              <th className="px-4 py-3">{t('alertTemplateList.category')}</th>
+              <th className="px-4 py-3 text-right">{t('alertTemplateList.actions')}</th>
             </tr>
           </thead>
           <tbody className="divide-y">
             {filteredTemplates.length === 0 ? (
               <tr>
                 <td colSpan={5} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                  No templates match your filters.
+                  {t('alertTemplateList.noTemplatesMatchYourFilters')}
                 </td>
               </tr>
             ) : (

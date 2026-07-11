@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 import { ArrowLeft, AlertTriangle, CheckCircle, XCircle, Clock, ExternalLink, User, Bell, Ticket } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { cn } from '@/lib/utils';
@@ -70,6 +72,7 @@ const statusIcons: Record<AlertStatus, typeof Bell> = {
 };
 
 export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
+  const { t } = useTranslation('alerts');
   const [alert, setAlert] = useState<Alert | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -86,27 +89,27 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
       const response = await fetchWithAuth(`/alerts/${alertId}`);
       if (!response.ok) {
         if (response.status === 404) {
-          throw new Error('Alert not found');
+          throw new Error(t('alertDetailPage.alertNotFound'));
         }
-        throw new Error('Failed to fetch alert');
+        throw new Error(t('alertDetailPage.failedToFetchAlert'));
       }
 
       const data = await response.json();
       // Map API response to component structure
       setAlert({
         ...data,
-        deviceName: data.device?.hostname || data.deviceName || 'Unknown Device',
+        deviceName: data.device?.hostname || data.deviceName || t('alertDetailPage.unknownDevice'),
         ruleName: data.rule?.name || data.ruleName,
         ruleId: data.rule?.id || data.ruleId,
         contextData: data.contextData ?? data.context,
         anomalyContext: data.anomalyContext ?? normalizeMetricAnomalyContext(data.contextData ?? data.context),
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to fetch alert');
+      setError(err instanceof Error ? err.message : t('alertDetailPage.failedToFetchAlert'));
     } finally {
       setLoading(false);
     }
-  }, [alertId]);
+  }, [alertId, t]);
 
   const fetchLinkedTickets = useCallback(async () => {
     try {
@@ -149,15 +152,15 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
       setActionInProgress(true);
       await runAction({
         request: () => fetchWithAuth(`/alerts/${alertId}/acknowledge`, { method: 'POST' }),
-        errorFallback: 'Failed to acknowledge alert',
-        successMessage: 'Alert acknowledged',
+        errorFallback: t('alertDetailPage.failedToAcknowledgeAlert'),
+        successMessage: t('alertDetailPage.alertAcknowledged'),
         onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
       await fetchAlert();
     } catch (err) {
-      handleActionError(err, 'Failed to acknowledge alert');
+      handleActionError(err, t('alertDetailPage.failedToAcknowledgeAlert'));
       if (!(err instanceof ActionError && err.status === 401)) {
-        setError(err instanceof Error ? err.message : 'Failed to acknowledge alert');
+        setError(err instanceof Error ? err.message : t('alertDetailPage.failedToAcknowledgeAlert'));
       }
     } finally {
       setActionInProgress(false);
@@ -170,15 +173,15 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
       setActionInProgress(true);
       await runAction({
         request: () => fetchWithAuth(`/alerts/${alertId}/resolve`, { method: 'POST' }),
-        errorFallback: 'Failed to resolve alert',
-        successMessage: 'Alert resolved',
+        errorFallback: t('alertDetailPage.failedToResolveAlert'),
+        successMessage: t('alertDetailPage.alertResolved'),
         onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
       await fetchAlert();
     } catch (err) {
-      handleActionError(err, 'Failed to resolve alert');
+      handleActionError(err, t('alertDetailPage.failedToResolveAlert'));
       if (!(err instanceof ActionError && err.status === 401)) {
-        setError(err instanceof Error ? err.message : 'Failed to resolve alert');
+        setError(err instanceof Error ? err.message : t('alertDetailPage.failedToResolveAlert'));
       }
     } finally {
       setActionInProgress(false);
@@ -190,7 +193,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
       <div className="flex items-center justify-center py-12">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading alert...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('alertDetailPage.loadingAlert')}</p>
         </div>
       </div>
     );
@@ -205,16 +208,16 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
           className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
         >
           <ArrowLeft className="h-4 w-4" />
-          Back to alerts
+          {t('alertDetailPage.backToAlerts')}
         </button>
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
-          <p className="text-sm text-destructive">{error || 'Alert not found'}</p>
+          <p className="text-sm text-destructive">{error || t('alertDetailPage.alertNotFound')}</p>
           <button
             type="button"
             onClick={handleBack}
             className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
           >
-            Go back
+            {t('alertDetailPage.goBack')}
           </button>
         </div>
       </div>
@@ -226,8 +229,8 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
   return (
     <div className="space-y-6">
       <Breadcrumbs items={[
-        { label: 'Alerts', href: '/alerts' },
-        { label: alert.title || 'Alert' }
+        { label: t('alertDetailPage.alertsBreadcrumb'), href: '/alerts' },
+        { label: alert.title || t('alertDetailPage.alertFallback') }
       ]} />
 
       {/* Header Card */}
@@ -252,7 +255,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
                     severityConfig[alert.severity].color
                   )}
                 >
-                  {severityConfig[alert.severity].label}
+                  {t(`alertDetailPage.severity.${alert.severity}`)}
                 </span>
                 <span
                   className={cn(
@@ -261,7 +264,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
                   )}
                 >
                   <StatusIcon className="h-3 w-3" />
-                  {statusConfig[alert.status].label}
+                  {t(`alertDetailPage.status.${alert.status}`)}
                 </span>
               </div>
             </div>
@@ -276,7 +279,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
               data-testid="alert-create-ticket"
             >
               <Ticket className="mr-2 inline-block h-4 w-4" />
-              Create ticket
+              {t('alertDetailPage.createTicket')}
             </button>
             {alert.status === 'active' && (
               <button
@@ -286,7 +289,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
                 className="h-10 rounded-md border border-yellow-500/40 bg-yellow-500/20 px-4 text-sm font-medium text-yellow-700 hover:bg-yellow-500/30 disabled:opacity-50"
               >
                 <CheckCircle className="mr-2 inline-block h-4 w-4" />
-                Acknowledge
+                {t('alertDetailPage.acknowledge')}
               </button>
             )}
             {(alert.status === 'active' || alert.status === 'acknowledged') && (
@@ -297,7 +300,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
                 className="h-10 rounded-md bg-green-600 px-4 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
               >
                 <CheckCircle className="mr-2 inline-block h-4 w-4" />
-                Resolve
+                {t('alertDetailPage.resolve')}
               </button>
             )}
           </div>
@@ -306,7 +309,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
 
       {/* Alert Message */}
       <div className="rounded-lg border bg-card p-6 shadow-xs">
-        <h3 className="text-sm font-semibold text-muted-foreground mb-2">Message</h3>
+        <h3 className="text-sm font-semibold text-muted-foreground mb-2">{t('alertDetailPage.message')}</h3>
         <p className="text-sm">{alert.message}</p>
       </div>
 
@@ -314,31 +317,31 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
 
       {alert.anomalyContext && (
         <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-6 shadow-xs">
-          <h3 className="text-sm font-semibold text-muted-foreground mb-4">ML Anomaly Evidence</h3>
+          <h3 className="text-sm font-semibold text-muted-foreground mb-4">{t('alertDetailPage.mlAnomalyEvidence')}</h3>
           <div className="grid gap-4 sm:grid-cols-3">
             <div>
-              <p className="text-xs text-muted-foreground">Metric</p>
-              <p className="text-sm font-medium">{alert.anomalyContext.metricName ?? 'Unknown metric'}</p>
+              <p className="text-xs text-muted-foreground">{t('alertDetailPage.metric')}</p>
+              <p className="text-sm font-medium">{alert.anomalyContext.metricName ?? t('alertDetailPage.unknownMetric')}</p>
             </div>
             <div>
-              <p className="text-xs text-muted-foreground">Type</p>
+              <p className="text-xs text-muted-foreground">{t('alertDetailPage.type')}</p>
               <p className="text-sm font-medium capitalize">{formatAnomalyType(alert.anomalyContext.anomalyType)}</p>
             </div>
             <div>
-              <p className="text-xs text-muted-foreground">Confidence</p>
+              <p className="text-xs text-muted-foreground">{t('alertDetailPage.confidence')}</p>
               <p className="text-sm font-medium tabular-nums">{formatAnomalyConfidence(alert.anomalyContext.confidence)}</p>
             </div>
             <div>
-              <p className="text-xs text-muted-foreground">Observed</p>
+              <p className="text-xs text-muted-foreground">{t('alertDetailPage.observed')}</p>
               <p className="text-sm font-medium tabular-nums">{formatAnomalyValue(alert.anomalyContext.observedValue)}</p>
             </div>
             <div>
-              <p className="text-xs text-muted-foreground">Baseline</p>
+              <p className="text-xs text-muted-foreground">{t('alertDetailPage.baseline')}</p>
               <p className="text-sm font-medium tabular-nums">{formatAnomalyValue(alert.anomalyContext.baselineValue)}</p>
             </div>
             {alert.anomalyContext.modelVersion && (
               <div>
-                <p className="text-xs text-muted-foreground">Model</p>
+                <p className="text-xs text-muted-foreground">{t('alertDetailPage.model')}</p>
                 <p className="text-sm font-medium">{alert.anomalyContext.modelVersion}</p>
               </div>
             )}
@@ -347,7 +350,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
             href={`/devices/${alert.deviceId}#anomalies${alert.anomalyContext.anomalyId ? `/${alert.anomalyContext.anomalyId}` : ''}`}
             className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-sky-700 hover:underline"
           >
-            Open device anomalies
+            {t('alertDetailPage.openDeviceAnomalies')}
             <ExternalLink className="h-3 w-3" />
           </a>
         </div>
@@ -356,11 +359,11 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
       {/* Linked Tickets */}
       {(linkedTickets.length > 0 || linkedError) && (
         <div className="rounded-lg border bg-card p-6 shadow-xs" data-testid="alert-linked-tickets">
-          <h3 className="text-sm font-semibold text-muted-foreground mb-3">Linked Tickets</h3>
+          <h3 className="text-sm font-semibold text-muted-foreground mb-3">{t('alertDetailPage.linkedTickets')}</h3>
           {linkedError ? (
             <p className="text-sm text-muted-foreground">
-              Linked tickets failed to load.{' '}
-              <button type="button" onClick={() => void fetchLinkedTickets()} className="underline hover:text-foreground">Retry</button>
+              {t('alertDetailPage.linkedTicketsFailedToLoad')}{' '}
+              <button type="button" onClick={() => void fetchLinkedTickets()} className="underline hover:text-foreground">{t('alertDetailPage.retry')}</button>
             </p>
           ) : (
             <ul className="space-y-2">
@@ -383,10 +386,10 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
       <div className="grid gap-6 md:grid-cols-2">
         {/* Device Info */}
         <div className="rounded-lg border bg-card p-6 shadow-xs">
-          <h3 className="text-sm font-semibold text-muted-foreground mb-4">Device Information</h3>
+          <h3 className="text-sm font-semibold text-muted-foreground mb-4">{t('alertDetailPage.deviceInformation')}</h3>
           <div className="space-y-3">
             <div>
-              <p className="text-xs text-muted-foreground">Device</p>
+              <p className="text-xs text-muted-foreground">{t('alertDetailPage.device')}</p>
               <a
                 href={`/devices/${alert.deviceId}`}
                 className="flex items-center gap-1 text-sm font-medium hover:underline"
@@ -397,10 +400,10 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
             </div>
             {alert.ruleName && (
               <div>
-                <p className="text-xs text-muted-foreground">Alert Rule</p>
+                <p className="text-xs text-muted-foreground">{t('alertDetailPage.alertRule')}</p>
                 <p className="text-sm font-medium">{alert.ruleName}</p>
                 <a href="/configuration-policies" className="mt-1 flex items-center gap-1 text-xs hover:underline">
-                  Managed in Configuration Policies
+                  {t('alertDetailPage.managedInConfigurationPolicies')}
                   <ExternalLink className="h-3 w-3" />
                 </a>
               </div>
@@ -410,12 +413,12 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
 
         {/* Timeline */}
         <div className="rounded-lg border bg-card p-6 shadow-xs">
-          <h3 className="text-sm font-semibold text-muted-foreground mb-4">Timeline</h3>
+          <h3 className="text-sm font-semibold text-muted-foreground mb-4">{t('alertDetailPage.timeline')}</h3>
           <div className="space-y-3">
             <div className="flex items-start gap-3">
               <Clock className="h-4 w-4 text-muted-foreground mt-0.5" />
               <div>
-                <p className="text-xs text-muted-foreground">Triggered</p>
+                <p className="text-xs text-muted-foreground">{t('alertDetailPage.triggered')}</p>
                 <p className="text-sm">{formatDateTime(alert.triggeredAt)}</p>
               </div>
             </div>
@@ -423,7 +426,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
               <div className="flex items-start gap-3">
                 <CheckCircle className="h-4 w-4 text-yellow-600 mt-0.5" />
                 <div>
-                  <p className="text-xs text-muted-foreground">Acknowledged</p>
+                  <p className="text-xs text-muted-foreground">{t('alertDetailPage.acknowledged')}</p>
                   <p className="text-sm">
                     {formatDateTime(alert.acknowledgedAt)}
                     {alert.acknowledgedBy && (
@@ -440,7 +443,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
               <div className="flex items-start gap-3">
                 <XCircle className="h-4 w-4 text-green-600 mt-0.5" />
                 <div>
-                  <p className="text-xs text-muted-foreground">Resolved</p>
+                  <p className="text-xs text-muted-foreground">{t('alertDetailPage.resolved')}</p>
                   <p className="text-sm">
                     {formatDateTime(alert.resolvedAt)}
                     {alert.resolvedBy && (
@@ -460,7 +463,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
       {/* Context Data */}
       {alert.contextData && Object.keys(alert.contextData).length > 0 && (
         <div className="rounded-lg border bg-card p-6 shadow-xs">
-          <h3 className="text-sm font-semibold text-muted-foreground mb-4">Context Data</h3>
+          <h3 className="text-sm font-semibold text-muted-foreground mb-4">{t('alertDetailPage.contextData')}</h3>
           <pre className="overflow-x-auto rounded-md bg-muted/40 p-4 text-xs">
             {JSON.stringify(alert.contextData, null, 2)}
           </pre>

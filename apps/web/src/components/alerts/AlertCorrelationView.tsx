@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 import { CheckCircle, GitBranch, Link2, Network, TreePine } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
@@ -38,6 +40,7 @@ type CorrelationData = {
 };
 
 export default function AlertCorrelationView() {
+  const { t } = useTranslation('alerts');
   const [autoLoad, setAutoLoad] = useState(true);
   const [selectedAlertId, setSelectedAlertId] = useState<string>('');
   const [alerts, setAlerts] = useState<AlertSummary[]>([]);
@@ -169,7 +172,7 @@ export default function AlertCorrelationView() {
               onClick={fetchAlerts}
               className="text-sm text-primary hover:underline"
             >
-              Try again
+              {t('alertCorrelationView.tryAgain')}
             </button>
           </div>
         </div>
@@ -182,9 +185,9 @@ export default function AlertCorrelationView() {
       <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h2 className="text-lg font-semibold">Alert Correlation</h2>
+            <h2 className="text-lg font-semibold">{t('alertCorrelationView.alertCorrelation')}</h2>
             <p className="text-sm text-muted-foreground">
-              Visualize related alerts and confirm root cause chains.
+              {t('alertCorrelationView.visualizeRelatedAlertsAndConfirmRootCause')}
             </p>
           </div>
           <button
@@ -193,7 +196,7 @@ export default function AlertCorrelationView() {
             className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
           >
             <CheckCircle className="h-4 w-4" />
-            Bulk acknowledge
+            {t('alertCorrelationView.bulkAcknowledge')}
           </button>
         </div>
 
@@ -201,8 +204,8 @@ export default function AlertCorrelationView() {
           <div className="rounded-md border p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
-                <p className="text-xs font-semibold uppercase text-muted-foreground">Alert selection</p>
-                <p className="text-sm font-medium">{selectedAlert?.title || 'No alert selected'}</p>
+                <p className="text-xs font-semibold uppercase text-muted-foreground">{t('alertCorrelationView.alertSelection')}</p>
+                <p className="text-sm font-medium">{selectedAlert?.title || t('alertCorrelationView.noAlertSelected')}</p>
               </div>
               <label className="flex items-center gap-2 text-xs text-muted-foreground">
                 <input
@@ -210,7 +213,7 @@ export default function AlertCorrelationView() {
                   checked={autoLoad}
                   onChange={event => setAutoLoad(event.target.checked)}
                 />
-                Auto-load from context
+                {t('alertCorrelationView.autoLoadFromContext')}
               </label>
             </div>
             <select
@@ -231,18 +234,18 @@ export default function AlertCorrelationView() {
           </div>
 
           <div className="rounded-md border p-4">
-            <p className="text-xs font-semibold uppercase text-muted-foreground">Correlation summary</p>
+            <p className="text-xs font-semibold uppercase text-muted-foreground">{t('alertCorrelationView.correlationSummary')}</p>
             <div className="mt-3 space-y-2 text-sm">
               <div className="flex items-center justify-between">
-                <span className="text-muted-foreground">Related alerts</span>
+                <span className="text-muted-foreground">{t('alertCorrelationView.relatedAlerts')}</span>
                 <span className="font-medium">{summary?.relatedCount ?? correlations.length}</span>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-muted-foreground">Root cause confidence</span>
+                <span className="text-muted-foreground">{t('alertCorrelationView.rootCauseConfidence')}</span>
                 <span className="font-medium">{summary?.rootCauseConfidence ?? 0}%</span>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-muted-foreground">Last update</span>
+                <span className="text-muted-foreground">{t('alertCorrelationView.lastUpdate')}</span>
                 <span className="font-medium">{summary?.lastUpdate ?? 'N/A'}</span>
               </div>
             </div>
@@ -259,7 +262,7 @@ export default function AlertCorrelationView() {
               <div className="rounded-md border p-4">
                 <div className="flex items-center gap-2">
                   <TreePine className="h-4 w-4 text-muted-foreground" />
-                  <h3 className="text-sm font-semibold">Correlation diagram</h3>
+                  <h3 className="text-sm font-semibold">{t('alertCorrelationView.correlationDiagram')}</h3>
                 </div>
                 <div className="mt-4 space-y-4">
                   {selectedAlert && (
@@ -267,7 +270,7 @@ export default function AlertCorrelationView() {
                       <div className={cn('mt-1 h-2.5 w-2.5 rounded-full', severityConfig[selectedAlert.severity].dotColor)} />
                       <div>
                         <p className="text-sm font-medium">{selectedAlert.title}</p>
-                        <p className="text-xs text-muted-foreground">Root cause alert</p>
+                        <p className="text-xs text-muted-foreground">{t('alertCorrelationView.rootCauseAlert')}</p>
                       </div>
                     </div>
                   )}
@@ -282,7 +285,7 @@ export default function AlertCorrelationView() {
                               <GitBranch className="h-3.5 w-3.5" />
                               {item.type}
                               <span>·</span>
-                              {item.confidence}% confidence
+                              {t('alertCorrelationView.confidenceValue', { confidence: item.confidence })}
                             </div>
                           </div>
                         </div>
@@ -290,7 +293,7 @@ export default function AlertCorrelationView() {
                     </div>
                   )}
                   {correlations.length === 0 && (
-                    <p className="text-sm text-muted-foreground">No correlations found for this alert.</p>
+                    <p className="text-sm text-muted-foreground">{t('alertCorrelationView.noCorrelationsFoundForThisAlert')}</p>
                   )}
                 </div>
               </div>
@@ -298,22 +301,22 @@ export default function AlertCorrelationView() {
               <div className="rounded-md border p-4">
                 <div className="flex items-center gap-2">
                   <Network className="h-4 w-4 text-muted-foreground" />
-                  <h3 className="text-sm font-semibold">Correlation list</h3>
+                  <h3 className="text-sm font-semibold">{t('alertCorrelationView.correlationList')}</h3>
                 </div>
                 <div className="mt-4 overflow-x-auto rounded-md border">
                   <table className="min-w-full divide-y">
                     <thead className="bg-muted/40">
                       <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                        <th className="px-3 py-2">Related alert</th>
-                        <th className="px-3 py-2">Type</th>
-                        <th className="px-3 py-2">Confidence</th>
+                        <th className="px-3 py-2">{t('alertCorrelationView.relatedAlert')}</th>
+                        <th className="px-3 py-2">{t('alertCorrelationView.type')}</th>
+                        <th className="px-3 py-2">{t('alertCorrelationView.confidence2')}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y">
                       {correlations.length === 0 ? (
                         <tr>
                           <td colSpan={3} className="px-3 py-4 text-center text-sm text-muted-foreground">
-                            No correlations found.
+                            {t('alertCorrelationView.noCorrelationsFound')}
                           </td>
                         </tr>
                       ) : (
@@ -334,7 +337,7 @@ export default function AlertCorrelationView() {
             <div className="mt-6 rounded-md border p-4">
               <div className="flex items-center gap-2">
                 <Link2 className="h-4 w-4 text-muted-foreground" />
-                <h3 className="text-sm font-semibold">Timeline view</h3>
+                <h3 className="text-sm font-semibold">{t('alertCorrelationView.timelineView')}</h3>
               </div>
               {timeline.length > 0 ? (
                 <div className="relative mt-4 flex items-center justify-between gap-2">
@@ -348,7 +351,7 @@ export default function AlertCorrelationView() {
                   ))}
                 </div>
               ) : (
-                <p className="mt-4 text-sm text-muted-foreground">No timeline events available.</p>
+                <p className="mt-4 text-sm text-muted-foreground">{t('alertCorrelationView.noTimelineEventsAvailable')}</p>
               )}
             </div>
           </>
