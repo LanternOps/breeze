@@ -32,6 +32,11 @@ import {
 } from "../services/installerBuilder";
 import { renameAppInZip } from "../services/installerAppZip";
 import {
+  InstallerFilenameHostError,
+  macosBundleApiHost,
+  windowsFilenameApiHost,
+} from "../services/installerFilenameHost";
+import {
   issueBootstrapTokenForKey,
   BootstrapTokenIssuanceError,
 } from "../services/installerBootstrapTokenIssuance";
@@ -1048,9 +1053,17 @@ enrollmentKeyRoutes.get(
     // ----------------------------------------------------------------
     if (platform === "macos") {
       const wantLegacy = c.req.query("legacy") === "1";
-      const appZip = wantLegacy ? null : await fetchMacosInstallerAppZip();
+      // The app-bundle installer carries the API host in its bundle filename /
+      // bootstrap.json, and the installer app only accepts a bare https host —
+      // no port, no scheme (FilenameTokenParser.swift). A self-hosted server
+      // on a nonstandard port could download the bundle but never enroll
+      // through it (#2341), so fall through to the legacy zip below, which
+      // embeds the full server URL.
+      const bundleApiHost = macosBundleApiHost(serverUrl);
+      const appZip =
+        wantLegacy || !bundleApiHost ? null : await fetchMacosInstallerAppZip();
 
-      if (appZip) {
+      if (appZip && bundleApiHost) {
         // New path — bootstrap token + renamed app zip. No child enrollment key
         // is created here; the bootstrap endpoint creates it lazily on consume.
         let issued;
@@ -1069,10 +1082,9 @@ enrollmentKeyRoutes.get(
           throw err;
         }
 
-        const apiHost = new URL(serverUrl).host;
         const useLegacyFilenameToken = allowLegacyMacosInstallerFilenameToken();
         const newAppName = useLegacyFilenameToken
-          ? `Breeze Installer [${issued.token}@${apiHost}].app`
+          ? `Breeze Installer [${issued.token}@${bundleApiHost}].app`
           : "Breeze Installer.app";
         const bootstrapPayloadName = "Breeze Installer.bootstrap.json";
 
@@ -1087,7 +1099,10 @@ enrollmentKeyRoutes.get(
                   extraFiles: [
                     {
                       path: bootstrapPayloadName,
-                      data: JSON.stringify({ token: issued.token, apiHost }),
+                      data: JSON.stringify({
+                        token: issued.token,
+                        apiHost: bundleApiHost,
+                      }),
                       mode: 0o600,
                     },
                   ],
@@ -1142,6 +1157,20 @@ enrollmentKeyRoutes.get(
     // mints the child key lazily on consume (mirrors the macOS path above).
     // ----------------------------------------------------------------
     if (platform === "windows") {
+      // Encode the filename host BEFORE issuing a bootstrap token, so a URL
+      // that can never enroll (non-https, host not expressible in a Windows
+      // filename) fails loudly with the reason instead of serving an MSI
+      // that silently installs unenrolled — and doesn't burn a token (#2341).
+      let apiHost: string;
+      try {
+        apiHost = windowsFilenameApiHost(serverUrl);
+      } catch (err) {
+        if (err instanceof InstallerFilenameHostError) {
+          return c.json({ error: err.message }, 400);
+        }
+        throw err;
+      }
+
       let issued;
       try {
         issued = await issueBootstrapTokenForKey({
@@ -1166,8 +1195,6 @@ enrollmentKeyRoutes.get(
         console.error("[installer] failed to fetch signed MSI:", err);
         return c.json({ error: "MSI not available" }, 503);
       }
-
-      const apiHost = new URL(serverUrl).host;
 
       writeEnrollmentKeyAudit(c, auth, {
         orgId: parentKey.orgId,
@@ -1760,6 +1787,20 @@ async function serveInstaller(
   // No per-customer signing and no child key created here.
   // ----------------------------------------------------------------
   if (platform === "windows") {
+    // Encode the filename host BEFORE issuing a bootstrap token, so a URL
+    // that can never enroll (non-https, host not expressible in a Windows
+    // filename) fails loudly with the reason instead of serving an MSI
+    // that silently installs unenrolled — and doesn't burn a token (#2341).
+    let apiHost: string;
+    try {
+      apiHost = windowsFilenameApiHost(serverUrl);
+    } catch (err) {
+      if (err instanceof InstallerFilenameHostError) {
+        return c.json({ error: err.message }, 400);
+      }
+      throw err;
+    }
+
     let issued;
     try {
       issued = await issueBootstrapTokenForKey({
@@ -1787,8 +1828,6 @@ async function serveInstaller(
       console.error("[public-download] Failed to fetch MSI:", err);
       return c.json({ error: "MSI not available" }, 503);
     }
-
-    const apiHost = new URL(serverUrl).host;
 
     createAuditLogAsync({
       orgId: keyRow.orgId,

@@ -308,6 +308,43 @@ describe('enrollment key routes — installer download', () => {
       expect(body.length).toBeGreaterThan(0);
     });
 
+    it('windows download encodes a nonstandard port as host_PORT in the filename (#2341)', async () => {
+      // `:` is illegal in Windows filenames — the browser rewrites it at save
+      // time and the agent-side parser never matches, so the device installs
+      // unenrolled with no visible error. The port must ride as `_PORT`.
+      process.env.PUBLIC_API_URL = 'https://self-hosted.example.com:8443';
+      mockSelectFromWhereLimit([makeEnrollmentKey()]);
+
+      const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/windows`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-disposition')).toBe(
+        'attachment; filename="Breeze Agent (ABCDE12345@self-hosted.example.com_8443).msi"',
+      );
+    });
+
+    it('windows download returns 400 for a non-https server URL without burning a token (#2341)', async () => {
+      // The agent always redeems the filename token over https, so an
+      // http-only server can never enroll through this path — fail the
+      // download with the reason instead of serving a dead MSI.
+      process.env.PUBLIC_API_URL = 'http://self-hosted.example.com:8080';
+      mockSelectFromWhereLimit([makeEnrollmentKey()]);
+
+      const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/windows`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/https/i);
+      expect(body.error).toMatch(/SERVER_URL and ENROLLMENT_KEY/);
+      expect(issueBootstrapTokenForKey).not.toHaveBeenCalled();
+    });
+
     it('windows bootstrap download does not create a child enrollment key', async () => {
       // Windows early-returns after issueBootstrapTokenForKey — no db.insert for a child key.
       mockSelectFromWhereLimit([makeEnrollmentKey()]);

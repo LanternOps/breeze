@@ -13,6 +13,10 @@ import {
   getGithubReleaseRepository,
 } from './binarySource';
 import { verifyGithubReleaseArtifactBuffer } from './releaseArtifactManifest';
+import {
+  InstallerFilenameHostError,
+  isEncodedWindowsFilenameApiHost,
+} from './installerFilenameHost';
 import { isS3Configured } from './s3Storage';
 
 // --- Enrollment key validation ---
@@ -401,11 +405,22 @@ export async function probeMacosInstallerApp(): Promise<boolean> {
  * and never enroll (observed in #1956). Parens are not special in MSI Formatted
  * fields, so they survive. The agent parser (installer_filename.go) accepts
  * both forms; the macOS download carries the token in bootstrap.json instead.
+ *
+ * `apiHost` must already be in the encoded filename form produced by
+ * windowsFilenameApiHost() — `host` or `host_PORT`, never `host:port`. A `:`
+ * is illegal in Windows filenames: the browser rewrites it at save time, the
+ * agent parser stops matching, and the install silently never enrolls
+ * (#2341). Reject outright rather than serve an MSI that cannot enroll.
  */
 export function serveWindowsBootstrapMsi(
   c: Context,
   args: { msi: Buffer; token: string; apiHost: string },
 ): Response {
+  if (!isEncodedWindowsFilenameApiHost(args.apiHost)) {
+    throw new InstallerFilenameHostError(
+      `apiHost "${args.apiHost}" is not safe for a Windows installer filename`,
+    );
+  }
   const filename = `Breeze Agent (${args.token}@${args.apiHost}).msi`;
   c.header('Content-Type', 'application/octet-stream');
   c.header('Content-Disposition', `attachment; filename="${filename}"`);

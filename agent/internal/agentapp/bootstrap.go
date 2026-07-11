@@ -31,8 +31,12 @@ type bootstrapResult struct {
 
 // resolveBootstrapInputs decides which token/server to use. Property token +
 // server take precedence (explicit silent-install intent); otherwise the
-// [TOKEN@HOST] in the installer filename is used, with the host promoted to an
-// https:// server URL. Mirrors the macOS payload-then-filename precedence.
+// [TOKEN@HOST] in the installer filename is used, with the host (which may
+// carry a decoded `host:port`) promoted to an https:// server URL. The
+// promotion is unconditionally https — the server refuses to emit a
+// filename-token download for a non-https URL, so an http-only server never
+// reaches this path (#2341). Mirrors the macOS payload-then-filename
+// precedence.
 func resolveBootstrapInputs(data string) (token, server string, err error) {
 	parts := strings.SplitN(data, "|", 3)
 	var installerPath, propToken, propServer string

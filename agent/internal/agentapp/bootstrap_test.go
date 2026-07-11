@@ -30,6 +30,15 @@ func TestResolveBootstrapInputs(t *testing.T) {
 			wantServer: "https://us.2breeze.app",
 		},
 		{
+			// Self-hosted server on a nonstandard port (#2341): the filename
+			// carries `host_8443` (Windows filenames cannot contain `:`) and the
+			// resolved server URL must come back as https://host:8443.
+			name:       "paren filename token with encoded port",
+			data:       `C:\Users\me\Downloads\Breeze Agent (6KE9MDUG56@rmm.acme.example_8443).msi||`,
+			wantToken:  "6KE9MDUG56",
+			wantServer: "https://rmm.acme.example:8443",
+		},
+		{
 			name:       "property token + server wins over filename",
 			data:       `C:\dl\Breeze Agent [ABCDE12345@eu.2breeze.app].msi|ZZZZZ99999|https://us.2breeze.app`,
 			wantToken:  "ZZZZZ99999",

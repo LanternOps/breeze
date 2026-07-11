@@ -386,6 +386,36 @@ describe('serveWindowsBootstrapMsi', () => {
     expect(cd).not.toContain(']');
   });
 
+  it('carries a nonstandard port as host_PORT, never host:port (#2341)', () => {
+    // `:` is illegal in Windows filenames — the browser rewrites it at save
+    // time and the agent parser then never matches, so the device installs
+    // unenrolled with no visible error. The port rides as `_PORT` instead.
+    const { c, headers } = fakeContext();
+    serveWindowsBootstrapMsi(c, {
+      msi: Buffer.from('signed-msi-bytes'),
+      token: 'ABCDE12345',
+      apiHost: 'rmm.example.com_8443',
+    });
+
+    expect(headers.get('content-disposition')).toBe(
+      'attachment; filename="Breeze Agent (ABCDE12345@rmm.example.com_8443).msi"',
+    );
+  });
+
+  it('rejects an apiHost that is not Windows-filename-safe (#2341)', () => {
+    // Defense-in-depth: callers encode via windowsFilenameApiHost(), but a
+    // raw `host:port` reaching this point must throw rather than serve an
+    // MSI whose token the agent can never parse back out.
+    const { c } = fakeContext();
+    expect(() =>
+      serveWindowsBootstrapMsi(c, {
+        msi: Buffer.from('signed-msi-bytes'),
+        token: 'ABCDE12345',
+        apiHost: 'rmm.example.com:8443',
+      }),
+    ).toThrow(/not safe for a Windows installer filename/);
+  });
+
   it('serves the MSI bytes unmodified with octet-stream + no-store headers', () => {
     const { c, headers } = fakeContext();
     const msi = Buffer.from('signed-msi-bytes');

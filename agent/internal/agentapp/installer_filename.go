@@ -17,7 +17,15 @@ var errNoFilenameToken = errors.New("no bootstrap token in installer filename")
 // substring (brackets are that engine's property-reference delimiter) gets
 // stripped along the way, silently dropping the token (observed in #1956).
 // Parens are not special in MSI Formatted fields, so they survive intact.
-var installerTokenParenRe = regexp.MustCompile(`\(([A-Z0-9]{10})@([a-zA-Z0-9.\-]+)\)`)
+//
+// A nonstandard server port is carried as an optional `_PORT` suffix
+// (HOST_8443), because `:` is illegal in Windows filenames — Chrome rewrites
+// it to `_` at save time, which used to make the whole match fail and the
+// install silently skip enrollment (#2341). Underscore never appears in a
+// hostname, so the suffix is unambiguous, and since it equals Chrome's
+// sanitization of the old `host:port` form, files downloaded from older
+// servers parse the same way.
+var installerTokenParenRe = regexp.MustCompile(`\(([A-Z0-9]{10})@([a-zA-Z0-9.\-]+)(?:_([0-9]{1,5}))?\)`)
 
 // installerTokenBracketRe is the legacy form: [TOKEN@HOST] in square brackets
 // (mirrors FilenameTokenParser.swift). The current macOS path carries the token
@@ -25,18 +33,23 @@ var installerTokenParenRe = regexp.MustCompile(`\(([A-Z0-9]{10})@([a-zA-Z0-9.\-]
 // bundle name only appears under the opt-in MACOS_INSTALLER_FILENAME_TOKEN_COMPAT
 // mode. Neither macOS path passes through MSI formatting, so brackets are safe
 // there. Still accepted here for backward compatibility with older downloads.
-var installerTokenBracketRe = regexp.MustCompile(`\[([A-Z0-9]{10})@([a-zA-Z0-9.\-]+)\]`)
+var installerTokenBracketRe = regexp.MustCompile(`\[([A-Z0-9]{10})@([a-zA-Z0-9.\-]+)(?:_([0-9]{1,5}))?\]`)
 
 // parseInstallerFilenameToken extracts the bootstrap token and API host from an
 // installer path or basename. It searches anywhere in the string, so a browser
 // "(1)" dedup suffix or a full path does not break matching. The paren form is
 // tried first (canonical Windows); the bracket form is the legacy/macOS
 // fallback. The host charset excludes spaces and the delimiter characters, so a
-// trailing " (1)" dedup suffix can never be folded into a match.
+// trailing " (1)" dedup suffix can never be folded into a match. An optional
+// `_PORT` suffix is decoded back to `host:port` (see installerTokenParenRe).
 func parseInstallerFilenameToken(name string) (token string, host string, err error) {
 	for _, re := range []*regexp.Regexp{installerTokenParenRe, installerTokenBracketRe} {
 		if m := re.FindStringSubmatch(name); m != nil {
-			return m[1], m[2], nil
+			host = m[2]
+			if m[3] != "" {
+				host += ":" + m[3]
+			}
+			return m[1], host, nil
 		}
 	}
 	return "", "", errNoFilenameToken
