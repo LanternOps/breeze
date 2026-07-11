@@ -50,12 +50,15 @@ function renderTab() {
 }
 
 describe('AutomationTab — deploy_software action', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    await i18n.changeLanguage('en');
     vi.clearAllMocks();
     fetchMock.mockResolvedValue(makeJsonResponse({ data: CATALOG }));
   });
 
-  afterEach(() => i18n.changeLanguage('en'));
+  afterEach(async () => {
+    await i18n.changeLanguage('en');
+  });
 
   it('updates mounted action options when the locale changes', async () => {
     renderTab();

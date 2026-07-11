@@ -19,13 +19,14 @@ import TicketingSettingsTabs from './TicketingSettingsTabs';
 import { applyLocale, i18n } from '@/lib/i18n';
 
 describe('TicketingSettingsTabs', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    await i18n.changeLanguage('en');
     window.location.hash = '';
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     window.location.hash = '';
-    return i18n.changeLanguage('en');
+    await i18n.changeLanguage('en');
   });
 
   it('renders all four sub-tabs and defaults to statuses', () => {

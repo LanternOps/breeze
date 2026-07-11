@@ -26,13 +26,16 @@ const findPost = () =>
       (c[1] as RequestInit | undefined)?.method === 'POST'
   );
 
-beforeEach(() => {
+beforeEach(async () => {
+  await i18n.changeLanguage('en');
   fetchWithAuth.mockReset();
   // Default: assignments list is empty; any target list returns empty.
   fetchWithAuth.mockResolvedValue(jsonResponse({ data: [] }));
 });
 
-afterEach(() => i18n.changeLanguage('en'));
+afterEach(async () => {
+  await i18n.changeLanguage('en');
+});
 
 describe('AssignmentsTab — partner-OWNED policy (all organizations library, #2280)', () => {
   it('delegates to OrganizationScopePanel — no level/target picker, no partner-wide banner', async () => {
