@@ -2,14 +2,13 @@ import { useState, useCallback, useEffect } from 'react';
 import { ArrowLeft, X, Globe, Network, ExternalLink } from 'lucide-react';
 import { fetchWithAuth } from '@/stores/auth';
 import { extractApiError } from '@/lib/apiError';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 
 interface Props {
   tunnelId: string;
   target: string;
 }
-
-const TLS_UNTRUSTED_MSG =
-  'This device presented an untrusted or self-signed certificate. Recreate the proxy session with "Allow self-signed certificate" enabled to proceed.';
 
 /**
  * Network Proxy page. Renders the proxied device's web UI in an iframe served
@@ -28,6 +27,7 @@ function buildProxyUrl(tunnelId: string, ticket: string): string {
 }
 
 export default function ProxyTunnelPage({ tunnelId, target }: Props) {
+  const { t } = useTranslation('remote');
   const [status, setStatus] = useState<'connecting' | 'active' | 'disconnected' | 'failed'>('connecting');
   const [proxyUrl, setProxyUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -45,14 +45,14 @@ export default function ProxyTunnelPage({ tunnelId, target }: Props) {
           if (data.status === 'failed') {
             setError(
               data.errorMessage === 'tls_cert_untrusted'
-                ? TLS_UNTRUSTED_MSG
-                : extractApiError(data, 'Tunnel failed'),
+                ? t('proxyTunnelPage.errors.tlsUntrusted')
+                : extractApiError(data, t('proxyTunnelPage.errors.tunnelFailed')),
             );
           }
         }
       }
     } catch { /* ignore */ }
-  }, [tunnelId]);
+  }, [tunnelId, t]);
 
   useEffect(() => {
     pollStatus();
@@ -68,20 +68,20 @@ export default function ProxyTunnelPage({ tunnelId, target }: Props) {
         const res = await fetchWithAuth(`/tunnels/${tunnelId}/http-ticket`, { method: 'POST' });
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
-          throw new Error(body.error || 'Failed to obtain tunnel ticket');
+          throw new Error(body.error || t('proxyTunnelPage.errors.obtainTicket'));
         }
         const body = await res.json();
         // The mint endpoint wraps the ticket: `{ ticket: { ticket, expiresInSeconds } }`.
         const ticket = typeof body.ticket === 'string' ? body.ticket : body.ticket?.ticket;
         if (!ticket) {
-          throw new Error('Invalid tunnel ticket response');
+          throw new Error(t('proxyTunnelPage.errors.invalidTicket'));
         }
         if (!cancelled) {
           setProxyUrl(buildProxyUrl(tunnelId, ticket));
         }
       } catch (err) {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Failed to prepare the proxy connection');
+          setError(err instanceof Error ? err.message : t('proxyTunnelPage.errors.prepareConnection'));
         }
       }
     };
@@ -90,7 +90,7 @@ export default function ProxyTunnelPage({ tunnelId, target }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [tunnelId]);
+  }, [tunnelId, t]);
 
   const handleClose = useCallback(() => {
     fetchWithAuth(`/tunnels/${tunnelId}`, { method: 'DELETE' }).catch(() => {});
@@ -105,10 +105,10 @@ export default function ProxyTunnelPage({ tunnelId, target }: Props) {
   }[status];
 
   const statusLabel = {
-    connecting: 'Connecting…',
-    active: 'Connected',
-    disconnected: 'Disconnected',
-    failed: 'Failed',
+    connecting: t('proxyTunnelPage.status.connecting'),
+    active: t('proxyTunnelPage.status.connected'),
+    disconnected: t('proxyTunnelPage.status.disconnected'),
+    failed: t('proxyTunnelPage.status.failed'),
   }[status];
 
   return (
@@ -120,11 +120,11 @@ export default function ProxyTunnelPage({ tunnelId, target }: Props) {
             className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition"
           >
             <ArrowLeft className="h-4 w-4" />
-            Back
+            {t('common:actions.back')}
           </a>
           <span className="text-muted-foreground">|</span>
           <Globe className="h-4 w-4 shrink-0 text-muted-foreground" />
-          <span className="text-sm font-medium">Network Proxy</span>
+          <span className="text-sm font-medium">{t('proxyTunnelPage.title')}</span>
           <span className="text-muted-foreground">·</span>
           <span className="truncate font-mono text-xs text-muted-foreground">{target || '—'}</span>
           <span className={`shrink-0 text-xs font-medium ${statusColor}`}>{statusLabel}</span>
@@ -138,7 +138,7 @@ export default function ProxyTunnelPage({ tunnelId, target }: Props) {
               className="flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground"
             >
               <ExternalLink className="h-4 w-4" />
-              Open in new tab
+              {t('proxyTunnelPage.openInNewTab')}
             </a>
           )}
           <button
@@ -148,7 +148,7 @@ export default function ProxyTunnelPage({ tunnelId, target }: Props) {
             className="flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-50"
           >
             <X className="h-4 w-4" />
-            Close
+            {t('common:actions.close')}
           </button>
         </div>
       </div>
@@ -158,15 +158,15 @@ export default function ProxyTunnelPage({ tunnelId, target }: Props) {
           <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-xs">
             <h2 className="flex items-center gap-2 text-lg font-semibold">
               <Network className="h-5 w-5" />
-              Tunnel Details
+              {t('proxyTunnelPage.tunnelDetails')}
             </h2>
             <dl className="mt-4 space-y-3 text-sm">
               <div className="flex justify-between">
-                <dt className="text-muted-foreground">Target</dt>
+                <dt className="text-muted-foreground">{t('proxyTunnelPage.target')}</dt>
                 <dd className="font-mono font-medium">{target || '—'}</dd>
               </div>
               <div className="flex justify-between">
-                <dt className="text-muted-foreground">Tunnel ID</dt>
+                <dt className="text-muted-foreground">{t('proxyTunnelPage.tunnelId')}</dt>
                 <dd className="font-mono text-xs text-muted-foreground">{tunnelId}</dd>
               </div>
             </dl>
@@ -178,7 +178,7 @@ export default function ProxyTunnelPage({ tunnelId, target }: Props) {
       ) : proxyUrl ? (
         <iframe
           src={proxyUrl}
-          title="Proxied service"
+          title={t('proxyTunnelPage.proxiedService')}
           data-testid="network-proxy-frame"
           // The proxied device is untrusted. Omitting `allow-same-origin` forces
           // the framed content into a null origin so its scripts cannot read this
@@ -191,7 +191,7 @@ export default function ProxyTunnelPage({ tunnelId, target }: Props) {
         />
       ) : (
         <div className="flex flex-1 items-center justify-center p-8 text-sm text-muted-foreground">
-          Preparing proxy connection…
+          {t('proxyTunnelPage.preparingConnection')}
         </div>
       )}
     </div>

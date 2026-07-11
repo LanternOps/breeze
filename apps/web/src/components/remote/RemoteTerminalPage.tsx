@@ -3,6 +3,8 @@ import { ArrowLeft, Monitor, Loader2, AlertCircle } from 'lucide-react';
 import RemoteTerminal from './RemoteTerminal';
 import { fetchWithAuth } from '@/stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 
 type Device = {
   id: string;
@@ -18,6 +20,7 @@ type RemoteTerminalPageProps = {
 };
 
 export default function RemoteTerminalPage({ deviceId }: RemoteTerminalPageProps) {
+  const { t } = useTranslation('remote');
   const [device, setDevice] = useState<Device | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -30,22 +33,22 @@ export default function RemoteTerminalPage({ deviceId }: RemoteTerminalPageProps
 
         if (!response.ok) {
           if (response.status === 404) {
-            throw new Error('Device not found');
+            throw new Error(t('remoteTerminalPage.errors.deviceNotFound'));
           }
-          throw new Error('Failed to fetch device');
+          throw new Error(t('remoteTerminalPage.errors.fetchDevice'));
         }
 
         const data = await response.json();
         setDevice(data);
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'An error occurred');
+        setError(err instanceof Error ? err.message : t('remoteTerminalPage.errors.generic'));
       } finally {
         setLoading(false);
       }
     };
 
     fetchDevice();
-  }, [deviceId]);
+  }, [deviceId, t]);
 
   const handleBack = () => {
     // Always return to this device's detail page. This page can be opened from
@@ -80,7 +83,7 @@ export default function RemoteTerminalPage({ deviceId }: RemoteTerminalPageProps
     return (
       <div className="flex flex-col items-center justify-center u-min-h-px-400 gap-4">
         <AlertCircle className="h-12 w-12 text-red-500" />
-        <h2 className="text-lg font-semibold">Error</h2>
+        <h2 className="text-lg font-semibold">{t('remoteTerminalPage.errorTitle')}</h2>
         <p className="text-muted-foreground">{error}</p>
         <button
           type="button"
@@ -88,7 +91,7 @@ export default function RemoteTerminalPage({ deviceId }: RemoteTerminalPageProps
           className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
           <ArrowLeft className="h-4 w-4" />
-          Go Back
+          {t('common:actions.back')}
         </button>
       </div>
     );
@@ -98,15 +101,15 @@ export default function RemoteTerminalPage({ deviceId }: RemoteTerminalPageProps
     return (
       <div className="flex flex-col items-center justify-center u-min-h-px-400 gap-4">
         <Monitor className="h-12 w-12 text-muted-foreground" />
-        <h2 className="text-lg font-semibold">Device Not Found</h2>
-        <p className="text-muted-foreground">The requested device could not be found.</p>
+        <h2 className="text-lg font-semibold">{t('remoteTerminalPage.deviceNotFoundTitle')}</h2>
+        <p className="text-muted-foreground">{t('remoteTerminalPage.deviceNotFoundDescription')}</p>
         <button
           type="button"
           onClick={handleBack}
           className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
           <ArrowLeft className="h-4 w-4" />
-          Go Back
+          {t('common:actions.back')}
         </button>
       </div>
     );
@@ -123,7 +126,7 @@ export default function RemoteTerminalPage({ deviceId }: RemoteTerminalPageProps
           <ArrowLeft className="h-5 w-5" />
         </button>
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Remote Terminal</h1>
+          <h1 className="text-xl font-semibold tracking-tight">{t('remoteTerminalPage.title')}</h1>
           <p className="text-muted-foreground">
             {device.displayName || device.hostname} - {device.osType} {device.osVersion}
           </p>
@@ -134,7 +137,7 @@ export default function RemoteTerminalPage({ deviceId }: RemoteTerminalPageProps
         <div className="flex items-start gap-3 rounded-lg border border-yellow-500/40 bg-yellow-500/10 px-4 py-3">
           <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-yellow-600" />
           <p className="text-sm text-yellow-800">
-            Device status is currently <span className="font-medium">{device.status}</span>. Attempting to connect anyway.
+            {t('remoteTerminalPage.offlineWarning', { status: device.status })}
           </p>
         </div>
       )}

@@ -4,6 +4,8 @@ import type { RemoteAccessPolicy } from '@breeze/shared';
 import { fetchWithAuth } from '@/stores/auth';
 import { buildRemoteVncPageUrl } from '@/lib/remoteTunnelUrls';
 import { extractApiError } from '@/lib/apiError';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 
 interface Props {
   deviceId: string;
@@ -30,6 +32,7 @@ export default function ConnectVncButton({
   primary = false,
   remoteAccessPolicy = null,
 }: Props) {
+  const { t } = useTranslation('remote');
   const [status, setStatus] = useState<'idle' | 'creating' | 'launching' | 'fallback'>('idle');
   const [error, setError] = useState<string | null>(null);
   const [tunnelId, setTunnelId] = useState<string | null>(null);
@@ -59,8 +62,8 @@ export default function ConnectVncButton({
       });
 
       if (!tunnelRes.ok) {
-        const err = await tunnelRes.json().catch(() => ({ error: 'Failed to create tunnel' }));
-        throw new Error(err.error || 'Failed to create VNC tunnel');
+        const err = await tunnelRes.json().catch(() => ({ error: t('connectVncButton.errors.createTunnel') }));
+        throw new Error(err.error || t('connectVncButton.errors.createVncTunnel'));
       }
 
       const tunnel = await tunnelRes.json();
@@ -72,7 +75,7 @@ export default function ConnectVncButton({
       const codeRes = await fetchWithAuth(`/tunnels/${tunnel.id}/connect-code`, { method: 'POST' });
       if (!codeRes.ok) {
         closeTunnel(tunnel.id);
-        throw new Error('Failed to issue VNC connect code');
+        throw new Error(t('connectVncButton.errors.issueConnectCode'));
       }
       const { code } = await codeRes.json();
 
@@ -106,7 +109,7 @@ export default function ConnectVncButton({
               return;
             }
             if (data.status === 'failed') {
-              throw new Error(extractApiError(data, 'Tunnel failed to open'));
+              throw new Error(extractApiError(data, t('connectVncButton.errors.tunnelFailed')));
             }
           }
         } catch (e) {
@@ -130,10 +133,10 @@ export default function ConnectVncButton({
 
       pollTimerRef.current = setTimeout(poll, 1500);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Connection failed');
+      setError(err instanceof Error ? err.message : t('connectVncButton.errors.connectionFailed'));
       setStatus('idle');
     }
-  }, [deviceId, closeTunnel]);
+  }, [deviceId, closeTunnel, t]);
 
   const handleOpenInBrowser = useCallback(() => {
     if (tunnelId) {
@@ -162,10 +165,10 @@ export default function ConnectVncButton({
         <Monitor className="mt-0.5 h-4 w-4 shrink-0 text-blue-600 dark:text-blue-400" />
         <div className="flex-1">
           <p className="font-medium text-blue-800 dark:text-blue-300">
-            Viewer didn't open?
+            {t('connectVncButton.fallback.title')}
           </p>
           <p className="mt-1 text-xs text-blue-700 dark:text-blue-400">
-            Open the VNC session in your browser instead.
+            {t('connectVncButton.fallback.description')}
           </p>
           <div className="mt-2.5 flex items-center gap-3">
             <button
@@ -174,14 +177,14 @@ export default function ConnectVncButton({
               className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-blue-700"
             >
               <Globe className="h-3.5 w-3.5" />
-              Open in Browser
+              {t('connectVncButton.openInBrowser')}
             </button>
             <button
               type="button"
               onClick={handleDismissAndCleanup}
               className="text-xs text-muted-foreground transition hover:text-foreground"
             >
-              Cancel
+              {t('common:actions.cancel')}
             </button>
           </div>
         </div>
@@ -198,14 +201,16 @@ export default function ConnectVncButton({
 
   const policyDisabled = remoteAccessPolicy?.vncRelay === false;
   const policyTitle = policyDisabled
-    ? `VNC relay is disabled by policy${remoteAccessPolicy?.policyName ? ` "${remoteAccessPolicy.policyName}"` : ''}`
+    ? remoteAccessPolicy?.policyName
+      ? t('connectVncButton.policyDisabledNamed', { name: remoteAccessPolicy.policyName })
+      : t('connectVncButton.policyDisabled')
     : undefined;
 
-  const label = primary ? 'VNC Desktop' : 'VNC Remote';
+  const label = primary ? t('connectVncButton.vncDesktop') : t('connectVncButton.vncRemote');
   const buttonLabel =
-    error ? 'Connection failed' :
-    status === 'creating' ? 'Creating tunnel...' :
-    status === 'launching' ? 'Launching...' :
+    error ? t('connectVncButton.errors.connectionFailed') :
+    status === 'creating' ? t('connectVncButton.creatingTunnel') :
+    status === 'launching' ? t('connectVncButton.launching') :
     label;
 
   if (policyDisabled) {
@@ -223,7 +228,7 @@ export default function ConnectVncButton({
         <div className="relative">
           <button type="button" disabled title={policyTitle} className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-muted-foreground cursor-not-allowed opacity-50">
             <MonitorOff className="h-4 w-4" />
-            VNC Unavailable
+            {t('connectVncButton.unavailable')}
           </button>
         </div>
       );
@@ -232,7 +237,7 @@ export default function ConnectVncButton({
       <div className={`relative ${className}`}>
         <button type="button" disabled title={policyTitle} className="flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-medium text-muted-foreground cursor-not-allowed opacity-50">
           <MonitorOff className="h-4 w-4" />
-          VNC Unavailable
+          {t('connectVncButton.unavailable')}
         </button>
       </div>
     );

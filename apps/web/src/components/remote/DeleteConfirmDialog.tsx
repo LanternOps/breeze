@@ -1,6 +1,8 @@
 import { Trash2, AlertTriangle, File, Folder, X } from 'lucide-react';
 import { Dialog } from '../shared/Dialog';
 import { formatNumber } from '@/lib/i18n/format';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 
 type DeleteConfirmDialogProps = {
   open: boolean;
@@ -25,6 +27,7 @@ export default function DeleteConfirmDialog({
   onConfirm,
   onClose,
 }: DeleteConfirmDialogProps) {
+  const { t } = useTranslation('remote');
   if (items.length === 0) return null;
 
   const totalSize = items.reduce((sum, item) => sum + (item.size ?? 0), 0);
@@ -32,8 +35,8 @@ export default function DeleteConfirmDialog({
 
   const heading =
     items.length === 1
-      ? `Delete ${items[0].name}?`
-      : `Delete ${items.length} items?`;
+      ? t('deleteConfirmDialog.headingSingle', { name: items[0].name })
+      : t('deleteConfirmDialog.headingMultiple', { count: items.length });
 
   return (
     <Dialog open={open} onClose={onClose} title={heading} maxWidth="md" className="p-6">
@@ -47,7 +50,7 @@ export default function DeleteConfirmDialog({
             type="button"
             onClick={onClose}
             className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-            title="Close"
+            title={t('common:actions.close')}
           >
             <X className="h-4 w-4" />
           </button>
@@ -82,15 +85,15 @@ export default function DeleteConfirmDialog({
 
         {/* Summary */}
         <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
-          <span>{items.length} item{items.length !== 1 ? 's' : ''}</span>
-          {hasSizeInfo && <span>Total: {formatSize(totalSize)}</span>}
+          <span>{t('deleteConfirmDialog.itemCount', { count: items.length })}</span>
+          {hasSizeInfo && <span>{t('deleteConfirmDialog.totalSize', { size: formatSize(totalSize) })}</span>}
         </div>
 
         {/* Warning */}
         <div className="mt-4 flex items-start gap-2 rounded-md bg-muted px-3 py-2">
           <Trash2 className="h-4 w-4 shrink-0 text-muted-foreground mt-0.5" />
           <p className="text-xs text-muted-foreground">
-            Files will be moved to the recycle bin and can be restored later.
+            {t('deleteConfirmDialog.recycleBinNotice')}
           </p>
         </div>
 
@@ -102,7 +105,7 @@ export default function DeleteConfirmDialog({
             className="flex-1 flex items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:opacity-90"
           >
             <Trash2 className="h-4 w-4" />
-            Move to Trash
+            {t('deleteConfirmDialog.moveToTrash')}
           </button>
 
           <button
@@ -110,7 +113,7 @@ export default function DeleteConfirmDialog({
             onClick={() => onConfirm(true)}
             className="flex items-center justify-center gap-1.5 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs font-medium text-destructive transition-colors hover:bg-destructive/20"
           >
-            Delete Permanently
+            {t('deleteConfirmDialog.deletePermanently')}
           </button>
 
           <button
@@ -118,7 +121,7 @@ export default function DeleteConfirmDialog({
             onClick={onClose}
             className="flex items-center justify-center rounded-md border px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
-            Cancel
+            {t('common:actions.cancel')}
           </button>
         </div>
     </Dialog>

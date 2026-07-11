@@ -25,6 +25,8 @@ import {
 } from 'lucide-react';
 import { cn, paddingLeftPxClass } from '@/lib/utils';
 import { formatDateTime as formatUserDateTime, formatTime as formatUserTime } from '@/lib/dateTimeFormat';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 
 // Types
 export type TaskStatus = 'ready' | 'running' | 'disabled' | 'queued' | 'unknown';
@@ -146,12 +148,12 @@ export type ScheduledTasksProps = {
 };
 
 // Status badge configuration
-const statusConfig: Record<TaskStatus, { label: string; color: string; icon: typeof CheckCircle }> = {
-  ready: { label: 'Ready', color: 'bg-success/15 text-success border-success/30', icon: CheckCircle },
-  running: { label: 'Running', color: 'bg-primary/15 text-primary border-primary/30', icon: Loader2 },
-  disabled: { label: 'Disabled', color: 'bg-muted text-muted-foreground border-border', icon: Pause },
-  queued: { label: 'Queued', color: 'bg-warning/15 text-warning border-warning/30', icon: Clock },
-  unknown: { label: 'Unknown', color: 'bg-muted text-muted-foreground border-border', icon: AlertCircle }
+const statusConfig: Record<TaskStatus, { labelKey: string; color: string; icon: typeof CheckCircle }> = {
+  ready: { labelKey: 'scheduledTasks.status.ready', color: 'bg-success/15 text-success border-success/30', icon: CheckCircle },
+  running: { labelKey: 'scheduledTasks.status.running', color: 'bg-primary/15 text-primary border-primary/30', icon: Loader2 },
+  disabled: { labelKey: 'scheduledTasks.status.disabled', color: 'bg-muted text-muted-foreground border-border', icon: Pause },
+  queued: { labelKey: 'scheduledTasks.status.queued', color: 'bg-warning/15 text-warning border-warning/30', icon: Clock },
+  unknown: { labelKey: 'scheduledTasks.status.unknown', color: 'bg-muted text-muted-foreground border-border', icon: AlertCircle }
 };
 
 // Last result interpretation
@@ -308,6 +310,7 @@ function FolderTree({
 
 // Status Badge Component
 function StatusBadge({ status }: { status: TaskStatus }) {
+  const { t } = useTranslation('remote');
   const config = statusConfig[status] || statusConfig.unknown;
   const Icon = config.icon;
 
@@ -319,7 +322,7 @@ function StatusBadge({ status }: { status: TaskStatus }) {
       )}
     >
       <Icon className={cn('h-3 w-3', status === 'running' && 'animate-spin')} />
-      {config.label}
+      {t(config.labelKey)}
     </span>
   );
 }
@@ -355,6 +358,7 @@ function TaskDetailPanel({
   onEnable: () => void;
   onDisable: () => void;
 }) {
+  const { t } = useTranslation('remote');
   const [activeTab, setActiveTab] = useState<'general' | 'triggers' | 'actions' | 'conditions' | 'settings' | 'history'>('general');
 
   return (
@@ -386,7 +390,7 @@ function TaskDetailPanel({
           )}
         >
           <Play className="h-3.5 w-3.5" />
-          Run
+          {t('common:actions.run')}
         </button>
         {task.status === 'disabled' ? (
           <button
@@ -394,7 +398,7 @@ function TaskDetailPanel({
             className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition-colors"
           >
             <PlayCircle className="h-3.5 w-3.5" />
-            Enable
+            {t('common:actions.enable')}
           </button>
         ) : (
           <button
@@ -402,7 +406,7 @@ function TaskDetailPanel({
             className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md bg-muted text-foreground hover:bg-accent transition-colors"
           >
             <Pause className="h-3.5 w-3.5" />
-            Disable
+            {t('common:actions.disable')}
           </button>
         )}
       </div>
@@ -410,12 +414,12 @@ function TaskDetailPanel({
       {/* Tabs */}
       <div className="flex border-b overflow-x-auto">
         {[
-          { id: 'general', label: 'General', icon: Info },
-          { id: 'triggers', label: 'Triggers', icon: Zap },
-          { id: 'actions', label: 'Actions', icon: FileCode },
-          { id: 'conditions', label: 'Conditions', icon: Filter },
-          { id: 'settings', label: 'Settings', icon: Settings },
-          { id: 'history', label: 'History', icon: History }
+          { id: 'general', label: t('scheduledTasks.tabs.general'), icon: Info },
+          { id: 'triggers', label: t('scheduledTasks.tabs.triggers'), icon: Zap },
+          { id: 'actions', label: t('scheduledTasks.tabs.actions'), icon: FileCode },
+          { id: 'conditions', label: t('scheduledTasks.tabs.conditions'), icon: Filter },
+          { id: 'settings', label: t('scheduledTasks.tabs.settings'), icon: Settings },
+          { id: 'history', label: t('scheduledTasks.tabs.history'), icon: History }
         ].map(tab => {
           const Icon = tab.icon;
           return (
@@ -441,37 +445,37 @@ function TaskDetailPanel({
         {activeTab === 'general' && (
           <div className="space-y-4">
             <div>
-              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Status</label>
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('common:labels.status')}</label>
               <div className="mt-1">
                 <StatusBadge status={task.status} />
               </div>
             </div>
             <div>
-              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Author</label>
-              <p className="mt-1 text-sm text-foreground">{task.author || 'Unknown'}</p>
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('scheduledTasks.author')}</label>
+              <p className="mt-1 text-sm text-foreground">{task.author || t('common:states.unknown')}</p>
             </div>
             <div>
-              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Description</label>
-              <p className="mt-1 text-sm text-muted-foreground">{task.description || 'No description'}</p>
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('common:labels.description')}</label>
+              <p className="mt-1 text-sm text-muted-foreground">{task.description || t('scheduledTasks.noDescription')}</p>
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Last Run</label>
+                <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('scheduledTasks.lastRun')}</label>
                 <p className="mt-1 text-sm text-foreground">{formatDateTime(task.lastRun)}</p>
               </div>
               <div>
-                <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Last Result</label>
+                <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('scheduledTasks.lastResult')}</label>
                 <div className="mt-1">
                   <ResultBadge code={task.lastResult} />
                 </div>
               </div>
               <div>
-                <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Next Run</label>
+                <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('scheduledTasks.nextRun')}</label>
                 <p className="mt-1 text-sm text-foreground">{formatDateTime(task.nextRun)}</p>
               </div>
               {task.securityPrincipal && (
                 <div>
-                  <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Run As</label>
+                  <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('scheduledTasks.runAs')}</label>
                   <p className="mt-1 text-sm text-foreground">{task.securityPrincipal.userId}</p>
                 </div>
               )}
@@ -482,7 +486,7 @@ function TaskDetailPanel({
         {activeTab === 'triggers' && (
           <div className="space-y-3">
             {task.triggers.length === 0 ? (
-              <p className="text-sm text-muted-foreground text-center py-4">No triggers configured</p>
+              <p className="text-sm text-muted-foreground text-center py-4">{t('scheduledTasks.noTriggers')}</p>
             ) : (
               task.triggers.map((trigger, index) => (
                 <div
@@ -503,7 +507,7 @@ function TaskDetailPanel({
                         trigger.enabled ? 'bg-success/15 text-success' : 'bg-muted text-muted-foreground'
                       )}
                     >
-                      {trigger.enabled ? 'Enabled' : 'Disabled'}
+                      {trigger.enabled ? t('common:states.enabled') : t('common:states.disabled')}
                     </span>
                   </div>
                   {trigger.nextRun && (
@@ -527,19 +531,19 @@ function TaskDetailPanel({
         {activeTab === 'actions' && (
           <div className="space-y-3">
             {task.actions.length === 0 ? (
-              <p className="text-sm text-muted-foreground text-center py-4">No actions configured</p>
+              <p className="text-sm text-muted-foreground text-center py-4">{t('scheduledTasks.noActions')}</p>
             ) : (
               task.actions.map((action, index) => (
                 <div key={index} className="p-3 rounded-lg border bg-card border-border">
                   <div className="flex items-center gap-2 mb-2">
                     <FileCode className="h-4 w-4 text-purple-600" />
                     <span className="text-sm font-medium text-foreground">
-                      {action.type === 'execute' ? 'Start a program' : action.type.replace('_', ' ')}
+                      {action.type === 'execute' ? t('scheduledTasks.startProgram') : action.type.replace('_', ' ')}
                     </span>
                   </div>
                   {action.path && (
                     <div className="mt-2">
-                      <label className="text-xs text-muted-foreground">Program/script:</label>
+                      <label className="text-xs text-muted-foreground">{t('scheduledTasks.programScript')}:</label>
                       <code className="block mt-0.5 text-xs bg-muted px-2 py-1 rounded font-mono text-foreground break-all">
                         {action.path}
                       </code>
@@ -547,7 +551,7 @@ function TaskDetailPanel({
                   )}
                   {action.arguments && (
                     <div className="mt-2">
-                      <label className="text-xs text-muted-foreground">Arguments:</label>
+                      <label className="text-xs text-muted-foreground">{t('scheduledTasks.arguments')}:</label>
                       <code className="block mt-0.5 text-xs bg-muted px-2 py-1 rounded font-mono text-foreground break-all">
                         {action.arguments}
                       </code>
@@ -555,7 +559,7 @@ function TaskDetailPanel({
                   )}
                   {action.workingDirectory && (
                     <div className="mt-2">
-                      <label className="text-xs text-muted-foreground">Start in:</label>
+                      <label className="text-xs text-muted-foreground">{t('scheduledTasks.startIn')}:</label>
                       <code className="block mt-0.5 text-xs bg-muted px-2 py-1 rounded font-mono text-foreground">
                         {action.workingDirectory}
                       </code>
@@ -571,36 +575,36 @@ function TaskDetailPanel({
           <div className="space-y-4">
             {task.conditions.idleCondition && (
               <div className="p-3 rounded-lg border bg-card border-border">
-                <h4 className="text-sm font-medium text-foreground mb-2">Idle Conditions</h4>
+                <h4 className="text-sm font-medium text-foreground mb-2">{t('scheduledTasks.idleConditions')}</h4>
                 <ul className="text-sm text-muted-foreground space-y-1">
-                  <li>Wait for idle: {task.conditions.idleCondition.duration}</li>
-                  <li>Wait timeout: {task.conditions.idleCondition.waitTimeout}</li>
-                  <li>Stop on idle end: {task.conditions.idleCondition.stopOnIdleEnd ? 'Yes' : 'No'}</li>
-                  <li>Restart on idle: {task.conditions.idleCondition.restartOnIdle ? 'Yes' : 'No'}</li>
+                  <li>{t('scheduledTasks.waitForIdle', { value: task.conditions.idleCondition.duration })}</li>
+                  <li>{t('scheduledTasks.waitTimeout', { value: task.conditions.idleCondition.waitTimeout })}</li>
+                  <li>{t('scheduledTasks.stopOnIdleEnd', { value: task.conditions.idleCondition.stopOnIdleEnd ? t('common:labels.yes') : t('common:labels.no') })}</li>
+                  <li>{t('scheduledTasks.restartOnIdle', { value: task.conditions.idleCondition.restartOnIdle ? t('common:labels.yes') : t('common:labels.no') })}</li>
                 </ul>
               </div>
             )}
             {task.conditions.powerCondition && (
               <div className="p-3 rounded-lg border bg-card border-border">
-                <h4 className="text-sm font-medium text-foreground mb-2">Power Conditions</h4>
+                <h4 className="text-sm font-medium text-foreground mb-2">{t('scheduledTasks.powerConditions')}</h4>
                 <ul className="text-sm text-muted-foreground space-y-1">
                   <li>
-                    Start on AC only: {task.conditions.powerCondition.disallowStartIfOnBatteries ? 'Yes' : 'No'}
+                    {t('scheduledTasks.startOnAcOnly', { value: task.conditions.powerCondition.disallowStartIfOnBatteries ? t('common:labels.yes') : t('common:labels.no') })}
                   </li>
                   <li>
-                    Stop if on battery: {task.conditions.powerCondition.stopIfGoingOnBatteries ? 'Yes' : 'No'}
+                    {t('scheduledTasks.stopOnBattery', { value: task.conditions.powerCondition.stopIfGoingOnBatteries ? t('common:labels.yes') : t('common:labels.no') })}
                   </li>
                 </ul>
               </div>
             )}
             {task.conditions.networkCondition && (
               <div className="p-3 rounded-lg border bg-card border-border">
-                <h4 className="text-sm font-medium text-foreground mb-2">Network Conditions</h4>
-                <p className="text-sm text-muted-foreground">Required: {task.conditions.networkCondition.name}</p>
+                <h4 className="text-sm font-medium text-foreground mb-2">{t('scheduledTasks.networkConditions')}</h4>
+                <p className="text-sm text-muted-foreground">{t('scheduledTasks.requiredNetwork', { name: task.conditions.networkCondition.name })}</p>
               </div>
             )}
             {!task.conditions.idleCondition && !task.conditions.powerCondition && !task.conditions.networkCondition && (
-              <p className="text-sm text-muted-foreground text-center py-4">No conditions configured</p>
+              <p className="text-sm text-muted-foreground text-center py-4">{t('scheduledTasks.noConditions')}</p>
             )}
           </div>
         )}
@@ -608,7 +612,7 @@ function TaskDetailPanel({
         {activeTab === 'settings' && (
           <div className="space-y-3">
             <div className="p-3 rounded-lg border bg-card border-border">
-              <h4 className="text-sm font-medium text-foreground mb-2">General Settings</h4>
+              <h4 className="text-sm font-medium text-foreground mb-2">{t('scheduledTasks.generalSettings')}</h4>
               <ul className="text-sm text-muted-foreground space-y-1.5">
                 <li className="flex items-center gap-2">
                   {task.settings.allowDemandStart ? (
@@ -616,7 +620,7 @@ function TaskDetailPanel({
                   ) : (
                     <X className="h-3.5 w-3.5 text-red-500" />
                   )}
-                  Allow task to be run on demand
+                  {t('scheduledTasks.allowOnDemand')}
                 </li>
                 <li className="flex items-center gap-2">
                   {task.settings.runOnlyIfNetworkAvailable ? (
@@ -624,22 +628,22 @@ function TaskDetailPanel({
                   ) : (
                     <X className="h-3.5 w-3.5 text-red-500" />
                   )}
-                  Run only if network available
+                  {t('scheduledTasks.runOnlyIfNetwork')}
                 </li>
                 <li>
-                  Execution time limit: {task.settings.executionTimeLimit.replace('PT', '').toLowerCase() || 'None'}
+                  {t('scheduledTasks.executionTimeLimit', { value: task.settings.executionTimeLimit.replace('PT', '').toLowerCase() || t('common:labels.none') })}
                 </li>
                 <li>
-                  If multiple instances: {task.settings.multipleInstances.replace('_', ' ')}
+                  {t('scheduledTasks.multipleInstances', { value: task.settings.multipleInstances.replace('_', ' ') })}
                 </li>
               </ul>
             </div>
             {task.settings.restartOnFailure.count > 0 && (
               <div className="p-3 rounded-lg border bg-card border-border">
-                <h4 className="text-sm font-medium text-foreground mb-2">Restart on Failure</h4>
+                <h4 className="text-sm font-medium text-foreground mb-2">{t('scheduledTasks.restartOnFailure')}</h4>
                 <ul className="text-sm text-muted-foreground space-y-1">
-                  <li>Restart count: {task.settings.restartOnFailure.count}</li>
-                  <li>Restart interval: {task.settings.restartOnFailure.interval.replace('PT', '').toLowerCase()}</li>
+                  <li>{t('scheduledTasks.restartCount', { count: task.settings.restartOnFailure.count })}</li>
+                  <li>{t('scheduledTasks.restartInterval', { value: task.settings.restartOnFailure.interval.replace('PT', '').toLowerCase() })}</li>
                 </ul>
               </div>
             )}
@@ -653,7 +657,7 @@ function TaskDetailPanel({
                 <Loader2 className="h-6 w-6 animate-spin text-blue-600" />
               </div>
             ) : history.length === 0 ? (
-              <p className="text-sm text-muted-foreground text-center py-4">No history available</p>
+              <p className="text-sm text-muted-foreground text-center py-4">{t('scheduledTasks.noHistory')}</p>
             ) : (
               history.map(entry => (
                 <div
@@ -713,6 +717,7 @@ export default function ScheduledTasks({
   onRefresh,
   className
 }: ScheduledTasksProps) {
+  const { t } = useTranslation('remote');
   const [tasks, setTasks] = useState<ScheduledTask[]>(propTasks || []);
   const [selectedFolder, setSelectedFolder] = useState<string>('\\');
   const [selectedTaskPath, setSelectedTaskPath] = useState<string | null>(null);
@@ -896,7 +901,7 @@ export default function ScheduledTasks({
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 bg-card border-b">
         <div>
-          <h2 className="text-lg font-semibold text-foreground">Scheduled Tasks</h2>
+          <h2 className="text-lg font-semibold text-foreground">{t('scheduledTasks.title')}</h2>
           {deviceName && (
             <p className="text-sm text-muted-foreground">{deviceName}</p>
           )}
@@ -906,7 +911,7 @@ export default function ScheduledTasks({
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <input
               type="text"
-              placeholder="Search tasks..."
+              placeholder={t('scheduledTasks.searchPlaceholder')}
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
               className="pl-9 pr-3 py-2 text-sm bg-background text-foreground border border-input rounded-lg focus:ring-2 focus:ring-ring focus:border-ring w-64"
@@ -918,7 +923,7 @@ export default function ScheduledTasks({
             className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-foreground bg-background border border-input rounded-lg hover:bg-muted disabled:opacity-50 transition-colors"
           >
             <RefreshCw className={cn('h-4 w-4', refreshing && 'animate-spin')} />
-            Refresh
+            {t('common:actions.refresh')}
           </button>
         </div>
       </div>
@@ -943,13 +948,13 @@ export default function ScheduledTasks({
           ) : filteredTasks.length === 0 ? (
             <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground">
               <Calendar className="h-12 w-12 mb-3" />
-              <p className="text-lg font-medium">No scheduled tasks available</p>
+              <p className="text-lg font-medium">{t('scheduledTasks.noTasksAvailable')}</p>
               <p className="text-sm">
                 {searchQuery
-                  ? 'Try adjusting your search query'
+                  ? t('scheduledTasks.adjustSearch')
                   : tasks.length === 0
-                  ? 'No scheduled tasks have been loaded for this device'
-                  : 'No scheduled tasks in this folder'}
+                  ? t('scheduledTasks.notLoaded')
+                  : t('scheduledTasks.noneInFolder')}
               </p>
             </div>
           ) : (
@@ -957,13 +962,13 @@ export default function ScheduledTasks({
               <table className="w-full">
                 <thead className="bg-muted/40 sticky top-0">
                   <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    <th className="px-4 py-3">Name</th>
-                    <th className="px-4 py-3">Status</th>
-                    <th className="px-4 py-3 hidden lg:table-cell">Triggers</th>
-                    <th className="px-4 py-3 hidden md:table-cell">Next Run</th>
-                    <th className="px-4 py-3 hidden md:table-cell">Last Run</th>
-                    <th className="px-4 py-3 hidden sm:table-cell">Last Result</th>
-                    <th className="px-4 py-3 text-right">Actions</th>
+                    <th className="px-4 py-3">{t('common:labels.name')}</th>
+                    <th className="px-4 py-3">{t('common:labels.status')}</th>
+                    <th className="px-4 py-3 hidden lg:table-cell">{t('scheduledTasks.tabs.triggers')}</th>
+                    <th className="px-4 py-3 hidden md:table-cell">{t('scheduledTasks.nextRun')}</th>
+                    <th className="px-4 py-3 hidden md:table-cell">{t('scheduledTasks.lastRun')}</th>
+                    <th className="px-4 py-3 hidden sm:table-cell">{t('scheduledTasks.lastResult')}</th>
+                    <th className="px-4 py-3 text-right">{t('common:labels.actions')}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border bg-card">
@@ -1015,7 +1020,7 @@ export default function ScheduledTasks({
                             }}
                             disabled={actionLoading === task.path || task.status === 'running'}
                             className="p-1.5 text-muted-foreground hover:text-success hover:bg-success/10 rounded transition-colors disabled:opacity-50"
-                            title="Run now"
+                            title={t('scheduledTasks.runNow')}
                           >
                             {actionLoading === task.path ? (
                               <Loader2 className="h-4 w-4 animate-spin" />
@@ -1031,7 +1036,7 @@ export default function ScheduledTasks({
                               }}
                               disabled={actionLoading === task.path}
                               className="p-1.5 text-muted-foreground hover:text-primary hover:bg-primary/10 rounded transition-colors disabled:opacity-50"
-                              title="Enable"
+                              title={t('common:actions.enable')}
                             >
                               <PlayCircle className="h-4 w-4" />
                             </button>
@@ -1043,7 +1048,7 @@ export default function ScheduledTasks({
                               }}
                               disabled={actionLoading === task.path}
                               className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded transition-colors disabled:opacity-50"
-                              title="Disable"
+                              title={t('common:actions.disable')}
                             >
                               <Pause className="h-4 w-4" />
                             </button>
@@ -1077,12 +1082,12 @@ export default function ScheduledTasks({
       {/* Footer */}
       <div className="px-4 py-2 bg-card border-t text-sm text-muted-foreground flex items-center justify-between">
         <span>
-          {filteredTasks.length} task{filteredTasks.length !== 1 ? 's' : ''}
-          {searchQuery && ' matching "' + searchQuery + '"'}
-          {selectedFolder !== '\\' && ' in ' + selectedFolder}
+          {t('scheduledTasks.taskCount', { count: filteredTasks.length })}
+          {searchQuery && t('scheduledTasks.matching', { query: searchQuery })}
+          {selectedFolder !== '\\' && t('scheduledTasks.inFolder', { folder: selectedFolder })}
         </span>
         <span className="text-xs">
-          Device ID: {deviceId}
+          {t('scheduledTasks.deviceId', { id: deviceId })}
         </span>
       </div>
     </div>

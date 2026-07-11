@@ -17,6 +17,8 @@ import {
 } from './fileOperations';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { formatNumber } from '@/lib/i18n/format';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 
 type TrashViewProps = {
   deviceId: string;
@@ -48,6 +50,7 @@ function formatSize(bytes?: number): string {
 }
 
 export default function TrashView({ deviceId, onRestore }: TrashViewProps) {
+  const { t } = useTranslation('remote');
   const [items, setItems] = useState<TrashItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -68,13 +71,13 @@ export default function TrashView({ deviceId, onRestore }: TrashViewProps) {
       setSelected(new Set());
     } catch (err) {
       const message =
-        err instanceof Error ? err.message : 'Failed to load trash';
+        err instanceof Error ? err.message : t('trashView.errors.load');
       setError(message);
       setItems([]);
     } finally {
       setLoading(false);
     }
-  }, [deviceId]);
+  }, [deviceId, t]);
 
   useEffect(() => {
     fetchTrash();
@@ -114,17 +117,17 @@ export default function TrashView({ deviceId, onRestore }: TrashViewProps) {
       await fetchTrash();
       onRestore();
       if (result === 'failure') {
-        setError(summary ?? 'Restore failed');
+        setError(summary ?? t('trashView.errors.restore'));
       } else if (result === 'unverified') {
-        setWarning(summary ?? 'Some items unverified — refresh to verify');
+        setWarning(summary ?? t('trashView.errors.unverified'));
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Restore failed';
+      const message = err instanceof Error ? err.message : t('trashView.errors.restore');
       setError(message);
     } finally {
       setActionLoading(null);
     }
-  }, [deviceId, selected, fetchTrash, onRestore]);
+  }, [deviceId, selected, fetchTrash, onRestore, t]);
 
   const handlePurgeSelected = useCallback(() => {
     const ids = Array.from(selected);
@@ -152,12 +155,12 @@ export default function TrashView({ deviceId, onRestore }: TrashViewProps) {
       await fetchTrash();
     } catch (err) {
       const message =
-        err instanceof Error ? err.message : action === 'purge' ? 'Purge failed' : 'Failed to empty trash';
+        err instanceof Error ? err.message : action === 'purge' ? t('trashView.errors.purge') : t('trashView.errors.empty');
       setError(message);
     } finally {
       setActionLoading(null);
     }
-  }, [confirmAction, deviceId, selected, fetchTrash]);
+  }, [confirmAction, deviceId, selected, fetchTrash, t]);
 
   const allSelected = items.length > 0 && selected.size === items.length;
   const someSelected = selected.size > 0 && selected.size < items.length;
@@ -167,7 +170,7 @@ export default function TrashView({ deviceId, onRestore }: TrashViewProps) {
     return (
       <div className="flex flex-col items-center justify-center py-16 text-gray-400">
         <Loader2 className="h-8 w-8 animate-spin" />
-        <p className="mt-3 text-sm">Loading trash...</p>
+        <p className="mt-3 text-sm">{t('trashView.loading')}</p>
       </div>
     );
   }
@@ -183,7 +186,7 @@ export default function TrashView({ deviceId, onRestore }: TrashViewProps) {
           onClick={fetchTrash}
           className="mt-3 text-xs text-blue-400 hover:underline"
         >
-          Retry
+          {t('common:actions.retry')}
         </button>
       </div>
     );
@@ -194,14 +197,14 @@ export default function TrashView({ deviceId, onRestore }: TrashViewProps) {
     return (
       <div className="flex flex-col items-center justify-center py-16 text-gray-400">
         <Trash2 className="h-10 w-10 text-gray-600" />
-        <p className="mt-3 text-sm">Trash is empty</p>
+        <p className="mt-3 text-sm">{t('trashView.empty')}</p>
         <button
           type="button"
           onClick={fetchTrash}
           className="mt-3 flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-300"
         >
           <RefreshCw className="h-3.5 w-3.5" />
-          Refresh
+          {t('common:actions.refresh')}
         </button>
       </div>
     );
@@ -214,7 +217,7 @@ export default function TrashView({ deviceId, onRestore }: TrashViewProps) {
         <div className="flex items-center gap-2">
           <Trash2 className="h-4 w-4 text-gray-400" />
           <span className="text-sm text-gray-300">
-            {items.length} item{items.length !== 1 ? 's' : ''} in trash
+            {t('trashView.itemCount', { count: items.length })}
           </span>
         </div>
 
@@ -232,7 +235,7 @@ export default function TrashView({ deviceId, onRestore }: TrashViewProps) {
                 ) : (
                   <RotateCcw className="h-4 w-4" />
                 )}
-                Restore Selected ({selected.size})
+                {t('trashView.restoreSelected', { count: selected.size })}
               </button>
               <button
                 type="button"
@@ -245,7 +248,7 @@ export default function TrashView({ deviceId, onRestore }: TrashViewProps) {
                 ) : (
                   <Trash2 className="h-4 w-4" />
                 )}
-                Delete Permanently ({selected.size})
+                {t('trashView.deleteSelected', { count: selected.size })}
               </button>
             </>
           )}
@@ -261,7 +264,7 @@ export default function TrashView({ deviceId, onRestore }: TrashViewProps) {
             ) : (
               <Trash2 className="h-4 w-4" />
             )}
-            Empty Trash
+            {t('trashView.emptyTrash')}
           </button>
 
           <button
@@ -269,7 +272,7 @@ export default function TrashView({ deviceId, onRestore }: TrashViewProps) {
             onClick={fetchTrash}
             disabled={actionLoading !== null}
             className="flex h-8 w-8 items-center justify-center rounded-md text-gray-400 hover:bg-gray-700 disabled:opacity-50"
-            title="Refresh"
+            title={t('common:actions.refresh')}
           >
             <RefreshCw className="h-4 w-4" />
           </button>
@@ -305,11 +308,11 @@ export default function TrashView({ deviceId, onRestore }: TrashViewProps) {
                   className="h-4 w-4 rounded border-gray-600 bg-gray-800 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
                 />
               </th>
-              <th className="px-4 py-3">Original Path</th>
-              <th className="w-12 px-4 py-3">Type</th>
-              <th className="px-4 py-3 text-right">Size</th>
-              <th className="px-4 py-3">Deleted At</th>
-              <th className="px-4 py-3">Deleted By</th>
+              <th className="px-4 py-3">{t('trashView.columns.originalPath')}</th>
+              <th className="w-12 px-4 py-3">{t('common:labels.type')}</th>
+              <th className="px-4 py-3 text-right">{t('trashView.columns.size')}</th>
+              <th className="px-4 py-3">{t('trashView.columns.deletedAt')}</th>
+              <th className="px-4 py-3">{t('trashView.columns.deletedBy')}</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-700">
@@ -365,13 +368,13 @@ export default function TrashView({ deviceId, onRestore }: TrashViewProps) {
         open={confirmAction !== null}
         onClose={() => setConfirmAction(null)}
         onConfirm={handleConfirmTrashAction}
-        title={confirmAction === 'empty' ? 'Empty Trash' : 'Permanently Delete'}
+        title={confirmAction === 'empty' ? t('trashView.emptyTrash') : t('trashView.permanentlyDelete')}
         message={
           confirmAction === 'empty'
-            ? 'Empty the entire trash? All items will be permanently deleted. This cannot be undone.'
-            : `Permanently delete ${selected.size} item(s)? This cannot be undone.`
+            ? t('trashView.emptyConfirm')
+            : t('trashView.deleteConfirm', { count: selected.size })
         }
-        confirmLabel={confirmAction === 'empty' ? 'Empty Trash' : 'Delete Permanently'}
+        confirmLabel={confirmAction === 'empty' ? t('trashView.emptyTrash') : t('trashView.deletePermanently')}
         variant="destructive"
         isLoading={actionLoading !== null}
       />

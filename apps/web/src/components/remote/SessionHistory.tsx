@@ -18,6 +18,8 @@ import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '@/stores/auth';
 import { formatDateTime as formatUserDateTime, formatTime as formatUserTime } from '@/lib/dateTimeFormat';
 import { formatNumber } from '@/lib/i18n/format';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 
 const DATE_LOCALE = 'en-US';
 const DATE_TIME_ZONE = 'UTC';
@@ -67,18 +69,18 @@ export type SessionHistoryProps = {
   className?: string;
 };
 
-const sessionTypeConfig: Record<SessionType, { label: string; icon: typeof Terminal; color: string }> = {
-  terminal: { label: 'Terminal', icon: Terminal, color: 'text-green-600 bg-green-500/10' },
-  desktop: { label: 'Desktop', icon: Monitor, color: 'text-blue-600 bg-blue-500/10' },
-  file_transfer: { label: 'File Transfer', icon: FolderSync, color: 'text-purple-600 bg-purple-500/10' }
+const sessionTypeConfig: Record<SessionType, { labelKey: string; icon: typeof Terminal; color: string }> = {
+  terminal: { labelKey: 'sessionHistory.types.terminal', icon: Terminal, color: 'text-green-600 bg-green-500/10' },
+  desktop: { labelKey: 'sessionHistory.types.desktop', icon: Monitor, color: 'text-blue-600 bg-blue-500/10' },
+  file_transfer: { labelKey: 'sessionHistory.types.fileTransfer', icon: FolderSync, color: 'text-purple-600 bg-purple-500/10' }
 };
 
-const sessionStatusConfig: Record<SessionStatus, { label: string; color: string }> = {
-  pending: { label: 'Pending', color: 'bg-muted text-muted-foreground border-border' },
-  connecting: { label: 'Connecting', color: 'bg-warning/15 text-warning border-warning/30' },
-  active: { label: 'Active', color: 'bg-success/15 text-success border-success/30' },
-  disconnected: { label: 'Disconnected', color: 'bg-muted text-muted-foreground border-border' },
-  failed: { label: 'Failed', color: 'bg-destructive/15 text-destructive border-destructive/30' }
+const sessionStatusConfig: Record<SessionStatus, { labelKey: string; color: string }> = {
+  pending: { labelKey: 'sessionHistory.status.pending', color: 'bg-muted text-muted-foreground border-border' },
+  connecting: { labelKey: 'sessionHistory.status.connecting', color: 'bg-warning/15 text-warning border-warning/30' },
+  active: { labelKey: 'sessionHistory.status.active', color: 'bg-success/15 text-success border-success/30' },
+  disconnected: { labelKey: 'sessionHistory.status.disconnected', color: 'bg-muted text-muted-foreground border-border' },
+  failed: { labelKey: 'sessionHistory.status.failed', color: 'bg-destructive/15 text-destructive border-destructive/30' }
 };
 
 // Format duration
@@ -108,7 +110,7 @@ function isSameUtcDate(a: Date, b: Date): boolean {
     && a.getUTCDate() === b.getUTCDate();
 }
 
-function formatDateTime(dateString?: string): string {
+function formatDateTime(dateString: string | undefined, translate: (key: string, options?: Record<string, unknown>) => string): string {
   if (!dateString) return '-';
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
@@ -117,12 +119,12 @@ function formatDateTime(dateString?: string): string {
   const isToday = isSameUtcDate(date, now);
 
   if (isToday) {
-    return `Today ${formatUserTime(date, {
+    return translate('sessionHistory.todayAt', { time: formatUserTime(date, {
       locale: DATE_LOCALE,
       hour: '2-digit',
       minute: '2-digit',
       timeZone: DATE_TIME_ZONE
-    })}`;
+    }) });
   }
 
   const yesterday = new Date(now);
@@ -130,12 +132,12 @@ function formatDateTime(dateString?: string): string {
   const isYesterday = isSameUtcDate(date, yesterday);
 
   if (isYesterday) {
-    return `Yesterday ${formatUserTime(date, {
+    return translate('sessionHistory.yesterdayAt', { time: formatUserTime(date, {
       locale: DATE_LOCALE,
       hour: '2-digit',
       minute: '2-digit',
       timeZone: DATE_TIME_ZONE
-    })}`;
+    }) });
   }
 
   return formatUserDateTime(date, {
@@ -178,6 +180,7 @@ export default function SessionHistory({
   limit,
   className
 }: SessionHistoryProps) {
+  const { t } = useTranslation('remote');
   const [sessions, setSessions] = useState<RemoteSession[]>(propSessions ?? []);
   const [query, setQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState<string>('all');
@@ -307,9 +310,9 @@ export default function SessionHistory({
       <div className="border-b p-6">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h2 className="text-lg font-semibold">Session History</h2>
+            <h2 className="text-lg font-semibold">{t('sessionHistory.title')}</h2>
             <p className="text-sm text-muted-foreground">
-              Remote access audit log
+              {t('sessionHistory.subtitle')}
             </p>
           </div>
           {onExport && (
@@ -319,7 +322,7 @@ export default function SessionHistory({
               className="flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
             >
               <Download className="h-4 w-4" />
-              Export
+              {t('common:actions.export')}
             </button>
           )}
         </div>
@@ -329,28 +332,28 @@ export default function SessionHistory({
           <div className="rounded-lg border bg-muted/30 p-4">
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Clock className="h-4 w-4" />
-              Total Sessions
+              {t('sessionHistory.stats.totalSessions')}
             </div>
             <p className="mt-1 text-2xl font-bold">{stats.total}</p>
           </div>
           <div className="rounded-lg border bg-muted/30 p-4">
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Clock className="h-4 w-4" />
-              Total Duration
+              {t('sessionHistory.stats.totalDuration')}
             </div>
             <p className="mt-1 text-2xl font-bold">{formatDuration(stats.totalDuration)}</p>
           </div>
           <div className="rounded-lg border bg-muted/30 p-4">
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Clock className="h-4 w-4" />
-              Avg Duration
+              {t('sessionHistory.stats.averageDuration')}
             </div>
             <p className="mt-1 text-2xl font-bold">{formatDuration(stats.avgDuration)}</p>
           </div>
           <div className="rounded-lg border bg-muted/30 p-4">
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <FolderSync className="h-4 w-4" />
-              Data Transferred
+              {t('sessionHistory.stats.dataTransferred')}
             </div>
             <p className="mt-1 text-2xl font-bold">{formatBytes(stats.totalBytes)}</p>
           </div>
@@ -364,7 +367,7 @@ export default function SessionHistory({
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <input
               type="search"
-              placeholder="Search by device or user..."
+              placeholder={t('sessionHistory.searchPlaceholder')}
               value={query}
               onChange={event => {
                 setQuery(event.target.value);
@@ -382,10 +385,10 @@ export default function SessionHistory({
             }}
             className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
-            <option value="all">All Types</option>
-            <option value="terminal">Terminal</option>
-            <option value="desktop">Desktop</option>
-            <option value="file_transfer">File Transfer</option>
+            <option value="all">{t('sessionHistory.filters.allTypes')}</option>
+            <option value="terminal">{t('sessionHistory.types.terminal')}</option>
+            <option value="desktop">{t('sessionHistory.types.desktop')}</option>
+            <option value="file_transfer">{t('sessionHistory.types.fileTransfer')}</option>
           </select>
 
           <select
@@ -396,7 +399,7 @@ export default function SessionHistory({
             }}
             className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
-            <option value="all">All Users</option>
+            <option value="all">{t('sessionHistory.filters.allUsers')}</option>
             {uniqueUsers.map(user => (
               <option key={user.id} value={user.id}>{user.name}</option>
             ))}
@@ -410,11 +413,11 @@ export default function SessionHistory({
             }}
             className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
-            <option value="all">All Time</option>
-            <option value="today">Today</option>
-            <option value="yesterday">Yesterday</option>
-            <option value="week">Last 7 Days</option>
-            <option value="month">Last 30 Days</option>
+            <option value="all">{t('sessionHistory.filters.allTime')}</option>
+            <option value="today">{t('sessionHistory.filters.today')}</option>
+            <option value="yesterday">{t('sessionHistory.filters.yesterday')}</option>
+            <option value="week">{t('sessionHistory.filters.lastSevenDays')}</option>
+            <option value="month">{t('sessionHistory.filters.lastThirtyDays')}</option>
           </select>
         </div>
       </div>
@@ -424,14 +427,14 @@ export default function SessionHistory({
         <table className="min-w-full divide-y">
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <th className="px-4 py-3">Type</th>
-              <th className="px-4 py-3">Device</th>
-              <th className="px-4 py-3">User</th>
-              <th className="px-4 py-3">Started</th>
-              <th className="px-4 py-3">Duration</th>
-              <th className="px-4 py-3">Data</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3 text-right">Actions</th>
+              <th className="px-4 py-3">{t('common:labels.type')}</th>
+              <th className="px-4 py-3">{t('common:labels.device')}</th>
+              <th className="px-4 py-3">{t('common:labels.user')}</th>
+              <th className="px-4 py-3">{t('sessionHistory.columns.started')}</th>
+              <th className="px-4 py-3">{t('sessionHistory.columns.duration')}</th>
+              <th className="px-4 py-3">{t('sessionHistory.columns.data')}</th>
+              <th className="px-4 py-3">{t('common:labels.status')}</th>
+              <th className="px-4 py-3 text-right">{t('common:labels.actions')}</th>
             </tr>
           </thead>
           <tbody className="divide-y">
@@ -444,7 +447,7 @@ export default function SessionHistory({
             ) : paginatedSessions.length === 0 ? (
               <tr>
                 <td colSpan={8} className="px-4 py-8 text-center text-sm text-muted-foreground">
-                  No sessions found. Try adjusting your filters.
+                  {t('sessionHistory.noSessions')}
                 </td>
               </tr>
             ) : (
@@ -463,7 +466,7 @@ export default function SessionHistory({
                         sessionTypeConfig[session.type].color
                       )}>
                         <TypeIcon className="h-3 w-3" />
-                        {sessionTypeConfig[session.type].label}
+                        {t(sessionTypeConfig[session.type].labelKey)}
                       </div>
                     </td>
                     <td className="px-4 py-3">
@@ -479,7 +482,7 @@ export default function SessionHistory({
                       </div>
                     </td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">
-                      {formatDateTime(session.startedAt || session.createdAt)}
+                      {formatDateTime(session.startedAt || session.createdAt, (key, options) => t(key, options))}
                     </td>
                     <td className="px-4 py-3 text-sm">
                       {formatDuration(session.durationSeconds)}
@@ -492,7 +495,7 @@ export default function SessionHistory({
                         'inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium',
                         sessionStatusConfig[session.status].color
                       )}>
-                        {sessionStatusConfig[session.status].label}
+                        {t(sessionStatusConfig[session.status].labelKey)}
                       </span>
                     </td>
                     <td className="px-4 py-3">
@@ -504,7 +507,7 @@ export default function SessionHistory({
                             onViewDetails?.(session);
                           }}
                           className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
-                          title="View details"
+                          title={t('sessionHistory.viewDetails')}
                         >
                           <Eye className="h-4 w-4" />
                         </button>
@@ -522,7 +525,7 @@ export default function SessionHistory({
       {totalPages > 1 && (
         <div className="flex items-center justify-between border-t px-4 py-3">
           <p className="text-sm text-muted-foreground">
-            Showing {startIndex + 1} to {Math.min(startIndex + pageSize, filteredSessions.length)} of {filteredSessions.length}
+            {t('sessionHistory.showing', { start: startIndex + 1, end: Math.min(startIndex + pageSize, filteredSessions.length), total: filteredSessions.length })}
           </p>
           <div className="flex items-center gap-2">
             <button
@@ -534,7 +537,7 @@ export default function SessionHistory({
               <ChevronLeft className="h-4 w-4" />
             </button>
             <span className="text-sm">
-              Page {currentPage} of {totalPages}
+              {t('sessionHistory.page', { current: currentPage, total: totalPages })}
             </span>
             <button
               type="button"

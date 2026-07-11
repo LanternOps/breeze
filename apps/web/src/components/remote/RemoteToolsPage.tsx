@@ -25,6 +25,8 @@ import RemoteTerminal from './RemoteTerminal';
 import FileManager from './FileManager';
 import ConnectDesktopButton from './ConnectDesktopButton';
 import { getInitialFilePath } from './filePathUtils';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 
 type RemoteToolsPageProps = {
   deviceId: string;
@@ -392,6 +394,7 @@ export default function RemoteToolsPage({
   onClose,
   showClose = false
 }: RemoteToolsPageProps) {
+  const { t } = useTranslation('remote');
   const [activeTab, setActiveTab] = useState<ToolTab>(initialTab);
   const [resolvedDeviceName, setResolvedDeviceName] = useState(deviceName);
   const [resolvedDeviceOs, setResolvedDeviceOs] = useState<DeviceOs>(normalizeDeviceOs(deviceOs));
@@ -483,7 +486,7 @@ export default function RemoteToolsPage({
     setProcessLoading(true);
     try {
       const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/processes?limit=500`);
-      if (!res.ok) throw new Error('Failed to fetch processes');
+      if (!res.ok) throw new Error(t('remoteToolsPage.errors.fetchProcesses'));
       const json = await res.json();
       const data: ApiProcess[] = Array.isArray(json.data) ? json.data : [];
       setProcesses(data.map(mapProcess));
@@ -500,7 +503,7 @@ export default function RemoteToolsPage({
     });
     if (!res.ok) {
       const json = await res.json();
-      throw new Error(json.error || 'Failed to kill process');
+      throw new Error(json.error || t('remoteToolsPage.errors.killProcess'));
     }
     await fetchProcesses();
   }, [deviceId, fetchProcesses]);
@@ -509,7 +512,7 @@ export default function RemoteToolsPage({
     const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/processes/${pid}`);
     if (!res.ok) {
       const json = await res.json();
-      throw new Error(json.error || 'Failed to get process details');
+      throw new Error(json.error || t('remoteToolsPage.errors.processDetails'));
     }
     const json = await res.json();
     return mapProcess(json.data as ApiProcess);
@@ -523,7 +526,7 @@ export default function RemoteToolsPage({
       // 500 is the agent's max accepted page size (same as the Processes tab) and
       // covers realistic Windows service counts (the agent caps the list at 512).
       const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/services?limit=500`);
-      if (!res.ok) throw new Error('Failed to fetch services');
+      if (!res.ok) throw new Error(t('remoteToolsPage.errors.fetchServices'));
       const json = await res.json();
       const data: ApiService[] = Array.isArray(json.data) ? json.data : [];
       setServices(data.map(mapService));
@@ -540,7 +543,7 @@ export default function RemoteToolsPage({
     });
     if (!res.ok) {
       const json = await res.json();
-      throw new Error(json.error || 'Failed to start service');
+      throw new Error(json.error || t('remoteToolsPage.errors.startService'));
     }
     await fetchServices();
   }, [deviceId, fetchServices]);
@@ -551,7 +554,7 @@ export default function RemoteToolsPage({
     });
     if (!res.ok) {
       const json = await res.json();
-      throw new Error(json.error || 'Failed to stop service');
+      throw new Error(json.error || t('remoteToolsPage.errors.stopService'));
     }
     await fetchServices();
   }, [deviceId, fetchServices]);
@@ -566,7 +569,7 @@ export default function RemoteToolsPage({
 
     if (!res.ok) {
       const json = await res.json();
-      throw new Error(json.error || 'Failed to restart service');
+      throw new Error(json.error || t('remoteToolsPage.errors.restartService'));
     }
 
     if (isAgent) {
@@ -606,7 +609,7 @@ export default function RemoteToolsPage({
     setEventLoading(true);
     try {
       const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/eventlogs`);
-      if (!res.ok) throw new Error('Failed to fetch event logs');
+      if (!res.ok) throw new Error(t('remoteToolsPage.errors.fetchEventLogs'));
       const json = await res.json();
       const data: ApiEventLog[] = Array.isArray(json.data) ? json.data : [];
       setEventLogs(data.map(mapEventLog));
@@ -628,7 +631,7 @@ export default function RemoteToolsPage({
     const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/eventlogs/${encodeURIComponent(logName)}/events?${params}`);
     if (!res.ok) {
       const json = await res.json();
-      throw new Error(json.error || 'Failed to query events');
+      throw new Error(json.error || t('remoteToolsPage.errors.queryEvents'));
     }
     const json = await res.json();
     const data: ApiEventEntry[] = Array.isArray(json.data) ? json.data : [];
@@ -639,7 +642,7 @@ export default function RemoteToolsPage({
     const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/eventlogs/${encodeURIComponent(logName)}/events/${encodeURIComponent(recordId)}`);
     if (!res.ok) {
       const json = await res.json();
-      throw new Error(json.error || 'Failed to fetch event details');
+      throw new Error(json.error || t('remoteToolsPage.errors.eventDetails'));
     }
     const json = await res.json();
     return mapEventEntry(json.data as ApiEventEntry, logName);
@@ -650,7 +653,7 @@ export default function RemoteToolsPage({
     setTaskLoading(true);
     try {
       const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/tasks`);
-      if (!res.ok) throw new Error('Failed to fetch tasks');
+      if (!res.ok) throw new Error(t('remoteToolsPage.errors.fetchTasks'));
       const json = await res.json();
       const data: ApiTask[] = Array.isArray(json.data) ? json.data : [];
       setTasks(data.map(mapTaskSummary));
@@ -667,7 +670,7 @@ export default function RemoteToolsPage({
     });
     if (!res.ok) {
       const json = await res.json();
-      throw new Error(json.error || 'Failed to run task');
+      throw new Error(json.error || t('remoteToolsPage.errors.runTask'));
     }
     await fetchTasks();
   }, [deviceId, fetchTasks]);
@@ -676,7 +679,7 @@ export default function RemoteToolsPage({
     const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/tasks/${encodeURIComponent(path)}`);
     if (!res.ok) {
       const json = await res.json();
-      throw new Error(json.error || 'Failed to load task details');
+      throw new Error(json.error || t('remoteToolsPage.errors.taskDetails'));
     }
     const json = await res.json();
     return mapTaskDetails(json.data as ApiTask);
@@ -686,7 +689,7 @@ export default function RemoteToolsPage({
     const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/tasks/${encodeURIComponent(path)}/history?limit=100`);
     if (!res.ok) {
       const json = await res.json();
-      throw new Error(json.error || 'Failed to load task history');
+      throw new Error(json.error || t('remoteToolsPage.errors.taskHistory'));
     }
     const json = await res.json();
     const data: ApiTaskHistory[] = Array.isArray(json.data) ? json.data : [];
@@ -699,7 +702,7 @@ export default function RemoteToolsPage({
     });
     if (!res.ok) {
       const json = await res.json();
-      throw new Error(json.error || 'Failed to enable task');
+      throw new Error(json.error || t('remoteToolsPage.errors.enableTask'));
     }
     await fetchTasks();
   }, [deviceId, fetchTasks]);
@@ -710,7 +713,7 @@ export default function RemoteToolsPage({
     });
     if (!res.ok) {
       const json = await res.json();
-      throw new Error(json.error || 'Failed to disable task');
+      throw new Error(json.error || t('remoteToolsPage.errors.disableTask'));
     }
     await fetchTasks();
   }, [deviceId, fetchTasks]);
@@ -720,7 +723,7 @@ export default function RemoteToolsPage({
     const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/registry/keys?${params}`);
     if (!res.ok) {
       const json = await res.json();
-      throw new Error(json.error || 'Failed to load registry keys');
+      throw new Error(json.error || t('remoteToolsPage.errors.registryKeys'));
     }
     const json = await res.json();
     const data = Array.isArray(json.data) ? json.data : [];
@@ -741,7 +744,7 @@ export default function RemoteToolsPage({
     const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/registry/values?${params}`);
     if (!res.ok) {
       const json = await res.json();
-      throw new Error(json.error || 'Failed to load registry values');
+      throw new Error(json.error || t('remoteToolsPage.errors.registryValues'));
     }
     const json = await res.json();
     return Array.isArray(json.data) ? json.data : [];
@@ -754,7 +757,7 @@ export default function RemoteToolsPage({
     });
     if (!res.ok) {
       const json = await res.json();
-      throw new Error(json.error || 'Failed to set registry value');
+      throw new Error(json.error || t('remoteToolsPage.errors.setRegistryValue'));
     }
   }, [deviceId]);
 
@@ -765,7 +768,7 @@ export default function RemoteToolsPage({
     });
     if (!res.ok) {
       const json = await res.json();
-      throw new Error(json.error || 'Failed to delete registry value');
+      throw new Error(json.error || t('remoteToolsPage.errors.deleteRegistryValue'));
     }
   }, [deviceId]);
 
@@ -776,7 +779,7 @@ export default function RemoteToolsPage({
     });
     if (!res.ok) {
       const json = await res.json();
-      throw new Error(json.error || 'Failed to create registry key');
+      throw new Error(json.error || t('remoteToolsPage.errors.createRegistryKey'));
     }
   }, [deviceId]);
 
@@ -787,7 +790,7 @@ export default function RemoteToolsPage({
     });
     if (!res.ok) {
       const json = await res.json();
-      throw new Error(json.error || 'Failed to delete registry key');
+      throw new Error(json.error || t('remoteToolsPage.errors.deleteRegistryKey'));
     }
   }, [deviceId]);
 
@@ -816,7 +819,7 @@ export default function RemoteToolsPage({
         <div className="flex items-center gap-3">
           <Monitor className="h-5 w-5 text-primary" />
           <div>
-            <h1 className="text-lg font-semibold">Remote Tools</h1>
+            <h1 className="text-lg font-semibold">{t('remoteToolsPage.title')}</h1>
             <p className="text-sm text-muted-foreground">
               {resolvedDeviceName} ({deviceOsLabel})
             </p>
@@ -829,7 +832,7 @@ export default function RemoteToolsPage({
               onClick={handleClose}
               className="rounded-md px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted"
           >
-            Close
+            {t('common:actions.close')}
           </button>
           )}
         </div>
@@ -851,7 +854,7 @@ export default function RemoteToolsPage({
               }`}
             >
               <Icon className="h-4 w-4" />
-              {tab.label}
+              {t(`remoteToolsPage.tabs.${tab.id}`)}
             </button>
           );
         })}
@@ -863,12 +866,12 @@ export default function RemoteToolsPage({
           <ShieldOff className="h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400" />
           <div>
             <p className="text-sm font-medium text-amber-800 dark:text-amber-300">
-              Remote tools are disabled for this device
+              {t('remoteToolsPage.policyDisabledTitle')}
             </p>
             <p className="text-xs text-amber-700 dark:text-amber-400">
               {remoteAccessPolicy.policyName
-                ? `Configuration policy "${remoteAccessPolicy.policyName}" has disabled remote system tools.`
-                : 'A configuration policy has disabled remote system tools.'}
+                ? t('remoteToolsPage.policyDisabledNamed', { name: remoteAccessPolicy.policyName })
+                : t('remoteToolsPage.policyDisabled')}
             </p>
           </div>
         </div>
@@ -891,9 +894,9 @@ export default function RemoteToolsPage({
           <div className="mb-4 flex items-center gap-3 rounded-md border border-blue-500/40 bg-blue-500/10 p-4">
             <Loader2 className="h-5 w-5 animate-spin text-blue-600" />
             <div>
-              <h3 className="font-medium text-blue-700">Agent Restarting</h3>
+              <h3 className="font-medium text-blue-700">{t('remoteToolsPage.agentRestartingTitle')}</h3>
               <p className="text-sm text-blue-600">
-                The Breeze agent is restarting. The device will reconnect automatically...
+                {t('remoteToolsPage.agentRestartingDescription')}
               </p>
             </div>
           </div>

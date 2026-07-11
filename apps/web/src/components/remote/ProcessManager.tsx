@@ -14,6 +14,8 @@ import {
 } from 'lucide-react';
 import { cn, widthPercentClass } from '@/lib/utils';
 import { formatNumber, formatPercent } from '@/lib/i18n/format';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 
 export type ProcessStatus = 'running' | 'sleeping' | 'stopped' | 'zombie' | 'idle';
 
@@ -52,12 +54,12 @@ const statusColors: Record<ProcessStatus, string> = {
   idle: 'bg-blue-500/20 text-blue-700 border-blue-500/40'
 };
 
-const statusLabels: Record<ProcessStatus, string> = {
-  running: 'Running',
-  sleeping: 'Sleeping',
-  stopped: 'Stopped',
-  zombie: 'Zombie',
-  idle: 'Idle'
+const statusLabelKeys: Record<ProcessStatus, string> = {
+  running: 'processManager.status.running',
+  sleeping: 'processManager.status.sleeping',
+  stopped: 'processManager.status.stopped',
+  zombie: 'processManager.status.zombie',
+  idle: 'processManager.status.idle'
 };
 
 function formatMemory(mb: number): string {
@@ -88,6 +90,7 @@ export default function ProcessManager({
   onKillProcess,
   onGetProcess
 }: ProcessManagerProps) {
+  const { t } = useTranslation('remote');
   const [internalProcesses, setInternalProcesses] = useState<Process[]>([]);
   const [internalLoading, setInternalLoading] = useState(false);
   const [query, setQuery] = useState('');
@@ -184,17 +187,17 @@ export default function ProcessManager({
       if (onKillProcess) {
         await onKillProcess(pid);
       } else {
-        throw new Error('Kill process handler is not configured');
+        throw new Error(t('processManager.errors.handlerNotConfigured'));
       }
       setShowKillModal(false);
       setSelectedPid(null);
       setExpandedPid(null);
     } catch (error) {
-      setKillError(error instanceof Error ? error.message : 'Failed to kill process');
+      setKillError(error instanceof Error ? error.message : t('processManager.errors.killFailed'));
     } finally {
       setKillingPid(null);
     }
-  }, [onKillProcess]);
+  }, [onKillProcess, t]);
 
   // Auto-refresh effect
   useEffect(() => {
@@ -246,7 +249,7 @@ export default function ProcessManager({
           <div className="flex items-center gap-3">
             <Activity className="h-5 w-5 text-muted-foreground" />
             <div>
-              <h2 className="text-lg font-semibold">Process Manager</h2>
+              <h2 className="text-lg font-semibold">{t('processManager.title')}</h2>
               <p className="text-sm text-muted-foreground">{deviceName}</p>
             </div>
           </div>
@@ -256,7 +259,7 @@ export default function ProcessManager({
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <input
                 type="search"
-                placeholder="Search by name or PID..."
+                placeholder={t('processManager.searchPlaceholder')}
                 value={query}
                 onChange={e => setQuery(e.target.value)}
                 className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-56"
@@ -271,7 +274,7 @@ export default function ProcessManager({
                 onChange={e => setAutoRefresh(e.target.checked)}
                 className="h-4 w-4 rounded border-border"
               />
-              <span className="whitespace-nowrap">Auto-refresh</span>
+              <span className="whitespace-nowrap">{t('processManager.autoRefresh')}</span>
             </label>
 
             {/* Refresh button */}
@@ -282,7 +285,7 @@ export default function ProcessManager({
               className="flex h-10 items-center gap-2 rounded-md border bg-background px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
             >
               <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />
-              Refresh
+              {t('common:actions.refresh')}
             </button>
           </div>
         </div>
@@ -295,7 +298,7 @@ export default function ProcessManager({
             <Activity className="h-5 w-5 text-blue-500" />
           </div>
           <div>
-            <p className="text-sm text-muted-foreground">Processes</p>
+            <p className="text-sm text-muted-foreground">{t('processManager.processes')}</p>
             <p className="text-lg font-semibold">{resourceSummary.totalProcesses}</p>
           </div>
         </div>
@@ -304,7 +307,7 @@ export default function ProcessManager({
             <Cpu className="h-5 w-5 text-green-500" />
           </div>
           <div>
-            <p className="text-sm text-muted-foreground">Total CPU</p>
+            <p className="text-sm text-muted-foreground">{t('processManager.totalCpu')}</p>
             <p className="text-lg font-semibold">{resourceSummary.totalCpu}%</p>
           </div>
         </div>
@@ -313,7 +316,7 @@ export default function ProcessManager({
             <HardDrive className="h-5 w-5 text-purple-500" />
           </div>
           <div>
-            <p className="text-sm text-muted-foreground">Process Memory</p>
+            <p className="text-sm text-muted-foreground">{t('processManager.processMemory')}</p>
             <p className="text-lg font-semibold">{resourceSummary.totalMemory}</p>
           </div>
         </div>
@@ -337,14 +340,14 @@ export default function ProcessManager({
                   className="cursor-pointer px-4 py-3 hover:text-foreground"
                   onClick={() => handleSort('name')}
                 >
-                  Process Name
+                  {t('processManager.columns.processName')}
                   <SortIndicator field="name" />
                 </th>
                 <th
                   className="cursor-pointer px-4 py-3 hover:text-foreground"
                   onClick={() => handleSort('user')}
                 >
-                  User
+                  {t('common:labels.user')}
                   <SortIndicator field="user" />
                 </th>
                 <th
@@ -358,17 +361,17 @@ export default function ProcessManager({
                   className="cursor-pointer px-4 py-3 text-right hover:text-foreground"
                   onClick={() => handleSort('memoryMb')}
                 >
-                  Memory
+                  {t('processManager.columns.memory')}
                   <SortIndicator field="memoryMb" />
                 </th>
                 <th
                   className="cursor-pointer px-4 py-3 hover:text-foreground"
                   onClick={() => handleSort('status')}
                 >
-                  Status
+                  {t('common:labels.status')}
                   <SortIndicator field="status" />
                 </th>
-                <th className="px-4 py-3">Actions</th>
+                <th className="px-4 py-3">{t('common:labels.actions')}</th>
               </tr>
             </thead>
             <tbody className="divide-y">
@@ -381,13 +384,13 @@ export default function ProcessManager({
               ) : processes.length === 0 ? (
                 <tr>
                   <td colSpan={8} className="px-4 py-8 text-center text-sm text-muted-foreground">
-                    No process data available. Click Refresh to load processes.
+                    {t('processManager.noData')}
                   </td>
                 </tr>
               ) : filteredProcesses.length === 0 ? (
                 <tr>
                   <td colSpan={8} className="px-4 py-8 text-center text-sm text-muted-foreground">
-                    No processes found. Try adjusting your search.
+                    {t('processManager.noMatches')}
                   </td>
                 </tr>
               ) : (
@@ -443,7 +446,7 @@ export default function ProcessManager({
                             statusColors[proc.status]
                           )}
                         >
-                          {statusLabels[proc.status]}
+                          {t(statusLabelKeys[proc.status])}
                         </span>
                       </td>
                       <td className="px-4 py-3">
@@ -455,7 +458,7 @@ export default function ProcessManager({
                             setShowKillModal(true);
                           }}
                           className="flex h-8 w-8 items-center justify-center rounded-md text-red-500 hover:bg-red-500/10"
-                          title="Kill Process"
+                          title={t('processManager.killProcess')}
                         >
                           <X className="h-4 w-4" />
                         </button>
@@ -471,31 +474,31 @@ export default function ProcessManager({
                           {isLoading ? (
                             <div className="flex items-center gap-2 text-sm text-muted-foreground">
                               <Loader2 className="h-4 w-4 animate-spin" />
-                              Loading details...
+                              {t('processManager.loadingDetails')}
                             </div>
                           ) : (
                           <div className="grid grid-cols-2 gap-4 text-sm md:grid-cols-4">
                             <div>
-                              <p className="text-muted-foreground">Command Line</p>
+                              <p className="text-muted-foreground">{t('processManager.details.commandLine')}</p>
                               <p className="mt-1 break-all font-mono text-xs">
                                 {detail?.commandLine || proc.commandLine || '-'}
                               </p>
                             </div>
                             <div>
-                              <p className="text-muted-foreground">Parent PID</p>
+                              <p className="text-muted-foreground">{t('processManager.details.parentPid')}</p>
                               <p className="mt-1 font-mono">{detail?.parentPid ?? proc.parentPid ?? '-'}</p>
                             </div>
                             <div>
-                              <p className="text-muted-foreground">Threads</p>
+                              <p className="text-muted-foreground">{t('processManager.details.threads')}</p>
                               <p className="mt-1">{detail?.threads ?? proc.threads ?? '-'}</p>
                             </div>
                             <div>
-                              <p className="text-muted-foreground">Priority</p>
+                              <p className="text-muted-foreground">{t('processManager.details.priority')}</p>
                               <p className="mt-1">{detail?.priority ?? proc.priority ?? '-'}</p>
                             </div>
                             {(detail?.startTime || proc.startTime) && (
                               <div>
-                                <p className="text-muted-foreground">Start Time</p>
+                                <p className="text-muted-foreground">{t('processManager.details.startTime')}</p>
                                 <p className="mt-1">{formatStartTime(detail?.startTime || proc.startTime)}</p>
                               </div>
                             )}
@@ -516,7 +519,7 @@ export default function ProcessManager({
       {/* Results count */}
       <div className="border-t px-4 py-3">
         <p className="text-sm text-muted-foreground">
-          Showing {filteredProcesses.length} of {processes.length} processes
+          {t('processManager.showing', { shown: filteredProcesses.length, total: processes.length })}
         </p>
       </div>
 
@@ -526,27 +529,27 @@ export default function ProcessManager({
           <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xl">
             <div className="flex items-center gap-3 text-red-500">
               <AlertTriangle className="h-6 w-6" />
-              <h3 className="text-lg font-semibold">Kill Process</h3>
+              <h3 className="text-lg font-semibold">{t('processManager.killProcess')}</h3>
             </div>
             <p className="mt-4 text-sm text-muted-foreground">
-              Are you sure you want to kill this process? This action cannot be undone.
+              {t('processManager.killConfirm')}
             </p>
             <div className="mt-4 rounded-md border bg-muted/40 p-3">
               <div className="grid grid-cols-2 gap-2 text-sm">
                 <div>
-                  <span className="text-muted-foreground">PID:</span>{' '}
+                  <span className="text-muted-foreground">{t('processManager.pid')}:</span>{' '}
                   <span className="font-mono">{processToKill.pid}</span>
                 </div>
                 <div>
-                  <span className="text-muted-foreground">Name:</span>{' '}
+                  <span className="text-muted-foreground">{t('common:labels.name')}:</span>{' '}
                   <span className="font-medium">{processToKill.name}</span>
                 </div>
                 <div>
-                  <span className="text-muted-foreground">User:</span>{' '}
+                  <span className="text-muted-foreground">{t('common:labels.user')}:</span>{' '}
                   <span>{processToKill.user}</span>
                 </div>
                 <div>
-                  <span className="text-muted-foreground">CPU:</span>{' '}
+                  <span className="text-muted-foreground">{t('processManager.cpu')}:</span>{' '}
                   <span>{formatPercent(processToKill.cpuPercent / 100, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</span>
                 </div>
               </div>
@@ -566,7 +569,7 @@ export default function ProcessManager({
                 disabled={killingPid !== null}
                 className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
               >
-                Cancel
+                {t('common:actions.cancel')}
               </button>
               <button
                 type="button"
@@ -577,12 +580,12 @@ export default function ProcessManager({
                 {killingPid !== null ? (
                   <>
                     <Loader2 className="h-4 w-4 animate-spin" />
-                    Killing...
+                    {t('processManager.killing')}
                   </>
                 ) : (
                   <>
                     <X className="h-4 w-4" />
-                    Kill Process
+                    {t('processManager.killProcess')}
                   </>
                 )}
               </button>
