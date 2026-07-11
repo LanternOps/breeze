@@ -1285,7 +1285,7 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
       },
       libraries: [{
         libraryId: 'lib-1', displayName: 'Docs', siteUrl: null, targetingMode: 'graph_group',
-        groupId: 'g-1', groupName: null, hiveScope: 'hkcu', allowedUpns: ['u@c.com'],
+        groupId: 'g-1', groupName: null, hiveScope: 'hkcu', allowedUpns: ['u@contoso.com'],
       }],
     };
     vi.mocked(buildOnedriveHelperConfigUpdate).mockResolvedValueOnce(settings as any);

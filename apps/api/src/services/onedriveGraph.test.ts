@@ -202,7 +202,7 @@ describe('resolveUserGroupMembership', () => {
 
   it('a 2xx with no value array is an error, not an empty membership', async () => {
     (graphFetch as any).mockResolvedValueOnce({ kind: 'ok', data: null });
-    const res = await resolveUserGroupMembership('org-1', 'u@c.com');
+    const res = await resolveUserGroupMembership('org-1', 'u@contoso.com');
     expect(res.kind).toBe('error');
     expect((res as any).code).toBe('graph_malformed_response');
   });
@@ -220,7 +220,7 @@ describe('resolveUserGroupMembership', () => {
         '@odata.nextLink': 'https://graph.microsoft.com/v1.0/users/u/transitiveMemberOf?$skiptoken=abc',
       } })
       .mockResolvedValueOnce({ kind: 'ok', data: { value: [{ id: 'g-2' }] } });
-    const res = await resolveUserGroupMembership('org-1', 'u@c.com');
+    const res = await resolveUserGroupMembership('org-1', 'u@contoso.com');
     expect((res as any).data.groupIds).toEqual(['g-1', 'g-2']);
     expect(graphFetch).toHaveBeenCalledTimes(2);
     // page 2 must be requested via the absolute nextLink verbatim
@@ -232,7 +232,7 @@ describe('resolveUserGroupMembership', () => {
       value: [{ id: 'g-n' }],
       '@odata.nextLink': 'https://graph.microsoft.com/v1.0/users/u/transitiveMemberOf?$skiptoken=more',
     } });
-    const res = await resolveUserGroupMembership('org-1', 'u@c.com');
+    const res = await resolveUserGroupMembership('org-1', 'u@contoso.com');
     expect(res.kind).toBe('error');
     expect((res as any).code).toBe('too_many_groups');
     expect(graphFetch).toHaveBeenCalledTimes(5); // GROUP_MEMBERSHIP_MAX_PAGES
@@ -245,7 +245,7 @@ describe('resolveUserGroupMembership', () => {
         '@odata.nextLink': 'https://graph.microsoft.com/v1.0/next',
       } })
       .mockResolvedValueOnce({ kind: 'error', code: 'graph_unreachable', message: 'x' });
-    const res = await resolveUserGroupMembership('org-1', 'u@c.com');
+    const res = await resolveUserGroupMembership('org-1', 'u@contoso.com');
     expect(res.kind).toBe('error');
     expect((res as any).code).toBe('graph_unreachable');
   });
@@ -267,9 +267,9 @@ describe('resolveUserGroupMembershipCached', () => {
     (graphFetch as any)
       .mockResolvedValueOnce({ kind: 'error', code: 'throttled', message: 'x' })
       .mockResolvedValueOnce({ kind: 'ok', data: { value: [{ id: 'g-2' }] } });
-    const a = await resolveUserGroupMembershipCached('org-1', 'u@c.com');
+    const a = await resolveUserGroupMembershipCached('org-1', 'u@contoso.com');
     expect(a.kind).toBe('error');
-    const b = await resolveUserGroupMembershipCached('org-1', 'u@c.com');
+    const b = await resolveUserGroupMembershipCached('org-1', 'u@contoso.com');
     expect((b as any).data.groupIds).toEqual(['g-2']);
     expect(graphFetch).toHaveBeenCalledTimes(2);
   });
@@ -280,9 +280,9 @@ describe('resolveUserGroupMembershipCached', () => {
       (graphFetch as any)
         .mockResolvedValueOnce({ kind: 'ok', data: { value: [{ id: 'g-1' }] } })
         .mockResolvedValueOnce({ kind: 'ok', data: { value: [] } }); // user removed from the group
-      await resolveUserGroupMembershipCached('org-1', 'u@c.com');
+      await resolveUserGroupMembershipCached('org-1', 'u@contoso.com');
       vi.advanceTimersByTime(GROUP_MEMBERSHIP_CACHE_TTL_MS + 1);
-      const b = await resolveUserGroupMembershipCached('org-1', 'u@c.com');
+      const b = await resolveUserGroupMembershipCached('org-1', 'u@contoso.com');
       expect((b as any).data.groupIds).toEqual([]);
       expect(graphFetch).toHaveBeenCalledTimes(2);
     } finally {
@@ -294,8 +294,8 @@ describe('resolveUserGroupMembershipCached', () => {
     (graphFetch as any)
       .mockResolvedValueOnce({ kind: 'ok', data: { value: [{ id: 'g-1' }] } })
       .mockResolvedValueOnce({ kind: 'ok', data: { value: [{ id: 'g-9' }] } });
-    await resolveUserGroupMembershipCached('org-1', 'u@c.com');
-    const b = await resolveUserGroupMembershipCached('org-2', 'u@c.com');
+    await resolveUserGroupMembershipCached('org-1', 'u@contoso.com');
+    const b = await resolveUserGroupMembershipCached('org-2', 'u@contoso.com');
     expect((b as any).data.groupIds).toEqual(['g-9']);
     expect(graphFetch).toHaveBeenCalledTimes(2);
   });

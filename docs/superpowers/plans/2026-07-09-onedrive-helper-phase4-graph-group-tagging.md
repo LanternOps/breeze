@@ -98,9 +98,9 @@ describe('resolveUserGroupMembershipCached', () => {
     (graphFetch as any)
       .mockResolvedValueOnce({ kind: 'error', code: 'throttled', message: 'x' })
       .mockResolvedValueOnce({ kind: 'ok', data: { value: [{ id: 'g-2' }] } });
-    const a = await resolveUserGroupMembershipCached('org-1', 'u@c.com');
+    const a = await resolveUserGroupMembershipCached('org-1', 'u@contoso.com');
     expect(a.kind).toBe('error');
-    const b = await resolveUserGroupMembershipCached('org-1', 'u@c.com');
+    const b = await resolveUserGroupMembershipCached('org-1', 'u@contoso.com');
     expect((b as any).data.groupIds).toEqual(['g-2']);
     expect(graphFetch).toHaveBeenCalledTimes(2);
   });
@@ -109,8 +109,8 @@ describe('resolveUserGroupMembershipCached', () => {
     (graphFetch as any)
       .mockResolvedValueOnce({ kind: 'ok', data: { value: [{ id: 'g-1' }] } })
       .mockResolvedValueOnce({ kind: 'ok', data: { value: [{ id: 'g-9' }] } });
-    await resolveUserGroupMembershipCached('org-1', 'u@c.com');
-    const b = await resolveUserGroupMembershipCached('org-2', 'u@c.com');
+    await resolveUserGroupMembershipCached('org-1', 'u@contoso.com');
+    const b = await resolveUserGroupMembershipCached('org-2', 'u@contoso.com');
     expect((b as any).data.groupIds).toEqual(['g-9']);
     expect(graphFetch).toHaveBeenCalledTimes(2);
   });
