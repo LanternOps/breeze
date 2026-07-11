@@ -3560,7 +3560,7 @@ tests never exercised the real browser payloads** — worth a validator/UI-contr
 ## Web console i18n Phase 2 extraction (en / pt-BR) — 2026-07-11
 
 **Branch:** `worktree-web-i18n-phase1`
-**Commit:** `6a0b0a53b`
+**Commit:** `b47ab13ca`
 **Tested by:** Codex
 **Result:** PARTIAL
 
@@ -3575,14 +3575,15 @@ tests never exercised the real browser payloads** — worth a validator/UI-contr
 
 ### Evidence
 
-- Full web suite: 416 files / 3,234 tests passed.
+- Full web suite: 417 files / 3,257 tests passed.
 - API org/user route suites: 2 files / 214 tests passed.
-- Astro check: 1,323 files, 0 errors (existing hints only).
+- Astro check: 1,324 files, 0 errors (existing hints only).
 - Production build: passed; pt-BR remains emitted through lazy locale chunks.
 - Worktree diff and whitespace checks: clean.
 
 ### Issues Found
 
 - Automated verification found and fixed structural enum/state values that had been translated by mechanical extraction, two callback variables shadowing `t()`, cross-namespace device metadata labels, and several post-wave literal-string misses.
-- Brazilian Portuguese copy is machine-drafted and still requires native-speaker review.
+- Final read-only code review found no unresolved Critical or Important issues after runtime, enforcement, formatter, and copy-quality remediation.
+- Brazilian Portuguese copy remains machine-drafted and should receive native-speaker review before production rollout.
 - Live locale persistence/navigation smoke remains pending until an E2E stack is configured.
