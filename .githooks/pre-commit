@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+#
+# Breeze pre-commit hook. Auto-installed by the root package.json "prepare"
+# script (sets core.hooksPath=.githooks on pnpm install).
+#
+# Blocks confidential infrastructure identifiers / secrets from being committed.
+# Bypass in a genuine emergency with `git commit --no-verify` — CI runs the same
+# scan on push/PR, so it cannot be smuggled past that way.
+#
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+scanner="$repo_root/scripts/security/scan-confidential.sh"
+
+[[ -x "$scanner" ]] || scanner="bash $repo_root/scripts/security/scan-confidential.sh"
+
+exec $scanner --staged
