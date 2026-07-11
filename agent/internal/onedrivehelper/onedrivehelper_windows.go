@@ -365,7 +365,9 @@ func readDeviceState(sessions []userSession, entitled []string, applied []Librar
 			continue // this user isn't signed in to OneDrive Business
 		}
 		state.SignedIn = true
-		if upn, _, e := acct.GetStringValue("UserEmail"); e == nil && upn != "" && !containsFold(state.SignedInUpns, upn) {
+		// Cap at 16 entries to match the server-side zod .max(16); exceeding it
+		// silently rejects the device's whole state report.
+		if upn, _, e := acct.GetStringValue("UserEmail"); e == nil && upn != "" && !containsFold(state.SignedInUpns, upn) && len(state.SignedInUpns) < 16 {
 			state.SignedInUpns = append(state.SignedInUpns, upn)
 		}
 		if !primaryFound {
