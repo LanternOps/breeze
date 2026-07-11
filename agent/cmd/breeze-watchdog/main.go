@@ -53,6 +53,22 @@ func (h *tokenHolder) Reveal() string {
 
 var version = "0.1.0"
 
+const backupProbeThreshold = 10 // keep in sync with agent/internal/heartbeat
+
+// decideWatchdogServerURL picks the failover client's base URL after a failed
+// poll (#2288). Priority: a server_url the agent already swapped on disk;
+// then, past the probe threshold, the configured backup — transiently, in
+// memory only. The watchdog NEVER persists config; the agent owns that.
+func decideWatchdogServerURL(current string, reloaded *config.Config, consecutiveFailures int) string {
+	if reloaded.ServerURL != "" && reloaded.ServerURL != current {
+		return reloaded.ServerURL
+	}
+	if consecutiveFailures >= backupProbeThreshold && reloaded.BackupServerURL != "" {
+		return reloaded.BackupServerURL
+	}
+	return current
+}
+
 var rootCmd = &cobra.Command{
 	Use:   "breeze-watchdog",
 	Short: "Breeze RMM Agent Watchdog",
@@ -293,6 +309,7 @@ func runWatchdog(stopCh <-chan struct{}) {
 	defer failoverTicker.Stop()
 
 	var failoverClient *watchdog.FailoverClient
+	var failoverFailures int
 
 	for {
 		select {
@@ -373,7 +390,7 @@ func runWatchdog(stopCh <-chan struct{}) {
 			if wd.State() != watchdog.StateFailover || failoverClient == nil {
 				continue
 			}
-			handleFailoverPoll(failoverClient, wd, journal, cfg, tokenStore, recovery, cfg.Watchdog.MaxRestartsPer24h)
+			handleFailoverPoll(failoverClient, wd, journal, cfg, tokenStore, recovery, cfg.Watchdog.MaxRestartsPer24h, &failoverFailures)
 		}
 
 		// State-driven actions after each tick.
@@ -461,10 +478,19 @@ func runWatchdog(stopCh <-chan struct{}) {
 				stats := currentRestartStats(recovery, cfg.Watchdog.MaxRestartsPer24h)
 				resp, err := failoverClient.SendHeartbeat(version, wd.State(), journal.Recent(10), stats)
 				if err != nil {
+					failoverFailures++
+					if reloaded, rerr := config.Load(""); rerr == nil {
+						current := failoverClient.BaseURL()
+						if next := decideWatchdogServerURL(current, reloaded, failoverFailures); next != current {
+							journal.Log(watchdog.LevelInfo, "failover.server_url_switch", map[string]any{"to": next})
+							failoverClient.SetBaseURL(next)
+						}
+					}
 					journal.Log(watchdog.LevelError, "failover.heartbeat_failed", map[string]any{
 						"error": err.Error(),
 					})
 				} else {
+					failoverFailures = 0
 					handleInitialFailoverHeartbeatResponse(failoverClient, resp, wd, journal, cfg, tokenStore, recovery)
 				}
 			}
@@ -486,6 +512,7 @@ func runWatchdog(stopCh <-chan struct{}) {
 			if failoverClient != nil {
 				failoverClient = nil
 			}
+			failoverFailures = 0
 		}
 	}
 }
@@ -559,16 +586,26 @@ func handleFailoverPoll(
 	tokens *tokenHolder,
 	recovery *watchdog.RecoveryManager,
 	maxPer24h int,
+	failoverFailures *int,
 ) {
 	// Send failover heartbeat.
 	stats := currentRestartStats(recovery, maxPer24h)
 	resp, err := fc.SendHeartbeat(version, wd.State(), journal.Recent(10), stats)
 	if err != nil {
+		*failoverFailures = *failoverFailures + 1
+		if reloaded, rerr := config.Load(""); rerr == nil {
+			current := fc.BaseURL()
+			if next := decideWatchdogServerURL(current, reloaded, *failoverFailures); next != current {
+				journal.Log(watchdog.LevelInfo, "failover.server_url_switch", map[string]any{"to": next})
+				fc.SetBaseURL(next)
+			}
+		}
 		journal.Log(watchdog.LevelError, "failover.heartbeat_failed", map[string]any{
 			"error": err.Error(),
 		})
 		return
 	}
+	*failoverFailures = 0
 	heartbeatCmds := processHeartbeatResponse(resp, wd, journal, cfg, tokens, recovery)
 
 	// Commands targeted at the watchdog are claimed by the heartbeat (the
