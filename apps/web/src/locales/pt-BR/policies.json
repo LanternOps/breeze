@@ -1125,7 +1125,7 @@
       },
       "vulnerabilityTab": {
         "enableVulnerabilityScanning": "Ativar verificação de vulnerabilidades",
-        "correlateThisScopeSInstalledSoftwareAnd": "Correlacione o software instalado e as versões do OS deste escopo com o catálogo de CVEs (MSRC, NVD, Apple) para exibir vulnerabilidades nos painéis do dispositivo e da frota. A verificação é desativada por padrão — ative-a aqui para incluir os dispositivos de um cliente. A correlação é executada diariamente.",
+        "correlateThisScopeSInstalledSoftwareAnd": "Correlacione o software instalado e as versões do OS deste escopo com o catálogo de CVEs (MSRC, NVD, Apple) para exibir vulnerabilidades no painel do dispositivo e no painel geral de dispositivos. A verificação é desativada por padrão — ative-a aqui para incluir os dispositivos de um cliente. A correlação é executada diariamente.",
         "findingsAppearInTheVulnerabilitiesDashboard": "As descobertas aparecem no painel Vulnerabilidades",
         "thisPolicyOnlyControlsWhetherDevicesAre": "Esta política controla apenas se os dispositivos são verificados. Os CVEs detectados, as pontuações de risco e as ações de correção são gerenciados no",
         "vulnerabilitiesConsole": "console de Vulnerabilidades"
