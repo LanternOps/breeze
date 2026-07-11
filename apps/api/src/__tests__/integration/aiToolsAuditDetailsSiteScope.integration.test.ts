@@ -181,6 +181,60 @@ describe('query_audit_log — details.deviceId site narrowing (R3b residual)', (
     expect(JSON.stringify(parsed)).not.toContain(outScopeDevice.id);
   });
 
+  it('narrows non-device rows that reference an out-of-scope device via an array-valued details.deviceIds (SR5-17)', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const siteAllowed = await createSite({ orgId: org.id });
+    const siteForbidden = await createSite({ orgId: org.id });
+
+    const inScopeA = await seedDevice(org.id, siteAllowed.id);
+    const inScopeB = await seedDevice(org.id, siteAllowed.id);
+    const outScope = await seedDevice(org.id, siteForbidden.id);
+
+    const marker = `sr5-17-arrays-${randomUUID()}`;
+
+    // (a) all-in-scope array → visible
+    await seedAudit(org.id, marker, 'software_deploy_job', randomUUID(), {
+      deviceIds: [inScopeA.id, inScopeB.id],
+      reason: 'all-in-scope-array',
+    });
+    // (b) array containing ONE out-of-scope device → hidden (any forbidden
+    //     element excludes the whole row so no forbidden UUID leaks)
+    await seedAudit(org.id, marker, 'software_deploy_job', randomUUID(), {
+      deviceIds: [inScopeA.id, outScope.id],
+      reason: 'mixed-array',
+    });
+    // (c) array of ONLY out-of-scope devices → hidden
+    await seedAudit(org.id, marker, 'device_link_group', randomUUID(), {
+      deviceIds: [outScope.id],
+      reason: 'forbidden-array',
+    });
+    // (d) empty array → no device reference → visible (no over-exclusion)
+    await seedAudit(org.id, marker, 'software_deploy_job', randomUUID(), {
+      deviceIds: [],
+      reason: 'empty-array',
+    });
+
+    const handler = auditHandler();
+    const auth = makeAuth(org.id, [siteAllowed.id]);
+
+    const raw = await withDbAccessContext(
+      { scope: 'organization', orgId: org.id, accessibleOrgIds: [org.id] },
+      async () => handler({ action: marker, hoursBack: 168, limit: 100 }, auth),
+    );
+    const parsed = JSON.parse(raw);
+    const reasons = (parsed.entries ?? []).map((e: any) => e.details?.reason);
+
+    expect(parsed.error).toBeUndefined();
+    expect(reasons).toContain('all-in-scope-array');
+    expect(reasons).toContain('empty-array');
+    expect(reasons).not.toContain('mixed-array');
+    expect(reasons).not.toContain('forbidden-array');
+    // The out-of-scope device UUID must never leak (not even via the mixed row).
+    expect(JSON.stringify(parsed)).not.toContain(outScope.id);
+    expect(parsed.showing).toBe(2);
+  });
+
   it('does NOT over-exclude device-referencing rows when the caller has no forbidden devices (empty forbidden set)', async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });

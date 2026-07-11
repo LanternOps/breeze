@@ -88,3 +88,57 @@ describe('get_huntress_incidents — site narrowing (cross-site enumeration)', (
     expect(parsed.incidents).toHaveLength(1);
   });
 });
+
+describe('get_huntress_status — SR5-19 site narrowing of aggregates', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const integration = {
+    id: 'int1', partnerId: 'p1', name: 'Hunt', isActive: true,
+    lastSyncAt: null, lastSyncStatus: null, lastSyncError: null,
+  };
+
+  it('site-restricted caller with zero in-scope devices gets a zeroed summary and never runs the aggregate scans', async () => {
+    let aggregatesRan = false;
+    let call = 0;
+    mockDb.select.mockImplementation((cols?: unknown) => {
+      call++;
+      if (call === 1) return chain([integration]); // integrations list
+      if (isDeviceResolverSelect(cols)) {
+        // The org's only Huntress-mapped device is in a forbidden site.
+        return { from: () => ({ where: () => Promise.resolve([{ id: 'd-siteB', siteId: 'site-B' }]) }) };
+      }
+      aggregatesRan = true;
+      return chain([{ count: 0 }]);
+    });
+
+    const r = await handlerFor('get_huntress_status')({}, makeAuth(['site-A']));
+    const parsed = JSON.parse(r);
+    expect(parsed.scopeNote).toBeDefined();
+    expect(parsed.summary.totalAgents).toBe(0);
+    expect(parsed.summary.openIncidents).toBe(0);
+    expect(parsed.integrations).toEqual([]);
+    // Fail closed: aggregate agent/incident/severity scans must not span all sites.
+    expect(aggregatesRan).toBe(false);
+  });
+
+  it('unrestricted caller runs aggregates normally without a device resolver (no regression)', async () => {
+    let resolverRan = false;
+    let call = 0;
+    mockDb.select.mockImplementation((cols?: unknown) => {
+      call++;
+      if (call === 1) return chain([integration]);
+      if (isDeviceResolverSelect(cols)) {
+        resolverRan = true;
+        return { from: () => ({ where: () => Promise.resolve([]) }) };
+      }
+      if (cols && typeof cols === 'object' && 'count' in (cols as object)) return chain([{ count: 1 }]);
+      return chain([{ totalAgents: 0, mappedAgents: 0, offlineAgents: 0, openIncidents: 0 }]);
+    });
+
+    const r = await handlerFor('get_huntress_status')({}, makeAuth(undefined));
+    const parsed = JSON.parse(r);
+    expect(parsed.scopeNote).toBeUndefined();
+    expect(parsed.integrations).toHaveLength(1);
+    expect(resolverRan).toBe(false);
+  });
+});

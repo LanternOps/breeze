@@ -1453,6 +1453,100 @@ export async function validateAssignmentTarget(
   }
 }
 
+/**
+ * Site-axis (SR5-07) authorization for a policy assignment target. This is a
+ * SEPARATE concern from `validateAssignmentTarget`, which only proves the target
+ * belongs to the policy's owning org/partner. `authorizeAssignmentTarget` proves
+ * the CALLER is permitted to touch the target under their site allowlist —
+ * Postgres RLS does NOT enforce the site sub-axis, so it must be checked here.
+ *
+ * No-op (allow) for an unrestricted caller (`allowedSiteIds` undefined). For a
+ * site-restricted caller it fails closed:
+ *  - organization/partner targets are denied outright — a site-scoped tech
+ *    cannot push a policy across a whole org or partner.
+ *  - site targets must be in the caller's site allowlist.
+ *  - device_group / device targets are resolved to their site and checked with
+ *    `canAccessSite` (a group/device with no site, or an unknown id, is denied).
+ *
+ * Callable at assignment time (create) AND re-checked at removal time using the
+ * stored assignment's level/targetId so a later site-restriction change can't be
+ * bypassed by deleting an assignment created earlier.
+ */
+export async function authorizeAssignmentTarget(
+  auth: AuthContext,
+  level: ConfigAssignmentLevel,
+  targetId: string
+): Promise<AssignmentTargetValidation> {
+  // Unrestricted caller (partner/system scope, or org user with no site
+  // restriction) — org/partner ownership is already enforced elsewhere.
+  if (!auth.allowedSiteIds || !auth.canAccessSite) return { valid: true };
+  const canAccessSite = auth.canAccessSite;
+
+  switch (level) {
+    case 'partner':
+    case 'organization':
+      return {
+        valid: false,
+        error: 'Your access is restricted to specific sites — you cannot assign a policy at the organization or partner level.',
+      };
+
+    case 'site':
+      return canAccessSite(targetId)
+        ? { valid: true }
+        : { valid: false, error: 'Target site is outside your site access' };
+
+    case 'device_group': {
+      const [group] = await db
+        .select({ siteId: deviceGroups.siteId })
+        .from(deviceGroups)
+        .where(eq(deviceGroups.id, targetId))
+        .limit(1);
+      // Unknown group, or a group with no single site (org-wide), is denied for a
+      // site-restricted caller (fail closed).
+      return group && canAccessSite(group.siteId)
+        ? { valid: true }
+        : { valid: false, error: 'Target device group is outside your site access' };
+    }
+
+    case 'device': {
+      const [device] = await db
+        .select({ siteId: devices.siteId })
+        .from(devices)
+        .where(eq(devices.id, targetId))
+        .limit(1);
+      return device && canAccessSite(device.siteId)
+        ? { valid: true }
+        : { valid: false, error: 'Target device is outside your site access' };
+    }
+
+    default:
+      return { valid: false, error: 'Unsupported assignment target level' };
+  }
+}
+
+/**
+ * Fetch a single assignment's identity (level + targetId) scoped to its policy.
+ * Used by the REST delete route to re-run the site-axis check against the
+ * stored target before removing the row.
+ */
+export async function getAssignment(assignmentId: string, configPolicyId: string) {
+  const [row] = await db
+    .select({
+      id: configPolicyAssignments.id,
+      level: configPolicyAssignments.level,
+      targetId: configPolicyAssignments.targetId,
+    })
+    .from(configPolicyAssignments)
+    .where(
+      and(
+        eq(configPolicyAssignments.id, assignmentId),
+        eq(configPolicyAssignments.configPolicyId, configPolicyId)
+      )
+    )
+    .limit(1);
+  return row ?? null;
+}
+
 export async function unassignPolicy(assignmentId: string, configPolicyId: string) {
   const [deleted] = await db
     .delete(configPolicyAssignments)

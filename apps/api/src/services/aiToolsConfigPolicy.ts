@@ -20,6 +20,7 @@ import {
   listFeatureLinks,
   listAssignments,
   validateAssignmentTarget,
+  authorizeAssignmentTarget,
   canManagePartnerWidePolicies,
   policyAccessCondition,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
@@ -273,6 +274,14 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: targetValidation.error });
       }
 
+      // Site sub-axis (SR5-07): RLS does not enforce the site allowlist, so a
+      // site-restricted caller must be blocked from assigning to org/partner
+      // targets or to a site/group/device outside their allowed sites.
+      const siteAuth = await authorizeAssignmentTarget(auth, input.level as any, targetId);
+      if (!siteAuth.valid) {
+        return JSON.stringify({ error: siteAuth.error });
+      }
+
       // assignPolicy returns null (instead of throwing) on a duplicate — see
       // the comment on its onConflictDoNothing insert in configurationPolicy.ts
       // for why the raised-violation catch pattern doesn't work inside this
@@ -344,6 +353,14 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       // under the partner. Same blast radius as assigning, so the same gate applies.
       if (assignment.policyOrgId === null && !canManagePartnerWidePolicies(auth)) {
         return JSON.stringify({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+      }
+
+      // Site sub-axis (SR5-07): re-check against the stored target so a
+      // site-restricted caller can't remove an assignment reaching a site,
+      // group, or device outside their allowlist (RLS does not enforce site).
+      const siteAuth = await authorizeAssignmentTarget(auth, assignment.level as any, assignment.targetId);
+      if (!siteAuth.valid) {
+        return JSON.stringify({ error: siteAuth.error });
       }
 
       const deleted = await unassignPolicy(input.assignmentId as string, assignment.configPolicyId);

@@ -11,9 +11,12 @@ import {
   listAssignments,
   listAssignmentsForTarget,
   validateAssignmentTarget,
+  authorizeAssignmentTarget,
+  getAssignment,
   canManagePartnerWidePolicies,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
 } from '../../services/configurationPolicy';
+import type { ConfigAssignmentLevel } from '../../services/configurationPolicy';
 import { invalidateRemoteAccessCache } from '../../services/remoteAccessPolicy';
 import {
   assignPolicySchema,
@@ -98,6 +101,14 @@ assignmentRoutes.post(
       return c.json({ error: targetValidation.error }, 403);
     }
 
+    // Site sub-axis (SR5-07): RLS does not enforce the site allowlist, so a
+    // site-restricted caller must be blocked from assigning to org/partner
+    // targets or to a site/group/device outside their allowed sites.
+    const siteAuth = await authorizeAssignmentTarget(auth, data.level, targetId);
+    if (!siteAuth.valid) {
+      return c.json({ error: siteAuth.error }, 403);
+    }
+
     // assignPolicy returns null (instead of throwing) on a duplicate — see the
     // comment on its onConflictDoNothing insert in configurationPolicy.ts for
     // why the raised-violation catch pattern doesn't work inside this route's
@@ -151,6 +162,20 @@ assignmentRoutes.delete(
     // under the partner. Same blast radius as assigning, so the same gate applies.
     if (policy.orgId === null && !canManagePartnerWidePolicies(auth)) {
       return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
+
+    // Site sub-axis (SR5-07): re-check against the stored target so a
+    // site-restricted caller can't remove an assignment that reaches a site,
+    // group, or device outside their allowlist (RLS does not enforce site).
+    const existing = await getAssignment(aid, id);
+    if (!existing) return c.json({ error: 'Assignment not found' }, 404);
+    const siteAuth = await authorizeAssignmentTarget(
+      auth,
+      existing.level as ConfigAssignmentLevel,
+      existing.targetId
+    );
+    if (!siteAuth.valid) {
+      return c.json({ error: siteAuth.error }, 403);
     }
 
     const deleted = await unassignPolicy(aid, id);
