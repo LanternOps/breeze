@@ -62,9 +62,12 @@ export function createAbuseSignalsWorker(): Worker<AbuseJobData> {
           await runAbuseDigest();
           return {};
         }
+        console.warn(`[AbuseSignals] Unknown job name: ${job.name}`);
         return {};
       } catch (error) {
-        recordAbuseSweepRun('error');
+        if (job.name === SWEEP_JOB) {
+          recordAbuseSweepRun('error');
+        }
         throw error;
       }
     },

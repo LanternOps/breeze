@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import * as dbModule from '../../db';
-import { sendOpsAlert } from '../opsAlerts';
+import { sendOpsAlert, isOpsAlertingConfigured } from '../opsAlerts';
 import { recordAbuseSignalFired } from '../abuseMetrics';
 import { loadSignalConfig } from './config';
 import { computeInvariantSignals } from './invariants';
@@ -59,6 +59,11 @@ export async function runAbuseSweep(): Promise<{ fired: number; notified: number
 }
 
 export async function runAbuseDigest(): Promise<void> {
+  if (!isOpsAlertingConfigured()) {
+    console.warn('[AbuseSignals] Digest skipped — ops alerting not configured');
+    return;
+  }
+
   const stats = await runSystemDbCompute(async () => {
     const openBySeverity = (await db.execute(sql`
       SELECT severity, COUNT(*) AS count FROM partner_abuse_signals
@@ -79,7 +84,7 @@ export async function runAbuseDigest(): Promise<void> {
 
   const severityLine = stats.openBySeverity.map((r) => `${r.severity}: ${r.count}`).join(', ') || 'none open';
   const watchLines = stats.watchRows.map((r) => `- ${r.name}: ${r.signal_key} (score ${r.score})`).join('\n');
-  await sendOpsAlert({
+  const delivered = await sendOpsAlert({
     title: 'Weekly abuse-signals digest',
     body: [
       `New partners this week: ${stats.newPartnerCount}`,
@@ -88,4 +93,7 @@ export async function runAbuseDigest(): Promise<void> {
       'Invariants checked hourly all week (any breach would have alerted immediately).',
     ].join('\n'),
   });
+  if (!delivered) {
+    throw new Error('[AbuseSignals] Weekly digest delivery failed');
+  }
 }
