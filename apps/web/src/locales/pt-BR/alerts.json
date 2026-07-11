@@ -507,7 +507,7 @@
     "dismissedAlertsAreHiddenForGoodWarranty": "Os alertas dispensados ficam ocultos permanentemente. O vencimento da garantia não gerará outro alerta para a mesma data final; outros alertas ainda poderão ser disparados se suas condições ocorrerem novamente.",
     "cancel": "Cancelar",
     "allClear": "Tudo em ordem",
-    "noActiveAlertsYourFleetIsHealthy": "Nenhum alerta ativo. Sua frota está saudável.",
+    "noActiveAlertsYourFleetIsHealthy": "Nenhum alerta ativo. Seus dispositivos estão saudáveis.",
     "setUpAlertRules": "Configurar regras de alerta",
     "failedToFetchAlerts": "Falha ao buscar alertas",
     "unknownDevice": "Dispositivo desconhecido",
