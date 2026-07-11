@@ -75,15 +75,27 @@ export async function listTicketFormsForOrg(org: OrgRef, opts?: { portalOnly?: b
  * under the partner may use it; rows present = only the linked orgs may.
  * Reads under a system context. Callers must only invoke this once the form
  * is already confirmed partner-wide AND owned by this org's own partner.
+ *
+ * Two EXISTS probes (any-links / link-for-this-org) in one query — mirrors
+ * the NOT EXISTS/EXISTS shape in listTicketFormsForOrg's WHERE — rather than
+ * fetching up to 500 link rows and doing the membership check in JS.
  */
 async function isOrgAllowedForPartnerWideForm(formId: string, orgId: string): Promise<boolean> {
-  const links = await runOutsideDbContext(() =>
+  const rows = await runOutsideDbContext(() =>
     withSystemDbAccessContext(() =>
-      db.select({ orgId: ticketFormOrgLinks.orgId }).from(ticketFormOrgLinks).where(eq(ticketFormOrgLinks.formId, formId)).limit(500)
+      db
+        .select({
+          anyLinks: sql<boolean>`EXISTS (SELECT 1 FROM ${ticketFormOrgLinks} WHERE ${ticketFormOrgLinks.formId} = ${ticketForms.id})`,
+          linkForOrg: sql<boolean>`EXISTS (SELECT 1 FROM ${ticketFormOrgLinks} WHERE ${ticketFormOrgLinks.formId} = ${ticketForms.id} AND ${ticketFormOrgLinks.orgId} = ${orgId})`
+        })
+        .from(ticketForms)
+        .where(eq(ticketForms.id, formId))
+        .limit(1)
     )
   );
-  if (links.length === 0) return true; // no rows = allowlist not in effect
-  return links.some((l) => l.orgId === orgId);
+  const row = rows[0];
+  if (!row || !row.anyLinks) return true; // no rows (or form vanished) = allowlist not in effect
+  return row.linkForOrg;
 }
 
 /**
@@ -125,11 +137,14 @@ export async function getTicketFormForOrg(
  * Replace the org allowlist for a form (system-context write; intended for
  * partner-wide forms only — callers gate visibleOrgIds to ownerScope
  * 'partner' before reaching here). `null` clears the allowlist entirely
- * (form reverts to visible-to-all-the-partner's-orgs); an array (including
- * empty) replaces the link rows wholesale — an empty array is a valid
- * "allowlist nobody" state, not an error. Every id in a non-empty array MUST
- * belong to `partnerId`, checked with a single select before any write so a
- * cross-partner id can never sneak in as a link.
+ * (form reverts to visible-to-all-the-partner's-orgs). An array replaces the
+ * link rows wholesale; an EMPTY array produces the exact same zero-row state
+ * as `null` — there is no distinct "allowlist nobody" state, since "no link
+ * rows" already means visible-to-all (spec ruling). Callers (routes) should
+ * normalize `[] -> null` before calling, but this function tolerates either
+ * because both converge on the same persisted result. Every id in a
+ * non-empty array MUST belong to `partnerId`, checked with a single select
+ * before any write so a cross-partner id can never sneak in as a link.
  */
 export async function syncTicketFormOrgLinks(formId: string, orgIds: string[] | null, partnerId: string): Promise<void> {
   return runOutsideDbContext(() =>
@@ -164,8 +179,10 @@ export async function syncTicketFormOrgLinks(formId: string, orgIds: string[] | 
 /**
  * Link map for management-list responses: `Map<formId, orgId[]>` containing
  * ONLY the forms that have link rows (a form with no entry means "no
- * allowlist" / visible to all the partner's orgs — callers must not confuse
- * a missing key with an empty-allowlist array, which is a distinct state).
+ * allowlist" / visible to all the partner's orgs). The map can never hold an
+ * empty array — a form only gets a key when at least one link row exists —
+ * so there is no distinct "empty allowlist" state to guard against; a
+ * missing key IS the all-orgs state.
  */
 export async function getTicketFormOrgLinkMap(formIds: string[]): Promise<Map<string, string[]>> {
   if (formIds.length === 0) return new Map();

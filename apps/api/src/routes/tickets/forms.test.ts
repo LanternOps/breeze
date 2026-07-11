@@ -1,7 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-const { authRef, dbRowsMock, insertReturningMock, insertValuesMock, updateReturningMock, updateSetMock, deleteWhereMock, listForOrgMock, writeRouteAuditMock, selectWhereArgs } = vi.hoisted(() => ({
+const {
+  authRef,
+  dbRowsMock,
+  insertReturningMock,
+  insertValuesMock,
+  updateReturningMock,
+  updateSetMock,
+  deleteWhereMock,
+  listForOrgMock,
+  syncOrgLinksMock,
+  getOrgLinkMapMock,
+  writeRouteAuditMock,
+  selectWhereArgs
+} = vi.hoisted(() => ({
   /** Every db.select()...where(...) arg, so tests can assert fetch conditions. */
   selectWhereArgs: [] as unknown[],
   /** Captures db.insert().values(arg) so tests can assert the persisted owner axis. */
@@ -25,11 +38,23 @@ const { authRef, dbRowsMock, insertReturningMock, insertValuesMock, updateReturn
   updateSetMock: vi.fn(),
   deleteWhereMock: vi.fn(),
   listForOrgMock: vi.fn(),
+  syncOrgLinksMock: vi.fn(),
+  getOrgLinkMapMock: vi.fn(),
   writeRouteAuditMock: vi.fn()
 }));
 
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: writeRouteAuditMock }));
-vi.mock('../../services/ticketFormService', () => ({ listTicketFormsForOrg: listForOrgMock }));
+vi.mock('../../services/ticketFormService', async () => {
+  // Keep the real TicketFormError class (forms.ts does `instanceof` checks
+  // against it) while mocking the two functions under test.
+  const actual = await vi.importActual<typeof import('../../services/ticketFormService')>('../../services/ticketFormService');
+  return {
+    ...actual,
+    listTicketFormsForOrg: listForOrgMock,
+    syncTicketFormOrgLinks: syncOrgLinksMock,
+    getTicketFormOrgLinkMap: getOrgLinkMapMock
+  };
+});
 vi.mock('../../services/ticketService', async () => {
   const actual = await vi.importActual<typeof import('../../services/ticketService')>('../../services/ticketService');
   return { ...actual, assertCategoryInPartner: vi.fn().mockResolvedValue({ id: 'cat-1', partnerId: 'p-1' }) };
@@ -75,6 +100,7 @@ import { sql, type SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { ticketFormRoutes } from './forms';
 import { assertCategoryInPartner, TicketServiceError } from '../../services/ticketService';
+import { TicketFormError } from '../../services/ticketFormService';
 
 /** Render a captured Drizzle condition to a SQL string for shape assertions. */
 function renderSql(condition: unknown): string {
@@ -97,6 +123,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   selectWhereArgs.length = 0;
   authRef.current = { ...authRef.current, scope: 'partner', partnerId: 'p-1', partnerOrgAccess: 'all', orgId: null, orgCondition: () => undefined, canAccessOrg: () => true };
+  syncOrgLinksMock.mockResolvedValue(undefined);
+  getOrgLinkMapMock.mockResolvedValue(new Map());
 });
 
 describe('POST /ticket-forms', () => {
@@ -214,6 +242,90 @@ describe('POST /ticket-forms', () => {
       body: JSON.stringify({ name: 'x', orgId: ORG_ID, fields: [{ key: 'BAD KEY', label: 'x', type: 'text', required: false }] })
     });
     expect(res.status).toBe(400);
+  });
+});
+
+describe('POST /ticket-forms — visibleOrgIds', () => {
+  const ORG_A = '11112222-3333-4444-8555-666677778888';
+  const ORG_B = '22223333-4444-4555-8666-777788889999';
+
+  it('creates a partner-wide form and syncs links with the token-derived partner + the array as-is', async () => {
+    insertReturningMock.mockResolvedValue([{ id: 'f-2', orgId: null, partnerId: 'p-1', ...validBody }]);
+    const res = await makeApp().request('/ticket-forms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...validBody, ownerScope: 'partner', visibleOrgIds: [ORG_A, ORG_B] })
+    });
+    expect(res.status).toBe(201);
+    expect(syncOrgLinksMock).toHaveBeenCalledWith('f-2', [ORG_A, ORG_B], 'p-1');
+    const body = await res.json();
+    expect(body.data.visibleOrgIds).toEqual([ORG_A, ORG_B]);
+  });
+
+  it('normalizes an empty visibleOrgIds array to null before syncing', async () => {
+    insertReturningMock.mockResolvedValue([{ id: 'f-2', orgId: null, partnerId: 'p-1', ...validBody }]);
+    const res = await makeApp().request('/ticket-forms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...validBody, ownerScope: 'partner', visibleOrgIds: [] })
+    });
+    expect(res.status).toBe(201);
+    expect(syncOrgLinksMock).toHaveBeenCalledWith('f-2', null, 'p-1');
+    const body = await res.json();
+    expect(body.data.visibleOrgIds).toBeNull();
+  });
+
+  it('partner-wide create with no visibleOrgIds still syncs (no-op) with null and reports null', async () => {
+    insertReturningMock.mockResolvedValue([{ id: 'f-2', orgId: null, partnerId: 'p-1', ...validBody }]);
+    const res = await makeApp().request('/ticket-forms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...validBody, ownerScope: 'partner' })
+    });
+    expect(res.status).toBe(201);
+    expect(syncOrgLinksMock).toHaveBeenCalledWith('f-2', null, 'p-1');
+    const body = await res.json();
+    expect(body.data.visibleOrgIds).toBeNull();
+  });
+
+  it('400s an org-owned create that supplies visibleOrgIds, before any insert or sync', async () => {
+    const res = await makeApp().request('/ticket-forms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...validBody, ownerScope: 'organization', orgId: ORG_A, visibleOrgIds: [ORG_B] })
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBe('visibleOrgIds is only valid on partner-wide forms');
+    expect(insertValuesMock).not.toHaveBeenCalled();
+    expect(syncOrgLinksMock).not.toHaveBeenCalled();
+  });
+
+  it('400s a default-ownerScope (org-owned) create that supplies visibleOrgIds', async () => {
+    const res = await makeApp().request('/ticket-forms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...validBody, orgId: ORG_A, visibleOrgIds: [ORG_B] })
+    });
+    expect(res.status).toBe(400);
+    expect(insertValuesMock).not.toHaveBeenCalled();
+  });
+
+  it('rolls back (deletes) the just-created form when the sync rejects, and surfaces its 400', async () => {
+    insertReturningMock.mockResolvedValue([{ id: 'f-2', orgId: null, partnerId: 'p-1', ...validBody }]);
+    syncOrgLinksMock.mockRejectedValueOnce(
+      new TicketFormError('visibleOrgIds must reference organizations of the owning partner', 400)
+    );
+    const res = await makeApp().request('/ticket-forms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...validBody, ownerScope: 'partner', visibleOrgIds: [ORG_A] })
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBe('visibleOrgIds must reference organizations of the owning partner');
+    // The form row inserted above must be deleted — no orphaned half-created form.
+    expect(deleteWhereMock).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -380,5 +492,130 @@ describe('PUT/DELETE app-layer tenant scoping on the row fetch', () => {
     const rendered = renderSql(selectWhereArgs[0]);
     expect(rendered).toContain('org_scope_marker');
     expect(rendered).toContain('and');
+  });
+});
+
+describe('PUT /ticket-forms/:id — visibleOrgIds', () => {
+  const FORM_ID = '9a8b7c6d-1111-4222-8333-444455556666';
+  const ORG_A = '11112222-3333-4444-8555-666677778888';
+  const ORG_B = '22223333-4444-4555-8666-777788889999';
+
+  function partnerWideRow() {
+    dbRowsMock.mockResolvedValue([{ id: FORM_ID, orgId: null, partnerId: 'p-1', version: 1, fields: [], name: 'Onboarding' }]);
+  }
+
+  it('undefined (key omitted): links untouched — sync never called', async () => {
+    partnerWideRow();
+    updateReturningMock.mockResolvedValue([{ id: FORM_ID, orgId: null, partnerId: 'p-1', version: 1, fields: [], name: 'renamed' }]);
+    const res = await makeApp().request(`/ticket-forms/${FORM_ID}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'renamed' })
+    });
+    expect(res.status).toBe(200);
+    expect(syncOrgLinksMock).not.toHaveBeenCalled();
+    const setArg = updateSetMock.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect('visibleOrgIds' in setArg).toBe(false);
+    expect('version' in setArg).toBe(false);
+  });
+
+  it('null: clears the allowlist via sync, does not bump version, and never reaches .set()', async () => {
+    partnerWideRow();
+    updateReturningMock.mockResolvedValue([{ id: FORM_ID, orgId: null, partnerId: 'p-1', version: 1, fields: [], name: 'Onboarding' }]);
+    const res = await makeApp().request(`/ticket-forms/${FORM_ID}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ visibleOrgIds: null })
+    });
+    expect(res.status).toBe(200);
+    expect(syncOrgLinksMock).toHaveBeenCalledWith(FORM_ID, null, 'p-1');
+    const setArg = updateSetMock.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect('visibleOrgIds' in setArg).toBe(false);
+    expect('version' in setArg).toBe(false);
+  });
+
+  it('[] (empty array): normalized to null before syncing, same as explicit null', async () => {
+    partnerWideRow();
+    updateReturningMock.mockResolvedValue([{ id: FORM_ID, orgId: null, partnerId: 'p-1', version: 1, fields: [], name: 'Onboarding' }]);
+    const res = await makeApp().request(`/ticket-forms/${FORM_ID}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ visibleOrgIds: [] })
+    });
+    expect(res.status).toBe(200);
+    expect(syncOrgLinksMock).toHaveBeenCalledWith(FORM_ID, null, 'p-1');
+  });
+
+  it('non-empty array: replaces the allowlist via sync with the array as-is, .set() never sees the key', async () => {
+    partnerWideRow();
+    updateReturningMock.mockResolvedValue([{ id: FORM_ID, orgId: null, partnerId: 'p-1', version: 1, fields: [], name: 'Onboarding' }]);
+    const res = await makeApp().request(`/ticket-forms/${FORM_ID}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ visibleOrgIds: [ORG_A, ORG_B] })
+    });
+    expect(res.status).toBe(200);
+    expect(syncOrgLinksMock).toHaveBeenCalledWith(FORM_ID, [ORG_A, ORG_B], 'p-1');
+    const setArg = updateSetMock.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect('visibleOrgIds' in setArg).toBe(false);
+  });
+
+  it('400s an update of an org-owned row that supplies visibleOrgIds, before any sync or column update', async () => {
+    dbRowsMock.mockResolvedValue([{ id: FORM_ID, orgId: ORG_A, partnerId: null, version: 1, fields: [], name: 'Onboarding' }]);
+    const res = await makeApp().request(`/ticket-forms/${FORM_ID}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ visibleOrgIds: [ORG_B] })
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBe('visibleOrgIds is only valid on partner-wide forms');
+    expect(syncOrgLinksMock).not.toHaveBeenCalled();
+    expect(updateReturningMock).not.toHaveBeenCalled();
+  });
+
+  it('sync failure aborts before the column update runs (form left completely unmodified) and surfaces the 400', async () => {
+    partnerWideRow();
+    syncOrgLinksMock.mockRejectedValueOnce(
+      new TicketFormError('visibleOrgIds must reference organizations of the owning partner', 400)
+    );
+    const res = await makeApp().request(`/ticket-forms/${FORM_ID}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'renamed', visibleOrgIds: [ORG_A] })
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBe('visibleOrgIds must reference organizations of the owning partner');
+    expect(updateSetMock).not.toHaveBeenCalled();
+    expect(updateReturningMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /ticket-forms — management list', () => {
+  it('carries visibleOrgIds from getTicketFormOrgLinkMap (present when links exist, null otherwise)', async () => {
+    dbRowsMock.mockResolvedValue([
+      { id: 'f-1', orgId: null, partnerId: 'p-1', name: 'All-orgs form' },
+      { id: 'f-2', orgId: null, partnerId: 'p-1', name: 'Limited form' }
+    ]);
+    getOrgLinkMapMock.mockResolvedValue(new Map([['f-2', ['org-a', 'org-b']]]));
+    const res = await makeApp().request('/ticket-forms');
+    expect(res.status).toBe(200);
+    expect(getOrgLinkMapMock).toHaveBeenCalledWith(['f-1', 'f-2']);
+    const body = await res.json();
+    expect(body.data.find((f: { id: string }) => f.id === 'f-1').visibleOrgIds).toBeNull();
+    expect(body.data.find((f: { id: string }) => f.id === 'f-2').visibleOrgIds).toEqual(['org-a', 'org-b']);
+  });
+});
+
+describe('GET /ticket-forms/available — does not carry visibleOrgIds', () => {
+  it('does not call getTicketFormOrgLinkMap; the picker payload is unmodified from the service result', async () => {
+    dbRowsMock.mockResolvedValue([{ id: ORG_ID, partnerId: 'p-1' }]); // org lookup
+    listForOrgMock.mockResolvedValue([{ id: 'f-1', name: 'Onboarding' }]);
+    const res = await makeApp().request(`/ticket-forms/available?orgId=${ORG_ID}`);
+    expect(res.status).toBe(200);
+    expect(getOrgLinkMapMock).not.toHaveBeenCalled();
+    const body = await res.json();
+    expect(body.data).toEqual([{ id: 'f-1', name: 'Onboarding' }]);
   });
 });

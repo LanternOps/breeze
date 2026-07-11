@@ -119,21 +119,25 @@ describe('getTicketFormForOrg', () => {
     expect(dbSelectMock).toHaveBeenCalledTimes(1);
   });
 
+  // isOrgAllowedForPartnerWideForm now issues ONE query with two EXISTS
+  // probes (anyLinks / linkForOrg) instead of fetching up to 500 link rows
+  // and doing the membership check in JS — see ticketFormService.ts. The
+  // second dbSelectMock resolution below stands in for that probe's row.
   it('resolves when partner-wide form has no link rows (allowlist not in effect)', async () => {
     dbSelectMock.mockResolvedValueOnce([form]); // form select
-    dbSelectMock.mockResolvedValueOnce([]); // links select — no rows
+    dbSelectMock.mockResolvedValueOnce([{ anyLinks: false, linkForOrg: false }]); // probe: no links
     await expect(getTicketFormForOrg('form-1', { id: 'org-1', partnerId: 'p-1' })).resolves.toMatchObject({ id: 'form-1' });
   });
 
   it('resolves when partner-wide form has link rows that include this org', async () => {
     dbSelectMock.mockResolvedValueOnce([form]);
-    dbSelectMock.mockResolvedValueOnce([{ orgId: 'org-2' }, { orgId: 'org-1' }]);
+    dbSelectMock.mockResolvedValueOnce([{ anyLinks: true, linkForOrg: true }]); // probe: links exist, org included
     await expect(getTicketFormForOrg('form-1', { id: 'org-1', partnerId: 'p-1' })).resolves.toMatchObject({ id: 'form-1' });
   });
 
   it('400 (tenant-miss message, deliberately indistinguishable) when partner-wide form has link rows that EXCLUDE this org', async () => {
     dbSelectMock.mockResolvedValueOnce([form]);
-    dbSelectMock.mockResolvedValueOnce([{ orgId: 'org-OTHER' }]);
+    dbSelectMock.mockResolvedValueOnce([{ anyLinks: true, linkForOrg: false }]); // probe: links exist, org excluded
     const err = await getTicketFormForOrg('form-1', { id: 'org-1', partnerId: 'p-1' }).catch((e) => e);
     expect(err).toBeInstanceOf(TicketFormError);
     expect(err.status).toBe(400);
@@ -142,7 +146,7 @@ describe('getTicketFormForOrg', () => {
 
   it('400 when inactive (isActive is checked after the allowlist passes)', async () => {
     dbSelectMock.mockResolvedValueOnce([{ ...(form as object), isActive: false }]);
-    dbSelectMock.mockResolvedValueOnce([]); // no links — allowlist passes
+    dbSelectMock.mockResolvedValueOnce([{ anyLinks: false, linkForOrg: false }]); // no links — allowlist passes
     await expect(getTicketFormForOrg('form-1', { id: 'org-1', partnerId: 'p-1' })).rejects.toMatchObject({ status: 400 });
   });
 
@@ -182,7 +186,10 @@ describe('syncTicketFormOrgLinks', () => {
     expect(insertValuesMock).not.toHaveBeenCalled();
   });
 
-  it('empty array is a valid "allowlist nobody" state: deletes all, skips org validation and insert', async () => {
+  // Not a distinct "allowlist nobody" state (routes normalize [] -> null
+  // before calling this) — an empty array converges on the exact same
+  // zero-row result as null, since both delete all links and insert nothing.
+  it('empty array converges on the same zero-row result as null: deletes all, skips org validation and insert', async () => {
     await syncTicketFormOrgLinks('form-1', [], 'p-1');
     expect(deleteWhereMock).toHaveBeenCalledTimes(1);
     expect(dbSelectMock).not.toHaveBeenCalled();
