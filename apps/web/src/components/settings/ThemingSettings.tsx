@@ -1,26 +1,32 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AlignJustify, Check, Clock, Monitor, Moon, Rows3, Rows4, Sun, Type } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import type { UserPreferences } from '../../stores/auth';
 import {
   applyAppearancePreferences,
   normalizeDensity,
   normalizeFont,
+  normalizeLocale,
   normalizeTheme,
   normalizeTimeFormat,
   readDensity,
   readFontPreference,
+  readResolvedLocalePreference,
   readResolvedTimeFormatPreference,
   readThemePreference,
   subscribeDensity,
   subscribeFont,
+  subscribeLocale,
   subscribeTimeFormat,
   subscribeTheme,
   type Density,
   type FontPreference,
+  type LocalePreference,
   type TimeFormatPreference,
   type ThemePreference,
 } from '@/lib/appearance';
 import { saveUserPreferences } from '@/lib/userPreferences';
+import '@/lib/i18n';
 
 const themeOptions = [
   { value: 'light' as const, label: 'Light', Icon: Sun },
@@ -44,12 +50,18 @@ const timeFormatOptions = [
   { value: '24h' as const, label: '24-hour', description: '15:45' },
 ];
 
+const localeOptions = [
+  { value: 'en' as const, labelKey: 'settings.language.englishLabel', defaultLabel: 'English', descriptionKey: 'settings.language.englishDescription', defaultDescription: 'English (United States)' },
+  { value: 'pt-BR' as const, labelKey: 'settings.language.ptBRLabel', defaultLabel: 'Português (Brasil)', descriptionKey: 'settings.language.ptBRDescription', defaultDescription: 'Portuguese (Brazil)' },
+];
+
 function resolveAppearance(preferences?: UserPreferences | null): Required<UserPreferences> {
   return {
     theme: normalizeTheme(preferences?.theme) ?? readThemePreference(),
     density: normalizeDensity(preferences?.density) ?? readDensity(),
     font: normalizeFont(preferences?.font) ?? readFontPreference(),
     timeFormat: normalizeTimeFormat(preferences?.timeFormat) ?? readResolvedTimeFormatPreference(),
+    locale: normalizeLocale(preferences?.locale) ?? readResolvedLocalePreference(),
   };
 }
 
@@ -59,10 +71,12 @@ type ThemingSettingsProps = {
 };
 
 export default function ThemingSettings({ preferences, onSaved }: ThemingSettingsProps) {
+  const { t } = useTranslation();
   const [themePreference, setThemePreference] = useState<ThemePreference>('system');
   const [densityPreference, setDensityPreference] = useState<Density>('comfortable');
   const [fontPreference, setFontPreference] = useState<FontPreference>('breeze');
   const [timeFormatPreference, setTimeFormatPreference] = useState<TimeFormatPreference>(readResolvedTimeFormatPreference);
+  const [localePreference, setLocalePreference] = useState<LocalePreference>(readResolvedLocalePreference);
   const [appearanceError, setAppearanceError] = useState<string | undefined>();
   const [appearanceSuccess, setAppearanceSuccess] = useState<string | undefined>();
   const [isSavingAppearance, setIsSavingAppearance] = useState(false);
@@ -73,6 +87,7 @@ export default function ThemingSettings({ preferences, onSaved }: ThemingSetting
     setDensityPreference(next.density);
     setFontPreference(next.font);
     setTimeFormatPreference(next.timeFormat);
+    setLocalePreference(next.locale);
   }, []);
 
   useEffect(() => {
@@ -84,29 +99,33 @@ export default function ThemingSettings({ preferences, onSaved }: ThemingSetting
     const unsubscribeDensity = subscribeDensity(setDensityPreference);
     const unsubscribeFont = subscribeFont(setFontPreference);
     const unsubscribeTimeFormat = subscribeTimeFormat(setTimeFormatPreference);
+    const unsubscribeLocale = subscribeLocale(setLocalePreference);
 
     return () => {
       unsubscribeTheme();
       unsubscribeDensity();
       unsubscribeFont();
       unsubscribeTimeFormat();
+      unsubscribeLocale();
     };
   }, []);
 
   const handleAppearanceChange = async (
-    patch: Partial<Pick<Required<UserPreferences>, 'theme' | 'density' | 'font' | 'timeFormat'>>
+    patch: Partial<Pick<Required<UserPreferences>, 'theme' | 'density' | 'font' | 'timeFormat' | 'locale'>>
   ) => {
     const next: Required<UserPreferences> = {
       theme: patch.theme ?? themePreference,
       density: patch.density ?? densityPreference,
       font: patch.font ?? fontPreference,
       timeFormat: patch.timeFormat ?? timeFormatPreference,
+      locale: patch.locale ?? localePreference,
     };
 
     setThemePreference(next.theme);
     setDensityPreference(next.density);
     setFontPreference(next.font);
     setTimeFormatPreference(next.timeFormat);
+    setLocalePreference(next.locale);
     setAppearanceError(undefined);
     setAppearanceSuccess(undefined);
     applyAppearancePreferences(next);
@@ -119,6 +138,7 @@ export default function ThemingSettings({ preferences, onSaved }: ThemingSetting
       setDensityPreference(resolved.density);
       setFontPreference(resolved.font);
       setTimeFormatPreference(resolved.timeFormat);
+      setLocalePreference(resolved.locale);
       onSaved?.(saved);
       setAppearanceSuccess('Theming preferences saved.');
     } catch (error) {
@@ -225,6 +245,39 @@ export default function ThemingSettings({ preferences, onSaved }: ThemingSetting
                   <span className="block text-xs text-muted-foreground">{description}</span>
                 </span>
                 {timeFormatPreference === value && <Check className="h-4 w-4 shrink-0" />}
+              </button>
+            ))}
+          </div>
+        </fieldset>
+
+        <fieldset className="space-y-2">
+          <legend className="text-sm font-medium">
+            {t('settings.language.title', { defaultValue: 'Language' })}
+          </legend>
+          <p className="text-xs text-muted-foreground">
+            {t('settings.language.description', {
+              defaultValue: 'Language for the Breeze console. More languages coming — contributions welcome.',
+            })}
+          </p>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {localeOptions.map(({ value, labelKey, defaultLabel, descriptionKey, defaultDescription }) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => void handleAppearanceChange({ locale: value })}
+                aria-pressed={localePreference === value}
+                disabled={isSavingAppearance}
+                className={`flex min-h-14 items-center gap-3 rounded-md border px-3 py-2 text-left text-sm transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60 ${
+                  localePreference === value ? 'border-primary bg-primary/10 text-primary' : 'bg-background'
+                }`}
+              >
+                <span className="min-w-0 flex-1">
+                  <span className="block font-medium">{t(labelKey, { defaultValue: defaultLabel })}</span>
+                  <span className="block text-xs text-muted-foreground">
+                    {t(descriptionKey, { defaultValue: defaultDescription })}
+                  </span>
+                </span>
+                {localePreference === value && <Check className="h-4 w-4 shrink-0" />}
               </button>
             ))}
           </div>

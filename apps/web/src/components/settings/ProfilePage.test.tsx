@@ -325,7 +325,8 @@ describe('ProfilePage theming settings', () => {
         theme: 'dark',
         density: 'compact',
         font: 'system',
-        timeFormat: '12h'
+        timeFormat: '12h',
+        locale: 'en'
       }
     });
     expect(localStorage.getItem('breeze.font')).toBe('system');
@@ -376,7 +377,8 @@ describe('ProfilePage theming settings', () => {
         theme: 'dark',
         density: 'compact',
         font: 'breeze',
-        timeFormat: '24h'
+        timeFormat: '24h',
+        locale: 'en'
       }
     });
     expect(localStorage.getItem('breeze.timeFormat')).toBe('24h');
