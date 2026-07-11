@@ -1145,7 +1145,7 @@ export function createBreezeMcpServer(
 
     tool(
       'file_operations',
-      'Perform file operations on a device. Read/list are safe; write/delete require approval.',
+      'Perform file operations on a device. All actions (read, list, write, delete, mkdir, rename) require approval because the agent reads/writes as root/LocalSystem.',
       {
         deviceId: uuid,
         action: z.enum(['list', 'read', 'write', 'delete', 'mkdir', 'rename']),

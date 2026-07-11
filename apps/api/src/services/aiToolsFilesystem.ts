@@ -2,7 +2,9 @@
  * AI Filesystem Tools
  *
  * Tools for file operations and disk usage analysis.
- * - file_operations (Tier 1 read/list, Tier 3 write/delete): Perform file operations on a device
+ * - file_operations (all actions Tier 3): Perform file operations on a device.
+ *   Reads run as root/LocalSystem on the endpoint, so read/list are privileged
+ *   (require devices.execute + approval), same as write/delete (SR5-01).
  * - analyze_disk_usage (Tier 1): Analyze filesystem usage for a device
  * - disk_cleanup (Tier 1 preview, Tier 3 execute): Preview or execute disk cleanup
  */
@@ -52,15 +54,15 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
   }
 
   // ============================================
-  // file_operations - Tier 1 (read/list), Tier 3 (write/delete)
+  // file_operations - all actions Tier 3 (SR5-01)
   // ============================================
 
   registerTool({
-    tier: 1 as AiToolTier, // Runtime tier check for write/delete in guardrails
+    tier: 1 as AiToolTier, // Base tier; guardrails escalate every action to Tier 3 via TIER3_ACTIONS
     deviceArgs: ['deviceId'],
     definition: {
       name: 'file_operations',
-      description: 'Perform file operations on a device. List and read are safe; write, delete, mkdir, and rename require approval.',
+      description: 'Perform file operations on a device. All actions (list, read, write, delete, mkdir, rename) require approval because the agent reads/writes as root/LocalSystem.',
       input_schema: {
         type: 'object' as const,
         properties: {
