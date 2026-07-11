@@ -56,17 +56,43 @@ var version = "0.1.0"
 const backupProbeThreshold = 10 // keep in sync with agent/internal/heartbeat
 
 // decideWatchdogServerURL picks the failover client's base URL after a failed
-// poll (#2288). Priority: a server_url the agent already swapped on disk;
-// then, past the probe threshold, the configured backup — transiently, in
-// memory only. The watchdog NEVER persists config; the agent owns that.
-func decideWatchdogServerURL(current string, reloaded *config.Config, consecutiveFailures int) string {
-	if reloaded.ServerURL != "" && reloaded.ServerURL != current {
+// poll (#2288). Priority: a server_url the agent swapped on disk since we
+// last looked (lastDiskURL is the anchor — NOT the client's own mutable URL,
+// which this function itself may have pointed at the backup transiently);
+// then, past the probe threshold, alternate between the disk URL and the
+// backup every threshold ticks, so with both control planes down whichever
+// returns first wins without flapping (and journal-spamming) on every poll.
+// Transient, in memory only. The watchdog NEVER persists config; the agent
+// owns that.
+func decideWatchdogServerURL(current, lastDiskURL string, reloaded *config.Config, consecutiveFailures int) string {
+	if reloaded.ServerURL != "" && reloaded.ServerURL != lastDiskURL && reloaded.ServerURL != current {
 		return reloaded.ServerURL
 	}
-	if consecutiveFailures >= backupProbeThreshold && reloaded.BackupServerURL != "" {
+	if consecutiveFailures >= backupProbeThreshold && reloaded.BackupServerURL != "" &&
+		consecutiveFailures%backupProbeThreshold == 0 {
+		if current == reloaded.BackupServerURL && reloaded.ServerURL != "" {
+			return reloaded.ServerURL
+		}
 		return reloaded.BackupServerURL
 	}
 	return current
+}
+
+// noteFailoverHeartbeatFailure re-reads the on-disk config after a failed
+// failover heartbeat and retargets the client per decideWatchdogServerURL.
+// Returns the server_url now on disk so the caller can carry it into the
+// next tick as the disk-swap anchor (unchanged on reload error).
+func noteFailoverHeartbeatFailure(fc *watchdog.FailoverClient, journal *watchdog.Journal, lastDiskURL string, consecutiveFailures int) string {
+	reloaded, err := config.Load("")
+	if err != nil {
+		return lastDiskURL
+	}
+	current := fc.BaseURL()
+	if next := decideWatchdogServerURL(current, lastDiskURL, reloaded, consecutiveFailures); next != current {
+		journal.Log(watchdog.LevelInfo, "failover.server_url_switch", map[string]any{"to": next})
+		fc.SetBaseURL(next)
+	}
+	return reloaded.ServerURL
 }
 
 var rootCmd = &cobra.Command{
@@ -310,6 +336,7 @@ func runWatchdog(stopCh <-chan struct{}) {
 
 	var failoverClient *watchdog.FailoverClient
 	var failoverFailures int
+	var lastDiskServerURL string
 
 	for {
 		select {
@@ -390,7 +417,7 @@ func runWatchdog(stopCh <-chan struct{}) {
 			if wd.State() != watchdog.StateFailover || failoverClient == nil {
 				continue
 			}
-			handleFailoverPoll(failoverClient, wd, journal, cfg, tokenStore, recovery, cfg.Watchdog.MaxRestartsPer24h, &failoverFailures)
+			handleFailoverPoll(failoverClient, wd, journal, cfg, tokenStore, recovery, cfg.Watchdog.MaxRestartsPer24h, &failoverFailures, &lastDiskServerURL)
 		}
 
 		// State-driven actions after each tick.
@@ -472,6 +499,7 @@ func runWatchdog(stopCh <-chan struct{}) {
 				failoverClient = watchdog.NewFailoverClient(
 					cfg.ServerURL, cfg.AgentID, tokenStore.Reveal(), nil,
 				)
+				lastDiskServerURL = cfg.ServerURL
 				journal.Log(watchdog.LevelInfo, "failover.start", nil)
 
 				// Send initial failover heartbeat.
@@ -479,13 +507,7 @@ func runWatchdog(stopCh <-chan struct{}) {
 				resp, err := failoverClient.SendHeartbeat(version, wd.State(), journal.Recent(10), stats)
 				if err != nil {
 					failoverFailures++
-					if reloaded, rerr := config.Load(""); rerr == nil {
-						current := failoverClient.BaseURL()
-						if next := decideWatchdogServerURL(current, reloaded, failoverFailures); next != current {
-							journal.Log(watchdog.LevelInfo, "failover.server_url_switch", map[string]any{"to": next})
-							failoverClient.SetBaseURL(next)
-						}
-					}
+					lastDiskServerURL = noteFailoverHeartbeatFailure(failoverClient, journal, lastDiskServerURL, failoverFailures)
 					journal.Log(watchdog.LevelError, "failover.heartbeat_failed", map[string]any{
 						"error": err.Error(),
 					})
@@ -587,19 +609,14 @@ func handleFailoverPoll(
 	recovery *watchdog.RecoveryManager,
 	maxPer24h int,
 	failoverFailures *int,
+	lastDiskServerURL *string,
 ) {
 	// Send failover heartbeat.
 	stats := currentRestartStats(recovery, maxPer24h)
 	resp, err := fc.SendHeartbeat(version, wd.State(), journal.Recent(10), stats)
 	if err != nil {
 		*failoverFailures = *failoverFailures + 1
-		if reloaded, rerr := config.Load(""); rerr == nil {
-			current := fc.BaseURL()
-			if next := decideWatchdogServerURL(current, reloaded, *failoverFailures); next != current {
-				journal.Log(watchdog.LevelInfo, "failover.server_url_switch", map[string]any{"to": next})
-				fc.SetBaseURL(next)
-			}
-		}
+		*lastDiskServerURL = noteFailoverHeartbeatFailure(fc, journal, *lastDiskServerURL, *failoverFailures)
 		journal.Log(watchdog.LevelError, "failover.heartbeat_failed", map[string]any{
 			"error": err.Error(),
 		})
