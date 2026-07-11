@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { and, desc, eq, isNull, sql } from 'drizzle-orm';
-import { db } from '../../db';
-import { tickets, ticketComments, ticketStatuses } from '../../db/schema';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { tickets, ticketComments, ticketStatuses, organizations } from '../../db/schema';
 import {
   listSchema,
   createTicketSchema,
@@ -19,9 +19,43 @@ import {
   writePortalAudit,
 } from './helpers';
 import { createTicket, TicketServiceError, portalCommentMutable, editTicketComment, deleteTicketComment } from '../../services/ticketService';
+import { listTicketFormsForOrg } from '../../services/ticketFormService';
 import { editCommentSchema } from '@breeze/shared';
 
 export const ticketRoutes = new Hono();
+
+// GET /ticket-forms — literal path, registered first so it can never be
+// shadowed by a `/tickets/:id`-style param route mounted later in this file
+// (same mount-order convention as Phase 1). Portal runs under an org-scoped
+// RLS context where partner-wide ticket_forms rows are invisible (#1105
+// pattern), so the org's partnerId is resolved under a system context first —
+// mirrors routes/portal/quotes.ts:70 exactly. Slim payload only: no
+// titleTemplate (the server composes subjects, never the portal client).
+ticketRoutes.get('/ticket-forms', async (c) => {
+  const auth = c.get('portalAuth');
+
+  const [org] = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db
+        .select({ partnerId: organizations.partnerId })
+        .from(organizations)
+        .where(eq(organizations.id, auth.user.orgId))
+        .limit(1)
+    )
+  );
+  if (!org) return c.json({ data: [] });
+
+  const forms = await listTicketFormsForOrg({ id: auth.user.orgId, partnerId: org.partnerId }, { portalOnly: true });
+  const data = forms.map((f) => ({
+    id: f.id,
+    name: f.name,
+    description: f.description,
+    categoryId: f.categoryId,
+    fields: f.fields,
+    defaultPriority: f.defaultPriority,
+  }));
+  return c.json({ data });
+});
 
 ticketRoutes.get('/tickets', zValidator('query', listSchema), async (c) => {
   const auth = c.get('portalAuth');
@@ -102,6 +136,8 @@ ticketRoutes.post('/tickets', zValidator('json', createTicketSchema), async (c) 
         subject: payload.subject,
         description: payload.description,
         priority: payload.priority,
+        formId: payload.formId,
+        formResponses: payload.formResponses,
         source: 'portal',
         submittedBy: auth.user.id,
         submitterEmail: auth.user.email,
