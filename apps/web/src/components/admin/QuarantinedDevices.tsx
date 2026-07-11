@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { ShieldAlert, CheckCircle, XCircle, RefreshCw, AlertTriangle, X } from 'lucide-react';
 import { fetchWithAuth } from '@/stores/auth';
 
@@ -36,6 +37,7 @@ function formatDate(dateString: string): string {
 }
 
 export default function QuarantinedDevices() {
+  const { t } = useTranslation('admin');
   const [devices, setDevices] = useState<QuarantinedDevice[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -48,16 +50,16 @@ export default function QuarantinedDevices() {
       setError(undefined);
       const response = await fetchWithAuth('/agents/quarantined');
       if (!response.ok) {
-        throw new Error('Failed to fetch quarantined devices');
+        throw new Error(t('admin.quarantinedDevices.errors.fetch'));
       }
       const data = await response.json();
       setDevices(data.devices ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('admin.quarantinedDevices.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     fetchDevices();
@@ -71,11 +73,11 @@ export default function QuarantinedDevices() {
         method: 'POST'
       });
       if (!response.ok) {
-        throw new Error('Failed to approve device');
+        throw new Error(t('admin.quarantinedDevices.errors.approve'));
       }
       await fetchDevices();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to approve device');
+      setError(err instanceof Error ? err.message : t('admin.quarantinedDevices.errors.approve'));
     } finally {
       setActionLoading(null);
     }
@@ -90,12 +92,12 @@ export default function QuarantinedDevices() {
         method: 'POST'
       });
       if (!response.ok) {
-        throw new Error('Failed to deny device');
+        throw new Error(t('admin.quarantinedDevices.errors.deny'));
       }
       setModal({ type: 'none', device: null });
       await fetchDevices();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to deny device');
+      setError(err instanceof Error ? err.message : t('admin.quarantinedDevices.errors.deny'));
     } finally {
       setActionLoading(null);
     }
@@ -111,7 +113,7 @@ export default function QuarantinedDevices() {
       <div className="flex items-center justify-center py-12">
         <div className="text-center">
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading quarantined devices...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('admin.quarantinedDevices.loading')}</p>
         </div>
       </div>
     );
@@ -126,7 +128,7 @@ export default function QuarantinedDevices() {
           onClick={fetchDevices}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Try again
+          {t('admin.quarantinedDevices.retry')}
         </button>
       </div>
     );
@@ -136,10 +138,9 @@ export default function QuarantinedDevices() {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Quarantined Devices</h1>
+          <h1 className="text-xl font-semibold tracking-tight">{t('admin.quarantinedDevices.title')}</h1>
           <p className="text-muted-foreground">
-            Devices quarantined due to expired or invalid mTLS certificates. Approve to re-issue
-            certificates or deny to decommission.
+            {t('admin.quarantinedDevices.description')}
           </p>
         </div>
         <button
@@ -149,7 +150,7 @@ export default function QuarantinedDevices() {
           className="inline-flex h-10 items-center justify-center gap-2 rounded-md border bg-background px-4 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
         >
           <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-          Refresh
+          {t('admin.quarantinedDevices.refresh')}
         </button>
       </div>
 
@@ -162,10 +163,9 @@ export default function QuarantinedDevices() {
       {devices.length === 0 ? (
         <div className="rounded-lg border bg-card p-12 text-center">
           <ShieldAlert className="mx-auto h-12 w-12 text-muted-foreground/40" />
-          <h3 className="mt-4 text-lg font-semibold">No quarantined devices</h3>
+          <h3 className="mt-4 text-lg font-semibold">{t('admin.quarantinedDevices.empty.title')}</h3>
           <p className="mt-2 text-sm text-muted-foreground">
-            All devices have valid mTLS certificates. Devices with expired or revoked certificates
-            will appear here for review.
+            {t('admin.quarantinedDevices.empty.description')}
           </p>
         </div>
       ) : (
@@ -174,11 +174,11 @@ export default function QuarantinedDevices() {
             <table className="w-full border-collapse text-left text-sm">
               <thead className="bg-muted/40">
                 <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  <th className="px-4 py-3">Hostname</th>
-                  <th className="px-4 py-3">OS</th>
-                  <th className="px-4 py-3">Quarantined At</th>
-                  <th className="px-4 py-3">Reason</th>
-                  <th className="px-4 py-3 text-right">Actions</th>
+                  <th className="px-4 py-3">{t('admin.quarantinedDevices.table.hostname')}</th>
+                  <th className="px-4 py-3">{t('admin.quarantinedDevices.table.os')}</th>
+                  <th className="px-4 py-3">{t('admin.quarantinedDevices.table.quarantinedAt')}</th>
+                  <th className="px-4 py-3">{t('admin.quarantinedDevices.table.reason')}</th>
+                  <th className="px-4 py-3 text-right">{t('admin.quarantinedDevices.table.actions')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -216,7 +216,7 @@ export default function QuarantinedDevices() {
                             ) : (
                               <CheckCircle className="h-4 w-4" />
                             )}
-                            Approve
+                            {t('admin.quarantinedDevices.actions.approve')}
                           </button>
                           <button
                             type="button"
@@ -225,7 +225,7 @@ export default function QuarantinedDevices() {
                             className="inline-flex h-9 items-center gap-2 rounded-md bg-destructive px-3 text-sm font-medium text-destructive-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
                           >
                             <XCircle className="h-4 w-4" />
-                            Deny
+                            {t('admin.quarantinedDevices.actions.deny')}
                           </button>
                         </div>
                       </td>
@@ -237,7 +237,7 @@ export default function QuarantinedDevices() {
           </div>
           <div className="border-t px-4 py-3">
             <p className="text-sm text-muted-foreground">
-              {devices.length} quarantined device{devices.length === 1 ? '' : 's'}
+              {t('admin.quarantinedDevices.count', { count: devices.length })}
             </p>
           </div>
         </div>
@@ -252,7 +252,7 @@ export default function QuarantinedDevices() {
                 <div className="flex h-10 w-10 items-center justify-center rounded-full bg-destructive/10">
                   <AlertTriangle className="h-5 w-5 text-destructive" />
                 </div>
-                <h2 className="text-lg font-semibold">Deny Device</h2>
+                <h2 className="text-lg font-semibold">{t('admin.quarantinedDevices.denyDialog.title')}</h2>
               </div>
               <button
                 type="button"
@@ -265,9 +265,9 @@ export default function QuarantinedDevices() {
             </div>
 
             <p className="mt-4 text-sm text-muted-foreground">
-              Are you sure you want to deny <span className="font-medium text-foreground">{modal.device.hostname}</span>?
-              This will permanently decommission the device and revoke its certificate.
-              The agent will stop reporting and the device will no longer be managed.
+              {t('admin.quarantinedDevices.denyDialog.descriptionPrefix')}{' '}
+              <span className="font-medium text-foreground">{modal.device.hostname}</span>?{' '}
+              {t('admin.quarantinedDevices.denyDialog.descriptionSuffix')}
             </p>
 
             <div className="mt-6 flex justify-end gap-3">
@@ -277,7 +277,7 @@ export default function QuarantinedDevices() {
                 disabled={!!actionLoading}
                 className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
               >
-                Cancel
+                {t('admin.quarantinedDevices.denyDialog.cancel')}
               </button>
               <button
                 type="button"
@@ -288,10 +288,10 @@ export default function QuarantinedDevices() {
                 {actionLoading === modal.device.id ? (
                   <>
                     <span className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
-                    Denying...
+                    {t('admin.quarantinedDevices.denyDialog.denying')}
                   </>
                 ) : (
-                  'Deny & Decommission'
+                  t('admin.quarantinedDevices.denyDialog.confirm')
                 )}
               </button>
             </div>

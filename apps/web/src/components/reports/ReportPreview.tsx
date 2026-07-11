@@ -12,6 +12,7 @@ import {
 import { cn, widthPercentClass } from '@/lib/utils';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import type { ReportType } from './ReportsList';
+import { useTranslation } from 'react-i18next';
 
 type PreviewMode = 'table' | 'chart';
 
@@ -50,16 +51,6 @@ type ReportPreviewProps = {
   timezone?: string;
 };
 
-const reportTypeLabels: Record<ReportType, string> = {
-  device_inventory: 'Device Inventory',
-  software_inventory: 'Software Inventory',
-  alert_summary: 'Alert Summary',
-  compliance: 'Compliance Report',
-  performance: 'Performance Report',
-  executive_summary: 'Executive Summary',
-  security_compliance_posture: 'Security & Compliance Posture'
-};
-
 const getBrowserTimezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 export default function ReportPreview({
@@ -70,6 +61,7 @@ export default function ReportPreview({
   onExport,
   timezone
 }: ReportPreviewProps) {
+  const { t } = useTranslation('reports');
   const effectiveTimezone = timezone || getBrowserTimezone();
   const [previewMode, setPreviewMode] = useState<PreviewMode>('table');
   const [currentPage, setCurrentPage] = useState(1);
@@ -104,7 +96,7 @@ export default function ReportPreview({
   // Format cell value for display
   const formatCellValue = (value: unknown): string => {
     if (value === null || value === undefined) return '-';
-    if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+    if (typeof value === 'boolean') return value ? t('reports.reportPreview.values.yes') : t('reports.reportPreview.values.no');
     if (value instanceof Date) return formatDateTime(value, { timeZone: effectiveTimezone });
     if (typeof value === 'string' && value.match(/^\d{4}-\d{2}-\d{2}/)) {
       return formatDateTime(value, { timeZone: effectiveTimezone });
@@ -128,7 +120,7 @@ export default function ReportPreview({
       <div className="flex items-center justify-center py-12">
         <div className="text-center">
           <Loader2 className="h-8 w-8 animate-spin text-primary mx-auto" />
-          <p className="mt-4 text-sm text-muted-foreground">Generating report preview...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('reports.reportPreview.generating')}</p>
         </div>
       </div>
     );
@@ -145,7 +137,7 @@ export default function ReportPreview({
             className="mt-4 inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
           >
             <RefreshCw className="h-4 w-4" />
-            Try again
+            {t('reports.reportPreview.tryAgain')}
           </button>
         )}
       </div>
@@ -156,9 +148,9 @@ export default function ReportPreview({
     return (
       <div className="rounded-lg border border-dashed p-12 text-center">
         <FileText className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
-        <h3 className="text-lg font-medium">No preview available</h3>
+        <h3 className="text-lg font-medium">{t('reports.reportPreview.emptyTitle')}</h3>
         <p className="text-sm text-muted-foreground mt-1">
-          Configure your report settings and click Preview to see the data.
+          {t('reports.reportPreview.emptyDescription')}
         </p>
       </div>
     );
@@ -175,10 +167,16 @@ export default function ReportPreview({
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h3 className="text-lg font-semibold">{reportTypeLabels[data.type]}</h3>
+          <h3 className="text-lg font-semibold">{t(`reports.reportPreview.reportTypes.${data.type}`)/* i18n-dynamic */}</h3>
           <p className="text-sm text-muted-foreground">
-            Generated {formatDateTime(data.generatedAt, { timeZone: effectiveTimezone })}
-            {data.data.rowCount !== undefined && ` - ${data.data.rowCount} records`}
+            {data.data.rowCount !== undefined
+              ? t('reports.reportPreview.generatedWithRecords', {
+                date: formatDateTime(data.generatedAt, { timeZone: effectiveTimezone }),
+                count: data.data.rowCount
+              })
+              : t('reports.reportPreview.generated', {
+                date: formatDateTime(data.generatedAt, { timeZone: effectiveTimezone })
+              })}
           </p>
         </div>
 
@@ -197,7 +195,7 @@ export default function ReportPreview({
                 )}
               >
                 <Table className="h-4 w-4" />
-                Table
+                {t('reports.reportPreview.viewModes.table')}
               </button>
               <button
                 type="button"
@@ -210,7 +208,7 @@ export default function ReportPreview({
                 )}
               >
                 <BarChart3 className="h-4 w-4" />
-                Chart
+                {t('reports.reportPreview.viewModes.chart')}
               </button>
             </div>
           )}
@@ -224,21 +222,21 @@ export default function ReportPreview({
                 className="flex items-center gap-1 px-3 py-1.5 text-sm hover:bg-muted"
               >
                 <Download className="h-4 w-4" />
-                CSV
+                {t('reports.reportPreview.formats.csv')}
               </button>
               <button
                 type="button"
                 onClick={() => onExport('excel')}
                 className="border-l px-3 py-1.5 text-sm hover:bg-muted"
               >
-                Excel
+                {t('reports.reportPreview.formats.excel')}
               </button>
               <button
                 type="button"
                 onClick={() => onExport('pdf')}
                 className="border-l px-3 py-1.5 text-sm hover:bg-muted"
               >
-                PDF
+                {t('reports.reportPreview.formats.pdf')}
               </button>
             </div>
           )}
@@ -248,7 +246,7 @@ export default function ReportPreview({
               type="button"
               onClick={onRefresh}
               className="flex h-9 w-9 items-center justify-center rounded-md border hover:bg-muted"
-              title="Refresh"
+              title={t('reports.reportPreview.refresh')}
             >
               <RefreshCw className="h-4 w-4" />
             </button>
@@ -313,8 +311,11 @@ export default function ReportPreview({
           {totalPages > 1 && (
             <div className="flex items-center justify-between">
               <p className="text-sm text-muted-foreground">
-                Showing {(currentPage - 1) * pageSize + 1} to{' '}
-                {Math.min(currentPage * pageSize, rows.length)} of {rows.length} records
+                {t('reports.reportPreview.pagination.showing', {
+                  start: (currentPage - 1) * pageSize + 1,
+                  end: Math.min(currentPage * pageSize, rows.length),
+                  total: rows.length
+                })}
               </p>
               <div className="flex items-center gap-1">
                 <button
@@ -326,7 +327,7 @@ export default function ReportPreview({
                   <ChevronLeft className="h-4 w-4" />
                 </button>
                 <span className="px-3 text-sm">
-                  Page {currentPage} of {totalPages}
+                  {t('reports.reportPreview.pagination.page', { current: currentPage, total: totalPages })}
                 </span>
                 <button
                   type="button"
@@ -351,7 +352,7 @@ export default function ReportPreview({
               {/* Severity Distribution */}
               {data.data.bySeverity && (
                 <div className="rounded-lg border bg-card p-4">
-                  <h4 className="text-sm font-semibold mb-4">Alerts by Severity</h4>
+                  <h4 className="text-sm font-semibold mb-4">{t('reports.reportPreview.charts.alertsBySeverity')}</h4>
                   <div className="space-y-2">
                     {Object.entries(data.data.bySeverity).map(([severity, count]) => {
                       const total = Object.values(data.data.bySeverity!).reduce((a, b) => a + b, 0);
@@ -383,7 +384,7 @@ export default function ReportPreview({
               {/* Top Alert Rules */}
               {data.data.topRules && data.data.topRules.length > 0 && (
                 <div className="rounded-lg border bg-card p-4">
-                  <h4 className="text-sm font-semibold mb-4">Top Alerting Rules</h4>
+                  <h4 className="text-sm font-semibold mb-4">{t('reports.reportPreview.charts.topAlertingRules')}</h4>
                   <div className="space-y-2">
                     {data.data.topRules.map((rule, index) => (
                       <div key={rule.ruleId} className="flex items-center gap-3">
@@ -404,25 +405,25 @@ export default function ReportPreview({
               {data.data.overview && (
                 <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                   <div className="rounded-lg border bg-card p-4 text-center">
-                    <p className="text-sm text-muted-foreground">Compliance Score</p>
+                    <p className="text-sm text-muted-foreground">{t('reports.reportPreview.charts.complianceScore')}</p>
                     <p className="text-3xl font-bold text-primary mt-1">
                       {String((data.data.overview as Record<string, unknown>).complianceScore)}%
                     </p>
                   </div>
                   <div className="rounded-lg border bg-card p-4 text-center">
-                    <p className="text-sm text-muted-foreground">Total Devices</p>
+                    <p className="text-sm text-muted-foreground">{t('reports.reportPreview.charts.totalDevices')}</p>
                     <p className="text-3xl font-bold mt-1">
                       {String((data.data.overview as Record<string, unknown>).totalDevices)}
                     </p>
                   </div>
                   <div className="rounded-lg border bg-card p-4 text-center">
-                    <p className="text-sm text-muted-foreground">Online</p>
+                    <p className="text-sm text-muted-foreground">{t('reports.reportPreview.charts.online')}</p>
                     <p className="text-3xl font-bold text-success mt-1">
                       {String((data.data.overview as Record<string, unknown>).onlineDevices)}
                     </p>
                   </div>
                   <div className="rounded-lg border bg-card p-4 text-center">
-                    <p className="text-sm text-muted-foreground">Offline</p>
+                    <p className="text-sm text-muted-foreground">{t('reports.reportPreview.charts.offline')}</p>
                     <p className="text-3xl font-bold text-destructive mt-1">
                       {String((data.data.overview as Record<string, unknown>).offlineDevices)}
                     </p>
@@ -432,7 +433,7 @@ export default function ReportPreview({
 
               {data.data.issues && data.data.issues.length > 0 && (
                 <div className="rounded-lg border bg-card p-4">
-                  <h4 className="text-sm font-semibold mb-4">Compliance Issues</h4>
+                  <h4 className="text-sm font-semibold mb-4">{t('reports.reportPreview.charts.complianceIssues')}</h4>
                   <div className="space-y-3">
                     {data.data.issues.map((issue, index) => (
                       <div
@@ -459,15 +460,15 @@ export default function ReportPreview({
               {data.data.averages && (
                 <div className="grid gap-4 sm:grid-cols-3">
                   <div className="rounded-lg border bg-card p-4 text-center">
-                    <p className="text-sm text-muted-foreground">Avg CPU</p>
+                    <p className="text-sm text-muted-foreground">{t('reports.reportPreview.charts.avgCpu')}</p>
                     <p className="text-3xl font-bold mt-1">{data.data.averages.cpu}%</p>
                   </div>
                   <div className="rounded-lg border bg-card p-4 text-center">
-                    <p className="text-sm text-muted-foreground">Avg Memory</p>
+                    <p className="text-sm text-muted-foreground">{t('reports.reportPreview.charts.avgMemory')}</p>
                     <p className="text-3xl font-bold mt-1">{data.data.averages.ram}%</p>
                   </div>
                   <div className="rounded-lg border bg-card p-4 text-center">
-                    <p className="text-sm text-muted-foreground">Avg Disk</p>
+                    <p className="text-sm text-muted-foreground">{t('reports.reportPreview.charts.avgDisk')}</p>
                     <p className="text-3xl font-bold mt-1">{data.data.averages.disk}%</p>
                   </div>
                 </div>
@@ -475,7 +476,7 @@ export default function ReportPreview({
 
               {data.data.topCpu && data.data.topCpu.length > 0 && (
                 <div className="rounded-lg border bg-card p-4">
-                  <h4 className="text-sm font-semibold mb-4">Top CPU Consumers</h4>
+                  <h4 className="text-sm font-semibold mb-4">{t('reports.reportPreview.charts.topCpuConsumers')}</h4>
                   <div className="space-y-2">
                     {data.data.topCpu.slice(0, 5).map((device, index) => (
                       <div key={device.deviceId} className="flex items-center gap-3">
@@ -500,7 +501,7 @@ export default function ReportPreview({
       {/* Empty State */}
       {rows.length === 0 && previewMode === 'table' && (
         <div className="rounded-lg border border-dashed p-12 text-center">
-          <p className="text-sm text-muted-foreground">No data matches the current filters.</p>
+          <p className="text-sm text-muted-foreground">{t('reports.reportPreview.noDataMatches')}</p>
         </div>
       )}
     </div>

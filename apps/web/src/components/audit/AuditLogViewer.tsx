@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   ArrowUpDown,
   ChevronDown,
@@ -47,15 +48,6 @@ const actionStyles: Record<string, string> = {
   create: 'bg-indigo-100 text-indigo-700 border-indigo-200',
   export: 'bg-amber-100 text-amber-700 border-amber-200',
   access: 'bg-slate-100 text-slate-700 border-slate-200'
-};
-
-const columnLabels: Record<SortKey, string> = {
-  timestamp: 'Timestamp',
-  user: 'User',
-  action: 'Action',
-  resource: 'Resource',
-  details: 'Details',
-  ipAddress: 'IP'
 };
 
 const getSortValue = (entry: AuditLogEntry, key: SortKey) => {
@@ -126,7 +118,16 @@ interface AuditLogViewerProps {
 }
 
 export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
+  const { t } = useTranslation('admin');
   const [entries, setEntries] = useState<AuditLogEntry[]>([]);
+  const columnLabels: Record<SortKey, string> = {
+    timestamp: t('audit.auditLogViewer.columns.timestamp'),
+    user: t('audit.auditLogViewer.columns.user'),
+    action: t('audit.auditLogViewer.columns.action'),
+    resource: t('audit.auditLogViewer.columns.resource'),
+    details: t('audit.auditLogViewer.columns.details'),
+    ipAddress: t('audit.auditLogViewer.columns.ipAddress')
+  };
   const [sortConfig, setSortConfig] = useState<SortConfig>({
     key: 'timestamp',
     direction: 'desc'
@@ -179,7 +180,7 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
       }
 
       if (!response.ok) {
-        throw new Error('Failed to fetch audit logs');
+        throw new Error(t('audit.auditLogViewer.errors.fetch'));
       }
 
       const data = await response.json();
@@ -191,11 +192,11 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
         setTotalCount(data.pagination.total ?? 0);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load audit logs');
+      setError(err instanceof Error ? err.message : t('audit.auditLogViewer.errors.load'));
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     fetchAuditLogs(currentPage, activeFilters);
@@ -284,9 +285,9 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
       <div className="space-y-6">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
-            <h1 className="text-xl font-semibold tracking-tight">Audit Trail</h1>
+            <h1 className="text-xl font-semibold tracking-tight">{t('audit.auditLogViewer.title')}</h1>
             <p className="text-muted-foreground">
-              Track user actions, sensitive operations, and system changes.
+              {t('audit.auditLogViewer.description')}
             </p>
           </div>
         </div>
@@ -304,9 +305,9 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
       <div className="space-y-6">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
-            <h1 className="text-xl font-semibold tracking-tight">Audit Trail</h1>
+            <h1 className="text-xl font-semibold tracking-tight">{t('audit.auditLogViewer.title')}</h1>
             <p className="text-muted-foreground">
-              Track user actions, sensitive operations, and system changes.
+              {t('audit.auditLogViewer.description')}
             </p>
           </div>
         </div>
@@ -318,7 +319,7 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
               onClick={() => fetchAuditLogs(currentPage, activeFilters)}
               className="text-sm text-primary hover:underline"
             >
-              Try again
+              {t('audit.auditLogViewer.retry')}
             </button>
           </div>
         </div>
@@ -330,9 +331,9 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Audit Trail</h1>
+          <h1 className="text-xl font-semibold tracking-tight">{t('audit.auditLogViewer.title')}</h1>
           <p className="text-muted-foreground">
-            Track user actions, sensitive operations, and system changes.
+            {t('audit.auditLogViewer.description')}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -347,7 +348,7 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
             )}
           >
             <Filter className="h-4 w-4" />
-            Filters
+            {t('audit.auditLogViewer.filters')}
             {hasActiveFilters(activeFilters) && (
               <span className="ml-1 inline-flex h-5 w-5 items-center justify-center rounded-full bg-primary text-xs text-primary-foreground">
                 {(activeFilters!.actions.length > 0 ? 1 : 0) +
@@ -364,7 +365,7 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
               className="inline-flex h-10 items-center gap-1.5 rounded-md border border-rose-200 bg-rose-50 px-3 text-sm font-medium text-rose-600 hover:bg-rose-100"
             >
               <X className="h-3.5 w-3.5" />
-              Clear
+              {t('audit.auditLogViewer.clear')}
             </button>
           )}
           <button
@@ -373,7 +374,7 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
             className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
           >
             <List className="h-4 w-4" />
-            Export Logs
+            {t('audit.auditLogViewer.exportLogs')}
           </button>
         </div>
       </div>
@@ -407,7 +408,7 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
             {sortedEntries.length === 0 ? (
               <tr>
                 <td colSpan={6} className="px-4 py-8 text-center text-sm text-muted-foreground">
-                  No audit logs found.
+                  {t('audit.auditLogViewer.empty')}
                 </td>
               </tr>
             ) : (
@@ -478,7 +479,7 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
                             className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:underline"
                           >
                             <Eye className="h-3.5 w-3.5" />
-                            View details
+                            {t('audit.auditLogViewer.viewDetails')}
                           </button>
                         </div>
                       </td>
@@ -501,7 +502,7 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
                           <div className="grid gap-4 lg:grid-cols-3">
                             <div className="rounded-md border bg-background p-3">
                               <p className="text-xs font-semibold uppercase text-muted-foreground">
-                                Full Details
+                                {t('audit.auditLogViewer.expanded.fullDetails')}
                               </p>
                               <p className="mt-2 text-sm text-foreground">
                                 {formatAuditDetails(entry.details) || '-'}
@@ -509,24 +510,26 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
                             </div>
                             <div className="rounded-md border bg-background p-3">
                               <p className="text-xs font-semibold uppercase text-muted-foreground">
-                                Session
+                                {t('audit.auditLogViewer.expanded.session')}
                               </p>
                               <p className="mt-2 text-sm text-foreground">{entry.sessionId}</p>
                               <p className="mt-1 text-xs text-muted-foreground">{entry.userAgent}</p>
                             </div>
                             <div className="rounded-md border bg-background p-3">
                               <p className="text-xs font-semibold uppercase text-muted-foreground">
-                                Changes
+                                {t('audit.auditLogViewer.expanded.changes')}
                               </p>
                               <p className="mt-2 text-sm text-foreground">
-                                {Object.keys(entry.changes?.after || {}).length} fields updated
+                                {t('audit.auditLogViewer.expanded.fieldsUpdated', {
+                                  count: Object.keys(entry.changes?.after || {}).length,
+                                })}
                               </p>
                               <button
                                 type="button"
                                 onClick={() => setSelectedEntry(entry)}
                                 className="mt-2 text-xs font-semibold text-primary hover:underline"
                               >
-                                Review full snapshot
+                                {t('audit.auditLogViewer.expanded.reviewFullSnapshot')}
                               </button>
                             </div>
                           </div>
@@ -546,13 +549,18 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
           <div className="text-sm text-muted-foreground">
             {totalCount === -1 ? (
               <>
-                Showing {(currentPage - 1) * pageSize + 1}-
-                {(currentPage - 1) * pageSize + entries.length}
+                {t('audit.auditLogViewer.pagination.showingRange', {
+                  from: (currentPage - 1) * pageSize + 1,
+                  to: (currentPage - 1) * pageSize + entries.length,
+                })}
               </>
             ) : (
               <>
-                Showing {(currentPage - 1) * pageSize + 1}-
-                {Math.min(currentPage * pageSize, totalCount)} of {totalCount}
+                {t('audit.auditLogViewer.pagination.showingOf', {
+                  from: (currentPage - 1) * pageSize + 1,
+                  to: Math.min(currentPage * pageSize, totalCount),
+                  total: totalCount,
+                })}
               </>
             )}
           </div>
@@ -563,7 +571,7 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
               disabled={currentPage === 1}
               className="h-9 rounded-md border px-3 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
             >
-              Previous
+              {t('audit.auditLogViewer.pagination.previous')}
             </button>
             {totalPages > 0 &&
               Array.from({ length: Math.min(totalPages, 7) }, (_, index) => {
@@ -595,7 +603,7 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
               })}
             {totalCount === -1 && (
               <span className="px-2 text-sm font-medium text-muted-foreground">
-                Page {currentPage}
+                {t('audit.auditLogViewer.pagination.page', { page: currentPage })}
               </span>
             )}
             <button
@@ -608,7 +616,7 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
               }
               className="h-9 rounded-md border px-3 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
             >
-              Next
+              {t('audit.auditLogViewer.pagination.next')}
             </button>
           </div>
         </div>

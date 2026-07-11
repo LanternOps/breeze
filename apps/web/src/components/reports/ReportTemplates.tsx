@@ -19,6 +19,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { runAction } from '@/lib/runAction';
 import { navigateTo } from '@/lib/navigation';
+import { useTranslation } from 'react-i18next';
 
 type TemplateTone = {
   iconBg: string;
@@ -65,33 +66,6 @@ const reportTypeValues: TemplateReportType[] = [
 
 const scheduleValues: ReportSchedule[] = ['one_time', 'daily', 'weekly', 'monthly'];
 const formatValues: ReportFormat[] = ['csv', 'pdf', 'excel'];
-
-const reportTypeLabels: Record<string, string> = {
-  device_inventory: 'Device Inventory',
-  software_inventory: 'Software Inventory',
-  alert_summary: 'Alert Summary',
-  compliance: 'Compliance Report',
-  performance: 'Performance Report',
-  executive_summary: 'Executive Summary',
-  security_compliance_posture: 'Security & Compliance Posture',
-  devices: 'Devices',
-  alerts: 'Alerts',
-  patches: 'Patches',
-  activity: 'Activity'
-};
-
-const scheduleLabels: Record<ReportSchedule, string> = {
-  one_time: 'One-time',
-  daily: 'Daily',
-  weekly: 'Weekly',
-  monthly: 'Monthly'
-};
-
-const formatLabels: Record<ReportFormat, string> = {
-  csv: 'CSV',
-  pdf: 'PDF',
-  excel: 'Excel'
-};
 
 const defaultTemplates: ReportTemplate[] = [
   {
@@ -336,12 +310,12 @@ const mergeTemplates = (items: TemplateApiItem[]) => {
 };
 
 /** A real screenshot when the template provides one; otherwise nothing. */
-const TemplatePreviewImage = ({ template }: { template: ReportTemplate }) => {
+const TemplatePreviewImage = ({ template, alt }: { template: ReportTemplate; alt: string }) => {
   if (!template.previewImage) return null;
   return (
     <img
       src={template.previewImage}
-      alt={`${template.name} preview`}
+      alt={alt}
       className="mt-4 h-28 w-full rounded-md border object-cover"
     />
   );
@@ -360,6 +334,7 @@ const TemplateSpec = ({ items }: { items: { label: string; value: string }[] }) 
 );
 
 export default function ReportTemplates() {
+  const { t } = useTranslation('reports');
   const { currentOrgId } = useOrgStore();
   const [templates, setTemplates] = useState<ReportTemplate[]>(defaultTemplates);
   const [loading, setLoading] = useState(false);
@@ -374,7 +349,7 @@ export default function ReportTemplates() {
     try {
       const response = await fetchWithAuth('/reports/templates');
       if (!response.ok) {
-        throw new Error('Failed to fetch report templates');
+        throw new Error(t('reports.reportTemplates.errors.fetchTemplates'));
       }
       const data = await response.json();
       const items = (data.data ?? data.templates ?? data) as TemplateApiItem[];
@@ -382,11 +357,11 @@ export default function ReportTemplates() {
         setTemplates(mergeTemplates(items));
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to load templates');
+      setError(err instanceof Error ? err.message : t('reports.reportTemplates.errors.loadTemplates'));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     fetchTemplates();
@@ -417,9 +392,9 @@ export default function ReportTemplates() {
                   dateRange: template.defaults.dateRange ?? { preset: 'last_30_days' }
                 }
               })
-            }),
-          errorFallback: 'Failed to create report',
-          successMessage: `Created "${template.defaults.name ?? template.name}". Generate it from the Reports list.`,
+          }),
+          errorFallback: t('reports.reportTemplates.errors.createReport'),
+          successMessage: t('reports.reportTemplates.success.created', { name: template.defaults.name ?? template.name }),
           onUnauthorized: () => {
             void navigateTo('/login', { replace: true });
           }
@@ -431,7 +406,7 @@ export default function ReportTemplates() {
         setCreatingId(null);
       }
     },
-    [currentOrgId]
+    [currentOrgId, t]
   );
 
   const handleUseTemplate = useCallback(
@@ -475,20 +450,28 @@ export default function ReportTemplates() {
     void navigateTo('/reports');
   }, []);
 
+  const getReportTypeLabel = (type: string) => t(`reports.reportTemplates.reportTypes.${type}`); // i18n-dynamic
+  const getScheduleLabel = (schedule: ReportSchedule) => t(`reports.reportTemplates.schedules.${schedule}`); // i18n-dynamic
+  const getFormatLabel = (format: ReportFormat) => t(`reports.reportTemplates.formats.${format}`); // i18n-dynamic
+  const getTemplateDisplayName = (template: ReportTemplate) =>
+    t(`reports.reportTemplates.templates.${template.id}.name`, { defaultValue: template.name }); // i18n-dynamic
+  const getTemplateDescription = (template: ReportTemplate) =>
+    t(`reports.reportTemplates.templates.${template.id}.description`, { defaultValue: template.description }); // i18n-dynamic
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Report Templates</h1>
+          <h1 className="text-xl font-semibold tracking-tight">{t('reports.reportTemplates.title')}</h1>
           <p className="text-sm text-muted-foreground">
-            Start from curated templates and tailor the details before publishing.
+            {t('reports.reportTemplates.description')}
           </p>
         </div>
         <div className="flex items-center gap-3">
           {loading && (
             <span className="inline-flex items-center gap-2 text-xs text-muted-foreground">
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              Syncing templates...
+              {t('reports.reportTemplates.syncing')}
             </span>
           )}
           <button
@@ -497,7 +480,7 @@ export default function ReportTemplates() {
             className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
           >
             <Plus className="h-4 w-4" />
-            Create Custom Template
+            {t('reports.reportTemplates.createCustomTemplate')}
           </button>
         </div>
       </div>
@@ -512,10 +495,12 @@ export default function ReportTemplates() {
         {templates.map(template => {
           const Icon = template.icon;
           const scheduleLabel = template.defaults.schedule
-            ? scheduleLabels[template.defaults.schedule]
-            : 'Custom';
-          const formatLabel = template.defaults.format ? formatLabels[template.defaults.format] : 'Custom';
-          const reportTypeLabel = template.defaults.type ? reportTypeLabels[template.defaults.type] : 'Template';
+            ? getScheduleLabel(template.defaults.schedule)
+            : t('reports.reportTemplates.custom');
+          const formatLabel = template.defaults.format ? getFormatLabel(template.defaults.format) : t('reports.reportTemplates.custom');
+          const reportTypeLabel = template.defaults.type ? getReportTypeLabel(template.defaults.type) : t('reports.reportTemplates.template');
+          const displayName = getTemplateDisplayName(template);
+          const description = getTemplateDescription(template);
 
           return (
             <div
@@ -528,23 +513,26 @@ export default function ReportTemplates() {
                     <Icon className={cn('h-5 w-5', template.tone.iconColor)} />
                   </div>
                   <div>
-                    <p className="text-sm font-semibold">{template.name}</p>
+                    <p className="text-sm font-semibold">{displayName}</p>
                     <p className="text-xs text-muted-foreground">{reportTypeLabel}</p>
                   </div>
                 </div>
               </div>
 
-              <p className="mt-3 text-sm text-muted-foreground">{template.description}</p>
+              <p className="mt-3 text-sm text-muted-foreground">{description}</p>
 
-              <TemplatePreviewImage template={template} />
+              <TemplatePreviewImage
+                template={template}
+                alt={t('reports.reportTemplates.previewAlt', { name: displayName })}
+              />
 
               <TemplateSpec
                 items={[
-                  { label: 'Cadence', value: scheduleLabel },
-                  { label: 'Format', value: formatLabel },
+                  { label: t('reports.reportTemplates.spec.cadence'), value: scheduleLabel },
+                  { label: t('reports.reportTemplates.spec.format'), value: formatLabel },
                   {
-                    label: 'Default range',
-                    value: template.defaults.dateRange?.preset?.replace(/_/g, ' ') ?? 'last 30 days',
+                    label: t('reports.reportTemplates.spec.defaultRange'),
+                    value: template.defaults.dateRange?.preset?.replace(/_/g, ' ') ?? t('reports.reportTemplates.last30Days'),
                   },
                 ]}
               />
@@ -557,7 +545,7 @@ export default function ReportTemplates() {
                   className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-md bg-primary px-4 text-xs font-semibold text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {creatingId === template.id && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                  Use template
+                  {t('reports.reportTemplates.useTemplate')}
                 </button>
               </div>
             </div>
@@ -571,12 +559,14 @@ export default function ReportTemplates() {
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h2 className="text-lg font-semibold">
-                  {activeTemplate ? `Use ${activeTemplate.name}` : 'Create Custom Template'}
+                  {activeTemplate
+                    ? t('reports.reportTemplates.useTemplateTitle', { name: getTemplateDisplayName(activeTemplate) })
+                    : t('reports.reportTemplates.createCustomTemplate')}
                 </h2>
                 <p className="text-sm text-muted-foreground">
                   {activeTemplate
-                    ? activeTemplate.description
-                    : 'Configure a report from scratch or start with a blank configuration.'}
+                    ? getTemplateDescription(activeTemplate)
+                    : t('reports.reportTemplates.blankConfigurationDescription')}
                 </p>
               </div>
               <button

@@ -1,0 +1,625 @@
+{
+  "admin": {
+    "accountDeletionRequestDetail": {
+      "back": "Back to deletion requests",
+      "retry": "Try again",
+      "errors": {
+        "network": "Network error",
+        "requestFailed": "Request failed ({{status}})"
+      },
+      "toast": {
+        "emailMismatch": "The email you typed does not match.",
+        "rejectNoteRequired": "A note is required when rejecting.",
+        "actionFailed": "Action failed ({{status}})",
+        "approved": "Request approved and queued for processing.",
+        "rejected": "Request rejected. The user has been notified."
+      },
+      "unauthorized": {
+        "title": "Not allowed",
+        "description": "You don't have permission to review this request."
+      },
+      "notFound": {
+        "title": "Request not found",
+        "description": "It may have been removed or it doesn't exist in your tenant."
+      },
+      "header": {
+        "title": "Account deletion request",
+        "reference": "Reference"
+      },
+      "user": {
+        "title": "Requesting user",
+        "name": "Name",
+        "email": "Email",
+        "joined": "Joined",
+        "userId": "User ID"
+      },
+      "request": {
+        "title": "Request details",
+        "status": "Status",
+        "requested": "Requested",
+        "processBy": "Process by",
+        "processed": "Processed",
+        "reasonFromUser": "Reason from user",
+        "noReasonGiven": "No reason given",
+        "adminNote": "Admin note"
+      },
+      "status": {
+        "pending": "Pending",
+        "processing": "Processing",
+        "completed": "Completed",
+        "cancelled": "Cancelled"
+      },
+      "actions": {
+        "reject": "Reject",
+        "approveAndQueue": "Approve and queue for processing"
+      },
+      "processedNotice": {
+        "processing": "Approved and queued for processing.",
+        "cancelled": "Rejected. User has been notified.",
+        "completed": "Completed.",
+        "processed": "Processed {{time}}."
+      },
+      "confirm": {
+        "approveTitle": "Approve deletion?",
+        "rejectTitle": "Reject deletion?",
+        "close": "Close",
+        "approveDescription": "Approving queues this account for deletion. The actual deletion runs out-of-band; you can't undo this from the UI once it picks the request up.",
+        "rejectDescription": "Rejecting cancels the request. The user will be emailed your note explaining why their request was declined.",
+        "emailLabel": "Type the user's email to confirm",
+        "noteLabel": "Note",
+        "optionalSuffix": "(optional)",
+        "approvePlaceholder": "Optional internal context for the audit log…",
+        "rejectPlaceholder": "Why are you declining? This is emailed to the user.",
+        "cancel": "Cancel",
+        "approving": "Approving…",
+        "rejecting": "Rejecting…",
+        "approve": "Approve",
+        "reject": "Reject"
+      }
+    },
+    "accountDeletionRequestsList": {
+      "title": "Account deletion requests",
+      "description": "Users in your tenant who've asked to delete their Breeze account. Approve to queue them for processing, or reject with a note explaining why.",
+      "filterLabel": "Filter by status",
+      "refresh": "Refresh",
+      "retry": "Try again",
+      "errors": {
+        "network": "Network error",
+        "requestFailed": "Request failed ({{status}})"
+      },
+      "status": {
+        "pending": "Pending",
+        "processing": "Processing",
+        "cancelled": "Cancelled",
+        "completed": "Completed"
+      },
+      "unauthorized": {
+        "title": "Not allowed",
+        "prefix": "You don't have the",
+        "suffix": "permission required to review account deletion requests."
+      },
+      "empty": {
+        "title": "No {{status}} requests",
+        "description": "You're all caught up."
+      },
+      "table": {
+        "user": "User",
+        "requested": "Requested",
+        "processBy": "Process by",
+        "reason": "Reason",
+        "status": "Status",
+        "action": "Action"
+      },
+      "noReasonGiven": "No reason given",
+      "review": "Review",
+      "pagination": {
+        "showing": "Showing {{from}}–{{to}}",
+        "previous": "Previous",
+        "next": "Next"
+      }
+    },
+    "orgConnectedAppsPage": {
+      "title": "Connected apps (org-wide)",
+      "description": {
+        "prefix": "AI assistants and other MCP clients that users in",
+        "yourOrganization": "your organization",
+        "suffix": "have authorized. Block any client to immediately revoke every active grant."
+      },
+      "refresh": "Refresh",
+      "retry": "Try again",
+      "noOrg": "Pick an organization from the org switcher to view its connected apps.",
+      "thisOrganization": "this organization",
+      "errors": {
+        "network": "Network error",
+        "requestFailed": "Request failed ({{status}})"
+      },
+      "toast": {
+        "reasonRequired": "Reason is required.",
+        "blockFailed": "Block failed ({{status}})",
+        "blocked": "{{name}} blocked for the organization. Users will sign out within their token TTL (≤15 min).",
+        "unblockFailed": "Unblock failed ({{status}})",
+        "unblocked": "{{name}} unblocked. Users must re-authorize before tokens are issued again."
+      },
+      "unauthorized": {
+        "title": "Not allowed",
+        "prefix": "You don't have the",
+        "suffix": "permission required to manage org-wide connected app blocks."
+      },
+      "empty": {
+        "title": "No authorized clients yet",
+        "description": "When a user in this org authorizes an MCP client, it'll show up here."
+      },
+      "table": {
+        "app": "App",
+        "activeUsers": "Active users",
+        "lastUsed": "Last used",
+        "status": "Status",
+        "actions": "Actions"
+      },
+      "everUsers": "{{count}} ever",
+      "blockReasonTitle": "Reason: {{reason}}",
+      "status": {
+        "blocked": "Blocked",
+        "until": "until {{time}}",
+        "allowed": "Allowed"
+      },
+      "actions": {
+        "unblock": "Unblock",
+        "blockOrgWide": "Block org-wide"
+      },
+      "blockDialog": {
+        "title": "Block {{name}}?",
+        "close": "Close",
+        "descriptionPrefix": "This blocks",
+        "descriptionMiddle": "for every user in",
+        "descriptionSuffix": "All active grants and refresh tokens are revoked immediately. Users will see a sign-out within their access-token TTL (~15 min). They cannot re-authorize until you unblock.",
+        "authorizedUsers": "users currently authorized — they'll lose access in this app.",
+        "authorizedUsers_one": "user currently authorized — they'll lose access in this app.",
+        "authorizedUsers_other": "users currently authorized — they'll lose access in this app.",
+        "reason": "Reason",
+        "reasonPlaceholder": "Vendor risk review, suspected compromise, policy change…",
+        "cancel": "Cancel",
+        "blocking": "Blocking…",
+        "blockOrgWide": "Block org-wide"
+      },
+      "unblockDialog": {
+        "title": "Unblock {{name}}?",
+        "close": "Close",
+        "descriptionPrefix": "Users in this organization will be able to authorize",
+        "descriptionSuffix": "again. Existing grants stay revoked — every user must sign in fresh through the OAuth flow.",
+        "cancel": "Cancel",
+        "unblocking": "Unblocking…",
+        "unblock": "Unblock"
+      }
+    },
+    "quarantinedDevices": {
+      "title": "Quarantined Devices",
+      "description": "Devices quarantined due to expired or invalid mTLS certificates. Approve to re-issue certificates or deny to decommission.",
+      "loading": "Loading quarantined devices...",
+      "refresh": "Refresh",
+      "retry": "Try again",
+      "errors": {
+        "fetch": "Failed to fetch quarantined devices",
+        "generic": "An error occurred",
+        "approve": "Failed to approve device",
+        "deny": "Failed to deny device"
+      },
+      "empty": {
+        "title": "No quarantined devices",
+        "description": "All devices have valid mTLS certificates. Devices with expired or revoked certificates will appear here for review."
+      },
+      "table": {
+        "hostname": "Hostname",
+        "os": "OS",
+        "quarantinedAt": "Quarantined At",
+        "reason": "Reason",
+        "actions": "Actions"
+      },
+      "actions": {
+        "approve": "Approve",
+        "deny": "Deny"
+      },
+      "count": "{{count}} quarantined device",
+      "count_one": "{{count}} quarantined device",
+      "count_other": "{{count}} quarantined devices",
+      "denyDialog": {
+        "title": "Deny Device",
+        "descriptionPrefix": "Are you sure you want to deny",
+        "descriptionSuffix": "This will permanently decommission the device and revoke its certificate. The agent will stop reporting and the device will no longer be managed.",
+        "cancel": "Cancel",
+        "denying": "Denying...",
+        "confirm": "Deny & Decommission"
+      }
+    },
+    "thirdPartyCatalog": {
+      "title": "Third-Party Package Catalog",
+      "description": "Breeze-curated metadata for third-party software detected by winget on agents.",
+      "totalEntries": "Total entries:",
+      "refresh": "Refresh",
+      "addPackage": "Add package",
+      "searchPlaceholder": "Search by name, vendor, or winget ID…",
+      "breezeTestedOnly": "Breeze-tested only",
+      "breezeTested": "Breeze-tested",
+      "dismiss": "Dismiss",
+      "loading": "Loading catalog…",
+      "empty": "No catalog entries match the current filters.",
+      "confirmDelete": "Delete \"{{name}}\" from the catalog?",
+      "errors": {
+        "load": "Failed to load catalog",
+        "generic": "An error occurred",
+        "queueTestStatus": "Failed to queue test ({{status}})",
+        "queueTest": "Failed to queue test",
+        "deleteEntry": "Failed to delete entry",
+        "delete": "Failed to delete"
+      },
+      "notice": {
+        "testComplete": "Test complete — {{summary}}",
+        "testQueued": "Test queued for {{name}}. Polling for result…"
+      },
+      "prompt": {
+        "runSmokeTest": "Run smoke test for {{name}} at which version?"
+      },
+      "platformAdmin": {
+        "title": "Platform-admin access required",
+        "prefix": "The third-party catalog is managed by Breeze platform admins. Your account",
+        "role": "an org/partner admin",
+        "suffix": "can view the curated catalog through normal patch flows but cannot edit it directly."
+      },
+      "table": {
+        "vendor": "Vendor",
+        "package": "Package",
+        "wingetId": "Winget ID",
+        "severity": "Severity",
+        "status": "Status",
+        "lastTest": "Last test",
+        "actions": "Actions"
+      },
+      "severity": {
+        "critical": "critical",
+        "important": "important",
+        "moderate": "moderate",
+        "low": "low",
+        "unknown": "unknown"
+      },
+      "test": {
+        "running": "running…",
+        "versionTitle": "v{{version}}",
+        "pass": "pass",
+        "fail": "fail",
+        "inconclusive": "inconclusive",
+        "skipped": "skipped"
+      },
+      "actions": {
+        "retest": "Re-test",
+        "runSmokeTest": "Run smoke test",
+        "edit": "Edit",
+        "delete": "Delete"
+      }
+    },
+    "thirdPartyCatalogEditor": {
+      "title": {
+        "edit": "Edit catalog entry",
+        "add": "Add catalog entry"
+      },
+      "errors": {
+        "saveStatus": "Save failed ({{status}})",
+        "save": "Failed to save"
+      },
+      "fields": {
+        "packageId": "Winget package ID",
+        "vendor": "Vendor",
+        "friendlyName": "Friendly name",
+        "defaultSeverity": "Default severity",
+        "breezeTested": "Breeze-tested",
+        "homepageUrl": "Homepage URL",
+        "notes": "Notes"
+      },
+      "placeholders": {
+        "packageId": "e.g. Mozilla.Firefox",
+        "vendor": "Mozilla",
+        "friendlyName": "Mozilla Firefox",
+        "homepageUrl": "https://example.com"
+      },
+      "severity": {
+        "critical": "critical",
+        "important": "important",
+        "moderate": "moderate",
+        "low": "low",
+        "unknown": "unknown"
+      },
+      "packageIdLocked": "Package ID cannot be changed once saved.",
+      "cancel": "Cancel",
+      "saveChanges": "Save changes",
+      "addPackage": "Add package"
+    },
+    "userDevicesPage": {
+      "title": "Trusted devices",
+      "backToUsers": "Back to users",
+      "retry": "Try again",
+      "unknownDevice": "Unknown device",
+      "thisUser": "this user",
+      "blockThisDevice": "Block this device",
+      "empty": "This user has no paired devices.",
+      "auditLink": "See related audit events",
+      "auditSuffix": "for a full history of approvals, sign-ins, and blocks.",
+      "errors": {
+        "missingUserId": "Missing user id",
+        "requestFailed": "Request failed ({{status}})",
+        "network": "Network error"
+      },
+      "toast": {
+        "reasonRequired": "Reason is required.",
+        "blockFailed": "Block failed ({{status}})",
+        "blocked": "Device blocked. {{name}} can no longer approve from this device until they re-pair."
+      },
+      "unauthorized": {
+        "title": "Not allowed",
+        "description": "You don't have permission to manage this user. Make sure you're signed in as an org or partner admin and that this user is in your tenant."
+      },
+      "description": {
+        "prefix": "Mobile devices paired by",
+        "suffix": "Blocking a device clears its push tokens and forces a re-pair."
+      },
+      "selfWarning": {
+        "prefix": "This is",
+        "own": "your own",
+        "middle": "account. Use",
+        "suffix": "to manage your own devices — admin block can't target self."
+      },
+      "status": {
+        "active": "Active",
+        "blocked": "Blocked"
+      },
+      "fields": {
+        "platform": "Platform",
+        "appVersion": "app {{version}}",
+        "lastActive": "Last active",
+        "paired": "Paired",
+        "blocked": "Blocked",
+        "installId": "Install ID"
+      },
+      "blockDialog": {
+        "title": "Block device",
+        "close": "Close",
+        "descriptionPrefix": "This will block",
+        "descriptionMiddle": "for",
+        "descriptionSuffix": "Push tokens are wiped immediately and the user will need to re-pair before approving anything from their phone.",
+        "reason": "Reason",
+        "reasonPlaceholder": "Lost phone, employee offboarded, suspected compromise…",
+        "reasonRequired": "A reason is required for the audit log.",
+        "cancel": "Cancel",
+        "blocking": "Blocking…",
+        "blockDevice": "Block device"
+      }
+    }
+  },
+  "audit": {
+    "auditExport": {
+      "title": "Export Audit Logs",
+      "description": "Download entries using the current filters and columns.",
+      "dateRange": "Date Range",
+      "defaultRange": "Last 30 days",
+      "format": "Format",
+      "columns": "Columns",
+      "includeDetails": "Include details & changes",
+      "exporting": "Exporting...",
+      "exportFormat": "Export {{format}}",
+      "formats": {
+        "csv": "CSV",
+        "json": "JSON"
+      },
+      "columnLabels": {
+        "timestamp": "Timestamp",
+        "user": "User",
+        "action": "Action",
+        "resource": "Resource",
+        "details": "Details",
+        "ipAddress": "IP Address"
+      },
+      "errors": {
+        "status": "{{status}} {{statusText}}",
+        "export": "Failed to export audit logs"
+      }
+    },
+    "auditFilters": {
+      "title": "Audit Filters",
+      "description": "Refine audit entries by user, action, and resource.",
+      "dateRange": "Date Range",
+      "start": "Start",
+      "end": "End",
+      "user": "User",
+      "searchUsers": "Search users",
+      "loadingUsers": "Loading users...",
+      "noUsersFound": "No users found",
+      "filteringBy": "Filtering by",
+      "clear": "Clear",
+      "actionTypes": "Action Types",
+      "resourceTypes": "Resource Types",
+      "searchDetails": "Search Details",
+      "searchDetailsPlaceholder": "Search activity details",
+      "applyFilters": "Apply Filters",
+      "clearAll": "Clear All",
+      "presets": {
+        "today": "Today",
+        "last7Days": "Last 7 days",
+        "last30Days": "Last 30 days",
+        "custom": "Custom"
+      },
+      "actions": {
+        "login": "login",
+        "update": "update",
+        "delete": "delete",
+        "create": "create",
+        "export": "export",
+        "access": "access"
+      },
+      "resources": {
+        "policy": "policy",
+        "report": "report",
+        "dataset": "dataset",
+        "identity": "identity",
+        "automation": "automation",
+        "asset": "asset"
+      }
+    },
+    "auditLogDetail": {
+      "title": "Audit Log Detail",
+      "subtitle": "{{action}} on {{resource}}",
+      "close": "Close",
+      "activitySummary": "Activity Summary",
+      "changesSnapshot": "Changes Snapshot",
+      "before": "Before",
+      "after": "After",
+      "userInfo": "User Info",
+      "requestMetadata": "Request Metadata",
+      "fields": {
+        "timestamp": "Timestamp:",
+        "action": "Action:",
+        "resource": "Resource:",
+        "details": "Details:",
+        "ip": "IP:",
+        "userAgent": "User Agent:",
+        "session": "Session:"
+      }
+    },
+    "auditLogViewer": {
+      "title": "Audit Trail",
+      "description": "Track user actions, sensitive operations, and system changes.",
+      "retry": "Try again",
+      "filters": "Filters",
+      "clear": "Clear",
+      "exportLogs": "Export Logs",
+      "empty": "No audit logs found.",
+      "viewDetails": "View details",
+      "errors": {
+        "fetch": "Failed to fetch audit logs",
+        "load": "Failed to load audit logs"
+      },
+      "columns": {
+        "timestamp": "Timestamp",
+        "user": "User",
+        "action": "Action",
+        "resource": "Resource",
+        "details": "Details",
+        "ipAddress": "IP"
+      },
+      "expanded": {
+        "fullDetails": "Full Details",
+        "session": "Session",
+        "changes": "Changes",
+        "fieldsUpdated": "{{count}} fields updated",
+        "fieldsUpdated_one": "{{count}} field updated",
+        "fieldsUpdated_other": "{{count}} fields updated",
+        "reviewFullSnapshot": "Review full snapshot"
+      },
+      "pagination": {
+        "showingRange": "Showing {{from}}-{{to}}",
+        "showingOf": "Showing {{from}}-{{to}} of {{total}}",
+        "previous": "Previous",
+        "page": "Page {{page}}",
+        "next": "Next"
+      }
+    },
+    "complianceReport": {
+      "title": "Compliance Report",
+      "description": "Generate audit-ready summaries aligned to compliance controls.",
+      "generateReport": "Generate Report",
+      "dataAccessAudit": "Data Access Audit",
+      "sensitiveOperations": "Sensitive Operations",
+      "reviewRequired": "Review required",
+      "categories": {
+        "gdpr": { "label": "GDPR" },
+        "soc2": { "label": "SOC 2" },
+        "hipaa": { "label": "HIPAA" }
+      },
+      "summary": {
+        "gdpr": {
+          "dataAccessEvents": "Data access events",
+          "dsarRequests": "DSAR requests",
+          "retentionAlerts": "Retention alerts"
+        },
+        "soc2": {
+          "controlExceptions": "Control exceptions",
+          "privilegedActions": "Privileged actions",
+          "policyAttestations": "Policy attestations"
+        },
+        "hipaa": {
+          "phiAccessEvents": "PHI access events",
+          "roleChanges": "Role changes",
+          "encryptionChecks": "Encryption checks"
+        },
+        "helpers": {
+          "past30Days": "past 30 days",
+          "pending2": "pending 2",
+          "overdue": "overdue",
+          "last7Days": "last 7 days",
+          "withinScope": "within scope",
+          "complete": "complete",
+          "past14Days": "past 14 days",
+          "requiresReview": "requires review",
+          "compliant": "compliant"
+        }
+      },
+      "table": {
+        "user": "User",
+        "data": "Data",
+        "purpose": "Purpose",
+        "time": "Time"
+      },
+      "data": {
+        "customerRecords": "Customer Records",
+        "adminPortal": "Admin Portal",
+        "payrollRecords": "Payroll Records",
+        "deviceGroupVip": "Device Group - VIP"
+      },
+      "purpose": {
+        "billingReview": "Billing review",
+        "securityAudit": "Security audit",
+        "complianceSampling": "Compliance sampling",
+        "accessProvisioning": "Access provisioning"
+      },
+      "operations": {
+        "exportedCustomerDataset": "Exported customer dataset to CSV",
+        "mfaWindowReduced": "MFA window reduced to 15 minutes",
+        "roleChangedExternalContractor": "Role changed for external contractor"
+      },
+      "severity": {
+        "high": "High",
+        "medium": "Medium"
+      }
+    },
+    "userActivityReport": {
+      "title": "User Activity Report",
+      "description": "Review activity trends and export history.",
+      "allUsers": "All users",
+      "unknown": "Unknown",
+      "retry": "Try again",
+      "exportActivity": "Export Activity",
+      "selectedActivity": "{{user}} activity",
+      "totalActions": "Total Actions",
+      "topAction": "Top Action",
+      "notApplicable": "n/a",
+      "occurrences": "{{count}} occurrences",
+      "occurrences_one": "{{count}} occurrence",
+      "occurrences_other": "{{count}} occurrences",
+      "distinctActions": "Distinct Actions",
+      "activityTimeline": "Activity Timeline",
+      "noActivity": "No activity found.",
+      "actionsByType": "Actions by Type",
+      "noActionsRecorded": "No actions recorded.",
+      "recentActions": "Recent Actions",
+      "noRecentActions": "No recent actions found.",
+      "errors": {
+        "fetchUsers": "Failed to fetch users",
+        "fetchActivity": "Failed to fetch activity",
+        "loadData": "Failed to load data"
+      },
+      "table": {
+        "time": "Time",
+        "action": "Action",
+        "resource": "Resource",
+        "ip": "IP"
+      }
+    }
+  }
+}

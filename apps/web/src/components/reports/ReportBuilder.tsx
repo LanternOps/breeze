@@ -30,6 +30,7 @@ import type { FilterConditionGroup } from '@breeze/shared';
 import { FilterBuilder, DEFAULT_FILTER_FIELDS } from '../filters/FilterBuilder';
 import { FilterPreview } from '../filters/FilterPreview';
 import { useFilterPreview } from '../../hooks/useFilterPreview';
+import { useTranslation } from 'react-i18next';
 
 type BuilderReportType = 'devices' | 'alerts' | 'patches' | 'compliance' | 'activity';
 type ReportBuilderType = BuilderReportType | LegacyReportType;
@@ -682,6 +683,7 @@ export default function ReportBuilder({
   onPreview,
   onCancel
 }: ReportBuilderProps) {
+  const { t } = useTranslation('reports');
   const { currentOrgId } = useOrgStore();
   const defaultsAppliedRef = useRef(false);
   const initialType = normalizeBuilderType(defaultValues?.builderType ?? defaultValues?.type);
@@ -764,11 +766,32 @@ export default function ReportBuilder({
     [fieldDefinitions]
   );
 
+  const getReportTypeOptionLabel = (type: BuilderReportType) =>
+    t(`reports.reportBuilder.reportTypes.${type}.label`); // i18n-dynamic
+  const getReportTypeOptionDescription = (type: BuilderReportType) =>
+    t(`reports.reportBuilder.reportTypes.${type}.description`); // i18n-dynamic
+  const getDataSourceFieldLabel = (fieldId: string) =>
+    t(`reports.reportBuilder.dataSource.${builderType}.${fieldId}.label`); // i18n-dynamic
+  const getDataSourceOptionLabel = (fieldId: string, value: string) =>
+    t(`reports.reportBuilder.dataSource.${builderType}.${fieldId}.options.${value}`); // i18n-dynamic
+  const getFilterOperatorLabel = (operator: string) =>
+    t(`reports.reportBuilder.filterOperators.${operator}`); // i18n-dynamic
+  const getWeekDayLabel = (day: string) => t(`reports.reportBuilder.weekDays.${day}`); // i18n-dynamic
+  const getScheduleOptionLabel = (value: ReportSchedule) =>
+    t(`reports.reportBuilder.scheduleOptions.${value}.label`); // i18n-dynamic
+  const getExportFormatLabel = (value: ReportFormat) =>
+    t(`reports.reportBuilder.exportFormats.${value}.label`); // i18n-dynamic
+  const getExportFormatDescription = (value: ReportFormat) =>
+    t(`reports.reportBuilder.exportFormats.${value}.description`); // i18n-dynamic
+  const getChartTypeLabel = (value: ChartType) => t(`reports.reportBuilder.chartTypes.${value}`); // i18n-dynamic
+
   const fieldLabelMap = useMemo(() => {
     const map = new Map<string, string>();
-    fieldDefinitions.forEach(field => map.set(field.id, field.label));
+    fieldDefinitions.forEach(field => {
+      map.set(field.id, t(`reports.reportBuilder.fields.${builderType}.${field.id}`)); // i18n-dynamic
+    });
     return map;
-  }, [fieldDefinitions]);
+  }, [builderType, fieldDefinitions, t]);
 
   const getFieldLabel = (fieldId: string) => fieldLabelMap.get(fieldId) ?? formatLabel(fieldId);
 
@@ -780,10 +803,10 @@ export default function ReportBuilder({
 
   const groupedMetricLabel = useMemo(() => {
     if (!groupBy) return '';
-    if (aggregation.type === 'count') return 'Count';
-    const fieldLabel = aggregation.field ? getFieldLabel(aggregation.field) : 'Value';
-    return `${aggregation.type === 'sum' ? 'Sum' : 'Avg'} ${fieldLabel}`;
-  }, [aggregation, groupBy, fieldLabelMap]);
+    if (aggregation.type === 'count') return t('reports.reportBuilder.groupedMetric.count');
+    const fieldLabel = aggregation.field ? getFieldLabel(aggregation.field) : t('reports.reportBuilder.groupedMetric.value');
+    return t(`reports.reportBuilder.groupedMetric.${aggregation.type}`, { field: fieldLabel }); // i18n-dynamic
+  }, [aggregation, groupBy, fieldLabelMap, t]);
 
   useEffect(() => {
     if (mode === 'adhoc') return;
@@ -864,7 +887,7 @@ export default function ReportBuilder({
         };
 
         if (!response.ok) {
-          throw new Error(payload.error || 'Failed to load live preview');
+          throw new Error(payload.error || t('reports.reportBuilder.errors.loadLivePreview'));
         }
 
         if (!mounted || previewRequestIdRef.current !== requestId) return;
@@ -883,7 +906,7 @@ export default function ReportBuilder({
         if (!mounted || previewRequestIdRef.current !== requestId) return;
         setLivePreviewRows([]);
         setLivePreviewSummary(null);
-        setLivePreviewError(err instanceof Error ? err.message : 'Failed to load live preview');
+        setLivePreviewError(err instanceof Error ? err.message : t('reports.reportBuilder.errors.loadLivePreview'));
       } finally {
         if (!mounted || previewRequestIdRef.current !== requestId) return;
         setLivePreviewLoading(false);
@@ -894,7 +917,7 @@ export default function ReportBuilder({
       mounted = false;
       window.clearTimeout(timer);
     };
-  }, [builderType, currentOrgId, dataSource, defaultValues?.dateRange, defaultValues?.filters, exportFormats, filterConditions, mode]);
+  }, [builderType, currentOrgId, dataSource, defaultValues?.dateRange, defaultValues?.filters, exportFormats, filterConditions, mode, t]);
 
   const normalizedPreviewRows = useMemo(
     () => livePreviewRows.map(row => normalizePreviewRow(builderType, row)),
@@ -1046,20 +1069,27 @@ export default function ReportBuilder({
     return dataSourceFields
       .map(field => {
         const value = dataSource[field.id];
+        const fieldLabel = getDataSourceFieldLabel(field.id);
         if (field.type === 'toggle') {
-          return `${field.label}: ${value ? 'On' : 'Off'}`;
+          return t('reports.reportBuilder.dataSourceSummary', {
+            label: fieldLabel,
+            value: value
+              ? t('reports.reportBuilder.values.on')
+              : t('reports.reportBuilder.values.off')
+          });
         }
         if (field.type === 'select') {
-          const optionLabel = field.options?.find(option => option.value === value)?.label ?? value;
-          return `${field.label}: ${optionLabel}`;
+          const optionValue = field.options?.find(option => option.value === value)?.value;
+          const optionLabel = optionValue ? getDataSourceOptionLabel(field.id, optionValue) : value;
+          return t('reports.reportBuilder.dataSourceSummary', { label: fieldLabel, value: optionLabel });
         }
         if (field.type === 'text') {
-          return value ? `${field.label}: ${value}` : null;
+          return value ? t('reports.reportBuilder.dataSourceSummary', { label: fieldLabel, value }) : null;
         }
         return null;
       })
       .filter((value): value is string => Boolean(value));
-  }, [dataSource, dataSourceFields]);
+  }, [builderType, dataSource, dataSourceFields, t]);
 
   const handleTypeSelect = (type: BuilderReportType) => {
     setBuilderType(type);
@@ -1124,7 +1154,7 @@ export default function ReportBuilder({
     if (!trimmed) return;
     const isValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed);
     if (!isValid) {
-      setEmailError('Enter a valid email address.');
+      setEmailError(t('reports.reportBuilder.errors.validEmail'));
       return;
     }
     setEmailError(undefined);
@@ -1176,7 +1206,7 @@ export default function ReportBuilder({
     try {
       await onPreview(values);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to generate preview');
+      setError(err instanceof Error ? err.message : t('reports.reportBuilder.errors.generatePreview'));
     } finally {
       setPreviewing(false);
     }
@@ -1188,17 +1218,17 @@ export default function ReportBuilder({
     setEmailError(undefined);
 
     if (mode !== 'adhoc' && !reportName.trim()) {
-      setError('Report name is required.');
+      setError(t('reports.reportBuilder.errors.reportNameRequired'));
       return;
     }
 
     if (saveTemplate && !templateName.trim()) {
-      setError('Template name is required.');
+      setError(t('reports.reportBuilder.errors.templateNameRequired'));
       return;
     }
 
     if (exportFormats.length === 0) {
-      setError('Select at least one export format.');
+      setError(t('reports.reportBuilder.errors.selectExportFormat'));
       return;
     }
 
@@ -1260,12 +1290,12 @@ export default function ReportBuilder({
       }
 
       if (!response.ok) {
-        throw new Error('Failed to save report');
+        throw new Error(t('reports.reportBuilder.errors.saveReport'));
       }
 
       onSubmit?.(values);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('reports.reportBuilder.errors.generic'));
     } finally {
       setSaving(false);
     }
@@ -1275,7 +1305,7 @@ export default function ReportBuilder({
     if (previewColumns.length === 0) {
       return (
         <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
-          Select fields to populate the preview table.
+          {t('reports.reportBuilder.previewTable.selectFields')}
         </div>
       );
     }
@@ -1312,7 +1342,7 @@ export default function ReportBuilder({
     if (!chartSeries.length) {
       return (
         <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
-          Not enough data to chart.
+          {t('reports.reportBuilder.chart.notEnoughData')}
         </div>
       );
     }
@@ -1390,7 +1420,7 @@ export default function ReportBuilder({
 
       return (
         <div className="flex flex-wrap items-center gap-6">
-          <svg viewBox="0 0 36 36" className="h-28 w-28 -rotate-90" aria-label="Pie chart preview">
+          <svg viewBox="0 0 36 36" className="h-28 w-28 -rotate-90" aria-label={t('reports.reportBuilder.chart.pieChartPreview')}>
             {segments.map((segment) => (
               <circle
                 key={segment.key}
@@ -1421,15 +1451,15 @@ export default function ReportBuilder({
     return renderPreviewTable();
   };
 
-  const scheduleLabel = scheduleOptions.find(option => option.value === schedule)?.label ?? 'Weekly';
+  const scheduleLabel = getScheduleOptionLabel(schedule);
   const scheduleDetail =
     schedule === 'weekly'
-      ? weekDays.find(day => day.value === scheduleDay)?.label
+      ? getWeekDayLabel(scheduleDay)
       : schedule === 'monthly'
-        ? `Day ${scheduleDate}`
-        : 'Every day';
+        ? t('reports.reportBuilder.scheduleDetail.day', { date: scheduleDate })
+        : t('reports.reportBuilder.scheduleDetail.everyDay');
 
-  const previewTypeLabel = reportTypeOptions.find(option => option.value === builderType)?.label ?? 'Report';
+  const previewTypeLabel = getReportTypeOptionLabel(builderType);
 
   const showDelivery = mode !== 'adhoc';
 
@@ -1447,18 +1477,18 @@ export default function ReportBuilder({
 
         <div className="rounded-lg border bg-card p-6 shadow-xs space-y-4">
           <div>
-            <h2 className="text-sm font-semibold">Report details</h2>
-            <p className="text-xs text-muted-foreground">Name the report and decide if it becomes a template.</p>
+            <h2 className="text-sm font-semibold">{t('reports.reportBuilder.sections.reportDetails.title')}</h2>
+            <p className="text-xs text-muted-foreground">{t('reports.reportBuilder.sections.reportDetails.description')}</p>
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <label htmlFor="report-name" className="text-sm font-medium">
-                Report name
+                {t('reports.reportBuilder.fieldsShared.reportName')}
               </label>
               <input
                 id="report-name"
-                placeholder="Monthly Security Overview"
+                placeholder={t('reports.reportBuilder.placeholders.reportName')}
                 value={reportName}
                 onChange={event => setReportName(event.target.value)}
                 className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
@@ -1472,7 +1502,7 @@ export default function ReportBuilder({
                   onChange={event => setSaveTemplate(event.target.checked)}
                   className="h-4 w-4 rounded border"
                 />
-                Save as template
+                {t('reports.reportBuilder.fieldsShared.saveAsTemplate')}
               </label>
             </div>
           </div>
@@ -1480,11 +1510,11 @@ export default function ReportBuilder({
           {saveTemplate && (
             <div className="space-y-2">
               <label htmlFor="template-name" className="text-sm font-medium">
-                Template name
+                {t('reports.reportBuilder.fieldsShared.templateName')}
               </label>
               <input
                 id="template-name"
-                placeholder="Quarterly Compliance Pack"
+                placeholder={t('reports.reportBuilder.placeholders.templateName')}
                 value={templateName}
                 onChange={event => setTemplateName(event.target.value)}
                 className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
@@ -1497,8 +1527,8 @@ export default function ReportBuilder({
           <div className="flex items-center gap-2">
             <Monitor className="h-4 w-4 text-muted-foreground" />
             <div>
-              <h2 className="text-sm font-semibold">Report type</h2>
-              <p className="text-xs text-muted-foreground">Choose the kind of report you are building.</p>
+              <h2 className="text-sm font-semibold">{t('reports.reportBuilder.sections.reportType.title')}</h2>
+              <p className="text-xs text-muted-foreground">{t('reports.reportBuilder.sections.reportType.description')}</p>
             </div>
           </div>
 
@@ -1517,9 +1547,9 @@ export default function ReportBuilder({
                 >
                   <div className="flex items-center gap-2">
                     <type.icon className={cn('h-5 w-5', isSelected ? 'text-primary' : 'text-muted-foreground')} />
-                    <span className="font-medium">{type.label}</span>
+                    <span className="font-medium">{getReportTypeOptionLabel(type.value)}</span>
                   </div>
-                  <p className="text-xs text-muted-foreground">{type.description}</p>
+                  <p className="text-xs text-muted-foreground">{getReportTypeOptionDescription(type.value)}</p>
                 </button>
               );
             })}
@@ -1530,15 +1560,15 @@ export default function ReportBuilder({
           <div className="flex items-center gap-2">
             <Database className="h-4 w-4 text-muted-foreground" />
             <div>
-              <h2 className="text-sm font-semibold">Data source</h2>
-              <p className="text-xs text-muted-foreground">Configure the dataset for this report type.</p>
+              <h2 className="text-sm font-semibold">{t('reports.reportBuilder.sections.dataSource.title')}</h2>
+              <p className="text-xs text-muted-foreground">{t('reports.reportBuilder.sections.dataSource.description')}</p>
             </div>
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2">
             {dataSourceFields.map(field => (
               <div key={field.id} className="space-y-2">
-                <label className="text-xs font-medium text-muted-foreground">{field.label}</label>
+                <label className="text-xs font-medium text-muted-foreground">{getDataSourceFieldLabel(field.id)}</label>
                 {field.type === 'toggle' ? (
                   <label className="flex items-center gap-2 text-sm font-medium">
                     <input
@@ -1552,7 +1582,7 @@ export default function ReportBuilder({
                       }
                       className="h-4 w-4 rounded border"
                     />
-                    {field.helper ?? 'Enabled'}
+                    {field.helper ?? t('reports.reportBuilder.values.enabled')}
                   </label>
                 ) : (
                   <select
@@ -1567,7 +1597,7 @@ export default function ReportBuilder({
                   >
                     {field.options?.map(option => (
                       <option key={option.value} value={option.value}>
-                        {option.label}
+                        {getDataSourceOptionLabel(field.id, option.value)}
                       </option>
                     ))}
                   </select>
@@ -1581,14 +1611,14 @@ export default function ReportBuilder({
           <div className="flex items-center gap-2">
             <Columns className="h-4 w-4 text-muted-foreground" />
             <div>
-              <h2 className="text-sm font-semibold">Columns and fields</h2>
-              <p className="text-xs text-muted-foreground">Pick fields and drag to reorder.</p>
+              <h2 className="text-sm font-semibold">{t('reports.reportBuilder.sections.columns.title')}</h2>
+              <p className="text-xs text-muted-foreground">{t('reports.reportBuilder.sections.columns.description')}</p>
             </div>
           </div>
 
           <div className="grid gap-4 lg:grid-cols-2">
             <div className="space-y-3">
-              <p className="text-xs font-medium text-muted-foreground">Available fields</p>
+              <p className="text-xs font-medium text-muted-foreground">{t('reports.reportBuilder.availableFields')}</p>
               <div className="flex flex-wrap gap-2">
                 {fieldDefinitions.map(field => {
                   const isSelected = selectedFields.includes(field.id);
@@ -1604,17 +1634,17 @@ export default function ReportBuilder({
                           : 'hover:bg-muted'
                       )}
                     >
-                      {field.label}
+                      {getFieldLabel(field.id)}
                     </button>
                   );
                 })}
               </div>
             </div>
             <div className="space-y-3">
-              <p className="text-xs font-medium text-muted-foreground">Selected fields</p>
+              <p className="text-xs font-medium text-muted-foreground">{t('reports.reportBuilder.selectedFields')}</p>
               {selectedFields.length === 0 ? (
                 <div className="rounded-md border border-dashed p-4 text-xs text-muted-foreground">
-                  No fields selected yet.
+                  {t('reports.reportBuilder.noFieldsSelected')}
                 </div>
               ) : (
                 <div className="space-y-2">
@@ -1664,8 +1694,8 @@ export default function ReportBuilder({
             <div className="flex items-center gap-2">
               <Filter className="h-4 w-4 text-muted-foreground" />
               <div>
-                <h2 className="text-sm font-semibold">Filters</h2>
-                <p className="text-xs text-muted-foreground">Filter report data by records or device properties.</p>
+                <h2 className="text-sm font-semibold">{t('reports.reportBuilder.sections.filters.title')}</h2>
+                <p className="text-xs text-muted-foreground">{t('reports.reportBuilder.sections.filters.description')}</p>
               </div>
             </div>
             <div className="flex rounded-md border">
@@ -1677,7 +1707,7 @@ export default function ReportBuilder({
                   filterMode === 'simple' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
                 )}
               >
-                Record Filters
+                {t('reports.reportBuilder.filterModes.recordFilters')}
               </button>
               <button
                 type="button"
@@ -1688,7 +1718,7 @@ export default function ReportBuilder({
                 )}
               >
                 <Filter className="h-3 w-3 inline mr-1" />
-                Device Filter
+                {t('reports.reportBuilder.filterModes.deviceFilter')}
               </button>
             </div>
           </div>
@@ -1697,7 +1727,7 @@ export default function ReportBuilder({
             <>
               {filterConditions.length === 0 ? (
                 <div className="rounded-md border border-dashed p-4 text-xs text-muted-foreground">
-                  No filters yet. Add your first condition.
+                  {t('reports.reportBuilder.noFilters')}
                 </div>
               ) : (
                 <div className="space-y-3">
@@ -1705,7 +1735,7 @@ export default function ReportBuilder({
                     <div key={condition.id} className="grid gap-2 sm:grid-cols-[80px_1fr_1fr_1fr_auto]">
                       {index === 0 ? (
                         <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground self-center">
-                          Where
+                          {t('reports.reportBuilder.where')}
                         </div>
                       ) : (
                         <select
@@ -1713,8 +1743,8 @@ export default function ReportBuilder({
                           onChange={event => updateFilterCondition(condition.id, { logic: event.target.value as 'and' | 'or' })}
                           className="h-9 rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
                         >
-                          <option value="and">AND</option>
-                          <option value="or">OR</option>
+                          <option value="and">{t('reports.reportBuilder.logic.and')}</option>
+                          <option value="or">{t('reports.reportBuilder.logic.or')}</option>
                         </select>
                       )}
                       <select
@@ -1724,7 +1754,7 @@ export default function ReportBuilder({
                       >
                         {fieldDefinitions.map(field => (
                           <option key={field.id} value={field.id}>
-                            {field.label}
+                            {getFieldLabel(field.id)}
                           </option>
                         ))}
                       </select>
@@ -1735,7 +1765,7 @@ export default function ReportBuilder({
                       >
                         {filterOperators.map(operator => (
                           <option key={operator.value} value={operator.value}>
-                            {operator.label}
+                            {getFilterOperatorLabel(operator.value)}
                           </option>
                         ))}
                       </select>
@@ -1743,7 +1773,7 @@ export default function ReportBuilder({
                         value={condition.value}
                         onChange={event => updateFilterCondition(condition.id, { value: event.target.value })}
                         className="h-9 rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
-                        placeholder="Value"
+                        placeholder={t('reports.reportBuilder.placeholders.value')}
                       />
                       <button
                         type="button"
@@ -1763,13 +1793,13 @@ export default function ReportBuilder({
                 className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-xs font-medium hover:bg-muted"
               >
                 <Plus className="h-3 w-3" />
-                Add condition
+                {t('reports.reportBuilder.addCondition')}
               </button>
             </>
           ) : (
             <div className="space-y-4">
               <p className="text-xs text-muted-foreground">
-                Scope this report to devices matching the filter below.
+                {t('reports.reportBuilder.deviceFilterDescription')}
               </p>
               <FilterBuilder
                 value={deviceFilter}
@@ -1792,29 +1822,29 @@ export default function ReportBuilder({
           <div className="flex items-center gap-2">
             <BarChart3 className="h-4 w-4 text-muted-foreground" />
             <div>
-              <h2 className="text-sm font-semibold">Grouping and aggregation</h2>
-              <p className="text-xs text-muted-foreground">Summarize data with counts, sums, or averages.</p>
+              <h2 className="text-sm font-semibold">{t('reports.reportBuilder.sections.grouping.title')}</h2>
+              <p className="text-xs text-muted-foreground">{t('reports.reportBuilder.sections.grouping.description')}</p>
             </div>
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">
-              <label className="text-xs font-medium text-muted-foreground">Group by</label>
+              <label className="text-xs font-medium text-muted-foreground">{t('reports.reportBuilder.groupBy')}</label>
               <select
                 value={groupBy}
                 onChange={event => setGroupBy(event.target.value)}
                 className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               >
-                <option value="">No grouping</option>
+                <option value="">{t('reports.reportBuilder.noGrouping')}</option>
                 {groupByOptions.map(field => (
                   <option key={field.id} value={field.id}>
-                    {field.label}
+                    {getFieldLabel(field.id)}
                   </option>
                 ))}
               </select>
             </div>
             <div className="space-y-2">
-              <label className="text-xs font-medium text-muted-foreground">Aggregation</label>
+              <label className="text-xs font-medium text-muted-foreground">{t('reports.reportBuilder.aggregation')}</label>
               <select
                 value={aggregation.type}
                 onChange={event => {
@@ -1829,25 +1859,25 @@ export default function ReportBuilder({
                 }}
                 className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               >
-                <option value="count">Count</option>
-                <option value="sum">Sum</option>
-                <option value="avg">Average</option>
+                <option value="count">{t('reports.reportBuilder.aggregationOptions.count')}</option>
+                <option value="sum">{t('reports.reportBuilder.aggregationOptions.sum')}</option>
+                <option value="avg">{t('reports.reportBuilder.aggregationOptions.avg')}</option>
               </select>
             </div>
           </div>
 
           {aggregation.type !== 'count' && (
             <div className="space-y-2">
-              <label className="text-xs font-medium text-muted-foreground">Aggregation field</label>
+              <label className="text-xs font-medium text-muted-foreground">{t('reports.reportBuilder.aggregationField')}</label>
               <select
                 value={aggregation.field ?? ''}
                 onChange={event => setAggregation(prev => ({ ...prev, field: event.target.value }))}
                 className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               >
-                {numericFields.length === 0 && <option value="">No numeric fields</option>}
+                {numericFields.length === 0 && <option value="">{t('reports.reportBuilder.noNumericFields')}</option>}
                 {numericFields.map(field => (
                   <option key={field.id} value={field.id}>
-                    {field.label}
+                    {getFieldLabel(field.id)}
                   </option>
                 ))}
               </select>
@@ -1859,8 +1889,8 @@ export default function ReportBuilder({
           <div className="flex items-center gap-2">
             <PieChart className="h-4 w-4 text-muted-foreground" />
             <div>
-              <h2 className="text-sm font-semibold">Chart type</h2>
-              <p className="text-xs text-muted-foreground">Choose how the report is visualized.</p>
+              <h2 className="text-sm font-semibold">{t('reports.reportBuilder.sections.chartType.title')}</h2>
+              <p className="text-xs text-muted-foreground">{t('reports.reportBuilder.sections.chartType.description')}</p>
             </div>
           </div>
 
@@ -1878,7 +1908,7 @@ export default function ReportBuilder({
                   )}
                 >
                   <option.icon className={cn('h-4 w-4', isSelected ? 'text-primary' : 'text-muted-foreground')} />
-                  {option.label}
+                  {getChartTypeLabel(option.value)}
                 </button>
               );
             })}
@@ -1890,13 +1920,13 @@ export default function ReportBuilder({
             <div className="flex items-center gap-2">
               <Calendar className="h-4 w-4 text-muted-foreground" />
               <div>
-                <h2 className="text-sm font-semibold">Schedule and delivery</h2>
-                <p className="text-xs text-muted-foreground">Set cadence, formats, and recipients.</p>
+                <h2 className="text-sm font-semibold">{t('reports.reportBuilder.sections.delivery.title')}</h2>
+                <p className="text-xs text-muted-foreground">{t('reports.reportBuilder.sections.delivery.description')}</p>
               </div>
             </div>
 
             <div className="space-y-3">
-              <p className="text-xs font-medium text-muted-foreground">Schedule</p>
+              <p className="text-xs font-medium text-muted-foreground">{t('reports.reportBuilder.schedule')}</p>
               <div className="flex flex-wrap gap-2">
                 {scheduleOptions.map(option => (
                   <button
@@ -1910,14 +1940,14 @@ export default function ReportBuilder({
                         : 'hover:bg-muted'
                     )}
                   >
-                    {option.label}
+                    {getScheduleOptionLabel(option.value)}
                   </button>
                 ))}
               </div>
 
               <div className="grid gap-3 sm:grid-cols-3">
                 <div className="space-y-2">
-                  <label className="text-xs font-medium text-muted-foreground">Run time</label>
+                  <label className="text-xs font-medium text-muted-foreground">{t('reports.reportBuilder.runTime')}</label>
                   <input
                     type="time"
                     value={scheduleTime}
@@ -1927,7 +1957,7 @@ export default function ReportBuilder({
                 </div>
                 {schedule === 'weekly' && (
                   <div className="space-y-2">
-                    <label className="text-xs font-medium text-muted-foreground">Day of week</label>
+                    <label className="text-xs font-medium text-muted-foreground">{t('reports.reportBuilder.dayOfWeek')}</label>
                     <select
                       value={scheduleDay}
                       onChange={event => setScheduleDay(event.target.value)}
@@ -1935,7 +1965,7 @@ export default function ReportBuilder({
                     >
                       {weekDays.map(day => (
                         <option key={day.value} value={day.value}>
-                          {day.label}
+                          {getWeekDayLabel(day.value)}
                         </option>
                       ))}
                     </select>
@@ -1943,7 +1973,7 @@ export default function ReportBuilder({
                 )}
                 {schedule === 'monthly' && (
                   <div className="space-y-2">
-                    <label className="text-xs font-medium text-muted-foreground">Day of month</label>
+                    <label className="text-xs font-medium text-muted-foreground">{t('reports.reportBuilder.dayOfMonth')}</label>
                     <select
                       value={scheduleDate}
                       onChange={event => setScheduleDate(event.target.value)}
@@ -1961,7 +1991,7 @@ export default function ReportBuilder({
             </div>
 
             <div className="space-y-3">
-              <p className="text-xs font-medium text-muted-foreground">Export formats</p>
+              <p className="text-xs font-medium text-muted-foreground">{t('reports.reportBuilder.exportFormatsTitle')}</p>
               <div className="grid gap-3 sm:grid-cols-3">
                 {exportFormatOptions.map(format => {
                   const isSelected = exportFormats.includes(format.value);
@@ -1975,8 +2005,8 @@ export default function ReportBuilder({
                         isSelected ? 'border-primary bg-primary/10 text-foreground' : 'hover:bg-muted'
                       )}
                     >
-                      <span className="font-medium">{format.label}</span>
-                      <span className="text-muted-foreground">{format.description}</span>
+                      <span className="font-medium">{getExportFormatLabel(format.value)}</span>
+                      <span className="text-muted-foreground">{getExportFormatDescription(format.value)}</span>
                     </button>
                   );
                 })}
@@ -1986,7 +2016,7 @@ export default function ReportBuilder({
             <div className="space-y-3">
               <div className="flex items-center gap-2">
                 <Mail className="h-4 w-4 text-muted-foreground" />
-                <p className="text-xs font-medium text-muted-foreground">Email distribution list</p>
+                <p className="text-xs font-medium text-muted-foreground">{t('reports.reportBuilder.emailDistributionList')}</p>
               </div>
               <div className="flex flex-wrap gap-2">
                 {emailRecipients.map(email => (
@@ -2012,7 +2042,7 @@ export default function ReportBuilder({
                       addEmailRecipient();
                     }
                   }}
-                  placeholder="name@company.com"
+                  placeholder={t('reports.reportBuilder.placeholders.email')}
                   className="h-9 flex-1 rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
                 <button
@@ -2020,7 +2050,7 @@ export default function ReportBuilder({
                   onClick={addEmailRecipient}
                   className="h-9 rounded-md border px-3 text-xs font-medium hover:bg-muted"
                 >
-                  Add recipient
+                  {t('reports.reportBuilder.addRecipient')}
                 </button>
               </div>
               {emailError && <p className="text-xs text-destructive">{emailError}</p>}
@@ -2035,7 +2065,7 @@ export default function ReportBuilder({
               onClick={onCancel}
               className="h-11 w-full rounded-md border bg-background text-sm font-medium text-foreground transition hover:bg-muted sm:w-auto sm:px-6"
             >
-              Cancel
+              {t('reports.reportBuilder.actions.cancel')}
             </button>
           )}
 
@@ -2047,7 +2077,7 @@ export default function ReportBuilder({
               className="flex h-11 w-full items-center justify-center gap-2 rounded-md border bg-background text-sm font-medium transition hover:bg-muted disabled:opacity-60 sm:w-auto sm:px-6"
             >
               {previewing ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-              Preview
+              {t('reports.reportBuilder.actions.preview')}
             </button>
           )}
 
@@ -2057,7 +2087,11 @@ export default function ReportBuilder({
             className="flex h-11 w-full items-center justify-center gap-2 rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-60 sm:w-auto sm:px-6"
           >
             {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-            {mode === 'edit' ? 'Update report' : mode === 'adhoc' ? 'Generate report' : 'Save report'}
+            {mode === 'edit'
+              ? t('reports.reportBuilder.actions.updateReport')
+              : mode === 'adhoc'
+                ? t('reports.reportBuilder.actions.generateReport')
+                : t('reports.reportBuilder.actions.saveReport')}
           </button>
         </div>
       </div>
@@ -2066,8 +2100,8 @@ export default function ReportBuilder({
         <div className="rounded-lg border bg-card p-6 shadow-xs space-y-5">
           <div className="flex items-center justify-between">
             <div>
-              <h2 className="text-sm font-semibold">Live preview</h2>
-              <p className="text-xs text-muted-foreground">Updates as you configure the report.</p>
+              <h2 className="text-sm font-semibold">{t('reports.reportBuilder.livePreview.title')}</h2>
+              <p className="text-xs text-muted-foreground">{t('reports.reportBuilder.livePreview.description')}</p>
             </div>
             <span className="rounded-full border px-2 py-1 text-xs text-muted-foreground">
               {chartType.toUpperCase()}
@@ -2075,7 +2109,7 @@ export default function ReportBuilder({
           </div>
 
           <div className="space-y-1">
-            <h3 className="text-lg font-semibold">{reportName || 'Untitled report'}</h3>
+            <h3 className="text-lg font-semibold">{reportName || t('reports.reportBuilder.livePreview.untitledReport')}</h3>
             <p className="text-xs text-muted-foreground">{previewTypeLabel}</p>
           </div>
 
@@ -2088,7 +2122,7 @@ export default function ReportBuilder({
           </div>
 
           <div className="space-y-2">
-            <p className="text-xs font-medium text-muted-foreground">Data source</p>
+            <p className="text-xs font-medium text-muted-foreground">{t('reports.reportBuilder.sections.dataSource.title')}</p>
             <div className="flex flex-wrap gap-2">
               {dataSourceSummary.map(summary => (
                 <span key={summary} className="rounded-md border px-2 py-1 text-xs text-muted-foreground">
@@ -2102,7 +2136,7 @@ export default function ReportBuilder({
             {livePreviewLoading && (
               <div className="flex items-center justify-center gap-2 rounded-md border border-dashed p-6 text-sm text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" />
-                Loading live preview...
+                {t('reports.reportBuilder.livePreview.loading')}
               </div>
             )}
 
@@ -2114,7 +2148,7 @@ export default function ReportBuilder({
 
             {!livePreviewLoading && !livePreviewError && previewRows.length === 0 && (
               <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
-                No preview data for the current configuration.
+                {t('reports.reportBuilder.livePreview.noData')}
               </div>
             )}
 
@@ -2126,7 +2160,7 @@ export default function ReportBuilder({
                   <>
                     {renderChart()}
                     <div className="space-y-2">
-                      <p className="text-xs font-medium text-muted-foreground">Preview rows</p>
+                      <p className="text-xs font-medium text-muted-foreground">{t('reports.reportBuilder.livePreview.previewRows')}</p>
                       {renderPreviewTable(true)}
                     </div>
                   </>

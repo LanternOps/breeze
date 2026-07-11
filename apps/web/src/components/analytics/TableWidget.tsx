@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { ArrowDown, ArrowUp } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 
 type TableColumn<T> = {
@@ -21,6 +22,7 @@ export default function TableWidget<T extends Record<string, unknown>>({
   data,
   columns
 }: TableWidgetProps<T>) {
+  const { t } = useTranslation('reports');
   const [query, setQuery] = useState('');
   const [sortKey, setSortKey] = useState<keyof T & string | null>(null);
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
@@ -62,7 +64,7 @@ export default function TableWidget<T extends Record<string, unknown>>({
         <input
           value={query}
           onChange={event => setQuery(event.target.value)}
-          placeholder="Filter"
+          placeholder={t('analytics.tableWidget.filterPlaceholder')}
           className="h-8 w-40 rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
         />
       </div>
@@ -105,7 +107,7 @@ export default function TableWidget<T extends Record<string, unknown>>({
         </div>
         {sortedData.length === 0 && (
           <div className="flex h-24 items-center justify-center text-xs text-muted-foreground">
-            No matching records
+            {t('analytics.tableWidget.noMatchingRecords')}
           </div>
         )}
       </div>

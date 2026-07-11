@@ -25,6 +25,7 @@ import {
   type ScheduleConfig,
   type ExecutiveSummary
 } from '@breeze/shared';
+import { useTranslation } from 'react-i18next';
 
 export type ReportType =
   | 'device_inventory'
@@ -71,29 +72,6 @@ type ReportsListProps = {
   timezone?: string;
 };
 
-const reportTypeLabels: Record<ReportType, string> = {
-  device_inventory: 'Device Inventory',
-  software_inventory: 'Software Inventory',
-  alert_summary: 'Alert Summary',
-  compliance: 'Compliance Report',
-  performance: 'Performance Report',
-  executive_summary: 'Executive Summary',
-  security_compliance_posture: 'Security & Compliance Posture'
-};
-
-const scheduleLabels: Record<ReportSchedule, string> = {
-  one_time: 'One-time',
-  daily: 'Daily',
-  weekly: 'Weekly',
-  monthly: 'Monthly'
-};
-
-const formatLabels: Record<ReportFormat, string> = {
-  csv: 'CSV',
-  pdf: 'PDF',
-  excel: 'Excel'
-};
-
 /** Extract the filename from a Content-Disposition header, if present. */
 function parseContentDispositionFilename(header: string | null): string | null {
   if (!header) return null;
@@ -112,6 +90,7 @@ function recipientCountOf(config: Record<string, unknown> | undefined): number {
 }
 
 export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: ReportsListProps) {
+  const { t } = useTranslation('reports');
   const effectiveTimezone = timezone || getBrowserTimezone();
   const [reports, setReports] = useState<Report[]>([]);
   const [recentRuns, setRecentRuns] = useState<ReportRun[]>([]);
@@ -127,16 +106,16 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
       setError(undefined);
       const response = await fetchWithAuth('/reports');
       if (!response.ok) {
-        throw new Error('Failed to fetch reports');
+        throw new Error(t('reports.reportsList.errors.fetchReports'));
       }
       const data = await response.json();
       setReports(data.data ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('reports.reportsList.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   const fetchRecentRuns = useCallback(async () => {
     try {
@@ -165,14 +144,14 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
       });
 
       if (!response.ok) {
-        throw new Error('Failed to generate report');
+        throw new Error(t('reports.reportsList.errors.generateReport'));
       }
 
       onGenerate?.(report);
       // Refresh runs after a short delay
       setTimeout(fetchRecentRuns, 1500);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to generate report');
+      setError(err instanceof Error ? err.message : t('reports.reportsList.errors.generateReport'));
     } finally {
       setGeneratingIds(prev => {
         const next = new Set(prev);
@@ -183,7 +162,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
   };
 
   const handleDelete = async (report: Report) => {
-    if (!confirm(`Are you sure you want to delete "${report.name}"?`)) {
+    if (!confirm(t('reports.reportsList.confirmDelete', { name: report.name }))) {
       return;
     }
 
@@ -194,13 +173,13 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
       });
 
       if (!response.ok) {
-        throw new Error('Failed to delete report');
+        throw new Error(t('reports.reportsList.errors.deleteReport'));
       }
 
       onDelete?.(report);
       fetchReports();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete report');
+      setError(err instanceof Error ? err.message : t('reports.reportsList.errors.deleteReport'));
     } finally {
       setDeletingId(null);
     }
@@ -221,12 +200,17 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
 
   const [downloadingRunId, setDownloadingRunId] = useState<string | null>(null);
 
+  const getReportTypeLabel = (type: ReportType) => t(`reports.reportsList.reportTypes.${type}`); // i18n-dynamic
+  const getScheduleLabel = (schedule: ReportSchedule) => t(`reports.reportsList.schedules.${schedule}`); // i18n-dynamic
+  const getFormatLabel = (format: ReportFormat) => t(`reports.reportsList.formats.${format}`); // i18n-dynamic
+  const getStatusLabel = (status: ReportRun['status']) => t(`reports.reportsList.status.${status}`); // i18n-dynamic
+
   const handleDownload = async (run: ReportRun) => {
     setDownloadingRunId(run.id);
     try {
       const res = await fetchWithAuth(`/reports/runs/${run.id}/download`);
       if (!res.ok) {
-        let message = 'Download failed';
+        let message = t('reports.reportsList.errors.downloadFailed');
         try {
           message = (await res.json())?.error ?? message;
         } catch {
@@ -266,14 +250,14 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
         `${run.reportType ?? 'report'}-report.csv`;
       downloadBlob(blob, filename);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Download failed');
+      setError(err instanceof Error ? err.message : t('reports.reportsList.errors.downloadFailed'));
     } finally {
       setDownloadingRunId(null);
     }
   };
 
   const formatDate = (dateStr: string | null) => {
-    if (!dateStr) return 'Never';
+    if (!dateStr) return t('reports.reportsList.never');
     return formatDateTime(dateStr, { timeZone: effectiveTimezone });
   };
 
@@ -282,7 +266,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
       <div className="flex items-center justify-center py-12">
         <div className="text-center">
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading reports...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('reports.reportsList.loading')}</p>
         </div>
       </div>
     );
@@ -297,7 +281,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
           onClick={fetchReports}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Try again
+          {t('reports.reportsList.tryAgain')}
         </button>
       </div>
     );
@@ -307,8 +291,8 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Reports</h1>
-          <p className="text-muted-foreground">Generate and schedule reports for your infrastructure.</p>
+          <h1 className="text-xl font-semibold tracking-tight">{t('reports.reportsList.title')}</h1>
+          <p className="text-muted-foreground">{t('reports.reportsList.description')}</p>
         </div>
         <div className="flex items-center gap-2">
           <a
@@ -316,21 +300,21 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
             className="inline-flex h-10 items-center justify-center gap-2 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted"
           >
             <LayoutTemplate className="h-4 w-4" />
-            Templates
+            {t('reports.reportsList.templates')}
           </a>
           <a
             href="/reports/builder"
             className="inline-flex h-10 items-center justify-center gap-2 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted"
           >
             <FileText className="h-4 w-4" />
-            Ad-hoc Report
+            {t('reports.reportsList.adhocReport')}
           </a>
           <a
             href="/reports/new"
             className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
           >
             <Plus className="h-4 w-4" />
-            New Report
+            {t('reports.reportsList.newReport')}
           </a>
         </div>
       </div>
@@ -354,7 +338,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                 : 'text-muted-foreground hover:text-foreground'
             )}
           >
-            Saved Reports
+            {t('reports.reportsList.tabs.savedReports')}
           </button>
           <button
             type="button"
@@ -366,7 +350,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                 : 'text-muted-foreground hover:text-foreground'
             )}
           >
-            Recent Runs
+            {t('reports.reportsList.tabs.recentRuns')}
           </button>
         </div>
       </div>
@@ -376,16 +360,16 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
           {reports.length === 0 ? (
             <div className="rounded-lg border border-dashed p-12 text-center">
               <FileText className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
-              <h3 className="text-lg font-medium">No reports yet</h3>
+              <h3 className="text-lg font-medium">{t('reports.reportsList.emptyReportsTitle')}</h3>
               <p className="text-sm text-muted-foreground mt-1">
-                Create your first report to get started.
+                {t('reports.reportsList.emptyReportsDescription')}
               </p>
               <a
                 href="/reports/new"
                 className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 mt-4"
               >
                 <Plus className="h-4 w-4" />
-                Create Report
+                {t('reports.reportsList.createReport')}
               </a>
             </div>
           ) : (
@@ -394,22 +378,22 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                 <thead className="bg-muted/40">
                   <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                     <th className="px-4 py-3">
-                      Name
+                      {t('reports.reportsList.table.name')}
                     </th>
                     <th className="px-4 py-3">
-                      Type
+                      {t('reports.reportsList.table.type')}
                     </th>
                     <th className="px-4 py-3">
-                      Schedule
+                      {t('reports.reportsList.table.schedule')}
                     </th>
                     <th className="px-4 py-3">
-                      Format
+                      {t('reports.reportsList.table.format')}
                     </th>
                     <th className="px-4 py-3">
-                      Last Generated
+                      {t('reports.reportsList.table.lastGenerated')}
                     </th>
                     <th className="px-4 py-3 text-right">
-                      Actions
+                      {t('reports.reportsList.table.actions')}
                     </th>
                   </tr>
                 </thead>
@@ -423,7 +407,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                         </div>
                       </td>
                       <td className="px-4 py-3 text-sm">
-                        {reportTypeLabels[report.type]}
+                        {getReportTypeLabel(report.type)}
                       </td>
                       <td className="px-4 py-3">
                         <span
@@ -435,7 +419,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                           )}
                         >
                           <Calendar className="h-3 w-3" />
-                          {scheduleLabels[report.schedule]}
+                          {getScheduleLabel(report.schedule)}
                         </span>
                         {report.schedule !== 'one_time' && (
                           /* Computed in the viewer's timezone; the worker fires in the
@@ -443,18 +427,20 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                              the user, not a contract for when the run actually fires. */
                           <p className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
                             <span>
-                              Next: {formatNextOccurrence(
-                                nextOccurrence(
-                                  new Date(),
-                                  report.schedule as ScheduleCadence,
-                                  scheduleConfigOf(report.config),
-                                  effectiveTimezone
-                                ),
-                                { weekday: report.schedule === 'weekly' }
-                              )}
+                              {t('reports.reportsList.nextOccurrence', {
+                                next: formatNextOccurrence(
+                                  nextOccurrence(
+                                    new Date(),
+                                    report.schedule as ScheduleCadence,
+                                    scheduleConfigOf(report.config),
+                                    effectiveTimezone
+                                  ),
+                                  { weekday: report.schedule === 'weekly' }
+                                )
+                              })}
                             </span>
                             {recipientCountOf(report.config) > 0 && (
-                              <span className="inline-flex items-center gap-1" title="Email recipients">
+                              <span className="inline-flex items-center gap-1" title={t('reports.reportsList.emailRecipients')}>
                                 <Mail className="h-3 w-3" />
                                 {recipientCountOf(report.config)}
                               </span>
@@ -463,7 +449,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                         )}
                       </td>
                       <td className="px-4 py-3 text-sm">
-                        {formatLabels[report.format]}
+                        {getFormatLabel(report.format)}
                       </td>
                       <td className="px-4 py-3 text-sm text-muted-foreground">
                         {formatDate(report.lastGeneratedAt)}
@@ -475,7 +461,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                             onClick={() => handleGenerate(report)}
                             disabled={generatingIds.has(report.id)}
                             className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted disabled:opacity-50"
-                            title="Generate now"
+                            title={t('reports.reportsList.actions.generateNow')}
                           >
                             {generatingIds.has(report.id) ? (
                               <Loader2 className="h-4 w-4 animate-spin" />
@@ -487,7 +473,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                             type="button"
                             onClick={() => onEdit?.(report)}
                             className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
-                            title="Edit"
+                            title={t('reports.reportsList.actions.edit')}
                           >
                             <Pencil className="h-4 w-4" />
                           </button>
@@ -496,7 +482,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                             onClick={() => handleDelete(report)}
                             disabled={deletingId === report.id}
                             className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted text-destructive disabled:opacity-50"
-                            title="Delete"
+                            title={t('reports.reportsList.actions.delete')}
                           >
                             {deletingId === report.id ? (
                               <Loader2 className="h-4 w-4 animate-spin" />
@@ -520,9 +506,9 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
           {recentRuns.length === 0 ? (
             <div className="rounded-lg border border-dashed p-12 text-center">
               <Clock className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
-              <h3 className="text-lg font-medium">No recent runs</h3>
+              <h3 className="text-lg font-medium">{t('reports.reportsList.emptyRunsTitle')}</h3>
               <p className="text-sm text-muted-foreground mt-1">
-                Generate a report to see it here.
+                {t('reports.reportsList.emptyRunsDescription')}
               </p>
             </div>
           ) : (
@@ -531,19 +517,19 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                 <thead className="bg-muted/40">
                   <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                     <th className="px-4 py-3">
-                      Report
+                      {t('reports.reportsList.runsTable.report')}
                     </th>
                     <th className="px-4 py-3">
-                      Status
+                      {t('reports.reportsList.runsTable.status')}
                     </th>
                     <th className="px-4 py-3">
-                      Started
+                      {t('reports.reportsList.runsTable.started')}
                     </th>
                     <th className="px-4 py-3">
-                      Completed
+                      {t('reports.reportsList.runsTable.completed')}
                     </th>
                     <th className="px-4 py-3 text-right">
-                      Actions
+                      {t('reports.reportsList.runsTable.actions')}
                     </th>
                   </tr>
                 </thead>
@@ -552,10 +538,10 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                     <tr key={run.id} className="hover:bg-muted/30">
                       <td className="px-4 py-3">
                         <div>
-                          <span className="font-medium">{run.reportName || 'Unknown Report'}</span>
+                          <span className="font-medium">{run.reportName || t('reports.reportsList.unknownReport')}</span>
                           {run.reportType && (
                             <p className="text-xs text-muted-foreground">
-                              {reportTypeLabels[run.reportType]}
+                              {getReportTypeLabel(run.reportType)}
                             </p>
                           )}
                         </div>
@@ -571,7 +557,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                               run.status === 'running' && 'text-primary'
                             )}
                           >
-                            {run.status}
+                            {getStatusLabel(run.status)}
                           </span>
                         </div>
                         {run.errorMessage && (
@@ -598,7 +584,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                               ) : (
                                 <Download className="h-4 w-4" />
                               )}
-                              Download
+                              {t('reports.reportsList.download')}
                             </button>
                           )}
                         </div>
