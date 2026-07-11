@@ -588,7 +588,8 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
           'comfortable, compact, or dense'
         )
         ?? validatePreferenceEnum(prefs, 'font', ['breeze', 'system'], 'breeze or system')
-        ?? validatePreferenceEnum(prefs, 'timeFormat', ['12h', '24h'], '12h or 24h');
+        ?? validatePreferenceEnum(prefs, 'timeFormat', ['12h', '24h'], '12h or 24h')
+        ?? validatePreferenceEnum(prefs, 'locale', ['en', 'pt-BR'], 'en or pt-BR');
       if (validationError) {
         return c.json({ error: validationError }, 400);
       }

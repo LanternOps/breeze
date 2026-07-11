@@ -13,6 +13,7 @@ import {
   applyAppearancePreferences,
   type Density,
   type FontPreference,
+  type LocalePreference,
   type TimeFormatPreference,
   type ThemePreference,
 } from '@/lib/appearance';
@@ -22,6 +23,7 @@ export interface UserPreferences {
   density?: Density;
   font?: FontPreference;
   timeFormat?: TimeFormatPreference;
+  locale?: LocalePreference;
 }
 
 /** A single permission grant ({ resource, action }), mirroring the API. */

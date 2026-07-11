@@ -627,6 +627,61 @@ describe('user routes', () => {
       expect(body.error).toMatch(message);
     });
 
+    it('rejects an invalid locale preference', async () => {
+      const res = await app.request('/users/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ preferences: { locale: 'klingon' } })
+      });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toBe('Invalid locale value. Must be en or pt-BR.');
+    });
+
+    it('accepts and merges a valid locale preference', async () => {
+      const existingPreferences = { theme: 'dark' };
+      const mergedPreferences = { ...existingPreferences, locale: 'pt-BR' };
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              email: 'test@example.com',
+              passwordHash: 'hash',
+              preferences: existingPreferences
+            }])
+          })
+        })
+      } as any);
+
+      const setMock = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{
+            id: 'user-123',
+            email: 'test@example.com',
+            name: 'Test User',
+            avatarUrl: null,
+            status: 'active',
+            mfaEnabled: false,
+            preferences: mergedPreferences
+          }])
+        })
+      });
+      vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
+
+      const res = await app.request('/users/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ preferences: { locale: 'pt-BR' } })
+      });
+
+      expect(res.status).toBe(200);
+      expect(setMock).toHaveBeenCalledWith(expect.objectContaining({
+        preferences: mergedPreferences
+      }));
+      const body = await res.json();
+      expect(body.preferences).toMatchObject({ locale: 'pt-BR' });
+    });
+
     it('merges partial preference updates instead of clobbering existing keys', async () => {
       const existingPreferences = {
         theme: 'dark',
