@@ -323,12 +323,41 @@ export async function cleanupDatabase() {
     'vulnerability_sources'
   ];
 
-  for (const table of tables) {
-    try {
-      await testClient`TRUNCATE TABLE ${testClient(table)} CASCADE`;
-    } catch {
-      // Table might not exist yet, ignore
+  // audit_logs carries a BEFORE TRUNCATE trigger (`audit_log_block_truncate`,
+  // migration 2026-05-25-k) that unconditionally rejects ANY truncate whose
+  // cascade set reaches the table — the append-only bypass GUC
+  // (`breeze.allow_audit_retention`) only exists for DELETE. Every TRUNCATE of
+  // partners/organizations/users therefore used to fail wholesale, and the old
+  // blanket try/catch swallowed it, so tenant-root rows silently accumulated
+  // across suites (#2205). The test client connects as the table owner, so
+  // disable the trigger for the duration of the reset and re-enable it in a
+  // finally — a failed truncate must never leave the append-only guard off.
+  // (ALTER TABLE ... DISABLE TRIGGER is a catalog change, not session-local,
+  // but integration files run one at a time — fileParallelism:false — so no
+  // concurrent test can observe the window.) Production semantics are
+  // untouched: this is an owner-only ALTER on the throwaway test database,
+  // not a change to the trigger itself.
+  await testClient`ALTER TABLE audit_logs DISABLE TRIGGER audit_log_block_truncate`;
+  try {
+    for (const table of tables) {
+      try {
+        await testClient`TRUNCATE TABLE ${testClient(table)} CASCADE`;
+      } catch (error) {
+        // The only benign failure is the table not existing yet (42P01) on a
+        // branch that predates its migration. Anything else means the DB was
+        // NOT reset — fail loudly instead of letting state leak into the next
+        // test (the silent-swallow variant of this loop is how #2205 stayed
+        // hidden).
+        if (isUndefinedTableError(error)) continue;
+        throw new Error(
+          `cleanupDatabase: TRUNCATE ${table} CASCADE failed — the database was not reset. ` +
+          `Failing loudly so leaked tenant state cannot poison later tests (#2205).`,
+          { cause: error }
+        );
+      }
     }
+  } finally {
+    await testClient`ALTER TABLE audit_logs ENABLE TRIGGER audit_log_block_truncate`;
   }
 
   // Clear Redis

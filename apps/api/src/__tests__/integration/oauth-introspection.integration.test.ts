@@ -33,7 +33,7 @@
 import './setup';
 import './loadEnv';
 
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 import { serve, type ServerType } from '@hono/node-server';
 import { Hono } from 'hono';
 import type { HttpBindings } from '@hono/node-server';
@@ -198,8 +198,16 @@ describe.skipIf(!SHOULD_RUN)('OAuth introspection client-binding', () => {
     expect(live.url).toBe(process.env.OAUTH_ISSUER);
     const { _resetJwksCacheForTests } = await import('../../middleware/bearerTokenAuth');
     _resetJwksCacheForTests();
+  }, 60_000);
 
-    // A victim client + token set, and a separate attacker client.
+  // A victim client + token set, and a separate attacker client. Minted
+  // per-test (NOT in beforeAll): setup.ts's global beforeEach cleanupDatabase()
+  // TRUNCATEs partners/users CASCADE before every test, which wipes the whole
+  // oauth_* table family (they FK to partners/users). Since #2205 fixed the
+  // silently failing truncate, beforeAll-minted fixtures no longer survive to
+  // the tests — client auth would 401 and the cross-client assertions would go
+  // vacuous (introspecting a nonexistent token also reports active:false).
+  beforeEach(async () => {
     victim = await mintTokensForNewClient(live.url);
     attackerClientId = await dcr(live.url, 'https://attacker.example/cb');
   }, 60_000);
