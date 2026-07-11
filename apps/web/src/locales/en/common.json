@@ -1,0 +1,30 @@
+{
+  "nav": {
+    "dashboard": "Dashboard",
+    "devices": "Devices",
+    "alerts": "Alerts",
+    "tickets": "Tickets",
+    "incidents": "Incidents",
+    "remoteAccess": "Remote Access",
+    "scripts": "Scripts",
+    "patches": "Patches",
+    "vulnerabilities": "Vulnerabilities",
+    "sectionAiFleet": "AI & Fleet",
+    "sectionMonitoring": "Monitoring",
+    "sectionSecurity": "Security",
+    "sectionOperations": "Operations",
+    "sectionBackup": "Backup",
+    "sectionReporting": "Reporting",
+    "sectionSettings": "Settings"
+  },
+  "settings": {
+    "language": {
+      "title": "Language",
+      "description": "Language for the Breeze console. More languages coming — contributions welcome.",
+      "englishLabel": "English",
+      "englishDescription": "English (United States)",
+      "ptBRLabel": "Português (Brasil)",
+      "ptBRDescription": "Portuguese (Brazil)"
+    }
+  }
+}
