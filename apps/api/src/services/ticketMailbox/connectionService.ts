@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
@@ -12,6 +13,7 @@ export type MailboxConnectionStatus =
 export interface MailboxConnection {
   id: string;
   partnerId: string;
+  consentAttemptId: string;
   tenantId: string | null;
   mailboxAddress: string;
   displayName: string | null;
@@ -35,9 +37,14 @@ export interface MailboxConnectionListItem {
   lastMessageAt: Date | null;
 }
 
-type ConnectedMailbox = Pick<
+export type MailboxConnectionSnapshot = Pick<
   MailboxConnection,
-  'id' | 'partnerId' | 'tenantId' | 'mailboxAddress' | 'deltaLink'
+  'id' | 'partnerId' | 'consentAttemptId'
+> & { tenantId: string };
+
+type ConnectedMailbox = MailboxConnectionSnapshot & Pick<
+  MailboxConnection,
+  'mailboxAddress' | 'deltaLink'
 >;
 
 type Row = typeof ticketMailboxConnections.$inferSelect;
@@ -69,12 +76,13 @@ export async function listMailboxConnections(partnerId: string): Promise<Mailbox
 /** System-context read across all partners — used by the poll worker (Plan 2). */
 export async function listConnectedMailboxes(): Promise<ConnectedMailbox[]> {
   return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-    return db.select({
+    const rows = await db.select({
       id: ticketMailboxConnections.id,
       partnerId: ticketMailboxConnections.partnerId,
       tenantId: ticketMailboxConnections.tenantId,
       mailboxAddress: ticketMailboxConnections.mailboxAddress,
       deltaLink: ticketMailboxConnections.deltaLink,
+      consentAttemptId: ticketMailboxConnections.consentAttemptId,
     }).from(ticketMailboxConnections)
       .innerJoin(
         ticketMailboxTenantOwnerships,
@@ -84,6 +92,7 @@ export async function listConnectedMailboxes(): Promise<ConnectedMailbox[]> {
         ),
       )
       .where(eq(ticketMailboxConnections.status, 'connected'));
+    return rows.flatMap((row) => row.tenantId ? [{ ...row, tenantId: row.tenantId }] : []);
   }));
 }
 
@@ -97,16 +106,19 @@ export async function getMailboxConnection(id: string, partnerId: string): Promi
 export async function createPendingConnection(input: {
   partnerId: string; mailboxAddress: string; displayName: string | null; createdBy: string | null;
 }): Promise<MailboxConnection> {
+  const consentAttemptId = randomUUID();
   const rows = await db.insert(ticketMailboxConnections).values({
     partnerId: input.partnerId,
     mailboxAddress: input.mailboxAddress.trim().toLowerCase(),
     displayName: input.displayName,
     status: 'pending_consent',
     createdBy: input.createdBy,
+    consentAttemptId,
   }).onConflictDoUpdate({
     target: [ticketMailboxConnections.partnerId, ticketMailboxConnections.mailboxAddress],
     set: {
       status: 'pending_consent',
+      consentAttemptId,
       tenantId: null,
       deltaLink: null,
       lastError: null,
@@ -124,6 +136,7 @@ export async function createPendingConnection(input: {
 export async function bindVerifiedTenant(
   connectionId: string,
   partnerId: string,
+  consentAttemptId: string,
   tenantId: string,
   evidence: { microsoftOid: string; breezeUserId: string | null },
 ): Promise<void> {
@@ -160,6 +173,7 @@ export async function bindVerifiedTenant(
       .where(and(
         eq(ticketMailboxConnections.id, connectionId),
         eq(ticketMailboxConnections.partnerId, partnerId),
+        eq(ticketMailboxConnections.consentAttemptId, consentAttemptId),
         eq(ticketMailboxConnections.status, 'pending_consent'),
       ))
       .returning({ id: ticketMailboxConnections.id });
@@ -167,35 +181,77 @@ export async function bindVerifiedTenant(
   });
 }
 
-export async function setConnectionStatus(
-  id: string, partnerId: string, status: MailboxConnectionStatus, lastError: string | null,
-): Promise<void> {
-  if (status === 'connected') {
-    throw new Error('Connected status requires bindVerifiedTenant');
-  }
-  await db.update(ticketMailboxConnections)
-    .set({ status, lastError, updatedAt: new Date() })
-    .where(and(eq(ticketMailboxConnections.id, id), eq(ticketMailboxConnections.partnerId, partnerId)));
+export async function markPendingConsentFailed(
+  id: string,
+  partnerId: string,
+  consentAttemptId: string,
+  lastError: string,
+): Promise<boolean> {
+  const rows = await db.update(ticketMailboxConnections)
+    .set({ status: 'reauth_required', lastError, updatedAt: new Date() })
+    .where(and(
+      eq(ticketMailboxConnections.id, id),
+      eq(ticketMailboxConnections.partnerId, partnerId),
+      eq(ticketMailboxConnections.consentAttemptId, consentAttemptId),
+      eq(ticketMailboxConnections.status, 'pending_consent'),
+    ))
+    .returning({ id: ticketMailboxConnections.id });
+  return rows.length === 1;
 }
 
 /** Restore a connection after a transient probe failure. The tenant/partner
  * composite foreign key is the ownership proof; the status predicate prevents
  * pending, disabled, and reauth-required rows from being activated here. */
 export async function restoreVerifiedConnection(
-  id: string,
-  partnerId: string,
-  tenantId: string,
-): Promise<void> {
+  snapshot: MailboxConnectionSnapshot,
+): Promise<boolean> {
   const rows = await db.update(ticketMailboxConnections)
     .set({ status: 'connected', lastError: null, updatedAt: new Date() })
     .where(and(
-      eq(ticketMailboxConnections.id, id),
-      eq(ticketMailboxConnections.partnerId, partnerId),
-      eq(ticketMailboxConnections.tenantId, tenantId),
+      eq(ticketMailboxConnections.id, snapshot.id),
+      eq(ticketMailboxConnections.partnerId, snapshot.partnerId),
+      eq(ticketMailboxConnections.tenantId, snapshot.tenantId),
+      eq(ticketMailboxConnections.consentAttemptId, snapshot.consentAttemptId),
       eq(ticketMailboxConnections.status, 'error'),
     ))
     .returning({ id: ticketMailboxConnections.id });
-  if (rows.length !== 1) throw new Error('Verified mailbox connection not found');
+  return rows.length === 1;
+}
+
+function connectedSnapshotPredicate(snapshot: MailboxConnectionSnapshot) {
+  return and(
+    eq(ticketMailboxConnections.id, snapshot.id),
+    eq(ticketMailboxConnections.partnerId, snapshot.partnerId),
+    eq(ticketMailboxConnections.tenantId, snapshot.tenantId),
+    eq(ticketMailboxConnections.consentAttemptId, snapshot.consentAttemptId),
+    eq(ticketMailboxConnections.status, 'connected'),
+  );
+}
+
+export async function isConnectedMailboxSnapshotCurrent(
+  snapshot: MailboxConnectionSnapshot,
+): Promise<boolean> {
+  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const rows = await db.select({ id: ticketMailboxConnections.id })
+      .from(ticketMailboxConnections)
+      .where(connectedSnapshotPredicate(snapshot))
+      .limit(1);
+    return rows.length === 1;
+  }));
+}
+
+export async function setConnectedMailboxStatus(
+  snapshot: MailboxConnectionSnapshot,
+  status: Exclude<MailboxConnectionStatus, 'connected' | 'pending_consent' | 'disabled'>,
+  lastError: string,
+): Promise<boolean> {
+  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const rows = await db.update(ticketMailboxConnections)
+      .set({ status, lastError, updatedAt: new Date() })
+      .where(connectedSnapshotPredicate(snapshot))
+      .returning({ id: ticketMailboxConnections.id });
+    return rows.length === 1;
+  }));
 }
 
 /** Worker-only. Self-wraps in system context: ticket_mailbox_connections is
@@ -203,29 +259,43 @@ export async function restoreVerifiedConnection(
  *  so a bare write would match zero rows silently and the cursor would never
  *  advance. */
 export async function updateDeltaCursor(
-  id: string, deltaLink: string, polledAt: Date, lastMessageAt: Date | null,
-): Promise<void> {
-  await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-    await db.update(ticketMailboxConnections)
+  snapshot: MailboxConnectionSnapshot,
+  deltaLink: string,
+  polledAt: Date,
+  lastMessageAt: Date | null,
+): Promise<boolean> {
+  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const rows = await db.update(ticketMailboxConnections)
       .set({ deltaLink, lastPolledAt: polledAt, ...(lastMessageAt ? { lastMessageAt } : {}), updatedAt: new Date() })
-      .where(eq(ticketMailboxConnections.id, id));
+      .where(connectedSnapshotPredicate(snapshot))
+      .returning({ id: ticketMailboxConnections.id });
+    return rows.length === 1;
   }));
 }
 
-export async function disableConnection(id: string, partnerId: string): Promise<void> {
-  await db.update(ticketMailboxConnections)
-    .set({ status: 'disabled', deltaLink: null, updatedAt: new Date() })
-    .where(and(eq(ticketMailboxConnections.id, id), eq(ticketMailboxConnections.partnerId, partnerId)));
+export async function disableConnection(id: string, partnerId: string): Promise<boolean> {
+  const rows = await db.update(ticketMailboxConnections)
+    .set({
+      status: 'disabled',
+      deltaLink: null,
+      consentAttemptId: randomUUID(),
+      updatedAt: new Date(),
+    })
+    .where(and(eq(ticketMailboxConnections.id, id), eq(ticketMailboxConnections.partnerId, partnerId)))
+    .returning({ id: ticketMailboxConnections.id });
+  return rows.length === 1;
 }
 
 /** 410 Gone: Graph invalidated the delta token. Clear it so the next sweep restarts
  *  the delta from "now" (no history backfill). Stays 'connected'. Worker-only;
  *  self-wraps in system context (FORCE RLS — see updateDeltaCursor). */
-export async function resetDeltaCursor(id: string): Promise<void> {
-  await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-    await db.update(ticketMailboxConnections)
+export async function resetDeltaCursor(snapshot: MailboxConnectionSnapshot): Promise<boolean> {
+  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const rows = await db.update(ticketMailboxConnections)
       .set({ deltaLink: null, updatedAt: new Date() })
-      .where(eq(ticketMailboxConnections.id, id));
+      .where(connectedSnapshotPredicate(snapshot))
+      .returning({ id: ticketMailboxConnections.id });
+    return rows.length === 1;
   }));
 }
 

@@ -29,6 +29,7 @@ export const ticketMailboxTenantOwnerships = pgTable('ticket_mailbox_tenant_owne
 export const ticketMailboxConnections = pgTable('ticket_mailbox_connections', {
   id: uuid('id').primaryKey().defaultRandom(),
   partnerId: uuid('partner_id').notNull().references(() => partners.id),
+  consentAttemptId: uuid('consent_attempt_id').notNull().defaultRandom(),
   tenantId: uuid('tenant_id'),
   mailboxAddress: text('mailbox_address').notNull(),
   displayName: text('display_name'),
@@ -65,6 +66,7 @@ export const ticketMailboxConsentSessions = pgTable('ticket_mailbox_consent_sess
   phase: varchar('phase', { length: 24 }).$type<TicketMailboxConsentPhase>().notNull(),
   partnerId: uuid('partner_id').notNull().references(() => partners.id),
   connectionId: uuid('connection_id').notNull(),
+  consentAttemptId: uuid('consent_attempt_id').notNull(),
   userId: uuid('user_id').references(() => users.id),
   tenantHintHash: text('tenant_hint_hash'),
   nonce: text('nonce'),

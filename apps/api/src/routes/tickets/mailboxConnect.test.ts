@@ -11,6 +11,7 @@ const CONNECTION_ID = '44444444-4444-4444-8444-444444444444';
 const TENANT_ID = '11111111-1111-4111-8111-111111111111';
 const ATTACKER_TENANT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const MICROSOFT_OID = '55555555-5555-4555-8555-555555555555';
+const ATTEMPT_ID = '66666666-6666-4666-8666-666666666666';
 
 type PermissionName = 'ticket_mailbox:read' | 'ticket_mailbox:admin';
 type AuthState = {
@@ -26,12 +27,13 @@ const { authRef, mocks } = vi.hoisted(() => ({
   mocks: {
     createPendingConnection: vi.fn(),
     getMailboxConnection: vi.fn(),
-    setConnectionStatus: vi.fn(async () => {}),
-    restoreVerifiedConnection: vi.fn(async () => {}),
+    markPendingConsentFailed: vi.fn(async () => true),
+    setConnectedMailboxStatus: vi.fn(async () => true),
+    restoreVerifiedConnection: vi.fn(async () => true),
     probeMailbox: vi.fn(),
     bindVerifiedTenant: vi.fn(async () => {}),
     listMailboxConnections: vi.fn(async (): Promise<unknown[]> => []),
-    disableConnection: vi.fn(async () => {}),
+    disableConnection: vi.fn(async () => true),
     createAdminConsentSession: vi.fn(),
     createIdentityVerificationSession: vi.fn(),
     consumeConsentSession: vi.fn(),
@@ -90,7 +92,8 @@ vi.mock('../../services/ticketMailbox/mailboxToken', () => ({
 vi.mock('../../services/ticketMailbox/connectionService', () => ({
   createPendingConnection: mocks.createPendingConnection,
   getMailboxConnection: mocks.getMailboxConnection,
-  setConnectionStatus: mocks.setConnectionStatus,
+  markPendingConsentFailed: mocks.markPendingConsentFailed,
+  setConnectedMailboxStatus: mocks.setConnectedMailboxStatus,
   restoreVerifiedConnection: mocks.restoreVerifiedConnection,
   probeMailbox: mocks.probeMailbox,
   bindVerifiedTenant: mocks.bindVerifiedTenant,
@@ -140,6 +143,7 @@ function session(phase: 'admin_consent' | 'identity_verification', overrides: Re
     phase,
     partnerId: PARTNER_ID,
     connectionId: CONNECTION_ID,
+    consentAttemptId: ATTEMPT_ID,
     userId: USER_ID,
     tenantHintHash: phase === 'identity_verification' ? `tenant-hash:${TENANT_ID}` : null,
     nonce: phase === 'identity_verification' ? 'stored-nonce' : null,
@@ -152,6 +156,7 @@ function session(phase: 'admin_consent' | 'identity_verification', overrides: Re
 function connection(overrides: Record<string, unknown> = {}) {
   return {
     id: CONNECTION_ID,
+    consentAttemptId: ATTEMPT_ID,
     partnerId: PARTNER_ID,
     tenantId: TENANT_ID,
     mailboxAddress: 'support@example.com',
@@ -194,6 +199,11 @@ describe('M365 mailbox lifecycle routes', () => {
     authRef.current = adminAuth();
     mocks.platformConfig.mockReturnValue({ clientId: 'platform-client-id', clientSecret: 'platform-client-secret' });
     mocks.createPendingConnection.mockResolvedValue(connection({ status: 'pending_consent', tenantId: null }));
+    mocks.markPendingConsentFailed.mockResolvedValue(true);
+    mocks.setConnectedMailboxStatus.mockResolvedValue(true);
+    mocks.restoreVerifiedConnection.mockResolvedValue(true);
+    mocks.bindVerifiedTenant.mockResolvedValue(undefined);
+    mocks.disableConnection.mockResolvedValue(true);
     mocks.createAdminConsentSession.mockResolvedValue(session('admin_consent'));
     mocks.createIdentityVerificationSession.mockResolvedValue({
       session: session('identity_verification'), codeChallenge: 'stored-code-challenge',
@@ -314,7 +324,8 @@ describe('M365 mailbox lifecycle routes', () => {
     expect(response.headers.get('set-cookie')).toContain('HttpOnly');
     expect(response.headers.get('set-cookie')).toContain('SameSite=Lax');
     expect(mocks.createAdminConsentSession).toHaveBeenCalledWith({
-      partnerId: PARTNER_ID, connectionId: CONNECTION_ID, userId: USER_ID,
+      partnerId: PARTNER_ID, connectionId: CONNECTION_ID,
+      consentAttemptId: ATTEMPT_ID, userId: USER_ID,
     });
     expect(mocks.writeRouteAudit).toHaveBeenCalledTimes(1);
     expect(mocks.writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
@@ -332,13 +343,14 @@ describe('M365 mailbox lifecycle routes', () => {
     expect(response.status).toBe(302);
     expect(mocks.consumeConsentSession).toHaveBeenCalledWith(adminState, 'admin_consent');
     expect(mocks.createIdentityVerificationSession).toHaveBeenCalledWith({
-      partnerId: PARTNER_ID, connectionId: CONNECTION_ID, userId: USER_ID, tenantHint: ATTACKER_TENANT,
+      partnerId: PARTNER_ID, connectionId: CONNECTION_ID,
+      consentAttemptId: ATTEMPT_ID, userId: USER_ID, tenantHint: ATTACKER_TENANT,
     });
     expect(response.headers.get('set-cookie')).toContain('ticket_mailbox_oauth_state=identity_verification.');
     expect(response.headers.get('location')).toContain(`/${ATTACKER_TENANT}/oauth2/v2.0/authorize`);
     expect(mocks.probeMailbox).not.toHaveBeenCalled();
     expect(mocks.bindVerifiedTenant).not.toHaveBeenCalled();
-    expect(mocks.setConnectionStatus).not.toHaveBeenCalled();
+    expect(mocks.markPendingConsentFailed).not.toHaveBeenCalled();
   });
 
   it('sanitizes identity-session creation failures before sending them to telemetry', async () => {
@@ -384,11 +396,30 @@ describe('M365 mailbox lifecycle routes', () => {
       expect(JSON.stringify(mocks.writeAuditEvent.mock.calls)).not.toContain('raw-provider-detail');
       expect(mocks.probeMailbox).not.toHaveBeenCalled();
       expect(mocks.bindVerifiedTenant).not.toHaveBeenCalled();
-      expect(mocks.setConnectionStatus).toHaveBeenCalledWith(
-        CONNECTION_ID, PARTNER_ID, 'reauth_required', 'Mailbox verification failed',
+      expect(mocks.markPendingConsentFailed).toHaveBeenCalledWith(
+        CONNECTION_ID, PARTNER_ID, ATTEMPT_ID, 'Mailbox verification failed',
       );
     },
   );
+
+  it('treats a consumed callback from an older consent attempt as one audited stale no-op', async () => {
+    mocks.markPendingConsentFailed.mockResolvedValue(false);
+    const response = await app.request(
+      '/callback?state=identity-state&error=access_denied',
+      { headers: { cookie: `ticket_mailbox_oauth_state=${cookieFor('identity_verification', 'identity-state')}` } },
+    );
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get('location')).toContain('ticketMailbox=stale');
+    expect(mocks.markPendingConsentFailed).toHaveBeenCalledWith(
+      CONNECTION_ID, PARTNER_ID, ATTEMPT_ID, 'Mailbox verification failed',
+    );
+    expect(mocks.writeAuditEvent).toHaveBeenCalledTimes(1);
+    expect(mocks.writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'ticket_mailbox.verification_failed',
+      details: expect.objectContaining({ outcome: 'stale_attempt' }),
+    }));
+  });
 
   it.each([
     ['missing', undefined],
@@ -423,9 +454,11 @@ describe('M365 mailbox lifecycle routes', () => {
     });
     expect(mocks.getMailboxConnection).toHaveBeenCalledWith(CONNECTION_ID, PARTNER_ID);
     expect(mocks.probeMailbox).toHaveBeenCalledWith(TENANT_ID, 'support@example.com');
-    expect(mocks.bindVerifiedTenant).toHaveBeenCalledWith(CONNECTION_ID, PARTNER_ID, TENANT_ID, {
+    expect(mocks.bindVerifiedTenant).toHaveBeenCalledWith(
+      CONNECTION_ID, PARTNER_ID, ATTEMPT_ID, TENANT_ID, {
       microsoftOid: MICROSOFT_OID, breezeUserId: USER_ID,
-    });
+      },
+    );
     expect(mocks.writeAuditEvent).toHaveBeenCalledTimes(1);
     expect(mocks.writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: 'ticket_mailbox.tenant_binding_verified', actorId: USER_ID,
@@ -437,6 +470,23 @@ describe('M365 mailbox lifecycle routes', () => {
     expect(JSON.stringify(mocks.writeAuditEvent.mock.calls)).not.toContain('authorization-code');
     expect(JSON.stringify(mocks.writeAuditEvent.mock.calls)).not.toContain('verified-id-token');
     expect(JSON.stringify(mocks.writeAuditEvent.mock.calls)).not.toContain('platform-client-secret');
+  });
+
+  it('cannot bind a completed callback after a newer connect attempt replaced its generation', async () => {
+    mocks.bindVerifiedTenant.mockRejectedValue(new Error('Pending mailbox connection attempt is stale'));
+    mocks.markPendingConsentFailed.mockResolvedValue(false);
+
+    const response = await app.request('/callback?state=identity-state&code=authorization-code', {
+      headers: { cookie: `ticket_mailbox_oauth_state=${cookieFor('identity_verification', 'identity-state')}` },
+    });
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get('location')).toContain('ticketMailbox=stale');
+    expect(mocks.writeAuditEvent).toHaveBeenCalledTimes(1);
+    expect(mocks.writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'ticket_mailbox.verification_failed',
+      details: expect.objectContaining({ outcome: 'stale_attempt' }),
+    }));
   });
 
   it('rejects an identity cookie tenant whose hash does not match the consumed session', async () => {
@@ -559,8 +609,8 @@ describe('M365 mailbox lifecycle routes', () => {
     expect(response.headers.get('location')).toContain('ticketMailbox=needs_policy');
     expect(mocks.probeMailbox).toHaveBeenCalledWith(TENANT_ID, 'support@example.com');
     expect(mocks.bindVerifiedTenant).not.toHaveBeenCalled();
-    expect(mocks.setConnectionStatus).toHaveBeenCalledWith(
-      CONNECTION_ID, PARTNER_ID, 'reauth_required', 'Mailbox verification failed',
+    expect(mocks.markPendingConsentFailed).toHaveBeenCalledWith(
+      CONNECTION_ID, PARTNER_ID, ATTEMPT_ID, 'Mailbox verification failed',
     );
     expect(mocks.writeAuditEvent).toHaveBeenCalledTimes(1);
     expect(mocks.writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
@@ -596,7 +646,7 @@ describe('M365 mailbox lifecycle routes', () => {
   it('writes one sanitized failure audit even when callback cleanup reads and writes fail', async () => {
     mocks.exchangeMicrosoftAuthorizationCode.mockRejectedValue(new Error('sanitized upstream failure'));
     mocks.getMailboxConnection.mockRejectedValue(new Error('database read detail'));
-    mocks.setConnectionStatus.mockRejectedValue(new Error('database write detail'));
+    mocks.markPendingConsentFailed.mockRejectedValue(new Error('database write detail'));
     const response = await app.request('/callback?state=identity-state&code=authorization-code', {
       headers: { cookie: `ticket_mailbox_oauth_state=${cookieFor('identity_verification', 'identity-state')}` },
     });
@@ -632,7 +682,7 @@ describe('M365 mailbox lifecycle routes', () => {
     expect(response.status).toBe(200);
     expect(mocks.probeMailbox).toHaveBeenCalledWith(TENANT_ID, 'support@example.com');
     expect(mocks.bindVerifiedTenant).not.toHaveBeenCalled();
-    expect(mocks.setConnectionStatus).not.toHaveBeenCalled();
+    expect(mocks.setConnectedMailboxStatus).not.toHaveBeenCalled();
     expect(mocks.restoreVerifiedConnection).not.toHaveBeenCalled();
     expect(mocks.writeRouteAudit).toHaveBeenCalledTimes(1);
     expect(mocks.writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
@@ -642,8 +692,8 @@ describe('M365 mailbox lifecycle routes', () => {
   });
 
   it('allows a failed verified retest to succeed on retry without re-consent', async () => {
-    mocks.setConnectionStatus.mockResolvedValue(undefined);
-    mocks.restoreVerifiedConnection.mockResolvedValue(undefined);
+    mocks.setConnectedMailboxStatus.mockResolvedValue(true);
+    mocks.restoreVerifiedConnection.mockResolvedValue(true);
     mocks.getMailboxConnection
       .mockResolvedValueOnce(connection({ status: 'connected' }))
       .mockResolvedValueOnce(connection({ status: 'error' }));
@@ -659,10 +709,34 @@ describe('M365 mailbox lifecycle routes', () => {
     expect(retried.status).toBe(200);
     await expect(retried.json()).resolves.toEqual({ ok: true });
     expect(mocks.probeMailbox).toHaveBeenCalledTimes(2);
-    expect(mocks.setConnectionStatus).toHaveBeenCalledWith(
-      CONNECTION_ID, PARTNER_ID, 'error', 'Mailbox verification failed',
+    expect(mocks.setConnectedMailboxStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ id: CONNECTION_ID, consentAttemptId: ATTEMPT_ID }),
+      'error', 'Mailbox verification failed',
     );
-    expect(mocks.restoreVerifiedConnection).toHaveBeenCalledWith(CONNECTION_ID, PARTNER_ID, TENANT_ID);
+    expect(mocks.restoreVerifiedConnection).toHaveBeenCalledWith(expect.objectContaining({
+      id: CONNECTION_ID, partnerId: PARTNER_ID, tenantId: TENANT_ID,
+      consentAttemptId: ATTEMPT_ID,
+    }));
+  });
+
+  it('does not overwrite disable when a failed retest finishes after it', async () => {
+    let finishProbe!: (value: { ok: false; error: string }) => void;
+    mocks.probeMailbox.mockReturnValue(new Promise((resolve) => { finishProbe = resolve; }));
+    mocks.setConnectedMailboxStatus.mockResolvedValue(false);
+
+    const retest = app.request(`/connections/${CONNECTION_ID}/retest`, { method: 'POST' });
+    await vi.waitFor(() => expect(mocks.probeMailbox).toHaveBeenCalledOnce());
+    // disableConnection rotates the generation while the Graph probe is paused.
+    finishProbe({ ok: false, error: 'Graph denied' });
+    const response = await retest;
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: 'Mailbox connection changed during retest' });
+    expect(mocks.writeRouteAudit).toHaveBeenCalledTimes(1);
+    expect(mocks.writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'ticket_mailbox.retested',
+      details: expect.objectContaining({ outcome: 'stale' }),
+    }));
   });
 
   it('disables and audits exactly once after the service succeeds', async () => {

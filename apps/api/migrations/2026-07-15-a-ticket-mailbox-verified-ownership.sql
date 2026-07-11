@@ -8,6 +8,27 @@ CREATE TABLE IF NOT EXISTS ticket_mailbox_tenant_ownerships (
   CONSTRAINT ticket_mailbox_tenant_ownerships_tenant_partner_unique UNIQUE (tenant_id, partner_id)
 );
 
+ALTER TABLE ticket_mailbox_connections
+  ADD COLUMN IF NOT EXISTS consent_attempt_id uuid;
+
+DO $$
+DECLARE affected bigint;
+BEGIN
+  UPDATE ticket_mailbox_connections
+  SET consent_attempt_id = gen_random_uuid()
+  WHERE consent_attempt_id IS NULL;
+  GET DIAGNOSTICS affected = ROW_COUNT;
+  IF affected > 0 THEN
+    RAISE WARNING 'ticket mailbox hardening assigned state generations to % connection(s)', affected;
+  END IF;
+END $$;
+
+ALTER TABLE ticket_mailbox_connections
+  ALTER COLUMN consent_attempt_id SET DEFAULT gen_random_uuid(),
+  ALTER COLUMN consent_attempt_id SET NOT NULL;
+
+DROP INDEX IF EXISTS ticket_mailbox_connections_id_partner_attempt_idx;
+
 CREATE TABLE IF NOT EXISTS ticket_mailbox_consent_sessions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   state text NOT NULL UNIQUE,
@@ -16,6 +37,7 @@ CREATE TABLE IF NOT EXISTS ticket_mailbox_consent_sessions (
     CHECK (phase IN ('admin_consent', 'identity_verification')),
   partner_id uuid NOT NULL REFERENCES partners(id),
   connection_id uuid NOT NULL,
+  consent_attempt_id uuid NOT NULL,
   user_id uuid REFERENCES users(id),
   tenant_hint_hash text,
   nonce text,
@@ -26,6 +48,35 @@ CREATE TABLE IF NOT EXISTS ticket_mailbox_consent_sessions (
     FOREIGN KEY (connection_id, partner_id)
     REFERENCES ticket_mailbox_connections(id, partner_id) ON DELETE CASCADE
 );
+
+ALTER TABLE ticket_mailbox_consent_sessions
+  ADD COLUMN IF NOT EXISTS consent_attempt_id uuid;
+
+DO $$
+DECLARE affected bigint;
+BEGIN
+  UPDATE ticket_mailbox_consent_sessions AS sessions
+  SET consent_attempt_id = connections.consent_attempt_id
+  FROM ticket_mailbox_connections AS connections
+  WHERE sessions.connection_id = connections.id
+    AND sessions.partner_id = connections.partner_id
+    AND sessions.consent_attempt_id IS NULL;
+  GET DIAGNOSTICS affected = ROW_COUNT;
+  IF affected > 0 THEN
+    RAISE WARNING 'ticket mailbox hardening assigned state generations to % consent session(s)', affected;
+  END IF;
+END $$;
+
+ALTER TABLE ticket_mailbox_consent_sessions
+  ALTER COLUMN consent_attempt_id SET NOT NULL;
+
+ALTER TABLE ticket_mailbox_consent_sessions
+  DROP CONSTRAINT IF EXISTS ticket_mailbox_consent_sessions_connection_partner_fk;
+ALTER TABLE ticket_mailbox_consent_sessions
+  ADD CONSTRAINT ticket_mailbox_consent_sessions_connection_partner_fk
+  FOREIGN KEY (connection_id, partner_id)
+  REFERENCES ticket_mailbox_connections(id, partner_id)
+  ON DELETE CASCADE;
 
 DO $$
 DECLARE affected bigint;

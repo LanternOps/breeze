@@ -1,12 +1,12 @@
 import { Job, Queue, Worker } from 'bullmq';
 import { getBullMQConnection } from '../services/redis';
-import { runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { captureException } from '../services/sentry';
 import {
+  isConnectedMailboxSnapshotCurrent,
   listConnectedMailboxes,
   updateDeltaCursor,
   resetDeltaCursor,
-  setConnectionStatus,
+  setConnectedMailboxStatus,
 } from '../services/ticketMailbox/connectionService';
 import { getMailboxToken } from '../services/ticketMailbox/mailboxToken';
 import { listInboxDelta, markRead } from '../services/ticketMailbox/graphMailClient';
@@ -30,23 +30,26 @@ async function sweepOne(c: Awaited<ReturnType<typeof listConnectedMailboxes>>[nu
   } catch (err) {
     const status = (err as { status?: number }).status;
     if (status === 410) {
-      await resetDeltaCursor(c.id);
+      await resetDeltaCursor(c);
       console.warn('[mailboxPoll] delta token gone (410); cursor reset', { id: c.id });
       return;
     }
 
     const next = status === 401 || status === 403 ? 'reauth_required' : 'error';
-    // setConnectionStatus is shared with the request path (bare db); the worker has
-    // no request DB context, so wrap in system context or the FORCE-RLS UPDATE
-    // matches zero rows and the status never surfaces.
-    await runOutsideDbContext(() => withSystemDbAccessContext(() =>
-      setConnectionStatus(c.id, c.partnerId, next, err instanceof Error ? err.message : 'poll failed')));
+    await setConnectedMailboxStatus(
+      c,
+      next,
+      err instanceof Error ? err.message : 'poll failed',
+    );
     return;
   }
 
   let lastMessageAt: Date | null = null;
   try {
     const token = await getMailboxToken(c.tenantId);
+    // Graph I/O may outlive a reconnect/disable. Revalidate the exact generation
+    // immediately before producing any external side effects.
+    if (!await isConnectedMailboxSnapshotCurrent(c)) return;
     for (const msg of page.messages) {
       const normalized = normalizeGraphMessage(msg, c.partnerId, c.mailboxAddress);
       await enqueueInboundEmail(normalized);
@@ -65,7 +68,7 @@ async function sweepOne(c: Awaited<ReturnType<typeof listConnectedMailboxes>>[nu
 
   if (page.deltaLink) {
     const polledAt = new Date();
-    await updateDeltaCursor(c.id, page.deltaLink, polledAt, lastMessageAt ?? polledAt);
+    await updateDeltaCursor(c, page.deltaLink, polledAt, lastMessageAt ?? polledAt);
   }
 }
 

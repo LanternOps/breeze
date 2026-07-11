@@ -15,6 +15,7 @@ export interface ConsentSession {
   phase: TicketMailboxConsentPhase;
   partnerId: string;
   connectionId: string;
+  consentAttemptId: string;
   userId: string | null;
   tenantHintHash: string | null;
   nonce: string | null;
@@ -30,6 +31,7 @@ function toConsentSession(row: SessionRow): ConsentSession {
     phase: row.phase,
     partnerId: row.partnerId,
     connectionId: row.connectionId,
+    consentAttemptId: row.consentAttemptId,
     userId: row.userId,
     tenantHintHash: row.tenantHintHash,
     nonce: row.nonce,
@@ -42,6 +44,7 @@ async function createConsentSession(input: {
   phase: TicketMailboxConsentPhase;
   partnerId: string;
   connectionId: string;
+  consentAttemptId: string;
   userId: string | null;
   tenantHintHash: string | null;
   nonce: string | null;
@@ -87,6 +90,7 @@ export function hashTenantHint(tenantHint: string): string | null {
 export async function createAdminConsentSession(input: {
   partnerId: string;
   connectionId: string;
+  consentAttemptId: string;
   userId: string | null;
 }): Promise<ConsentSession> {
   return createConsentSession({
@@ -101,6 +105,7 @@ export async function createAdminConsentSession(input: {
 export async function createIdentityVerificationSession(input: {
   partnerId: string;
   connectionId: string;
+  consentAttemptId: string;
   userId: string | null;
   tenantHint: string;
 }): Promise<{ session: ConsentSession; codeChallenge: string }> {
@@ -111,6 +116,7 @@ export async function createIdentityVerificationSession(input: {
   const session = await createConsentSession({
     partnerId: input.partnerId,
     connectionId: input.connectionId,
+    consentAttemptId: input.consentAttemptId,
     userId: input.userId,
     phase: 'identity_verification',
     tenantHintHash,

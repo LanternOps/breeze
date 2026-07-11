@@ -1,8 +1,8 @@
 # Playbook #1 Security Remediation Design
 
-**Date:** 2026-07-11  
-**Status:** Approved for planning  
-**Source:** `internal/security-findings/2026-07-11-playbook-01-multi-tenant-rls-authz.md`  
+**Date:** 2026-07-11
+**Status:** Approved for planning
+**Source:** `internal/security-findings/2026-07-11-playbook-01-multi-tenant-rls-authz.md`
 **Reviewed baseline:** `origin/main` at `2a88b9a3a454db56cef5dc8b009bb1ec9e3dcd75`
 
 ## Objective

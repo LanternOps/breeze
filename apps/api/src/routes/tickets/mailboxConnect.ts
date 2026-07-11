@@ -32,9 +32,10 @@ import {
   disableConnection,
   getMailboxConnection,
   listMailboxConnections,
+  markPendingConsentFailed,
   probeMailbox,
   restoreVerifiedConnection,
-  setConnectionStatus,
+  setConnectedMailboxStatus,
   type MailboxConnection,
 } from '../../services/ticketMailbox/connectionService';
 import {
@@ -259,11 +260,11 @@ async function loadCallbackConnection(session: ConsentSession): Promise<MailboxC
   return callbackDb(() => getMailboxConnection(session.connectionId, session.partnerId));
 }
 
-async function markCallbackFailed(session: ConsentSession): Promise<void> {
-  await callbackDb(() => setConnectionStatus(
+async function markCallbackFailed(session: ConsentSession): Promise<boolean> {
+  return callbackDb(() => markPendingConsentFailed(
     session.connectionId,
     session.partnerId,
-    'reauth_required',
+    session.consentAttemptId,
     'Mailbox verification failed',
   ));
 }
@@ -310,6 +311,7 @@ mailboxRoutes.post(
     const session = await createAdminConsentSession({
       partnerId: resolved.partnerId,
       connectionId: connection.id,
+      consentAttemptId: connection.consentAttemptId,
       userId: auth.user.id,
     });
     if (!setBindingCookie(c, session.phase, session.state)) {
@@ -364,8 +366,8 @@ mailboxRoutes.get('/callback', zValidator('query', callbackQuery), async (c) => 
 
   let connection: MailboxConnection | null = null;
   const fail = async (
-    outcome: 'invalid_identity' | 'insufficient_role' | 'probe_failed' | 'ownership_conflict',
-    redirect: 'error' | 'needs_policy' = 'error',
+    outcome: 'invalid_identity' | 'insufficient_role' | 'probe_failed' | 'ownership_conflict' | 'stale_attempt',
+    redirect: 'error' | 'needs_policy' | 'stale' = 'error',
     verifiedTenantId?: string,
   ): Promise<Response> => {
     try {
@@ -374,7 +376,11 @@ mailboxRoutes.get('/callback', zValidator('query', callbackQuery), async (c) => 
       captureException(error instanceof Error ? error : new Error('Mailbox connection lookup failed'), c);
     }
     try {
-      await markCallbackFailed(session);
+      const changed = await markCallbackFailed(session);
+      if (!changed) {
+        outcome = 'stale_attempt';
+        redirect = 'stale';
+      }
     } catch (error) {
       captureException(error instanceof Error ? error : new Error('Mailbox status update failed'), c);
     }
@@ -392,11 +398,25 @@ mailboxRoutes.get('/callback', zValidator('query', callbackQuery), async (c) => 
   const platform = getMailboxPlatformConfig();
   if (!platform) return fail('invalid_identity');
 
+  try {
+    connection = await loadCallbackConnection(session);
+  } catch (error) {
+    captureException(error instanceof Error ? error : new Error('Mailbox connection lookup failed'), c);
+    return fail('invalid_identity');
+  }
+  if (
+    !connection
+    || connection.consentAttemptId !== session.consentAttemptId
+  ) {
+    return fail('stale_attempt', 'stale');
+  }
+
   if (intent.kind === 'admin_success') {
     try {
       const next = await createIdentityVerificationSession({
         partnerId: session.partnerId,
         connectionId: session.connectionId,
+        consentAttemptId: session.consentAttemptId,
         userId: session.userId,
         tenantHint: intent.tenantHint,
       });
@@ -441,8 +461,6 @@ mailboxRoutes.get('/callback', zValidator('query', callbackQuery), async (c) => 
     });
     if (!hasMailboxConsentAdminRole(claims.wids)) return fail('insufficient_role');
 
-    connection = await loadCallbackConnection(session);
-    if (!connection) return fail('invalid_identity');
     const probe = await probeMailbox(claims.tid, connection.mailboxAddress);
     if (!probe.ok) return fail('probe_failed', 'needs_policy', claims.tid);
 
@@ -450,6 +468,7 @@ mailboxRoutes.get('/callback', zValidator('query', callbackQuery), async (c) => 
       await callbackDb(() => bindVerifiedTenant(
         session.connectionId,
         session.partnerId,
+        session.consentAttemptId,
         claims.tid,
         { microsoftOid: claims.oid, breezeUserId: session.userId },
       ));
@@ -491,27 +510,42 @@ mailboxRoutes.post(
     if (!['connected', 'error'].includes(connection.status) || !connection.tenantId) {
       return c.json({ error: 'Mailbox re-consent required' }, 409);
     }
+    const snapshot = {
+      id: connection.id,
+      partnerId: connection.partnerId,
+      tenantId: connection.tenantId,
+      consentAttemptId: connection.consentAttemptId,
+    };
 
     const probe = await probeMailbox(connection.tenantId, connection.mailboxAddress);
+    let changed = true;
     if (!probe.ok) {
-      await setConnectionStatus(id, resolved.partnerId, 'error', 'Mailbox verification failed');
+      if (connection.status === 'connected') {
+        changed = await setConnectedMailboxStatus(
+          snapshot,
+          'error',
+          'Mailbox verification failed',
+        );
+      }
     } else if (connection.status === 'error') {
-      await restoreVerifiedConnection(id, resolved.partnerId, connection.tenantId);
+      changed = await restoreVerifiedConnection(snapshot);
     }
+    const outcome = changed ? (probe.ok ? 'verified' : 'probe_failed') : 'stale';
     writeRouteAudit(c, {
       orgId: null,
       action: 'ticket_mailbox.retested',
       resourceType: 'ticket_mailbox_connection',
       resourceId: id,
       resourceName: connection.mailboxAddress,
-      result: probe.ok ? 'success' : 'failure',
+      result: changed && probe.ok ? 'success' : 'failure',
       details: auditDetails(
         { partnerId: resolved.partnerId, connectionId: id },
         connection,
-        probe.ok ? 'verified' : 'probe_failed',
+        outcome,
         connection.tenantId,
       ),
     });
+    if (!changed) return c.json({ error: 'Mailbox connection changed during retest' }, 409);
     return c.json({ ok: probe.ok, ...(probe.ok ? {} : { error: 'Mailbox verification failed' }) });
   },
 );

@@ -146,10 +146,13 @@ async function verifyMigrationCleanup() {
       FROM information_schema.columns
       WHERE table_schema = 'public'
         AND table_name = 'ticket_mailbox_consent_sessions'
-        AND column_name IN ('tenant_hint', 'tenant_hint_hash')
+        AND column_name IN ('consent_attempt_id', 'tenant_hint', 'tenant_hint_hash')
       ORDER BY column_name
     `) as unknown as Array<{ columnName: string; dataType: string }>;
-    expect(sessionColumns).toEqual([{ columnName: 'tenant_hint_hash', dataType: 'text' }]);
+    expect(sessionColumns).toEqual([
+      { columnName: 'consent_attempt_id', dataType: 'uuid' },
+      { columnName: 'tenant_hint_hash', dataType: 'text' },
+    ]);
 
     // Once the column is hardened to UUID, replay must not revoke a valid
     // verified binding or discard its active delta cursor.
@@ -223,6 +226,36 @@ async function verifyConnectedOwnershipGuard() {
         AND column_name = 'tenant_id'
     `) as unknown as Array<{ data_type: string }>;
     expect(typeRows[0]?.data_type).toBe('uuid');
+
+    const pendingConnectionId = randomUUID();
+    const oldAttemptId = randomUUID();
+    const newAttemptId = randomUUID();
+    await adminDb.execute(sql`
+      INSERT INTO ticket_mailbox_connections
+        (id, partner_id, consent_attempt_id, mailbox_address, status)
+      VALUES (${pendingConnectionId}, ${partnerA.id}, ${oldAttemptId},
+              'rotating-attempt@example.com', 'pending_consent')
+    `);
+    await adminDb.execute(sql`
+      INSERT INTO ticket_mailbox_consent_sessions
+        (state, phase, partner_id, connection_id, consent_attempt_id, expires_at)
+      VALUES (${`state-${pendingConnectionId}`}, 'admin_consent', ${partnerA.id},
+              ${pendingConnectionId}, ${oldAttemptId}, now() + interval '10 minutes')
+    `);
+
+    // Rotating the parent generation invalidates the old session without
+    // deleting or rewriting its forensic attempt identifier.
+    await expect(adminDb.execute(sql`
+      UPDATE ticket_mailbox_connections
+      SET consent_attempt_id = ${newAttemptId}
+      WHERE id = ${pendingConnectionId}
+    `)).resolves.toBeDefined();
+    const staleSessions = await adminDb.execute(sql`
+      SELECT consent_attempt_id AS "consentAttemptId"
+      FROM ticket_mailbox_consent_sessions
+      WHERE connection_id = ${pendingConnectionId}
+    `) as unknown as Array<{ consentAttemptId: string }>;
+    expect(staleSessions).toEqual([{ consentAttemptId: oldAttemptId }]);
 }
 
 async function verifyGlobalTenantUniqueness() {
@@ -248,6 +281,7 @@ async function verifyPartnerAxisRls() {
     const { partnerB, userA, userB, contextA } = await seedPartnersAndUsers();
     const tenantB = randomUUID();
     const connectionB = randomUUID();
+    const attemptB = randomUUID();
     const ownershipA = randomUUID();
 
     const adminDb = getTestDb();
@@ -257,13 +291,15 @@ async function verifyPartnerAxisRls() {
       VALUES (${tenantB}, ${partnerB.id}, ${userB.id}, ${randomUUID()})
     `);
     await adminDb.execute(sql`
-      INSERT INTO ticket_mailbox_connections (id, partner_id, mailbox_address)
-      VALUES (${connectionB}, ${partnerB.id}, 'consent-b@example.com')
+      INSERT INTO ticket_mailbox_connections
+        (id, partner_id, consent_attempt_id, mailbox_address)
+      VALUES (${connectionB}, ${partnerB.id}, ${attemptB}, 'consent-b@example.com')
     `);
     await adminDb.execute(sql`
       INSERT INTO ticket_mailbox_consent_sessions
-        (state, phase, partner_id, connection_id, user_id, tenant_hint_hash, expires_at)
-      VALUES ('state-b', 'admin_consent', ${partnerB.id}, ${connectionB}, ${userB.id},
+        (state, phase, partner_id, connection_id, consent_attempt_id, user_id,
+         tenant_hint_hash, expires_at)
+      VALUES ('state-b', 'admin_consent', ${partnerB.id}, ${connectionB}, ${attemptB}, ${userB.id},
               'test-only-tenant-hash', now() + interval '10 minutes')
     `);
 
@@ -286,8 +322,8 @@ async function verifyPartnerAxisRls() {
 
     const sessionForgeCause = await captureCause(() => withDbAccessContext(contextA, () => db.execute(sql`
       INSERT INTO ticket_mailbox_consent_sessions
-        (state, phase, partner_id, connection_id, user_id, expires_at)
-      VALUES ('forged-state', 'identity_verification', ${partnerB.id}, ${connectionB},
+        (state, phase, partner_id, connection_id, consent_attempt_id, user_id, expires_at)
+      VALUES ('forged-state', 'identity_verification', ${partnerB.id}, ${connectionB}, ${attemptB},
               ${userA.id}, now() + interval '10 minutes')
     `)));
     expect(sessionForgeCause?.code).toBe('42501');

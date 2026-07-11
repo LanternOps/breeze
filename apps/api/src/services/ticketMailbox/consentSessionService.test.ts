@@ -72,6 +72,7 @@ const PARTNER_ID = '11111111-1111-1111-1111-111111111111';
 const CONNECTION_ID = '22222222-2222-2222-2222-222222222222';
 const USER_ID = '33333333-3333-3333-3333-333333333333';
 const TENANT_ID = '44444444-4444-4444-4444-444444444444';
+const ATTEMPT_ID = '66666666-6666-4666-8666-666666666666';
 const NOW = new Date('2026-07-11T12:00:00.000Z');
 
 function row(overrides: Record<string, unknown> = {}) {
@@ -81,6 +82,7 @@ function row(overrides: Record<string, unknown> = {}) {
     phase: 'admin_consent',
     partnerId: PARTNER_ID,
     connectionId: CONNECTION_ID,
+    consentAttemptId: ATTEMPT_ID,
     userId: USER_ID,
     tenantHintHash: null,
     nonce: null,
@@ -114,15 +116,18 @@ describe('ticket mailbox consent sessions', () => {
     dbMocks.insertResults.push([row()]);
 
     await expect(createAdminConsentSession({
-      partnerId: PARTNER_ID, connectionId: CONNECTION_ID, userId: USER_ID,
+      partnerId: PARTNER_ID, connectionId: CONNECTION_ID, consentAttemptId: ATTEMPT_ID,
+      userId: USER_ID,
     })).resolves.toEqual(expect.objectContaining({
       state: 'state-1', phase: 'admin_consent', partnerId: PARTNER_ID,
-      connectionId: CONNECTION_ID, userId: USER_ID, tenantHintHash: null,
+      connectionId: CONNECTION_ID, consentAttemptId: ATTEMPT_ID,
+      userId: USER_ID, tenantHintHash: null,
       nonce: null, codeVerifier: null,
       expiresAt: new Date('2026-07-11T12:10:00.000Z'),
     }));
     expect(dbMocks.insertedValues).toEqual([expect.objectContaining({
-      state: 'state-1', phase: 'admin_consent', expiresAt: new Date('2026-07-11T12:10:00.000Z'),
+      state: 'state-1', phase: 'admin_consent', consentAttemptId: ATTEMPT_ID,
+      expiresAt: new Date('2026-07-11T12:10:00.000Z'),
     })]);
     expect(dbMocks.conflictTargets).toEqual([ticketMailboxConsentSessions.state]);
     expect(contextMocks.runOutside).toHaveBeenCalledOnce();
@@ -134,7 +139,8 @@ describe('ticket mailbox consent sessions', () => {
     dbMocks.insertResults.push([], [row({ state: 'fresh-state' })]);
 
     const session = await createAdminConsentSession({
-      partnerId: PARTNER_ID, connectionId: CONNECTION_ID, userId: null,
+      partnerId: PARTNER_ID, connectionId: CONNECTION_ID, consentAttemptId: ATTEMPT_ID,
+      userId: null,
     });
 
     expect(session.state).toBe('fresh-state');
@@ -149,7 +155,8 @@ describe('ticket mailbox consent sessions', () => {
     })]);
 
     const result = await createIdentityVerificationSession({
-      partnerId: PARTNER_ID, connectionId: CONNECTION_ID, userId: USER_ID, tenantHint: TENANT_ID,
+      partnerId: PARTNER_ID, connectionId: CONNECTION_ID, consentAttemptId: ATTEMPT_ID,
+      userId: USER_ID, tenantHint: TENANT_ID,
     });
 
     expect(result).toEqual({
@@ -165,6 +172,7 @@ describe('ticket mailbox consent sessions', () => {
     ).update(`ticket-mailbox-oauth-tenant-hint:${TENANT_ID}`).digest('base64url');
     expect(dbMocks.insertedValues[0]).toEqual(expect.objectContaining({
       tenantHintHash: expectedHash, nonce: 'nonce-1', codeVerifier: 'verifier-1',
+      consentAttemptId: ATTEMPT_ID,
     }));
     expect(dbMocks.insertedValues[0]).not.toHaveProperty('tenantHint');
     expect(JSON.stringify(dbMocks.insertedValues[0])).not.toContain(TENANT_ID);
@@ -174,7 +182,8 @@ describe('ticket mailbox consent sessions', () => {
     dbMocks.insertResults.push([row()]);
 
     await createAdminConsentSession({
-      partnerId: PARTNER_ID, connectionId: CONNECTION_ID, userId: USER_ID,
+      partnerId: PARTNER_ID, connectionId: CONNECTION_ID, consentAttemptId: ATTEMPT_ID,
+      userId: USER_ID,
     });
 
     expect(dbMocks.deleteWhere).toHaveBeenCalledWith(expect.objectContaining({
@@ -192,7 +201,7 @@ describe('ticket mailbox consent sessions', () => {
 
     expect(first).toMatchObject({
       partnerId: PARTNER_ID, connectionId: CONNECTION_ID,
-      userId: USER_ID, phase: 'admin_consent',
+      consentAttemptId: ATTEMPT_ID, userId: USER_ID, phase: 'admin_consent',
     });
     expect(replay).toBeNull();
     expect(dbMocks.deleteWhere).toHaveBeenCalledTimes(2);

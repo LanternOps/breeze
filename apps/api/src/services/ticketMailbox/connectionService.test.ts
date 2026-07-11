@@ -34,10 +34,13 @@ vi.mock('../../db', () => {
           }),
         };
         return {
-          where: vi.fn(() => ({
-            limit: vi.fn(async () => finish()),
-            then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve(finish()).then(resolve),
-          })),
+          where: vi.fn((condition: unknown) => {
+            dbMocks.selectWheres.push(condition);
+            return {
+              limit: vi.fn(async () => finish()),
+              then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve(finish()).then(resolve),
+            };
+          }),
           innerJoin: vi.fn((table: unknown, condition: unknown) => {
             dbMocks.innerJoins.push({ table, condition });
             return joined;
@@ -114,11 +117,15 @@ import { ticketMailboxConnections, ticketMailboxTenantOwnerships } from '../../d
 import {
   bindVerifiedTenant,
   createPendingConnection,
+  disableConnection,
+  isConnectedMailboxSnapshotCurrent,
   listConnectedMailboxes,
   listMailboxConnections,
+  markPendingConsentFailed,
   probeMailbox,
   restoreVerifiedConnection,
-  setConnectionStatus,
+  setConnectedMailboxStatus,
+  updateDeltaCursor,
 } from './connectionService';
 
 const CONNECTION_ID = '11111111-1111-1111-1111-111111111111';
@@ -129,9 +136,11 @@ const TENANT_ID = TENANT_ID_UPPER.toLowerCase();
 const MICROSOFT_OID_UPPER = 'BBBBBBBB-BBBB-4BBB-8BBB-BBBBBBBBBBBB';
 const MICROSOFT_OID = MICROSOFT_OID_UPPER.toLowerCase();
 const USER_ID = '44444444-4444-4444-8444-444444444444';
+const ATTEMPT_ID = '55555555-5555-4555-8555-555555555555';
 
 const fullRow = {
   id: CONNECTION_ID,
+  consentAttemptId: ATTEMPT_ID,
   partnerId: PARTNER_ID,
   tenantId: TENANT_ID,
   mailboxAddress: 'support@example.com',
@@ -182,6 +191,12 @@ describe('ticket mailbox connection service', () => {
       lastPolledAt: null,
       lastMessageAt: null,
     });
+    expect(dbMocks.conflictUpdates[0]?.consentAttemptId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    expect(dbMocks.insertedValues[0]?.consentAttemptId).toBe(
+      dbMocks.conflictUpdates[0]?.consentAttemptId,
+    );
   });
 
   it('atomically confirms ownership, binds the same-partner connection, and activates it', async () => {
@@ -189,7 +204,7 @@ describe('ticket mailbox connection service', () => {
     dbMocks.selectResults.push([{ partnerId: PARTNER_ID }]);
     dbMocks.updateResults.push([{ id: CONNECTION_ID }]);
 
-    await bindVerifiedTenant(CONNECTION_ID, PARTNER_ID, TENANT_ID_UPPER, {
+    await bindVerifiedTenant(CONNECTION_ID, PARTNER_ID, ATTEMPT_ID, TENANT_ID_UPPER, {
       microsoftOid: MICROSOFT_OID_UPPER,
       breezeUserId: USER_ID,
     });
@@ -216,6 +231,7 @@ describe('ticket mailbox connection service', () => {
       conditions: [
         { op: 'eq', column: ticketMailboxConnections.id, value: CONNECTION_ID },
         { op: 'eq', column: ticketMailboxConnections.partnerId, value: PARTNER_ID },
+        { op: 'eq', column: ticketMailboxConnections.consentAttemptId, value: ATTEMPT_ID },
         { op: 'eq', column: ticketMailboxConnections.status, value: 'pending_consent' },
       ],
     });
@@ -225,7 +241,7 @@ describe('ticket mailbox connection service', () => {
     dbMocks.insertResults.push([]);
     dbMocks.selectResults.push([{ partnerId: OTHER_PARTNER_ID }]);
 
-    await expect(bindVerifiedTenant(CONNECTION_ID, PARTNER_ID, TENANT_ID, {
+    await expect(bindVerifiedTenant(CONNECTION_ID, PARTNER_ID, ATTEMPT_ID, TENANT_ID, {
       microsoftOid: MICROSOFT_OID,
       breezeUserId: null,
     })).rejects.toThrow(/another partner/i);
@@ -238,25 +254,20 @@ describe('ticket mailbox connection service', () => {
     dbMocks.selectResults.push([{ partnerId: PARTNER_ID }]);
     dbMocks.updateResults.push([]);
 
-    await expect(bindVerifiedTenant(CONNECTION_ID, PARTNER_ID, TENANT_ID, {
+    await expect(bindVerifiedTenant(CONNECTION_ID, PARTNER_ID, ATTEMPT_ID, TENANT_ID, {
       microsoftOid: MICROSOFT_OID,
       breezeUserId: USER_ID,
     })).rejects.toThrow(/pending mailbox connection/i);
   });
 
-  it('prevents the generic status setter from activating a connection', async () => {
-    await expect(setConnectionStatus(CONNECTION_ID, PARTNER_ID, 'connected', null))
-      .rejects.toThrow(/bindVerifiedTenant/);
-    expect(dbMocks.updatedValues).toHaveLength(0);
-  });
-
-  it('persists callback failures as requiring re-consent without tenant binding', async () => {
-    await setConnectionStatus(
+  it('callback failure changes only its matching pending consent attempt', async () => {
+    dbMocks.updateResults.push([{ id: CONNECTION_ID }]);
+    await expect(markPendingConsentFailed(
       CONNECTION_ID,
       PARTNER_ID,
-      'reauth_required',
+      ATTEMPT_ID,
       'Mailbox verification failed',
-    );
+    )).resolves.toBe(true);
 
     expect(dbMocks.updatedValues[0]).toMatchObject({
       status: 'reauth_required',
@@ -267,14 +278,26 @@ describe('ticket mailbox connection service', () => {
       conditions: [
         { op: 'eq', column: ticketMailboxConnections.id, value: CONNECTION_ID },
         { op: 'eq', column: ticketMailboxConnections.partnerId, value: PARTNER_ID },
+        { op: 'eq', column: ticketMailboxConnections.consentAttemptId, value: ATTEMPT_ID },
+        { op: 'eq', column: ticketMailboxConnections.status, value: 'pending_consent' },
       ],
     });
+  });
+
+  it('reports a stale callback as a no-op when its generation no longer matches', async () => {
+    dbMocks.updateResults.push([]);
+    await expect(markPendingConsentFailed(
+      CONNECTION_ID, PARTNER_ID, ATTEMPT_ID, 'Mailbox verification failed',
+    )).resolves.toBe(false);
   });
 
   it('restores only the matching previously verified error connection', async () => {
     dbMocks.updateResults.push([{ id: CONNECTION_ID }]);
 
-    await restoreVerifiedConnection(CONNECTION_ID, PARTNER_ID, TENANT_ID);
+    await expect(restoreVerifiedConnection({
+      id: CONNECTION_ID, partnerId: PARTNER_ID, tenantId: TENANT_ID,
+      consentAttemptId: ATTEMPT_ID,
+    })).resolves.toBe(true);
 
     expect(dbMocks.updatedValues[0]).toMatchObject({
       status: 'connected',
@@ -286,6 +309,7 @@ describe('ticket mailbox connection service', () => {
         { op: 'eq', column: ticketMailboxConnections.id, value: CONNECTION_ID },
         { op: 'eq', column: ticketMailboxConnections.partnerId, value: PARTNER_ID },
         { op: 'eq', column: ticketMailboxConnections.tenantId, value: TENANT_ID },
+        { op: 'eq', column: ticketMailboxConnections.consentAttemptId, value: ATTEMPT_ID },
         { op: 'eq', column: ticketMailboxConnections.status, value: 'error' },
       ],
     });
@@ -294,8 +318,45 @@ describe('ticket mailbox connection service', () => {
   it('fails closed rather than activating a connection without matching verified ownership', async () => {
     dbMocks.updateResults.push([]);
 
-    await expect(restoreVerifiedConnection(CONNECTION_ID, PARTNER_ID, TENANT_ID))
-      .rejects.toThrow(/verified mailbox connection/i);
+    await expect(restoreVerifiedConnection({
+      id: CONNECTION_ID, partnerId: PARTNER_ID, tenantId: TENANT_ID,
+      consentAttemptId: ATTEMPT_ID,
+    })).resolves.toBe(false);
+  });
+
+  it('uses connected tenant and generation CAS for worker state and cursor writes', async () => {
+    const snapshot = {
+      id: CONNECTION_ID, partnerId: PARTNER_ID, tenantId: TENANT_ID,
+      consentAttemptId: ATTEMPT_ID,
+    };
+    dbMocks.selectResults.push([{ id: CONNECTION_ID }]);
+    dbMocks.updateResults.push([{ id: CONNECTION_ID }], [{ id: CONNECTION_ID }]);
+
+    await expect(isConnectedMailboxSnapshotCurrent(snapshot)).resolves.toBe(true);
+    await expect(setConnectedMailboxStatus(snapshot, 'error', 'poll failed')).resolves.toBe(true);
+    await expect(updateDeltaCursor(snapshot, 'delta-next', new Date(), null)).resolves.toBe(true);
+
+    for (const where of [dbMocks.selectWheres.at(-1), ...dbMocks.updateWheres.slice(-2)]) {
+      expect(where).toEqual(expect.objectContaining({
+        op: 'and',
+        conditions: expect.arrayContaining([
+          { op: 'eq', column: ticketMailboxConnections.id, value: CONNECTION_ID },
+          { op: 'eq', column: ticketMailboxConnections.partnerId, value: PARTNER_ID },
+          { op: 'eq', column: ticketMailboxConnections.tenantId, value: TENANT_ID },
+          { op: 'eq', column: ticketMailboxConnections.consentAttemptId, value: ATTEMPT_ID },
+          { op: 'eq', column: ticketMailboxConnections.status, value: 'connected' },
+        ]),
+      }));
+    }
+  });
+
+  it('disable rotates the generation so in-flight snapshots cannot write afterward', async () => {
+    dbMocks.updateResults.push([{ id: CONNECTION_ID }]);
+    await expect(disableConnection(CONNECTION_ID, PARTNER_ID)).resolves.toBe(true);
+    expect(dbMocks.updatedValues[0]?.status).toBe('disabled');
+    expect(dbMocks.updatedValues[0]?.consentAttemptId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
   });
 
   it('returns an exact public list DTO with no tenant or processing internals', async () => {
@@ -327,6 +388,7 @@ describe('ticket mailbox connection service', () => {
       tenantId: TENANT_ID,
       mailboxAddress: 'support@example.com',
       deltaLink: 'secret-cursor',
+      consentAttemptId: ATTEMPT_ID,
     };
     dbMocks.selectResults.push([connectedRow]);
 
@@ -347,6 +409,7 @@ describe('ticket mailbox connection service', () => {
     ]);
     expect(Object.keys(dbMocks.selectedFields[0] ?? {})).toEqual([
       'id', 'partnerId', 'tenantId', 'mailboxAddress', 'deltaLink',
+      'consentAttemptId',
     ]);
     expect(contextMocks.runOutside).toHaveBeenCalledOnce();
     expect(contextMocks.withSystem).toHaveBeenCalledOnce();
