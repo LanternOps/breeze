@@ -3531,3 +3531,28 @@ tests never exercised the real browser payloads** — worth a validator/UI-contr
 > forward on `main` — verified present in `origin/main`, which is also well ahead of the
 > throwaway branch (Zod-4 migration, contract auto-renew, quotes + portal Caddy routes).
 > The QA branch was discarded; only this log + `UI_IMPROVEMENTS.md` + the checklist were salvaged.
+
+## Web console i18n Phase 1 (en / pt-BR) — 2026-07-10
+
+**Branch:** `worktree-web-i18n-phase1`
+**Commit:** `e44d668ef` (implementation uncommitted)
+**Tested by:** Codex
+**Result:** PARTIAL
+
+### What was tested
+
+- [x] UI unit coverage: language selector persists and applies `pt-BR`; mounted sidebar switches between English and Portuguese; full web Vitest suite run.
+- [x] API unit coverage: `/users/me` rejects unsupported locales and merges `pt-BR` preferences.
+- [x] Static verification: Astro check completes with zero errors.
+- [ ] Live UI/API smoke: unavailable because this worktree has no configured `E2E_*` credentials and no running web/API/Postgres/Redis compose services.
+
+### Evidence
+
+- Full web suite: 412 files / 3,215 tests passed (including the new i18n and ProfilePage regression coverage).
+- API users route tests: 68 passed.
+- Astro check: 0 errors (existing hints only).
+
+### Issues Found
+
+- No implementation defects found in automated verification.
+- Live persistence across a fresh browser profile remains to be exercised when an E2E stack is configured.
