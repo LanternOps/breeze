@@ -409,6 +409,7 @@ func TestResolveBackupServerURL(t *testing.T) {
 		bootstrapSeed string
 		primaryURL    string
 		want          string
+		wantErr       bool
 	}{
 		{
 			name:          "enroll wins over bootstrap",
@@ -436,6 +437,7 @@ func TestResolveBackupServerURL(t *testing.T) {
 			name:       "invalid http non-localhost skipped",
 			enrollSeed: "http://backup.example.com",
 			primaryURL: "https://primary.example.com",
+			wantErr:    true,
 		},
 		{
 			name:       "valid https accepted",
@@ -450,9 +452,12 @@ func TestResolveBackupServerURL(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := resolveBackupServerURL(tc.enrollSeed, tc.bootstrapSeed, tc.primaryURL)
+			got, err := resolveBackupServerURL(tc.enrollSeed, tc.bootstrapSeed, tc.primaryURL)
 			if got != tc.want {
 				t.Errorf("resolveBackupServerURL(%q, %q, %q) = %q, want %q", tc.enrollSeed, tc.bootstrapSeed, tc.primaryURL, got, tc.want)
+			}
+			if (err != nil) != tc.wantErr {
+				t.Errorf("resolveBackupServerURL(%q, %q, %q) err = %v, wantErr %v", tc.enrollSeed, tc.bootstrapSeed, tc.primaryURL, err, tc.wantErr)
 			}
 		})
 	}

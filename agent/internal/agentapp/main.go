@@ -934,19 +934,21 @@ func trimEnrollInputs(key, server, secret string) (string, string, string) {
 // resolveBackupServerURL selects and validates the backup control-plane URL
 // seeded during enrollment. The enrollment response takes precedence over the
 // bootstrap response; an invalid seed or one matching the primary URL is
-// discarded rather than persisted into the fresh agent config.
-func resolveBackupServerURL(enrollSeed, bootstrapSeed, primaryServerURL string) string {
+// discarded rather than persisted into the fresh agent config. A non-nil
+// error means a candidate seed existed but failed validation — callers log
+// it; it must never fail enrollment.
+func resolveBackupServerURL(enrollSeed, bootstrapSeed, primaryServerURL string) (string, error) {
 	seed := enrollSeed
 	if seed == "" {
 		seed = bootstrapSeed
 	}
 	if seed == "" || seed == primaryServerURL {
-		return ""
+		return "", nil
 	}
 	if err := config.ValidateBackupServerURL(seed); err != nil {
-		return ""
+		return "", err
 	}
-	return seed
+	return seed, nil
 }
 
 // assertHostnameNonEmpty enforces the #439 contract: enrollment must
@@ -1157,18 +1159,12 @@ func enrollDevice(enrollmentKey string) {
 	// Backup control-plane URL (#2288): enroll response wins; bootstrap value
 	// is the fallback. Validated before persisting — a bad value must not
 	// poison a fresh enrollment.
-	if resolved := resolveBackupServerURL(enrollResp.BackupServerURL, backupServerURL, cfg.ServerURL); resolved != "" {
-		cfg.BackupServerURL = resolved
-	} else {
-		seed := enrollResp.BackupServerURL
-		if seed == "" {
-			seed = backupServerURL
-		}
-		if seed != "" && seed != cfg.ServerURL {
-			if err := config.ValidateBackupServerURL(seed); err != nil {
-				enrollLog.Warn("dropped invalid backup server URL seed from enrollment", "error", err)
-			}
-		}
+	resolvedBackupURL, backupSeedErr := resolveBackupServerURL(enrollResp.BackupServerURL, backupServerURL, cfg.ServerURL)
+	if backupSeedErr != nil {
+		enrollLog.Warn("dropped invalid backup server URL seed from enrollment", "error", backupSeedErr)
+	}
+	if resolvedBackupURL != "" {
+		cfg.BackupServerURL = resolvedBackupURL
 	}
 
 	if enrollResp.Config.HeartbeatIntervalSeconds > 0 {
