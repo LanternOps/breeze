@@ -7,13 +7,14 @@
 import { Hono } from 'hono';
 import { eq } from 'drizzle-orm';
 import { authMiddleware, requirePermission, requireScope } from '../middleware/auth';
-import { PERMISSIONS } from '../services/permissions';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { resolveScopedOrgId } from './c2c/helpers';
 import { hasDirectM365Connection } from '../services/m365DirectGraph';
 import { listSharePointLibraries } from '../services/onedriveGraph';
 import { db } from '../db';
 import { devices } from '../db/schema/devices';
 import { onedriveDeviceState } from '../db/schema/onedriveHelper';
+import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './devices/helpers';
 
 export const onedriveRoutes = new Hono();
 
@@ -57,10 +58,14 @@ onedriveRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const deviceId = c.req.param('deviceId')!;
-    const [device] = await db
-      .select({ id: devices.id, orgId: devices.orgId })
-      .from(devices).where(eq(devices.id, deviceId)).limit(1);
-    if (!device || !resolveScopedOrgId(auth, device.orgId)) {
+    // Canonical org + site-scope gate (site-scope-coverage contract): a
+    // site-restricted tech must not read OneDrive state for devices in
+    // other sites of the same org.
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+    if (!device) {
       return c.json({ error: 'Device not found' }, 404);
     }
     const [state] = await db
@@ -94,10 +99,11 @@ onedriveRoutes.get(
       orgCond = auth.orgCondition(onedriveDeviceState.orgId);
     }
 
-    const rows = await db
+    const allRows = await db
       .select({
         deviceId: onedriveDeviceState.deviceId,
         hostname: devices.hostname,
+        siteId: devices.siteId,
         signedIn: onedriveDeviceState.signedIn,
         filesOnDemandOn: onedriveDeviceState.filesOnDemandOn,
         oneDriveVersion: onedriveDeviceState.oneDriveVersion,
@@ -110,6 +116,14 @@ onedriveRoutes.get(
       .from(onedriveDeviceState)
       .innerJoin(devices, eq(onedriveDeviceState.deviceId, devices.id))
       .where(orgCond);
+
+    // Site-scope narrowing (site-scope-coverage contract): a site-restricted
+    // tech only sees devices in their allowed sites. `permissions` is live —
+    // populated by the requireDevicesRead (requirePermission) middleware above.
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    const rows = perms?.allowedSiteIds
+      ? allRows.filter((r) => typeof r.siteId === 'string' && canAccessSite(perms, r.siteId))
+      : allRows;
 
     const kfmProtected = (kfm: unknown) => {
       const entries = Object.values((kfm ?? {}) as Record<string, string>);
