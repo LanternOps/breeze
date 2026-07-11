@@ -407,6 +407,17 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     deviceUpdates.watchdogVersion = data.watchdogVersion;
   }
 
+  // #2288 — active control-plane URL. Absent (old agent) leaves the stored
+  // value untouched; a malformed value is dropped, never a heartbeat failure.
+  if (data.serverUrl) {
+    try {
+      new URL(data.serverUrl);
+      deviceUpdates.agentServerUrl = data.serverUrl;
+    } catch {
+      // informational field — ignore garbage
+    }
+  }
+
   // Orthogonal virtualization attribute (issue #1387). Old agents omit
   // isVirtual entirely (undefined) — leave the stored value untouched in that
   // case. A present value (true/false) is authoritative; the platform is

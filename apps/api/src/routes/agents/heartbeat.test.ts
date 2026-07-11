@@ -1713,6 +1713,59 @@ describe('POST /agents/:id/heartbeat — watchdogVersion telemetry (#1802)', () 
 });
 
 // ---------------------------------------------------------------------
+// #2288 — active control-plane URL persistence
+// ---------------------------------------------------------------------
+
+describe('POST /agents/:id/heartbeat — active server URL telemetry (#2288)', () => {
+  const deviceRow = {
+    id: 'device-1', orgId: 'org-1', siteId: 'site-1', hostname: 'host',
+    osType: 'windows', architecture: 'amd64', agentVersion: '0.66.0',
+    deviceRoleSource: 'auto', lastSeenAt: new Date(), mainAgentSilentSince: null,
+  };
+
+  let capturedDeviceUpdate: Record<string, unknown>;
+
+  function arrange() {
+    vi.clearAllMocks();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
+    selectMock.mockReturnValue(selectChainResolving([]));
+    updateMock.mockReturnValue({
+      set: vi.fn((values: Record<string, unknown>) => {
+        capturedDeviceUpdate = values;
+        return { where: vi.fn().mockResolvedValue(undefined) };
+      }),
+    });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+  }
+
+  async function postHeartbeat(body: Record<string, unknown>) {
+    arrange();
+    return buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it('persists a valid serverUrl to devices.agent_server_url', async () => {
+    await postHeartbeat({ ...minimalHeartbeatBody, serverUrl: 'https://old.example.com' });
+    expect(capturedDeviceUpdate.agentServerUrl).toBe('https://old.example.com');
+  });
+
+  it('ignores a malformed serverUrl instead of failing the heartbeat', async () => {
+    const res = await postHeartbeat({ ...minimalHeartbeatBody, serverUrl: 'not a url' });
+    expect(res.status).toBe(200);
+    expect(capturedDeviceUpdate.agentServerUrl).toBeUndefined();
+  });
+
+  it('leaves stored value untouched when serverUrl absent (old agent)', async () => {
+    await postHeartbeat(minimalHeartbeatBody);
+    expect(capturedDeviceUpdate.agentServerUrl).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------
 // #1387 — orthogonal virtualization attribute persistence
 // ---------------------------------------------------------------------
 
