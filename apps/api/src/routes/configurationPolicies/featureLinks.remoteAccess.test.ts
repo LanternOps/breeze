@@ -179,6 +179,59 @@ describe('featureLinks routes — remote_access inlineSettings validation', () =
       expect(addFeatureLinkMock).toHaveBeenCalled();
     });
 
+    it('accepts the capability payload the RemoteAccessTab sends → 201 (#2320 regression)', async () => {
+      // Exact shape the web Remote Access tab submits (and what pre-#1694
+      // policies have stored). The consent-only .strict() schema used to 400
+      // this with "Unrecognized keys: webrtcDesktop, ...".
+      const capabilitySettings = {
+        webrtcDesktop: true,
+        vncRelay: false,
+        remoteTools: true,
+        clipboardHostToViewer: true,
+        clipboardViewerToHost: true,
+        enableProxy: false,
+        defaultAllowedPorts: [80, 443, 8080, 8443],
+        autoEnableProxy: false,
+        maxConcurrentTunnels: 5,
+        idleTimeoutMinutes: 5,
+        maxSessionDurationHours: 8,
+      };
+      const res = await app.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          featureType: 'remote_access',
+          inlineSettings: capabilitySettings,
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      // The capability fields must survive validation verbatim — they are what
+      // resolveRemoteAccessForDevice reads back from the JSONB mirror.
+      expect(addFeatureLinkMock).toHaveBeenCalledWith(
+        POLICY_ID,
+        'remote_access',
+        undefined,
+        capabilitySettings
+      );
+    });
+
+    it('rejects capability fields with invalid values → 400', async () => {
+      const res = await app.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          featureType: 'remote_access',
+          inlineSettings: { webrtcDesktop: 'yes' },
+        }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.error).toMatch(/remote access/i);
+      expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    });
+
     it('accepts remote_access inlineSettings: {} (all defaults) → 201', async () => {
       const res = await app.request(`/${POLICY_ID}/features`, {
         method: 'POST',
@@ -230,6 +283,35 @@ describe('featureLinks routes — remote_access inlineSettings validation', () =
 
       expect(res.status).toBe(200);
       expect(updateFeatureLinkMock).toHaveBeenCalled();
+    });
+
+    it('accepts an update with mixed capability + consent fields → 200 (#2320 regression)', async () => {
+      const res = await app.request(`/${POLICY_ID}/features/${LINK_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          inlineSettings: {
+            webrtcDesktop: false,
+            remoteTools: true,
+            idleTimeoutMinutes: 10,
+            sessionPromptMode: 'consent',
+          },
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(updateFeatureLinkMock).toHaveBeenCalledWith(
+        LINK_ID,
+        expect.objectContaining({
+          inlineSettings: {
+            webrtcDesktop: false,
+            remoteTools: true,
+            idleTimeoutMinutes: 10,
+            sessionPromptMode: 'consent',
+          },
+        }),
+        POLICY_ID
+      );
     });
 
     it('accepts update remote_access inlineSettings with technicianIdentityLevel: "generic" → 200', async () => {
