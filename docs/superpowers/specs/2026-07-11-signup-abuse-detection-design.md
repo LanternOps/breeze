@@ -51,7 +51,8 @@ LLM involvement is confined to layer 4. Layers 1–3 are deterministic SQL + ari
 | `partners` | `signup_ip` (varchar 45) | `register-partner` handler, from trusted client IP |
 | `partners` | `signup_user_agent` (text) | same |
 | `devices` | `enrollment_ip` (varchar 45) | agent enrollment route (IP already computed for rate limiting) |
-| `devices` | `last_public_ip` (varchar 45) | agent WS connection establishment (server-side remote address; **no Go agent changes**) |
+
+**Amendment 2026-07-11:** the originally proposed `devices.last_public_ip` is dropped — `devices.last_seen_ip` (varchar 45) already exists, updated on every authenticated agent request with audit-logged transitions. The sweep reads `last_seen_ip` for ongoing device geography. **No Go agent changes** either way.
 
 **IP enrichment:** MaxMind GeoLite2 (City + ASN), resolved at **sweep time** only — never on hot paths. Databases are downloaded locally by a weekly refresh job using `MAXMIND_LICENSE_KEY`; lookups give country, city, ASN, and org name. Residential-vs-business classification is a best-effort keyword heuristic over ASN org names and is only ever one weighted signal among several.
 
@@ -85,7 +86,7 @@ LLM involvement is confined to layer 4. Layers 1–3 are deterministic SQL + ari
 | `rmm.consumer_devices` | ratio of default hostnames (`DESKTOP-`/`LAPTOP-` pattern) and non-domain-joined Windows machines |
 | `rmm.session_intensity` | remote sessions per device in first weeks; remote session into a device enrolled < 24h earlier weighs heaviest |
 | `rmm.enrollment_velocity` | burst enrollments on young accounts |
-| `rmm.token_spread` | one installer/bootstrap token redeemed from many distinct IPs/countries |
+| `rmm.enrollment_ip_spread` | devices enrolled from many distinct IPs relative to fleet size (amended from the original `rmm.token_spread`: bootstrap tokens do not record redeemer IPs; per-device `enrollment_ip` spread measures the same scatter. Upgraded to country-level in the geo PR) |
 
 **Fraud / resource** (existing data):
 
