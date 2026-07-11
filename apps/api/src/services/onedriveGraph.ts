@@ -109,7 +109,16 @@ export async function listSharePointLibraries(orgId: string): Promise<DirectInvo
   return { kind: 'ok', data: { libraries, skippedSites } };
 }
 
-export async function resolveUserGroupMembership(orgId: string, upn: string): Promise<DirectInvokeResult> {
+// Pagination bound: 5 pages × $top=200 = 1000 transitive groups. Past that we
+// return an error, never a truncated set as 'ok' — a silently missing group id
+// here is a mount-entitlement decision, and truncated-as-ok would cache a
+// false negative for the full TTL with no log anywhere.
+const GROUP_MEMBERSHIP_MAX_PAGES = 5;
+
+export async function resolveUserGroupMembership(
+  orgId: string,
+  upn: string,
+): Promise<DirectInvokeResult<{ groupIds: string[] }>> {
   if (!upn || typeof upn !== 'string') {
     return { kind: 'error', code: 'bad_request', message: 'upn is required.' };
   }
@@ -117,31 +126,51 @@ export async function resolveUserGroupMembership(orgId: string, upn: string): Pr
   if ('kind' in tok) return tok;
 
   // transitiveMemberOf so nested group membership counts; only group objects, ids only.
-  const res = await graphFetch(
-    tok.token, 'GET',
-    `/users/${encodeURIComponent(upn)}/transitiveMemberOf/microsoft.graph.group?$select=id&$top=200`,
-  );
-  if (res.kind === 'error') return res;
-
-  const rows = Array.isArray((res.data as any)?.value) ? (res.data as any).value : [];
-  const groupIds = rows.map((g: any) => g.id).filter((id: unknown): id is string => typeof id === 'string');
+  const groupIds: string[] = [];
+  let path: string | null =
+    `/users/${encodeURIComponent(upn)}/transitiveMemberOf/microsoft.graph.group?$select=id&$top=200`;
+  for (let page = 0; page < GROUP_MEMBERSHIP_MAX_PAGES && path; page++) {
+    const res = await graphFetch(tok.token, 'GET', path);
+    if (res.kind === 'error') return res;
+    const data = res.data as { value?: unknown; '@odata.nextLink'?: unknown };
+    const rows = Array.isArray(data?.value) ? data.value : [];
+    for (const g of rows) {
+      const id = (g as { id?: unknown })?.id;
+      if (typeof id === 'string') groupIds.push(id);
+    }
+    path = typeof data?.['@odata.nextLink'] === 'string' ? data['@odata.nextLink'] : null;
+  }
+  if (path) {
+    return {
+      kind: 'error',
+      code: 'too_many_groups',
+      message: `More than ${GROUP_MEMBERSHIP_MAX_PAGES * 200} transitive groups; refusing to return a truncated set.`,
+    };
+  }
   return { kind: 'ok', data: { groupIds } };
 }
 
+// The TTL bounds access-revocation latency: a user removed from an Entra
+// group stays tagged (mountable) for up to this TTL + one heartbeat.
 export const GROUP_MEMBERSHIP_CACHE_TTL_MS = 30 * 60 * 1000;
 
-type CacheEntry = { at: number; result: DirectInvokeResult };
+type CacheEntry = { at: number; result: DirectInvokeResult<{ groupIds: string[] }> };
 const groupMembershipCache = new Map<string, CacheEntry>();
 
+/** Test hook. */
 export function clearGroupMembershipCache(): void {
   groupMembershipCache.clear();
 }
 
 /** TTL-cached transitive group membership. Delivery calls this once per
- * reported UPN per heartbeat; without the cache that is a Graph round-trip
- * per user per minute per device. Errors are never cached (fail closed but
- * retry next heartbeat). */
-export async function resolveUserGroupMembershipCached(orgId: string, upn: string): Promise<DirectInvokeResult> {
+ * reported UPN per heartbeat; without the cache an uncached miss costs two
+ * sequential HTTP round-trips (client-credentials token + Graph) per user per
+ * heartbeat (default 60s, configurable 5-3600s) per device. Errors are never
+ * cached (fail closed but retry next heartbeat). */
+export async function resolveUserGroupMembershipCached(
+  orgId: string,
+  upn: string,
+): Promise<DirectInvokeResult<{ groupIds: string[] }>> {
   const key = `${orgId}:${upn.toLowerCase()}`;
   const hit = groupMembershipCache.get(key);
   if (hit && Date.now() - hit.at < GROUP_MEMBERSHIP_CACHE_TTL_MS) return hit.result;

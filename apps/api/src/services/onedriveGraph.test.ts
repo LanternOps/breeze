@@ -11,6 +11,7 @@ import { getToken, graphFetch } from './m365DirectGraph';
 import { captureException } from './sentry';
 import {
   clearGroupMembershipCache,
+  GROUP_MEMBERSHIP_CACHE_TTL_MS,
   listSharePointLibraries,
   resolveUserGroupMembership,
   resolveUserGroupMembershipCached,
@@ -200,6 +201,43 @@ describe('resolveUserGroupMembership', () => {
     expect(res.kind).toBe('error');
     expect((graphFetch as any)).not.toHaveBeenCalled();
   });
+
+  it('follows @odata.nextLink and unions the pages', async () => {
+    (graphFetch as any)
+      .mockResolvedValueOnce({ kind: 'ok', data: {
+        value: [{ id: 'g-1' }],
+        '@odata.nextLink': 'https://graph.microsoft.com/v1.0/users/u/transitiveMemberOf?$skiptoken=abc',
+      } })
+      .mockResolvedValueOnce({ kind: 'ok', data: { value: [{ id: 'g-2' }] } });
+    const res = await resolveUserGroupMembership('org-1', 'u@c.com');
+    expect((res as any).data.groupIds).toEqual(['g-1', 'g-2']);
+    expect(graphFetch).toHaveBeenCalledTimes(2);
+    // page 2 must be requested via the absolute nextLink verbatim
+    expect((graphFetch as any).mock.calls[1][2]).toContain('$skiptoken=abc');
+  });
+
+  it('never returns a truncated set as ok — past the page bound it errors', async () => {
+    (graphFetch as any).mockResolvedValue({ kind: 'ok', data: {
+      value: [{ id: 'g-n' }],
+      '@odata.nextLink': 'https://graph.microsoft.com/v1.0/users/u/transitiveMemberOf?$skiptoken=more',
+    } });
+    const res = await resolveUserGroupMembership('org-1', 'u@c.com');
+    expect(res.kind).toBe('error');
+    expect((res as any).code).toBe('too_many_groups');
+    expect(graphFetch).toHaveBeenCalledTimes(5); // GROUP_MEMBERSHIP_MAX_PAGES
+  });
+
+  it('a mid-pagination Graph error propagates (not a partial ok)', async () => {
+    (graphFetch as any)
+      .mockResolvedValueOnce({ kind: 'ok', data: {
+        value: [{ id: 'g-1' }],
+        '@odata.nextLink': 'https://graph.microsoft.com/v1.0/next',
+      } })
+      .mockResolvedValueOnce({ kind: 'error', code: 'graph_unreachable', message: 'x' });
+    const res = await resolveUserGroupMembership('org-1', 'u@c.com');
+    expect(res.kind).toBe('error');
+    expect((res as any).code).toBe('graph_unreachable');
+  });
 });
 
 describe('resolveUserGroupMembershipCached', () => {
@@ -223,6 +261,22 @@ describe('resolveUserGroupMembershipCached', () => {
     const b = await resolveUserGroupMembershipCached('org-1', 'u@c.com');
     expect((b as any).data.groupIds).toEqual(['g-2']);
     expect(graphFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('expired entries refetch — a revoked membership cannot outlive the TTL', async () => {
+    vi.useFakeTimers();
+    try {
+      (graphFetch as any)
+        .mockResolvedValueOnce({ kind: 'ok', data: { value: [{ id: 'g-1' }] } })
+        .mockResolvedValueOnce({ kind: 'ok', data: { value: [] } }); // user removed from the group
+      await resolveUserGroupMembershipCached('org-1', 'u@c.com');
+      vi.advanceTimersByTime(GROUP_MEMBERSHIP_CACHE_TTL_MS + 1);
+      const b = await resolveUserGroupMembershipCached('org-1', 'u@c.com');
+      expect((b as any).data.groupIds).toEqual([]);
+      expect(graphFetch).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('distinct orgs do not share cache entries', async () => {

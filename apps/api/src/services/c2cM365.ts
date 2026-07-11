@@ -127,6 +127,9 @@ export async function acquireClientCredentialsToken(params: {
     // undici's fetch follows redirects by default; the token endpoint never
     // legitimately redirects, so refuse to chase one off-host.
     redirect: 'error',
+    // Callers on the agent heartbeat response path cannot tolerate an
+    // unbounded hang; an abort surfaces as a normal thrown error here.
+    signal: AbortSignal.timeout(10_000),
   });
 
   if (!res.ok) {

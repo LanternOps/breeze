@@ -28,9 +28,17 @@ import type { DelegantToolName } from './delegantClient';
 
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
 
-export type DirectInvokeResult =
-  | { kind: 'ok'; data: unknown }
-  | { kind: 'error'; code: string; message: string };
+export type DirectInvokeError = { kind: 'error'; code: string; message: string };
+export type DirectInvokeResult<T = unknown> =
+  | { kind: 'ok'; data: T }
+  | DirectInvokeError;
+
+// Bound on any single Graph/token round-trip. Delivery-path callers run inside
+// the agent heartbeat response (post-#1105-hoist), where a hung upstream fetch
+// would stall the response past the agent's client timeout and drop that
+// cycle's already-claimed command delivery. An abort lands in the fetch catch
+// as a normal error result (graph_unreachable / auth_failed) — fail closed.
+export const GRAPH_HTTP_TIMEOUT_MS = 5_000;
 
 /** True when a direct M365 connection exists for the org (selects the direct backend). */
 export async function hasDirectM365Connection(orgId: string): Promise<boolean> {
@@ -58,7 +66,7 @@ function generateTempPassword(): string {
   return `Mz9!${raw.slice(0, 18)}`;
 }
 
-export async function getToken(orgId: string): Promise<{ token: string } | DirectInvokeResult> {
+export async function getToken(orgId: string): Promise<{ token: string } | DirectInvokeError> {
   const [row] = await db
     .select()
     .from(m365Connections)
@@ -97,13 +105,26 @@ export async function graphFetch(
 ): Promise<DirectInvokeResult> {
   let resp: Response;
   try {
-    resp = await fetch(`${GRAPH_BASE}${path}`, {
+    // path is normally relative to GRAPH_BASE; pagination follows Graph's
+    // absolute @odata.nextLink URLs. Only same-origin Graph URLs may pass
+    // through — the Authorization header must never follow a link elsewhere.
+    let url: string;
+    if (path.startsWith('https://')) {
+      if (!path.startsWith(`${GRAPH_BASE}/`)) {
+        return { kind: 'error', code: 'bad_request', message: 'Refusing non-Graph absolute URL.' };
+      }
+      url = path;
+    } else {
+      url = `${GRAPH_BASE}${path}`;
+    }
+    resp = await fetch(url, {
       method,
       headers: {
         Authorization: `Bearer ${token}`,
         ...(body ? { 'Content-Type': 'application/json' } : {}),
       },
       body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(GRAPH_HTTP_TIMEOUT_MS),
     });
   } catch (err) {
     return { kind: 'error', code: 'graph_unreachable', message: err instanceof Error ? err.message : 'Graph request failed' };
