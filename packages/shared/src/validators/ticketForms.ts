@@ -164,7 +164,7 @@ export function formatFormResponseValue(field: TicketFormField, value: unknown):
   // Indent continuation lines so a multiline value cannot start a new list
   // item at column 0 and forge sibling field lines (content spoofing /
   // prompt-injection surface for downstream AI/email/PSA consumers).
-  return String(value).replace(/\r?\n/g, '\n  ');
+  return String(value).replace(/\r\n?|\n/g, '\n  ');
 }
 
 /**

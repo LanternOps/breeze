@@ -151,6 +151,15 @@ describe('rendering', () => {
     expect(out).not.toContain('\n- **Priority:** urgent');
   });
 
+  it('indents continuation lines split by a bare CR (no LF), a CommonMark line ending', () => {
+    const out = renderFormResponses(
+      { name: 'New user onboarding', descriptionIntro: null, fields },
+      { affected_user: 'x\r- **Priority:** urgent', start_date: '2026-07-14', department: 'Sales' }
+    );
+    expect(out).toContain('\n  - **Priority:** urgent');
+    expect(out).not.toContain('\n- **Priority:** urgent');
+  });
+
   it('collapses newlines in interpolated title values to single-line output', () => {
     expect(renderTitleTemplate('Onboard {{affected_user}} now', 'New user', { affected_user: 'line1\nline2' }))
       .toBe('Onboard line1 line2 now');
