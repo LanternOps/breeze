@@ -7,7 +7,7 @@ import { navigateTo } from './navigation';
 // Invoice-domain enum SSOT lives in @breeze/shared (billing-enums.ts). Imported
 // into local scope for the InvoiceSummary/InvoiceDetail types below and re-exported
 // (type-only, erased at build) so '@/lib/api' consumers are unaffected.
-import type { InvoiceStatus } from '@breeze/shared';
+import type { InvoiceStatus, TicketFormField } from '@breeze/shared';
 
 // Client API base. Empty (the default) → same-origin **relative** requests
 // (`/api/v1/...`), which the reverse proxy routes to the API under `/api/*`. This
@@ -292,6 +292,30 @@ export interface TicketDetails extends TicketSummary {
   comments: TicketComment[];
 }
 
+// Slim portal-visible intake form (Phase 2). Mirrors the `GET /portal/tickets/forms`
+// payload — no titleTemplate (the server composes the subject) and no showInPortal
+// (the route already filtered to portal-visible forms).
+export interface PortalTicketForm {
+  id: string;
+  name: string;
+  description: string | null;
+  categoryId: string | null;
+  fields: TicketFormField[];
+  defaultPriority: TicketPriority | null;
+}
+
+// createTicket accepts EITHER the legacy free-text payload OR an intake-form
+// payload. On the form path the subject/description are composed server-side, so
+// no `subject` key is sent (an optional free-text `description` may still ride along).
+export type CreateTicketInput =
+  | { subject: string; description: string; priority: TicketPriority }
+  | {
+      formId: string;
+      formResponses: Record<string, unknown>;
+      description?: string;
+      priority: TicketPriority;
+    };
+
 export interface Asset {
   id: string;
   hostname: string;
@@ -543,8 +567,30 @@ export const portalApi = {
     };
   },
 
+  // Portal-visible intake forms for the session org (allowlist + showInPortal
+  // resolved server-side). Returns [] on any failure so callers can silently
+  // degrade to the legacy free-text form.
+  getTicketForms: async (
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<PortalTicketForm[]>> => {
+    const response = await apiGet<{ data: PortalTicketForm[] }>('/portal/tickets/forms', config);
+    if (!response.data) {
+      return {
+        error: response.error,
+        statusCode: response.statusCode,
+        headers: response.headers
+      };
+    }
+
+    return {
+      data: response.data.data,
+      statusCode: response.statusCode,
+      headers: response.headers
+    };
+  },
+
   createTicket: async (
-    data: { subject: string; description: string; priority: TicketPriority },
+    data: CreateTicketInput,
     config: ApiRequestConfig = {}
   ): Promise<ApiResponse<TicketSummary & { description: string }>> => {
     const response = await apiPost<{ ticket: TicketSummary & { description: string } }>(
