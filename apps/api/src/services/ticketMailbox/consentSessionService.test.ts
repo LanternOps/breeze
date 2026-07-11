@@ -51,6 +51,9 @@ vi.mock('drizzle-orm', async (importActual) => {
     and: vi.fn((...conditions: unknown[]) => ({ op: 'and', conditions })),
     eq: vi.fn((column: unknown, value: unknown) => ({ op: 'eq', column, value })),
     gt: vi.fn((column: unknown, value: unknown) => ({ op: 'gt', column, value })),
+    sql: vi.fn((strings: TemplateStringsArray, ...params: unknown[]) => ({
+      op: 'sql', strings: [...strings], params,
+    })),
   };
 });
 
@@ -176,7 +179,11 @@ describe('ticket mailbox consent sessions', () => {
       conditions: [
         { op: 'eq', column: ticketMailboxConsentSessions.state, value: 'state-1' },
         { op: 'eq', column: ticketMailboxConsentSessions.phase, value: 'admin_consent' },
-        { op: 'gt', column: ticketMailboxConsentSessions.expiresAt, value: NOW },
+        {
+          op: 'gt',
+          column: ticketMailboxConsentSessions.expiresAt,
+          value: { op: 'sql', strings: ['now()'], params: [] },
+        },
       ],
     });
   });

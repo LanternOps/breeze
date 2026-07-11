@@ -1,4 +1,4 @@
-import { and, eq, gt } from 'drizzle-orm';
+import { and, eq, gt, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
   ticketMailboxConsentSessions,
@@ -99,7 +99,7 @@ export async function consumeConsentSession(
     const rows = await db.delete(ticketMailboxConsentSessions).where(and(
       eq(ticketMailboxConsentSessions.state, state),
       eq(ticketMailboxConsentSessions.phase, phase),
-      gt(ticketMailboxConsentSessions.expiresAt, new Date()),
+      gt(ticketMailboxConsentSessions.expiresAt, sql`now()`),
     )).returning();
     return rows[0] ? toConsentSession(rows[0]) : null;
   }));
