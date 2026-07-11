@@ -4,6 +4,8 @@ import { fetchWithAuth } from '../../stores/auth';
 import { sanitizeImageSrc } from '../../lib/safeImageSrc';
 import { resolveUiColorToken, sanitizeHexColor } from '@/lib/utils';
 import { navigateTo } from '@/lib/navigation';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 
 type BrandingEditorProps = {
   organizationId?: string;
@@ -108,6 +110,7 @@ function UploadDropzone({
   accept = 'image/*',
   onFileSelect
 }: UploadDropzoneProps) {
+  const { t } = useTranslation('settings');
   const [isDragging, setIsDragging] = useState(false);
   const safePreview = sanitizeImageSrc(preview);
 
@@ -157,7 +160,7 @@ function UploadDropzone({
           className={`flex items-center justify-center rounded-md border ${previewSizeClassName} ${previewClassName ?? 'bg-background'}`}
         >
           {safePreview ? (
-            <img src={safePreview} alt={`${title} preview`} className="h-full w-full rounded-md object-contain" />
+            <img src={safePreview} alt={t('brandingEditor.imagePreview', { title })} className="h-full w-full rounded-md object-contain" />
           ) : (
             <span className="text-xs font-medium text-muted-foreground">{placeholder}</span>
           )}
@@ -165,11 +168,11 @@ function UploadDropzone({
         <div className="space-y-1">
           <p className="text-sm font-medium">{title}</p>
           <p className="text-xs text-muted-foreground">{description}</p>
-          {fileName ? <p className="text-xs text-muted-foreground">Selected: {fileName}</p> : null}
+          {fileName ? <p className="text-xs text-muted-foreground">{t('brandingEditor.selectedFile', { fileName })}</p> : null}
         </div>
         <label className="ml-auto inline-flex cursor-pointer items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm font-medium transition hover:bg-muted">
           <input type="file" accept={accept} className="hidden" onChange={handleChange} />
-          Upload
+          {t('common:actions.upload')}
         </label>
       </div>
       {helper ? <p className="mt-3 text-xs text-muted-foreground">{helper}</p> : null}
@@ -178,6 +181,7 @@ function UploadDropzone({
 }
 
 export default function BrandingEditor({ organizationId, onDirty, onSave }: BrandingEditorProps) {
+  const { t } = useTranslation('settings');
   const [branding, setBranding] = useState<BrandingData>(defaultBranding);
   const [loading, setLoading] = useState(true);
   const [logoLightPreview, setLogoLightPreview] = useState('');
@@ -226,7 +230,7 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
           setLoading(false);
           return;
         }
-        throw new Error('Failed to fetch branding');
+        throw new Error(t('brandingEditor.fetchFailed'));
       }
       const data = await response.json();
       const brandingData = { ...defaultBranding, ...data };
@@ -251,12 +255,12 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
     } catch (error) {
       setStatusMessage({
         type: 'error',
-        message: error instanceof Error ? error.message : 'Failed to load branding'
+        message: error instanceof Error ? error.message : t('brandingEditor.loadFailed')
       });
     } finally {
       setLoading(false);
     }
-  }, [organizationId]);
+  }, [organizationId, t]);
 
   useEffect(() => {
     fetchBranding();
@@ -311,7 +315,7 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
 
   const handleSave = async () => {
     if (!organizationId) {
-      setStatusMessage({ type: 'error', message: 'No organization selected' });
+      setStatusMessage({ type: 'error', message: t('brandingEditor.noOrganization') });
       return;
     }
 
@@ -332,7 +336,7 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
       });
 
       if (!response.ok) {
-        throw new Error('Failed to save branding');
+        throw new Error(t('brandingEditor.saveFailed'));
       }
 
       // Handle file uploads if any files were selected
@@ -355,7 +359,7 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
         });
 
         if (!uploadResponse.ok) {
-          throw new Error('Failed to upload branding assets');
+          throw new Error(t('brandingEditor.uploadFailed'));
         }
       }
 
@@ -374,12 +378,12 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
       setLogoDarkFile(null);
       setFaviconFile(null);
       setHasChanges(false);
-      setStatusMessage({ type: 'success', message: 'Branding settings saved.' });
+      setStatusMessage({ type: 'success', message: t('brandingEditor.saved') });
       onSave?.();
     } catch (error) {
       setStatusMessage({
         type: 'error',
-        message: error instanceof Error ? error.message : 'Something went wrong saving branding.'
+        message: error instanceof Error ? error.message : t('brandingEditor.saveError')
       });
     } finally {
       setIsSaving(false);
@@ -400,7 +404,7 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
     setSecondaryColor(savedBranding.secondaryColor);
     setCustomCss(savedBranding.customCss);
     setHasChanges(false);
-    setStatusMessage({ type: 'success', message: 'Changes reset to the last saved state.' });
+    setStatusMessage({ type: 'success', message: t('brandingEditor.resetSuccess') });
     onSave?.();
   };
 
@@ -421,7 +425,7 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
         <div className="flex items-center justify-center py-12">
           <div className="text-center">
             <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto" />
-            <p className="mt-4 text-sm text-muted-foreground">Loading branding settings...</p>
+            <p className="mt-4 text-sm text-muted-foreground">{t('brandingEditor.loading')}</p>
           </div>
         </div>
       </section>
@@ -432,9 +436,9 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
     <section className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h2 className="text-lg font-semibold">Branding editor</h2>
+          <h2 className="text-lg font-semibold">{t('brandingEditor.title')}</h2>
           <p className="text-sm text-muted-foreground">
-            Customize logos, colors, and styling for {branding.organizationName}.
+            {t('brandingEditor.description', { name: branding.organizationName })}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -445,7 +449,7 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
             className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
           >
             <RefreshCcw className="h-4 w-4" />
-            Reset
+            {t('brandingEditor.reset')}
           </button>
           <button
             type="button"
@@ -454,7 +458,7 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
             className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-70"
           >
             <Save className="h-4 w-4" />
-            {isSaving ? 'Saving...' : 'Save branding'}
+            {isSaving ? t('common:states.saving') : t('brandingEditor.save')}
           </button>
         </div>
       </div>
@@ -476,22 +480,22 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
           <div className="space-y-3">
             <div className="flex items-center gap-2 text-sm font-medium">
               <Image className="h-4 w-4" />
-              Logos
+              {t('brandingEditor.logos')}
             </div>
             <div className="grid gap-4 lg:grid-cols-2">
               <UploadDropzone
-                title="Light mode logo"
-                description="Displayed on light backgrounds in emails and portal."
-                helper="SVG or PNG, recommended 512x512."
+                title={t('brandingEditor.lightLogo')}
+                description={t('brandingEditor.lightLogoDescription')}
+                helper={t('brandingEditor.logoHelp')}
                 preview={logoLightPreview}
                 fileName={logoLightName}
                 placeholder={initials}
                 onFileSelect={file => handleFileSelect('logoLight', file)}
               />
               <UploadDropzone
-                title="Dark mode logo"
-                description="Displayed on dark backgrounds and in dark mode."
-                helper="SVG or PNG, recommended 512x512."
+                title={t('brandingEditor.darkLogo')}
+                description={t('brandingEditor.darkLogoDescription')}
+                helper={t('brandingEditor.logoHelp')}
                 preview={logoDarkPreview}
                 fileName={logoDarkName}
                 placeholder={initials}
@@ -504,12 +508,12 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
           <div className="space-y-3">
             <div className="flex items-center gap-2 text-sm font-medium">
               <Image className="h-4 w-4" />
-              Favicon
+              {t('brandingEditor.favicon')}
             </div>
             <UploadDropzone
-              title="Browser icon"
-              description="Used in browser tabs and bookmarks."
-              helper="ICO, PNG, or SVG (at least 32x32)."
+              title={t('brandingEditor.browserIcon')}
+              description={t('brandingEditor.browserIconDescription')}
+              helper={t('brandingEditor.browserIconHelp')}
               preview={faviconPreview}
               fileName={faviconName}
               placeholder="ICO"
@@ -523,7 +527,7 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
             <div className="space-y-2 rounded-lg border bg-muted/40 p-4">
               <div className="flex items-center gap-2 text-sm font-medium">
                 <Palette className="h-4 w-4" />
-                Primary color
+                {t('brandingEditor.primaryColor')}
               </div>
               <div className="flex items-center gap-3">
                 <input
@@ -550,7 +554,7 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
             <div className="space-y-2 rounded-lg border bg-muted/40 p-4">
               <div className="flex items-center gap-2 text-sm font-medium">
                 <Palette className="h-4 w-4" />
-                Secondary color
+                {t('brandingEditor.secondaryColor')}
               </div>
               <div className="flex items-center gap-3">
                 <input
@@ -578,7 +582,7 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
           <div className="space-y-2 rounded-lg border bg-muted/40 p-4">
             <div className="flex items-center gap-2 text-sm font-medium">
               <FileCode className="h-4 w-4" />
-              Custom CSS (advanced)
+              {t('brandingEditor.customCss')}
             </div>
             <textarea
               value={customCss}
@@ -590,7 +594,7 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
               className="w-full rounded-md border bg-background px-3 py-2 text-xs font-mono"
             />
             <p className="text-xs text-muted-foreground">
-              CSS is injected into your portal and email templates after saving.
+              {t('brandingEditor.customCssHelp')}
             </p>
           </div>
         </div>
@@ -598,14 +602,14 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
         <div className="space-y-4">
           <div className="flex items-center gap-2 text-sm font-medium">
             <Globe className="h-4 w-4" />
-            Live preview
+            {t('brandingEditor.livePreview')}
           </div>
 
           <div className="space-y-4 rounded-lg border bg-muted/30 p-4">
             <div className="space-y-2">
               <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                 <Mail className="h-4 w-4" />
-                Email template preview
+                {t('brandingEditor.emailPreview')}
               </div>
               <div className="overflow-hidden rounded-lg border bg-background">
                 <div
@@ -615,7 +619,7 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
                     {safeLogoLightPreview ? (
                       <img
                         src={safeLogoLightPreview}
-                        alt="Light logo preview"
+                        alt={t('brandingEditor.lightLogoPreview')}
                         className="h-8 w-8 rounded-full bg-white/20 object-cover"
                       />
                     ) : (
@@ -625,25 +629,25 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
                     )}
                     <div>
                       <p className="text-sm font-semibold">{branding.organizationName}</p>
-                      <p className="text-xs opacity-80">Weekly activity summary</p>
+                      <p className="text-xs opacity-80">{t('brandingEditor.weeklySummary')}</p>
                     </div>
                   </div>
                   <span className="text-xs font-semibold uppercase tracking-wide">Breeze</span>
                 </div>
                 <div className="space-y-3 p-4 text-sm">
-                  <p>Hello Priya,</p>
+                  <p>{t('brandingEditor.helloPreview')}</p>
                   <p className="text-muted-foreground">
-                    You closed 12 tickets this week. Your average response time was 23 minutes.
+                    {t('brandingEditor.emailBodyPreview')}
                   </p>
                   <div className="flex flex-wrap items-center gap-3">
                     <button
                       type="button"
                       className={`rounded-md px-3 py-2 text-xs font-semibold ${secondaryToken.bgClass} ${secondaryToken.textOnClass}`}
                     >
-                      View dashboard
+                      {t('brandingEditor.viewDashboard')}
                     </button>
                     <span className="text-xs text-muted-foreground">
-                      Questions? {branding.supportEmail}
+                      {t('brandingEditor.questions', { email: branding.supportEmail })}
                     </span>
                   </div>
                 </div>
@@ -653,7 +657,7 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
             <div className="space-y-2">
               <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                 <Globe className="h-4 w-4" />
-                Portal branding preview
+                {t('brandingEditor.portalPreview')}
               </div>
               <div className="space-y-4 rounded-lg border bg-background p-4">
                 <div
@@ -664,7 +668,7 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
                       {safeFaviconPreview ? (
                         <img
                           src={safeFaviconPreview}
-                          alt="Favicon preview"
+                          alt={t('brandingEditor.faviconPreview')}
                           className="h-6 w-6 rounded-sm object-contain"
                         />
                       ) : (
@@ -675,7 +679,7 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
                       {safeLogoLightPreview ? (
                         <img
                           src={safeLogoLightPreview}
-                          alt="Portal logo preview"
+                          alt={t('brandingEditor.portalLogoPreview')}
                           className="h-8 w-8 rounded-md object-cover"
                         />
                       ) : (
@@ -693,17 +697,17 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
                     type="button"
                     className={`rounded-md px-3 py-2 text-xs font-semibold ${secondaryToken.bgClass} ${secondaryToken.textOnClass}`}
                   >
-                    New request
+                    {t('brandingEditor.newRequest')}
                   </button>
                 </div>
 
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div className={`rounded-md border p-3 ${secondaryToken.borderClass}`}>
-                    <p className="text-xs text-muted-foreground">Open requests</p>
+                    <p className="text-xs text-muted-foreground">{t('brandingEditor.openRequests')}</p>
                     <p className="text-xl font-semibold">12</p>
                   </div>
                   <div className="rounded-md border p-3">
-                    <p className="text-xs text-muted-foreground">CSAT score</p>
+                    <p className="text-xs text-muted-foreground">{t('brandingEditor.csatScore')}</p>
                     <p className="text-xl font-semibold">94%</p>
                   </div>
                 </div>
@@ -713,7 +717,7 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
                     {safeLogoDarkPreview ? (
                       <img
                         src={safeLogoDarkPreview}
-                        alt="Dark logo preview"
+                        alt={t('brandingEditor.darkLogoPreview')}
                         className="h-7 w-7 rounded-md object-cover"
                       />
                     ) : (
@@ -722,8 +726,8 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
                       </div>
                     )}
                     <div>
-                      <p className="text-xs font-semibold">Dark mode header</p>
-                      <p className="chart-legend-xs text-slate-400">Preview of dark assets</p>
+                      <p className="text-xs font-semibold">{t('brandingEditor.darkHeader')}</p>
+                      <p className="chart-legend-xs text-slate-400">{t('brandingEditor.darkAssetsPreview')}</p>
                     </div>
                   </div>
                 </div>

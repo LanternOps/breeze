@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 import { Plus, Trash2 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 
@@ -13,6 +15,7 @@ type KnownGuest = {
 const macRegex = /^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$/;
 
 export default function KnownGuestsSettings() {
+  const { t } = useTranslation('settings');
   const [guests, setGuests] = useState<KnownGuest[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -26,24 +29,24 @@ export default function KnownGuestsSettings() {
     try {
       const response = await fetchWithAuth('/partner/known-guests');
       if (!response.ok) {
-        setError('Failed to load known guests');
+        setError(t('knownGuestsSettings.errors.load'));
         return;
       }
       const data = await response.json();
       setGuests(data.data ?? []);
     } catch {
-      setError('Failed to load known guests');
+      setError(t('knownGuestsSettings.errors.load'));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => { fetchGuests(); }, [fetchGuests]);
 
   const handleAdd = async (e: FormEvent) => {
     e.preventDefault();
-    if (!macRegex.test(mac)) { setError('Invalid MAC format (XX:XX:XX:XX:XX:XX)'); return; }
-    if (!label.trim()) { setError('Label is required'); return; }
+    if (!macRegex.test(mac)) { setError(t('knownGuestsSettings.errors.invalidMac')); return; }
+    if (!label.trim()) { setError(t('knownGuestsSettings.errors.labelRequired')); return; }
     setSaving(true);
     setError(null);
     try {
@@ -53,13 +56,13 @@ export default function KnownGuestsSettings() {
       });
       if (!response.ok) {
         const data = await response.json().catch(() => null);
-        setError(data?.error ?? 'Failed to add guest');
+        setError(data?.error ?? t('knownGuestsSettings.errors.add'));
       } else {
         setMac(''); setLabel(''); setNotes('');
         await fetchGuests();
       }
     } catch {
-      setError('Failed to add guest');
+      setError(t('knownGuestsSettings.errors.add'));
     } finally {
       setSaving(false);
     }
@@ -69,21 +72,20 @@ export default function KnownGuestsSettings() {
     try {
       const response = await fetchWithAuth(`/partner/known-guests/${id}`, { method: 'DELETE' });
       if (!response.ok) {
-        setError('Failed to remove guest');
+        setError(t('knownGuestsSettings.errors.remove'));
         return;
       }
       await fetchGuests();
     } catch {
-      setError('Failed to remove guest');
+      setError(t('knownGuestsSettings.errors.remove'));
     }
   };
 
   return (
     <div className="rounded-lg border bg-card p-6 shadow-xs">
-      <h2 className="text-lg font-semibold">Known Guests</h2>
+      <h2 className="text-lg font-semibold">{t('knownGuestsSettings.title')}</h2>
       <p className="text-sm text-muted-foreground mt-1">
-        Devices on this whitelist are automatically approved across all your managed organizations.
-        Use this for technician laptops or other known visitor devices.
+        {t('knownGuestsSettings.description')}
       </p>
 
       {error && (
@@ -93,21 +95,21 @@ export default function KnownGuestsSettings() {
       <form onSubmit={handleAdd} className="mt-4 flex flex-wrap gap-3">
         <input
           type="text"
-          placeholder="AA:BB:CC:DD:EE:FF"
+          placeholder={t('knownGuestsSettings.placeholders.mac')}
           value={mac}
           onChange={e => setMac(e.target.value)}
           className="h-9 w-48 rounded-md border bg-background px-3 text-sm font-mono focus:outline-hidden focus:ring-2 focus:ring-ring"
         />
         <input
           type="text"
-          placeholder="Label (e.g. John's laptop)"
+          placeholder={t('knownGuestsSettings.placeholders.label')}
           value={label}
           onChange={e => setLabel(e.target.value)}
           className="h-9 flex-1 min-w-48 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         />
         <input
           type="text"
-          placeholder="Notes (optional)"
+          placeholder={t('knownGuestsSettings.placeholders.notes')}
           value={notes}
           onChange={e => setNotes(e.target.value)}
           className="h-9 flex-1 min-w-48 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
@@ -118,7 +120,7 @@ export default function KnownGuestsSettings() {
           className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
         >
           <Plus className="h-4 w-4" />
-          Add
+          {t('common:actions.add')}
         </button>
       </form>
 
@@ -126,17 +128,17 @@ export default function KnownGuestsSettings() {
         <table className="min-w-full divide-y">
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <th className="px-4 py-3">MAC Address</th>
-              <th className="px-4 py-3">Label</th>
-              <th className="px-4 py-3">Notes</th>
-              <th className="px-4 py-3 text-right">Actions</th>
+              <th className="px-4 py-3">{t('knownGuestsSettings.columns.macAddress')}</th>
+              <th className="px-4 py-3">{t('knownGuestsSettings.columns.label')}</th>
+              <th className="px-4 py-3">{t('knownGuestsSettings.columns.notes')}</th>
+              <th className="px-4 py-3 text-right">{t('common:labels.actions')}</th>
             </tr>
           </thead>
           <tbody className="divide-y">
             {loading ? (
-              <tr><td colSpan={4} className="px-4 py-6 text-center text-sm text-muted-foreground">Loading...</td></tr>
+              <tr><td colSpan={4} className="px-4 py-6 text-center text-sm text-muted-foreground">{t('common:states.loading')}</td></tr>
             ) : guests.length === 0 ? (
-              <tr><td colSpan={4} className="px-4 py-6 text-center text-sm text-muted-foreground">No known guests yet.</td></tr>
+              <tr><td colSpan={4} className="px-4 py-6 text-center text-sm text-muted-foreground">{t('knownGuestsSettings.empty')}</td></tr>
             ) : guests.map(guest => (
               <tr key={guest.id} className="hover:bg-muted/40">
                 <td className="px-4 py-3 font-mono text-sm">{guest.macAddress}</td>
@@ -147,7 +149,7 @@ export default function KnownGuestsSettings() {
                     type="button"
                     onClick={() => handleRemove(guest.id)}
                     className="flex h-8 w-8 items-center justify-center rounded-md border border-destructive/30 text-destructive hover:bg-destructive/10 ml-auto"
-                    title="Remove"
+                    title={t('common:actions.remove')}
                   >
                     <Trash2 className="h-4 w-4" />
                   </button>

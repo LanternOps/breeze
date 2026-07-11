@@ -1,3 +1,5 @@
+import { useTranslation } from 'react-i18next';
+import { i18n } from '@/lib/i18n';
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
@@ -82,9 +84,9 @@ export function moveWithinSiblings(cats: Category[], id: string, dir: -1 | 1): s
 function defaultsSummary(c: Category): string {
   const parts: string[] = [];
   if (c.defaultPriority) parts.push(priorityConfig[c.defaultPriority as TicketPriority]?.label ?? c.defaultPriority);
-  if (c.responseSlaMinutes != null) parts.push(`${c.responseSlaMinutes}m response`);
-  if (c.resolutionSlaMinutes != null) parts.push(`${c.resolutionSlaMinutes}m resolve`);
-  if (c.defaultHourlyRate) parts.push(`${formatCurrency(parseFloat(c.defaultHourlyRate))}/h`);
+  if (c.responseSlaMinutes != null) parts.push(i18n.t('settings:ticketCategoriesPage.responseMinutes', { count: c.responseSlaMinutes }));
+  if (c.resolutionSlaMinutes != null) parts.push(i18n.t('settings:ticketCategoriesPage.resolveMinutes', { count: c.resolutionSlaMinutes }));
+  if (c.defaultHourlyRate) parts.push(i18n.t('settings:ticketCategoriesPage.hourlyRate', { rate: formatCurrency(parseFloat(c.defaultHourlyRate)) }));
   if (c.defaultBillable) parts.push('billable');
   else if (parts.length > 0) parts.push('non-billable');
   return parts.length > 0 ? parts.join(' · ') : '—';
@@ -93,6 +95,7 @@ function defaultsSummary(c: Category): string {
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 
 export default function TicketCategoriesPage() {
+  const { t } = useTranslation('settings');
   const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -131,8 +134,8 @@ export default function TicketCategoriesPage() {
     try {
       await runAction({
         request: () => fetchWithAuth('/ticket-categories', { method: 'POST', body: JSON.stringify(body) }),
-        errorFallback: 'Category creation failed. Retry.',
-        successMessage: `Category "${name.trim()}" created`,
+        errorFallback: t('ticketCategoriesPage.categoryCreationFailedRetry'),
+        successMessage: t('ticketCategoriesPage.categoryCreated', { name: name.trim() }),
         onUnauthorized: UNAUTHORIZED
       });
       setName('');
@@ -147,7 +150,7 @@ export default function TicketCategoriesPage() {
     try {
       await runAction({
         request: () => fetchWithAuth(`/ticket-categories/${cat.id}`, { method: 'PATCH', body: JSON.stringify({ isActive: !cat.isActive }) }),
-        errorFallback: 'Update failed. Retry.',
+        errorFallback: t('ticketCategoriesPage.updateFailedRetry'),
         onUnauthorized: UNAUTHORIZED
       });
       void load();
@@ -176,7 +179,7 @@ export default function TicketCategoriesPage() {
     // to null, so refuse anything non-finite instead of silently nulling.
     const numeric = [draft.responseSlaMinutes, draft.resolutionSlaMinutes, draft.defaultHourlyRate];
     if (numeric.some((v) => v !== '' && !Number.isFinite(Number(v)))) {
-      showToast({ type: 'error', message: 'SLA minutes and hourly rate must be numbers.' });
+      showToast({ type: 'error', message: t('ticketCategoriesPage.sLAMinutesAndHourlyRateMustBeNumbers') });
       return;
     }
     const payload = {
@@ -192,8 +195,8 @@ export default function TicketCategoriesPage() {
     try {
       await runAction({
         request: () => fetchWithAuth(`/ticket-categories/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
-        errorFallback: 'Update failed. Retry.',
-        successMessage: 'Category updated',
+        errorFallback: t('ticketCategoriesPage.updateFailedRetry'),
+        successMessage: t('ticketCategoriesPage.categoryUpdated'),
         onUnauthorized: UNAUTHORIZED
       });
       setEditingId(null);
@@ -212,7 +215,7 @@ export default function TicketCategoriesPage() {
     try {
       await runAction({
         request: () => fetchWithAuth('/ticket-categories/reorder', { method: 'PUT', body: JSON.stringify({ ids: order }) }),
-        errorFallback: 'Reorder failed. Retry.',
+        errorFallback: t('ticketCategoriesPage.reorderFailedRetry'),
         onUnauthorized: UNAUTHORIZED
       });
     } catch (err) {
@@ -236,14 +239,13 @@ export default function TicketCategoriesPage() {
 
   return (
     <div className="max-w-3xl" data-testid="ticket-categories-page">
-      <h1 className="text-xl font-semibold" data-testid="ticket-categories-heading">Ticketing</h1>
+      <h1 className="text-xl font-semibold" data-testid="ticket-categories-heading">{t('ticketCategoriesPage.ticketing')}</h1>
       <p className="mt-1 text-sm text-muted-foreground">
-        Categories organize the queue and carry SLA and billing defaults (SLA enforcement arrives with the SLA engine).
-      </p>
+        {t('ticketCategoriesPage.categoriesOrganizeTheQueueAndCarrySLAAndBillingDefaultsS')}</p>
 
       <div className="mt-4 flex items-end gap-2">
         <div className="flex-1">
-          <label className="text-sm font-medium" htmlFor="cat-name">New category</label>
+          <label className="text-sm font-medium" htmlFor="cat-name">{t('ticketCategoriesPage.newCategory')}</label>
           <input
             id="cat-name"
             value={name}
@@ -257,17 +259,17 @@ export default function TicketCategoriesPage() {
           value={color}
           onChange={(e) => setColor(e.target.value)}
           className="h-9 w-12 rounded-md border"
-          aria-label="Category color"
+          aria-label={t('ticketCategoriesPage.categoryColor')}
           data-testid="ticket-categories-color-input"
         />
         <select
           value={createParentId}
           onChange={(e) => setCreateParentId(e.target.value)}
           className="rounded-md border bg-background px-2.5 py-1.5 text-sm"
-          aria-label="Parent category"
+          aria-label={t('ticketCategoriesPage.parentCategory')}
           data-testid="ticket-categories-parent-input"
         >
-          <option value="">None</option>
+          <option value="">{t('ticketCategoriesPage.none')}</option>
           {createParentOptions.map((p) => (
             <option key={p.id} value={p.id}>{p.name}</option>
           ))}
@@ -279,34 +281,32 @@ export default function TicketCategoriesPage() {
           className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
           data-testid="ticket-categories-create-button"
         >
-          Add
-        </button>
+          {t('ticketCategoriesPage.add')}</button>
       </div>
 
       <table className="mt-4 min-w-full divide-y" data-testid="ticket-categories-table">
         <thead className="bg-muted/40">
           <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            <th className="px-4 py-2">Name</th>
-            <th className="px-4 py-2">Defaults</th>
-            <th className="px-4 py-2">Status</th>
+            <th className="px-4 py-2">{t('ticketCategoriesPage.name')}</th>
+            <th className="px-4 py-2">{t('ticketCategoriesPage.defaults')}</th>
+            <th className="px-4 py-2">{t('ticketCategoriesPage.status')}</th>
             <th className="px-4 py-2" />
           </tr>
         </thead>
         <tbody className="divide-y">
           {loading ? (
-            <tr><td colSpan={4} className="px-4 py-6 text-center text-sm text-muted-foreground">Loading.</td></tr>
+            <tr><td colSpan={4} className="px-4 py-6 text-center text-sm text-muted-foreground">{t('ticketCategoriesPage.loading')}</td></tr>
           ) : error ? (
             <tr>
               <td colSpan={4} className="px-4 py-6 text-center text-sm text-muted-foreground" data-testid="ticket-categories-error">
-                Categories failed to load.{' '}
-                <button type="button" onClick={() => void load()} className="underline hover:text-foreground" data-testid="ticket-categories-retry">Retry</button>
+                {t('ticketCategoriesPage.categoriesFailedToLoad')}{' '}
+                <button type="button" onClick={() => void load()} className="underline hover:text-foreground" data-testid="ticket-categories-retry">{t('ticketCategoriesPage.retry')}</button>
               </td>
             </tr>
           ) : categories.length === 0 ? (
             <tr>
               <td colSpan={4} className="px-4 py-6 text-center text-sm text-muted-foreground" data-testid="ticket-categories-empty">
-                No categories yet. Add the first one above.
-              </td>
+                {t('ticketCategoriesPage.noCategoriesYetAddTheFirstOneAbove')}</td>
             </tr>
           ) : ordered.map((c) => (
             <Fragment key={c.id}>
@@ -316,14 +316,14 @@ export default function TicketCategoriesPage() {
                   {c.name}
                 </td>
                 <td className="px-4 py-2 text-sm text-muted-foreground">{defaultsSummary(c)}</td>
-                <td className="px-4 py-2 text-sm">{c.isActive ? 'Active' : 'Inactive'}</td>
+                <td className="px-4 py-2 text-sm">{c.isActive ? t('ticketCategoriesPage.active') : t('ticketCategoriesPage.inactive')}</td>
                 <td className="px-4 py-2 text-right space-x-2">
                   <button
                     type="button"
                     onClick={() => void move(c, -1)}
                     disabled={moveWithinSiblings(categories, c.id, -1) === null}
                     className="text-sm text-muted-foreground hover:text-foreground disabled:opacity-30"
-                    aria-label={`Move ${c.name} up`}
+                    aria-label={t('ticketCategoriesPage.moveUp', { name: c.name })}
                     data-testid={`ticket-category-move-up-${c.id}`}
                   >
                     ▲
@@ -333,7 +333,7 @@ export default function TicketCategoriesPage() {
                     onClick={() => void move(c, 1)}
                     disabled={moveWithinSiblings(categories, c.id, 1) === null}
                     className="text-sm text-muted-foreground hover:text-foreground disabled:opacity-30"
-                    aria-label={`Move ${c.name} down`}
+                    aria-label={t('ticketCategoriesPage.moveDown', { name: c.name })}
                     data-testid={`ticket-category-move-down-${c.id}`}
                   >
                     ▼
@@ -344,15 +344,14 @@ export default function TicketCategoriesPage() {
                     className="text-sm text-muted-foreground hover:text-foreground"
                     data-testid={`ticket-category-edit-${c.id}`}
                   >
-                    Edit
-                  </button>
+                    {t('ticketCategoriesPage.edit')}</button>
                   <button
                     type="button"
                     onClick={() => void toggleActive(c)}
                     className="text-sm text-muted-foreground hover:text-foreground"
                     data-testid={`ticket-category-toggle-${c.id}`}
                   >
-                    {c.isActive ? 'Deactivate' : 'Activate'}
+                    {c.isActive ? t('ticketCategoriesPage.deactivate') : t('ticketCategoriesPage.activate')}
                   </button>
                 </td>
               </tr>
@@ -361,7 +360,7 @@ export default function TicketCategoriesPage() {
                   <td colSpan={4} className="bg-muted/30 px-4 py-3">
                     <div className="grid grid-cols-2 gap-3">
                       <div>
-                        <label className="text-xs font-medium" htmlFor="edit-name">Name</label>
+                        <label className="text-xs font-medium" htmlFor="edit-name">{t('ticketCategoriesPage.name')}</label>
                         <input
                           value={draft.name}
                           onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
@@ -371,7 +370,7 @@ export default function TicketCategoriesPage() {
                         />
                       </div>
                       <div>
-                        <label className="text-xs font-medium" htmlFor="edit-color">Color</label>
+                        <label className="text-xs font-medium" htmlFor="edit-color">{t('ticketCategoriesPage.color')}</label>
                         <input
                           type="color"
                           value={draft.color}
@@ -382,7 +381,7 @@ export default function TicketCategoriesPage() {
                         />
                       </div>
                       <div>
-                        <label className="text-xs font-medium" htmlFor="edit-parent">Parent</label>
+                        <label className="text-xs font-medium" htmlFor="edit-parent">{t('ticketCategoriesPage.parent')}</label>
                         <select
                           value={draft.parentId}
                           onChange={(e) => setDraft((d) => ({ ...d, parentId: e.target.value }))}
@@ -390,14 +389,14 @@ export default function TicketCategoriesPage() {
                           id="edit-parent"
                           data-testid="ticket-category-edit-parent"
                         >
-                          <option value="">None</option>
+                          <option value="">{t('ticketCategoriesPage.none')}</option>
                           {editParentOptions(c.id).map((p) => (
                             <option key={p.id} value={p.id}>{p.name}</option>
                           ))}
                         </select>
                       </div>
                       <div>
-                        <label className="text-xs font-medium" htmlFor="edit-priority">Default priority</label>
+                        <label className="text-xs font-medium" htmlFor="edit-priority">{t('ticketCategoriesPage.defaultPriority')}</label>
                         <select
                           value={draft.defaultPriority}
                           onChange={(e) => setDraft((d) => ({ ...d, defaultPriority: e.target.value }))}
@@ -405,14 +404,14 @@ export default function TicketCategoriesPage() {
                           id="edit-priority"
                           data-testid="ticket-category-edit-priority"
                         >
-                          <option value="">None</option>
+                          <option value="">{t('ticketCategoriesPage.none')}</option>
                           {(Object.keys(priorityConfig) as TicketPriority[]).map((p) => (
                             <option key={p} value={p}>{priorityConfig[p].label}</option>
                           ))}
                         </select>
                       </div>
                       <div>
-                        <label className="text-xs font-medium" htmlFor="edit-response-sla">Response SLA (minutes)</label>
+                        <label className="text-xs font-medium" htmlFor="edit-response-sla">{t('ticketCategoriesPage.responseSLAMinutes')}</label>
                         <input
                           type="number"
                           min={1}
@@ -424,7 +423,7 @@ export default function TicketCategoriesPage() {
                         />
                       </div>
                       <div>
-                        <label className="text-xs font-medium" htmlFor="edit-resolution-sla">Resolution SLA (minutes)</label>
+                        <label className="text-xs font-medium" htmlFor="edit-resolution-sla">{t('ticketCategoriesPage.resolutionSLAMinutes')}</label>
                         <input
                           type="number"
                           min={1}
@@ -443,10 +442,10 @@ export default function TicketCategoriesPage() {
                           onChange={(e) => setDraft((d) => ({ ...d, defaultBillable: e.target.checked }))}
                           data-testid="ticket-category-edit-billable"
                         />
-                        <label htmlFor={`billable-${c.id}`} className="text-xs font-medium">Billable by default</label>
+                        <label htmlFor={`billable-${c.id}`} className="text-xs font-medium">{t('ticketCategoriesPage.billableByDefault')}</label>
                       </div>
                       <div>
-                        <label className="text-xs font-medium" htmlFor="edit-rate">Default hourly rate ($)</label>
+                        <label className="text-xs font-medium" htmlFor="edit-rate">{t('ticketCategoriesPage.defaultHourlyRate')}</label>
                         <input
                           type="number"
                           min={0}
@@ -467,16 +466,14 @@ export default function TicketCategoriesPage() {
                         className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
                         data-testid={`ticket-category-save-${c.id}`}
                       >
-                        Save
-                      </button>
+                        {t('ticketCategoriesPage.save')}</button>
                       <button
                         type="button"
                         onClick={() => setEditingId(null)}
                         className="rounded-md border px-3 py-1.5 text-sm font-medium"
                         data-testid={`ticket-category-cancel-${c.id}`}
                       >
-                        Cancel
-                      </button>
+                        {t('ticketCategoriesPage.cancel')}</button>
                     </div>
                   </td>
                 </tr>

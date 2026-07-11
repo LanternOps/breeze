@@ -1,13 +1,13 @@
 import { useState, useEffect } from 'react';
 import type { InheritableBrandingSettings } from '@breeze/shared';
 import { sanitizeImageSrc } from '../../lib/safeImageSrc';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 
 type Props = {
   data: InheritableBrandingSettings;
   onChange: (data: InheritableBrandingSettings) => void;
 };
-
-const PLACEHOLDER = 'Not set — orgs configure individually';
 
 const MAX_LOGO_BYTES = 400_000;
 const LOGO_ACCEPT = 'image/png,image/jpeg,image/webp';
@@ -42,6 +42,7 @@ function resizeToDataUrl(file: File): Promise<string> {
 }
 
 export default function PartnerBrandingTab({ data, onChange }: Props) {
+  const { t } = useTranslation('settings');
   const set = (patch: Partial<InheritableBrandingSettings>) =>
     onChange({ ...data, ...patch });
 
@@ -68,14 +69,14 @@ export default function PartnerBrandingTab({ data, onChange }: Props) {
     try {
       const dataUrl = await resizeToDataUrl(file);
       if (dataUrl.length > MAX_LOGO_BYTES) {
-        setLogoError('Image too large after encoding (max 400 KB). Try a smaller or simpler image.');
+        setLogoError(t('partnerBranding.imageTooLarge'));
         e.target.value = '';
         return;
       }
       set({ logoUrl: dataUrl });
     } catch (err) {
       console.error('[PartnerBrandingTab] Logo file processing failed:', err);
-      setLogoError('Could not read image. Please try a different file.');
+      setLogoError(t('partnerBranding.readError'));
       e.target.value = '';
     }
   };
@@ -88,11 +89,11 @@ export default function PartnerBrandingTab({ data, onChange }: Props) {
       return;
     }
     if (val.startsWith('blob:')) {
-      setLogoError('Blob URLs are temporary and cannot be saved. Upload the file instead.');
+      setLogoError(t('partnerBranding.blobError'));
       return;
     }
     if (!sanitizeImageSrc(val)) {
-      setLogoError('URL not supported. Use an https:// URL or upload a file.');
+      setLogoError(t('partnerBranding.urlError'));
       return;
     }
     setLogoError(null);
@@ -109,7 +110,7 @@ export default function PartnerBrandingTab({ data, onChange }: Props) {
     <div className="space-y-6">
       <div className="grid gap-6 sm:grid-cols-2">
         <div className="space-y-2">
-          <label className="text-sm font-medium">Primary Color</label>
+          <label className="text-sm font-medium">{t('partnerBranding.primaryColor')}</label>
           <div className="flex gap-2">
             <input
               type="color"
@@ -121,14 +122,14 @@ export default function PartnerBrandingTab({ data, onChange }: Props) {
               type="text"
               value={data.primaryColor ?? ''}
               onChange={e => set({ primaryColor: e.target.value || undefined })}
-              placeholder={PLACEHOLDER}
+              placeholder={t('partnerBranding.notSet')}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm"
             />
           </div>
         </div>
 
         <div className="space-y-2">
-          <label className="text-sm font-medium">Secondary Color</label>
+          <label className="text-sm font-medium">{t('partnerBranding.secondaryColor')}</label>
           <div className="flex gap-2">
             <input
               type="color"
@@ -140,39 +141,39 @@ export default function PartnerBrandingTab({ data, onChange }: Props) {
               type="text"
               value={data.secondaryColor ?? ''}
               onChange={e => set({ secondaryColor: e.target.value || undefined })}
-              placeholder={PLACEHOLDER}
+              placeholder={t('partnerBranding.notSet')}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm"
             />
           </div>
         </div>
 
         <div className="space-y-2">
-          <label className="text-sm font-medium">Theme</label>
+          <label className="text-sm font-medium">{t('partnerBranding.theme')}</label>
           <select
             value={data.theme ?? ''}
             onChange={e => set({ theme: (e.target.value || undefined) as InheritableBrandingSettings['theme'] })}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm"
           >
-            <option value="">{PLACEHOLDER}</option>
-            <option value="light">Light</option>
-            <option value="dark">Dark</option>
-            <option value="system">System</option>
+            <option value="">{t('partnerBranding.notSet')}</option>
+            <option value="light">{t('partnerBranding.themes.light')}</option>
+            <option value="dark">{t('partnerBranding.themes.dark')}</option>
+            <option value="system">{t('partnerBranding.themes.system')}</option>
           </select>
         </div>
 
         <div className="space-y-2 col-span-full">
-          <label htmlFor="logo-file-input" className="text-sm font-medium">Logo</label>
+          <label htmlFor="logo-file-input" className="text-sm font-medium">{t('partnerBranding.logo')}</label>
           <div className="rounded-lg border bg-muted/40 p-4 space-y-3">
             <div className="flex items-center gap-4">
               <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-lg border bg-background overflow-hidden">
                 {safeLogo ? (
                   <img
                     src={safeLogo}
-                    alt="Logo preview"
+                    alt={t('partnerBranding.logoPreview')}
                     className="h-full w-full object-contain"
                   />
                 ) : (
-                  <span className="text-xs text-muted-foreground text-center px-1">No logo</span>
+                  <span className="text-xs text-muted-foreground text-center px-1">{t('partnerBranding.noLogo')}</span>
                 )}
               </div>
               <div className="flex flex-col gap-2">
@@ -184,7 +185,7 @@ export default function PartnerBrandingTab({ data, onChange }: Props) {
                     className="hidden"
                     onChange={handleLogoFile}
                   />
-                  Upload image
+                  {t('partnerBranding.uploadImage')}
                 </label>
                 {data.logoUrl && (
                   <button
@@ -192,30 +193,30 @@ export default function PartnerBrandingTab({ data, onChange }: Props) {
                     onClick={() => { set({ logoUrl: undefined }); setLogoError(null); }}
                     className="text-xs text-destructive hover:underline text-left"
                   >
-                    Remove
+                    {t('common:actions.remove')}
                   </button>
                 )}
               </div>
             </div>
             <p className="text-xs text-muted-foreground">
-              PNG, JPEG, or WebP · max 400 KB after encoding · resized to fit 256×256
+              {t('partnerBranding.imageHelp')}
             </p>
             {hasInvalidDataUri && (
-              <p className="text-xs text-destructive">Saved logo data is invalid. Remove it or upload a new one.</p>
+              <p className="text-xs text-destructive">{t('partnerBranding.invalidSavedLogo')}</p>
             )}
             {logoError && (
               <p className="text-xs text-destructive">{logoError}</p>
             )}
             {showUrlField && (
               <div className="space-y-1">
-                <label htmlFor="logo-url-input" className="text-xs text-muted-foreground">Or paste an image URL</label>
+                <label htmlFor="logo-url-input" className="text-xs text-muted-foreground">{t('partnerBranding.pasteUrl')}</label>
                 <input
                   id="logo-url-input"
                   type="url"
                   value={urlDraft}
                   onChange={e => { setUrlDraft(e.target.value); setLogoError(null); }}
                   onBlur={handleUrlBlur}
-                  placeholder={PLACEHOLDER}
+                  placeholder={t('partnerBranding.notSet')}
                   className="h-9 w-full rounded-md border bg-background px-3 text-sm"
                 />
               </div>
@@ -225,16 +226,16 @@ export default function PartnerBrandingTab({ data, onChange }: Props) {
       </div>
 
       <div className="space-y-2">
-        <label className="text-sm font-medium">Custom CSS</label>
+        <label className="text-sm font-medium">{t('partnerBranding.customCss')}</label>
         <textarea
           value={data.customCss ?? ''}
           onChange={e => set({ customCss: e.target.value || undefined })}
           rows={5}
           className="w-full rounded-md border bg-background px-3 py-2 font-mono text-sm"
-          placeholder="/* Custom CSS applied to all child organizations */"
+          placeholder={t('partnerBranding.customCssPlaceholder')}
         />
         <p className="text-xs text-muted-foreground">
-          CSS overrides applied to the portal for all child organizations.
+          {t('partnerBranding.customCssHelp')}
         </p>
       </div>
     </div>

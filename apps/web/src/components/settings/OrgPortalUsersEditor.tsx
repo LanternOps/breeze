@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '@/lib/runAction';
@@ -12,19 +14,21 @@ type PortalUser = {
   lastLoginAt: string | null; invitedAt: string | null;
 };
 
-const STATUS_LABEL: Record<PortalUser['effectiveStatus'], string> = {
-  active: 'Active', disabled: 'Disabled', pending_setup: 'Pending setup'
-};
-
 const STATUS_BADGE_CLASS: Record<PortalUser['effectiveStatus'], string> = {
   active: 'bg-emerald-500/10 text-emerald-600',
   disabled: 'bg-muted text-muted-foreground',
   pending_setup: 'bg-amber-500/10 text-amber-600'
 };
+const STATUS_LABEL_KEYS: Record<PortalUser['effectiveStatus'], string> = {
+  active: 'orgPortalUsersEditor.status.active',
+  disabled: 'orgPortalUsersEditor.status.disabled',
+  pending_setup: 'orgPortalUsersEditor.status.pending_setup',
+};
 
 const base = (orgId: string) => `/orgs/organizations/${orgId}/portal-users`;
 
 export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
+  const { t } = useTranslation('settings');
   const [users, setUsers] = useState<PortalUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
@@ -66,8 +70,8 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email, name: name || undefined, message: message || undefined })
         }),
-        errorFallback: 'Failed to send invite',
-        successMessage: 'Invite sent',
+        errorFallback: t('orgPortalUsersEditor.errors.sendInvite'),
+        successMessage: t('orgPortalUsersEditor.toasts.inviteSent'),
         onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
       setInviteOpen(false); setEmail(''); setName(''); setMessage('');
@@ -86,7 +90,7 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
           headers: body ? { 'Content-Type': 'application/json' } : undefined,
           body: body ? JSON.stringify(body) : undefined
         }),
-        errorFallback: 'Action failed',
+        errorFallback: t('orgPortalUsersEditor.errors.action'),
         successMessage,
         onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
@@ -101,15 +105,15 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
   const pendingCount = users.filter((u) => u.effectiveStatus === 'pending_setup').length;
 
   if (loading) {
-    return <p className="text-sm text-muted-foreground">Loading portal users…</p>;
+    return <p className="text-sm text-muted-foreground">{t('orgPortalUsersEditor.loading')}</p>;
   }
 
   if (loadError) {
     return (
       <div className="rounded-lg border bg-card p-6 text-sm text-muted-foreground" data-testid="portal-users-load-error">
-        Portal users failed to load.{' '}
+        {t('orgPortalUsersEditor.errors.load')}{' '}
         <button type="button" onClick={() => void load()} className="underline hover:text-foreground">
-          Retry
+          {t('common:actions.retry')}
         </button>
       </div>
     );
@@ -119,18 +123,18 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
     <section className="rounded-lg border bg-card p-6 shadow-xs space-y-4" data-testid="portal-users-editor">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-semibold">Portal users</h2>
-          <p className="mt-1 text-sm text-muted-foreground">Customer contacts with access to this organization's portal.</p>
+          <h2 className="text-lg font-semibold">{t('orgPortalUsersEditor.title')}</h2>
+          <p className="mt-1 text-sm text-muted-foreground">{t('orgPortalUsersEditor.description')}</p>
         </div>
         <div className="flex gap-2">
           {pendingCount > 0 && (
             <button
               type="button"
               data-testid="portal-users-bulk-invite"
-              onClick={() => void mutate(null, '/bulk-invite', 'POST', {}, `Invited ${pendingCount} pending user(s)`)}
+              onClick={() => void mutate(null, '/bulk-invite', 'POST', {}, t('orgPortalUsersEditor.toasts.pendingInvited', { count: pendingCount }))}
               className="rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted/50"
             >
-              Invite pending ({pendingCount})
+              {t('orgPortalUsersEditor.invitePending', { count: pendingCount })}
             </button>
           )}
           <button
@@ -139,7 +143,7 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
             onClick={() => setInviteOpen(true)}
             className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90"
           >
-            Invite user
+            {t('orgPortalUsersEditor.inviteUser')}
           </button>
         </div>
       </div>
@@ -148,10 +152,10 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b text-left text-xs text-muted-foreground">
-              <th className="py-2 font-medium">Email</th>
-              <th className="py-2 font-medium">Name</th>
-              <th className="py-2 font-medium">Status</th>
-              <th className="py-2 font-medium">Last login</th>
+              <th className="py-2 font-medium">{t('orgPortalUsersEditor.columns.email')}</th>
+              <th className="py-2 font-medium">{t('common:labels.name')}</th>
+              <th className="py-2 font-medium">{t('common:labels.status')}</th>
+              <th className="py-2 font-medium">{t('orgPortalUsersEditor.columns.lastLogin')}</th>
               <th className="py-2 font-medium"></th>
             </tr>
           </thead>
@@ -165,7 +169,7 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
                     data-testid={`portal-user-status-${u.id}`}
                     className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_BADGE_CLASS[u.effectiveStatus]}`}
                   >
-                    {STATUS_LABEL[u.effectiveStatus]}
+                    {t(STATUS_LABEL_KEYS[u.effectiveStatus])}
                   </span>
                 </td>
                 <td className="py-2">{u.lastLoginAt ? new Date(u.lastLoginAt).toLocaleDateString() : '—'}</td>
@@ -176,10 +180,10 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
                         type="button"
                         data-testid={`portal-user-resend-${u.id}`}
                         disabled={busyId === u.id}
-                        onClick={() => void mutate(u.id, `/${u.id}/resend-invite`, 'POST', undefined, 'Invite resent')}
+                        onClick={() => void mutate(u.id, `/${u.id}/resend-invite`, 'POST', undefined, t('orgPortalUsersEditor.toasts.inviteResent'))}
                         className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted/50 disabled:opacity-50"
                       >
-                        Resend
+                        {t('orgPortalUsersEditor.actions.resend')}
                       </button>
                     )}
                     {u.effectiveStatus === 'disabled' ? (
@@ -187,20 +191,20 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
                         type="button"
                         data-testid={`portal-user-enable-${u.id}`}
                         disabled={busyId === u.id}
-                        onClick={() => void mutate(u.id, `/${u.id}`, 'PATCH', { status: 'active' }, 'User reactivated')}
+                        onClick={() => void mutate(u.id, `/${u.id}`, 'PATCH', { status: 'active' }, t('orgPortalUsersEditor.toasts.reactivated'))}
                         className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted/50 disabled:opacity-50"
                       >
-                        Reactivate
+                        {t('orgPortalUsersEditor.actions.reactivate')}
                       </button>
                     ) : (
                       <button
                         type="button"
                         data-testid={`portal-user-disable-${u.id}`}
                         disabled={busyId === u.id}
-                        onClick={() => void mutate(u.id, `/${u.id}`, 'PATCH', { status: 'disabled' }, 'User disabled')}
+                        onClick={() => void mutate(u.id, `/${u.id}`, 'PATCH', { status: 'disabled' }, t('orgPortalUsersEditor.toasts.disabled'))}
                         className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted/50 disabled:opacity-50"
                       >
-                        Disable
+                        {t('common:actions.disable')}
                       </button>
                     )}
                     <button
@@ -210,7 +214,7 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
                       onClick={() => setPendingRemove(u)}
                       className="rounded-md border px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-500/10 disabled:opacity-50"
                     >
-                      Remove
+                      {t('common:actions.remove')}
                     </button>
                   </div>
                 </td>
@@ -218,7 +222,9 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
             ))}
             {users.length === 0 && (
               <tr>
-                <td colSpan={5} className="py-4 text-center text-muted-foreground">No portal users yet.</td>
+                <td colSpan={5} className="py-4 text-center text-muted-foreground">
+                  {t('orgPortalUsersEditor.empty')}
+                </td>
               </tr>
             )}
           </tbody>
@@ -228,12 +234,12 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
       {inviteOpen && (
         <div data-testid="portal-users-invite-modal" className="space-y-3 rounded-md border bg-muted/30 p-4">
           <div>
-            <label className="text-sm font-medium" htmlFor="portal-users-invite-email">Email</label>
+            <label className="text-sm font-medium" htmlFor="portal-users-invite-email">{t('orgPortalUsersEditor.columns.email')}</label>
             <input
               id="portal-users-invite-email"
               data-testid="portal-users-invite-email"
               type="email"
-              placeholder="customer@example.com"
+              placeholder={t('orgPortalUsersEditor.placeholders.email')}
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               aria-invalid={showEmailError}
@@ -241,28 +247,28 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
             />
             {showEmailError && (
               <p className="mt-1 text-xs text-destructive" data-testid="portal-users-invite-email-error">
-                Enter a valid email address
+                {t('orgPortalUsersEditor.errors.invalidEmail')}
               </p>
             )}
           </div>
           <div>
-            <label className="text-sm font-medium" htmlFor="portal-users-invite-name">Name (optional)</label>
+            <label className="text-sm font-medium" htmlFor="portal-users-invite-name">{t('orgPortalUsersEditor.fields.nameOptional')}</label>
             <input
               id="portal-users-invite-name"
               data-testid="portal-users-invite-name"
-              placeholder="Name"
+              placeholder={t('common:labels.name')}
               value={name}
               onChange={(e) => setName(e.target.value)}
               className="mt-1 w-full rounded-md border bg-background px-3 py-1.5 text-sm"
             />
           </div>
           <div>
-            <label className="text-sm font-medium" htmlFor="portal-users-invite-message">Message (optional)</label>
+            <label className="text-sm font-medium" htmlFor="portal-users-invite-message">{t('orgPortalUsersEditor.fields.messageOptional')}</label>
             <textarea
               id="portal-users-invite-message"
               data-testid="portal-users-invite-message"
               rows={3}
-              placeholder="Personal note for the invite email"
+              placeholder={t('orgPortalUsersEditor.placeholders.message')}
               value={message}
               onChange={(e) => setMessage(e.target.value)}
               className="mt-1 w-full rounded-md border bg-background px-3 py-1.5 text-sm"
@@ -274,7 +280,7 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
               onClick={() => setInviteOpen(false)}
               className="rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted/50"
             >
-              Cancel
+              {t('common:actions.cancel')}
             </button>
             <button
               type="button"
@@ -283,7 +289,7 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
               onClick={() => void invite()}
               className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
             >
-              Send invite
+              {t('orgPortalUsersEditor.actions.sendInvite')}
             </button>
           </div>
         </div>
@@ -295,14 +301,14 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
         onConfirm={() => {
           const target = pendingRemove;
           if (!target) return;
-          void mutate(target.id, `/${target.id}`, 'DELETE', undefined, 'User removed')
+          void mutate(target.id, `/${target.id}`, 'DELETE', undefined, t('orgPortalUsersEditor.toasts.removed'))
             .finally(() => setPendingRemove(null));
         }}
-        title="Remove portal user"
+        title={t('orgPortalUsersEditor.removeDialog.title')}
         message={pendingRemove
-          ? `Remove ${pendingRemove.email}? They lose access to this organization's portal immediately. This can't be undone — you'd need to re-invite them.`
+          ? t('orgPortalUsersEditor.removeDialog.message', { email: pendingRemove.email })
           : ''}
-        confirmLabel="Remove"
+        confirmLabel={t('common:actions.remove')}
         variant="destructive"
         isLoading={busyId === pendingRemove?.id}
         confirmTestId="portal-user-delete-confirm"

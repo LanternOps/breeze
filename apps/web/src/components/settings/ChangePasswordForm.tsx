@@ -1,3 +1,5 @@
+import { i18n } from '@/lib/i18n';
+import { useTranslation } from 'react-i18next';
 import { useMemo } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
@@ -6,17 +8,17 @@ import { cn, widthPercentClass } from '@/lib/utils';
 
 const changePasswordSchema = z
   .object({
-    currentPassword: z.string().min(1, 'Current password is required'),
-    newPassword: z.string().min(8, 'Password must be at least 8 characters'),
-    confirmPassword: z.string().min(8, 'Confirm your new password')
+    currentPassword: z.string().min(1, i18n.t('settings:changePasswordForm.currentPasswordIsRequired')),
+    newPassword: z.string().min(8, i18n.t('settings:changePasswordForm.passwordMustBeAtLeast8Characters')),
+    confirmPassword: z.string().min(8, i18n.t('settings:changePasswordForm.confirmYourNewPassword'))
   })
   .refine(data => data.newPassword === data.confirmPassword, {
-    message: 'Passwords do not match',
-    path: ['confirmPassword']
+    message: i18n.t('settings:changePasswordForm.passwordsDoNotMatch'),
+    path: [i18n.t('settings:changePasswordForm.confirmPassword')]
   })
   .refine(data => data.currentPassword !== data.newPassword, {
-    message: 'New password must be different from current password',
-    path: ['newPassword']
+    message: i18n.t('settings:changePasswordForm.newPasswordMustBeDifferentFromCurrentPassword'),
+    path: [i18n.t('settings:changePasswordForm.newPassword2')]
   });
 
 type ChangePasswordFormValues = z.infer<typeof changePasswordSchema>;
@@ -36,11 +38,11 @@ type StrengthConfig = {
 };
 
 const strengthScale: StrengthConfig[] = [
-  { label: 'Too weak', className: 'bg-destructive', minScore: 0 },
-  { label: 'Weak', className: 'bg-destructive/70', minScore: 2 },
-  { label: 'Fair', className: 'bg-amber-500', minScore: 3 },
-  { label: 'Good', className: 'bg-emerald-500', minScore: 4 },
-  { label: 'Strong', className: 'bg-emerald-600', minScore: 5 }
+  { label: i18n.t('settings:changePasswordForm.tooWeak'), className: 'bg-destructive', minScore: 0 },
+  { label: i18n.t('settings:changePasswordForm.weak'), className: 'bg-destructive/70', minScore: 2 },
+  { label: i18n.t('settings:changePasswordForm.fair'), className: 'bg-amber-500', minScore: 3 },
+  { label: i18n.t('settings:changePasswordForm.good'), className: 'bg-emerald-500', minScore: 4 },
+  { label: i18n.t('settings:changePasswordForm.strong'), className: 'bg-emerald-600', minScore: 5 }
 ];
 
 function getStrengthScore(password: string) {
@@ -72,6 +74,7 @@ export default function ChangePasswordForm({
   submitLabel = 'Change password',
   loading
 }: ChangePasswordFormProps) {
+  const { t } = useTranslation('settings');
   const {
     register,
     handleSubmit,
@@ -93,7 +96,7 @@ export default function ChangePasswordForm({
   const strength = useMemo(() => {
     if (!newPasswordValue) {
       return {
-        label: 'Enter a password',
+        label: t('changePasswordForm.enterAPassword'),
         className: 'bg-muted',
         percent: 0
       };
@@ -105,7 +108,7 @@ export default function ChangePasswordForm({
       .reverse()
       .find(item => score >= item.minScore);
     const percent = Math.min(100, Math.round((score / 5) * 100));
-    const defaultTier = { label: 'Weak', className: 'bg-destructive', minScore: 0 };
+    const defaultTier = { label: t('changePasswordForm.weak'), className: 'bg-destructive', minScore: 0 };
 
     return {
       label: tier?.label ?? defaultTier.label,
@@ -125,21 +128,19 @@ export default function ChangePasswordForm({
       className="space-y-6 rounded-lg border bg-card p-6 shadow-xs"
     >
       <div className="space-y-1">
-        <h2 className="text-lg font-semibold">Change password</h2>
+        <h2 className="text-lg font-semibold">{t('changePasswordForm.changePassword')}</h2>
         <p className="text-sm text-muted-foreground">
-          Update your password to keep your account secure.
-        </p>
+          {t('changePasswordForm.updateYourPasswordToKeepYourAccountSecure')}</p>
       </div>
 
       <div className="space-y-2">
         <label htmlFor="currentPassword" className="text-sm font-medium">
-          Current password
-        </label>
+          {t('changePasswordForm.currentPassword')}</label>
         <input
           id="currentPassword"
           type="password"
           autoComplete="current-password"
-          placeholder="Enter your current password"
+          placeholder={t('changePasswordForm.enterYourCurrentPassword')}
           className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           {...register('currentPassword')}
         />
@@ -150,13 +151,12 @@ export default function ChangePasswordForm({
 
       <div className="space-y-2">
         <label htmlFor="newPassword" className="text-sm font-medium">
-          New password
-        </label>
+          {t('changePasswordForm.newPassword')}</label>
         <input
           id="newPassword"
           type="password"
           autoComplete="new-password"
-          placeholder="Create a new password"
+          placeholder={t('changePasswordForm.createANewPassword')}
           className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           {...register('newPassword')}
         />
@@ -165,7 +165,7 @@ export default function ChangePasswordForm({
         )}
         <div className="space-y-2">
           <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <span>Password strength</span>
+            <span>{t('changePasswordForm.passwordStrength')}</span>
             <span>{strength.label}</span>
           </div>
           <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
@@ -179,13 +179,12 @@ export default function ChangePasswordForm({
 
       <div className="space-y-2">
         <label htmlFor="confirmPassword" className="text-sm font-medium">
-          Confirm new password
-        </label>
+          {t('changePasswordForm.confirmNewPassword')}</label>
         <input
           id="confirmPassword"
           type="password"
           autoComplete="new-password"
-          placeholder="Re-enter your new password"
+          placeholder={t('changePasswordForm.reEnterYourNewPassword')}
           className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           {...register('confirmPassword')}
         />
@@ -211,7 +210,7 @@ export default function ChangePasswordForm({
         disabled={isLoading}
         className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
       >
-        {isLoading ? 'Changing password...' : submitLabel}
+        {isLoading ? t('changePasswordForm.changingPassword') : submitLabel}
       </button>
     </form>
   );

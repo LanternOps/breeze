@@ -1,4 +1,6 @@
 import { useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 import { cn } from '@/lib/utils';
 
 export type UserStatus = 'active' | 'invited' | 'suspended' | 'pending';
@@ -27,8 +29,15 @@ const statusStyles: Record<string, string> = {
   suspended: 'bg-destructive/10 text-destructive',
   pending: 'bg-muted text-muted-foreground'
 };
+const statusLabelKeys: Record<UserStatus, string> = {
+  active: 'userList.status.active',
+  invited: 'userList.status.invited',
+  suspended: 'userList.status.suspended',
+  pending: 'userList.status.pending',
+};
 
 export default function UserList({ users, currentUserId, onInvite, onEdit, onRemove, onResendInvite }: UserListProps) {
+  const { t } = useTranslation('settings');
   const [query, setQuery] = useState('');
 
   const filteredUsers = useMemo(() => {
@@ -48,9 +57,9 @@ export default function UserList({ users, currentUserId, onInvite, onEdit, onRem
     <div className="space-y-4 rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-lg font-semibold">Users</h2>
+          <h2 className="text-lg font-semibold">{t('userList.title')}</h2>
           <p className="text-sm text-muted-foreground">
-            Manage access, roles, and activity for your organization.
+            {t('userList.description')}
           </p>
         </div>
         <button
@@ -58,26 +67,26 @@ export default function UserList({ users, currentUserId, onInvite, onEdit, onRem
           onClick={() => onInvite?.()}
           className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
         >
-          Invite user
+          {t('userList.actions.invite')}
         </button>
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex-1 min-w-[220px]">
           <label htmlFor="user-search" className="sr-only">
-            Search users
+            {t('userList.searchLabel')}
           </label>
           <input
             id="user-search"
             type="search"
-            placeholder="Search by name, email, or role"
+            placeholder={t('userList.searchPlaceholder')}
             value={query}
             onChange={event => setQuery(event.target.value)}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
         </div>
         <div className="text-sm text-muted-foreground">
-          {filteredUsers.length} of {users.length} users
+          {t('userList.count', { filtered: filteredUsers.length, total: users.length })}
         </div>
       </div>
 
@@ -85,12 +94,12 @@ export default function UserList({ users, currentUserId, onInvite, onEdit, onRem
         <table className="w-full border-collapse text-left text-sm">
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <th className="px-4 py-3">Name</th>
-              <th className="px-4 py-3">Email</th>
-              <th className="px-4 py-3">Role</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3">Last login</th>
-              <th className="px-4 py-3 text-right">Actions</th>
+              <th className="px-4 py-3">{t('common:labels.name')}</th>
+              <th className="px-4 py-3">{t('userList.columns.email')}</th>
+              <th className="px-4 py-3">{t('userList.columns.role')}</th>
+              <th className="px-4 py-3">{t('common:labels.status')}</th>
+              <th className="px-4 py-3">{t('userList.columns.lastLogin')}</th>
+              <th className="px-4 py-3 text-right">{t('common:labels.actions')}</th>
             </tr>
           </thead>
           <tbody>
@@ -106,7 +115,7 @@ export default function UserList({ users, currentUserId, onInvite, onEdit, onRem
                       statusStyles[user.status] ?? 'bg-muted text-muted-foreground'
                     )}
                   >
-                    {user.status}
+                    {statusLabelKeys[user.status as UserStatus] ? t(statusLabelKeys[user.status as UserStatus]) : user.status}
                   </span>
                 </td>
                 <td className="px-4 py-3 text-muted-foreground">{user.lastLogin}</td>
@@ -119,7 +128,7 @@ export default function UserList({ users, currentUserId, onInvite, onEdit, onRem
                           onClick={() => onResendInvite?.(user)}
                           className="text-sm font-medium text-primary hover:underline"
                         >
-                          Resend invite
+                          {t('userList.actions.resendInvite')}
                         </button>
                         <span className="text-muted-foreground">|</span>
                       </>
@@ -129,7 +138,7 @@ export default function UserList({ users, currentUserId, onInvite, onEdit, onRem
                       onClick={() => onEdit?.(user)}
                       className="text-sm font-medium text-primary hover:underline"
                     >
-                      Edit
+                      {t('common:actions.edit')}
                     </button>
                     {user.id !== currentUserId && (
                       <>
@@ -137,9 +146,9 @@ export default function UserList({ users, currentUserId, onInvite, onEdit, onRem
                         <a
                           href={`/admin/users/${user.id}/devices`}
                           className="text-sm font-medium text-primary hover:underline"
-                          title="Manage this user's mobile devices"
+                          title={t('userList.actions.manageMobileDevices')}
                         >
-                          Devices
+                          {t('userList.actions.devices')}
                         </a>
                         <span className="text-muted-foreground">|</span>
                         <button
@@ -147,7 +156,7 @@ export default function UserList({ users, currentUserId, onInvite, onEdit, onRem
                           onClick={() => onRemove?.(user)}
                           className="text-sm font-medium text-destructive hover:underline"
                         >
-                          Remove
+                          {t('common:actions.remove')}
                         </button>
                       </>
                     )}
@@ -158,7 +167,7 @@ export default function UserList({ users, currentUserId, onInvite, onEdit, onRem
             {filteredUsers.length === 0 && (
               <tr className="border-t">
                 <td className="px-4 py-8 text-center text-sm text-muted-foreground" colSpan={6}>
-                  No users match your search.
+                  {t('userList.empty')}
                 </td>
               </tr>
             )}

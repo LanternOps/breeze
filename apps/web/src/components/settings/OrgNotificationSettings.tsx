@@ -1,4 +1,6 @@
 import { useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 import { Bell, Mail, MessageSquare, Plus, Save, Send, Trash2, Webhook } from 'lucide-react';
 
 type NotificationsData = {
@@ -38,17 +40,17 @@ const defaultNotifications: NotificationsData = {
 const slackChannels = ['#ops-alerts', '#security', '#it-helpdesk'];
 
 const alertTypes = [
-  { id: 'critical', label: 'Critical incidents' },
-  { id: 'policy', label: 'Policy violations' },
-  { id: 'device', label: 'Device offline' },
-  { id: 'updates', label: 'Agent updates' },
-  { id: 'billing', label: 'Billing notices' }
+  { id: 'critical', labelKey: 'orgNotificationSettings.preferences.alertTypes.critical' },
+  { id: 'policy', labelKey: 'orgNotificationSettings.preferences.alertTypes.policy' },
+  { id: 'device', labelKey: 'orgNotificationSettings.preferences.alertTypes.device' },
+  { id: 'updates', labelKey: 'orgNotificationSettings.preferences.alertTypes.updates' },
+  { id: 'billing', labelKey: 'orgNotificationSettings.preferences.alertTypes.billing' },
 ];
 
 const channelOptions = [
-  { id: 'email', label: 'Email' },
-  { id: 'slack', label: 'Slack' },
-  { id: 'webhook', label: 'Webhook' }
+  { id: 'email', labelKey: 'orgNotificationSettings.preferences.channels.email' },
+  { id: 'slack', labelKey: 'orgNotificationSettings.preferences.channels.slack' },
+  { id: 'webhook', labelKey: 'orgNotificationSettings.preferences.channels.webhook' },
 ];
 
 const getDefaultPreferences = () => {
@@ -65,6 +67,7 @@ export default function OrgNotificationSettings({
   onSave,
   locked
 }: OrgNotificationSettingsProps) {
+  const { t } = useTranslation('settings');
   const isLocked = (field: string) => locked?.includes(`notifications.${field}`) ?? false;
   const initialData = { ...defaultNotifications, ...notifications };
   const [fromAddress, setFromAddress] = useState(initialData.fromAddress || '');
@@ -101,7 +104,7 @@ export default function OrgNotificationSettings({
   };
 
   const handleSlackTest = () => {
-    setSlackStatus(`Test sent to ${slackChannel}.`);
+    setSlackStatus(t('orgNotificationSettings.slack.testSent', { channel: slackChannel }));
   };
 
   const handleSave = () => {
@@ -123,21 +126,21 @@ export default function OrgNotificationSettings({
 
   const smtpFields = useMemo(
     () => [
-      { label: 'SMTP host', value: smtpHost, onChange: setSmtpHost, lockKey: 'smtpHost' },
-      { label: 'Port', value: smtpPort, onChange: setSmtpPort, lockKey: 'smtpPort' },
-      { label: 'Username', value: smtpUsername, onChange: setSmtpUsername, lockKey: 'smtpUsername' },
-      { label: 'Password', value: smtpPassword, onChange: setSmtpPassword, lockKey: 'smtpPassword' }
+      { label: t('orgNotificationSettings.email.smtpHost'), value: smtpHost, onChange: setSmtpHost, lockKey: 'smtpHost' },
+      { label: t('orgNotificationSettings.email.port'), value: smtpPort, onChange: setSmtpPort, lockKey: 'smtpPort' },
+      { label: t('orgNotificationSettings.email.username'), value: smtpUsername, onChange: setSmtpUsername, lockKey: 'smtpUsername' },
+      { label: t('orgNotificationSettings.email.password'), value: smtpPassword, onChange: setSmtpPassword, lockKey: 'smtpPassword' }
     ],
-    [smtpHost, smtpPort, smtpUsername, smtpPassword]
+    [smtpHost, smtpPort, smtpUsername, smtpPassword, t]
   );
 
   return (
     <section className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h2 className="text-lg font-semibold">Notifications</h2>
+          <h2 className="text-lg font-semibold">{t('orgNotificationSettings.title')}</h2>
           <p className="text-sm text-muted-foreground">
-            Configure messaging channels and alert routing for your teams.
+            {t('orgNotificationSettings.description')}
           </p>
         </div>
         <button
@@ -146,7 +149,7 @@ export default function OrgNotificationSettings({
           className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90"
         >
           <Save className="h-4 w-4" />
-          Save settings
+          {t('orgNotificationSettings.save')}
         </button>
       </div>
 
@@ -155,11 +158,11 @@ export default function OrgNotificationSettings({
           <div className="space-y-4 rounded-lg border bg-muted/40 p-4">
             <div className="flex items-center gap-2 text-sm font-medium">
               <Mail className="h-4 w-4" />
-              Email settings
+              {t('orgNotificationSettings.email.title')}
             </div>
             <div className="grid gap-4 md:grid-cols-2">
               <div className="space-y-2">
-                <label className="text-sm font-medium">From address</label>
+                <label className="text-sm font-medium">{t('orgNotificationSettings.email.fromAddress')}</label>
                 <input
                   type="email"
                   value={fromAddress}
@@ -171,11 +174,11 @@ export default function OrgNotificationSettings({
                   className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('fromAddress') ? 'opacity-60' : ''}`}
                 />
                 {isLocked('fromAddress') && (
-                  <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+                  <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgNotificationSettings.managedByPartner')}</span>
                 )}
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium">Reply-to address</label>
+                <label className="text-sm font-medium">{t('orgNotificationSettings.email.replyTo')}</label>
                 <input
                   type="email"
                   value={replyTo}
@@ -187,13 +190,13 @@ export default function OrgNotificationSettings({
                   className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('replyTo') ? 'opacity-60' : ''}`}
                 />
                 {isLocked('replyTo') && (
-                  <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+                  <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgNotificationSettings.managedByPartner')}</span>
                 )}
               </div>
             </div>
 
             <label className={`flex items-center justify-between gap-3 rounded-md border bg-background px-3 py-2 text-sm ${isLocked('useCustomSmtp') ? 'opacity-60' : ''}`}>
-              <span>Use custom SMTP server</span>
+              <span>{t('orgNotificationSettings.email.useCustomSmtp')}</span>
               <input
                 type="checkbox"
                 checked={useCustomSmtp}
@@ -206,7 +209,7 @@ export default function OrgNotificationSettings({
               />
             </label>
             {isLocked('useCustomSmtp') && (
-              <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+              <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgNotificationSettings.managedByPartner')}</span>
             )}
 
             {useCustomSmtp ? (
@@ -215,7 +218,7 @@ export default function OrgNotificationSettings({
                   <div key={field.label} className="space-y-2">
                     <label className="text-sm font-medium">{field.label}</label>
                     <input
-                      type={field.label === 'Password' ? 'password' : 'text'}
+                      type={field.lockKey === 'smtpPassword' ? 'password' : 'text'}
                       value={field.value}
                       disabled={isLocked(field.lockKey)}
                       onChange={event => {
@@ -225,12 +228,12 @@ export default function OrgNotificationSettings({
                       className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked(field.lockKey) ? 'opacity-60' : ''}`}
                     />
                     {isLocked(field.lockKey) && (
-                      <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+                      <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgNotificationSettings.managedByPartner')}</span>
                     )}
                   </div>
                 ))}
                 <div className="space-y-2">
-                  <label className="text-sm font-medium">Encryption</label>
+                  <label className="text-sm font-medium">{t('orgNotificationSettings.email.encryption')}</label>
                   <select
                     value={smtpEncryption}
                     disabled={isLocked('smtpEncryption')}
@@ -240,18 +243,18 @@ export default function OrgNotificationSettings({
                     }}
                     className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('smtpEncryption') ? 'opacity-60' : ''}`}
                   >
-                    <option value="tls">TLS</option>
-                    <option value="ssl">SSL</option>
-                    <option value="none">None</option>
+                    <option value="tls">{t('orgNotificationSettings.email.tls')}</option>
+                    <option value="ssl">{t('orgNotificationSettings.email.ssl')}</option>
+                    <option value="none">{t('common:labels.none')}</option>
                   </select>
                   {isLocked('smtpEncryption') && (
-                    <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+                    <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgNotificationSettings.managedByPartner')}</span>
                   )}
                 </div>
               </div>
             ) : (
               <p className="text-xs text-muted-foreground">
-                Using Breeze managed SMTP for faster deliverability.
+                {t('orgNotificationSettings.email.managedSmtp')}
               </p>
             )}
           </div>
@@ -259,10 +262,10 @@ export default function OrgNotificationSettings({
           <div className="space-y-4 rounded-lg border bg-muted/40 p-4">
             <div className="flex items-center gap-2 text-sm font-medium">
               <MessageSquare className="h-4 w-4" />
-              Slack integration
+              {t('orgNotificationSettings.slack.title')}
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">Webhook URL</label>
+              <label className="text-sm font-medium">{t('orgNotificationSettings.slack.webhookUrl')}</label>
               <input
                 type="text"
                 value={slackWebhookUrl}
@@ -274,12 +277,12 @@ export default function OrgNotificationSettings({
                 className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('slackWebhookUrl') ? 'opacity-60' : ''}`}
               />
               {isLocked('slackWebhookUrl') && (
-                <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+                <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgNotificationSettings.managedByPartner')}</span>
               )}
             </div>
             <div className="grid gap-4 md:grid-cols-[1fr_auto] md:items-end">
               <div className="space-y-2">
-                <label className="text-sm font-medium">Default channel</label>
+                <label className="text-sm font-medium">{t('orgNotificationSettings.slack.defaultChannel')}</label>
                 <select
                   value={slackChannel}
                   disabled={isLocked('slackChannel')}
@@ -296,7 +299,7 @@ export default function OrgNotificationSettings({
                   ))}
                 </select>
                 {isLocked('slackChannel') && (
-                  <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+                  <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgNotificationSettings.managedByPartner')}</span>
                 )}
               </div>
               <button
@@ -305,7 +308,7 @@ export default function OrgNotificationSettings({
                 className="inline-flex h-10 items-center justify-center gap-2 rounded-md border px-4 text-sm font-medium transition hover:bg-muted"
               >
                 <Send className="h-4 w-4" />
-                Test
+                {t('orgNotificationSettings.slack.test')}
               </button>
             </div>
             {slackStatus ? (
@@ -316,10 +319,10 @@ export default function OrgNotificationSettings({
           <div className="space-y-4 rounded-lg border bg-muted/40 p-4">
             <div className="flex items-center gap-2 text-sm font-medium">
               <Webhook className="h-4 w-4" />
-              Webhook notifications
+              {t('orgNotificationSettings.webhooks.title')}
             </div>
             {isLocked('webhooks') && (
-              <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+              <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgNotificationSettings.managedByPartner')}</span>
             )}
             <div className={`flex flex-wrap gap-2 ${isLocked('webhooks') ? 'opacity-60' : ''}`}>
               <input
@@ -327,7 +330,7 @@ export default function OrgNotificationSettings({
                 value={newWebhook}
                 disabled={isLocked('webhooks')}
                 onChange={event => setNewWebhook(event.target.value)}
-                placeholder="https://api.example.com/alerts"
+                placeholder={t('orgNotificationSettings.webhooks.placeholder')}
                 className="h-10 flex-1 rounded-md border bg-background px-3 text-sm"
               />
               <button
@@ -337,7 +340,7 @@ export default function OrgNotificationSettings({
                 className="inline-flex h-10 items-center gap-2 rounded-md border px-3 text-sm font-medium transition hover:bg-muted disabled:opacity-50"
               >
                 <Plus className="h-4 w-4" />
-                Add
+                {t('common:actions.add')}
               </button>
             </div>
             <div className="space-y-2">
@@ -353,12 +356,12 @@ export default function OrgNotificationSettings({
                     className="inline-flex items-center gap-1 text-muted-foreground transition hover:text-foreground"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
-                    Remove
+                    {t('common:actions.remove')}
                   </button>
                 </div>
               ))}
               {webhooks.length === 0 ? (
-                <p className="text-xs text-muted-foreground">No webhooks configured.</p>
+                <p className="text-xs text-muted-foreground">{t('orgNotificationSettings.webhooks.empty')}</p>
               ) : null}
             </div>
           </div>
@@ -367,16 +370,16 @@ export default function OrgNotificationSettings({
         <div className="space-y-4 rounded-lg border bg-muted/40 p-4">
           <div className="flex items-center gap-2 text-sm font-medium">
             <Bell className="h-4 w-4" />
-            Notification preferences
+            {t('orgNotificationSettings.preferences.title')}
           </div>
           <div className="overflow-auto">
             <table className="w-full min-w-[340px] text-left text-xs">
               <thead className="bg-muted/40 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                 <tr>
-                  <th className="px-2 py-2">Alert type</th>
+                  <th className="px-2 py-2">{t('orgNotificationSettings.preferences.alertType')}</th>
                   {channelOptions.map(channel => (
                     <th key={channel.id} className="px-2 py-2">
-                      {channel.label}
+                      {t(channel.labelKey)}
                     </th>
                   ))}
                 </tr>
@@ -384,7 +387,7 @@ export default function OrgNotificationSettings({
               <tbody>
                 {alertTypes.map(alert => (
                   <tr key={alert.id} className="border-t">
-                    <td className="px-2 py-2 text-sm font-medium">{alert.label}</td>
+                    <td className="px-2 py-2 text-sm font-medium">{t(alert.labelKey)}</td>
                     {channelOptions.map(channel => (
                       <td key={channel.id} className={`px-2 py-2 ${isLocked('preferences') ? 'opacity-60' : ''}`}>
                         <input
@@ -411,10 +414,10 @@ export default function OrgNotificationSettings({
             </table>
           </div>
           <p className="text-xs text-muted-foreground">
-            Choose which channels are used for each alert type.
+            {t('orgNotificationSettings.preferences.description')}
           </p>
           {isLocked('preferences') && (
-            <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+            <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgNotificationSettings.managedByPartner')}</span>
           )}
         </div>
       </div>

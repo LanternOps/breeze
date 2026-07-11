@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { i18n } from '@/lib/i18n';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -45,34 +47,34 @@ type TabKey =
 // SettingsSectionNav). Hashes are the section keys (already kebab-case).
 const TAB_GROUPS: (Omit<SettingsNavGroup, 'items'> & { items: (SettingsNavGroup['items'][number] & { key: TabKey })[] })[] = [
   {
-    label: 'Organization',
+    label: 'orgSettingsPage.nav.organization',
     items: [
-      { key: 'general', hash: 'general', label: 'General', description: 'Profile and defaults', icon: Building2 },
-      { key: 'contracts', hash: 'contracts', label: 'Contracts', description: 'Recurring agreements', icon: FileSignature },
-      { key: 'billing', hash: 'billing', label: 'Billing', description: 'Tax and billing address', icon: CreditCard },
+      { key: 'general', hash: 'general', label: 'orgSettingsPage.nav.general', description: 'orgSettingsPage.nav.generalDescription', icon: Building2 },
+      { key: 'contracts', hash: 'contracts', label: 'orgSettingsPage.nav.contracts', description: 'orgSettingsPage.nav.contractsDescription', icon: FileSignature },
+      { key: 'billing', hash: 'billing', label: 'orgSettingsPage.nav.billing', description: 'orgSettingsPage.nav.billingDescription', icon: CreditCard },
     ],
   },
   {
-    label: 'Portal & Branding',
+    label: 'orgSettingsPage.nav.portalBranding',
     items: [
-      { key: 'branding', hash: 'branding', label: 'Branding', description: 'Portal theme and visuals', icon: Paintbrush },
-      { key: 'portal', hash: 'portal', label: 'Customer Portal', description: 'Features and support', icon: Globe },
+      { key: 'branding', hash: 'branding', label: 'orgSettingsPage.nav.branding', description: 'orgSettingsPage.nav.brandingDescription', icon: Paintbrush },
+      { key: 'portal', hash: 'portal', label: 'orgSettingsPage.nav.portal', description: 'orgSettingsPage.nav.portalDescription', icon: Globe },
     ],
   },
   {
-    label: 'Security & Access',
+    label: 'orgSettingsPage.nav.securityAccess',
     items: [
-      { key: 'security', hash: 'security', label: 'Security', description: 'Access policies and MFA', icon: Shield },
-      { key: 'approval-security', hash: 'approval-security', label: 'Approval Security', description: 'Step-up verification', icon: Fingerprint },
-      { key: 'remote-access', hash: 'remote-access', label: 'Remote Access', description: 'VNC, proxy, tunnels', icon: Monitor },
-      { key: 'event-logs', hash: 'event-logs', label: 'Event Logs', description: 'Forwarding and retention', icon: ScrollText },
+      { key: 'security', hash: 'security', label: 'orgSettingsPage.nav.security', description: 'orgSettingsPage.nav.securityDescription', icon: Shield },
+      { key: 'approval-security', hash: 'approval-security', label: 'orgSettingsPage.nav.approvalSecurity', description: 'orgSettingsPage.nav.approvalSecurityDescription', icon: Fingerprint },
+      { key: 'remote-access', hash: 'remote-access', label: 'orgSettingsPage.nav.remoteAccess', description: 'orgSettingsPage.nav.remoteAccessDescription', icon: Monitor },
+      { key: 'event-logs', hash: 'event-logs', label: 'orgSettingsPage.nav.eventLogs', description: 'orgSettingsPage.nav.eventLogsDescription', icon: ScrollText },
     ],
   },
   {
-    label: 'Communications',
+    label: 'orgSettingsPage.nav.communications',
     items: [
-      { key: 'notifications', hash: 'notifications', label: 'Notifications', description: 'Email, Slack, webhooks', icon: Bell },
-      { key: 'ticketing', hash: 'ticketing', label: 'Ticketing', description: 'SLA and billing overrides', icon: Ticket },
+      { key: 'notifications', hash: 'notifications', label: 'orgSettingsPage.nav.notifications', description: 'orgSettingsPage.nav.notificationsDescription', icon: Bell },
+      { key: 'ticketing', hash: 'ticketing', label: 'orgSettingsPage.nav.ticketing', description: 'orgSettingsPage.nav.ticketingDescription', icon: Ticket },
     ],
   },
 ];
@@ -178,7 +180,7 @@ type OrgSettingsPageProps = {
 export async function runOrgNameSave(
   orgId: string,
   name: string,
-  deps: { onUnauthorized: () => void }
+  deps: { onUnauthorized: () => void; successMessage?: string; errorFallback?: string }
 ): Promise<OrgDetails> {
   return runAction<OrgDetails>({
     request: () =>
@@ -186,13 +188,14 @@ export async function runOrgNameSave(
         method: 'PATCH',
         body: JSON.stringify({ name })
       }),
-    successMessage: 'Organization name saved',
-    errorFallback: 'Failed to save organization name',
+    successMessage: deps.successMessage ?? i18n.t('settings:orgSettingsPage.toasts.nameSaved'),
+    errorFallback: deps.errorFallback ?? i18n.t('settings:orgSettingsPage.errors.saveName'),
     onUnauthorized: deps.onUnauthorized
   });
 }
 
 export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPageProps) {
+  const { t } = useTranslation('settings');
   // Seeded SSR-safe with the default tab; the hash is applied client-side in
   // the effect below to avoid a hydration mismatch (same pattern as
   // PartnerSettingsPage). Also tracks back/forward via hashchange.
@@ -221,7 +224,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
     if (tab === activeTab) return;
     if (saveState.hasUnsavedChanges) {
       const proceed = window.confirm(
-        'You have unsaved changes in this section. Switching will discard them. Continue?'
+        t('orgSettingsPage.confirmDiscard')
       );
       if (!proceed) return;
       setSaveState(prev => ({ ...prev, hasUnsavedChanges: false }));
@@ -269,7 +272,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
           void navigateTo('/login', { replace: true });
           return;
         }
-        throw new Error('Failed to fetch organization details');
+        throw new Error(t('orgSettingsPage.errors.fetchDetails'));
       }
       const data = await response.json();
       setOrgDetails(data);
@@ -309,11 +312,11 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
           setPinnableVersions(null);
         });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('orgSettingsPage.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [effectiveOrgId]);
+  }, [effectiveOrgId, t]);
 
   useEffect(() => {
     fetchOrgDetails();
@@ -335,8 +338,8 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
             method: 'PATCH',
             body: JSON.stringify({ settings: updatedSettings })
           }),
-        successMessage: 'Settings saved',
-        errorFallback: 'Failed to save settings',
+        successMessage: t('orgSettingsPage.toasts.settingsSaved'),
+        errorFallback: t('orgSettingsPage.errors.saveSettings'),
         onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
 
@@ -348,10 +351,10 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
     } catch (err) {
       // runAction already toasts non-401 ActionErrors; only surface unexpected errors.
       if (!(err instanceof ActionError)) {
-        setError(err instanceof Error ? err.message : 'Failed to save settings');
+        setError(err instanceof Error ? err.message : t('orgSettingsPage.errors.saveSettings'));
       }
     }
-  }, [effectiveOrgId, orgDetails, fetchOrgDetails]);
+  }, [effectiveOrgId, orgDetails, fetchOrgDetails, t]);
 
   const handleSaveName = useCallback(async () => {
     if (!effectiveOrgId) return;
@@ -362,18 +365,20 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
       setSavingName(true);
       setError(undefined);
       await runOrgNameSave(effectiveOrgId, trimmed, {
-        onUnauthorized: () => void navigateTo('/login', { replace: true })
+        onUnauthorized: () => void navigateTo('/login', { replace: true }),
+        successMessage: t('orgSettingsPage.toasts.nameSaved'),
+        errorFallback: t('orgSettingsPage.errors.saveName')
       });
       await fetchOrgDetails();
     } catch (err) {
       // runAction already toasts non-401 ActionErrors; only surface unexpected errors.
       if (!(err instanceof ActionError)) {
-        setError(err instanceof Error ? err.message : 'Failed to save organization name');
+        setError(err instanceof Error ? err.message : t('orgSettingsPage.errors.saveName'));
       }
     } finally {
       setSavingName(false);
     }
-  }, [effectiveOrgId, nameDraft, orgDetails, fetchOrgDetails]);
+  }, [effectiveOrgId, nameDraft, orgDetails, fetchOrgDetails, t]);
 
   const handleSaveType = useCallback(async () => {
     if (!effectiveOrgId) return;
@@ -388,32 +393,32 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
             method: 'PATCH',
             body: JSON.stringify({ type: typeDraft })
           }),
-        successMessage: 'Organization type saved',
-        errorFallback: 'Failed to save organization type',
+        successMessage: t('orgSettingsPage.toasts.typeSaved'),
+        errorFallback: t('orgSettingsPage.errors.saveType'),
         onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
 
       await fetchOrgDetails();
     } catch (err) {
       if (!(err instanceof ActionError)) {
-        setError(err instanceof Error ? err.message : 'Failed to save organization type');
+        setError(err instanceof Error ? err.message : t('orgSettingsPage.errors.saveType'));
       }
     } finally {
       setSavingType(false);
     }
-  }, [effectiveOrgId, typeDraft, fetchOrgDetails]);
+  }, [effectiveOrgId, typeDraft, fetchOrgDetails, t]);
 
   // Fallback display data — prefer fetched orgDetails; when accessed via URL prop the org
   // might not be in the store's organizations array, so fall back to a minimal object.
-  const displayOrg = orgDetails || organizations.find(org => org.id === effectiveOrgId) || { id: effectiveOrgId, name: 'Organization' } as OrgDetails;
+  const displayOrg = orgDetails || organizations.find(org => org.id === effectiveOrgId) || { id: effectiveOrgId, name: t('common:labels.organization') } as OrgDetails;
 
   // No fabricated timestamps: the pill only appears once there is something
   // true to say — unsaved edits exist, or a save actually happened.
   const statusLabel = useMemo(() => {
-    if (saveState.hasUnsavedChanges) return 'Unsaved changes';
-    if (saveState.lastSavedAt) return `Saved at ${saveState.lastSavedAt}`;
+    if (saveState.hasUnsavedChanges) return t('orgSettingsPage.saveStatus.unsaved');
+    if (saveState.lastSavedAt) return t('orgSettingsPage.saveStatus.savedAt', { time: saveState.lastSavedAt });
     return null;
-  }, [saveState.hasUnsavedChanges, saveState.lastSavedAt]);
+  }, [saveState.hasUnsavedChanges, saveState.lastSavedAt, t]);
 
   const handleDirty = () => {
     setSaveState(prev => ({ ...prev, hasUnsavedChanges: true }));
@@ -436,7 +441,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
       <div className="flex items-center justify-center py-12">
         <div className="text-center">
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading organization settings...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('orgSettingsPage.loading')}</p>
         </div>
       </div>
     );
@@ -447,9 +452,9 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
     return (
       <div className="rounded-lg border border-amber-200 bg-amber-50 p-6 text-center dark:border-amber-800 dark:bg-amber-950">
         <Building2 className="mx-auto h-12 w-12 text-amber-500" />
-        <h2 className="mt-4 text-lg font-semibold">No Organization Selected</h2>
+        <h2 className="mt-4 text-lg font-semibold">{t('orgSettingsPage.noOrganization.title')}</h2>
         <p className="mt-2 text-sm text-muted-foreground">
-          Please select an organization from the switcher in the header to view settings.
+          {t('orgSettingsPage.noOrganization.description')}
         </p>
       </div>
     );
@@ -467,7 +472,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
           onClick={fetchOrgDetails}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Try again
+          {t('orgSettingsPage.actions.tryAgain')}
         </button>
       </div>
     );
@@ -557,14 +562,14 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
           <div className="space-y-6">
             <section className="rounded-lg border bg-card p-6 shadow-xs">
               <div className="space-y-2">
-                <h2 className="text-lg font-semibold">Organization overview</h2>
+                <h2 className="text-lg font-semibold">{t('orgSettingsPage.overview.title')}</h2>
                 <p className="text-sm text-muted-foreground">
-                  Manage your organization profile and default experiences.
+                  {t('orgSettingsPage.overview.description')}
                 </p>
               </div>
               <dl className="mt-6 grid gap-4 text-sm sm:grid-cols-2">
                 <div className="rounded-md border bg-muted/40 p-4">
-                  <dt className="text-xs uppercase text-muted-foreground">Organization name</dt>
+                  <dt className="text-xs uppercase text-muted-foreground">{t('orgSettingsPage.overview.organizationName')}</dt>
                   <dd className="mt-2 flex items-center gap-2">
                     <input
                       type="text"
@@ -579,8 +584,8 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
                         }
                       }}
                       className="flex-1 rounded-md border bg-background px-3 py-1.5 text-base font-semibold focus:outline-hidden focus:ring-2 focus:ring-primary"
-                      placeholder="Organization name"
-                      aria-label="Organization name"
+                      placeholder={t('orgSettingsPage.overview.organizationName')}
+                      aria-label={t('orgSettingsPage.overview.organizationName')}
                     />
                     <button
                       type="button"
@@ -589,7 +594,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
                       disabled={savingName || !nameDraft.trim() || nameDraft.trim() === orgDetails?.name}
                       className="inline-flex items-center rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      {savingName ? 'Saving…' : 'Save'}
+                      {savingName ? t('common:states.saving') : t('orgSettingsPage.actions.save')}
                     </button>
                   </dd>
                   <p className="mt-1 text-xs text-muted-foreground">
@@ -597,24 +602,24 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
                   </p>
                 </div>
                 <div className="rounded-md border bg-muted/40 p-4">
-                  <dt className="text-xs uppercase text-muted-foreground">Status</dt>
+                  <dt className="text-xs uppercase text-muted-foreground">{t('common:labels.status')}</dt>
                   <dd className="mt-2 text-base font-semibold capitalize">{displayOrg.status}</dd>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Created {new Date(displayOrg.createdAt).toLocaleDateString()}
+                    {t('orgSettingsPage.overview.created', { date: new Date(displayOrg.createdAt).toLocaleDateString() })}
                   </p>
                 </div>
                 <div className="rounded-md border bg-muted/40 p-4">
-                  <dt className="text-xs uppercase text-muted-foreground">Type</dt>
+                  <dt className="text-xs uppercase text-muted-foreground">{t('common:labels.type')}</dt>
                   <dd className="mt-2 flex items-center gap-2">
                     <select
                       data-testid="org-type-select"
                       value={typeDraft}
                       onChange={(e) => setTypeDraft(e.target.value)}
                       className="flex-1 rounded-md border bg-background px-3 py-1.5 text-base font-semibold focus:outline-hidden focus:ring-2 focus:ring-primary"
-                      aria-label="Organization type"
+                      aria-label={t('orgSettingsPage.overview.organizationType')}
                     >
-                      <option value="customer">Customer</option>
-                      <option value="internal">Internal</option>
+                      <option value="customer">{t('orgSettingsPage.overview.types.customer')}</option>
+                      <option value="internal">{t('orgSettingsPage.overview.types.internal')}</option>
                     </select>
                     <button
                       type="button"
@@ -623,35 +628,37 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
                       disabled={savingType || typeDraft === (orgDetails?.type ?? 'customer')}
                       className="inline-flex items-center rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      {savingType ? 'Saving…' : 'Save'}
+                      {savingType ? t('common:states.saving') : t('orgSettingsPage.actions.save')}
                     </button>
                   </dd>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    {orgDetails?.maxDevices ? `Max ${orgDetails.maxDevices} devices` : 'Unlimited devices'}
+                    {orgDetails?.maxDevices
+                      ? t('orgSettingsPage.overview.maxDevices', { count: orgDetails.maxDevices })
+                      : t('orgSettingsPage.overview.unlimitedDevices')}
                   </p>
                 </div>
                 <div className="rounded-md border bg-muted/40 p-4">
-                  <dt className="text-xs uppercase text-muted-foreground">Contract</dt>
+                  <dt className="text-xs uppercase text-muted-foreground">{t('orgSettingsPage.overview.contract')}</dt>
                   <dd className="mt-2 text-base font-semibold">
                     {orgDetails?.contractEnd
                       ? new Date(orgDetails.contractEnd).toLocaleDateString()
-                      : 'No end date'}
+                      : t('orgSettingsPage.overview.noEndDate')}
                   </dd>
                   <p className="mt-1 text-xs text-muted-foreground">
                     {orgDetails?.contractStart
-                      ? `Started ${new Date(orgDetails.contractStart).toLocaleDateString()}`
-                      : 'No contract dates set'}
+                      ? t('orgSettingsPage.overview.started', { date: new Date(orgDetails.contractStart).toLocaleDateString() })
+                      : t('orgSettingsPage.overview.noContractDates')}
                   </p>
                 </div>
                 <div className="rounded-md border bg-muted/40 p-4 sm:col-span-2">
-                  <dt className="text-xs uppercase text-muted-foreground">Organization ID</dt>
+                  <dt className="text-xs uppercase text-muted-foreground">{t('orgSettingsPage.overview.organizationId')}</dt>
                   <dd className="mt-2 flex items-center gap-2">
                     <code className="rounded bg-muted px-2 py-1 font-mono text-sm">{displayOrg.id}</code>
                     <button
                       type="button"
                       className="inline-flex items-center rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-                      title="Copy Organization ID"
-                      aria-label="Copy Organization ID"
+                      title={t('orgSettingsPage.overview.copyOrganizationId')}
+                      aria-label={t('orgSettingsPage.overview.copyOrganizationId')}
                       onClick={() => {
                         navigator.clipboard.writeText(displayOrg.id);
                         setCopiedOrgId(true);
@@ -662,7 +669,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
                     </button>
                   </dd>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Use this ID when inviting users or configuring integrations.
+                    {t('orgSettingsPage.overview.organizationIdHelp')}
                   </p>
                 </div>
               </dl>
@@ -685,23 +692,23 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
       {propOrgId && (
         <>
           <nav className="mb-1 flex items-center gap-1 text-xs text-muted-foreground">
-            <a href="/settings" className="hover:text-foreground">Settings</a>
+            <a href="/settings" className="hover:text-foreground">{t('orgSettingsPage.breadcrumbs.settings')}</a>
             <span>/</span>
-            <a href="/settings/organizations" className="hover:text-foreground">Organizations</a>
+            <a href="/settings/organizations" className="hover:text-foreground">{t('orgSettingsPage.breadcrumbs.organizations')}</a>
             <span>/</span>
             <span className="text-foreground">{displayOrg.name}</span>
           </nav>
           <a href="/settings/organizations" className="mb-4 inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground">
             <ArrowLeft className="h-4 w-4" />
-            Back to Organizations
+            {t('orgSettingsPage.backToOrganizations')}
           </a>
         </>
       )}
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Organization settings</h1>
+          <h1 className="text-xl font-semibold tracking-tight">{t('orgSettingsPage.title')}</h1>
           <p className="text-sm text-muted-foreground">
-            Configure preferences for {displayOrg.name}.
+            {t('orgSettingsPage.description', { organization: displayOrg.name })}
           </p>
         </div>
         {statusLabel && (
@@ -721,10 +728,10 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
           <AlertTriangle className="mt-0.5 h-5 w-5" />
           <div>
             <p className="text-sm font-medium">
-              You have unsaved changes in {TAB_BY_KEY[activeTab].label}
+              {t('orgSettingsPage.unsaved.title', { section: t(TAB_BY_KEY[activeTab].label) })}
             </p>
             <p className="text-xs text-amber-800">
-              Save in that section to keep your updates.
+              {t('orgSettingsPage.unsaved.description')}
             </p>
           </div>
         </div>
@@ -739,9 +746,11 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
       <div className="grid gap-6 lg:grid-cols-[240px_minmax(0,1fr)]">
         <SettingsSectionNav
           groups={TAB_GROUPS.map(group => ({
-            label: group.label,
+            label: t(group.label),
             items: group.items.map(item => ({
               ...item,
+              label: t(item.label),
+              description: t(item.description),
               dirty: saveState.hasUnsavedChanges && item.key === activeTab,
             })),
           }))}

@@ -1,3 +1,5 @@
+import '@/lib/i18n';
+import { useTranslation } from 'react-i18next';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { runAction, handleActionError } from '../../lib/runAction';
@@ -27,6 +29,7 @@ interface Props {
  * web-sourced technical description rather than the raw distributor title.
  */
 export default function CatalogDistributorDrawer({ open, onClose, onImported }: Props) {
+  const { t } = useTranslation('settings');
   const [busy, setBusy] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
 
@@ -56,7 +59,7 @@ export default function CatalogDistributorDrawer({ open, onClose, onImported }: 
             // server-side (best-effort; falls back to the raw values).
             aiCleanup: true,
           }),
-          errorFallback: 'Could not import the distributor item.',
+          errorFallback: t('catalogDistributorDrawer.couldNotImportTheDistributorItem'),
           onUnauthorized: UNAUTHORIZED,
           parseSuccess: (d) => (d as { data: CatalogItem }).data,
         });
@@ -66,8 +69,8 @@ export default function CatalogDistributorDrawer({ open, onClose, onImported }: 
         const aiEnriched = (saved as { attributes?: { distributor?: { aiEnriched?: boolean } } })
           .attributes?.distributor?.aiEnriched === true;
         showToast(aiEnriched
-          ? { message: `Imported "${saved.name}" to the catalog`, type: 'success' }
-          : { message: `Imported "${saved.name}" — AI clean-up was unavailable, kept the original title.`, type: 'warning' });
+          ? { message: t('catalogDistributorDrawer.imported', { name: saved.name }), type: 'success' }
+          : { message: t('catalogDistributorDrawer.importedWithoutCleanup', { name: saved.name }), type: 'warning' });
         onImported(saved);
         onClose();
       } catch (err) {
@@ -89,16 +92,15 @@ export default function CatalogDistributorDrawer({ open, onClose, onImported }: 
       <div ref={panelRef} className="mt-8 w-full max-w-2xl rounded-lg border bg-card shadow-xl">
         <div className="flex items-center justify-between border-b px-5 py-4">
           <div>
-            <h2 className="text-base font-semibold">Import from TD SYNNEX</h2>
+            <h2 className="text-base font-semibold">{t('catalogDistributorDrawer.importFromTDSYNNEX')}</h2>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              Search EC Express by SKU or mfg part #, set your sell price, and add it to the catalog. AI fills in a clean name and a technical description for you.
-            </p>
+              {t('catalogDistributorDrawer.searchECExpressBySKUOrMfgPartSetYourSellPriceAndAddItToT')}</p>
           </div>
           <button
             type="button"
             onClick={() => { if (!busy) onClose(); }}
             className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
-            aria-label="Close"
+            aria-label={t('catalogDistributorDrawer.close')}
             data-testid="catalog-distributor-close"
           >
             <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6 6 18M6 6l12 12" strokeLinecap="round" /></svg>

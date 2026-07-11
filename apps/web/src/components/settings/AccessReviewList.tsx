@@ -1,5 +1,8 @@
+import { i18n } from '@/lib/i18n';
+import { useTranslation } from 'react-i18next';
 import { useMemo, useState } from 'react';
 import { cn } from '@/lib/utils';
+import { formatDate as formatLocaleDate } from '@/lib/dateTimeFormat';
 
 export type AccessReviewStatus = 'pending' | 'in_progress' | 'completed';
 
@@ -28,40 +31,36 @@ const statusStyles: Record<AccessReviewStatus, string> = {
 };
 
 const statusLabels: Record<AccessReviewStatus, string> = {
-  pending: 'Pending',
-  in_progress: 'In Progress',
-  completed: 'Completed'
+  pending: i18n.t('settings:accessReviewList.pending'),
+  in_progress: i18n.t('settings:accessReviewList.inProgress'),
+  completed: i18n.t('settings:accessReviewList.completed')
 };
 
 const dayMs = 1000 * 60 * 60 * 24;
 
 function formatDate(dateString: string): string {
-  return new Date(dateString).toLocaleDateString('en-US', {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric'
-  });
+  return formatLocaleDate(dateString, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
 function getDueStatus(dueDate?: string): { label: string; isOverdue: boolean } {
   if (!dueDate) {
-    return { label: 'No deadline', isOverdue: false };
+    return { label: i18n.t('settings:accessReviewList.noDeadline'), isOverdue: false };
   }
   const due = new Date(dueDate);
   if (Number.isNaN(due.getTime())) {
-    return { label: 'No deadline', isOverdue: false };
+    return { label: i18n.t('settings:accessReviewList.noDeadline'), isOverdue: false };
   }
   const now = new Date();
   const diffMs = due.getTime() - now.getTime();
   if (diffMs < 0) {
     const overdueDays = Math.ceil(Math.abs(diffMs) / dayMs);
-    return { label: `${overdueDays} day${overdueDays === 1 ? '' : 's'} overdue`, isOverdue: true };
+    return { label: i18n.t('settings:accessReviewList.daysOverdue', { count: overdueDays }), isOverdue: true };
   }
   const remainingDays = Math.ceil(diffMs / dayMs);
   if (remainingDays === 0) {
-    return { label: 'Due today', isOverdue: false };
+    return { label: i18n.t('settings:accessReviewList.dueToday'), isOverdue: false };
   }
-  return { label: `${remainingDays} day${remainingDays === 1 ? '' : 's'} remaining`, isOverdue: false };
+  return { label: i18n.t('settings:accessReviewList.daysRemaining', { count: remainingDays }), isOverdue: false };
 }
 
 export default function AccessReviewList({
@@ -69,6 +68,7 @@ export default function AccessReviewList({
   onCreateNew,
   onViewReview
 }: AccessReviewListProps) {
+  const { t } = useTranslation('settings');
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<AccessReviewStatus | 'all'>('all');
 
@@ -99,29 +99,26 @@ export default function AccessReviewList({
     <div className="space-y-4 rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-lg font-semibold">Access Reviews</h2>
+          <h2 className="text-lg font-semibold">{t('accessReviewList.accessReviews')}</h2>
           <p className="text-sm text-muted-foreground">
-            Periodically review user access and permissions to maintain security.
-          </p>
+            {t('accessReviewList.periodicallyReviewUserAccessAndPermissionsToMaintainSecu')}</p>
         </div>
         <button
           type="button"
           onClick={() => onCreateNew?.()}
           className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
         >
-          New Review
-        </button>
+          {t('accessReviewList.newReview')}</button>
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex-1 min-w-[220px]">
           <label htmlFor="review-search" className="sr-only">
-            Search reviews
-          </label>
+            {t('accessReviewList.searchReviews')}</label>
           <input
             id="review-search"
             type="search"
-            placeholder="Search by name or description"
+            placeholder={t('accessReviewList.searchByNameOrDescription')}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
@@ -132,26 +129,25 @@ export default function AccessReviewList({
           onChange={(e) => setStatusFilter(e.target.value as AccessReviewStatus | 'all')}
           className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         >
-          <option value="all">All Statuses</option>
-          <option value="pending">Pending</option>
-          <option value="in_progress">In Progress</option>
-          <option value="completed">Completed</option>
+          <option value="all">{t('accessReviewList.allStatuses')}</option>
+          <option value="pending">{t('accessReviewList.pending')}</option>
+          <option value="in_progress">{t('accessReviewList.inProgress')}</option>
+          <option value="completed">{t('accessReviewList.completed')}</option>
         </select>
         <div className="text-sm text-muted-foreground">
-          {filteredReviews.length} of {reviews.length} reviews
-        </div>
+          {filteredReviews.length} {t('accessReviewList.of')}{reviews.length} {t('accessReviewList.reviews')}</div>
       </div>
 
       <div className="overflow-hidden rounded-lg border">
         <table className="w-full border-collapse text-left text-sm">
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <th className="px-4 py-3">Name</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3">Reviewer</th>
-              <th className="px-4 py-3">Due Date</th>
-              <th className="px-4 py-3">Created</th>
-              <th className="px-4 py-3 text-right">Actions</th>
+              <th className="px-4 py-3">{t('accessReviewList.name')}</th>
+              <th className="px-4 py-3">{t('accessReviewList.status')}</th>
+              <th className="px-4 py-3">{t('accessReviewList.reviewer')}</th>
+              <th className="px-4 py-3">{t('accessReviewList.dueDate')}</th>
+              <th className="px-4 py-3">{t('accessReviewList.created')}</th>
+              <th className="px-4 py-3 text-right">{t('accessReviewList.actions')}</th>
             </tr>
           </thead>
           <tbody>
@@ -213,7 +209,7 @@ export default function AccessReviewList({
                     onClick={() => onViewReview?.(review)}
                     className="text-sm font-medium text-primary hover:underline"
                   >
-                    {review.status === 'completed' ? 'View' : 'Review'}
+                    {review.status === 'completed' ? t('accessReviewList.view') : t('accessReviewList.review')}
                   </button>
                 </td>
               </tr>
@@ -221,8 +217,7 @@ export default function AccessReviewList({
             {filteredReviews.length === 0 && (
               <tr className="border-t">
                 <td className="px-4 py-8 text-center text-sm text-muted-foreground" colSpan={6}>
-                  No access reviews match your criteria.
-                </td>
+                  {t('accessReviewList.noAccessReviewsMatchYourCriteria')}</td>
               </tr>
             )}
           </tbody>

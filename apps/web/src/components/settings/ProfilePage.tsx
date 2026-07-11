@@ -1,3 +1,5 @@
+import { i18n } from '@/lib/i18n';
+import { useTranslation } from 'react-i18next';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
@@ -14,7 +16,7 @@ import { useAvatarBlobUrl } from '@/lib/avatarBlobCache';
 import { formatNumber } from '@/lib/i18n/format';
 
 const profileSchema = z.object({
-  name: z.string().min(2, 'Name must be at least 2 characters'),
+  name: z.string().min(2, i18n.t('settings:profilePage.nameMustBeAtLeast2Characters')),
 });
 
 type ProfileFormValues = z.infer<typeof profileSchema>;
@@ -56,6 +58,7 @@ type ProfilePageProps = {
 };
 
 export default function ProfilePage({ initialUser }: ProfilePageProps) {
+  const { t } = useTranslation('settings');
   const [user, setUser] = useState<User | null>(initialUser ?? null);
   const [isLoadingUser, setIsLoadingUser] = useState(!initialUser);
   const [profileError, setProfileError] = useState<string | undefined>();
@@ -130,7 +133,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
             void navigateTo('/login', { replace: true });
             return;
           }
-          throw new Error('Failed to fetch user data');
+          throw new Error(t('profilePage.failedToFetchUserData'));
         }
         const userData = await response.json();
         setUser(userData);
@@ -138,7 +141,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
           name: userData.name ?? '',
         });
       } catch {
-        setProfileError('Failed to load profile data');
+        setProfileError(t('profilePage.failedToLoadProfileData'));
       } finally {
         setIsLoadingUser(false);
       }
@@ -153,12 +156,12 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       const response = await fetchWithAuth('/auth/passkeys');
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error ?? errorData.message ?? 'Failed to load passkeys');
+        throw new Error(errorData.error ?? errorData.message ?? t('profilePage.failedToLoadPasskeys'));
       }
       const data = await response.json();
       setPasskeys(Array.isArray(data) ? data : data.passkeys ?? []);
     } catch (error) {
-      setPasskeyError(error instanceof Error ? error.message : 'Failed to load passkeys');
+      setPasskeyError(error instanceof Error ? error.message : t('profilePage.failedToLoadPasskeys'));
     } finally {
       setIsLoadingPasskeys(false);
     }
@@ -188,7 +191,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.message ?? 'Failed to update profile');
+        throw new Error(errorData.message ?? t('profilePage.failedToUpdateProfile'));
       }
 
       const updatedUser = await response.json();
@@ -196,9 +199,9 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       reset({
         name: updatedUser.name ?? '',
       });
-      setProfileSuccess('Profile updated successfully');
+      setProfileSuccess(t('profilePage.profileUpdatedSuccessfully'));
     } catch (error) {
-      setProfileError(error instanceof Error ? error.message : 'Failed to update profile');
+      setProfileError(error instanceof Error ? error.message : t('profilePage.failedToUpdateProfile'));
     } finally {
       setIsUpdatingProfile(false);
     }
@@ -208,16 +211,16 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
 
   const validateAvatarFile = useCallback((file: File): string | null => {
     if (!ALLOWED_AVATAR_MIMES.includes(file.type)) {
-      return 'Unsupported file type. Use PNG, JPG, or WebP.';
+      return t('profilePage.unsupportedAvatarType');
     }
     if (file.size > MAX_AVATAR_BYTES) {
-      return `File is too large (max ${formatBytes(MAX_AVATAR_BYTES)}).`;
+      return t('profilePage.avatarTooLarge', { max: formatBytes(MAX_AVATAR_BYTES) });
     }
     if (file.size === 0) {
-      return 'File is empty.';
+      return t('profilePage.fileIsEmpty');
     }
     return null;
-  }, []);
+  }, [t]);
 
   const clearAvatarMessages = useCallback(() => {
     setAvatarError(undefined);
@@ -267,7 +270,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error ?? errorData.message ?? 'Failed to upload avatar');
+        throw new Error(errorData.error ?? errorData.message ?? t('profilePage.failedToUploadAvatar'));
       }
 
       const data = await response.json();
@@ -278,9 +281,9 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
 
       // Clear local preview state — the canonical URL will be used now.
       cancelAvatarSelection();
-      setAvatarSuccess('Avatar updated.');
+      setAvatarSuccess(t('profilePage.avatarUpdated'));
     } catch (error) {
-      setAvatarError(error instanceof Error ? error.message : 'Failed to upload avatar');
+      setAvatarError(error instanceof Error ? error.message : t('profilePage.failedToUploadAvatar'));
     } finally {
       setIsUploadingAvatar(false);
     }
@@ -293,14 +296,14 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       const response = await fetchWithAuth('/users/me/avatar', { method: 'DELETE' });
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error ?? errorData.message ?? 'Failed to remove avatar');
+        throw new Error(errorData.error ?? errorData.message ?? t('profilePage.failedToRemoveAvatar'));
       }
       setUser((prev) => (prev ? { ...prev, avatarUrl: undefined } : prev));
       updateAuthUser({ avatarUrl: undefined });
       cancelAvatarSelection();
-      setAvatarSuccess('Avatar removed.');
+      setAvatarSuccess(t('profilePage.avatarRemoved'));
     } catch (error) {
-      setAvatarError(error instanceof Error ? error.message : 'Failed to remove avatar');
+      setAvatarError(error instanceof Error ? error.message : t('profilePage.failedToRemoveAvatar'));
     } finally {
       setIsDeletingAvatar(false);
     }
@@ -346,12 +349,12 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.message ?? 'Failed to change password');
+        throw new Error(errorData.message ?? t('profilePage.failedToChangePassword'));
       }
 
-      setPasswordSuccess('Password changed successfully');
+      setPasswordSuccess(t('profilePage.passwordChangedSuccessfully'));
     } catch (error) {
-      setPasswordError(error instanceof Error ? error.message : 'Failed to change password');
+      setPasswordError(error instanceof Error ? error.message : t('profilePage.failedToChangePassword'));
     } finally {
       setIsChangingPassword(false);
     }
@@ -372,7 +375,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
         throw new Error(
-          errorData.error ?? errorData.message ?? `Failed to start MFA setup (HTTP ${response.status})`
+          errorData.error ?? errorData.message ?? t('profilePage.failedToStartMfaHttp', { status: response.status })
         );
       }
 
@@ -380,7 +383,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       setQrCodeDataUrl(data.qrCodeDataUrl);
       return true;
     } catch (error) {
-      setMfaError(error instanceof Error ? error.message : 'Failed to start MFA setup');
+      setMfaError(error instanceof Error ? error.message : t('profilePage.failedToStartMFASetup'));
       return false;
     } finally {
       setMfaLoading(false);
@@ -400,17 +403,17 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
         throw new Error(
-          errorData.error ?? errorData.message ?? `Failed to enable MFA (HTTP ${response.status})`
+          errorData.error ?? errorData.message ?? t('profilePage.failedToEnableMfaHttp', { status: response.status })
         );
       }
 
       const data = await response.json();
       setUser(prev => (prev ? { ...prev, mfaEnabled: true } : null));
       setRecoveryCodes(data.recoveryCodes);
-      setMfaSuccess('Multi-factor authentication enabled successfully');
+      setMfaSuccess(t('profilePage.multiFactorAuthenticationEnabledSuccessfully'));
       setQrCodeDataUrl(undefined);
     } catch (error) {
-      setMfaError(error instanceof Error ? error.message : 'Failed to enable MFA');
+      setMfaError(error instanceof Error ? error.message : t('profilePage.failedToEnableMFA'));
     } finally {
       setMfaLoading(false);
     }
@@ -429,15 +432,15 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
         throw new Error(
-          errorData.error ?? errorData.message ?? `Failed to disable MFA (HTTP ${response.status})`
+          errorData.error ?? errorData.message ?? t('profilePage.failedToDisableMfaHttp', { status: response.status })
         );
       }
 
       setUser(prev => (prev ? { ...prev, mfaEnabled: false } : null));
       setRecoveryCodes(undefined);
-      setMfaSuccess('Multi-factor authentication disabled');
+      setMfaSuccess(t('profilePage.multiFactorAuthenticationDisabled'));
     } catch (error) {
-      setMfaError(error instanceof Error ? error.message : 'Failed to disable MFA');
+      setMfaError(error instanceof Error ? error.message : t('profilePage.failedToDisableMFA'));
     } finally {
       setMfaLoading(false);
     }
@@ -455,14 +458,14 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.message ?? 'Failed to generate recovery codes');
+        throw new Error(errorData.message ?? t('profilePage.failedToGenerateRecoveryCodes'));
       }
 
       const data = await response.json();
       setRecoveryCodes(data.recoveryCodes);
-      setMfaSuccess('New recovery codes generated');
+      setMfaSuccess(t('profilePage.newRecoveryCodesGenerated'));
     } catch (error) {
-      setMfaError(error instanceof Error ? error.message : 'Failed to generate recovery codes');
+      setMfaError(error instanceof Error ? error.message : t('profilePage.failedToGenerateRecoveryCodes'));
     } finally {
       setMfaLoading(false);
     }
@@ -483,7 +486,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       const optionsData = await optionsResponse.json().catch(() => ({}));
       if (!optionsResponse.ok) {
         throw new Error(
-          optionsData.error ?? optionsData.message ?? `Failed to start passkey setup (HTTP ${optionsResponse.status})`
+          optionsData.error ?? optionsData.message ?? t('profilePage.failedToStartPasskeyHttp', { status: optionsResponse.status })
         );
       }
 
@@ -497,7 +500,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       const verifyData = await verifyResponse.json().catch(() => ({}));
       if (!verifyResponse.ok) {
         throw new Error(
-          verifyData.error ?? verifyData.message ?? `Failed to save passkey (HTTP ${verifyResponse.status})`
+          verifyData.error ?? verifyData.message ?? t('profilePage.failedToSavePasskeyHttp', { status: verifyResponse.status })
         );
       }
 
@@ -507,13 +510,13 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       if (Array.isArray(verifyData.recoveryCodes)) {
         setRecoveryCodes(verifyData.recoveryCodes);
       }
-      setPasskeySuccess('Passkey added');
+      setPasskeySuccess(t('profilePage.passkeyAdded'));
       await loadPasskeys();
     } catch (error) {
       if (error instanceof Error && error.name === 'NotAllowedError') {
-        setPasskeyError('Passkey setup was canceled or timed out');
+        setPasskeyError(t('profilePage.passkeySetupWasCanceledOrTimedOut'));
       } else {
-        setPasskeyError(error instanceof Error ? error.message : 'Failed to add passkey');
+        setPasskeyError(error instanceof Error ? error.message : t('profilePage.failedToAddPasskey'));
       }
     } finally {
       setIsAddingPasskey(false);
@@ -533,16 +536,16 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(data.error ?? data.message ?? `Failed to rename passkey (HTTP ${response.status})`);
+        throw new Error(data.error ?? data.message ?? t('profilePage.failedToRenamePasskeyHttp', { status: response.status }));
       }
       setPasskeys(prev => prev.map(passkey => (
         passkey.id === passkeyId ? { ...passkey, name: data.passkey?.name ?? name } : passkey
       )));
       setEditingPasskeyId(null);
       setEditingPasskeyName('');
-      setPasskeySuccess('Passkey renamed');
+      setPasskeySuccess(t('profilePage.passkeyRenamed'));
     } catch (error) {
-      setPasskeyError(error instanceof Error ? error.message : 'Failed to rename passkey');
+      setPasskeyError(error instanceof Error ? error.message : t('profilePage.failedToRenamePasskey'));
     } finally {
       setMutatingPasskeyId(null);
     }
@@ -553,7 +556,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     setPasskeyError(undefined);
     setPasskeySuccess(undefined);
     if (!passkeyPassword) {
-      setPasskeyError('Current password is required to delete a passkey');
+      setPasskeyError(t('profilePage.currentPasswordIsRequiredToDeleteAPasskey'));
       return;
     }
     try {
@@ -564,13 +567,13 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(data.error ?? data.message ?? `Failed to delete passkey (HTTP ${response.status})`);
+        throw new Error(data.error ?? data.message ?? t('profilePage.failedToDeletePasskeyHttp', { status: response.status }));
       }
       setPasskeys(prev => prev.filter(passkey => passkey.id !== passkeyId));
       setPasskeyPassword('');
-      setPasskeySuccess('Passkey deleted');
+      setPasskeySuccess(t('profilePage.passkeyDeleted'));
     } catch (error) {
-      setPasskeyError(error instanceof Error ? error.message : 'Failed to delete passkey');
+      setPasskeyError(error instanceof Error ? error.message : t('profilePage.failedToDeletePasskey'));
     } finally {
       setMutatingPasskeyId(null);
     }
@@ -579,7 +582,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   if (isLoadingUser) {
     return (
       <div className="flex u-min-h-px-400 items-center justify-center">
-        <div className="text-sm text-muted-foreground">Loading profile...</div>
+        <div className="text-sm text-muted-foreground">{t('profilePage.loadingProfile')}</div>
       </div>
     );
   }
@@ -587,10 +590,9 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   return (
     <div className="mx-auto max-w-2xl space-y-8">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">Profile settings</h1>
+        <h1 className="text-xl font-semibold tracking-tight">{t('profilePage.profileSettings')}</h1>
         <p className="text-sm text-muted-foreground">
-          Manage your account settings and security preferences.
-        </p>
+          {t('profilePage.manageYourAccountSettingsAndSecurityPreferences')}</p>
       </div>
 
       {/* Profile Information */}
@@ -599,12 +601,12 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         className="space-y-6 rounded-lg border bg-card p-6 shadow-xs"
       >
         <div className="space-y-1">
-          <h2 className="text-lg font-semibold">Profile information</h2>
-          <p className="text-sm text-muted-foreground">Update your personal details.</p>
+          <h2 className="text-lg font-semibold">{t('profilePage.profileInformation')}</h2>
+          <p className="text-sm text-muted-foreground">{t('profilePage.updateYourPersonalDetails')}</p>
         </div>
 
         <div className="space-y-3">
-          <p className="text-sm font-medium">Avatar</p>
+          <p className="text-sm font-medium">{t('profilePage.avatar')}</p>
           <div className="flex items-start gap-4">
             <div
               data-testid="avatar-dropzone"
@@ -620,7 +622,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
               {previewAvatarUrl ? (
                 <img
                   src={previewAvatarUrl}
-                  alt={user?.name ?? 'User avatar'}
+                  alt={user?.name ?? t('profilePage.userAvatar')}
                   className="h-24 w-24 rounded-full object-cover"
                 />
               ) : (
@@ -643,8 +645,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
                   disabled={isUploadingAvatar || isDeletingAvatar}
                   className="rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted transition-colors disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  Upload new picture
-                </button>
+                  {t('profilePage.uploadNewPicture')}</button>
                 {user?.avatarUrl && !avatarFile && (
                   <button
                     type="button"
@@ -652,13 +653,12 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
                     disabled={isUploadingAvatar || isDeletingAvatar}
                     className="rounded-md border px-3 py-1.5 text-sm font-medium text-destructive hover:bg-destructive/10 transition-colors disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    {isDeletingAvatar ? 'Removing...' : 'Remove'}
+                    {isDeletingAvatar ? t('profilePage.removing') : t('profilePage.remove')}
                   </button>
                 )}
               </div>
               <p className="text-xs text-muted-foreground">
-                PNG, JPG, or WebP. Max 5 MB. Drag and drop onto the circle, or click Upload.
-              </p>
+                {t('profilePage.pNGJPGOrWebPMax5MBDragAndDropOntoTheCircleOrClickUpload')}</p>
               {avatarFile && (
                 <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 px-3 py-2 text-sm">
                   <span className="truncate">{avatarFile.name}</span>
@@ -670,7 +670,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
                       disabled={isUploadingAvatar}
                       className="rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      {isUploadingAvatar ? 'Uploading...' : 'Upload'}
+                      {isUploadingAvatar ? t('profilePage.uploading') : t('profilePage.upload')}
                     </button>
                     <button
                       type="button"
@@ -678,8 +678,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
                       disabled={isUploadingAvatar}
                       className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      Cancel
-                    </button>
+                      {t('profilePage.cancel')}</button>
                   </div>
                 </div>
               )}
@@ -695,13 +694,12 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
 
         <div className="space-y-2">
           <label htmlFor="name" className="text-sm font-medium">
-            Name
-          </label>
+            {t('profilePage.name')}</label>
           <input
             id="name"
             type="text"
             autoComplete="name"
-            placeholder="Your name"
+            placeholder={t('profilePage.yourName')}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('name')}
           />
@@ -710,8 +708,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
 
         <div className="space-y-2">
           <label htmlFor="email" className="text-sm font-medium">
-            Email
-          </label>
+            {t('profilePage.email')}</label>
           <input
             id="email"
             type="email"
@@ -720,8 +717,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
             className="h-10 w-full rounded-md border bg-muted px-3 text-sm text-muted-foreground"
           />
           <p className="text-xs text-muted-foreground">
-            Email cannot be changed. Contact support for assistance.
-          </p>
+            {t('profilePage.emailCannotBeChangedContactSupportForAssistance')}</p>
         </div>
 
         {profileError && (
@@ -741,7 +737,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
           disabled={isProfileLoading}
           className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          {isProfileLoading ? 'Saving...' : 'Save changes'}
+          {isProfileLoading ? t('profilePage.saving') : t('profilePage.saveChanges')}
         </button>
       </form>
 
@@ -773,17 +769,15 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       {/* Passkeys */}
       <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
         <div className="space-y-1">
-          <h2 className="text-lg font-semibold">Passkeys</h2>
+          <h2 className="text-lg font-semibold">{t('profilePage.passkeys')}</h2>
           <p className="text-sm text-muted-foreground">
-            Manage passkeys that can be used as multi-factor authentication for your account.
-          </p>
+            {t('profilePage.managePasskeysThatCanBeUsedAsMultiFactorAuthenticationFo')}</p>
         </div>
 
         <div className="space-y-3">
           {isLoadingPasskeys ? (
             <div className="rounded-md border bg-muted/30 p-4 text-sm text-muted-foreground">
-              Loading passkeys...
-            </div>
+              {t('profilePage.loadingPasskeys')}</div>
           ) : passkeys.length ? (
             passkeys.map(passkey => (
               <div key={passkey.id} className="rounded-md border bg-muted/30 p-4">
@@ -799,10 +793,10 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
                         autoFocus
                       />
                     ) : (
-                      <p className="truncate text-sm font-medium">{passkey.name || 'Passkey'}</p>
+                      <p className="truncate text-sm font-medium">{passkey.name || t('profilePage.passkey')}</p>
                     )}
                     <p className="text-xs text-muted-foreground">
-                      Last used: {formatPasskeyDate(passkey.lastUsedAt)}
+                      {t('profilePage.lastUsed')}{formatPasskeyDate(passkey.lastUsedAt)}
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
@@ -814,7 +808,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
                           disabled={!editingPasskeyName.trim() || mutatingPasskeyId === passkey.id}
                           className="h-9 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
                         >
-                          {mutatingPasskeyId === passkey.id ? 'Saving...' : 'Save'}
+                          {mutatingPasskeyId === passkey.id ? t('profilePage.saving') : t('profilePage.save')}
                         </button>
                         <button
                           type="button"
@@ -825,8 +819,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
                           disabled={mutatingPasskeyId === passkey.id}
                           className="h-9 rounded-md border px-3 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
                         >
-                          Cancel
-                        </button>
+                          {t('profilePage.cancel')}</button>
                       </>
                     ) : (
                       <>
@@ -841,15 +834,14 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
                           disabled={!!mutatingPasskeyId}
                           className="h-9 rounded-md border px-3 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
                         >
-                          Rename
-                        </button>
+                          {t('profilePage.rename')}</button>
                         <button
                           type="button"
                           onClick={() => handleDeletePasskey(passkey.id)}
                           disabled={!!mutatingPasskeyId}
                           className="h-9 rounded-md border border-destructive/40 px-3 text-sm font-medium text-destructive transition hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-60"
                         >
-                          {mutatingPasskeyId === passkey.id ? 'Deleting...' : 'Delete'}
+                          {mutatingPasskeyId === passkey.id ? t('profilePage.deleting') : t('profilePage.delete')}
                         </button>
                       </>
                     )}
@@ -859,36 +851,32 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
             ))
           ) : (
             <div className="rounded-md border bg-muted/30 p-4 text-sm text-muted-foreground">
-              No passkeys are registered for this account.
-            </div>
+              {t('profilePage.noPasskeysAreRegisteredForThisAccount')}</div>
           )}
         </div>
 
         <div className="space-y-4 rounded-md border p-4">
           <div className="space-y-1">
-            <h3 className="text-sm font-medium">Add passkey</h3>
+            <h3 className="text-sm font-medium">{t('profilePage.addPasskey')}</h3>
             <p className="text-xs text-muted-foreground">
-              Re-enter your account password before adding or deleting a passkey.
-            </p>
+              {t('profilePage.reEnterYourAccountPasswordBeforeAddingOrDeletingAPasskey')}</p>
           </div>
           <div className="space-y-2">
             <label className="text-sm font-medium" htmlFor="passkey-name">
-              Passkey name
-            </label>
+              {t('profilePage.passkeyName')}</label>
             <input
               id="passkey-name"
               type="text"
               value={passkeyName}
               onChange={event => setPasskeyName(event.target.value)}
-              placeholder="MacBook Touch ID"
+              placeholder={t('profilePage.macBookTouchID')}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm"
               disabled={isAddingPasskey}
             />
           </div>
           <div className="space-y-2">
             <label className="text-sm font-medium" htmlFor="passkey-password">
-              Current password
-            </label>
+              {t('profilePage.currentPassword')}</label>
             <input
               id="passkey-password"
               type="password"
@@ -905,7 +893,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
             disabled={isAddingPasskey || !passkeyPassword}
             className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {isAddingPasskey ? 'Adding...' : 'Add passkey'}
+            {isAddingPasskey ? t('profilePage.adding') : t('profilePage.addPasskey')}
           </button>
         </div>
 
@@ -930,10 +918,9 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
 
       {/* Onboarding */}
       <div className="rounded-lg border bg-card p-6 shadow-xs">
-        <h2 className="text-lg font-semibold">Onboarding</h2>
+        <h2 className="text-lg font-semibold">{t('profilePage.onboarding')}</h2>
         <p className="text-sm text-muted-foreground mt-1 mb-4">
-          Reset the product tour to see the welcome walkthrough again.
-        </p>
+          {t('profilePage.resetTheProductTourToSeeTheWelcomeWalkthroughAgain')}</p>
         {tourResetMsg && (
           <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-600 mb-3">
             {tourResetMsg}
@@ -950,8 +937,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
           }}
           className="rounded-md border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted transition-colors"
         >
-          Restart tour
-        </button>
+          {t('profilePage.restartTour')}</button>
       </div>
     </div>
   );

@@ -1,10 +1,12 @@
+import { i18n } from '@/lib/i18n';
+import { useTranslation } from 'react-i18next';
 import { useMemo, useEffect, useState } from 'react';
 import { useForm, useWatch } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 
 const ssoProviderSchema = z.object({
-  name: z.string().min(1, 'Provider name is required'),
+  name: z.string().min(1, i18n.t('settings:ssoProviderForm.providerNameIsRequired')),
   type: z.enum(['oidc', 'saml']),
   // Ownership axis (#2183, mirrors software policies #2126): 'partner' = a
   // partner-wide provider used for technician login. Surfaced on create only,
@@ -17,8 +19,8 @@ const ssoProviderSchema = z.object({
   clientSecret: z.string().optional(),
   scopes: z.string().optional(),
   attributeMapping: z.object({
-    email: z.string().min(1, 'Email attribute is required'),
-    name: z.string().min(1, 'Name attribute is required'),
+    email: z.string().min(1, i18n.t('settings:ssoProviderForm.emailAttributeIsRequired')),
+    name: z.string().min(1, i18n.t('settings:ssoProviderForm.nameAttributeIsRequired')),
     firstName: z.string().optional(),
     lastName: z.string().optional(),
     groups: z.string().optional()
@@ -69,11 +71,11 @@ type SsoProviderFormProps = {
 };
 
 const presetOptions = [
-  { value: '', label: 'Custom Configuration' },
-  { value: 'azure', label: 'Azure AD / Entra ID' },
-  { value: 'okta', label: 'Okta' },
-  { value: 'google', label: 'Google Workspace' },
-  { value: 'auth0', label: 'Auth0' }
+  { value: '', label: i18n.t('settings:ssoProviderForm.customConfiguration') },
+  { value: 'azure', label: i18n.t('settings:ssoProviderForm.azureADEntraID') },
+  { value: 'okta', label: i18n.t('settings:ssoProviderForm.okta') },
+  { value: 'google', label: i18n.t('settings:ssoProviderForm.googleWorkspace') },
+  { value: 'auth0', label: i18n.t('settings:ssoProviderForm.auth0') }
 ];
 
 export default function SsoProviderForm({
@@ -90,6 +92,7 @@ export default function SsoProviderForm({
   hasClientSecret,
   showOwnerScope = false
 }: SsoProviderFormProps) {
+  const { t } = useTranslation('settings');
   const [showSecret, setShowSecret] = useState(false);
 
   const {
@@ -160,7 +163,7 @@ export default function SsoProviderForm({
       {/* Ownership scope — partner-scope creators only, create-only (#2183) */}
       {showOwnerScope && !isEditing && (
         <fieldset className="space-y-2 rounded-md border p-4" data-testid="sso-provider-owner">
-          <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">Applies to</legend>
+          <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">{t('ssoProviderForm.appliesTo')}</legend>
           <label className="flex items-center gap-2 text-sm">
             <input
               type="radio"
@@ -168,8 +171,7 @@ export default function SsoProviderForm({
               {...register('ownerScope')}
               data-testid="sso-provider-owner-org"
             />
-            This organization
-          </label>
+            {t('ssoProviderForm.thisOrganization')}</label>
           <label className="flex items-center gap-2 text-sm">
             <input
               type="radio"
@@ -177,8 +179,8 @@ export default function SsoProviderForm({
               {...register('ownerScope')}
               data-testid="sso-provider-owner-partner"
             />
-            Partner (technician login){' '}
-            <span className="text-muted-foreground">(your own team signs in with this)</span>
+            {t('ssoProviderForm.partnerTechnicianLogin')}{' '}
+            <span className="text-muted-foreground">{t('ssoProviderForm.yourOwnTeamSignsInWithThis')}</span>
           </label>
         </fieldset>
       )}
@@ -186,16 +188,14 @@ export default function SsoProviderForm({
       {/* Basic Information */}
       <div className="space-y-4">
         <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-          Basic Information
-        </h3>
+          {t('ssoProviderForm.basicInformation')}</h3>
         <div className="grid gap-6 md:grid-cols-2">
           <div className="space-y-2">
             <label htmlFor="provider-name" className="text-sm font-medium">
-              Provider name
-            </label>
+              {t('ssoProviderForm.providerName')}</label>
             <input
               id="provider-name"
-              placeholder="e.g., Okta Production"
+              placeholder={t('ssoProviderForm.eGOktaProduction')}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('name')}
             />
@@ -204,8 +204,7 @@ export default function SsoProviderForm({
 
           <div className="space-y-2">
             <label htmlFor="provider-preset" className="text-sm font-medium">
-              Provider preset
-            </label>
+              {t('ssoProviderForm.providerPreset')}</label>
             <select
               id="provider-preset"
               className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
@@ -218,8 +217,7 @@ export default function SsoProviderForm({
               ))}
             </select>
             <p className="text-xs text-muted-foreground">
-              Select a preset to auto-fill recommended settings
-            </p>
+              {t('ssoProviderForm.selectAPresetToAutoFillRecommendedSettings')}</p>
           </div>
         </div>
       </div>
@@ -227,33 +225,29 @@ export default function SsoProviderForm({
       {/* Connection Settings */}
       <div className="space-y-4 border-t pt-6">
         <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-          Connection Settings
-        </h3>
+          {t('ssoProviderForm.connectionSettings')}</h3>
         <div className="grid gap-6 md:grid-cols-2">
           <div className="space-y-2 md:col-span-2">
             <label htmlFor="provider-issuer" className="text-sm font-medium">
-              Issuer URL
-            </label>
+              {t('ssoProviderForm.issuerURL')}</label>
             <input
               id="provider-issuer"
               type="url"
-              placeholder="https://your-tenant.okta.com"
+              placeholder={t('ssoProviderForm.httpsYourTenantOktaCom')}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('issuer')}
             />
             {errors.issuer && <p className="text-sm text-destructive">{errors.issuer.message}</p>}
             <p className="text-xs text-muted-foreground">
-              The OpenID Connect discovery URL (without .well-known/openid-configuration)
-            </p>
+              {t('ssoProviderForm.theOpenIDConnectDiscoveryURLWithoutWellKnownOpenidConfig')}</p>
           </div>
 
           <div className="space-y-2">
             <label htmlFor="provider-client-id" className="text-sm font-medium">
-              Client ID
-            </label>
+              {t('ssoProviderForm.clientID')}</label>
             <input
               id="provider-client-id"
-              placeholder="your-client-id"
+              placeholder={t('ssoProviderForm.yourClientId')}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('clientId')}
             />
@@ -262,9 +256,8 @@ export default function SsoProviderForm({
 
           <div className="space-y-2">
             <label htmlFor="provider-client-secret" className="text-sm font-medium">
-              Client Secret
-              {isEditing && hasClientSecret && (
-                <span className="ml-2 text-xs text-muted-foreground">(leave blank to keep existing)</span>
+              {t('ssoProviderForm.clientSecret')}{isEditing && hasClientSecret && (
+                <span className="ml-2 text-xs text-muted-foreground">{t('ssoProviderForm.leaveBlankToKeepExisting')}</span>
               )}
             </label>
             <div className="relative">
@@ -297,17 +290,15 @@ export default function SsoProviderForm({
 
           <div className="space-y-2 md:col-span-2">
             <label htmlFor="provider-scopes" className="text-sm font-medium">
-              Scopes
-            </label>
+              {t('ssoProviderForm.scopes')}</label>
             <input
               id="provider-scopes"
-              placeholder="openid profile email"
+              placeholder={t('ssoProviderForm.openidProfileEmail')}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('scopes')}
             />
             <p className="text-xs text-muted-foreground">
-              Space-separated list of OAuth scopes to request
-            </p>
+              {t('ssoProviderForm.spaceSeparatedListOfOAuthScopesToRequest')}</p>
           </div>
         </div>
       </div>
@@ -315,19 +306,16 @@ export default function SsoProviderForm({
       {/* Attribute Mapping */}
       <div className="space-y-4 border-t pt-6">
         <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-          Attribute Mapping
-        </h3>
+          {t('ssoProviderForm.attributeMapping')}</h3>
         <p className="text-sm text-muted-foreground">
-          Map identity provider claims to user attributes
-        </p>
+          {t('ssoProviderForm.mapIdentityProviderClaimsToUserAttributes')}</p>
         <div className="grid gap-6 md:grid-cols-2">
           <div className="space-y-2">
             <label htmlFor="attr-email" className="text-sm font-medium">
-              Email attribute
-            </label>
+              {t('ssoProviderForm.emailAttribute')}</label>
             <input
               id="attr-email"
-              placeholder="email"
+              placeholder={t('ssoProviderForm.email')}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('attributeMapping.email')}
             />
@@ -338,11 +326,10 @@ export default function SsoProviderForm({
 
           <div className="space-y-2">
             <label htmlFor="attr-name" className="text-sm font-medium">
-              Display name attribute
-            </label>
+              {t('ssoProviderForm.displayNameAttribute')}</label>
             <input
               id="attr-name"
-              placeholder="name"
+              placeholder={t('ssoProviderForm.name')}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('attributeMapping.name')}
             />
@@ -353,11 +340,11 @@ export default function SsoProviderForm({
 
           <div className="space-y-2">
             <label htmlFor="attr-first-name" className="text-sm font-medium">
-              First name attribute <span className="text-muted-foreground">(optional)</span>
+              {t('ssoProviderForm.firstNameAttribute')}<span className="text-muted-foreground">{t('ssoProviderForm.optional')}</span>
             </label>
             <input
               id="attr-first-name"
-              placeholder="given_name"
+              placeholder={t('ssoProviderForm.givenName')}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('attributeMapping.firstName')}
             />
@@ -365,11 +352,11 @@ export default function SsoProviderForm({
 
           <div className="space-y-2">
             <label htmlFor="attr-last-name" className="text-sm font-medium">
-              Last name attribute <span className="text-muted-foreground">(optional)</span>
+              {t('ssoProviderForm.lastNameAttribute')}<span className="text-muted-foreground">{t('ssoProviderForm.optional')}</span>
             </label>
             <input
               id="attr-last-name"
-              placeholder="family_name"
+              placeholder={t('ssoProviderForm.familyName')}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('attributeMapping.lastName')}
             />
@@ -377,17 +364,16 @@ export default function SsoProviderForm({
 
           <div className="space-y-2 md:col-span-2">
             <label htmlFor="attr-groups" className="text-sm font-medium">
-              Groups attribute <span className="text-muted-foreground">(optional)</span>
+              {t('ssoProviderForm.groupsAttribute')}<span className="text-muted-foreground">{t('ssoProviderForm.optional')}</span>
             </label>
             <input
               id="attr-groups"
-              placeholder="groups"
+              placeholder={t('ssoProviderForm.groups')}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('attributeMapping.groups')}
             />
             <p className="text-xs text-muted-foreground">
-              Used for group-based role mapping (if supported by your IdP)
-            </p>
+              {t('ssoProviderForm.usedForGroupBasedRoleMappingIfSupportedByYourIdP')}</p>
           </div>
         </div>
       </div>
@@ -395,8 +381,7 @@ export default function SsoProviderForm({
       {/* Provisioning Settings */}
       <div className="space-y-4 border-t pt-6">
         <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-          User Provisioning
-        </h3>
+          {t('ssoProviderForm.userProvisioning')}</h3>
         <div className="space-y-4">
           <label className="flex items-start gap-3">
             <input
@@ -405,23 +390,21 @@ export default function SsoProviderForm({
               {...register('autoProvision')}
             />
             <div>
-              <span className="text-sm font-medium">Auto-provision users</span>
+              <span className="text-sm font-medium">{t('ssoProviderForm.autoProvisionUsers')}</span>
               <p className="text-xs text-muted-foreground">
-                Automatically create user accounts when they first sign in via SSO
-              </p>
+                {t('ssoProviderForm.automaticallyCreateUserAccountsWhenTheyFirstSignInViaSSO')}</p>
             </div>
           </label>
 
           <div className="space-y-2">
             <label htmlFor="default-role" className="text-sm font-medium">
-              Default role for new users
-            </label>
+              {t('ssoProviderForm.defaultRoleForNewUsers')}</label>
             <select
               id="default-role"
               className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring md:w-1/2"
               {...register('defaultRoleId')}
             >
-              <option value="">Select a role...</option>
+              <option value="">{t('ssoProviderForm.selectARole')}</option>
               {visibleRoles.map(role => (
                 <option key={role.id} value={role.id}>
                   {role.name}
@@ -429,23 +412,20 @@ export default function SsoProviderForm({
               ))}
             </select>
             <p className="text-xs text-muted-foreground">
-              Role assigned to auto-provisioned users
-            </p>
+              {t('ssoProviderForm.roleAssignedToAutoProvisionedUsers')}</p>
           </div>
 
           <div className="space-y-2">
             <label htmlFor="allowed-domains" className="text-sm font-medium">
-              Allowed email domains
-            </label>
+              {t('ssoProviderForm.allowedEmailDomains')}</label>
             <input
               id="allowed-domains"
-              placeholder="example.com, company.org"
+              placeholder={t('ssoProviderForm.exampleComCompanyOrg')}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring md:w-1/2"
               {...register('allowedDomains')}
             />
             <p className="text-xs text-muted-foreground">
-              Comma-separated list of allowed email domains. Leave empty to allow all.
-            </p>
+              {t('ssoProviderForm.commaSeparatedListOfAllowedEmailDomainsLeaveEmptyToAllow')}</p>
           </div>
         </div>
       </div>
@@ -453,8 +433,7 @@ export default function SsoProviderForm({
       {/* Security Settings */}
       <div className="space-y-4 border-t pt-6">
         <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-          Security Settings
-        </h3>
+          {t('ssoProviderForm.securitySettings')}</h3>
         <div className="space-y-4">
           <label className="flex items-start gap-3">
             <input
@@ -463,10 +442,9 @@ export default function SsoProviderForm({
               {...register('enforceSSO')}
             />
             <div>
-              <span className="text-sm font-medium">Enforce SSO-only login</span>
+              <span className="text-sm font-medium">{t('ssoProviderForm.enforceSSOOnlyLogin')}</span>
               <p className="text-xs text-muted-foreground">
-                Users must use SSO to sign in. Password login will be disabled.
-              </p>
+                {t('ssoProviderForm.usersMustUseSSOToSignInPasswordLoginWillBeDisabled')}</p>
             </div>
           </label>
 
@@ -486,13 +464,9 @@ export default function SsoProviderForm({
                 </svg>
                 <div>
                   <h4 className="text-sm font-medium text-amber-800 dark:text-amber-200">
-                    Warning: SSO enforcement enabled
-                  </h4>
+                    {t('ssoProviderForm.warningSSOEnforcementEnabled')}</h4>
                   <p className="mt-1 text-sm text-amber-700 dark:text-amber-300">
-                    Users will not be able to sign in with passwords. Make sure your SSO configuration
-                    is working correctly before enabling this option. Consider having at least one
-                    admin account that can bypass SSO for emergency access.
-                  </p>
+                    {t('ssoProviderForm.usersWillNotBeAbleToSignInWithPasswordsMakeSureYourSSOCo')}</p>
                 </div>
               </div>
             </div>
@@ -511,15 +485,13 @@ export default function SsoProviderForm({
           {testingConnection ? (
             <>
               <div className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
-              Testing...
-            </>
+              {t('ssoProviderForm.testing')}</>
           ) : (
             <>
               <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
-              Test Connection
-            </>
+              {t('ssoProviderForm.testConnection')}</>
           )}
         </button>
 
@@ -529,14 +501,13 @@ export default function SsoProviderForm({
             onClick={onCancel}
             className="h-11 w-full rounded-md border bg-background text-sm font-medium text-foreground transition hover:bg-muted sm:w-auto sm:px-6"
           >
-            Cancel
-          </button>
+            {t('ssoProviderForm.cancel')}</button>
           <button
             type="submit"
             disabled={isLoading}
             className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto sm:px-6"
           >
-            {isLoading ? 'Saving...' : submitLabel}
+            {isLoading ? t('ssoProviderForm.saving') : submitLabel}
           </button>
         </div>
       </div>

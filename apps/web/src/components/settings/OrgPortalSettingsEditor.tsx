@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '@/lib/runAction';
@@ -16,11 +18,27 @@ type PortalSettings = {
 
 type ToggleKey = 'enableTickets' | 'enableAssetCheckout' | 'enableSelfService' | 'enablePasswordReset';
 
-const TOGGLES: Array<{ key: ToggleKey; label: string; description: string }> = [
-  { key: 'enableTickets', label: 'Ticket submission', description: 'Customers can open and track support tickets from the portal.' },
-  { key: 'enableAssetCheckout', label: 'Asset checkout', description: 'Customers can check devices out and back in.' },
-  { key: 'enableSelfService', label: 'Self-service', description: 'Customers can use self-service tools in the portal.' },
-  { key: 'enablePasswordReset', label: 'Password reset', description: 'Customers can reset their portal password themselves.' }
+const TOGGLES: Array<{ key: ToggleKey; labelKey: string; descriptionKey: string }> = [
+  {
+    key: 'enableTickets',
+    labelKey: 'orgPortalSettingsEditor.features.toggles.enableTickets.label',
+    descriptionKey: 'orgPortalSettingsEditor.features.toggles.enableTickets.description',
+  },
+  {
+    key: 'enableAssetCheckout',
+    labelKey: 'orgPortalSettingsEditor.features.toggles.enableAssetCheckout.label',
+    descriptionKey: 'orgPortalSettingsEditor.features.toggles.enableAssetCheckout.description',
+  },
+  {
+    key: 'enableSelfService',
+    labelKey: 'orgPortalSettingsEditor.features.toggles.enableSelfService.label',
+    descriptionKey: 'orgPortalSettingsEditor.features.toggles.enableSelfService.description',
+  },
+  {
+    key: 'enablePasswordReset',
+    labelKey: 'orgPortalSettingsEditor.features.toggles.enablePasswordReset.label',
+    descriptionKey: 'orgPortalSettingsEditor.features.toggles.enablePasswordReset.description',
+  },
 ];
 
 type OrgPortalSettingsEditorProps = {
@@ -30,6 +48,7 @@ type OrgPortalSettingsEditorProps = {
 };
 
 export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgPortalSettingsEditorProps) {
+  const { t } = useTranslation('settings');
   const [draft, setDraft] = useState<PortalSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
@@ -79,8 +98,8 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
             footerText: draft.footerText?.trim() || null
           })
         }),
-        errorFallback: 'Failed to save portal settings',
-        successMessage: 'Portal settings saved',
+        errorFallback: t('orgPortalSettingsEditor.errors.save'),
+        successMessage: t('orgPortalSettingsEditor.toasts.saved'),
         onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
       onSave();
@@ -89,18 +108,18 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
     } finally {
       setSaving(false);
     }
-  }, [draft, saving, orgId, onSave]);
+  }, [draft, saving, orgId, onSave, t]);
 
   if (loading) {
-    return <p className="text-sm text-muted-foreground">Loading portal settings…</p>;
+    return <p className="text-sm text-muted-foreground">{t('orgPortalSettingsEditor.loading')}</p>;
   }
 
   if (loadError || !draft) {
     return (
       <div className="rounded-lg border bg-card p-6 text-sm text-muted-foreground" data-testid="org-portal-load-error">
-        Portal settings failed to load.{' '}
+        {t('orgPortalSettingsEditor.errors.load')}{' '}
         <button type="button" onClick={() => void load()} className="underline hover:text-foreground">
-          Retry
+          {t('common:actions.retry')}
         </button>
       </div>
     );
@@ -109,12 +128,12 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
   return (
     <div className="space-y-6" data-testid="org-portal-settings">
       <section className="rounded-lg border bg-card p-6 shadow-xs">
-        <h2 className="text-lg font-semibold">Portal features</h2>
+        <h2 className="text-lg font-semibold">{t('orgPortalSettingsEditor.features.title')}</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Control what this customer can do in their portal. Each organization is independent.
+          {t('orgPortalSettingsEditor.features.description')}
         </p>
         <div className="mt-4 space-y-3">
-          {TOGGLES.map(({ key, label, description }) => (
+          {TOGGLES.map(({ key, labelKey, descriptionKey }) => (
             <label key={key} className="flex items-start gap-3 rounded-md border bg-muted/30 p-3">
               <input
                 type="checkbox"
@@ -124,8 +143,12 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
                 data-testid={`org-portal-toggle-${key}`}
               />
               <span>
-                <span className="block text-sm font-medium">{label}</span>
-                <span className="block text-xs text-muted-foreground">{description}</span>
+                <span className="block text-sm font-medium">
+                  {t(labelKey)}
+                </span>
+                <span className="block text-xs text-muted-foreground">
+                  {t(descriptionKey)}
+                </span>
               </span>
             </label>
           ))}
@@ -133,11 +156,11 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
       </section>
 
       <section className="rounded-lg border bg-card p-6 shadow-xs">
-        <h2 className="text-lg font-semibold">Support contact</h2>
-        <p className="mt-1 text-sm text-muted-foreground">Shown to customers in the portal.</p>
+        <h2 className="text-lg font-semibold">{t('orgPortalSettingsEditor.support.title')}</h2>
+        <p className="mt-1 text-sm text-muted-foreground">{t('orgPortalSettingsEditor.support.description')}</p>
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
           <div>
-            <label className="text-sm font-medium" htmlFor="portal-support-email">Support email</label>
+            <label className="text-sm font-medium" htmlFor="portal-support-email">{t('orgPortalSettingsEditor.support.email')}</label>
             <input
               id="portal-support-email"
               type="email"
@@ -148,7 +171,7 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
             />
           </div>
           <div>
-            <label className="text-sm font-medium" htmlFor="portal-support-phone">Support phone</label>
+            <label className="text-sm font-medium" htmlFor="portal-support-phone">{t('orgPortalSettingsEditor.support.phone')}</label>
             <input
               id="portal-support-phone"
               type="tel"
@@ -159,7 +182,7 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
             />
           </div>
           <div className="sm:col-span-2">
-            <label className="text-sm font-medium" htmlFor="portal-welcome">Welcome message</label>
+            <label className="text-sm font-medium" htmlFor="portal-welcome">{t('orgPortalSettingsEditor.support.welcomeMessage')}</label>
             <textarea
               id="portal-welcome"
               rows={3}
@@ -170,7 +193,7 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
             />
           </div>
           <div className="sm:col-span-2">
-            <label className="text-sm font-medium" htmlFor="portal-footer">Footer text</label>
+            <label className="text-sm font-medium" htmlFor="portal-footer">{t('orgPortalSettingsEditor.support.footerText')}</label>
             <input
               id="portal-footer"
               value={draft.footerText ?? ''}
@@ -190,7 +213,7 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
           className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
           data-testid="org-portal-save"
         >
-          {saving ? 'Saving…' : 'Save portal settings'}
+          {saving ? t('common:states.saving') : t('orgPortalSettingsEditor.save')}
         </button>
       </div>
     </div>

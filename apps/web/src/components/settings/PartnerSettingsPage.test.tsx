@@ -170,7 +170,7 @@ describe('PartnerSettingsPage language control', () => {
     );
 
     render(<PartnerSettingsPage />);
-    await screen.findByText('Partner Settings');
+    await screen.findByRole('heading', { name: /Partner Settings|Configurações do parceiro/i });
     const user = userEvent.setup();
     await user.click(screen.getByRole('link', { name: /^regional$/i }));
     return user;

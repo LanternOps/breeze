@@ -1,3 +1,5 @@
+import '@/lib/i18n';
+import { useTranslation } from 'react-i18next';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, Plug, Search } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
@@ -134,6 +136,7 @@ function toMoney(value: string): number | null {
 }
 
 export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () => void }) {
+  const { t } = useTranslation('settings');
   const [status, setStatus] = useState<IntegrationStatus | null>(null);
   const [config, setConfig] = useState<ConfigForm>(EMPTY_CONFIG);
   const [loading, setLoading] = useState(true);
@@ -159,13 +162,13 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
         UNAUTHORIZED();
         return;
       }
-      if (!res.ok) throw new Error('failed');
+      if (!res.ok) throw new Error(t('tdSynnexCatalogPanel.failed'));
       const body = (await res.json()) as { data: IntegrationStatus };
       setStatus(body.data);
       setConfig(configFromStatus(body.data));
     } catch (err) {
       console.error('[td-synnex] status load failed', err);
-      showToast({ message: 'TD SYNNEX settings failed to load.', type: 'error' });
+      showToast({ message: t('tdSynnexCatalogPanel.tDSYNNEXSettingsFailedToLoad'), type: 'error' });
     } finally {
       setLoading(false);
     }
@@ -195,11 +198,11 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
   }, []);
 
   const connectionLabel = useMemo(() => {
-    if (status?.lastTestStatus === 'success') return 'Last test succeeded';
-    if (status?.lastTestStatus === 'failed') return status.lastTestError ?? 'Last test failed';
-    if (status?.configured) return 'Configured';
-    return 'Not configured';
-  }, [status]);
+    if (status?.lastTestStatus === 'success') return t('tdSynnexCatalogPanel.lastTestSucceeded');
+    if (status?.lastTestStatus === 'failed') return status.lastTestError ?? t('tdSynnexCatalogPanel.lastTestFailed');
+    if (status?.configured) return t('tdSynnexCatalogPanel.configured');
+    return t('tdSynnexCatalogPanel.notConfigured');
+  }, [status, t]);
 
   const saveConfig = useCallback(async () => {
     setSaving(true);
@@ -225,8 +228,8 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
             },
           }),
         }),
-        errorFallback: 'TD SYNNEX settings failed to save.',
-        successMessage: 'TD SYNNEX settings saved',
+        errorFallback: t('tdSynnexCatalogPanel.tDSYNNEXSettingsFailedToSave'),
+        successMessage: t('tdSynnexCatalogPanel.tDSYNNEXSettingsSaved'),
         onUnauthorized: UNAUTHORIZED,
       });
       setStatus(result.data);
@@ -243,8 +246,8 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
     try {
       const result = await runAction<{ data: IntegrationStatus }>({
         request: () => fetchWithAuth('/catalog/distributors/td-synnex/test', { method: 'POST' }),
-        errorFallback: 'TD SYNNEX connection test failed.',
-        successMessage: 'TD SYNNEX connection test succeeded',
+        errorFallback: t('tdSynnexCatalogPanel.tDSYNNEXConnectionTestFailed'),
+        successMessage: t('tdSynnexCatalogPanel.tDSYNNEXConnectionTestSucceeded'),
         onUnauthorized: UNAUTHORIZED,
       });
       setStatus(result.data);
@@ -271,11 +274,11 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
       // Honor the runAction failure contract: a non-2xx status OR an HTTP-200
       // { success:false } body both count as failures (CLAUDE.md no-silent-mutations).
       if (isApiFailure(body, res.status)) {
-        throw new Error(extractApiError(body, 'TD SYNNEX search failed.'));
+        throw new Error(extractApiError(body, t('tdSynnexCatalogPanel.tDSYNNEXSearchFailed')));
       }
       setProducts(body?.data ?? []);
     } catch (err) {
-      showToast({ message: err instanceof Error ? err.message : 'TD SYNNEX search failed.', type: 'error' });
+      showToast({ message: err instanceof Error ? err.message : t('tdSynnexCatalogPanel.tDSYNNEXSearchFailed'), type: 'error' });
     } finally {
       setSearching(false);
     }
@@ -290,7 +293,7 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
     if (!draftProduct || !importForm) return;
     const unitPrice = toMoney(importForm.unitPrice);
     if (unitPrice === null) {
-      showToast({ message: 'Enter a valid sell price.', type: 'error' });
+      showToast({ message: t('tdSynnexCatalogPanel.enterAValidSellPrice'), type: 'error' });
       return;
     }
     setImporting(true);
@@ -311,8 +314,8 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
             },
           }),
         }),
-        errorFallback: 'TD SYNNEX item import failed.',
-        successMessage: `Imported ${importForm.name.trim()}`,
+        errorFallback: t('tdSynnexCatalogPanel.tDSYNNEXItemImportFailed'),
+        successMessage: t('tdSynnexCatalogPanel.imported', { name: importForm.name.trim() }),
         onUnauthorized: UNAUTHORIZED,
       });
       setDraftProduct(null);
@@ -326,7 +329,7 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
   }, [draftProduct, importForm, onImported]);
 
   if (loading) {
-    return <p className="text-sm text-muted-foreground" data-testid="td-synnex-loading">Loading TD SYNNEX.</p>;
+    return <p className="text-sm text-muted-foreground" data-testid="td-synnex-loading">{t('tdSynnexCatalogPanel.loadingTDSYNNEX')}</p>;
   }
 
   return (
@@ -335,11 +338,9 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
         <div>
           <h2 className="flex items-center gap-2 text-lg font-semibold">
             <Plug className="h-4 w-4" aria-hidden="true" />
-            TD SYNNEX
-          </h2>
+            {t('tdSynnexCatalogPanel.tDSYNNEX')}</h2>
           <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-            Connect Digital Bridge to search real-time distributor catalog data and import hardware into Breeze.
-          </p>
+            {t('tdSynnexCatalogPanel.connectDigitalBridgeToSearchRealTimeDistributorCatalogDa')}</p>
         </div>
         <div className="flex items-center gap-2 text-sm text-muted-foreground" data-testid="td-synnex-status-label">
           {status?.lastTestStatus === 'success' && <CheckCircle2 className="h-4 w-4 text-green-600" aria-hidden="true" />}
@@ -349,18 +350,16 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
 
       <div className="grid gap-3 md:grid-cols-2">
         <label className="text-xs font-medium">
-          Base URL
-          <input
+          {t('tdSynnexCatalogPanel.baseURL')}<input
             value={config.baseUrl}
             onChange={(e) => setConfig((f) => ({ ...f, baseUrl: e.target.value }))}
             className="mt-1 w-full rounded-md border bg-background px-2.5 py-1.5 text-sm"
-            placeholder="https://..."
+            placeholder={t('tdSynnexCatalogPanel.https')}
             data-testid="td-synnex-base-url"
           />
         </label>
         <label className="text-xs font-medium">
-          Region
-          <input
+          {t('tdSynnexCatalogPanel.region')}<input
             value={config.region}
             onChange={(e) => setConfig((f) => ({ ...f, region: e.target.value }))}
             className="mt-1 w-full rounded-md border bg-background px-2.5 py-1.5 text-sm"
@@ -368,33 +367,30 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
           />
         </label>
         <label className="text-xs font-medium">
-          Environment
-          <select
+          {t('tdSynnexCatalogPanel.environment')}<select
             value={config.environment}
             onChange={(e) => setConfig((f) => ({ ...f, environment: e.target.value as ConfigForm['environment'] }))}
             className="mt-1 w-full rounded-md border bg-background px-2.5 py-1.5 text-sm"
             data-testid="td-synnex-environment"
           >
-            <option value="sandbox">Sandbox</option>
-            <option value="production">Production</option>
+            <option value="sandbox">{t('tdSynnexCatalogPanel.sandbox')}</option>
+            <option value="production">{t('tdSynnexCatalogPanel.production')}</option>
           </select>
         </label>
         <label className="text-xs font-medium">
-          Auth type
-          <select
+          {t('tdSynnexCatalogPanel.authType')}<select
             value={config.authType}
             onChange={(e) => setConfig((f) => ({ ...f, authType: e.target.value as ConfigForm['authType'] }))}
             className="mt-1 w-full rounded-md border bg-background px-2.5 py-1.5 text-sm"
             data-testid="td-synnex-auth-type"
           >
-            <option value="api_key">API key headers</option>
-            <option value="bearer">Bearer token</option>
-            <option value="basic">Basic auth</option>
+            <option value="api_key">{t('tdSynnexCatalogPanel.aPIKeyHeaders')}</option>
+            <option value="bearer">{t('tdSynnexCatalogPanel.bearerToken')}</option>
+            <option value="basic">{t('tdSynnexCatalogPanel.basicAuth')}</option>
           </select>
         </label>
         <label className="text-xs font-medium">
-          API key
-          <input
+          {t('tdSynnexCatalogPanel.aPIKey')}<input
             value={config.apiKey}
             onChange={(e) => setConfig((f) => ({ ...f, apiKey: e.target.value }))}
             className="mt-1 w-full rounded-md border bg-background px-2.5 py-1.5 text-sm"
@@ -403,8 +399,7 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
           />
         </label>
         <label className="text-xs font-medium">
-          API secret
-          <input
+          {t('tdSynnexCatalogPanel.aPISecret')}<input
             value={config.apiSecret}
             onChange={(e) => setConfig((f) => ({ ...f, apiSecret: e.target.value }))}
             className="mt-1 w-full rounded-md border bg-background px-2.5 py-1.5 text-sm"
@@ -414,8 +409,7 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
           />
         </label>
         <label className="text-xs font-medium">
-          Account ID
-          <input
+          {t('tdSynnexCatalogPanel.accountID')}<input
             value={config.accountId}
             onChange={(e) => setConfig((f) => ({ ...f, accountId: e.target.value }))}
             className="mt-1 w-full rounded-md border bg-background px-2.5 py-1.5 text-sm"
@@ -423,8 +417,7 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
           />
         </label>
         <label className="text-xs font-medium">
-          Test path
-          <input
+          {t('tdSynnexCatalogPanel.testPath')}<input
             value={config.testPath}
             onChange={(e) => setConfig((f) => ({ ...f, testPath: e.target.value }))}
             className="mt-1 w-full rounded-md border bg-background px-2.5 py-1.5 text-sm"
@@ -433,8 +426,7 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
           />
         </label>
         <label className="text-xs font-medium">
-          Search path
-          <input
+          {t('tdSynnexCatalogPanel.searchPath')}<input
             value={config.searchPath}
             onChange={(e) => setConfig((f) => ({ ...f, searchPath: e.target.value }))}
             className="mt-1 w-full rounded-md border bg-background px-2.5 py-1.5 text-sm"
@@ -443,15 +435,14 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
           />
         </label>
         <label className="text-xs font-medium">
-          Search method
-          <select
+          {t('tdSynnexCatalogPanel.searchMethod')}<select
             value={config.searchMethod}
             onChange={(e) => setConfig((f) => ({ ...f, searchMethod: e.target.value as ConfigForm['searchMethod'] }))}
             className="mt-1 w-full rounded-md border bg-background px-2.5 py-1.5 text-sm"
             data-testid="td-synnex-search-method"
           >
-            <option value="GET">GET</option>
-            <option value="POST">POST</option>
+            <option value="GET">{t('tdSynnexCatalogPanel.gET')}</option>
+            <option value="POST">{t('tdSynnexCatalogPanel.pOST')}</option>
           </select>
         </label>
       </div>
@@ -464,8 +455,7 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
             onChange={(e) => setConfig((f) => ({ ...f, enabled: e.target.checked }))}
             data-testid="td-synnex-enabled"
           />
-          Enabled
-        </label>
+          {t('tdSynnexCatalogPanel.enabled')}</label>
         <button
           type="button"
           onClick={() => void saveConfig()}
@@ -473,7 +463,7 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
           className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
           data-testid="td-synnex-save"
         >
-          {saving ? 'Saving.' : 'Save settings'}
+          {saving ? t('tdSynnexCatalogPanel.saving') : t('tdSynnexCatalogPanel.saveSettings')}
         </button>
         <button
           type="button"
@@ -482,7 +472,7 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
           className="rounded-md border px-3 py-1.5 text-sm font-medium disabled:opacity-50"
           data-testid="td-synnex-test"
         >
-          {testing ? 'Testing.' : 'Test connection'}
+          {testing ? t('tdSynnexCatalogPanel.testing') : t('tdSynnexCatalogPanel.testConnection')}
         </button>
       </div>
 
@@ -497,7 +487,7 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
                 if (e.key === 'Enter') void searchProducts();
               }}
               className="w-full rounded-md border bg-background py-1.5 pl-8 pr-2.5 text-sm"
-              placeholder="Search by SKU, manufacturer part number, or product name"
+              placeholder={t('tdSynnexCatalogPanel.searchBySKUManufacturerPartNumberOrProductName')}
               data-testid="td-synnex-search-query"
             />
           </div>
@@ -508,7 +498,7 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
             className="rounded-md border px-3 py-1.5 text-sm font-medium disabled:opacity-50"
             data-testid="td-synnex-search"
           >
-            {searching ? 'Searching.' : 'Search products'}
+            {searching ? t('tdSynnexCatalogPanel.searching') : t('tdSynnexCatalogPanel.searchProducts')}
           </button>
         </div>
 
@@ -516,10 +506,10 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
           <table className="min-w-full divide-y text-sm" data-testid="td-synnex-results">
             <thead>
               <tr className="text-left text-muted-foreground">
-                <th className="px-3 py-2 font-medium">Product</th>
-                <th className="px-3 py-2 font-medium">SKU</th>
-                <th className="px-3 py-2 font-medium">Cost</th>
-                <th className="px-3 py-2 font-medium">Available</th>
+                <th className="px-3 py-2 font-medium">{t('tdSynnexCatalogPanel.product')}</th>
+                <th className="px-3 py-2 font-medium">{t('tdSynnexCatalogPanel.sKU')}</th>
+                <th className="px-3 py-2 font-medium">{t('tdSynnexCatalogPanel.cost')}</th>
+                <th className="px-3 py-2 font-medium">{t('tdSynnexCatalogPanel.available')}</th>
                 <th className="px-3 py-2" />
               </tr>
             </thead>
@@ -528,11 +518,11 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
                 <tr key={product.sourceProductId} data-testid={`td-synnex-result-${product.sourceProductId}`}>
                   <td className="px-3 py-2">
                     <div className="font-medium">{product.name}</div>
-                    <div className="text-xs text-muted-foreground">{product.vendor ?? 'Unknown vendor'}</div>
+                    <div className="text-xs text-muted-foreground">{product.vendor ?? t('tdSynnexCatalogPanel.unknownVendor')}</div>
                   </td>
-                  <td className="px-3 py-2">{product.sku ?? product.manufacturerPartNumber ?? 'N/A'}</td>
-                  <td className="px-3 py-2">{product.cost ? `${product.currency ?? 'USD'} ${product.cost}` : 'N/A'}</td>
-                  <td className="px-3 py-2">{product.availability ?? 'N/A'}</td>
+                  <td className="px-3 py-2">{product.sku ?? product.manufacturerPartNumber ?? t('tdSynnexCatalogPanel.nA')}</td>
+                  <td className="px-3 py-2">{product.cost ? `${product.currency ?? t('tdSynnexCatalogPanel.uSD')} ${product.cost}` : t('tdSynnexCatalogPanel.nA')}</td>
+                  <td className="px-3 py-2">{product.availability ?? t('tdSynnexCatalogPanel.nA')}</td>
                   <td className="px-3 py-2 text-right">
                     <button
                       type="button"
@@ -540,8 +530,7 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
                       className="text-sm text-primary hover:underline"
                       data-testid={`td-synnex-import-open-${product.sourceProductId}`}
                     >
-                      Import
-                    </button>
+                      {t('tdSynnexCatalogPanel.import')}</button>
                   </td>
                 </tr>
               ))}
@@ -552,39 +541,32 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
         {draftProduct && importForm && (
           <div className="space-y-3 rounded-md border bg-muted/30 p-4" data-testid="td-synnex-import-editor">
             <div>
-              <h3 className="text-sm font-semibold">Import product</h3>
+              <h3 className="text-sm font-semibold">{t('tdSynnexCatalogPanel.importProduct')}</h3>
               <p className="mt-1 text-xs text-muted-foreground">{draftProduct.name}</p>
             </div>
             <div className="grid gap-3 md:grid-cols-2">
               <label className="text-xs font-medium">
-                Name
-                <input value={importForm.name} onChange={(e) => setImportForm((f) => f && ({ ...f, name: e.target.value }))} className="mt-1 w-full rounded-md border bg-background px-2.5 py-1.5 text-sm" data-testid="td-synnex-import-name" />
+                {t('tdSynnexCatalogPanel.name')}<input value={importForm.name} onChange={(e) => setImportForm((f) => f && ({ ...f, name: e.target.value }))} className="mt-1 w-full rounded-md border bg-background px-2.5 py-1.5 text-sm" data-testid="td-synnex-import-name" />
               </label>
               <label className="text-xs font-medium">
-                SKU
-                <input value={importForm.sku} onChange={(e) => setImportForm((f) => f && ({ ...f, sku: e.target.value }))} className="mt-1 w-full rounded-md border bg-background px-2.5 py-1.5 text-sm" data-testid="td-synnex-import-sku" />
+                {t('tdSynnexCatalogPanel.sKU')}<input value={importForm.sku} onChange={(e) => setImportForm((f) => f && ({ ...f, sku: e.target.value }))} className="mt-1 w-full rounded-md border bg-background px-2.5 py-1.5 text-sm" data-testid="td-synnex-import-sku" />
               </label>
               <label className="text-xs font-medium">
-                Sell price
-                <input value={importForm.unitPrice} onChange={(e) => setImportForm((f) => f && ({ ...f, unitPrice: e.target.value }))} inputMode="decimal" className="mt-1 w-full rounded-md border bg-background px-2.5 py-1.5 text-sm" data-testid="td-synnex-import-price" />
+                {t('tdSynnexCatalogPanel.sellPrice')}<input value={importForm.unitPrice} onChange={(e) => setImportForm((f) => f && ({ ...f, unitPrice: e.target.value }))} inputMode="decimal" className="mt-1 w-full rounded-md border bg-background px-2.5 py-1.5 text-sm" data-testid="td-synnex-import-price" />
               </label>
               <label className="text-xs font-medium">
-                Cost basis
-                <input value={importForm.costBasis} onChange={(e) => setImportForm((f) => f && ({ ...f, costBasis: e.target.value }))} inputMode="decimal" className="mt-1 w-full rounded-md border bg-background px-2.5 py-1.5 text-sm" data-testid="td-synnex-import-cost" />
+                {t('tdSynnexCatalogPanel.costBasis')}<input value={importForm.costBasis} onChange={(e) => setImportForm((f) => f && ({ ...f, costBasis: e.target.value }))} inputMode="decimal" className="mt-1 w-full rounded-md border bg-background px-2.5 py-1.5 text-sm" data-testid="td-synnex-import-cost" />
               </label>
               <label className="text-xs font-medium">
-                Markup percent
-                <input value={importForm.markupPercent} onChange={(e) => setImportForm((f) => f && ({ ...f, markupPercent: e.target.value }))} inputMode="decimal" className="mt-1 w-full rounded-md border bg-background px-2.5 py-1.5 text-sm" data-testid="td-synnex-import-markup" />
+                {t('tdSynnexCatalogPanel.markupPercent')}<input value={importForm.markupPercent} onChange={(e) => setImportForm((f) => f && ({ ...f, markupPercent: e.target.value }))} inputMode="decimal" className="mt-1 w-full rounded-md border bg-background px-2.5 py-1.5 text-sm" data-testid="td-synnex-import-markup" />
               </label>
               <label className="flex items-end gap-2 text-sm">
                 <input type="checkbox" checked={importForm.taxable} onChange={(e) => setImportForm((f) => f && ({ ...f, taxable: e.target.checked }))} data-testid="td-synnex-import-taxable" />
-                Taxable
-              </label>
+                {t('tdSynnexCatalogPanel.taxable')}</label>
               <div className="md:col-span-2" data-testid="td-synnex-import-enrich">
-                <p className="text-xs font-medium">Clean up name &amp; description with AI</p>
+                <p className="text-xs font-medium">{t('tdSynnexCatalogPanel.cleanUpNameAmpDescriptionWithAI')}</p>
                 <p className="mb-2 mt-0.5 text-xs text-muted-foreground">
-                  Search the web by product name or SKU to rewrite the raw distributor text. Pricing stays untouched.
-                </p>
+                  {t('tdSynnexCatalogPanel.searchTheWebByProductNameOrSKUToRewriteTheRawDistributor')}</p>
                 <CatalogEnrichButton
                   hint="hardware"
                   idSuffix="td-synnex-import"
@@ -596,8 +578,7 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
                 />
               </div>
               <label className="text-xs font-medium md:col-span-2">
-                Description
-                <textarea value={importForm.description} onChange={(e) => setImportForm((f) => f && ({ ...f, description: e.target.value }))} className="mt-1 min-h-20 w-full rounded-md border bg-background px-2.5 py-1.5 text-sm" data-testid="td-synnex-import-description" />
+                {t('tdSynnexCatalogPanel.description')}<textarea value={importForm.description} onChange={(e) => setImportForm((f) => f && ({ ...f, description: e.target.value }))} className="mt-1 min-h-20 w-full rounded-md border bg-background px-2.5 py-1.5 text-sm" data-testid="td-synnex-import-description" />
               </label>
             </div>
             {(() => {
@@ -609,7 +590,7 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
                   className={`text-xs font-medium ${negative ? 'text-red-600' : 'text-muted-foreground'}`}
                   data-testid="td-synnex-import-margin"
                 >
-                  {formatMarginSummary(breakdown, draftProduct.currency ?? 'USD')}
+                  {formatMarginSummary(breakdown, draftProduct.currency ?? t('tdSynnexCatalogPanel.uSD'))}
                   {negative ? ' — selling below cost' : ''}
                 </p>
               );
@@ -622,7 +603,7 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
                 className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
                 data-testid="td-synnex-import-save"
               >
-                {importing ? 'Importing.' : 'Import item'}
+                {importing ? t('tdSynnexCatalogPanel.importing') : t('tdSynnexCatalogPanel.importItem')}
               </button>
               <button
                 type="button"
@@ -633,8 +614,7 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
                 className="rounded-md border px-3 py-1.5 text-sm font-medium"
                 data-testid="td-synnex-import-cancel"
               >
-                Cancel
-              </button>
+                {t('tdSynnexCatalogPanel.cancel')}</button>
             </div>
           </div>
         )}

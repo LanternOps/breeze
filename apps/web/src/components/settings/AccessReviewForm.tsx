@@ -1,10 +1,12 @@
+import { i18n } from '@/lib/i18n';
+import { useTranslation } from 'react-i18next';
 import { useMemo, useState, useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 
 const accessReviewSchema = z.object({
-  name: z.string().min(1, 'Review name is required').max(255),
+  name: z.string().min(1, i18n.t('settings:accessReviewForm.reviewNameIsRequired')).max(255),
   description: z.string().optional(),
   scope: z.enum(['current', 'organization', 'partner']),
   reviewerIds: z.array(z.string()).optional(),
@@ -35,6 +37,7 @@ export default function AccessReviewForm({
   onCancel,
   loading
 }: AccessReviewFormProps) {
+  const { t } = useTranslation('settings');
   const [step, setStep] = useState(0);
   const [reviewerQuery, setReviewerQuery] = useState('');
   const {
@@ -60,7 +63,7 @@ export default function AccessReviewForm({
   const isLoading = useMemo(() => loading ?? isSubmitting, [loading, isSubmitting]);
   const reviewerIds = watch('reviewerIds') ?? [];
   const notifyReviewers = watch('notifyReviewers') ?? false;
-  const steps = ['Basics', 'Scope & Reviewers', 'Deadline'];
+  const steps = [t('accessReviewForm.basics'), t('accessReviewForm.scopeReviewers'), t('accessReviewForm.deadline')];
 
   useEffect(() => {
     if (isOpen) {
@@ -115,11 +118,9 @@ export default function AccessReviewForm({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
       <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-xs">
         <div className="space-y-1">
-          <h2 className="text-lg font-semibold">Create Access Review</h2>
+          <h2 className="text-lg font-semibold">{t('accessReviewForm.createAccessReview')}</h2>
           <p className="text-sm text-muted-foreground">
-            Start a new access review to audit user permissions. This will generate review items for
-            all users in scope.
-          </p>
+            {t('accessReviewForm.startANewAccessReviewToAuditUserPermissionsThisWillGener')}</p>
         </div>
 
         <form
@@ -130,7 +131,7 @@ export default function AccessReviewForm({
         >
           <div className="flex items-center justify-between text-sm text-muted-foreground">
             <span>
-              Step {step + 1} of {steps.length}
+              {t('accessReviewForm.step')}{step + 1} {t('accessReviewForm.of')}{steps.length}
             </span>
             <div className="flex items-center gap-2">
               {steps.map((label, index) => (
@@ -152,11 +153,10 @@ export default function AccessReviewForm({
             <>
               <div className="space-y-2">
                 <label htmlFor="review-name" className="text-sm font-medium">
-                  Review Name
-                </label>
+                  {t('accessReviewForm.reviewName')}</label>
                 <input
                   id="review-name"
-                  placeholder="Q1 2024 Access Review"
+                  placeholder={t('accessReviewForm.q12024AccessReview')}
                   className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   {...register('name')}
                 />
@@ -167,11 +167,10 @@ export default function AccessReviewForm({
 
               <div className="space-y-2">
                 <label htmlFor="review-description" className="text-sm font-medium">
-                  Description (optional)
-                </label>
+                  {t('accessReviewForm.descriptionOptional')}</label>
                 <textarea
                   id="review-description"
-                  placeholder="Describe the purpose of this access review..."
+                  placeholder={t('accessReviewForm.describeThePurposeOfThisAccessReview')}
                   rows={3}
                   className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring resize-none"
                   {...register('description')}
@@ -184,37 +183,34 @@ export default function AccessReviewForm({
             <>
               <div className="space-y-2">
                 <label htmlFor="review-scope" className="text-sm font-medium">
-                  Scope
-                </label>
+                  {t('accessReviewForm.scope')}</label>
                 <select
                   id="review-scope"
                   className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   {...register('scope')}
                 >
-                  <option value="current">Current workspace</option>
-                  <option value="organization">Organization</option>
-                  <option value="partner">Partner</option>
+                  <option value="current">{t('accessReviewForm.currentWorkspace')}</option>
+                  <option value="organization">{t('accessReviewForm.organization')}</option>
+                  <option value="partner">{t('accessReviewForm.partner')}</option>
                 </select>
                 <p className="text-xs text-muted-foreground">
-                  Scope is determined by your current organization or partner context.
-                </p>
+                  {t('accessReviewForm.scopeIsDeterminedByYourCurrentOrganizationOrPartnerConte')}</p>
               </div>
 
               <div className="space-y-2">
                 <label htmlFor="reviewer-search" className="text-sm font-medium">
-                  Reviewers
-                </label>
+                  {t('accessReviewForm.reviewers')}</label>
                 <input
                   id="reviewer-search"
                   type="search"
-                  placeholder="Search reviewers"
+                  placeholder={t('accessReviewForm.searchReviewers')}
                   value={reviewerQuery}
                   onChange={(event) => setReviewerQuery(event.target.value)}
                   className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
                 <div className="max-h-48 space-y-2 overflow-y-auto rounded-md border bg-muted/20 p-3">
                   {filteredReviewers.length === 0 && (
-                    <p className="text-sm text-muted-foreground">No reviewers found.</p>
+                    <p className="text-sm text-muted-foreground">{t('accessReviewForm.noReviewersFound')}</p>
                   )}
                   {filteredReviewers.map((reviewer) => (
                     <label key={reviewer.id} className="flex items-start gap-2 text-sm">
@@ -233,8 +229,7 @@ export default function AccessReviewForm({
                 </div>
                 {reviewerIds.length > 0 && (
                   <p className="text-xs text-muted-foreground">
-                    {reviewerIds.length} reviewer{reviewerIds.length === 1 ? '' : 's'} selected.
-                  </p>
+                    {reviewerIds.length} {t('accessReviewForm.reviewer')}{reviewerIds.length === 1 ? '' : 's'} {t('accessReviewForm.selected')}</p>
                 )}
               </div>
             </>
@@ -244,8 +239,7 @@ export default function AccessReviewForm({
             <>
               <div className="space-y-2">
                 <label htmlFor="review-due-date" className="text-sm font-medium">
-                  Deadline
-                </label>
+                  {t('accessReviewForm.deadline')}</label>
                 <input
                   id="review-due-date"
                   type="date"
@@ -253,8 +247,7 @@ export default function AccessReviewForm({
                   {...register('dueDate')}
                 />
                 <p className="text-xs text-muted-foreground">
-                  Set a deadline to keep reviewers on schedule.
-                </p>
+                  {t('accessReviewForm.setADeadlineToKeepReviewersOnSchedule')}</p>
               </div>
 
               <label className="flex items-center gap-2 text-sm">
@@ -264,7 +257,7 @@ export default function AccessReviewForm({
                   {...register('notifyReviewers')}
                   className="h-4 w-4 rounded border-muted-foreground"
                 />
-                <span>Email reviewers when the campaign starts.</span>
+                <span>{t('accessReviewForm.emailReviewersWhenTheCampaignStarts')}</span>
               </label>
             </>
           )}
@@ -275,8 +268,7 @@ export default function AccessReviewForm({
               onClick={handleClose}
               className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
             >
-              Cancel
-            </button>
+              {t('accessReviewForm.cancel')}</button>
             {step > 0 && (
               <button
                 type="button"
@@ -284,8 +276,7 @@ export default function AccessReviewForm({
                 disabled={isLoading}
                 className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
               >
-                Back
-              </button>
+                {t('accessReviewForm.back')}</button>
             )}
             {step < steps.length - 1 && (
               <button
@@ -294,8 +285,7 @@ export default function AccessReviewForm({
                 disabled={isLoading}
                 className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                Next
-              </button>
+                {t('accessReviewForm.next')}</button>
             )}
             {step === steps.length - 1 && (
               <button
@@ -303,7 +293,7 @@ export default function AccessReviewForm({
                 disabled={isLoading}
                 className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {isLoading ? 'Creating...' : 'Create Review'}
+                {isLoading ? t('accessReviewForm.creating') : t('accessReviewForm.createReview')}
               </button>
             )}
           </div>

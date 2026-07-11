@@ -1,3 +1,5 @@
+import { i18n } from '@/lib/i18n';
+import { useTranslation } from 'react-i18next';
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError } from '../../lib/runAction';
@@ -45,10 +47,10 @@ export function moveFlatList(statuses: StatusRow[], id: string, dir: -1 | 1): st
 }
 
 const FRIENDLY_CODES: Record<string, string> = {
-  STATUS_NAME_TAKEN: 'A status with that name already exists.',
-  SYSTEM_STATUS_IMMUTABLE: "Built-in statuses can't change their core state.",
-  SYSTEM_STATUS_REQUIRED: "Built-in statuses can't be deactivated.",
-  STATUS_INACTIVE: 'That status is deactivated.',
+  STATUS_NAME_TAKEN: i18n.t('settings:ticketStatusesTab.statusNameTaken'),
+  SYSTEM_STATUS_IMMUTABLE: i18n.t('settings:ticketStatusesTab.systemStatusImmutable'),
+  SYSTEM_STATUS_REQUIRED: i18n.t('settings:ticketStatusesTab.systemStatusRequired'),
+  STATUS_INACTIVE: i18n.t('settings:ticketStatusesTab.statusInactive'),
 };
 
 const friendlyCode = (code: string): string | undefined => FRIENDLY_CODES[code];
@@ -58,6 +60,7 @@ const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true 
 const DEFAULT_COLOR = '#1c8a9e';
 
 export default function TicketStatusesTab() {
+  const { t } = useTranslation('settings');
   const [statuses, setStatuses] = useState<StatusRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -102,8 +105,8 @@ export default function TicketStatusesTab() {
       await runAction({
         request: () =>
           fetchWithAuth('/ticket-config/statuses', { method: 'POST', body: JSON.stringify(body) }),
-        errorFallback: 'Status creation failed. Retry.',
-        successMessage: `Status "${addName.trim()}" created`,
+        errorFallback: t('ticketStatusesTab.statusCreationFailedRetry'),
+        successMessage: t('ticketStatusesTab.statusCreated', { name: addName.trim() }),
         friendly: friendlyCode,
         onUnauthorized: UNAUTHORIZED,
       });
@@ -131,8 +134,8 @@ export default function TicketStatusesTab() {
       await runAction({
         request: () =>
           fetchWithAuth(`/ticket-config/statuses/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
-        errorFallback: 'Update failed. Retry.',
-        successMessage: 'Status updated',
+        errorFallback: t('ticketStatusesTab.updateFailedRetry'),
+        successMessage: t('ticketStatusesTab.statusUpdated'),
         friendly: friendlyCode,
         onUnauthorized: UNAUTHORIZED,
       });
@@ -152,7 +155,7 @@ export default function TicketStatusesTab() {
             method: 'PATCH',
             body: JSON.stringify({ isActive: !s.isActive }),
           }),
-        errorFallback: 'Update failed. Retry.',
+        errorFallback: t('ticketStatusesTab.updateFailedRetry'),
         friendly: friendlyCode,
         onUnauthorized: UNAUTHORIZED,
       });
@@ -176,7 +179,7 @@ export default function TicketStatusesTab() {
             method: 'POST',
             body: JSON.stringify({ ids: order }),
           }),
-        errorFallback: 'Reorder failed. Retry.',
+        errorFallback: t('ticketStatusesTab.reorderFailedRetry'),
         onUnauthorized: UNAUTHORIZED,
       });
       invalidateTicketConfig();
@@ -200,10 +203,9 @@ export default function TicketStatusesTab() {
     <div className="max-w-3xl" data-testid="ticket-statuses-tab">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-semibold">Ticket Statuses</h2>
+          <h2 className="text-lg font-semibold">{t('ticketStatusesTab.ticketStatuses')}</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            Manage the statuses available in your ticketing queue. Built-in statuses are required and cannot be removed.
-          </p>
+            {t('ticketStatusesTab.manageTheStatusesAvailableInYourTicketingQueueBuiltInSta')}</p>
         </div>
         <button
           type="button"
@@ -211,7 +213,7 @@ export default function TicketStatusesTab() {
           className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white"
           data-testid="status-add-toggle"
         >
-          {addOpen ? 'Cancel' : 'Add status'}
+          {addOpen ? t('ticketStatusesTab.cancel') : t('ticketStatusesTab.addStatus')}
         </button>
       </div>
 
@@ -219,18 +221,18 @@ export default function TicketStatusesTab() {
         <div className="mt-4 rounded-md border bg-muted/30 p-4" data-testid="status-add-form">
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="text-xs font-medium" htmlFor="status-form-name-input">Name</label>
+              <label className="text-xs font-medium" htmlFor="status-form-name-input">{t('ticketStatusesTab.name')}</label>
               <input
                 id="status-form-name-input"
                 value={addName}
                 onChange={(e) => setAddName(e.target.value)}
                 className="w-full rounded-md border bg-background px-2.5 py-1.5 text-sm"
-                placeholder="Status name"
+                placeholder={t('ticketStatusesTab.statusName')}
                 data-testid="status-form-name"
               />
             </div>
             <div>
-              <label className="text-xs font-medium" htmlFor="status-form-core-select">Core state</label>
+              <label className="text-xs font-medium" htmlFor="status-form-core-select">{t('ticketStatusesTab.coreState')}</label>
               <select
                 id="status-form-core-select"
                 value={addCore}
@@ -244,7 +246,7 @@ export default function TicketStatusesTab() {
               </select>
             </div>
             <div>
-              <label className="text-xs font-medium" htmlFor="status-form-color-input">Color</label>
+              <label className="text-xs font-medium" htmlFor="status-form-color-input">{t('ticketStatusesTab.color')}</label>
               <input
                 id="status-form-color-input"
                 type="color"
@@ -263,15 +265,13 @@ export default function TicketStatusesTab() {
               className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
               data-testid="status-form-submit"
             >
-              Add
-            </button>
+              {t('ticketStatusesTab.add')}</button>
             <button
               type="button"
               onClick={() => setAddOpen(false)}
               className="rounded-md border px-3 py-1.5 text-sm font-medium"
             >
-              Cancel
-            </button>
+              {t('ticketStatusesTab.cancel')}</button>
           </div>
         </div>
       )}
@@ -279,24 +279,21 @@ export default function TicketStatusesTab() {
       <div className="mt-6 space-y-6">
         {loading ? (
           <p className="text-center text-sm text-muted-foreground" data-testid="ticket-statuses-loading">
-            Loading.
-          </p>
+            {t('ticketStatusesTab.loading')}</p>
         ) : error ? (
           <p className="text-center text-sm text-muted-foreground" data-testid="ticket-statuses-error">
-            Statuses failed to load.{' '}
+            {t('ticketStatusesTab.statusesFailedToLoad')}{' '}
             <button
               type="button"
               onClick={() => void load()}
               className="underline hover:text-foreground"
               data-testid="ticket-statuses-retry"
             >
-              Retry
-            </button>
+              {t('ticketStatusesTab.retry')}</button>
           </p>
         ) : statuses.length === 0 ? (
           <p className="text-center text-sm text-muted-foreground" data-testid="ticket-statuses-empty">
-            No statuses found.
-          </p>
+            {t('ticketStatusesTab.noStatusesFound')}</p>
         ) : (
           groups.map(({ coreStatus, statuses: groupStatuses }) => {
             if (groupStatuses.length === 0) return null;
@@ -322,13 +319,11 @@ export default function TicketStatusesTab() {
                                 className="ml-2 rounded border px-1 py-0.5 text-xs text-muted-foreground"
                                 data-testid={`status-system-badge-${s.id}`}
                               >
-                                Built-in
-                              </span>
+                                {t('ticketStatusesTab.builtIn')}</span>
                             )}
                             {!s.isActive && (
                               <span className="ml-2 rounded border px-1 py-0.5 text-xs text-muted-foreground">
-                                Inactive
-                              </span>
+                                {t('ticketStatusesTab.inactive')}</span>
                             )}
                           </td>
                           <td className="px-4 py-2 text-right space-x-2">
@@ -337,7 +332,7 @@ export default function TicketStatusesTab() {
                               onClick={() => void move(s, -1)}
                               disabled={moveFlatList(flatSorted, s.id, -1) === null}
                               className="text-sm text-muted-foreground hover:text-foreground disabled:opacity-30"
-                              aria-label={`Move ${s.name} up`}
+                              aria-label={t('ticketStatusesTab.moveUp', { name: s.name })}
                               data-testid={`status-up-${s.id}`}
                             >
                               ▲
@@ -347,7 +342,7 @@ export default function TicketStatusesTab() {
                               onClick={() => void move(s, 1)}
                               disabled={moveFlatList(flatSorted, s.id, 1) === null}
                               className="text-sm text-muted-foreground hover:text-foreground disabled:opacity-30"
-                              aria-label={`Move ${s.name} down`}
+                              aria-label={t('ticketStatusesTab.moveDown', { name: s.name })}
                               data-testid={`status-down-${s.id}`}
                             >
                               ▼
@@ -358,8 +353,7 @@ export default function TicketStatusesTab() {
                               className="text-sm text-muted-foreground hover:text-foreground"
                               data-testid={`status-edit-${s.id}`}
                             >
-                              Edit
-                            </button>
+                              {t('ticketStatusesTab.edit')}</button>
                             {!s.isSystem && (
                               <button
                                 type="button"
@@ -367,7 +361,7 @@ export default function TicketStatusesTab() {
                                 className="text-sm text-muted-foreground hover:text-foreground"
                                 data-testid={`status-toggle-${s.id}`}
                               >
-                                {s.isActive ? 'Deactivate' : 'Activate'}
+                                {s.isActive ? t('ticketStatusesTab.deactivate') : t('ticketStatusesTab.activate')}
                               </button>
                             )}
                           </td>
@@ -377,7 +371,7 @@ export default function TicketStatusesTab() {
                             <td colSpan={2} className="bg-muted/30 px-4 py-3">
                               <div className="grid grid-cols-2 gap-3">
                                 <div>
-                                  <label className="text-xs font-medium" htmlFor={`edit-name-${s.id}`}>Name</label>
+                                  <label className="text-xs font-medium" htmlFor={`edit-name-${s.id}`}>{t('ticketStatusesTab.name')}</label>
                                   <input
                                     id={`edit-name-${s.id}`}
                                     value={draft.name}
@@ -387,7 +381,7 @@ export default function TicketStatusesTab() {
                                   />
                                 </div>
                                 <div>
-                                  <label className="text-xs font-medium" htmlFor={`edit-core-${s.id}`}>Core state</label>
+                                  <label className="text-xs font-medium" htmlFor={`edit-core-${s.id}`}>{t('ticketStatusesTab.coreState')}</label>
                                   <select
                                     id={`edit-core-${s.id}`}
                                     value={draft.coreStatus}
@@ -402,7 +396,7 @@ export default function TicketStatusesTab() {
                                   </select>
                                 </div>
                                 <div>
-                                  <label className="text-xs font-medium" htmlFor={`edit-color-${s.id}`}>Color</label>
+                                  <label className="text-xs font-medium" htmlFor={`edit-color-${s.id}`}>{t('ticketStatusesTab.color')}</label>
                                   <input
                                     id={`edit-color-${s.id}`}
                                     type="color"
@@ -421,16 +415,14 @@ export default function TicketStatusesTab() {
                                   className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
                                   data-testid={`status-save-${s.id}`}
                                 >
-                                  Save
-                                </button>
+                                  {t('ticketStatusesTab.save')}</button>
                                 <button
                                   type="button"
                                   onClick={() => setEditingId(null)}
                                   className="rounded-md border px-3 py-1.5 text-sm font-medium"
                                   data-testid={`status-cancel-${s.id}`}
                                 >
-                                  Cancel
-                                </button>
+                                  {t('ticketStatusesTab.cancel')}</button>
                               </div>
                             </td>
                           </tr>

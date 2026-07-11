@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '@/lib/runAction';
@@ -33,6 +35,7 @@ type OrgTicketSettingsEditorProps = {
 };
 
 export default function OrgTicketSettingsEditor({ orgId, onDirty, onSave }: OrgTicketSettingsEditorProps) {
+  const { t } = useTranslation('settings');
   const [settings, setSettings] = useState<OrgTicketSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
@@ -122,8 +125,8 @@ export default function OrgTicketSettingsEditor({ orgId, onDirty, onSave }: OrgT
           method: 'PATCH',
           body: JSON.stringify({ slaOverrides, defaultHourlyRate, defaultBillable })
         }),
-        errorFallback: 'Failed to save ticket settings',
-        successMessage: 'Ticket settings saved',
+        errorFallback: t('orgTicketSettingsEditor.errors.save'),
+        successMessage: t('orgTicketSettingsEditor.toasts.saved'),
         onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
       onSave();
@@ -132,28 +135,28 @@ export default function OrgTicketSettingsEditor({ orgId, onDirty, onSave }: OrgT
     } finally {
       setSaving(false);
     }
-  }, [settings, saving, slaRows, hourlyRate, billable, orgId, onSave]);
+  }, [settings, saving, slaRows, hourlyRate, billable, orgId, onSave, t]);
 
   // Compute placeholder for a given priority+field:
   // If partnerConfig has a value, show the number; otherwise show "Partner default"
   const getPlaceholder = (priority: TicketPriority, field: 'response' | 'resolution'): string => {
-    if (!partnerConfig) return 'Partner default';
+    if (!partnerConfig) return t('orgTicketSettingsEditor.partnerDefault');
     const pSetting = partnerConfig.priorities[priority];
-    if (!pSetting) return 'Partner default';
+    if (!pSetting) return t('orgTicketSettingsEditor.partnerDefault');
     const val = field === 'response' ? pSetting.responseSlaMinutes : pSetting.resolutionSlaMinutes;
-    return val != null ? String(val) : 'Partner default';
+    return val != null ? String(val) : t('orgTicketSettingsEditor.partnerDefault');
   };
 
   if (loading) {
-    return <p className="text-sm text-muted-foreground">Loading ticket settings…</p>;
+    return <p className="text-sm text-muted-foreground">{t('orgTicketSettingsEditor.loading')}</p>;
   }
 
   if (loadError || !settings) {
     return (
       <div className="rounded-lg border bg-card p-6 text-sm text-muted-foreground" data-testid="org-ticket-load-error">
-        Ticket settings failed to load.{' '}
+        {t('orgTicketSettingsEditor.errors.load')}{' '}
         <button type="button" onClick={() => void load()} className="underline hover:text-foreground">
-          Retry
+          {t('common:actions.retry')}
         </button>
       </div>
     );
@@ -162,17 +165,17 @@ export default function OrgTicketSettingsEditor({ orgId, onDirty, onSave }: OrgT
   return (
     <div className="space-y-6" data-testid="org-ticket-settings">
       <section className="rounded-lg border bg-card p-6 shadow-xs">
-        <h2 className="text-lg font-semibold">SLA overrides</h2>
+        <h2 className="text-lg font-semibold">{t('orgTicketSettingsEditor.sla.title')}</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Override the partner-wide SLA defaults for this organization. Leave a cell blank to inherit the partner default.
+          {t('orgTicketSettingsEditor.sla.description')}
         </p>
         <div className="mt-4 overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-xs text-muted-foreground">
-                <th className="pb-2 pr-4 font-medium">Priority</th>
-                <th className="pb-2 pr-4 font-medium">Response (min)</th>
-                <th className="pb-2 font-medium">Resolution (min)</th>
+                <th className="pb-2 pr-4 font-medium">{t('orgTicketSettingsEditor.sla.priority')}</th>
+                <th className="pb-2 pr-4 font-medium">{t('orgTicketSettingsEditor.sla.response')}</th>
+                <th className="pb-2 font-medium">{t('orgTicketSettingsEditor.sla.resolution')}</th>
               </tr>
             </thead>
             <tbody className="space-y-2">
@@ -211,13 +214,13 @@ export default function OrgTicketSettingsEditor({ orgId, onDirty, onSave }: OrgT
       </section>
 
       <section className="rounded-lg border bg-card p-6 shadow-xs">
-        <h2 className="text-lg font-semibold">Billing defaults</h2>
+        <h2 className="text-lg font-semibold">{t('orgTicketSettingsEditor.billing.title')}</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Default billing settings for time entries on tickets for this organization.
+          {t('orgTicketSettingsEditor.billing.description')}
         </p>
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
           <div>
-            <label className="text-sm font-medium" htmlFor="org-ticket-rate">Default hourly rate ($)</label>
+            <label className="text-sm font-medium" htmlFor="org-ticket-rate">{t('orgTicketSettingsEditor.billing.hourlyRate')}</label>
             <input
               id="org-ticket-rate"
               type="number"
@@ -225,13 +228,13 @@ export default function OrgTicketSettingsEditor({ orgId, onDirty, onSave }: OrgT
               step="0.01"
               value={hourlyRate}
               onChange={(e) => { setHourlyRate(e.target.value); onDirty(); }}
-              placeholder="Partner default"
+              placeholder={t('orgTicketSettingsEditor.partnerDefault')}
               className="mt-1 w-full rounded-md border bg-background px-3 py-1.5 text-sm"
               data-testid="org-ticket-rate"
             />
           </div>
           <div>
-            <label className="text-sm font-medium" htmlFor="org-ticket-billable">Default billable</label>
+            <label className="text-sm font-medium" htmlFor="org-ticket-billable">{t('orgTicketSettingsEditor.billing.billable')}</label>
             <select
               id="org-ticket-billable"
               value={billable}
@@ -239,9 +242,9 @@ export default function OrgTicketSettingsEditor({ orgId, onDirty, onSave }: OrgT
               className="mt-1 w-full rounded-md border bg-background px-3 py-1.5 text-sm"
               data-testid="org-ticket-billable"
             >
-              <option value="inherit">Inherit</option>
-              <option value="true">Billable</option>
-              <option value="false">Non-billable</option>
+              <option value="inherit">{t('orgTicketSettingsEditor.billing.inherit')}</option>
+              <option value="true">{t('orgTicketSettingsEditor.billing.billableOption')}</option>
+              <option value="false">{t('orgTicketSettingsEditor.billing.nonBillableOption')}</option>
             </select>
           </div>
         </div>
@@ -255,7 +258,7 @@ export default function OrgTicketSettingsEditor({ orgId, onDirty, onSave }: OrgT
           className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
           data-testid="org-ticket-save"
         >
-          {saving ? 'Saving…' : 'Save ticket settings'}
+          {saving ? t('common:states.saving') : t('orgTicketSettingsEditor.actions.save')}
         </button>
       </div>
     </div>

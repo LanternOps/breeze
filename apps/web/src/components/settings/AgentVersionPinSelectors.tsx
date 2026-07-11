@@ -1,4 +1,6 @@
 import { RefreshCcw } from 'lucide-react';
+import { Trans, useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 
 /**
  * Agent + watchdog version-pin selectors (issue #2124). Shared by the partner
@@ -35,10 +37,7 @@ type Props = {
   inheritedPins?: AgentVersionPinsValue;
 };
 
-const COMPONENTS: Array<{ key: 'agent' | 'watchdog'; label: string }> = [
-  { key: 'agent', label: 'Agent target' },
-  { key: 'watchdog', label: 'Watchdog target' },
-];
+const COMPONENTS = ['agent', 'watchdog'] as const;
 
 /** '' | 'latest' | undefined → no pin. Otherwise the concrete version. */
 function normalize(raw: string | undefined): string | null {
@@ -55,6 +54,7 @@ export default function AgentVersionPinSelectors({
   context,
   inheritedPins,
 }: Props) {
+  const { t } = useTranslation('settings');
   const setPin = (key: 'agent' | 'watchdog', raw: string) => {
     // Empty select → 'latest' sentinel so the saved object is explicit (and, for
     // an org, deliberately overrides an inherited partner pin back to latest).
@@ -65,19 +65,17 @@ export default function AgentVersionPinSelectors({
     <div className="space-y-4 rounded-lg border bg-muted/40 p-4" data-testid="agent-version-pins">
       <div className="flex items-center gap-2 text-sm font-medium">
         <RefreshCcw className="h-4 w-4" />
-        Update version targets
+        {t('agentVersionPins.title')}
       </div>
       <p className="text-xs text-muted-foreground">
-        Pin the agent and watchdog to a specific registered version, or leave on{' '}
-        <strong>Latest promoted</strong> to track the globally promoted release. Agent and watchdog
-        are independent.
+        <Trans i18nKey="agentVersionPins.description" t={t} components={{ strong: <strong /> }} />
         {context === 'partner'
-          ? ' A pin here is the default for all your organizations; an organization can override it.'
-          : ' An organization pin overrides the partner default.'}
+          ? t('agentVersionPins.partnerDescription')
+          : t('agentVersionPins.organizationDescription')}
       </p>
 
       <div className="grid gap-4 sm:grid-cols-2">
-        {COMPONENTS.map(({ key, label }) => {
+        {COMPONENTS.map((key) => {
           const options = pinnable?.components?.[key]?.versions ?? [];
           const promoted = pinnable?.components?.[key]?.promoted?.[0];
           const ownVal = normalize(value[key]);
@@ -88,29 +86,29 @@ export default function AgentVersionPinSelectors({
           // state means "inherit the partner default", so surface that value.
           const emptyLabel =
             inheritedVal != null
-              ? `Inherit partner default (${inheritedVal})`
+              ? t('agentVersionPins.inheritDefault', { version: inheritedVal })
               : promoted
-                ? `Latest promoted (${promoted})`
-                : 'Latest promoted';
+                ? t('agentVersionPins.latestVersion', { version: promoted })
+                : t('agentVersionPins.latest');
 
           let caption: string;
           if (ownVal) {
             if (context === 'partner') {
-              caption = 'Pinned for all organizations';
+              caption = t('agentVersionPins.pinnedAll');
             } else {
               caption = inheritedVal
-                ? `Overrides partner default (${inheritedVal})`
-                : 'Pinned for this organization';
+                ? t('agentVersionPins.overridesDefault', { version: inheritedVal })
+                : t('agentVersionPins.pinnedOrganization');
             }
           } else if (inheritedVal != null) {
-            caption = `Inherited from partner: ${inheritedVal}`;
+            caption = t('agentVersionPins.inherited', { version: inheritedVal });
           } else {
-            caption = promoted ? `Global latest promoted (${promoted})` : 'Global latest promoted';
+            caption = promoted ? t('agentVersionPins.globalLatestVersion', { version: promoted }) : t('agentVersionPins.globalLatest');
           }
 
           return (
             <label key={key} className="space-y-1 text-sm">
-              <span className="font-medium">{label}</span>
+              <span className="font-medium">{t(`agentVersionPins.components.${key}`)}</span>
               <select
                 value={selectValue}
                 onChange={(e) => setPin(key, e.target.value)}
@@ -126,7 +124,7 @@ export default function AgentVersionPinSelectors({
                 {/* Preserve a stored pin whose build is no longer registered so a
                     save doesn't silently drop it. */}
                 {selectValue && !options.includes(selectValue) && (
-                  <option value={selectValue}>{selectValue} (unregistered)</option>
+                  <option value={selectValue}>{t('agentVersionPins.unregistered', { version: selectValue })}</option>
                 )}
               </select>
               <span

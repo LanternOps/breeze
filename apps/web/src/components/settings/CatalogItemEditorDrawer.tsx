@@ -1,3 +1,5 @@
+import { i18n } from '@/lib/i18n';
+import { useTranslation } from 'react-i18next';
 import {
   useCallback, useEffect, useId, useMemo, useRef, useState,
   type KeyboardEvent, type MouseEvent,
@@ -59,6 +61,7 @@ function bundleFriendly(code: string): string | undefined {
 }
 
 export default function CatalogItemEditorDrawer({ open, item, allItems, onClose, onSaved }: Props) {
+  const { t } = useTranslation('settings');
   const editId = item?.id ?? null;
 
   const { can } = usePermissions();
@@ -142,7 +145,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
         // optional context.
         setDetailLoadFailed(true);
         showToast({
-          message: 'Could not load this item’s components and pricing. Reopen to retry before saving.',
+          message: t('catalogItemEditorDrawer.couldNotLoadThisItemSComponentsAndPricingReopenToRetryBe'),
           type: 'error',
         });
       };
@@ -216,8 +219,8 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
   );
 
   const itemName = useCallback(
-    (id: string) => allItems.find((i) => i.id === id)?.name ?? 'Unknown item',
-    [allItems],
+    (id: string) => allItems.find((i) => i.id === id)?.name ?? t('catalogItemEditorDrawer.unknownItem'),
+    [allItems, t],
   );
 
   const addComponent = () => setComponents((cs) => [...cs, { componentItemId: '', quantity: '1', showOnInvoice: false }]);
@@ -241,18 +244,18 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
 
   const addOverride = useCallback(async () => {
     if (overrideBusy || !effectiveId) return;
-    if (!newOverrideOrgId) { showToast({ message: 'Pick an organization.', type: 'error' }); return; }
+    if (!newOverrideOrgId) { showToast({ message: t('catalogItemEditorDrawer.pickAnOrganization'), type: 'error' }); return; }
     const price = Number(newOverridePrice);
     if (newOverridePrice.trim() === '' || !Number.isFinite(price) || price < 0) {
-      showToast({ message: 'Enter a valid override price.', type: 'error' });
+      showToast({ message: t('catalogItemEditorDrawer.enterAValidOverridePrice'), type: 'error' });
       return;
     }
     setOverrideBusy(true);
     try {
       const saved = await runAction<{ data: OrgPriceOverride }>({
         request: () => setOrgPriceOverride(effectiveId, newOverrideOrgId, price),
-        errorFallback: 'Could not set the override. Retry.',
-        successMessage: 'Override saved',
+        errorFallback: t('catalogItemEditorDrawer.couldNotSetTheOverrideRetry'),
+        successMessage: t('catalogItemEditorDrawer.overrideSaved'),
         onUnauthorized: UNAUTHORIZED,
       });
       setOverrides((cur) => [...cur.filter((o) => o.orgId !== newOverrideOrgId), saved.data]);
@@ -271,8 +274,8 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
     try {
       await runAction({
         request: () => removeOrgPriceOverride(effectiveId, orgId),
-        errorFallback: 'Could not remove the override. Retry.',
-        successMessage: 'Override removed',
+        errorFallback: t('catalogItemEditorDrawer.couldNotRemoveTheOverrideRetry'),
+        successMessage: t('catalogItemEditorDrawer.overrideRemoved'),
         onUnauthorized: UNAUTHORIZED,
       });
       setOverrides((cur) => cur.filter((o) => o.orgId !== orgId));
@@ -290,8 +293,8 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
     try {
       await runAction({
         request: () => uploadCatalogItemImage(effectiveId, file),
-        errorFallback: 'Could not upload the image. Retry.',
-        successMessage: 'Image uploaded',
+        errorFallback: t('catalogItemEditorDrawer.couldNotUploadTheImageRetry'),
+        successMessage: t('catalogItemEditorDrawer.imageUploaded'),
         onUnauthorized: UNAUTHORIZED,
       });
       setImageVersion((v) => v + 1);
@@ -306,13 +309,13 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
   const importFromUrl = useCallback(async () => {
     if (!effectiveId || imageBusy) return;
     const url = imageUrl.trim();
-    if (!url) { showToast({ message: 'Enter an image URL.', type: 'error' }); return; }
+    if (!url) { showToast({ message: t('catalogItemEditorDrawer.enterAnImageURL'), type: 'error' }); return; }
     setImageBusy(true);
     try {
       await runAction({
         request: () => importCatalogItemImageFromUrl(effectiveId, url),
-        errorFallback: 'Could not import the image from that URL. Retry.',
-        successMessage: 'Image imported',
+        errorFallback: t('catalogItemEditorDrawer.couldNotImportTheImageFromThatURLRetry'),
+        successMessage: t('catalogItemEditorDrawer.imageImported'),
         onUnauthorized: UNAUTHORIZED,
       });
       setImageVersion((v) => v + 1);
@@ -330,8 +333,8 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
     try {
       await runAction({
         request: () => deleteCatalogItemImageRequest(effectiveId),
-        errorFallback: 'Could not remove the image. Retry.',
-        successMessage: 'Image removed',
+        errorFallback: t('catalogItemEditorDrawer.couldNotRemoveTheImageRetry'),
+        successMessage: t('catalogItemEditorDrawer.imageRemoved'),
         onUnauthorized: UNAUTHORIZED,
       });
       setImageVersion((v) => v + 1);
@@ -352,14 +355,14 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
 
   const save = useCallback(async () => {
     if (saving) return;
-    if (!name.trim()) { showToast({ message: 'Enter an item name.', type: 'error' }); return; }
-    if (!priceValid) { showToast({ message: 'Enter a valid unit price.', type: 'error' }); return; }
+    if (!name.trim()) { showToast({ message: t('catalogItemEditorDrawer.enterAnItemName'), type: 'error' }); return; }
+    if (!priceValid) { showToast({ message: t('catalogItemEditorDrawer.enterAValidUnitPrice'), type: 'error' }); return; }
     // If the detail load failed, our `components` state is unknown — not empty.
     // Saving a bundle would overwrite its real components with this stale/empty
     // set, wiping the bundle (#1944). Block until the user reopens and reloads.
     if (isBundle && detailLoadFailed) {
       showToast({
-        message: 'This bundle’s components could not be loaded. Reopen the item to retry before saving.',
+        message: t('catalogItemEditorDrawer.thisBundleSComponentsCouldNotBeLoadedReopenTheItemToRetr'),
         type: 'error',
       });
       return;
@@ -367,10 +370,10 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
 
     const comps = isBundle ? components : [];
     for (const c of comps) {
-      if (!c.componentItemId) { showToast({ message: 'Pick an item for every bundle component.', type: 'error' }); return; }
+      if (!c.componentItemId) { showToast({ message: t('catalogItemEditorDrawer.pickAnItemForEveryBundleComponent'), type: 'error' }); return; }
       const q = Number(c.quantity);
       if (c.quantity.trim() === '' || !Number.isFinite(q) || q <= 0) {
-        showToast({ message: 'Component quantity must be greater than 0.', type: 'error' });
+        showToast({ message: t('catalogItemEditorDrawer.componentQuantityMustBeGreaterThan0'), type: 'error' });
         return;
       }
     }
@@ -394,7 +397,9 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
       const targetId = effectiveId;
       const saved = await runAction<{ data: CatalogItem }>({
         request: () => (targetId ? updateCatalogItem(targetId, body) : createCatalogItem(body)),
-        errorFallback: targetId ? 'Update failed. Retry.' : 'Item creation failed. Retry.',
+        errorFallback: targetId
+          ? t('catalogItemEditorDrawer.updateFailedRetry')
+          : t('catalogItemEditorDrawer.itemCreationFailedRetry'),
         onUnauthorized: UNAUTHORIZED,
       });
       const savedId = saved.data.id;
@@ -408,13 +413,18 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
             quantity: Number(c.quantity),
             showOnInvoice: c.showOnInvoice,
           }))),
-          errorFallback: 'Bundle components could not be saved. Retry.',
+          errorFallback: t('catalogItemEditorDrawer.bundleComponentsCouldNotBeSavedRetry'),
           friendly: bundleFriendly,
           onUnauthorized: UNAUTHORIZED,
         });
       }
 
-      showToast({ message: editId ? 'Item updated' : `Item "${body.name}" created`, type: 'success' });
+      showToast({
+        message: editId
+          ? t('catalogItemEditorDrawer.itemUpdated')
+          : t('catalogItemEditorDrawer.itemCreated', { name: body.name }),
+        type: 'success'
+      });
       onSaved();
       onClose();
     } catch (err) {
@@ -464,13 +474,13 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
         {/* Header */}
         <div className="flex items-center justify-between border-b px-5 py-4">
           <h2 id={titleId} className="text-base font-semibold">
-            {editId ? 'Edit item' : 'New item'}
+            {editId ? t('catalogItemEditorDrawer.editItem') : t('catalogItemEditorDrawer.newItem')}
           </h2>
           <button
             type="button"
             onClick={onClose}
             className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
-            aria-label="Close"
+            aria-label={t('catalogItemEditorDrawer.close')}
             data-testid="catalog-form-close"
           >
             <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -484,52 +494,52 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
           {/* AI auto-fill — new items only */}
           {!editId && canWrite && (
             <div className="rounded-md border border-dashed p-3" data-testid="catalog-form-enrich">
-              <p className="mb-2 text-xs font-medium text-muted-foreground">Auto-fill a new item from the web</p>
+              <p className="mb-2 text-xs font-medium text-muted-foreground">{t('catalogItemEditorDrawer.autoFillANewItemFromTheWeb')}</p>
               <CatalogEnrichButton idSuffix="drawer" hint={itemType} onApply={applyEnrichment} />
             </div>
           )}
           {/* Type — segmented */}
           <div>
-            <span className="mb-1.5 block text-xs font-medium text-muted-foreground">Type</span>
-            <div className="grid grid-cols-3 gap-1 rounded-md border bg-muted/40 p-1" role="group" aria-label="Item type">
-              {CATALOG_TYPE_ORDER.map((t) => (
+            <span className="mb-1.5 block text-xs font-medium text-muted-foreground">{t('catalogItemEditorDrawer.type')}</span>
+            <div className="grid grid-cols-3 gap-1 rounded-md border bg-muted/40 p-1" role="group" aria-label={t('catalogItemEditorDrawer.itemType')}>
+              {CATALOG_TYPE_ORDER.map((catalogType) => (
                 <button
-                  key={t}
+                  key={catalogType}
                   type="button"
-                  onClick={() => setItemType(t)}
-                  aria-pressed={itemType === t}
+                  onClick={() => setItemType(catalogType)}
+                  aria-pressed={itemType === catalogType}
                   className={`rounded px-2 py-1.5 text-sm font-medium transition ${
-                    itemType === t ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'
+                    itemType === catalogType ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'
                   }`}
-                  data-testid={`catalog-form-type-${t}`}
+                  data-testid={`catalog-form-type-${catalogType}`}
                 >
-                  {CATALOG_TYPE_LABELS[t]}
+                  {CATALOG_TYPE_LABELS[catalogType]}
                 </button>
               ))}
             </div>
           </div>
 
           <div>
-            <label className="mb-1.5 block text-xs font-medium text-muted-foreground" htmlFor="catalog-form-name-input">Name</label>
+            <label className="mb-1.5 block text-xs font-medium text-muted-foreground" htmlFor="catalog-form-name-input">{t('catalogItemEditorDrawer.name')}</label>
             <input
               id="catalog-form-name-input"
               value={name}
               onChange={(e) => setName(e.target.value)}
               className={fieldCls}
-              placeholder="e.g. Managed Workstation"
+              placeholder={t('catalogItemEditorDrawer.eGManagedWorkstation')}
               data-testid="catalog-form-name"
             />
           </div>
 
           <div>
-            <label className="mb-1.5 block text-xs font-medium text-muted-foreground" htmlFor="catalog-form-description-input">Description <span className="font-normal opacity-70">(optional)</span></label>
+            <label className="mb-1.5 block text-xs font-medium text-muted-foreground" htmlFor="catalog-form-description-input">{t('catalogItemEditorDrawer.description')}<span className="font-normal opacity-70">{t('catalogItemEditorDrawer.optional')}</span></label>
             <textarea
               id="catalog-form-description-input"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               rows={3}
               className={`${fieldCls} resize-y`}
-              placeholder="Customer-facing details shown on quotes and invoices."
+              placeholder={t('catalogItemEditorDrawer.customerFacingDetailsShownOnQuotesAndInvoices')}
               data-testid="catalog-form-description"
             />
             {canWrite && (name.trim() || description.trim()) && (
@@ -542,26 +552,26 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
                     if (r.description !== null) setDescription(r.description);
                   }}
                 />
-                <span className="text-xs text-muted-foreground">Cleans up wording &amp; formatting — your numbers &amp; specs stay; you review before it applies.</span>
+                <span className="text-xs text-muted-foreground">{t('catalogItemEditorDrawer.cleansUpWordingAmpFormattingYourNumbersAmpSpecsStayYouRe')}</span>
               </div>
             )}
           </div>
 
           <div>
-            <label className="mb-1.5 block text-xs font-medium text-muted-foreground" htmlFor="catalog-form-sku-input">SKU <span className="font-normal opacity-70">(optional)</span></label>
+            <label className="mb-1.5 block text-xs font-medium text-muted-foreground" htmlFor="catalog-form-sku-input">{t('catalogItemEditorDrawer.sKU')}<span className="font-normal opacity-70">{t('catalogItemEditorDrawer.optional')}</span></label>
             <input
               id="catalog-form-sku-input"
               value={sku}
               onChange={(e) => setSku(e.target.value)}
               className={`${fieldCls} font-mono`}
-              placeholder="SKU-001"
+              placeholder={t('catalogItemEditorDrawer.sKU001')}
               data-testid="catalog-form-sku"
             />
           </div>
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="mb-1.5 block text-xs font-medium text-muted-foreground" htmlFor="catalog-form-price-input">Unit price</label>
+              <label className="mb-1.5 block text-xs font-medium text-muted-foreground" htmlFor="catalog-form-price-input">{t('catalogItemEditorDrawer.unitPrice')}</label>
               <input
                 id="catalog-form-price-input"
                 value={unitPrice}
@@ -573,7 +583,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
               />
             </div>
             <div>
-              <label className="mb-1.5 block text-xs font-medium text-muted-foreground" htmlFor="catalog-form-cost-input">Cost basis <span className="font-normal opacity-70">(optional)</span></label>
+              <label className="mb-1.5 block text-xs font-medium text-muted-foreground" htmlFor="catalog-form-cost-input">{t('catalogItemEditorDrawer.costBasis')}<span className="font-normal opacity-70">{t('catalogItemEditorDrawer.optional')}</span></label>
               <input
                 id="catalog-form-cost-input"
                 value={costBasis}
@@ -588,16 +598,16 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
 
           {/* Live margin preview */}
           <div className="flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2 text-sm" data-testid="catalog-form-margin">
-            <span className="text-muted-foreground">Margin</span>
+            <span className="text-muted-foreground">{t('catalogItemEditorDrawer.margin')}</span>
             <span className={`font-medium tabular-nums ${marginTone(marginPreview)}`}>
-              {marginPreview == null ? 'Add a cost basis to see margin' : formatMargin(marginPreview)}
+              {marginPreview == null ? t('catalogItemEditorDrawer.addACostBasisToSeeMargin') : formatMargin(marginPreview)}
             </span>
           </div>
 
           {/* Product image (#5) — manual upload, shown on quotes */}
           {canWrite && (
             <div className="space-y-2 rounded-md border p-3" data-testid="catalog-form-image">
-              <span className="text-xs font-medium text-muted-foreground">Product image</span>
+              <span className="text-xs font-medium text-muted-foreground">{t('catalogItemEditorDrawer.productImage')}</span>
               {effectiveId ? (
                 <>
                   <CatalogImagePreview itemId={effectiveId} version={imageVersion} />
@@ -618,8 +628,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
                       className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
                       data-testid="catalog-form-image-remove"
                     >
-                      Remove
-                    </button>
+                      {t('catalogItemEditorDrawer.remove')}</button>
                   </div>
                   <div className="flex items-center gap-2">
                     <input
@@ -627,7 +636,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
                       value={imageUrl}
                       onChange={(e) => setImageUrl(e.target.value)}
                       disabled={imageBusy}
-                      placeholder="https://example.com/product.png"
+                      placeholder={t('catalogItemEditorDrawer.httpsExampleComProductPng')}
                       className={`${fieldCls} text-xs disabled:opacity-50`}
                       data-testid="catalog-form-image-url"
                     />
@@ -638,15 +647,13 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
                       className="shrink-0 rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
                       data-testid="catalog-form-image-url-btn"
                     >
-                      Import from URL
-                    </button>
+                      {t('catalogItemEditorDrawer.importFromURL')}</button>
                   </div>
-                  <p className="chart-legend-xs text-muted-foreground">PNG, JPEG, or WebP up to 5 MB.</p>
+                  <p className="chart-legend-xs text-muted-foreground">{t('catalogItemEditorDrawer.pNGJPEGOrWebPUpTo5MB')}</p>
                 </>
               ) : (
                 <p className="text-xs text-muted-foreground" data-testid="catalog-form-image-hint">
-                  Save the item first, then add a product image.
-                </p>
+                  {t('catalogItemEditorDrawer.saveTheItemFirstThenAddAProductImage')}</p>
               )}
             </div>
           )}
@@ -661,8 +668,8 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
               data-testid="catalog-form-bundle"
             />
             <span>
-              <span className="font-medium">This item is a bundle</span>
-              <span className="block text-xs text-muted-foreground">Groups other catalog items sold together.</span>
+              <span className="font-medium">{t('catalogItemEditorDrawer.thisItemIsABundle')}</span>
+              <span className="block text-xs text-muted-foreground">{t('catalogItemEditorDrawer.groupsOtherCatalogItemsSoldTogether')}</span>
             </span>
           </label>
 
@@ -670,7 +677,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
           {isBundle && (
             <div className="space-y-2 rounded-md border p-3" data-testid="catalog-bundle-builder">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-medium text-muted-foreground">Items included in this bundle</span>
+                <span className="text-xs font-medium text-muted-foreground">{t('catalogItemEditorDrawer.itemsIncludedInThisBundle')}</span>
                 {canWrite && (
                   <button
                     type="button"
@@ -678,24 +685,21 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
                     className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
                     data-testid="catalog-bundle-add"
                   >
-                    Add component
-                  </button>
+                    {t('catalogItemEditorDrawer.addComponent')}</button>
                 )}
               </div>
 
               {componentsLoading ? (
-                <p className="py-2 text-center text-xs text-muted-foreground">Loading components.</p>
+                <p className="py-2 text-center text-xs text-muted-foreground">{t('catalogItemEditorDrawer.loadingComponents')}</p>
               ) : detailLoadFailed ? (
                 <p
                   className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-center text-xs text-destructive"
                   data-testid="catalog-bundle-load-error"
                 >
-                  Could not load this bundle’s components. Reopen the item to retry — saving now is disabled to avoid wiping the bundle.
-                </p>
+                  {t('catalogItemEditorDrawer.couldNotLoadThisBundleSComponentsReopenTheItemToRetrySav')}</p>
               ) : components.length === 0 ? (
                 <p className="py-2 text-center text-xs text-muted-foreground" data-testid="catalog-bundle-empty">
-                  No components yet. Add the items this bundle includes.
-                </p>
+                  {t('catalogItemEditorDrawer.noComponentsYetAddTheItemsThisBundleIncludes')}</p>
               ) : (
                 <ul className="space-y-2">
                   {components.map((c, idx) => {
@@ -710,7 +714,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
                             className="h-9 flex-1 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                             data-testid={`catalog-bundle-item-${idx}`}
                           >
-                            <option value="">Select item…</option>
+                            <option value="">{t('catalogItemEditorDrawer.selectItem')}</option>
                             {c.componentItemId && !opts.some((o) => o.id === c.componentItemId) && (
                               <option value={c.componentItemId}>{itemName(c.componentItemId)}</option>
                             )}
@@ -722,7 +726,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
                             value={c.quantity}
                             onChange={(e) => patchComponent(idx, { quantity: e.target.value })}
                             inputMode="decimal"
-                            aria-label="Quantity"
+                            aria-label={t('catalogItemEditorDrawer.quantity')}
                             className="h-9 w-16 rounded-md border bg-background px-2 text-right text-sm tabular-nums focus:outline-hidden focus:ring-2 focus:ring-ring"
                             data-testid={`catalog-bundle-qty-${idx}`}
                           />
@@ -731,7 +735,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
                               type="button"
                               onClick={() => removeComponent(idx)}
                               className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-destructive"
-                              aria-label="Remove component"
+                              aria-label={t('catalogItemEditorDrawer.removeComponent')}
                               data-testid={`catalog-bundle-remove-${idx}`}
                             >
                               <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -747,8 +751,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
                             onChange={(e) => patchComponent(idx, { showOnInvoice: e.target.checked })}
                             data-testid={`catalog-bundle-showoninvoice-${idx}`}
                           />
-                          Show this line on the invoice
-                        </label>
+                          {t('catalogItemEditorDrawer.showThisLineOnTheInvoice')}</label>
                       </li>
                     );
                   })}
@@ -760,15 +763,13 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
           {/* Per-organization price overrides (#1368) */}
           {showOrgPricing && (
             <div className="space-y-2 rounded-md border p-3" data-testid="catalog-org-pricing">
-              <span className="text-xs font-medium text-muted-foreground">Per-organization pricing</span>
+              <span className="text-xs font-medium text-muted-foreground">{t('catalogItemEditorDrawer.perOrganizationPricing')}</span>
               <p className="text-xs text-muted-foreground">
-                Override the base unit price for a specific customer. Everyone else is billed the catalog price.
-              </p>
+                {t('catalogItemEditorDrawer.overrideTheBaseUnitPriceForASpecificCustomerEveryoneElse')}</p>
 
               {overrides.length === 0 ? (
                 <p className="py-2 text-center text-xs text-muted-foreground" data-testid="catalog-org-pricing-empty">
-                  No overrides — every organization is billed the base price.
-                </p>
+                  {t('catalogItemEditorDrawer.noOverridesEveryOrganizationIsBilledTheBasePrice')}</p>
               ) : (
                 <ul className="space-y-1.5">
                   {overrides.map((o) => (
@@ -783,7 +784,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
                         type="button"
                         onClick={() => void deleteOverride(o.orgId)}
                         disabled={overrideBusy}
-                        aria-label={`Remove override for ${orgNameFor(o.orgId)}`}
+                        aria-label={t('catalogItemEditorDrawer.removeOverride', { organization: orgNameFor(o.orgId) })}
                         data-testid={`catalog-override-remove-${o.orgId}`}
                         className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-destructive disabled:opacity-50"
                       >
@@ -803,7 +804,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
                   className="h-9 flex-1 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   data-testid="catalog-override-org"
                 >
-                  <option value="">Select organization…</option>
+                  <option value="">{t('catalogItemEditorDrawer.selectOrganization')}</option>
                   {orgsWithoutOverride.map((o) => (
                     <option key={o.id} value={o.id}>{o.name}</option>
                   ))}
@@ -812,7 +813,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
                   value={newOverridePrice}
                   onChange={(e) => setNewOverridePrice(e.target.value)}
                   inputMode="decimal"
-                  aria-label="Override price"
+                  aria-label={t('catalogItemEditorDrawer.overridePrice')}
                   placeholder="0.00"
                   className="h-9 w-20 rounded-md border bg-background px-2 text-right text-sm tabular-nums focus:outline-hidden focus:ring-2 focus:ring-ring"
                   data-testid="catalog-override-price-input"
@@ -824,11 +825,10 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
                   className="rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
                   data-testid="catalog-override-add"
                 >
-                  Set
-                </button>
+                  {t('catalogItemEditorDrawer.set')}</button>
               </div>
               {organizations.length > 0 && orgsWithoutOverride.length === 0 && (
-                <p className="text-center chart-legend-xs text-muted-foreground">All organizations have an override.</p>
+                <p className="text-center chart-legend-xs text-muted-foreground">{t('catalogItemEditorDrawer.allOrganizationsHaveAnOverride')}</p>
               )}
             </div>
           )}
@@ -843,8 +843,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
             className="rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
             data-testid="catalog-form-cancel"
           >
-            Cancel
-          </button>
+            {t('catalogItemEditorDrawer.cancel')}</button>
           {canWrite && (
             <button
               type="button"
@@ -853,7 +852,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
               className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
               data-testid="catalog-form-save"
             >
-              {saving ? 'Saving…' : editId ? 'Save changes' : 'Create item'}
+              {saving ? t('catalogItemEditorDrawer.saving') : editId ? t('catalogItemEditorDrawer.saveChanges') : t('catalogItemEditorDrawer.createItem')}
             </button>
           )}
         </div>
@@ -893,7 +892,7 @@ function CatalogImagePreview({ itemId, version }: { itemId: string; version: num
   }, [itemId, version]);
 
   if (state === 'loading') return <div className="h-32 w-full animate-pulse rounded border bg-muted" data-testid="catalog-image-loading" />;
-  if (state === 'none') return <p className="rounded border border-dashed py-6 text-center text-xs text-muted-foreground" data-testid="catalog-image-empty">No image yet.</p>;
-  if (state === 'error' || !url) return <p className="text-xs text-muted-foreground">Image preview unavailable.</p>;
-  return <img src={url} alt="Product" className="max-h-40 rounded border" data-testid="catalog-image-preview" />;
+  if (state === 'none') return <p className="rounded border border-dashed py-6 text-center text-xs text-muted-foreground" data-testid="catalog-image-empty">{i18n.t('settings:catalogItemEditorDrawer.noImageYet')}</p>;
+  if (state === 'error' || !url) return <p className="text-xs text-muted-foreground">{i18n.t('settings:catalogItemEditorDrawer.imagePreviewUnavailable')}</p>;
+  return <img src={url} alt={i18n.t('settings:catalogItemEditorDrawer.product')} className="max-h-40 rounded border" data-testid="catalog-image-preview" />;
 }

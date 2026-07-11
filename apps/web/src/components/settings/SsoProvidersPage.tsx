@@ -1,3 +1,5 @@
+import '@/lib/i18n';
+import { useTranslation } from 'react-i18next';
 import { useState, useEffect, useCallback } from 'react';
 import SsoProviderList, { type SsoProvider } from './SsoProviderList';
 import SsoProviderForm, { type SsoProviderFormValues, type ProviderPreset, type Role } from './SsoProviderForm';
@@ -20,6 +22,7 @@ type TestResult = {
 };
 
 export default function SsoProvidersPage() {
+  const { t } = useTranslation('settings');
   const [providers, setProviders] = useState<SsoProvider[]>([]);
   const [presets, setPresets] = useState<ProviderPreset[]>([]);
   const [roles, setRoles] = useState<Role[]>([]);
@@ -85,10 +88,10 @@ export default function SsoProvidersPage() {
       setProviders(Array.from(byId.values()));
 
       if (hadError) {
-        setError('Failed to fetch SSO providers');
+        setError(t('ssoProvidersPage.failedToFetchSSOProviders'));
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('ssoProvidersPage.anErrorOccurred'));
     } finally {
       setLoading(false);
     }
@@ -164,7 +167,7 @@ export default function SsoProvidersPage() {
     } catch (err) {
       setTestResult({
         success: false,
-        error: err instanceof Error ? err.message : 'Test failed'
+        error: err instanceof Error ? err.message : t('ssoProvidersPage.testFailed')
       });
     } finally {
       setTestingConnection(false);
@@ -180,12 +183,12 @@ export default function SsoProvidersPage() {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to update provider status');
+        throw new Error(t('ssoProvidersPage.failedToUpdateProviderStatus'));
       }
 
       await fetchProviders();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('ssoProvidersPage.anErrorOccurred'));
     }
   };
 
@@ -215,7 +218,7 @@ export default function SsoProvidersPage() {
     } catch (err) {
       setTestResult({
         success: false,
-        error: err instanceof Error ? err.message : 'Test failed'
+        error: err instanceof Error ? err.message : t('ssoProvidersPage.testFailed')
       });
       setModalMode('test');
     } finally {
@@ -246,13 +249,13 @@ export default function SsoProvidersPage() {
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || 'Failed to save provider');
+        throw new Error(errorData.error || t('ssoProvidersPage.failedToSaveProvider'));
       }
 
       await fetchProviders();
       handleCloseModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('ssoProvidersPage.anErrorOccurred'));
     } finally {
       setSubmitting(false);
     }
@@ -268,13 +271,13 @@ export default function SsoProvidersPage() {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to delete provider');
+        throw new Error(t('ssoProvidersPage.failedToDeleteProvider'));
       }
 
       await fetchProviders();
       handleCloseModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('ssoProvidersPage.anErrorOccurred'));
     } finally {
       setSubmitting(false);
     }
@@ -285,7 +288,7 @@ export default function SsoProvidersPage() {
       <div className="flex items-center justify-center py-12">
         <div className="text-center">
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading SSO providers...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('ssoProvidersPage.loadingSSOProviders')}</p>
         </div>
       </div>
     );
@@ -300,8 +303,7 @@ export default function SsoProvidersPage() {
           onClick={fetchProviders}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Try again
-        </button>
+          {t('ssoProvidersPage.tryAgain')}</button>
       </div>
     );
   }
@@ -310,10 +312,9 @@ export default function SsoProvidersPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Single Sign-On</h1>
+          <h1 className="text-xl font-semibold tracking-tight">{t('ssoProvidersPage.singleSignOn')}</h1>
           <p className="text-muted-foreground">
-            Configure SSO providers for secure authentication.
-          </p>
+            {t('ssoProvidersPage.configureSSOProvidersForSecureAuthentication')}</p>
         </div>
         <button
           type="button"
@@ -323,8 +324,7 @@ export default function SsoProvidersPage() {
           <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
           </svg>
-          Add provider
-        </button>
+          {t('ssoProvidersPage.addProvider')}</button>
       </div>
 
       {error && (
@@ -347,12 +347,12 @@ export default function SsoProvidersPage() {
           <div className="w-full max-w-3xl max-h-[90vh] overflow-y-auto">
             <div className="mb-4">
               <h2 className="text-lg font-semibold">
-                {modalMode === 'add' ? 'Add SSO Provider' : 'Edit SSO Provider'}
+                {modalMode === 'add' ? t('ssoProvidersPage.addSSOProvider') : t('ssoProvidersPage.editSSOProvider')}
               </h2>
               <p className="text-sm text-muted-foreground">
                 {modalMode === 'add'
-                  ? 'Configure a new SSO provider for your organization.'
-                  : 'Update the SSO provider configuration.'}
+                  ? t('ssoProvidersPage.configureANewSSOProviderForYourOrganization')
+                  : t('ssoProvidersPage.updateTheSSOProviderConfiguration')}
               </p>
             </div>
             <SsoProviderForm
@@ -382,7 +382,9 @@ export default function SsoProvidersPage() {
                     }
                   : undefined
               }
-              submitLabel={modalMode === 'add' ? 'Create provider' : 'Save changes'}
+              submitLabel={modalMode === 'add'
+                ? t('ssoProvidersPage.createProvider')
+                : t('ssoProvidersPage.saveChanges')}
               loading={submitting}
               testingConnection={testingConnection}
               isEditing={modalMode === 'edit'}
@@ -397,36 +399,32 @@ export default function SsoProvidersPage() {
       {modalMode === 'delete' && selectedProvider && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
           <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
-            <h2 className="text-lg font-semibold">Delete SSO Provider</h2>
+            <h2 className="text-lg font-semibold">{t('ssoProvidersPage.deleteSSOProvider')}</h2>
             <p className="mt-2 text-sm text-muted-foreground">
-              Are you sure you want to delete <span className="font-medium">{selectedProvider.name}</span>?
+              {t('ssoProvidersPage.areYouSureYouWantToDelete')}<span className="font-medium">{selectedProvider.name}</span>?
             </p>
             {selectedProvider.status === 'active' && (
               <div className="mt-4 rounded-md border border-amber-200 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950">
                 <p className="text-sm text-amber-700 dark:text-amber-300">
-                  <strong>Warning:</strong> This provider is currently active. Users who rely on this
-                  provider for SSO login will no longer be able to sign in.
-                </p>
+                  <strong>{t('ssoProvidersPage.warning')}</strong> {t('ssoProvidersPage.thisProviderIsCurrentlyActiveUsersWhoRelyOnThisProviderF')}</p>
               </div>
             )}
             <p className="mt-4 text-sm text-muted-foreground">
-              This will also remove all linked SSO identities. This action cannot be undone.
-            </p>
+              {t('ssoProvidersPage.thisWillAlsoRemoveAllLinkedSSOIdentitiesThisActionCannot')}</p>
             <div className="mt-6 flex justify-end gap-3">
               <button
                 type="button"
                 onClick={handleCloseModal}
                 className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
               >
-                Cancel
-              </button>
+                {t('ssoProvidersPage.cancel')}</button>
               <button
                 type="button"
                 onClick={handleConfirmDelete}
                 disabled={submitting}
                 className="inline-flex h-10 items-center justify-center rounded-md bg-destructive px-4 text-sm font-medium text-destructive-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {submitting ? 'Deleting...' : 'Delete provider'}
+                {submitting ? t('ssoProvidersPage.deleting') : t('ssoProvidersPage.deleteProvider')}
               </button>
             </div>
           </div>
@@ -437,9 +435,9 @@ export default function SsoProvidersPage() {
       {modalMode === 'test' && selectedProvider && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
           <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-xs">
-            <h2 className="text-lg font-semibold">Connection Test Result</h2>
+            <h2 className="text-lg font-semibold">{t('ssoProvidersPage.connectionTestResult')}</h2>
             <p className="mt-1 text-sm text-muted-foreground">
-              Testing <span className="font-medium">{selectedProvider.name}</span>
+              {t('ssoProvidersPage.testing')}<span className="font-medium">{selectedProvider.name}</span>
             </p>
 
             <div className="mt-6">
@@ -461,22 +459,21 @@ export default function SsoProvidersPage() {
                     </svg>
                     <div>
                       <h3 className="font-medium text-green-800 dark:text-green-200">
-                        Connection successful
-                      </h3>
+                        {t('ssoProvidersPage.connectionSuccessful')}</h3>
                       <p className="text-sm text-green-700 dark:text-green-300">
-                        {testResult.message || 'Provider configuration is valid.'}
+                        {testResult.message || t('ssoProvidersPage.providerConfigurationIsValid')}
                       </p>
                     </div>
                   </div>
 
                   {testResult.discovery && (
                     <div className="space-y-2">
-                      <h4 className="text-sm font-medium">Discovered endpoints:</h4>
+                      <h4 className="text-sm font-medium">{t('ssoProvidersPage.discoveredEndpoints')}</h4>
                       <div className="rounded-md border bg-muted/40 p-3 text-xs font-mono space-y-1">
-                        <p><span className="text-muted-foreground">Issuer:</span> {testResult.discovery.issuer}</p>
-                        <p><span className="text-muted-foreground">Auth:</span> {testResult.discovery.authorizationEndpoint}</p>
-                        <p><span className="text-muted-foreground">Token:</span> {testResult.discovery.tokenEndpoint}</p>
-                        <p><span className="text-muted-foreground">UserInfo:</span> {testResult.discovery.userInfoEndpoint}</p>
+                        <p><span className="text-muted-foreground">{t('ssoProvidersPage.issuer')}</span> {testResult.discovery.issuer}</p>
+                        <p><span className="text-muted-foreground">{t('ssoProvidersPage.auth')}</span> {testResult.discovery.authorizationEndpoint}</p>
+                        <p><span className="text-muted-foreground">{t('ssoProvidersPage.token')}</span> {testResult.discovery.tokenEndpoint}</p>
+                        <p><span className="text-muted-foreground">{t('ssoProvidersPage.userInfo')}</span> {testResult.discovery.userInfoEndpoint}</p>
                       </div>
                     </div>
                   )}
@@ -497,13 +494,12 @@ export default function SsoProvidersPage() {
                     />
                   </svg>
                   <div>
-                    <h3 className="font-medium text-destructive">Connection failed</h3>
+                    <h3 className="font-medium text-destructive">{t('ssoProvidersPage.connectionFailed')}</h3>
                     <p className="mt-1 text-sm text-destructive/90">
-                      {testResult?.error || 'Unable to connect to the identity provider.'}
+                      {testResult?.error || t('ssoProvidersPage.unableToConnectToTheIdentityProvider')}
                     </p>
                     <p className="mt-2 text-sm text-muted-foreground">
-                      Please verify your issuer URL and credentials are correct.
-                    </p>
+                      {t('ssoProvidersPage.pleaseVerifyYourIssuerURLAndCredentialsAreCorrect')}</p>
                   </div>
                 </div>
               )}
@@ -515,8 +511,7 @@ export default function SsoProvidersPage() {
                 onClick={handleCloseModal}
                 className="h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
               >
-                Close
-              </button>
+                {t('ssoProvidersPage.close')}</button>
             </div>
           </div>
         </div>

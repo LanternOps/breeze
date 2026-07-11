@@ -1,3 +1,4 @@
+import { i18n } from '@/lib/i18n';
 import { useCallback, useEffect, useState } from 'react';
 import { AlignJustify, Check, Clock, Monitor, Moon, Rows3, Rows4, Sun, Type } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -29,25 +30,25 @@ import { saveUserPreferences } from '@/lib/userPreferences';
 import '@/lib/i18n';
 
 const themeOptions = [
-  { value: 'light' as const, label: 'Light', Icon: Sun },
-  { value: 'dark' as const, label: 'Dark', Icon: Moon },
-  { value: 'system' as const, label: 'System', Icon: Monitor },
+  { value: 'light' as const, label: i18n.t('settings:themingSettings.light'), Icon: Sun },
+  { value: 'dark' as const, label: i18n.t('settings:themingSettings.dark'), Icon: Moon },
+  { value: 'system' as const, label: i18n.t('settings:themingSettings.system'), Icon: Monitor },
 ];
 
 const densityOptions = [
-  { value: 'comfortable' as const, label: 'Comfortable', Icon: Rows3 },
-  { value: 'compact' as const, label: 'Compact', Icon: Rows4 },
-  { value: 'dense' as const, label: 'Dense', Icon: AlignJustify },
+  { value: 'comfortable' as const, label: i18n.t('settings:themingSettings.comfortable'), Icon: Rows3 },
+  { value: 'compact' as const, label: i18n.t('settings:themingSettings.compact'), Icon: Rows4 },
+  { value: 'dense' as const, label: i18n.t('settings:themingSettings.dense'), Icon: AlignJustify },
 ];
 
 const fontOptions = [
-  { value: 'breeze' as const, label: 'Breeze default', description: 'Plus Jakarta Sans', Icon: Type },
-  { value: 'system' as const, label: 'System', description: 'OS interface font', Icon: Monitor },
+  { value: 'breeze' as const, label: i18n.t('settings:themingSettings.breezeDefault'), description: i18n.t('settings:themingSettings.plusJakartaSans'), Icon: Type },
+  { value: 'system' as const, label: i18n.t('settings:themingSettings.system'), description: i18n.t('settings:themingSettings.oSInterfaceFont'), Icon: Monitor },
 ];
 
 const timeFormatOptions = [
-  { value: '12h' as const, label: '12-hour', description: '3:45 PM' },
-  { value: '24h' as const, label: '24-hour', description: '15:45' },
+  { value: '12h' as const, label: i18n.t('settings:themingSettings.hour'), description: i18n.t('settings:themingSettings.pM') },
+  { value: '24h' as const, label: i18n.t('settings:themingSettings.hour2'), description: '15:45' },
 ];
 
 const localeOptions = [
@@ -140,9 +141,9 @@ export default function ThemingSettings({ preferences, onSaved }: ThemingSetting
       setTimeFormatPreference(resolved.timeFormat);
       setLocalePreference(resolved.locale);
       onSaved?.(saved);
-      setAppearanceSuccess('Theming preferences saved.');
+      setAppearanceSuccess(t('themingSettings.themingPreferencesSaved'));
     } catch (error) {
-      setAppearanceError(error instanceof Error ? error.message : 'Failed to save theming preferences');
+      setAppearanceError(error instanceof Error ? error.message : t('themingSettings.failedToSaveThemingPreferences'));
     } finally {
       setIsSavingAppearance(false);
     }
@@ -151,13 +152,13 @@ export default function ThemingSettings({ preferences, onSaved }: ThemingSetting
   return (
     <section className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
       <div className="space-y-1">
-        <h2 className="text-lg font-semibold">Theming</h2>
-        <p className="text-sm text-muted-foreground">Set your display preferences for this account.</p>
+        <h2 className="text-lg font-semibold">{t('themingSettings.theming')}</h2>
+        <p className="text-sm text-muted-foreground">{t('themingSettings.setYourDisplayPreferencesForThisAccount')}</p>
       </div>
 
       <div className="space-y-5">
         <fieldset className="space-y-2">
-          <legend className="text-sm font-medium">Theme</legend>
+          <legend className="text-sm font-medium">{t('themingSettings.theme')}</legend>
           <div className="grid gap-2 sm:grid-cols-3">
             {themeOptions.map(({ value, label, Icon }) => (
               <button
@@ -179,7 +180,7 @@ export default function ThemingSettings({ preferences, onSaved }: ThemingSetting
         </fieldset>
 
         <fieldset className="space-y-2">
-          <legend className="text-sm font-medium">Interface density</legend>
+          <legend className="text-sm font-medium">{t('themingSettings.interfaceDensity')}</legend>
           <div className="grid gap-2 sm:grid-cols-3">
             {densityOptions.map(({ value, label, Icon }) => (
               <button
@@ -201,7 +202,7 @@ export default function ThemingSettings({ preferences, onSaved }: ThemingSetting
         </fieldset>
 
         <fieldset className="space-y-2">
-          <legend className="text-sm font-medium">Font selection</legend>
+          <legend className="text-sm font-medium">{t('themingSettings.fontSelection')}</legend>
           <div className="grid gap-2 sm:grid-cols-2">
             {fontOptions.map(({ value, label, description, Icon }) => (
               <button
@@ -226,7 +227,7 @@ export default function ThemingSettings({ preferences, onSaved }: ThemingSetting
         </fieldset>
 
         <fieldset className="space-y-2">
-          <legend className="text-sm font-medium">Time format</legend>
+          <legend className="text-sm font-medium">{t('themingSettings.timeFormat')}</legend>
           <div className="grid gap-2 sm:grid-cols-2">
             {timeFormatOptions.map(({ value, label, description }) => (
               <button

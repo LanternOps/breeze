@@ -6,6 +6,8 @@ import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
 import { showToast } from '../shared/Toast';
 import { CustomerDomainsCard } from './CustomerDomainsCard';
+import { Trans, useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 
 // Sample values so the admin can preview how merge variables resolve in the
 // acknowledgement email without sending one. The server fills these from the
@@ -43,16 +45,19 @@ interface OrgOption {
   name: string;
 }
 
-const FRIENDLY_CODES: Record<string, string> = {
-  ORG_NOT_ACCESSIBLE: 'That organization is not available under your partner.',
-};
-const friendlyCode = (code: string): string | undefined => FRIENDLY_CODES[code];
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 
-const SAVE_ERROR =
-  'Could not save inbound email settings — your session may need MFA re-verification. Retry.';
-
 export default function InboundEmailCard() {
+  const { t } = useTranslation('settings');
+  const saveError = t('inboundEmail.saveError');
+  const friendlyCode = (code: string): string | undefined =>
+    code === 'ORG_NOT_ACCESSIBLE' ? t('inboundEmail.orgNotAccessible') : undefined;
+  const autoresponseSample: TicketTemplateVars = {
+    ...AUTORESPONSE_SAMPLE,
+    ticket_subject: t('inboundEmail.sample.ticketSubject'),
+    requester_name: t('inboundEmail.sample.requesterName'),
+    partner_name: t('inboundEmail.sample.partnerName'),
+  };
   const [cfg, setCfg] = useState<InboundConfig | null>(null);
   const [orgs, setOrgs] = useState<OrgOption[]>([]);
   const [loading, setLoading] = useState(true);
@@ -148,19 +153,19 @@ export default function InboundEmailCard() {
               method: 'PATCH',
               body: JSON.stringify({ settings: { ticketing: { inbound } } }),
             }),
-          errorFallback: SAVE_ERROR,
-          successMessage: 'Inbound email settings saved',
+          errorFallback: saveError,
+          successMessage: t('inboundEmail.saved'),
           friendly: friendlyCode,
           onUnauthorized: UNAUTHORIZED,
         });
         setCfg(next);
       } catch (err) {
-        handleActionError(err, SAVE_ERROR);
+        handleActionError(err, saveError);
       } finally {
         setSaving(false);
       }
     },
-    [cfg],
+    [cfg, saveError, t],
   );
 
   const saveLocalPart = useCallback(async () => {
@@ -169,7 +174,7 @@ export default function InboundEmailCard() {
     const current = cfg.inboundLocalPart ?? cfg.address.split('@')[0];
     if (value === current) return;
     const ok = window.confirm(
-      'Customers using your current address will still reach you. New replies will be sent from the new address. Change it?',
+      t('inboundEmail.changeAddressConfirm'),
     );
     if (!ok) return;
     setSaving(true);
@@ -180,44 +185,44 @@ export default function InboundEmailCard() {
             method: 'PATCH',
             body: JSON.stringify({ inboundLocalPart: value }),
           }),
-        errorFallback: SAVE_ERROR,
-        successMessage: 'Inbound address updated',
+        errorFallback: saveError,
+        successMessage: t('inboundEmail.addressUpdated'),
         friendly: friendlyCode,
         onUnauthorized: UNAUTHORIZED,
       });
       const domainPart = cfg.address.split('@')[1] ?? '';
       setCfg({ ...cfg, inboundLocalPart: value, address: cfg.addressOverride ?? `${value}@${domainPart}` });
     } catch (err) {
-      handleActionError(err, SAVE_ERROR);
+      handleActionError(err, saveError);
     } finally {
       setSaving(false);
     }
-  }, [cfg, localPartDraft]);
+  }, [cfg, localPartDraft, saveError, t]);
 
   const copyAddress = useCallback(() => {
     if (cfg?.address) {
       void navigator.clipboard?.writeText(cfg.address);
-      showToast({ type: 'success', message: 'Inbound address copied' });
+      showToast({ type: 'success', message: t('inboundEmail.addressCopied') });
     }
-  }, [cfg]);
+  }, [cfg, t]);
 
   if (loading)
     return (
       <p className="mt-6 text-center text-sm text-muted-foreground" data-testid="inbound-email-loading">
-        Loading.
+        {t('common:states.loading')}
       </p>
     );
   if (error || !cfg)
     return (
       <p className="mt-6 text-center text-sm text-muted-foreground" data-testid="inbound-email-error">
-        Inbound email settings failed to load.{' '}
+        {t('inboundEmail.loadFailed')}{' '}
         <button
           type="button"
           onClick={() => void loadAll()}
           className="underline hover:text-foreground"
           data-testid="inbound-email-retry"
         >
-          Retry
+          {t('common:actions.retry')}
         </button>
       </p>
     );
@@ -225,9 +230,9 @@ export default function InboundEmailCard() {
   return (
     <div className="max-w-3xl space-y-6" data-testid="inbound-email-card">
       <section className="rounded-lg border p-4">
-        <h2 className="mb-1 text-sm font-semibold">Inbound email</h2>
+        <h2 className="mb-1 text-sm font-semibold">{t('inboundEmail.title')}</h2>
         <p className="mb-3 text-xs text-muted-foreground">
-          Turn email addressed to your inbound address into tickets.
+          {t('inboundEmail.description')}
         </p>
 
         <label className="flex items-center gap-2 text-sm">
@@ -238,11 +243,11 @@ export default function InboundEmailCard() {
             onChange={(e) => void saveConfig({ enabled: e.target.checked })}
             data-testid="inbound-enabled-toggle"
           />
-          Enable email-to-ticket
+          {t('inboundEmail.enable')}
         </label>
 
         <div className="mt-3">
-          <label className="text-xs font-medium">Inbound address</label>
+          <label className="text-xs font-medium">{t('inboundEmail.address')}</label>
           {cfg.domainConfigured ? (
             <div className="mt-0.5 flex items-center gap-2">
               <input
@@ -250,7 +255,7 @@ export default function InboundEmailCard() {
                 onChange={(e) => setLocalPartDraft(e.target.value)}
                 className="w-40 rounded-md border px-2.5 py-1.5 text-sm"
                 data-testid="inbound-localpart"
-                aria-label="Inbound address local part"
+                aria-label={t('inboundEmail.localPart')}
               />
               <span className="text-sm text-muted-foreground">@{cfg.address.split('@')[1] ?? ''}</span>
               <button
@@ -260,7 +265,7 @@ export default function InboundEmailCard() {
                 className="rounded-md border px-2.5 py-1.5 text-sm"
                 data-testid="inbound-localpart-save"
               >
-                Save
+                {t('common:actions.save')}
               </button>
               <button
                 type="button"
@@ -268,19 +273,19 @@ export default function InboundEmailCard() {
                 className="rounded-md border px-2.5 py-1.5 text-sm"
                 data-testid="inbound-address-copy"
               >
-                Copy
+                {t('common:actions.copy')}
               </button>
             </div>
           ) : (
             <p className="mt-0.5 text-xs text-amber-600" data-testid="inbound-address-unconfigured">
-              The platform inbound domain isn&apos;t configured yet. Contact your administrator.
+              {t('inboundEmail.domainNotConfigured')}
             </p>
           )}
         </div>
 
         <div className="mt-3">
           <label className="text-xs font-medium" htmlFor="inbound-triage-org">
-            Default triage organization
+            {t('inboundEmail.triageOrganization')}
           </label>
           <select
             id="inbound-triage-org"
@@ -290,7 +295,7 @@ export default function InboundEmailCard() {
             className="mt-0.5 block w-full rounded-md border bg-background px-2.5 py-1.5 text-sm"
             data-testid="inbound-triage-org"
           >
-            <option value="">None</option>
+            <option value="">{t('common:labels.none')}</option>
             {orgs.map((o) => (
               <option key={o.id} value={o.id}>
                 {o.name}
@@ -300,10 +305,9 @@ export default function InboundEmailCard() {
         </div>
 
         <fieldset className="mt-4" data-testid="inbound-unknown-sender-mode">
-          <legend className="text-xs font-medium">Unknown senders</legend>
+          <legend className="text-xs font-medium">{t('inboundEmail.unknownSenders')}</legend>
           <p className="mb-1.5 text-xs text-muted-foreground">
-            What to do with mail whose sender isn&apos;t a portal user, a mapped customer
-            domain, or a reply to an existing ticket.
+            {t('inboundEmail.unknownDescription')}
           </p>
           <label className="flex items-start gap-2 text-sm">
             <input
@@ -316,9 +320,9 @@ export default function InboundEmailCard() {
               data-testid="inbound-unknown-quarantine"
             />
             <span>
-              Quarantine for review <span className="text-muted-foreground">(default)</span>
+              {t('inboundEmail.quarantine')} <span className="text-muted-foreground">({t('inboundEmail.default')})</span>
               <span className="block text-xs text-muted-foreground">
-                Held in the Tickets → Review queue for manual convert or dismiss.
+                {t('inboundEmail.quarantineDescription')}
               </span>
             </span>
           </label>
@@ -333,10 +337,10 @@ export default function InboundEmailCard() {
               data-testid="inbound-unknown-triage"
             />
             <span>
-              Route to the triage organization
+              {t('inboundEmail.routeToTriage')}
               <span className="block text-xs text-muted-foreground">
-                Auto-creates a ticket in the triage org above.
-                {!cfg.defaultTriageOrgId && ' Select a triage organization first.'}
+                {t('inboundEmail.triageDescription')}
+                {!cfg.defaultTriageOrgId && ` ${t('inboundEmail.selectTriageFirst')}`}
               </span>
             </span>
           </label>
@@ -351,10 +355,9 @@ export default function InboundEmailCard() {
               data-testid="inbound-unknown-drop"
             />
             <span>
-              Drop silently
+              {t('inboundEmail.dropSilently')}
               <span className="block text-xs text-muted-foreground">
-                No ticket, no review-queue entry, no autoresponse. An audit row is still
-                recorded. Use this to keep unmapped spam out of triage and the review queue.
+                {t('inboundEmail.dropDescription')}
               </span>
             </span>
           </label>
@@ -370,11 +373,9 @@ export default function InboundEmailCard() {
             data-testid="inbound-drop-unverified-toggle"
           />
           <span>
-            Drop mail that fails sender authentication (SPF/DKIM/DMARC)
+            {t('inboundEmail.dropUnverified')}
             <span className="block text-xs text-muted-foreground">
-              When off, unverified mail is quarantined for review. When on, it&apos;s dropped
-              silently. This applies to <em>all</em> unverified senders — including mapped
-              customers whose individual message fails the check.
+              <Trans i18nKey="inboundEmail.dropUnverifiedDescription" t={t} components={{ all: <em /> }} />
             </span>
           </span>
         </label>
@@ -387,15 +388,15 @@ export default function InboundEmailCard() {
             onChange={(e) => void saveConfig({ autoresponderEnabled: e.target.checked })}
             data-testid="inbound-autoresponder-toggle"
           />
-          Send an autoresponse acknowledging new email tickets
+          {t('inboundEmail.enableAutoresponse')}
         </label>
 
         {cfg.autoresponderEnabled && (
           <div className="mt-4 rounded-md border bg-muted/20 p-3" data-testid="inbound-autoreply-editor">
-            <p className="mb-2 text-xs font-medium">Autoresponse message</p>
+            <p className="mb-2 text-xs font-medium">{t('inboundEmail.autoresponseMessage')}</p>
 
             <label className="text-xs font-medium" htmlFor="inbound-autoreply-subject">
-              Subject
+              {t('inboundEmail.subject')}
             </label>
             <input
               id="inbound-autoreply-subject"
@@ -403,13 +404,13 @@ export default function InboundEmailCard() {
               value={autoSubject}
               disabled={saving}
               onChange={(e) => setAutoSubject(e.target.value)}
-              placeholder="We received your request: {{ticket_subject}}"
+              placeholder={t('inboundEmail.subjectPlaceholder')}
               className="mt-0.5 mb-2 block w-full rounded-md border bg-background px-2.5 py-1.5 text-sm"
               data-testid="inbound-autoreply-subject"
             />
 
             <label className="text-xs font-medium" htmlFor="inbound-autoreply-body">
-              Body
+              {t('inboundEmail.body')}
             </label>
             <textarea
               id="inbound-autoreply-body"
@@ -417,13 +418,13 @@ export default function InboundEmailCard() {
               disabled={saving}
               onChange={(e) => setAutoBody(e.target.value)}
               rows={4}
-              placeholder="Thanks {{requester_name}} — we've opened ticket {{ticket_number}}."
+              placeholder={t('inboundEmail.bodyPlaceholder')}
               className="mt-0.5 block w-full resize-y rounded-md border bg-background px-2.5 py-1.5 text-sm"
               data-testid="inbound-autoreply-body"
             />
 
             <div className="mt-1.5 flex flex-wrap items-center gap-1">
-              <span className="text-xs text-muted-foreground">Insert:</span>
+              <span className="text-xs text-muted-foreground">{t('inboundEmail.insert')}</span>
               {variablesForContext('autoreply').map((v) => (
                 <button
                   key={v.key}
@@ -432,30 +433,30 @@ export default function InboundEmailCard() {
                   onClick={() => setAutoBody((b) => `${b}{{${v.key}}}`)}
                   className="rounded border px-1.5 py-0.5 text-xs text-muted-foreground hover:text-foreground"
                   data-testid={`inbound-autoreply-var-${v.key}`}
-                  title={v.label}
+                  title={t(`inboundEmail.variables.${v.key}`)}
                 >
-                  {v.label}
+                  {t(`inboundEmail.variables.${v.key}`)}
                 </button>
               ))}
             </div>
 
             {autoSubject.trim() || autoBody.trim() ? (
               <div className="mt-3" data-testid="inbound-autoreply-preview">
-                <p className="text-xs font-medium text-muted-foreground">Preview</p>
+                <p className="text-xs font-medium text-muted-foreground">{t('inboundEmail.preview')}</p>
                 {autoSubject.trim() && (
                   <p className="mt-0.5 text-sm font-medium">
-                    {renderTemplate(autoSubject, AUTORESPONSE_SAMPLE)}
+                    {renderTemplate(autoSubject, autoresponseSample)}
                   </p>
                 )}
                 {autoBody.trim() && (
                   <p className="mt-0.5 whitespace-pre-wrap text-sm">
-                    {renderTemplate(autoBody, AUTORESPONSE_SAMPLE)}
+                    {renderTemplate(autoBody, autoresponseSample)}
                   </p>
                 )}
               </div>
             ) : (
               <p className="mt-3 text-xs text-muted-foreground" data-testid="inbound-autoreply-default-hint">
-                Leave blank to use the default acknowledgement.
+                {t('inboundEmail.defaultAcknowledgement')}
               </p>
             )}
 
@@ -472,7 +473,7 @@ export default function InboundEmailCard() {
                 className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
                 data-testid="inbound-autoreply-save"
               >
-                Save autoresponse
+                {t('inboundEmail.saveAutoresponse')}
               </button>
             </div>
           </div>

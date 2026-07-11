@@ -1,4 +1,6 @@
 import { useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
 
 export type Organization = {
@@ -16,11 +18,11 @@ type OrganizationListProps = {
   onDelete?: (organization: Organization) => void;
 };
 
-const statusLabels: Record<Organization['status'], string> = {
-  active: 'Active',
-  trial: 'Trial',
-  suspended: 'Suspended',
-  churned: 'Churned'
+const STATUS_LABEL_KEYS: Record<Organization['status'], string> = {
+  active: 'organizationList.status.active',
+  trial: 'organizationList.status.trial',
+  suspended: 'organizationList.status.suspended',
+  churned: 'organizationList.status.churned',
 };
 
 export default function OrganizationList({
@@ -29,6 +31,7 @@ export default function OrganizationList({
   onEdit,
   onDelete
 }: OrganizationListProps) {
+  const { t } = useTranslation('settings');
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const formatDate = (value: string) => {
@@ -56,7 +59,7 @@ export default function OrganizationList({
 
   const renderStatusBadge = (org: Organization) => (
     <span className="inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium">
-      {statusLabels[org.status]}
+      {t(STATUS_LABEL_KEYS[org.status])}
     </span>
   );
 
@@ -70,7 +73,7 @@ export default function OrganizationList({
         }}
         className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted"
       >
-        Edit
+        {t('common:actions.edit')}
       </button>
       <button
         type="button"
@@ -80,7 +83,7 @@ export default function OrganizationList({
         }}
         className="rounded-md border border-destructive/40 px-3 py-1 text-xs font-medium text-destructive hover:bg-destructive/10"
       >
-        Delete
+        {t('common:actions.delete')}
       </button>
     </div>
   );
@@ -89,15 +92,15 @@ export default function OrganizationList({
     <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-lg font-semibold">Organizations</h2>
+          <h2 className="text-lg font-semibold">{t('organizationList.title')}</h2>
           <p className="text-sm text-muted-foreground">
-            {filteredOrganizations.length} of {organizations.length} organizations
+            {t('organizationList.count', { filtered: filteredOrganizations.length, total: organizations.length })}
           </p>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <input
             type="search"
-            placeholder="Search organizations"
+            placeholder={t('organizationList.searchPlaceholder')}
             value={query}
             onChange={event => setQuery(event.target.value)}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-56"
@@ -109,7 +112,7 @@ export default function OrganizationList({
           >
             {statusOptions.map(status => (
               <option key={status} value={status}>
-                {status === 'all' ? 'All statuses' : statusLabels[status as Organization['status']]}
+                {status === 'all' ? t('organizationList.allStatuses') : t(STATUS_LABEL_KEYS[status as Organization['status']])}
               </option>
             ))}
           </select>
@@ -122,18 +125,18 @@ export default function OrganizationList({
           <table className="min-w-full divide-y">
             <thead className="bg-muted/40">
               <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                <th className="px-4 py-3">Name</th>
-                <th className="px-4 py-3">Status</th>
-                <th className="px-4 py-3">Devices</th>
-                <th className="px-4 py-3">Created</th>
-                <th className="px-4 py-3 text-right">Actions</th>
+                <th className="px-4 py-3">{t('common:labels.name')}</th>
+                <th className="px-4 py-3">{t('common:labels.status')}</th>
+                <th className="px-4 py-3">{t('organizationList.columns.devices')}</th>
+                <th className="px-4 py-3">{t('common:labels.createdAt')}</th>
+                <th className="px-4 py-3 text-right">{t('common:labels.actions')}</th>
               </tr>
             </thead>
             <tbody className="divide-y">
               {filteredOrganizations.length === 0 ? (
                 <tr>
                   <td colSpan={5} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                    No organizations found. Try adjusting your search or filters.
+                    {t('organizationList.empty')}
                   </td>
                 </tr>
               ) : (
@@ -160,7 +163,7 @@ export default function OrganizationList({
           filteredOrganizations.length === 0 ? (
             <DataCard>
               <p className="py-2 text-center text-sm text-muted-foreground">
-                No organizations found. Try adjusting your search or filters.
+                {t('organizationList.empty')}
               </p>
             </DataCard>
           ) : (
@@ -168,9 +171,9 @@ export default function OrganizationList({
               <DataCard key={org.id} onClick={() => onSelect?.(org)}>
                 <h3 className="text-sm font-medium">{org.name}</h3>
                 <div className="mt-3 space-y-2 border-t pt-3">
-                  <CardField label="Status">{renderStatusBadge(org)}</CardField>
-                  <CardField label="Devices">{org.deviceCount}</CardField>
-                  <CardField label="Created">{formatDate(org.createdAt)}</CardField>
+                  <CardField label={t('common:labels.status')}>{renderStatusBadge(org)}</CardField>
+                  <CardField label={t('organizationList.columns.devices')}>{org.deviceCount}</CardField>
+                  <CardField label={t('common:labels.createdAt')}>{formatDate(org.createdAt)}</CardField>
                 </div>
                 <CardActions>{renderActions(org)}</CardActions>
               </DataCard>
