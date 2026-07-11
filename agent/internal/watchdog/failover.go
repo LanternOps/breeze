@@ -67,6 +67,8 @@ func NewFailoverClient(baseURL, agentID, token string, tlsConfig *tls.Config) *F
 
 // UpdateToken replaces the auth token used for subsequent requests.
 func (c *FailoverClient) UpdateToken(token string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.token = token
 }
 
@@ -86,8 +88,11 @@ func (c *FailoverClient) SetBaseURL(baseURL string) {
 
 // setHeaders attaches the standard watchdog headers to req.
 func (c *FailoverClient) setHeaders(req *http.Request) {
+	c.mu.RLock()
+	token := c.token
+	c.mu.RUnlock()
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("X-Breeze-Role", "watchdog")
 }
 

@@ -409,12 +409,20 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
 
   // #2288 — active control-plane URL. Absent (old agent) leaves the stored
   // value untouched; a malformed value is dropped, never a heartbeat failure.
+  // http(s) only: this is agent-reported telemetry that gets echoed into the
+  // web UI, so exotic-but-parseable schemes (javascript:, file:, data:) are
+  // rejected too. The drop is logged — a real agent only ever reports the
+  // URL it just POSTed to, so garbage here means an agent-side bug.
   if (data.serverUrl) {
     try {
-      new URL(data.serverUrl);
-      deviceUpdates.agentServerUrl = data.serverUrl;
+      const parsed = new URL(data.serverUrl);
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+        deviceUpdates.agentServerUrl = data.serverUrl;
+      } else {
+        console.warn(`[heartbeat] dropping non-http(s) serverUrl from device ${agent.deviceId}`);
+      }
     } catch {
-      // informational field — ignore garbage
+      console.warn(`[heartbeat] dropping malformed serverUrl from device ${agent.deviceId}`);
     }
   }
 

@@ -79,8 +79,9 @@ export type Device = {
   watchdogVersion?: string | null;
   /**
    * Control-plane URL the agent last heartbeated to (devices.agent_server_url,
-   * #2288). The opt-in Server column renders only its hostname. Absent on
-   * responses from older API versions or agents that never failed over.
+   * #2288). The opt-in Server column renders only its hostname. Any current
+   * agent reports it on every heartbeat (failover or not); absent only on
+   * responses from older API versions or agents too old to send it.
    */
   agentServerUrl?: string | null;
   tags: string[];

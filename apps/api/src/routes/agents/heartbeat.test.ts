@@ -1759,9 +1759,15 @@ describe('POST /agents/:id/heartbeat — active server URL telemetry (#2288)', (
     expect(capturedDeviceUpdate.agentServerUrl).toBeUndefined();
   });
 
+  it('drops parseable-but-non-http(s) serverUrl schemes (value is echoed into the web UI)', async () => {
+    const res = await postHeartbeat({ ...minimalHeartbeatBody, serverUrl: 'javascript:alert(1)' });
+    expect(res.status).toBe(200);
+    expect(capturedDeviceUpdate.agentServerUrl).toBeUndefined();
+  });
+
   it('leaves stored value untouched when serverUrl absent (old agent)', async () => {
     await postHeartbeat(minimalHeartbeatBody);
-    expect(capturedDeviceUpdate.agentServerUrl).toBeUndefined();
+    expect(Object.hasOwn(capturedDeviceUpdate, 'agentServerUrl')).toBe(false);
   });
 });
 

@@ -60,7 +60,7 @@ import (
 var log = logging.L("heartbeat")
 var desktopSessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 
-const backupProbeThreshold = 10
+const backupProbeThreshold = 10 // keep in sync with agent/cmd/breeze-watchdog
 
 type HeartbeatPayload struct {
 	Metrics          *collectors.SystemMetrics `json:"metrics,omitempty"`
@@ -2556,18 +2556,30 @@ func (h *Heartbeat) recordHeartbeatFailure(payload *HeartbeatPayload) {
 	}
 	log.Warn("primary server unreachable, probing backup", "failures", failures, "backupServerUrl", backup)
 	if h.postHeartbeat(backup, payload) {
-		h.promoteBackupServerURL()
+		h.promoteBackupServerURL(backup)
 		h.resetHeartbeatFailures()
 	}
 }
 
-// promoteBackupServerURL swaps backup to primary in the shared in-memory
-// config and persists both sides of the swap. The old primary remains the
-// backup so the same probe logic can roll back a false-positive promotion.
-func (h *Heartbeat) promoteBackupServerURL() {
+// promoteBackupServerURL swaps probedURL — the backup that just answered a
+// fully authenticated heartbeat — to primary in the shared in-memory config
+// and persists both sides of the swap. The old primary remains the backup so
+// the same probe logic can roll back a false-positive promotion.
+//
+// probedURL is a parameter, NOT re-read from config: the probe response's
+// own configUpdate is applied inside postHeartbeat and may have already
+// rewritten or cleared BackupServerURL (the API sends the key on every
+// heartbeat — a backup instance with the env var unset pushes a clear).
+// Only the URL that actually passed the probe may be promoted; re-reading
+// config here bricked stragglers with server_url="" during migrations.
+func (h *Heartbeat) promoteBackupServerURL(probedURL string) {
+	if probedURL == "" {
+		log.Error("refusing to promote empty backup server URL")
+		return
+	}
 	h.mu.Lock()
 	oldPrimary := h.config.ServerURL
-	newPrimary := h.config.BackupServerURL
+	newPrimary := probedURL
 	h.config.ServerURL = newPrimary
 	h.config.BackupServerURL = oldPrimary
 	h.mu.Unlock()
@@ -2577,11 +2589,11 @@ func (h *Heartbeat) promoteBackupServerURL() {
 		h.wsClient.SetServerURL(newPrimary)
 	}
 
-	if err := config.SetAndPersist("server_url", newPrimary); err != nil {
-		log.Error("failed to persist promoted server_url", "error", err.Error())
-	}
-	if err := config.SetAndPersist("backup_server_url", oldPrimary); err != nil {
-		log.Error("failed to persist demoted backup_server_url", "error", err.Error())
+	if err := config.SetAllAndPersist(map[string]any{
+		"server_url":        newPrimary,
+		"backup_server_url": oldPrimary,
+	}); err != nil {
+		log.Error("failed to persist promoted server URL swap", "error", err.Error())
 	}
 	log.Warn("PROMOTED backup server URL to primary",
 		"newServerUrl", newPrimary, "rollbackBackupUrl", oldPrimary)
@@ -2803,14 +2815,14 @@ func (h *Heartbeat) postHeartbeat(baseURL string, payload *HeartbeatPayload) boo
 
 	resp, err := httputil.Do(ctx, h.httpClient(), "POST", url, body, headers, h.retryCfg)
 	if err != nil {
-		log.Error("failed to send heartbeat", "error", err.Error())
+		log.Error("failed to send heartbeat", "server", baseURL, "error", err.Error())
 		h.healthMon.Update("heartbeat", health.Unhealthy, err.Error())
 		return false
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusUnauthorized {
-		log.Warn("heartbeat returned 401")
+		log.Warn("heartbeat returned 401", "server", baseURL)
 		h.healthMon.Update("heartbeat", health.Degraded, "unauthorized")
 		if h.authMon != nil {
 			h.authMon.RecordAuthFailure()
@@ -2819,7 +2831,7 @@ func (h *Heartbeat) postHeartbeat(baseURL string, payload *HeartbeatPayload) boo
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		log.Warn("heartbeat returned non-OK status", "status", resp.StatusCode)
+		log.Warn("heartbeat returned non-OK status", "server", baseURL, "status", resp.StatusCode)
 		h.healthMon.Update("heartbeat", health.Degraded, fmt.Sprintf("status %d", resp.StatusCode))
 		return false
 	}

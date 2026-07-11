@@ -62,8 +62,9 @@ const backupProbeThreshold = 10 // keep in sync with agent/internal/heartbeat
 // then, past the probe threshold, alternate between the disk URL and the
 // backup every threshold ticks, so with both control planes down whichever
 // returns first wins without flapping (and journal-spamming) on every poll.
-// Transient, in memory only. The watchdog NEVER persists config; the agent
-// owns that.
+// Transient, in memory only. The watchdog never persists
+// server_url/backup_server_url; the agent owns those. (Token persistence to
+// secrets.yaml elsewhere in this file is a separate, deliberate exception.)
 func decideWatchdogServerURL(current, lastDiskURL string, reloaded *config.Config, consecutiveFailures int) string {
 	if reloaded.ServerURL != "" && reloaded.ServerURL != lastDiskURL && reloaded.ServerURL != current {
 		return reloaded.ServerURL
@@ -85,6 +86,9 @@ func decideWatchdogServerURL(current, lastDiskURL string, reloaded *config.Confi
 func noteFailoverHeartbeatFailure(fc *watchdog.FailoverClient, journal *watchdog.Journal, lastDiskURL string, consecutiveFailures int) string {
 	reloaded, err := config.Load("")
 	if err != nil {
+		// The watchdog may be the only reporter left when this fires —
+		// surface why failover retargeting has degraded to "never switch".
+		journal.Log(watchdog.LevelWarn, "failover.config_reload_failed", map[string]any{"error": err.Error()})
 		return lastDiskURL
 	}
 	current := fc.BaseURL()

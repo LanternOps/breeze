@@ -19,7 +19,10 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/logging"
 )
+
+var log = logging.L("netcache")
 
 type Cache struct {
 	path    string
@@ -27,13 +30,20 @@ type Cache struct {
 	entries map[string][]string
 	lookup  func(ctx context.Context, host string) ([]string, error)
 	dial    func(ctx context.Context, network, addr string) (net.Conn, error)
+	// fallbackActive tracks hosts currently surviving on cached IPs so the
+	// outage is logged once per streak, not once per dial. Guarded by mu.
+	fallbackActive map[string]bool
+	// persistFailLogged latches the first persist failure so a permanently
+	// read-only data dir is visible without per-dial spam. Guarded by mu.
+	persistFailLogged bool
 }
 
 func New(path string) *Cache {
 	d := &net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}
 	c := &Cache{
-		path:    path,
-		entries: map[string][]string{},
+		path:           path,
+		entries:        map[string][]string{},
+		fallbackActive: map[string]bool{},
 		lookup: func(ctx context.Context, host string) ([]string, error) {
 			return net.DefaultResolver.LookupHost(ctx, host)
 		},
@@ -48,8 +58,9 @@ var (
 	shared     *Cache
 )
 
-// Shared is the process-wide cache, persisted in the agent data dir and thus
-// shared (last-writer-wins, atomic replace) with the watchdog process.
+// Shared is the process-wide cache. The file in the agent data dir is
+// written by both the agent and watchdog processes (last-writer-wins atomic
+// replace); each process reads it only at startup.
 func Shared() *Cache {
 	sharedOnce.Do(func() {
 		shared = New(filepath.Join(config.GetDataDir(), "dns-cache.json"))
@@ -68,11 +79,14 @@ func (c *Cache) DialContext(ctx context.Context, network, addr string) (net.Conn
 		conn, dialErr := c.dialFirst(ctx, network, ips, port)
 		if dialErr == nil {
 			c.store(host, ips)
+			c.noteDNSRecovered(host)
 			return conn, nil
 		}
 		return nil, dialErr
 	}
 
+	// A lookup that succeeds with zero addresses is intentionally NOT served
+	// from the cache: the record was answered (and is empty), not unreachable.
 	var dnsErr *net.DNSError
 	if lookupErr == nil || !errors.As(lookupErr, &dnsErr) {
 		if lookupErr != nil {
@@ -87,9 +101,36 @@ func (c *Cache) DialContext(ctx context.Context, network, addr string) (net.Conn
 	}
 	conn, dialErr := c.dialFirst(ctx, network, cached, port)
 	if dialErr != nil {
+		// Surface the ORIGINAL DNS error; the dial error is logged as the
+		// only evidence distinguishing "stale cache" from "server down".
+		log.Debug("cached-IP dial also failed", "host", host, "dialError", dialErr.Error())
 		return nil, lookupErr
 	}
+	c.noteFallbackEngaged(host, lookupErr)
 	return conn, nil
+}
+
+// noteFallbackEngaged warn-logs once per outage streak that this host is
+// surviving on cached IPs — essential forensic context during a DNS outage.
+func (c *Cache) noteFallbackEngaged(host string, lookupErr error) {
+	c.mu.Lock()
+	first := !c.fallbackActive[host]
+	c.fallbackActive[host] = true
+	c.mu.Unlock()
+	if first {
+		log.Warn("DNS resolution failed; using last-known-good cached IP", "host", host, "error", lookupErr.Error())
+	}
+}
+
+// noteDNSRecovered closes an active fallback streak once fresh DNS works.
+func (c *Cache) noteDNSRecovered(host string) {
+	c.mu.Lock()
+	wasActive := c.fallbackActive[host]
+	delete(c.fallbackActive, host)
+	c.mu.Unlock()
+	if wasActive {
+		log.Info("DNS resolution recovered", "host", host)
+	}
 }
 
 func (c *Cache) dialFirst(ctx context.Context, network string, ips []string, port string) (net.Conn, error) {
@@ -156,30 +197,44 @@ func (c *Cache) load() {
 	}
 }
 
-// persist atomically replaces the cache file (tmp + rename). Corruption from
-// a crash mid-write leaves either the old or the new file, both valid.
+// persist replaces the cache file via tmp+rename — safe against process
+// crash mid-write (no fsync: power loss may leave a corrupt file, which
+// load() tolerates and ignores). Best-effort: failures never affect the
+// dial, but the first one is warn-logged (latched) so a permanently broken
+// data dir is visible.
 func (c *Cache) persist(entries map[string][]string) {
+	err := c.persistOnce(entries)
+	c.mu.Lock()
+	logIt := err != nil && !c.persistFailLogged
+	c.persistFailLogged = err != nil
+	c.mu.Unlock()
+	if logIt {
+		log.Warn("failed to persist DNS cache; last-known-good IPs will not survive a restart", "path", c.path, "error", err.Error())
+	}
+}
+
+func (c *Cache) persistOnce(entries map[string][]string) error {
 	data, err := json.Marshal(entries)
 	if err != nil {
-		return
+		return err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(c.path), filepath.Base(c.path)+".partial-*")
 	if err != nil {
-		return
+		return err
 	}
 	tmpPath := tmp.Name()
 	defer os.Remove(tmpPath)
 
 	if err := tmp.Chmod(0o644); err != nil {
 		_ = tmp.Close()
-		return
+		return err
 	}
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
-		return
+		return err
 	}
 	if err := tmp.Close(); err != nil {
-		return
+		return err
 	}
-	_ = os.Rename(tmpPath, c.path)
+	return os.Rename(tmpPath, c.path)
 }

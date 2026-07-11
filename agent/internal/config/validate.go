@@ -94,6 +94,13 @@ func (c *Config) ValidateTiered() ValidationResult {
 	if err := ValidateBackupServerURL(c.BackupServerURL); err != nil {
 		result.Fatals = append(result.Fatals, err)
 	}
+	// Self-heal a backup equal to the primary (a torn promote persist could
+	// leave this on disk, #2288): it is useless as a failover target and the
+	// server-side push ignores equal values, so nothing else would repair it.
+	if c.BackupServerURL != "" && c.BackupServerURL == c.ServerURL {
+		result.Warnings = append(result.Warnings, fmt.Errorf("backup_server_url equals server_url; clearing useless backup"))
+		c.BackupServerURL = ""
+	}
 
 	if c.AuthToken != "" {
 		for _, r := range c.AuthToken {

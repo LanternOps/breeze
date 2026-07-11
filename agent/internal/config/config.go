@@ -340,6 +340,47 @@ func Load(cfgFile string) (*Config, error) {
 	return cfg, nil
 }
 
+// SetAllAndPersist updates several non-secret config keys in viper and writes
+// them to the config file in a SINGLE write, so related keys (e.g. the
+// server_url/backup_server_url swap on backup promotion, #2288) can never be
+// torn across two file writes by a crash between them. Secret keys are routed
+// to secrets.yaml exactly as in SetAndPersist.
+func SetAllAndPersist(kv map[string]any) error {
+	path := viper.ConfigFileUsed()
+
+	if path != "" {
+		if err := migrateInlineSecretsToSecretFile(path); err != nil {
+			return err
+		}
+	}
+	for _, k := range viper.AllKeys() {
+		if isSecretYAMLKey(k) {
+			viper.Set(k, nil)
+		}
+	}
+
+	for key, value := range kv {
+		if isSecretConfigKey(key) {
+			if err := SetSecretAndPersist(key, value); err != nil {
+				return err
+			}
+			viper.Set(key, nil)
+		} else {
+			viper.Set(key, value)
+		}
+	}
+	if err := viper.WriteConfig(); err != nil {
+		return err
+	}
+	if path != "" {
+		if err := migrateInlineSecretsToSecretFile(path); err != nil {
+			return err
+		}
+		return enforceConfigFilePermissions(path)
+	}
+	return nil
+}
+
 // SetAndPersist updates a single non-secret config key in viper and writes it
 // to the existing config file. Any legacy inline secrets are migrated to
 // secrets.yaml and scrubbed from agent.yaml after the write.

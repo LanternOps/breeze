@@ -90,7 +90,12 @@ watchdog's client:
 - **Env var unset after being set:** the heartbeat pushes an empty value and
   agents clear their stored backup. A key that is absent entirely (older
   API) changes nothing.
-- **Both URLs down:** agents keep alternating probes indefinitely; existing
-  backoff/retry behavior is unchanged.
-- **Crash mid-swap:** the config persist is atomic (tmp+fsync+rename); a
-  crash leaves either the old or the new config, both valid.
+- **Both URLs down:** agents keep retrying the primary and probing the
+  backup every heartbeat cycle; the watchdog alternates its target every ~10
+  polls. Existing backoff/retry behavior is unchanged.
+- **Crash mid-swap:** the promotion writes both keys in a single config-file
+  write, so the swap itself cannot be torn across writes. The write is a
+  plain file rewrite (not fsync'd); in the unlikely event of power loss
+  mid-write leaving a damaged agent.yaml, re-push the backup URL after
+  restoring the config. As defense-in-depth, an on-disk backup equal to the
+  primary is warned about and cleared at agent startup.
