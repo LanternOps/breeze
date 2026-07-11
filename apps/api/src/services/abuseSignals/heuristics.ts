@@ -70,6 +70,8 @@ export async function loadPartnerAggregates(): Promise<PartnerAggregates[]> {
       GROUP BY o.partner_id
     ),
     denied AS (
+      -- Counts only org-attributable denials (expired/exhausted keys, device-cap hits).
+      -- Denials from unresolved enrollment keys carry org_id NULL and are unattributable to a partner.
       SELECT o.partner_id, COUNT(*) AS denied_24h
       FROM audit_logs al JOIN organizations o ON o.id = al.org_id
       WHERE al.action = 'agent.enroll' AND al.result = 'denied'
@@ -148,7 +150,7 @@ export function computeHeuristicSignals(
     const weight = youngWeight(a.partnerCreatedAt, now, cfg);
     const push = (signalKey: string, rawScore: number, evidence: Record<string, unknown>, decays = true) => {
       const score = Math.min(100, Math.round(rawScore * (decays ? weight : 1)));
-      if (score <= 0) return;
+      if (!(score > 0)) return;
       signals.push({
         partnerId: a.partnerId,
         signalKey,

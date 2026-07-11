@@ -88,4 +88,21 @@ describe('computeHeuristicSignals', () => {
     const signals = computeHeuristicSignals([agg({ enrollmentDenied24h: 40 })], SIGNAL_DEFAULTS, now);
     expect(signals.some((x) => x.signalKey === 'resource.enrollment_denied')).toBe(true);
   });
+
+  it('emits nothing (not NaN) when a threshold is overridden to 0', () => {
+    const cfg = { ...SIGNAL_DEFAULTS, 'rmm.enrollment_velocity.devices_24h': 0 };
+    const signals = computeHeuristicSignals([agg({ enrolled24h: 0, deviceCount: 0 })], cfg, now);
+    expect(signals).toEqual([]);
+  });
+
+  it('fires volume_outlier on command volume regardless of partner age', () => {
+    const signals = computeHeuristicSignals(
+      [agg({ partnerCreatedAt: new Date('2026-01-01T00:00:00Z'), commands24h: 1200 })],
+      SIGNAL_DEFAULTS,
+      now,
+    );
+    const s = signals.find((x) => x.signalKey === 'resource.volume_outlier');
+    expect(s).toBeDefined();
+    expect(s!.evidence).toMatchObject({ commands24h: 1200 });
+  });
 });
