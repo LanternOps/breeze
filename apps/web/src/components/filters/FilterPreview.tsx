@@ -1,5 +1,6 @@
 import { RefreshCw, Monitor, AlertCircle } from 'lucide-react';
 import type { FilterPreviewResult } from '@breeze/shared';
+import { useTranslation } from 'react-i18next';
 
 interface FilterPreviewProps {
   preview: FilterPreviewResult | null;
@@ -14,12 +15,13 @@ export function FilterPreview({
   error,
   onRefresh
 }: FilterPreviewProps) {
+  const { t } = useTranslation('common');
   return (
     <div className="rounded-lg border bg-card p-4">
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
           <Monitor className="h-4 w-4 text-muted-foreground" />
-          <span className="text-sm font-medium">Matching Devices</span>
+          <span className="text-sm font-medium">{t('filters.preview.title')}</span>
         </div>
         <button
           type="button"
@@ -28,7 +30,7 @@ export function FilterPreview({
           className="inline-flex h-7 items-center gap-1 rounded border px-2 text-xs font-medium transition hover:bg-muted disabled:opacity-50"
         >
           <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
-          Refresh
+          {t('actions.refresh')}
         </button>
       </div>
 
@@ -48,7 +50,7 @@ export function FilterPreview({
       {!loading && !preview && !error && (
         <div className="text-center py-6">
           <p className="text-sm text-muted-foreground">
-            Add filter conditions to see matching devices
+            {t('filters.preview.addConditions')}
           </p>
         </div>
       )}
@@ -59,12 +61,12 @@ export function FilterPreview({
             <div className="flex items-baseline gap-2">
               <span className="text-2xl font-bold">{preview.totalCount}</span>
               <span className="text-sm text-muted-foreground">
-                device{preview.totalCount !== 1 ? 's' : ''} match
+                {t('filters.preview.matchCount', { count: preview.totalCount })}
               </span>
             </div>
             {preview.totalCount > preview.devices.length && (
               <span className="text-xs text-muted-foreground">
-                Showing {preview.devices.length} of {preview.totalCount}
+                {t('filters.preview.showing', { shown: preview.devices.length, total: preview.totalCount })}
               </span>
             )}
           </div>

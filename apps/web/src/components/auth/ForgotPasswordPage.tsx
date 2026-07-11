@@ -1,9 +1,11 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import ForgotPasswordForm from './ForgotPasswordForm';
 import StatusIcon from './StatusIcon';
 import { apiForgotPassword } from '../../stores/auth';
 
 export default function ForgotPasswordPage() {
+  const { t } = useTranslation('auth');
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(false);
   const [submitted, setSubmitted] = useState(false);
@@ -29,16 +31,18 @@ export default function ForgotPasswordPage() {
       <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
         <div className="space-y-2 text-center">
           <StatusIcon variant="success" />
-          <h2 className="text-lg font-semibold">Check your email</h2>
+          <h2 className="text-lg font-semibold">{t('forgotPassword.success.title', { defaultValue: 'Check your email' })}</h2>
           <p className="text-sm text-muted-foreground">
-            If an account exists with that email, we have sent a password reset link.
+            {t('forgotPassword.success.description', {
+              defaultValue: 'If an account exists with that email, we have sent a password reset link.',
+            })}
           </p>
         </div>
         <a
           href="/login"
           className="flex h-11 w-full items-center justify-center rounded-md border text-sm font-medium transition hover:bg-muted"
         >
-          Back to sign in
+          {t('common.backToSignIn', { defaultValue: 'Back to sign in' })}
         </a>
       </div>
     );

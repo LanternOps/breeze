@@ -3,6 +3,7 @@ import { Plus, Pencil, Trash2, Copy, Search, Filter, MoreVertical } from 'lucide
 import type { SavedFilter, FilterConditionGroup } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import { FilterBuilder } from './FilterBuilder';
+import { useTranslation } from 'react-i18next';
 
 interface SavedFilterListProps {
   onSelectFilter?: (filter: SavedFilter) => void;
@@ -17,6 +18,7 @@ export function SavedFilterList({
   className = '',
   timezone
 }: SavedFilterListProps) {
+  const { t } = useTranslation('common');
   const [filters, setFilters] = useState<SavedFilter[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -108,7 +110,7 @@ export function SavedFilterList({
     e.preventDefault();
     const trimmedName = formName.trim();
     if (!trimmedName) {
-      setFormError('Name is required');
+      setFormError(t('filters.saved.nameRequired'));
       return;
     }
 
@@ -171,7 +173,7 @@ export function SavedFilterList({
       <div className={`space-y-6 ${className}`}>
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold">
-            {editingFilter ? 'Edit Filter' : 'Create Filter'}
+            {editingFilter ? t('filters.saved.edit') : t('filters.saved.create')}
           </h2>
           <button
             type="button"
@@ -184,28 +186,28 @@ export function SavedFilterList({
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="text-sm font-medium">Name</label>
+            <label className="text-sm font-medium">{t('labels.name')}</label>
             <input
               type="text"
               value={formName}
               onChange={(e) => setFormName(e.target.value)}
               className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-              placeholder="e.g., Windows Servers"
+              placeholder={t('filters.saved.namePlaceholder')}
             />
           </div>
 
           <div>
-            <label className="text-sm font-medium">Description (optional)</label>
+            <label className="text-sm font-medium">{t('filters.saved.description')}</label>
             <textarea
               value={formDescription}
               onChange={(e) => setFormDescription(e.target.value)}
               className="mt-1 u-min-h-px-80 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-              placeholder="Describe what this filter matches"
+              placeholder={t('filters.saved.descriptionPlaceholder')}
             />
           </div>
 
           <div>
-            <label className="text-sm font-medium mb-2 block">Conditions</label>
+            <label className="text-sm font-medium mb-2 block">{t('filters.saved.conditions')}</label>
             <FilterBuilder
               value={formConditions}
               onChange={setFormConditions}
@@ -225,7 +227,7 @@ export function SavedFilterList({
               onClick={handleCancel}
               className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground hover:text-foreground"
             >
-              Cancel
+            {t('actions.cancel')}
             </button>
             <button
               type="submit"
@@ -233,10 +235,10 @@ export function SavedFilterList({
               className="h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-60"
             >
               {formSubmitting
-                ? 'Saving...'
+                ? t('states.saving')
                 : editingFilter
-                  ? 'Save Changes'
-                  : 'Create Filter'}
+                  ? t('filters.saved.saveChanges')
+                  : t('filters.saved.create')}
             </button>
           </div>
         </form>
@@ -249,7 +251,7 @@ export function SavedFilterList({
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Filter className="h-5 w-5 text-muted-foreground" />
-          <h2 className="text-lg font-semibold">Saved Filters</h2>
+          <h2 className="text-lg font-semibold">{t('filters.saved.title')}</h2>
         </div>
         <button
           type="button"
@@ -257,7 +259,7 @@ export function SavedFilterList({
           className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
           <Plus className="h-4 w-4" />
-          New Filter
+            {t('filters.saved.new')}
         </button>
       </div>
 
@@ -267,7 +269,7 @@ export function SavedFilterList({
           type="text"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="Search filters..."
+          placeholder={t('filters.saved.search')}
           className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         />
       </div>
@@ -283,8 +285,8 @@ export function SavedFilterList({
           <Filter className="mx-auto h-10 w-10 text-muted-foreground" />
           <p className="mt-2 text-sm text-muted-foreground">
             {searchQuery
-              ? 'No filters match your search'
-              : 'No saved filters yet. Create one to reuse across groups and deployments.'}
+              ? t('filters.saved.noMatches')
+              : t('filters.saved.empty')}
           </p>
           {!searchQuery && (
             <button
@@ -320,8 +322,7 @@ export function SavedFilterList({
                   )}
                   <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
                     <span>
-                      {filter.conditions.conditions.length} condition
-                      {filter.conditions.conditions.length !== 1 ? 's' : ''}
+                      {t('filters.conditionCount', { count: filter.conditions.conditions.length })}
                     </span>
                     <span>·</span>
                     <span>
@@ -335,7 +336,7 @@ export function SavedFilterList({
                     type="button"
                     onClick={() => handleEdit(filter)}
                     className="inline-flex h-8 w-8 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
-                    title="Edit"
+                    title={t('actions.edit')}
                   >
                     <Pencil className="h-4 w-4" />
                   </button>
@@ -343,7 +344,7 @@ export function SavedFilterList({
                     type="button"
                     onClick={() => handleDuplicate(filter)}
                     className="inline-flex h-8 w-8 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
-                    title="Duplicate"
+                    title={t('filters.saved.duplicate')}
                   >
                     <Copy className="h-4 w-4" />
                   </button>
@@ -351,7 +352,7 @@ export function SavedFilterList({
                     type="button"
                     onClick={() => setDeleteConfirmId(filter.id)}
                     className="inline-flex h-8 w-8 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-destructive"
-                    title="Delete"
+                    title={t('actions.delete')}
                   >
                     <Trash2 className="h-4 w-4" />
                   </button>

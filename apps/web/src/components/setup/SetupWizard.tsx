@@ -1,22 +1,24 @@
 import { useEffect, useState } from 'react';
 import { Loader2 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import SetupStepper from './SetupStepper';
 import AccountSetupStep from './AccountSetupStep';
 import OrganizationSetupStep from './OrganizationSetupStep';
 import EnrollDeviceStep from './EnrollDeviceStep';
 
-const STEPS = [
-  { label: 'Account' },
-  { label: 'Organization' },
-  { label: 'Install Agent' },
-];
-
 const STORAGE_KEY = 'breeze-setup-step';
 const SETUP_ORG_KEY = 'breeze-setup-org';
 const SETUP_SITE_KEY = 'breeze-setup-site';
+const SETUP_STEP_COUNT = 3;
 
 export default function SetupWizard() {
+  const { t } = useTranslation('auth');
+  const steps = [
+    { label: t('setup.steps.account') },
+    { label: t('setup.steps.organization') },
+    { label: t('setup.steps.installAgent') },
+  ];
   const [currentStep, setCurrentStep] = useState(0);
   const [checkingAuth, setCheckingAuth] = useState(true);
   const [isHydrated, setIsHydrated] = useState(false);
@@ -47,7 +49,7 @@ export default function SetupWizard() {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
         const step = parseInt(saved, 10);
-        if (step >= 0 && step < STEPS.length) {
+        if (step >= 0 && step < SETUP_STEP_COUNT) {
           setCurrentStep(step);
         }
       }
@@ -142,14 +144,14 @@ export default function SetupWizard() {
     return (
       <div className="flex flex-col items-center justify-center gap-3 py-12">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-        <p className="text-sm text-muted-foreground">Checking your account...</p>
+        <p className="text-sm text-muted-foreground">{t('setup.wizard.checkingAccount')}</p>
       </div>
     );
   }
 
   return (
     <div className="space-y-8">
-      <SetupStepper steps={STEPS} currentStep={currentStep} onStepClick={handleStepClick} />
+      <SetupStepper steps={steps} currentStep={currentStep} onStepClick={handleStepClick} />
 
       <div className="rounded-lg border bg-card p-6 shadow-xs">
         {currentStep === 0 && (
@@ -174,7 +176,7 @@ export default function SetupWizard() {
             onClick={handleSkipAll}
             className="text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
           >
-            Skip setup — I'll configure this later
+            {t('setup.wizard.skipSetup')}
           </button>
         </div>
       )}

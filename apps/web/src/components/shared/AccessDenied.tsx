@@ -1,4 +1,5 @@
 import { ShieldX } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 interface AccessDeniedProps {
   /**
@@ -21,9 +22,10 @@ interface AccessDeniedProps {
  * a clear explanation instead of a confusing error.
  */
 export default function AccessDenied({
-  message = "You don't have permission to view this.",
+  message,
   testId = 'access-denied',
 }: AccessDeniedProps) {
+  const { t } = useTranslation('common');
   return (
     <div
       className="rounded-lg border border-border bg-muted/30 p-8 text-center"
@@ -31,10 +33,10 @@ export default function AccessDenied({
       role="alert"
     >
       <ShieldX className="mx-auto h-10 w-10 text-muted-foreground" aria-hidden="true" />
-      <h2 className="mt-4 text-base font-semibold">Access denied</h2>
-      <p className="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">{message}</p>
+      <h2 className="mt-4 text-base font-semibold">{t('shared.accessDenied.title')}</h2>
+      <p className="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">{message ?? t('shared.accessDenied.message')}</p>
       <p className="mx-auto mt-3 max-w-sm text-xs text-muted-foreground">
-        If you believe you should have access, contact your administrator.
+        {t('shared.accessDenied.contactAdmin')}
       </p>
     </div>
   );

@@ -1,6 +1,7 @@
 // apps/web/src/components/shared/ScopeBadge.tsx
 import { Building2, Globe, Layers } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useTranslation } from 'react-i18next';
 
 // One quiet badge that states a catalog record's audience. Calm, not loud —
 // muted surface, brand accent only for the partner-wide case (the one a tech
@@ -18,16 +19,17 @@ export function ScopeBadge({
   orgName?: string;
   className?: string;
 }) {
+  const { t } = useTranslation('common');
   let icon = <Building2 className="h-3 w-3" />;
-  let label = orgName ?? 'Organization';
+  let label = orgName ?? t('labels.organization');
   let tone = 'bg-muted text-muted-foreground';
 
   if (isSystem) {
     icon = <Layers className="h-3 w-3" />;
-    label = 'System';
+    label = t('shared.scope.system');
   } else if (orgId === null && partnerId !== null) {
     icon = <Globe className="h-3 w-3" />;
-    label = 'Partner-wide';
+    label = t('shared.scope.partnerWide');
     tone = 'bg-primary/10 text-primary';
   }
 

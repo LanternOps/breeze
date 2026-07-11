@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { bootstrapFromCfAccessRedirect, restoreAccessTokenFromCookie, useAuthStore } from '../../stores/auth';
 import { Loader2 } from 'lucide-react';
 import { navigateTo } from '../../lib/navigation';
@@ -20,6 +21,7 @@ function consumeCfAccessLoginParam(): boolean {
 }
 
 export default function AuthOverlay() {
+  const { t } = useTranslation('auth');
   const { isAuthenticated, isLoading, tokens } = useAuthStore();
   const [isChecking, setIsChecking] = useState(true);
   const [isRecovering, setIsRecovering] = useState(false);
@@ -137,7 +139,9 @@ export default function AuthOverlay() {
       <div className="text-center">
         <Loader2 className="mx-auto h-8 w-8 animate-spin text-primary" />
         <p className="mt-4 text-sm text-muted-foreground">
-          {isChecking || isLoading || isRecovering ? 'Loading...' : 'Redirecting to login...'}
+          {isChecking || isLoading || isRecovering
+            ? t('common.loading', { defaultValue: 'Loading...' })
+            : t('common.redirectingToLogin', { defaultValue: 'Redirecting to login...' })}
         </p>
       </div>
     </div>

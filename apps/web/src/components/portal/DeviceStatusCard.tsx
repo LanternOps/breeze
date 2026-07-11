@@ -1,4 +1,5 @@
 import { Monitor } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { cn, formatRelativeTime } from '@/lib/utils';
 
 export type CustomerDeviceStatus = 'online' | 'offline' | 'maintenance';
@@ -24,9 +25,10 @@ const statusStyles: Record<CustomerDeviceStatus, string> = {
 };
 
 export default function DeviceStatusCard({ device, onSelect }: DeviceStatusCardProps) {
+  const { t } = useTranslation('portal');
   const lastSeenLabel = device.lastSeen
     ? formatRelativeTime(new Date(device.lastSeen))
-    : 'Unknown';
+    : t('deviceStatus.unknown');
 
   return (
     <button
@@ -52,7 +54,9 @@ export default function DeviceStatusCard({ device, onSelect }: DeviceStatusCardP
         </div>
       </div>
 
-      <div className="text-xs text-muted-foreground">Last seen {lastSeenLabel}</div>
+      <div className="text-xs text-muted-foreground">
+        {t('deviceStatus.lastSeen', { lastSeen: lastSeenLabel })}
+      </div>
     </button>
   );
 }

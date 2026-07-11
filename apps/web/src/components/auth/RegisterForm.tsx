@@ -1,22 +1,16 @@
 import { useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { cn, widthPercentClass } from '@/lib/utils';
 
-const registerSchema = z
-  .object({
-    name: z.string().min(2, 'Name must be at least 2 characters'),
-    email: z.string().email('Enter a valid email address'),
-    password: z.string().min(8, 'Password must be at least 8 characters'),
-    confirmPassword: z.string().min(8, 'Confirm your password')
-  })
-  .refine(data => data.password === data.confirmPassword, {
-    message: 'Passwords do not match',
-    path: ['confirmPassword']
-  });
-
-type RegisterFormValues = z.infer<typeof registerSchema>;
+type RegisterFormValues = {
+  name: string;
+  email: string;
+  password: string;
+  confirmPassword: string;
+};
 
 type RegisterFormProps = {
   onSubmit?: (values: RegisterFormValues) => void | Promise<void>;
@@ -64,9 +58,25 @@ function getStrengthScore(password: string) {
 export default function RegisterForm({
   onSubmit,
   errorMessage,
-  submitLabel = 'Create account',
+  submitLabel,
   loading
 }: RegisterFormProps) {
+  const { t } = useTranslation('auth');
+  const registerSchema = useMemo(
+    () =>
+      z
+        .object({
+          name: z.string().min(2, t('validation.nameMin', { defaultValue: 'Name must be at least 2 characters' })),
+          email: z.string().email(t('validation.email', { defaultValue: 'Enter a valid email address' })),
+          password: z.string().min(8, t('validation.passwordMin', { defaultValue: 'Password must be at least 8 characters' })),
+          confirmPassword: z.string().min(8, t('validation.confirmPassword', { defaultValue: 'Confirm your password' })),
+        })
+        .refine(data => data.password === data.confirmPassword, {
+          message: t('validation.passwordsDoNotMatch', { defaultValue: 'Passwords do not match' }),
+          path: ['confirmPassword'],
+        }),
+    [t],
+  );
   const {
     register,
     handleSubmit,
@@ -88,7 +98,7 @@ export default function RegisterForm({
   const strength = useMemo(() => {
     if (!passwordValue) {
       return {
-        label: 'Enter a password',
+        label: t('register.strength.enterPassword', { defaultValue: 'Enter a password' }),
         className: 'bg-muted',
         percent: 0
       };
@@ -100,14 +110,14 @@ export default function RegisterForm({
       .reverse()
       .find(item => score >= item.minScore);
     const percent = Math.min(100, Math.round((score / 5) * 100));
-    const defaultTier = { label: 'Weak', className: 'bg-destructive', minScore: 0 };
+    const defaultTier = { label: t('register.strength.weak', { defaultValue: 'Weak' }), className: 'bg-destructive', minScore: 0 };
 
     return {
-      label: tier?.label ?? defaultTier.label,
+      label: tier?.label ? t(`register.strength.${tier.label.toLowerCase().replace(' ', '')}`, { defaultValue: tier.label }) : defaultTier.label,
       className: tier?.className ?? defaultTier.className,
       percent
     };
-  }, [passwordValue]);
+  }, [passwordValue, t]);
 
   return (
     <form
@@ -118,13 +128,13 @@ export default function RegisterForm({
     >
       <div className="space-y-2">
         <label htmlFor="name" className="text-sm font-medium">
-          Name
+          {t('fields.name', { defaultValue: 'Name' })}
         </label>
         <input
           id="name"
           type="text"
           autoComplete="name"
-          placeholder="Jane Doe"
+          placeholder={t('placeholders.fullName', { defaultValue: 'Jane Doe' })}
           className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           {...register('name')}
         />
@@ -133,13 +143,13 @@ export default function RegisterForm({
 
       <div className="space-y-2">
         <label htmlFor="email" className="text-sm font-medium">
-          Email
+          {t('fields.email', { defaultValue: 'Email' })}
         </label>
         <input
           id="email"
           type="email"
           autoComplete="email"
-          placeholder="you@company.com"
+          placeholder={t('placeholders.email', { defaultValue: 'you@company.com' })}
           className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           {...register('email')}
         />
@@ -148,13 +158,13 @@ export default function RegisterForm({
 
       <div className="space-y-2">
         <label htmlFor="password" className="text-sm font-medium">
-          Password
+          {t('fields.password', { defaultValue: 'Password' })}
         </label>
         <input
           id="password"
           type="password"
           autoComplete="new-password"
-          placeholder="Create a password"
+          placeholder={t('placeholders.createPassword', { defaultValue: 'Create a password' })}
           className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           {...register('password')}
         />
@@ -163,7 +173,7 @@ export default function RegisterForm({
         )}
         <div className="space-y-2">
           <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <span>Password strength</span>
+            <span>{t('register.strength.label', { defaultValue: 'Password strength' })}</span>
             <span>{strength.label}</span>
           </div>
           <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
@@ -177,13 +187,13 @@ export default function RegisterForm({
 
       <div className="space-y-2">
         <label htmlFor="confirmPassword" className="text-sm font-medium">
-          Confirm password
+          {t('fields.confirmPassword', { defaultValue: 'Confirm password' })}
         </label>
         <input
           id="confirmPassword"
           type="password"
           autoComplete="new-password"
-          placeholder="Re-enter your password"
+          placeholder={t('placeholders.confirmPassword', { defaultValue: 'Re-enter your password' })}
           className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           {...register('confirmPassword')}
         />
@@ -203,13 +213,13 @@ export default function RegisterForm({
         disabled={isLoading}
         className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
       >
-        {isLoading ? 'Creating account...' : submitLabel}
+        {isLoading ? t('register.creating', { defaultValue: 'Creating account...' }) : submitLabel ?? t('register.submit', { defaultValue: 'Create account' })}
       </button>
 
       <p className="text-center text-sm text-muted-foreground">
-        Already have an account?{' '}
+        {t('common.alreadyHaveAccount', { defaultValue: 'Already have an account?' })}{' '}
         <a href="/login" className="font-medium text-primary hover:underline">
-          Sign in
+          {t('common.signIn', { defaultValue: 'Sign in' })}
         </a>
       </p>
     </form>

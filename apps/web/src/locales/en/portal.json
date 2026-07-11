@@ -1,0 +1,101 @@
+{
+  "assetCheckout": {
+    "expectedReturnDate": "Expected return date",
+    "notes": "Notes (optional)",
+    "notesPlaceholder": "Add any pickup or delivery details",
+    "requesting": "Requesting: {{assetName}}",
+    "submit": "Request checkout",
+    "submitting": "Submitting request...",
+    "title": "Asset checkout",
+    "validation": {
+      "expectedReturnDate": "Select an expected return date"
+    }
+  },
+  "assetHistory": {
+    "actions": {
+      "check-in": "check in",
+      "check-out": "check out"
+    },
+    "description": "Recent check-in and check-out activity",
+    "title": "Asset history"
+  },
+  "branding": {
+    "defaultName": "Breeze Portal"
+  },
+  "customerDeviceList": {
+    "deviceCount": "{{count}} devices linked to your account",
+    "deviceCount_one": "{{count}} device linked to your account",
+    "deviceCount_other": "{{count}} devices linked to your account",
+    "title": "My Devices"
+  },
+  "deviceStatus": {
+    "lastSeen": "Last seen {{lastSeen}}",
+    "status": {
+      "maintenance": "maintenance",
+      "offline": "offline",
+      "online": "online"
+    },
+    "unknown": "Unknown"
+  },
+  "header": {
+    "customerPortal": "Customer Portal",
+    "profile": "Profile",
+    "signOut": "Sign out"
+  },
+  "login": {
+    "email": "Email",
+    "emailPlaceholder": "you@company.com",
+    "forgotPassword": "Forgot password?",
+    "lookup": "Lookup",
+    "needHelp": "Need help?",
+    "organization": "Organization",
+    "organizationPlaceholder": "Acme Corp or ORG-123",
+    "password": "Password",
+    "passwordPlaceholder": "Enter your password",
+    "signingIn": "Signing in...",
+    "submit": "Sign in",
+    "validation": {
+      "email": "Enter a valid email address",
+      "organization": "Enter your organization name or code",
+      "passwordLength": "Password must be at least 8 characters"
+    }
+  },
+  "passwordReset": {
+    "confirm": {
+      "code": "Reset code",
+      "codePlaceholder": "123456",
+      "confirmPassword": "Confirm password",
+      "confirmPasswordPlaceholder": "Re-enter your new password",
+      "newPassword": "New password",
+      "newPasswordPlaceholder": "Enter a new password",
+      "resetting": "Resetting password...",
+      "submit": "Reset password"
+    },
+    "email": "Email",
+    "emailPlaceholder": "you@company.com",
+    "rememberedPassword": "Remembered your password?",
+    "request": {
+      "sending": "Sending reset email...",
+      "submit": "Send reset link"
+    },
+    "signIn": "Sign in",
+    "validation": {
+      "code": "Enter the 6 digit reset code",
+      "email": "Enter a valid email address",
+      "passwordLength": "Password must be at least 8 characters",
+      "passwordsMatch": "Passwords do not match"
+    }
+  },
+  "sidebar": {
+    "collapse": "Collapse portal navigation",
+    "expand": "Expand portal navigation",
+    "items": {
+      "assetCheckout": "Asset Checkout",
+      "helpCenter": "Help Center",
+      "myDevices": "My Devices",
+      "overview": "Overview",
+      "supportTickets": "Support Tickets"
+    },
+    "navigation": "Portal Navigation"
+  }
+}

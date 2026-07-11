@@ -8,6 +8,7 @@ import {
   ChevronLeft,
   ChevronRight
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 
 type PortalNavItem = {
@@ -30,13 +31,23 @@ const defaultItems: PortalNavItem[] = [
   { name: 'Help Center', href: '/portal/help', icon: LifeBuoy }
 ];
 
+const defaultLabelKeys: Record<string, string> = {
+  '/portal': 'sidebar.items.overview',
+  '/portal/devices': 'sidebar.items.myDevices',
+  '/portal/tickets': 'sidebar.items.supportTickets',
+  '/portal/assets': 'sidebar.items.assetCheckout',
+  '/portal/help': 'sidebar.items.helpCenter'
+};
+
 export default function PortalSidebar({
-  items = defaultItems,
+  items,
   currentPath = '/',
   className
 }: PortalSidebarProps) {
+  const { t } = useTranslation('portal');
   const [collapsed, setCollapsed] = useState(false);
   const resolvedPath = currentPath;
+  const navItems = items ?? defaultItems;
 
   return (
     <aside
@@ -49,12 +60,13 @@ export default function PortalSidebar({
       <div className="flex h-16 items-center justify-between border-b px-4">
         {!collapsed && (
           <span className="text-sm font-semibold text-muted-foreground">
-            Portal Navigation
+            {t('sidebar.navigation')}
           </span>
         )}
         <button
           type="button"
           onClick={() => setCollapsed(!collapsed)}
+          aria-label={collapsed ? t('sidebar.expand') : t('sidebar.collapse')}
           className="rounded-md p-1.5 hover:bg-muted"
         >
           {collapsed ? (
@@ -66,14 +78,15 @@ export default function PortalSidebar({
       </div>
 
       <nav className="flex-1 space-y-1 p-2">
-        {items.map(item => {
+        {navItems.map(item => {
+          const label = items ? item.name : t(defaultLabelKeys[item.href]); // i18n-dynamic
           const isActive =
             item.href === '/portal'
               ? resolvedPath === '/portal'
               : resolvedPath.startsWith(item.href);
           return (
             <a
-              key={item.name}
+              key={item.href}
               href={item.href}
               className={cn(
                 'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
@@ -83,7 +96,7 @@ export default function PortalSidebar({
               )}
             >
               <item.icon className="h-5 w-5 shrink-0" />
-              {!collapsed && <span>{item.name}</span>}
+              {!collapsed && <span>{label}</span>}
             </a>
           );
         })}

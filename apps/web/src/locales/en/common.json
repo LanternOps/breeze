@@ -74,12 +74,194 @@
     "loading": "Loading…", "saving": "Saving…", "saved": "Saved",
     "error": "Something went wrong", "empty": "No results found",
     "enabled": "Enabled", "disabled": "Disabled", "active": "Active", "inactive": "Inactive",
-    "online": "Online", "offline": "Offline", "pending": "Pending", "unknown": "Unknown"
+    "online": "Online", "offline": "Offline", "pending": "Pending", "unknown": "Unknown",
+    "processing": "Processing…", "copied": "Copied", "resolving": "Resolving…"
   },
   "labels": {
     "name": "Name", "description": "Description", "status": "Status", "type": "Type",
     "organization": "Organization", "site": "Site", "device": "Device", "user": "User",
     "createdAt": "Created", "updatedAt": "Updated", "actions": "Actions", "all": "All",
     "yes": "Yes", "no": "No", "none": "None", "optional": "Optional", "required": "Required"
+  },
+  "shared": {
+    "accessDenied": {
+      "title": "Access denied",
+      "message": "You don't have permission to view this.",
+      "contactAdmin": "If you believe you should have access, contact your administrator."
+    },
+    "help": "Help",
+    "more": "More",
+    "alpha": {
+      "label": "Alpha",
+      "disclaimer": "This feature is in early access. Functionality may change, and some operations may not work as expected. Not recommended for production use without testing."
+    },
+    "mcp": {
+      "connecting": "Connecting an AI agent?",
+      "title": "Direct your AI agent here",
+      "description": "Paste this URL into your MCP client (Claude.ai, ChatGPT, Cursor, …). You'll be sent back here to authorize the connection via OAuth."
+    },
+    "progress": {
+      "count": "{{current}} of {{total}}",
+      "remaining": "and {{count}} more…",
+      "remaining_one": "and {{count}} more…",
+      "remaining_other": "and {{count}} more…",
+      "status": { "pending": "Pending", "running": "Running", "success": "Success", "failed": "Failed" }
+    },
+    "scope": { "system": "System", "partnerWide": "Partner-wide" },
+    "toast": { "undo": "Undo", "dismiss": "Dismiss" }
+  },
+  "dashboard": {
+    "greeting": { "welcome": "Welcome", "morning": "Good morning", "afternoon": "Good afternoon", "evening": "Good evening" },
+    "updated": {
+      "justNow": "Just now",
+      "secondsAgo": "{{count}}s ago", "secondsAgo_one": "{{count}}s ago", "secondsAgo_other": "{{count}}s ago",
+      "minutesAgo": "{{count}}m ago", "minutesAgo_one": "{{count}}m ago", "minutesAgo_other": "{{count}}m ago",
+      "hoursAgo": "{{count}}h ago", "hoursAgo_one": "{{count}}h ago", "hoursAgo_other": "{{count}}h ago"
+    },
+    "refresh": "Refresh dashboard",
+    "stats": { "totalDevices": "Total Devices", "warnings": "Warnings", "critical": "Critical" },
+    "emptyDevices": { "title": "No devices enrolled yet", "description": "Enroll your first device to start monitoring your fleet.", "add": "Add Device" },
+    "fleetStatus": {
+      "title": "Fleet Status", "onlineCount": "{{online}}/{{total}} online", "allOnline": "All devices online",
+      "healthy": "Your fleet is healthy", "viewOffline": "View all {{count}} offline"
+    },
+    "activity": {
+      "title": "Recent Activity", "viewAuditLog": "View audit log", "empty": "No activity yet",
+      "emptyDescription": "Actions like device enrollment, script runs, and config changes will appear here.",
+      "action": "Action", "target": "Target", "time": "Time"
+    },
+    "alerts": {
+      "title": "Recent Alerts", "viewAll": "View all", "allClear": "All clear",
+      "empty": "No active alerts across your fleet", "fallbackTitle": "Alert"
+    },
+    "customizer": {
+      "title": "Dashboard Customizer", "newName": "New dashboard name", "widgetLibrary": "Widget Library", "emailPlaceholder": "email@company.com",
+      "noSharedUsers": "No shared users yet.", "grid": "Dashboard Grid", "trendChart": "Trend chart", "dashboardSettings": "Dashboard Settings",
+      "layout": "Layout", "dashboardName": "Dashboard name", "widgetSettings": "Widget Settings", "widgetTitle": "Title",
+      "refreshInterval": "Refresh interval (minutes)", "severityFilter": "Severity filter", "chartType": "Chart type", "timeRange": "Time range",
+      "severity": { "all": "All severities", "critical": "Critical only", "high": "High only", "medium": "Medium only", "low": "Low only" },
+      "chart": { "line": "Line", "bar": "Bar", "area": "Area" },
+      "ranges": { "24h": "Last 24 hours", "7d": "Last 7 days", "30d": "Last 30 days" }, "defaultPerRole": "Default dashboard per role"
+    }
+  },
+  "filters": {
+    "match": "Match", "allConditions": "All conditions (AND)", "anyCondition": "Any condition (OR)",
+    "condition": "Condition", "addCondition": "Add Condition", "removeCondition": "Remove condition",
+    "addGroup": "Add Group", "conditionCount": "{{count}} conditions", "conditionCount_one": "{{count}} condition", "conditionCount_other": "{{count}} conditions",
+    "activeConditionCount": "{{count}} conditions active", "activeConditionCount_one": "{{count}} condition active", "activeConditionCount_other": "{{count}} conditions active",
+    "selectField": "Select field", "searchFields": "Search fields…", "noFields": "No fields match your search",
+    "group": { "label": "Group", "match": "Group: Match", "all": "All (AND)", "any": "Any (OR)", "remove": "Remove group" },
+    "saved": {
+      "title": "Saved Filters", "edit": "Edit Filter", "create": "Create Filter", "new": "New Filter", "nameRequired": "Name is required",
+      "namePlaceholder": "e.g., Windows Servers", "description": "Description (optional)", "descriptionPlaceholder": "Describe what this filter matches",
+      "conditions": "Conditions", "saveChanges": "Save Changes", "search": "Search filters…", "noMatches": "No filters match your search",
+      "empty": "No saved filters yet. Create one to reuse across groups and deployments.", "duplicate": "Duplicate"
+    },
+    "targets": {
+      "modes": { "all": "All Devices", "manual": "Select Devices", "groups": "Device Groups", "filter": "Advanced Filter" },
+      "allManaged": "Targets all managed devices", "totalDevices": "{{count}} devices total", "selectedDevices": "{{count}} devices selected",
+      "searchDevices": "Search devices…", "noDevices": "No devices found", "selectedGroups": "{{count}} groups selected",
+      "noGroups": "No device groups available", "deviceCount": "{{count}} devices", "loadSaved": "Load saved filter:", "select": "Select"
+    },
+    "preview": {
+      "title": "Matching Devices", "addConditions": "Add filter conditions to see matching devices",
+      "matchCount": "devices match", "matchCount_one": "device match", "matchCount_other": "devices match",
+      "showing": "Showing {{shown}} of {{total}}"
+    },
+    "operators": {
+      "equals": "equals", "notEquals": "does not equal", "greaterThan": "greater than",
+      "greaterThanOrEquals": "greater than or equals", "lessThan": "less than", "lessThanOrEquals": "less than or equals",
+      "contains": "contains", "notContains": "does not contain", "startsWith": "starts with", "endsWith": "ends with",
+      "matches": "matches regex", "in": "is one of", "notIn": "is not one of", "hasAny": "has any of", "hasAll": "has all of",
+      "isEmpty": "is empty", "isNotEmpty": "is not empty", "isNull": "is empty", "isNotNull": "is not empty",
+      "before": "is before", "after": "is after", "between": "is between", "withinLast": "within last", "notWithinLast": "not within last"
+    },
+    "value": {
+      "noValue": "No value needed", "enterNumber": "Enter a number", "to": "to", "typeAndEnter": "Type and press Enter",
+      "regex": "Regular expression", "ipExample": "e.g., 192.168.1.", "macExample": "e.g., AA:BB:CC",
+      "hostnameExample": "e.g., srv-web-01", "softwareExample": "e.g., Chrome", "enterValue": "Enter value",
+      "units": { "minutes": "minutes", "hours": "hours", "days": "days", "weeks": "weeks", "months": "months" }
+    }
+  },
+  "account": {
+    "nav": { "label": "Account sections", "devices": "Trusted devices", "connectedApps": "Connected apps", "delete": "Delete account" },
+    "backToSettings": "Back to settings", "returnDashboard": "Return to dashboard", "signedInAs": "Signed in as", "email": "Email",
+    "reason": "Reason (optional)", "revoke": "Revoke", "revoked": "Revoked", "revoking": "Revoking…",
+    "errors": { "network": "Network error. Please try again.", "revokeNetwork": "Network error during revoke" },
+    "approval": {
+      "title": "Test the approval flow",
+      "description": "Send a sandbox approval push to your own Breeze Mobile devices. Tapping the push will take over your phone with the approval screen for 60 seconds. Approving or denying does not run any real action — it's purely for testing.",
+      "sendTitle": "Send a test approval to your phone", "sendDescription": "We'll deliver a push within a few seconds. The approval expires automatically after 60 seconds if you don't act on it.",
+      "sending": "Sending…", "send": "Send test approval to my phone", "sent": "Sent. Check your phone within a few seconds.",
+      "delivered": "Push delivered to {{sent}} of {{count}} registered devices. The approval expires in 60 seconds.",
+      "delivered_one": "Push delivered to {{sent}} of {{count}} registered device. The approval expires in 60 seconds.",
+      "delivered_other": "Push delivered to {{sent}} of {{count}} registered devices. The approval expires in 60 seconds.",
+      "noDevices": "We don't see a registered Breeze Mobile device on your account. Sign in to the app at least once, then try again.",
+      "tip": "Tip: this page is safe to share with App Store reviewers. They can sign in with the provided test account, click the button, and verify the approval takeover end-to-end.",
+      "errors": { "send": "We could not send a test approval. Please try again." }
+    },
+    "deletion": {
+      "title": "Delete your account", "description": "Submitting a deletion request notifies an administrator on your organization. Your account will be processed and removed within 30 days. You can cancel any time before then.",
+      "warningTitle": "This is a request, not an immediate deletion.", "warningDescription": "Once submitted, an admin from your organization is notified by email. Your account will be processed within 30 days. You can sign in and cancel any time before then.",
+      "confirmPassword": "Confirm your password", "typePrefix": "Type", "typeSuffix": "to confirm", "reason": "Reason (optional)",
+      "reasonPlaceholder": "Help us improve — what made you decide to leave?", "submitting": "Submitting…", "submit": "Request account deletion",
+      "received": "Deletion request received", "processedByPrefix": "We've notified an administrator on your organization. Your account will be processed by",
+      "reference": "Reference", "submitted": "Submitted", "processesBy": "Processes by", "cancelling": "Cancelling…", "cancelRequest": "Cancel deletion request",
+      "errors": { "load": "Unable to load your account status. Please refresh.", "submit": "We could not submit your request. Please try again.", "cancel": "We could not cancel your request. Please try again." }
+    },
+    "devices": {
+      "title": "Trusted devices", "description": "Phones and tablets you've paired with the Breeze mobile app. These devices can approve high-risk MCP requests on your behalf. Revoke any device you no longer use.",
+      "empty": "No paired devices", "emptyDescription": "Install the Breeze mobile app and sign in to pair a device. Approvals will then surface on your phone.",
+      "thisDevice": "This device", "blocked": "Blocked", "platform": "Platform", "lastActive": "Last active", "revokeElsewhere": "Revoke from another device",
+      "revokedToast": "Device revoked.", "revokeTitle": "Revoke {{device}}?", "revokeDescription": "The device's push tokens are wiped immediately and any in-flight approvals will fail. To use the app again you'll need to re-pair from a sign-in.",
+      "onlyDeviceTitle": "This is your only trusted device.", "onlyDeviceDescription": "Until you re-pair from a new sign-in, you won't be able to approve anything from your phone.",
+      "reasonPlaceholder": "Lost phone, replaced device, …", "revokeAction": "Revoke device"
+    },
+    "apps": {
+      "title": "Connected apps", "description": "AI assistants and other MCP clients (Claude.ai, ChatGPT, Cursor, …) you've authorized to act on your behalf. Revoke access at any time — tokens stop working within 10 minutes.",
+      "empty": "No connected apps", "emptyDescription": "When you authorize a Claude.ai chat, ChatGPT, Cursor, or any other MCP client, it will appear here so you can revoke it later.",
+      "authorized": "Authorized", "lastUsed": "Last used", "lastDecision": "Last decision", "revokedToast": "{{app}} access revoked. Tokens stop working within 10 minutes.",
+      "revokeTitle": "Revoke {{app}}?", "revokeDescription": "All grants and refresh tokens for this client will be wiped. Tokens stop working within 10 minutes. You'll need to re-authorize the next time you use it.",
+      "onlyAppTitle": "This is your only authorized app.", "onlyAppDescription": "After revoking, you'll need to re-authorize before any AI assistant can act on your tenant.",
+      "reasonPlaceholder": "No longer needed, suspicious activity, …", "revokeAction": "Revoke access"
+    }
+  },
+  "layout": {
+    "logoAlt": "{{brand}} logo", "breadcrumb": "Breadcrumb", "redirectingToLogin": "Redirecting to login…",
+    "scope": { "shared": "Shared across all organizations", "allOrganizations": "All organizations" },
+    "org": {
+      "allSites": "All Sites", "deviceCount": "{{count}} devices", "deviceCount_one": "{{count}} device", "deviceCount_other": "{{count}} devices",
+      "scopeLabel": "Organization scope", "current": "Current", "allOrgs": "All orgs",
+      "currentTitle": "Show data for the selected organization only", "allTitle": "Show data across every accessible organization",
+      "allOrganizations": "All Organizations", "globalTitle": "This page shows all organizations", "selectTitle": "Select Organization (Cmd+O)",
+      "switching": "Switching…", "organizations": "Organizations", "noneAvailable": "No organizations available",
+      "status": { "active": "Active", "trial": "Trial", "suspended": "Suspended", "inactive": "Inactive" },
+      "toast": { "showingAll": "Showing all organizations", "showing": "Showing {{name}}", "switched": "Switched to {{name}}", "showingAllSites": "Showing all sites" }
+    },
+    "header": {
+      "menu": "Menu", "openMenu": "Open navigation menu", "ai": "AI Assistant", "aiTitle": "AI Assistant (Cmd+Shift+A)",
+      "help": "Help and docs", "helpTitle": "Help & Docs (Cmd+Shift+H)", "theme": "Theme",
+      "themeOptions": { "light": "Light", "dark": "Dark", "system": "System" },
+      "density": "Interface density", "densityOptions": { "comfortable": "Comfortable", "compact": "Compact", "dense": "Dense" },
+      "densityOptionLabel": "{{label}} interface density", "densityDescription": "Applies across the entire app.",
+      "accountMenu": "Account menu", "userAvatar": "User avatar", "guest": "Guest", "notSignedIn": "Not signed in", "mfaEnabled": "2FA enabled",
+      "account": "Account", "profile": "Profile", "apiKeys": "API Keys", "billingSupport": "Billing & support",
+      "opening": "Opening…", "billing": "Billing", "contactSupport": "Contact support", "activityLog": "Activity Log",
+      "signingOut": "Signing out…", "signOut": "Sign out",
+      "billingErrors": { "noRecord": "No active subscription. Contact support.", "notConfigured": "Billing is not available on this deployment.", "unavailable": "Billing service is temporarily unavailable. Please try again in a moment.", "rateLimited": "Too many requests. Please wait a few minutes and try again.", "open": "Failed to open billing portal", "missingUrl": "Billing portal URL missing from response" }
+    },
+    "search": {
+      "prompt": "Search devices, scripts, alerts, users, settings", "placeholder": "Search devices, scripts, alerts, users, settings…",
+      "searching": "Searching…", "startTyping": "Start typing to search across devices, scripts, alerts, users, and settings.",
+      "noResults": "No results found. Try a different query.", "navigationHint": "Use arrows to navigate, Enter to open", "closeHint": "Esc to close",
+      "sections": { "quick-actions": "Quick actions", "recent": "Recent", "devices": "Devices", "scripts": "Scripts", "alerts": "Alerts", "users": "Users", "settings": "Settings" }
+    },
+    "notifications": {
+      "title": "Notifications", "ariaUnread": "Notifications, {{count}} unread", "ariaUnread_one": "Notifications, {{count}} unread", "ariaUnread_other": "Notifications, {{count}} unread",
+      "unread": "{{count}} unread", "unread_one": "{{count}} unread", "unread_other": "{{count}} unread", "markAllRead": "Mark all read", "markAllUnread": "Mark all unread",
+      "confirmClear": "Confirm clear", "clearAll": "Clear all", "loading": "Loading notifications…", "empty": "No notifications yet.",
+      "recently": "Recently", "markUnread": "Mark unread", "markRead": "Mark read", "preferences": "Notification preferences"
+    },
+    "sidebar": { "autoHide": "Auto-hide sidebar", "collapse": "Collapse sidebar", "expand": "Expand sidebar", "collapseSections": "Collapse all sections", "closeMenu": "Close menu" }
   }
 }

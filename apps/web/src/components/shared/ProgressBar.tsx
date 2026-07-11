@@ -1,4 +1,5 @@
 import { cn } from '@/lib/utils';
+import { useTranslation } from 'react-i18next';
 
 export type ProgressBarVariant = 'default' | 'success' | 'warning' | 'error';
 
@@ -26,6 +27,7 @@ export default function ProgressBar({
   showCount = true,
   className,
 }: ProgressBarProps) {
+  const { t } = useTranslation('common');
   const percent = total > 0 ? Math.round((current / total) * 100) : 0;
 
   return (
@@ -35,7 +37,7 @@ export default function ProgressBar({
           <span>{label}</span>
           {showCount && (
             <span>
-              {current} of {total}
+              {t('shared.progress.count', { current, total })}
             </span>
           )}
         </div>
@@ -64,13 +66,6 @@ const itemStatusStyles: Record<ItemStatus, string> = {
   failed: 'bg-destructive/15 text-destructive',
 };
 
-const itemStatusLabels: Record<ItemStatus, string> = {
-  pending: 'Pending',
-  running: 'Running',
-  success: 'Success',
-  failed: 'Failed',
-};
-
 export interface ProgressItem {
   id: string;
   label: string;
@@ -93,6 +88,7 @@ export function ProgressItemList({
   maxVisible = 10,
   className,
 }: ProgressItemListProps) {
+  const { t } = useTranslation('common');
   const visible = items.slice(0, maxVisible);
   const remaining = items.length - visible.length;
 
@@ -119,13 +115,13 @@ export function ProgressItemList({
               itemStatusStyles[item.status],
             )}
           >
-            {itemStatusLabels[item.status]}
+            {t(`shared.progress.status.${item.status}`)}
           </span>
         </div>
       ))}
       {remaining > 0 && (
         <p className="px-3 text-xs text-muted-foreground">
-          and {remaining} more...
+          {t('shared.progress.remaining', { count: remaining })}
         </p>
       )}
     </div>

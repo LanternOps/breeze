@@ -4,6 +4,7 @@ import type { FilterCondition, FilterFieldDefinition, FilterOperator, FilterValu
 import { FieldSelector } from './FieldSelector';
 import { OperatorSelector } from './OperatorSelector';
 import { ValueInput } from './ValueInput';
+import { useTranslation } from 'react-i18next';
 
 interface ConditionRowProps {
   value: FilterCondition;
@@ -20,6 +21,7 @@ export function ConditionRow({
   filterFields,
   canRemove = true
 }: ConditionRowProps) {
+  const { t } = useTranslation('common');
   const selectedField = useMemo(() => {
     return filterFields.find(f => f.key === value.field);
   }, [filterFields, value.field]);
@@ -79,7 +81,7 @@ export function ConditionRow({
         onClick={onRemove}
         disabled={!canRemove}
         className="inline-flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-destructive disabled:opacity-40 disabled:cursor-not-allowed"
-        title="Remove condition"
+        title={t('filters.removeCondition')}
       >
         <Trash2 className="h-4 w-4" />
       </button>

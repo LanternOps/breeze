@@ -13,6 +13,7 @@ import {
   Share2
 } from 'lucide-react';
 import { cn, gridColSpanClass, gridColStartClass, gridRowSpanClass, gridRowStartClass } from '@/lib/utils';
+import { useTranslation } from 'react-i18next';
 
 const GRID_COLUMNS = 12;
 const ROW_HEIGHT = 120;
@@ -223,6 +224,7 @@ const findOpenPosition = (w: number, h: number, widgets: DashboardWidget[]) => {
 };
 
 export default function DashboardCustomizer() {
+  const { t } = useTranslation('common');
   const [dashboards, setDashboards] = useState<Dashboard[]>(() => cloneDashboards(DEFAULT_DASHBOARDS));
   const [activeDashboardId, setActiveDashboardId] = useState<string>(
     () => DEFAULT_DASHBOARDS[0]?.id ?? ''
@@ -590,7 +592,7 @@ export default function DashboardCustomizer() {
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <LayoutDashboard className="h-4 w-4" />
-            <span>Dashboard Customizer</span>
+            <span>{t('dashboard.customizer.title')}</span>
           </div>
           <select
             value={activeDashboard?.id ?? ''}
@@ -610,7 +612,7 @@ export default function DashboardCustomizer() {
             <input
               value={newDashboardName}
               onChange={(event) => setNewDashboardName(event.target.value)}
-              placeholder="New dashboard name"
+              placeholder={t('dashboard.customizer.newName')}
               className="h-9 w-48 rounded-md border bg-background px-3 text-sm"
             />
             <button
@@ -661,7 +663,7 @@ export default function DashboardCustomizer() {
         <div className="space-y-4">
           <div className="rounded-lg border bg-card p-4 shadow-xs">
             <div className="mb-4">
-              <h3 className="text-sm font-semibold">Widget Library</h3>
+              <h3 className="text-sm font-semibold">{t('dashboard.customizer.widgetLibrary')}</h3>
               <p className="text-xs text-muted-foreground">
                 Drag widgets onto the grid or tap to add.
               </p>
@@ -705,7 +707,7 @@ export default function DashboardCustomizer() {
               <input
                 value={shareInput}
                 onChange={(event) => setShareInput(event.target.value)}
-                placeholder="email@company.com"
+                placeholder={t('dashboard.customizer.emailPlaceholder')}
                 className="h-9 flex-1 rounded-md border bg-background px-3 text-sm"
               />
               <button
@@ -734,7 +736,7 @@ export default function DashboardCustomizer() {
                   </div>
                 ))
               ) : (
-                <p className="text-xs text-muted-foreground">No shared users yet.</p>
+                <p className="text-xs text-muted-foreground">{t('dashboard.customizer.noSharedUsers')}</p>
               )}
             </div>
           </div>
@@ -743,7 +745,7 @@ export default function DashboardCustomizer() {
         <div className="rounded-lg border bg-card p-4 shadow-xs">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
             <div>
-              <h3 className="text-sm font-semibold">Dashboard Grid</h3>
+              <h3 className="text-sm font-semibold">{t('dashboard.customizer.grid')}</h3>
               <p className="text-xs text-muted-foreground">
                 {activeWidgets.length} widgets placed
               </p>
@@ -816,7 +818,7 @@ export default function DashboardCustomizer() {
                     )}
                     {widget.type === 'chart' && (
                       <div className="space-y-1">
-                        <div className="font-medium text-foreground">Trend chart</div>
+                        <div className="font-medium text-foreground">{t('dashboard.customizer.trendChart')}</div>
                         <div>
                           {widget.settings.chartType ?? 'line'} · {widget.settings.timeRange ?? '24h'}
                         </div>
@@ -842,12 +844,12 @@ export default function DashboardCustomizer() {
         <div className="space-y-4">
           <div className="rounded-lg border bg-card p-4 shadow-xs">
             <div className="mb-4 flex items-center justify-between">
-              <h3 className="text-sm font-semibold">Dashboard Settings</h3>
-              <span className="text-xs text-muted-foreground">Layout</span>
+              <h3 className="text-sm font-semibold">{t('dashboard.customizer.dashboardSettings')}</h3>
+              <span className="text-xs text-muted-foreground">{t('dashboard.customizer.layout')}</span>
             </div>
             <div className="space-y-3">
               <div className="space-y-1">
-                <label className="text-xs font-medium">Dashboard name</label>
+                <label className="text-xs font-medium">{t('dashboard.customizer.dashboardName')}</label>
                 <input
                   value={activeDashboard?.name ?? ''}
                   onChange={(event) => handleDashboardNameChange(event.target.value)}
@@ -863,7 +865,7 @@ export default function DashboardCustomizer() {
 
           <div className="rounded-lg border bg-card p-4 shadow-xs">
             <div className="mb-4 flex items-center justify-between">
-              <h3 className="text-sm font-semibold">Widget Settings</h3>
+              <h3 className="text-sm font-semibold">{t('dashboard.customizer.widgetSettings')}</h3>
               {selectedWidget && (
                 <span className="rounded-full bg-muted px-2 py-1 text-xs text-muted-foreground">
                   {selectedWidget.type}
@@ -873,7 +875,7 @@ export default function DashboardCustomizer() {
             {selectedWidget ? (
               <div className="space-y-3">
                 <div className="space-y-1">
-                  <label className="text-xs font-medium">Title</label>
+                  <label className="text-xs font-medium">{t('dashboard.customizer.widgetTitle')}</label>
                   <input
                     value={selectedWidget.title}
                     onChange={(event) =>
@@ -886,7 +888,7 @@ export default function DashboardCustomizer() {
                   />
                 </div>
                 <div className="space-y-1">
-                  <label className="text-xs font-medium">Refresh interval (minutes)</label>
+                  <label className="text-xs font-medium">{t('dashboard.customizer.refreshInterval')}</label>
                   <input
                     type="number"
                     min={1}
@@ -912,7 +914,7 @@ export default function DashboardCustomizer() {
                 )}
                 {selectedWidget.type === 'alert-summary' && (
                   <div className="space-y-1">
-                    <label className="text-xs font-medium">Severity filter</label>
+                    <label className="text-xs font-medium">{t('dashboard.customizer.severityFilter')}</label>
                     <select
                       value={selectedWidget.settings.severityFilter ?? 'all'}
                       onChange={(event) =>
@@ -923,18 +925,18 @@ export default function DashboardCustomizer() {
                       }
                       className="h-9 w-full rounded-md border bg-background px-3 text-sm"
                     >
-                      <option value="all">All severities</option>
-                      <option value="critical">Critical only</option>
-                      <option value="high">High only</option>
-                      <option value="medium">Medium only</option>
-                      <option value="low">Low only</option>
+                      <option value="all">{t('dashboard.customizer.severity.all')}</option>
+                      <option value="critical">{t('dashboard.customizer.severity.critical')}</option>
+                      <option value="high">{t('dashboard.customizer.severity.high')}</option>
+                      <option value="medium">{t('dashboard.customizer.severity.medium')}</option>
+                      <option value="low">{t('dashboard.customizer.severity.low')}</option>
                     </select>
                   </div>
                 )}
                 {selectedWidget.type === 'chart' && (
                   <>
                     <div className="space-y-1">
-                      <label className="text-xs font-medium">Chart type</label>
+                      <label className="text-xs font-medium">{t('dashboard.customizer.chartType')}</label>
                       <select
                         value={selectedWidget.settings.chartType ?? 'line'}
                         onChange={(event) =>
@@ -945,13 +947,13 @@ export default function DashboardCustomizer() {
                         }
                         className="h-9 w-full rounded-md border bg-background px-3 text-sm"
                       >
-                        <option value="line">Line</option>
-                        <option value="bar">Bar</option>
-                        <option value="area">Area</option>
+                        <option value="line">{t('dashboard.customizer.chart.line')}</option>
+                        <option value="bar">{t('dashboard.customizer.chart.bar')}</option>
+                        <option value="area">{t('dashboard.customizer.chart.area')}</option>
                       </select>
                     </div>
                     <div className="space-y-1">
-                      <label className="text-xs font-medium">Time range</label>
+                      <label className="text-xs font-medium">{t('dashboard.customizer.timeRange')}</label>
                       <select
                         value={selectedWidget.settings.timeRange ?? '24h'}
                         onChange={(event) =>
@@ -962,9 +964,9 @@ export default function DashboardCustomizer() {
                         }
                         className="h-9 w-full rounded-md border bg-background px-3 text-sm"
                       >
-                        <option value="24h">Last 24 hours</option>
-                        <option value="7d">Last 7 days</option>
-                        <option value="30d">Last 30 days</option>
+                        <option value="24h">{t('dashboard.customizer.ranges.24h')}</option>
+                        <option value="7d">{t('dashboard.customizer.ranges.7d')}</option>
+                        <option value="30d">{t('dashboard.customizer.ranges.30d')}</option>
                       </select>
                     </div>
                     <label className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -998,7 +1000,7 @@ export default function DashboardCustomizer() {
           <div className="rounded-lg border bg-card p-4 shadow-xs">
             <div className="mb-4 flex items-center gap-2">
               <LayoutDashboard className="h-4 w-4 text-muted-foreground" />
-              <h3 className="text-sm font-semibold">Default dashboard per role</h3>
+              <h3 className="text-sm font-semibold">{t('dashboard.customizer.defaultPerRole')}</h3>
             </div>
             <div className="space-y-3">
               {ROLE_OPTIONS.map((role) => (

@@ -3,6 +3,7 @@ import { ChevronDown, ChevronUp, X, Filter, BookmarkIcon } from 'lucide-react';
 import type { FilterConditionGroup, SavedFilter } from '@breeze/shared';
 import { FilterBuilder, DEFAULT_FILTER_FIELDS } from './FilterBuilder';
 import { fetchWithAuth } from '../../stores/auth';
+import { useTranslation } from 'react-i18next';
 
 interface DeviceFilterBarProps {
   value: FilterConditionGroup | null;
@@ -40,6 +41,7 @@ export function DeviceFilterBar({
   defaultExpanded = false,
   className = ''
 }: DeviceFilterBarProps) {
+  const { t } = useTranslation('common');
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [savedFilters, setSavedFilters] = useState<SavedFilter[]>([]);
   const [savedFiltersLoading, setSavedFiltersLoading] = useState(false);
@@ -102,7 +104,7 @@ export function DeviceFilterBar({
             disabled={savedFiltersLoading}
             className="rounded-md border bg-background pl-2 pr-6 py-1.5 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
-            <option value="">Saved Filters...</option>
+            <option value="">{t('filters.saved.title')}…</option>
             {savedFilters.map(f => (
               <option key={f.id} value={f.id}>{f.name}</option>
             ))}
@@ -111,7 +113,7 @@ export function DeviceFilterBar({
 
         {conditionCount > 0 && (
           <span className="inline-flex items-center rounded-full bg-primary/10 px-2.5 py-0.5 text-xs font-medium text-primary">
-            {conditionCount} condition{conditionCount !== 1 ? 's' : ''} active
+            {t('filters.activeConditionCount', { count: conditionCount })}
           </span>
         )}
 

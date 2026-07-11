@@ -664,7 +664,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
 
   // --- Toggle button icon --------------------------------------------------
   const ToggleIcon = effectiveMode === 'open' ? ChevronLeft : effectiveMode === 'hover' ? ChevronsLeft : ChevronRight;
-  const toggleTitle = effectiveMode === 'open' ? 'Auto-hide sidebar' : effectiveMode === 'hover' ? 'Collapse sidebar' : 'Expand sidebar';
+  const toggleTitle = effectiveMode === 'open' ? t('layout.sidebar.autoHide') : effectiveMode === 'hover' ? t('layout.sidebar.collapse') : t('layout.sidebar.expand');
 
   // --- Shared CSS for expand/collapse animation ----------------------------
   const sectionAnimCss = (
@@ -707,8 +707,8 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
           {showLabels && (
             <button
               onClick={collapseAllExceptActive}
-              title="Collapse all sections"
-              aria-label="Collapse all sections"
+              title={t('layout.sidebar.collapseSections')}
+              aria-label={t('layout.sidebar.collapseSections')}
               className="rounded-md p-1.5 hover:bg-muted"
             >
               <ChevronsDownUp className="h-5 w-5" />
@@ -765,8 +765,8 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
           <div className="flex items-center gap-1">
             <button
               onClick={collapseAllExceptActive}
-              title="Collapse all sections"
-              aria-label="Collapse all sections"
+              title={t('layout.sidebar.collapseSections')}
+              aria-label={t('layout.sidebar.collapseSections')}
               className="rounded-md p-1.5 hover:bg-muted"
             >
               <ChevronsDownUp className="h-5 w-5" />
@@ -774,7 +774,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
             <button
               onClick={closeMobileMenu}
               className="rounded-md p-1.5 hover:bg-muted"
-              title="Close menu"
+              title={t('layout.sidebar.closeMenu')}
             >
               <X className="h-5 w-5" />
             </button>

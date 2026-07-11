@@ -74,12 +74,194 @@
     "loading": "Carregando…", "saving": "Salvando…", "saved": "Salvo",
     "error": "Algo deu errado", "empty": "Nenhum resultado encontrado",
     "enabled": "Ativado", "disabled": "Desativado", "active": "Ativo", "inactive": "Inativo",
-    "online": "Online", "offline": "Offline", "pending": "Pendente", "unknown": "Desconhecido"
+    "online": "Online", "offline": "Offline", "pending": "Pendente", "unknown": "Desconhecido",
+    "processing": "Processando…", "copied": "Copiado", "resolving": "Resolvendo…"
   },
   "labels": {
     "name": "Nome", "description": "Descrição", "status": "Status", "type": "Tipo",
     "organization": "Organização", "site": "Local", "device": "Dispositivo", "user": "Usuário",
     "createdAt": "Criado em", "updatedAt": "Atualizado em", "actions": "Ações", "all": "Todos",
     "yes": "Sim", "no": "Não", "none": "Nenhum", "optional": "Opcional", "required": "Obrigatório"
+  },
+  "shared": {
+    "accessDenied": {
+      "title": "Acesso negado",
+      "message": "Você não tem permissão para visualizar isto.",
+      "contactAdmin": "Se acredita que deveria ter acesso, entre em contato com seu administrador."
+    },
+    "help": "Ajuda",
+    "more": "Mais",
+    "alpha": {
+      "label": "Alfa",
+      "disclaimer": "Este recurso está em acesso antecipado. A funcionalidade pode mudar e algumas operações podem não funcionar como esperado. Não é recomendado para uso em produção sem testes."
+    },
+    "mcp": {
+      "connecting": "Conectando um agente de IA?",
+      "title": "Direcione seu agente de IA para cá",
+      "description": "Cole esta URL no seu cliente MCP (Claude.ai, ChatGPT, Cursor, …). Você voltará aqui para autorizar a conexão via OAuth."
+    },
+    "progress": {
+      "count": "{{current}} de {{total}}",
+      "remaining": "e mais {{count}}…",
+      "remaining_one": "e mais {{count}}…",
+      "remaining_other": "e mais {{count}}…",
+      "status": { "pending": "Pendente", "running": "Em execução", "success": "Sucesso", "failed": "Falhou" }
+    },
+    "scope": { "system": "Sistema", "partnerWide": "Todo o parceiro" },
+    "toast": { "undo": "Desfazer", "dismiss": "Dispensar" }
+  },
+  "dashboard": {
+    "greeting": { "welcome": "Bem-vindo", "morning": "Bom dia", "afternoon": "Boa tarde", "evening": "Boa noite" },
+    "updated": {
+      "justNow": "Agora mesmo",
+      "secondsAgo": "há {{count}}s", "secondsAgo_one": "há {{count}}s", "secondsAgo_other": "há {{count}}s",
+      "minutesAgo": "há {{count}}min", "minutesAgo_one": "há {{count}}min", "minutesAgo_other": "há {{count}}min",
+      "hoursAgo": "há {{count}}h", "hoursAgo_one": "há {{count}}h", "hoursAgo_other": "há {{count}}h"
+    },
+    "refresh": "Atualizar painel",
+    "stats": { "totalDevices": "Total de dispositivos", "warnings": "Avisos", "critical": "Críticos" },
+    "emptyDevices": { "title": "Nenhum dispositivo registrado ainda", "description": "Registre seu primeiro dispositivo para começar a monitorar sua frota.", "add": "Adicionar dispositivo" },
+    "fleetStatus": {
+      "title": "Status da frota", "onlineCount": "{{online}}/{{total}} online", "allOnline": "Todos os dispositivos estão online",
+      "healthy": "Sua frota está saudável", "viewOffline": "Ver todos os {{count}} offline"
+    },
+    "activity": {
+      "title": "Atividade recente", "viewAuditLog": "Ver log de auditoria", "empty": "Nenhuma atividade ainda",
+      "emptyDescription": "Ações como registro de dispositivos, execução de scripts e alterações de configuração aparecerão aqui.",
+      "action": "Ação", "target": "Destino", "time": "Hora"
+    },
+    "alerts": {
+      "title": "Alertas recentes", "viewAll": "Ver todos", "allClear": "Tudo certo",
+      "empty": "Nenhum alerta ativo em sua frota", "fallbackTitle": "Alerta"
+    },
+    "customizer": {
+      "title": "Personalizador do painel", "newName": "Nome do novo painel", "widgetLibrary": "Biblioteca de widgets", "emailPlaceholder": "email@empresa.com",
+      "noSharedUsers": "Nenhum usuário compartilhado ainda.", "grid": "Grade do painel", "trendChart": "Gráfico de tendência", "dashboardSettings": "Configurações do painel",
+      "layout": "Layout", "dashboardName": "Nome do painel", "widgetSettings": "Configurações do widget", "widgetTitle": "Título",
+      "refreshInterval": "Intervalo de atualização (minutos)", "severityFilter": "Filtro de gravidade", "chartType": "Tipo de gráfico", "timeRange": "Período",
+      "severity": { "all": "Todas as gravidades", "critical": "Somente crítica", "high": "Somente alta", "medium": "Somente média", "low": "Somente baixa" },
+      "chart": { "line": "Linha", "bar": "Barras", "area": "Área" },
+      "ranges": { "24h": "Últimas 24 horas", "7d": "Últimos 7 dias", "30d": "Últimos 30 dias" }, "defaultPerRole": "Painel padrão por função"
+    }
+  },
+  "filters": {
+    "match": "Corresponder", "allConditions": "Todas as condições (E)", "anyCondition": "Qualquer condição (OU)",
+    "condition": "Condição", "addCondition": "Adicionar condição", "removeCondition": "Remover condição",
+    "addGroup": "Adicionar grupo", "conditionCount": "{{count}} condições", "conditionCount_one": "{{count}} condição", "conditionCount_other": "{{count}} condições",
+    "activeConditionCount": "{{count}} condições ativas", "activeConditionCount_one": "{{count}} condição ativa", "activeConditionCount_other": "{{count}} condições ativas",
+    "selectField": "Selecionar campo", "searchFields": "Pesquisar campos…", "noFields": "Nenhum campo corresponde à pesquisa",
+    "group": { "label": "Grupo", "match": "Grupo: corresponder", "all": "Todos (E)", "any": "Qualquer (OU)", "remove": "Remover grupo" },
+    "saved": {
+      "title": "Filtros salvos", "edit": "Editar filtro", "create": "Criar filtro", "new": "Novo filtro", "nameRequired": "O nome é obrigatório",
+      "namePlaceholder": "ex.: Servidores Windows", "description": "Descrição (opcional)", "descriptionPlaceholder": "Descreva o que este filtro corresponde",
+      "conditions": "Condições", "saveChanges": "Salvar alterações", "search": "Pesquisar filtros…", "noMatches": "Nenhum filtro corresponde à pesquisa",
+      "empty": "Nenhum filtro salvo ainda. Crie um para reutilizar em grupos e implantações.", "duplicate": "Duplicar"
+    },
+    "targets": {
+      "modes": { "all": "Todos os dispositivos", "manual": "Selecionar dispositivos", "groups": "Grupos de dispositivos", "filter": "Filtro avançado" },
+      "allManaged": "Inclui todos os dispositivos gerenciados", "totalDevices": "{{count}} dispositivos no total", "selectedDevices": "{{count}} dispositivos selecionados",
+      "searchDevices": "Pesquisar dispositivos…", "noDevices": "Nenhum dispositivo encontrado", "selectedGroups": "{{count}} grupos selecionados",
+      "noGroups": "Nenhum grupo de dispositivos disponível", "deviceCount": "{{count}} dispositivos", "loadSaved": "Carregar filtro salvo:", "select": "Selecionar"
+    },
+    "preview": {
+      "title": "Dispositivos correspondentes", "addConditions": "Adicione condições de filtro para ver os dispositivos correspondentes",
+      "matchCount": "dispositivos correspondentes", "matchCount_one": "dispositivo correspondente", "matchCount_other": "dispositivos correspondentes",
+      "showing": "Exibindo {{shown}} de {{total}}"
+    },
+    "operators": {
+      "equals": "é igual a", "notEquals": "não é igual a", "greaterThan": "maior que",
+      "greaterThanOrEquals": "maior ou igual a", "lessThan": "menor que", "lessThanOrEquals": "menor ou igual a",
+      "contains": "contém", "notContains": "não contém", "startsWith": "começa com", "endsWith": "termina com",
+      "matches": "corresponde à expressão regular", "in": "é um de", "notIn": "não é um de", "hasAny": "tem qualquer um de", "hasAll": "tem todos",
+      "isEmpty": "está vazio", "isNotEmpty": "não está vazio", "isNull": "está vazio", "isNotNull": "não está vazio",
+      "before": "é anterior a", "after": "é posterior a", "between": "está entre", "withinLast": "nos últimos", "notWithinLast": "não nos últimos"
+    },
+    "value": {
+      "noValue": "Nenhum valor necessário", "enterNumber": "Digite um número", "to": "até", "typeAndEnter": "Digite e pressione Enter",
+      "regex": "Expressão regular", "ipExample": "ex.: 192.168.1.", "macExample": "ex.: AA:BB:CC",
+      "hostnameExample": "ex.: srv-web-01", "softwareExample": "ex.: Chrome", "enterValue": "Digite um valor",
+      "units": { "minutes": "minutos", "hours": "horas", "days": "dias", "weeks": "semanas", "months": "meses" }
+    }
+  },
+  "account": {
+    "nav": { "label": "Seções da conta", "devices": "Dispositivos confiáveis", "connectedApps": "Aplicativos conectados", "delete": "Excluir conta" },
+    "backToSettings": "Voltar às configurações", "returnDashboard": "Voltar ao painel", "signedInAs": "Conectado como", "email": "E-mail",
+    "reason": "Motivo (opcional)", "revoke": "Revogar", "revoked": "Revogado", "revoking": "Revogando…",
+    "errors": { "network": "Erro de rede. Tente novamente.", "revokeNetwork": "Erro de rede durante a revogação" },
+    "approval": {
+      "title": "Testar o fluxo de aprovação",
+      "description": "Envie uma notificação de aprovação de teste para seus próprios dispositivos Breeze Mobile. Ao tocar na notificação, a tela de aprovação ficará ativa por 60 segundos. Aprovar ou negar não executa nenhuma ação real — é apenas um teste.",
+      "sendTitle": "Enviar uma aprovação de teste ao seu telefone", "sendDescription": "Enviaremos uma notificação em alguns segundos. A aprovação expira automaticamente após 60 segundos se você não responder.",
+      "sending": "Enviando…", "send": "Enviar aprovação de teste ao meu telefone", "sent": "Enviado. Verifique seu telefone em alguns segundos.",
+      "delivered": "Notificação entregue a {{sent}} de {{count}} dispositivos registrados. A aprovação expira em 60 segundos.",
+      "delivered_one": "Notificação entregue a {{sent}} de {{count}} dispositivo registrado. A aprovação expira em 60 segundos.",
+      "delivered_other": "Notificação entregue a {{sent}} de {{count}} dispositivos registrados. A aprovação expira em 60 segundos.",
+      "noDevices": "Não encontramos um dispositivo Breeze Mobile registrado em sua conta. Entre no aplicativo pelo menos uma vez e tente novamente.",
+      "tip": "Dica: esta página pode ser compartilhada com os revisores da App Store. Eles podem entrar com a conta de teste fornecida, clicar no botão e verificar o fluxo de aprovação completo.",
+      "errors": { "send": "Não foi possível enviar uma aprovação de teste. Tente novamente." }
+    },
+    "deletion": {
+      "title": "Excluir sua conta", "description": "O envio de uma solicitação de exclusão notifica um administrador da sua organização. Sua conta será processada e removida em até 30 dias. Você pode cancelar antes disso.",
+      "warningTitle": "Esta é uma solicitação, não uma exclusão imediata.", "warningDescription": "Após o envio, um administrador da sua organização será notificado por e-mail. Sua conta será processada em até 30 dias. Você pode entrar e cancelar antes disso.",
+      "confirmPassword": "Confirme sua senha", "typePrefix": "Digite", "typeSuffix": "para confirmar", "reason": "Motivo (opcional)",
+      "reasonPlaceholder": "Ajude-nos a melhorar — o que fez você decidir sair?", "submitting": "Enviando…", "submit": "Solicitar exclusão da conta",
+      "received": "Solicitação de exclusão recebida", "processedByPrefix": "Notificamos um administrador da sua organização. Sua conta será processada até",
+      "reference": "Referência", "submitted": "Enviada", "processesBy": "Processar até", "cancelling": "Cancelando…", "cancelRequest": "Cancelar solicitação de exclusão",
+      "errors": { "load": "Não foi possível carregar o status da sua conta. Atualize a página.", "submit": "Não foi possível enviar sua solicitação. Tente novamente.", "cancel": "Não foi possível cancelar sua solicitação. Tente novamente." }
+    },
+    "devices": {
+      "title": "Dispositivos confiáveis", "description": "Telefones e tablets pareados com o aplicativo Breeze Mobile. Esses dispositivos podem aprovar solicitações MCP de alto risco em seu nome. Revogue os dispositivos que não usa mais.",
+      "empty": "Nenhum dispositivo pareado", "emptyDescription": "Instale o aplicativo Breeze Mobile e entre para parear um dispositivo. As aprovações aparecerão no seu telefone.",
+      "thisDevice": "Este dispositivo", "blocked": "Bloqueado", "platform": "Plataforma", "lastActive": "Última atividade", "revokeElsewhere": "Revogue em outro dispositivo",
+      "revokedToast": "Dispositivo revogado.", "revokeTitle": "Revogar {{device}}?", "revokeDescription": "Os tokens de notificação do dispositivo serão apagados imediatamente e aprovações em andamento falharão. Para usar o aplicativo novamente, será necessário pareá-lo em um novo login.",
+      "onlyDeviceTitle": "Este é seu único dispositivo confiável.", "onlyDeviceDescription": "Até parear novamente em um novo login, você não poderá aprovar nada pelo telefone.",
+      "reasonPlaceholder": "Telefone perdido, dispositivo substituído, …", "revokeAction": "Revogar dispositivo"
+    },
+    "apps": {
+      "title": "Aplicativos conectados", "description": "Assistentes de IA e outros clientes MCP (Claude.ai, ChatGPT, Cursor, …) que você autorizou a agir em seu nome. Revogue o acesso a qualquer momento — os tokens param de funcionar em até 10 minutos.",
+      "empty": "Nenhum aplicativo conectado", "emptyDescription": "Ao autorizar uma conversa no Claude.ai, ChatGPT, Cursor ou outro cliente MCP, ele aparecerá aqui para que você possa revogá-lo depois.",
+      "authorized": "Autorizado", "lastUsed": "Usado pela última vez", "lastDecision": "Última decisão", "revokedToast": "Acesso de {{app}} revogado. Os tokens param de funcionar em até 10 minutos.",
+      "revokeTitle": "Revogar {{app}}?", "revokeDescription": "Todas as concessões e tokens de atualização deste cliente serão apagados. Os tokens param de funcionar em até 10 minutos. Será necessário autorizar novamente no próximo uso.",
+      "onlyAppTitle": "Este é seu único aplicativo autorizado.", "onlyAppDescription": "Após revogar, será necessário autorizar novamente antes que um assistente de IA possa agir no seu tenant.",
+      "reasonPlaceholder": "Não é mais necessário, atividade suspeita, …", "revokeAction": "Revogar acesso"
+    }
+  },
+  "layout": {
+    "logoAlt": "Logotipo de {{brand}}", "breadcrumb": "Caminho de navegação", "redirectingToLogin": "Redirecionando para o login…",
+    "scope": { "shared": "Compartilhado entre todas as organizações", "allOrganizations": "Todas as organizações" },
+    "org": {
+      "allSites": "Todos os locais", "deviceCount": "{{count}} dispositivos", "deviceCount_one": "{{count}} dispositivo", "deviceCount_other": "{{count}} dispositivos",
+      "scopeLabel": "Escopo da organização", "current": "Atual", "allOrgs": "Todas as orgs.",
+      "currentTitle": "Mostrar dados apenas da organização selecionada", "allTitle": "Mostrar dados de todas as organizações acessíveis",
+      "allOrganizations": "Todas as organizações", "globalTitle": "Esta página mostra todas as organizações", "selectTitle": "Selecionar organização (Cmd+O)",
+      "switching": "Alternando…", "organizations": "Organizações", "noneAvailable": "Nenhuma organização disponível",
+      "status": { "active": "Ativa", "trial": "Avaliação", "suspended": "Suspensa", "inactive": "Inativa" },
+      "toast": { "showingAll": "Mostrando todas as organizações", "showing": "Mostrando {{name}}", "switched": "Alterado para {{name}}", "showingAllSites": "Mostrando todos os locais" }
+    },
+    "header": {
+      "menu": "Menu", "openMenu": "Abrir menu de navegação", "ai": "Assistente de IA", "aiTitle": "Assistente de IA (Cmd+Shift+A)",
+      "help": "Ajuda e documentação", "helpTitle": "Ajuda e documentação (Cmd+Shift+H)", "theme": "Tema",
+      "themeOptions": { "light": "Claro", "dark": "Escuro", "system": "Sistema" },
+      "density": "Densidade da interface", "densityOptions": { "comfortable": "Confortável", "compact": "Compacta", "dense": "Densa" },
+      "densityOptionLabel": "Densidade da interface: {{label}}", "densityDescription": "Aplica-se a todo o aplicativo.",
+      "accountMenu": "Menu da conta", "userAvatar": "Avatar do usuário", "guest": "Visitante", "notSignedIn": "Não conectado", "mfaEnabled": "2FA ativado",
+      "account": "Conta", "profile": "Perfil", "apiKeys": "Chaves de API", "billingSupport": "Faturamento e suporte",
+      "opening": "Abrindo…", "billing": "Faturamento", "contactSupport": "Contatar suporte", "activityLog": "Log de atividades",
+      "signingOut": "Saindo…", "signOut": "Sair",
+      "billingErrors": { "noRecord": "Nenhuma assinatura ativa. Entre em contato com o suporte.", "notConfigured": "O faturamento não está disponível nesta implantação.", "unavailable": "O serviço de faturamento está temporariamente indisponível. Tente novamente em instantes.", "rateLimited": "Muitas solicitações. Aguarde alguns minutos e tente novamente.", "open": "Falha ao abrir o portal de faturamento", "missingUrl": "A URL do portal de faturamento não foi retornada" }
+    },
+    "search": {
+      "prompt": "Pesquisar dispositivos, scripts, alertas, usuários e configurações", "placeholder": "Pesquisar dispositivos, scripts, alertas, usuários e configurações…",
+      "searching": "Pesquisando…", "startTyping": "Comece a digitar para pesquisar dispositivos, scripts, alertas, usuários e configurações.",
+      "noResults": "Nenhum resultado encontrado. Tente outra busca.", "navigationHint": "Use as setas para navegar e Enter para abrir", "closeHint": "Esc para fechar",
+      "sections": { "quick-actions": "Ações rápidas", "recent": "Recentes", "devices": "Dispositivos", "scripts": "Scripts", "alerts": "Alertas", "users": "Usuários", "settings": "Configurações" }
+    },
+    "notifications": {
+      "title": "Notificações", "ariaUnread": "Notificações, {{count}} não lidas", "ariaUnread_one": "Notificações, {{count}} não lida", "ariaUnread_other": "Notificações, {{count}} não lidas",
+      "unread": "{{count}} não lidas", "unread_one": "{{count}} não lida", "unread_other": "{{count}} não lidas", "markAllRead": "Marcar todas como lidas", "markAllUnread": "Marcar todas como não lidas",
+      "confirmClear": "Confirmar limpeza", "clearAll": "Limpar tudo", "loading": "Carregando notificações…", "empty": "Nenhuma notificação ainda.",
+      "recently": "Recentemente", "markUnread": "Marcar como não lida", "markRead": "Marcar como lida", "preferences": "Preferências de notificações"
+    },
+    "sidebar": { "autoHide": "Ocultar barra lateral automaticamente", "collapse": "Recolher barra lateral", "expand": "Expandir barra lateral", "collapseSections": "Recolher todas as seções", "closeMenu": "Fechar menu" }
   }
 }

@@ -1,5 +1,6 @@
 // apps/web/src/components/shared/ScopeBadge.test.tsx
 import { render, screen } from '@testing-library/react';
+import '../../lib/i18n';
 import { describe, it, expect } from 'vitest';
 import { ScopeBadge } from './ScopeBadge';
 

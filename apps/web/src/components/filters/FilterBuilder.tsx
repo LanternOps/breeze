@@ -13,6 +13,7 @@ import { ConditionGroup } from './ConditionGroup';
 import { FilterPreview } from './FilterPreview';
 import { FILTER_FIELDS } from './filterFields';
 import { fetchWithAuth } from '../../stores/auth';
+import { useTranslation } from 'react-i18next';
 
 // The canonical device filter catalog (mirrors the backend filterEngine —
 // see ./filterFields). Re-exported as DEFAULT_FILTER_FIELDS for the components
@@ -55,6 +56,7 @@ export function FilterBuilder({
   previewDebounceMs = 500,
   className = ''
 }: FilterBuilderProps) {
+  const { t } = useTranslation('common');
   const [preview, setPreview] = useState<FilterPreviewResult | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
@@ -145,14 +147,14 @@ export function FilterBuilder({
       <div className="rounded-lg border bg-card p-4">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
-            <span className="text-sm font-medium">Match</span>
+            <span className="text-sm font-medium">{t('filters.match')}</span>
             <select
               value={value.operator}
               onChange={(e) => handleOperatorChange(e.target.value as 'AND' | 'OR')}
               className="rounded-md border bg-background px-2 py-1.5 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
-              <option value="AND">All conditions (AND)</option>
-              <option value="OR">Any condition (OR)</option>
+              <option value="AND">{t('filters.allConditions')}</option>
+              <option value="OR">{t('filters.anyCondition')}</option>
             </select>
           </div>
           <div className="flex items-center gap-2">
@@ -162,7 +164,7 @@ export function FilterBuilder({
               className="inline-flex h-8 items-center gap-1 rounded-md border px-3 text-xs font-medium transition hover:bg-muted"
             >
               <Plus className="h-3 w-3" />
-              Add Condition
+              {t('filters.addCondition')}
             </button>
             <button
               type="button"
@@ -170,7 +172,7 @@ export function FilterBuilder({
               className="inline-flex h-8 items-center gap-1 rounded-md border px-3 text-xs font-medium transition hover:bg-muted"
             >
               <Plus className="h-3 w-3" />
-              Add Group
+              {t('filters.addGroup')}
             </button>
           </div>
         </div>

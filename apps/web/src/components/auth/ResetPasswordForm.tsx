@@ -1,21 +1,15 @@
 import { useId, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import PasswordInput from './PasswordInput';
 import PasswordStrength from './PasswordStrength';
 
-const resetPasswordSchema = z
-  .object({
-    password: z.string().min(8, 'Password must be at least 8 characters'),
-    confirmPassword: z.string().min(8, 'Password must be at least 8 characters')
-  })
-  .refine(values => values.password === values.confirmPassword, {
-    message: 'Passwords do not match',
-    path: ['confirmPassword']
-  });
-
-type ResetPasswordFormValues = z.infer<typeof resetPasswordSchema>;
+type ResetPasswordFormValues = {
+  password: string;
+  confirmPassword: string;
+};
 
 type ResetPasswordFormProps = {
   onSubmit?: (values: ResetPasswordFormValues) => void | Promise<void>;
@@ -27,9 +21,23 @@ type ResetPasswordFormProps = {
 export default function ResetPasswordForm({
   onSubmit,
   errorMessage,
-  submitLabel = 'Reset password',
+  submitLabel,
   loading
 }: ResetPasswordFormProps) {
+  const { t } = useTranslation('auth');
+  const resetPasswordSchema = useMemo(
+    () =>
+      z
+        .object({
+          password: z.string().min(8, t('validation.passwordMin', { defaultValue: 'Password must be at least 8 characters' })),
+          confirmPassword: z.string().min(8, t('validation.passwordMin', { defaultValue: 'Password must be at least 8 characters' })),
+        })
+        .refine(values => values.password === values.confirmPassword, {
+          message: t('validation.passwordsDoNotMatch', { defaultValue: 'Passwords do not match' }),
+          path: ['confirmPassword'],
+        }),
+    [t],
+  );
   const {
     register,
     handleSubmit,
@@ -59,13 +67,13 @@ export default function ResetPasswordForm({
     >
       <div className="space-y-2">
         <label htmlFor="password" className="text-sm font-medium">
-          New password
+          {t('fields.newPassword', { defaultValue: 'New password' })}
         </label>
         <PasswordInput
           id="password"
           autoComplete="new-password"
           autoFocus
-          placeholder="Enter a new password"
+          placeholder={t('placeholders.newPassword', { defaultValue: 'Enter a new password' })}
           aria-invalid={errors.password ? true : undefined}
           aria-describedby={errors.password ? passwordErrId : undefined}
           {...register('password')}
@@ -78,12 +86,12 @@ export default function ResetPasswordForm({
 
       <div className="space-y-2">
         <label htmlFor="confirmPassword" className="text-sm font-medium">
-          Confirm password
+          {t('fields.confirmPassword', { defaultValue: 'Confirm password' })}
         </label>
         <PasswordInput
           id="confirmPassword"
           autoComplete="new-password"
-          placeholder="Re-enter your new password"
+          placeholder={t('placeholders.confirmNewPassword', { defaultValue: 'Re-enter your new password' })}
           aria-invalid={errors.confirmPassword ? true : undefined}
           aria-describedby={errors.confirmPassword ? confirmErrId : undefined}
           {...register('confirmPassword')}
@@ -111,13 +119,15 @@ export default function ResetPasswordForm({
         aria-busy={isLoading || undefined}
         className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
       >
-        {isLoading ? 'Resetting password…' : submitLabel}
+        {isLoading
+          ? t('resetPassword.form.resetting', { defaultValue: 'Resetting password…' })
+          : submitLabel ?? t('resetPassword.form.submit', { defaultValue: 'Reset password' })}
       </button>
 
       <p className="text-center text-sm text-muted-foreground">
-        Back to{' '}
+        {t('resetPassword.form.backTo', { defaultValue: 'Back to' })}{' '}
         <a href="/login" className="font-medium text-primary hover:underline">
-          sign in
+          {t('common.signInLower', { defaultValue: 'sign in' })}
         </a>
       </p>
     </form>

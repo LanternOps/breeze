@@ -4,6 +4,7 @@ import { getErrorMessage, getErrorTitle } from '@/lib/errorMessages';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatTimeAgo } from '@/lib/formatTime';
 import { formatAuditAction, DEFAULT_DASHBOARD_EXCLUDE_ACTIONS } from '@/lib/auditFormat';
+import { useTranslation } from 'react-i18next';
 
 interface AuditLogEntry {
   id: string;
@@ -44,6 +45,7 @@ const typeIcons: Record<string, typeof Monitor> = {
 };
 
 export default function RecentActivity() {
+  const { t } = useTranslation('common');
   const [activities, setActivities] = useState<AuditLogEntry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
@@ -92,9 +94,9 @@ export default function RecentActivity() {
     return (
       <div className="border-t pt-6 mt-2">
         <div className="mb-4 flex items-center justify-between">
-          <h3 data-testid="dashboard-recent-activity-heading" className="text-sm font-semibold">Recent Activity</h3>
+          <h3 data-testid="dashboard-recent-activity-heading" className="text-sm font-semibold">{t('dashboard.activity.title')}</h3>
           <a href="/audit" className="text-xs font-medium text-primary hover:text-primary/80 transition-colors">
-            View audit log
+            {t('dashboard.activity.viewAuditLog')}
           </a>
         </div>
         <div className="space-y-0">
@@ -115,9 +117,9 @@ export default function RecentActivity() {
     return (
       <div className="border-t pt-6 mt-2">
         <div className="mb-4 flex items-center justify-between">
-          <h3 data-testid="dashboard-recent-activity-heading" className="text-sm font-semibold">Recent Activity</h3>
+          <h3 data-testid="dashboard-recent-activity-heading" className="text-sm font-semibold">{t('dashboard.activity.title')}</h3>
           <a href="/audit" className="text-xs font-medium text-primary hover:text-primary/80 transition-colors">
-            View audit log
+            {t('dashboard.activity.viewAuditLog')}
           </a>
         </div>
         <div className="flex flex-col items-center justify-center py-8 text-center">
@@ -127,7 +129,7 @@ export default function RecentActivity() {
           <p className="text-sm font-medium text-foreground mb-1">{getErrorTitle(error)}</p>
           <p className="text-xs text-muted-foreground mb-3">{getErrorMessage(error)}</p>
           <button onClick={retry} className="text-xs font-medium text-primary hover:underline">
-            Try again
+            {t('actions.retry')}
           </button>
         </div>
       </div>
@@ -137,9 +139,9 @@ export default function RecentActivity() {
   return (
     <div className="border-t pt-6 mt-2">
       <div className="mb-4 flex items-center justify-between">
-        <h3 data-testid="dashboard-recent-activity-heading" className="text-sm font-semibold">Recent Activity</h3>
+        <h3 data-testid="dashboard-recent-activity-heading" className="text-sm font-semibold">{t('dashboard.activity.title')}</h3>
         <a href="/audit" className="text-sm text-primary hover:underline">
-          View audit log
+          {t('dashboard.activity.viewAuditLog')}
         </a>
       </div>
       <div className="overflow-x-auto">
@@ -148,17 +150,17 @@ export default function RecentActivity() {
             <div className="rounded-full bg-muted p-3 mb-3">
               <Activity className="h-5 w-5 text-muted-foreground" />
             </div>
-            <p className="text-sm text-muted-foreground">No activity yet</p>
-            <p className="text-xs text-muted-foreground/70 mt-1">Actions like device enrollment, script runs, and config changes will appear here.</p>
+            <p className="text-sm text-muted-foreground">{t('dashboard.activity.empty')}</p>
+            <p className="text-xs text-muted-foreground/70 mt-1">{t('dashboard.activity.emptyDescription')}</p>
           </div>
         ) : (
           <table className="w-full">
             <thead>
               <tr className="border-b text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                <th className="pb-3">User</th>
-                <th className="pb-3">Action</th>
-                <th className="pb-3">Target</th>
-                <th className="pb-3">Time</th>
+                <th className="pb-3">{t('labels.user')}</th>
+                <th className="pb-3">{t('dashboard.activity.action')}</th>
+                <th className="pb-3">{t('dashboard.activity.target')}</th>
+                <th className="pb-3">{t('dashboard.activity.time')}</th>
               </tr>
             </thead>
             <tbody>
@@ -166,7 +168,7 @@ export default function RecentActivity() {
                 const resourceType = activity.resource?.type || activity.resourceType || activity.targetType;
                 const targetType = (resourceType || 'default').toLowerCase();
                 const Icon = typeIcons[targetType] || typeIcons.default;
-                const userName = activity.user?.name || activity.userName || 'System';
+                const userName = activity.user?.name || activity.userName || t('shared.scope.system');
                 const targetName = activity.resource?.name || activity.target || activity.targetName;
                 const target = targetName && targetName.trim()
                   ? targetName

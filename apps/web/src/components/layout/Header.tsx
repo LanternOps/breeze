@@ -46,8 +46,10 @@ import {
   type ThemePreference,
 } from '../../lib/appearance';
 import { saveUserPreferences } from '../../lib/userPreferences';
+import { useTranslation } from 'react-i18next';
 
 export default function Header() {
+  const { t } = useTranslation('common');
   const [mounted, setMounted] = useState(false);
   const [theme, setTheme] = useState<ThemePreference>('system');
   // Interface density: account-wide preference (breeze.density) shared with
@@ -108,12 +110,12 @@ export default function Header() {
         console.error('[billing] portal failed', { status: res.status, body });
         const code = typeof body.error === 'string' ? body.error : '';
         const messages: Record<string, string> = {
-          no_billing_record: 'No active subscription. Contact support.',
-          not_configured: 'Billing is not available on this deployment.',
-          upstream_unavailable: 'Billing service is temporarily unavailable. Please try again in a moment.',
-          rate_limited: 'Too many requests. Please wait a few minutes and try again.',
+          no_billing_record: t('layout.header.billingErrors.noRecord'),
+          not_configured: t('layout.header.billingErrors.notConfigured'),
+          upstream_unavailable: t('layout.header.billingErrors.unavailable'),
+          rate_limited: t('layout.header.billingErrors.rateLimited'),
         };
-        const message = messages[code] ?? (code || 'Failed to open billing portal');
+        const message = messages[code] ?? (code || t('layout.header.billingErrors.open'));
         showToast({ type: 'error', message });
         return;
       }
@@ -122,11 +124,11 @@ export default function Header() {
         window.location.href = data.url;
       } else {
         console.error('[billing] upstream returned no url', data);
-        showToast({ type: 'error', message: 'Billing portal URL missing from response' });
+        showToast({ type: 'error', message: t('layout.header.billingErrors.missingUrl') });
       }
     } catch (err) {
       console.error('[billing] portal request threw', err);
-      showToast({ type: 'error', message: 'Failed to open billing portal' });
+      showToast({ type: 'error', message: t('layout.header.billingErrors.open') });
     } finally {
       setBillingLoading(false);
     }
@@ -260,8 +262,8 @@ export default function Header() {
         <button
           className="rounded-md p-2 hover:bg-muted transition-colors md:hidden"
           onClick={toggleMobileMenu}
-          title="Menu"
-          aria-label="Open navigation menu"
+          title={t('layout.header.menu')}
+          aria-label={t('layout.header.openMenu')}
         >
           <Menu className="h-5 w-5 text-muted-foreground" />
         </button>
@@ -285,8 +287,8 @@ export default function Header() {
             data-tour="ai-assistant"
             onClick={toggleAi}
             className="relative rounded-md p-2 hover:bg-muted transition-colors"
-            title="AI Assistant (Cmd+Shift+A)"
-            aria-label="AI Assistant"
+            title={t('layout.header.aiTitle')}
+            aria-label={t('layout.header.ai')}
             aria-pressed={isAiOpen}
           >
             <Sparkles className="h-5 w-5" />
@@ -302,8 +304,8 @@ export default function Header() {
             type="button"
             onClick={toggleHelp}
             className="relative rounded-md p-2 hover:bg-muted transition-colors"
-            title="Help & Docs (Cmd+Shift+H)"
-            aria-label="Help and docs"
+            title={t('layout.header.helpTitle')}
+            aria-label={t('layout.header.help')}
             aria-pressed={isHelpOpen}
           >
             <BookOpen className="h-5 w-5" />
@@ -331,8 +333,8 @@ export default function Header() {
             ref={themeTriggerRef}
             onClick={() => setShowThemeMenu(!showThemeMenu)}
             className="rounded-md p-2 hover:bg-muted"
-            title="Theme"
-            aria-label="Theme"
+            title={t('layout.header.theme')}
+            aria-label={t('layout.header.theme')}
             aria-expanded={showThemeMenu}
             aria-haspopup="true"
           >
@@ -345,12 +347,12 @@ export default function Header() {
 
           {showThemeMenu && (
             <div ref={themePanelRef} className="absolute right-0 top-full z-50 mt-2 w-52 rounded-lg border bg-popover py-1 shadow-lg">
-              <p className="px-3 pb-1 pt-1.5 chart-legend-xs font-medium uppercase tracking-wide text-muted-foreground">Theme</p>
+              <p className="px-3 pb-1 pt-1.5 chart-legend-xs font-medium uppercase tracking-wide text-muted-foreground">{t('layout.header.theme')}</p>
               {([
-                { value: 'light' as const, label: 'Light', Icon: Sun },
-                { value: 'dark' as const, label: 'Dark', Icon: Moon },
-                { value: 'system' as const, label: 'System', Icon: Monitor },
-              ]).map(({ value, label, Icon }) => (
+                { value: 'light' as const, labelKey: 'layout.header.themeOptions.light', Icon: Sun },
+                { value: 'dark' as const, labelKey: 'layout.header.themeOptions.dark', Icon: Moon },
+                { value: 'system' as const, labelKey: 'layout.header.themeOptions.system', Icon: Monitor },
+              ]).map(({ value, labelKey, Icon }) => (
                 <button
                   key={value}
                   type="button"
@@ -358,32 +360,32 @@ export default function Header() {
                   className="flex w-full items-center gap-3 px-3 py-2 text-sm transition hover:bg-muted"
                 >
                   <Icon className="h-4 w-4 text-muted-foreground" />
-                  <span className="flex-1 text-left">{label}</span>
+                  <span className="flex-1 text-left">{t(labelKey)}</span>
                   {theme === value && <Check className="h-4 w-4 text-primary" />}
                 </button>
               ))}
 
               {/* Interface density — account-wide; applies across the whole app. */}
               <div className="my-1 border-t" />
-              <p className="px-3 pb-1 pt-1.5 chart-legend-xs font-medium uppercase tracking-wide text-muted-foreground">Interface density</p>
+              <p className="px-3 pb-1 pt-1.5 chart-legend-xs font-medium uppercase tracking-wide text-muted-foreground">{t('layout.header.density')}</p>
               {([
-                { value: 'comfortable' as const, label: 'Comfortable', Icon: Rows3 },
-                { value: 'compact' as const, label: 'Compact', Icon: Rows4 },
-                { value: 'dense' as const, label: 'Dense', Icon: AlignJustify },
-              ]).map(({ value, label, Icon }) => (
+                { value: 'comfortable' as const, labelKey: 'layout.header.densityOptions.comfortable', Icon: Rows3 },
+                { value: 'compact' as const, labelKey: 'layout.header.densityOptions.compact', Icon: Rows4 },
+                { value: 'dense' as const, labelKey: 'layout.header.densityOptions.dense', Icon: AlignJustify },
+              ]).map(({ value, labelKey, Icon }) => (
                 <button
                   key={value}
                   type="button"
                   onClick={() => applyDensity(value)}
-                  aria-label={`${label} interface density`}
+                  aria-label={t('layout.header.densityOptionLabel', { label: t(labelKey) })}
                   className="flex w-full items-center gap-3 px-3 py-2 text-sm transition hover:bg-muted"
                 >
                   <Icon className="h-4 w-4 text-muted-foreground" />
-                  <span className="flex-1 text-left">{label}</span>
+                  <span className="flex-1 text-left">{t(labelKey)}</span>
                   {density === value && <Check className="h-4 w-4 text-primary" />}
                 </button>
               ))}
-              <p className="px-3 pb-1.5 pt-1 chart-legend-xs leading-snug text-muted-foreground">Applies across the entire app.</p>
+              <p className="px-3 pb-1.5 pt-1 chart-legend-xs leading-snug text-muted-foreground">{t('layout.header.densityDescription')}</p>
             </div>
           )}
         </div>
@@ -395,15 +397,15 @@ export default function Header() {
             ref={userTriggerRef}
             onClick={() => setShowUserMenu(!showUserMenu)}
             className="flex items-center gap-2 rounded-md p-2 hover:bg-muted"
-            title="Account menu"
-            aria-label="Account menu"
+            title={t('layout.header.accountMenu')}
+            aria-label={t('layout.header.accountMenu')}
             aria-expanded={showUserMenu}
             aria-haspopup="true"
           >
             {mounted && resolvedAvatarUrl ? (
               <img
                 src={resolvedAvatarUrl}
-                alt={user?.name ?? 'User avatar'}
+                alt={user?.name ?? t('layout.header.userAvatar')}
                 className="h-8 w-8 rounded-full object-cover"
               />
             ) : (
@@ -422,7 +424,7 @@ export default function Header() {
                   {resolvedAvatarUrl ? (
                     <img
                       src={resolvedAvatarUrl}
-                      alt={user?.name ?? 'User avatar'}
+                      alt={user?.name ?? t('layout.header.userAvatar')}
                       className="h-10 w-10 rounded-full object-cover"
                     />
                   ) : (
@@ -432,17 +434,17 @@ export default function Header() {
                   )}
                   <div className="flex-1 overflow-hidden">
                     <p className="truncate text-sm font-medium">
-                      {user?.name || 'Guest'}
+                      {user?.name || t('layout.header.guest')}
                     </p>
                     <p className="truncate text-xs text-muted-foreground">
-                      {user?.email || 'Not signed in'}
+                      {user?.email || t('layout.header.notSignedIn')}
                     </p>
                   </div>
                 </div>
                 {user?.mfaEnabled && (
                   <div className="mt-2 flex items-center gap-1.5 text-xs text-emerald-600">
                     <Shield className="h-3 w-3" />
-                    <span>2FA enabled</span>
+                    <span>{t('layout.header.mfaEnabled')}</span>
                   </div>
                 )}
               </div>
@@ -450,7 +452,7 @@ export default function Header() {
               {/* Account */}
               <div className="p-1">
                 <p className="px-3 pb-1 pt-1.5 chart-legend-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  Account
+                  {t('layout.header.account')}
                 </p>
                 <a
                   href="/settings/profile"
@@ -458,7 +460,7 @@ export default function Header() {
                   onClick={() => setShowUserMenu(false)}
                 >
                   <User className="h-4 w-4 text-muted-foreground" />
-                  <span>Profile</span>
+                  <span>{t('layout.header.profile')}</span>
                 </a>
                 <a
                   href="/settings"
@@ -466,22 +468,21 @@ export default function Header() {
                   onClick={() => setShowUserMenu(false)}
                 >
                   <Settings className="h-4 w-4 text-muted-foreground" />
-                  <span>Settings</span>
+                  <span>{t('nav.sectionSettings')}</span>
                 </a>
               </div>
 
               {/* Security */}
               <div className="border-t p-1">
                 <p className="px-3 pb-1 pt-1.5 chart-legend-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  Security
-                </p>
+                  {t('nav.sectionSecurity')}</p>
                 <a
                   href="/settings/api-keys"
                   className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm transition hover:bg-muted"
                   onClick={() => setShowUserMenu(false)}
                 >
                   <Key className="h-4 w-4 text-muted-foreground" />
-                  <span>API Keys</span>
+                  <span>{t('layout.header.apiKeys')}</span>
                 </a>
                 <a
                   href="/account/devices"
@@ -489,7 +490,7 @@ export default function Header() {
                   onClick={() => setShowUserMenu(false)}
                 >
                   <Smartphone className="h-4 w-4 text-muted-foreground" />
-                  <span>Trusted devices</span>
+                  <span>{t('account.nav.devices')}</span>
                 </a>
                 <a
                   href="/account/connected-apps"
@@ -497,7 +498,7 @@ export default function Header() {
                   onClick={() => setShowUserMenu(false)}
                 >
                   <Plug className="h-4 w-4 text-muted-foreground" />
-                  <span>Connected apps</span>
+                  <span>{t('account.nav.connectedApps')}</span>
                 </a>
               </div>
 
@@ -505,7 +506,7 @@ export default function Header() {
               {(features.billing || features.support) && (
                 <div className="border-t p-1">
                   <p className="px-3 pb-1 pt-1.5 chart-legend-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    Billing &amp; support
+                    {t('layout.header.billingSupport')}
                   </p>
                   {features.billing && (
                     <button
@@ -518,7 +519,7 @@ export default function Header() {
                       }}
                     >
                       <CreditCard className="h-4 w-4 text-muted-foreground" />
-                      <span>{billingLoading ? 'Opening…' : 'Billing'}</span>
+                      <span>{billingLoading ? t('layout.header.opening') : t('layout.header.billing')}</span>
                     </button>
                   )}
                   {features.support && (
@@ -531,7 +532,7 @@ export default function Header() {
                       }}
                     >
                       <LifeBuoy className="h-4 w-4 text-muted-foreground" />
-                      <span>Contact support</span>
+                      <span>{t('layout.header.contactSupport')}</span>
                     </button>
                   )}
                 </div>
@@ -545,7 +546,7 @@ export default function Header() {
                   onClick={() => setShowUserMenu(false)}
                 >
                   <Activity className="h-4 w-4 text-muted-foreground" />
-                  <span>Activity Log</span>
+                  <span>{t('layout.header.activityLog')}</span>
                 </a>
               </div>
 
@@ -558,7 +559,7 @@ export default function Header() {
                   className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm text-destructive transition hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <LogOut className="h-4 w-4" />
-                  <span>{isLoggingOut ? 'Signing out...' : 'Sign out'}</span>
+                  <span>{isLoggingOut ? t('layout.header.signingOut') : t('layout.header.signOut')}</span>
                 </button>
               </div>
             </div>

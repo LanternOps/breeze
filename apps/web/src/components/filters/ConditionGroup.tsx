@@ -2,6 +2,7 @@ import { Plus, Trash2, ChevronDown, ChevronRight } from 'lucide-react';
 import { useState } from 'react';
 import type { FilterCondition, FilterConditionGroup, FilterFieldDefinition } from '@breeze/shared';
 import { ConditionRow } from './ConditionRow';
+import { useTranslation } from 'react-i18next';
 
 interface ConditionGroupProps {
   value: FilterConditionGroup;
@@ -37,6 +38,7 @@ export function ConditionGroup({
   filterFields,
   depth = 0
 }: ConditionGroupProps) {
+  const { t } = useTranslation('common');
   const [isCollapsed, setIsCollapsed] = useState(false);
   const maxDepth = 3;
   const canNest = depth < maxDepth;
@@ -99,17 +101,17 @@ export function ConditionGroup({
               <ChevronDown className="h-4 w-4" />
             )}
           </button>
-          <span className="text-xs font-medium text-muted-foreground">Group: Match</span>
+          <span className="text-xs font-medium text-muted-foreground">{t('filters.group.match')}</span>
           <select
             value={value.operator}
             onChange={(e) => handleOperatorChange(e.target.value as 'AND' | 'OR')}
             className="h-7 rounded border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
-            <option value="AND">All (AND)</option>
-            <option value="OR">Any (OR)</option>
+            <option value="AND">{t('filters.group.all')}</option>
+            <option value="OR">{t('filters.group.any')}</option>
           </select>
           <span className="text-xs text-muted-foreground">
-            {value.conditions.length} condition{value.conditions.length !== 1 ? 's' : ''}
+            {t('filters.conditionCount', { count: value.conditions.length })}
           </span>
         </div>
         <div className="flex items-center gap-1">
@@ -119,7 +121,7 @@ export function ConditionGroup({
             className="inline-flex h-7 items-center gap-1 rounded border px-2 text-xs font-medium transition hover:bg-muted"
           >
             <Plus className="h-3 w-3" />
-            Condition
+            {t('filters.condition')}
           </button>
           {canNest && (
             <button
@@ -128,14 +130,14 @@ export function ConditionGroup({
               className="inline-flex h-7 items-center gap-1 rounded border px-2 text-xs font-medium transition hover:bg-muted"
             >
               <Plus className="h-3 w-3" />
-              Group
+              {t('filters.group.label')}
             </button>
           )}
           <button
             type="button"
             onClick={onRemove}
             className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground transition hover:bg-muted hover:text-destructive"
-            title="Remove group"
+            title={t('filters.group.remove')}
           >
             <Trash2 className="h-3.5 w-3.5" />
           </button>

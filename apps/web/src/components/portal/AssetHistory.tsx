@@ -1,5 +1,6 @@
 import { cn } from '@/lib/utils';
 import { formatDateTime } from '@/lib/dateTimeFormat';
+import { useTranslation } from 'react-i18next';
 
 export type AssetHistoryEntry = {
   id: string;
@@ -20,11 +21,13 @@ const actionStyles: Record<AssetHistoryEntry['action'], string> = {
 };
 
 export default function AssetHistory({ entries, timezone }: AssetHistoryProps) {
+  const { t } = useTranslation('portal');
+
   return (
     <div className="overflow-hidden rounded-lg border bg-card shadow-xs">
       <div className="border-b px-4 py-3">
-        <h3 className="text-sm font-semibold text-foreground">Asset history</h3>
-        <p className="text-xs text-muted-foreground">Recent check-in and check-out activity</p>
+        <h3 className="text-sm font-semibold text-foreground">{t('assetHistory.title')}</h3>
+        <p className="text-xs text-muted-foreground">{t('assetHistory.description')}</p>
       </div>
       <div className="divide-y">
         {entries.map(entry => (
@@ -42,7 +45,7 @@ export default function AssetHistory({ entries, timezone }: AssetHistoryProps) {
                   actionStyles[entry.action]
                 )}
               >
-                {entry.action.replace('-', ' ')}
+                {t(`assetHistory.actions.${entry.action}`)}
               </span>
               {entry.notes && (
                 <span className="text-xs text-muted-foreground">{entry.notes}</span>

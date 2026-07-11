@@ -1,4 +1,5 @@
 import { sanitizeImageSrc } from '../../lib/safeImageSrc';
+import { useTranslation } from 'react-i18next';
 
 interface BrandHeaderProps {
   /** Partner logo. Sanitized before render; falls back to the Breeze SVG when null/unsafe. */
@@ -27,6 +28,7 @@ const BREEZE_SVG = (
 );
 
 export default function BrandHeader({ logoUrl, name, showLabel }: BrandHeaderProps) {
+  const { t } = useTranslation('common');
   const safeLogoUrl = sanitizeImageSrc(logoUrl);
   const label = name?.trim() || 'Breeze';
 
@@ -34,7 +36,7 @@ export default function BrandHeader({ logoUrl, name, showLabel }: BrandHeaderPro
     <div className="flex items-center gap-2">
       <div className="flex u-h-px-22 w-[22px] shrink-0 items-center justify-center overflow-hidden rounded-[6px] bg-primary/15">
         {safeLogoUrl ? (
-          <img src={safeLogoUrl} alt={`${label} logo`} className="h-full w-full object-contain" />
+          <img src={safeLogoUrl} alt={t('layout.logoAlt', { brand: label })} className="h-full w-full object-contain" />
         ) : (
           BREEZE_SVG
         )}

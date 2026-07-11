@@ -1,0 +1,101 @@
+{
+  "assetCheckout": {
+    "expectedReturnDate": "Data prevista de devolucao",
+    "notes": "Observacoes (opcional)",
+    "notesPlaceholder": "Adicione detalhes de retirada ou entrega",
+    "requesting": "Solicitando: {{assetName}}",
+    "submit": "Solicitar retirada",
+    "submitting": "Enviando solicitacao...",
+    "title": "Retirada de ativo",
+    "validation": {
+      "expectedReturnDate": "Selecione uma data prevista de devolucao"
+    }
+  },
+  "assetHistory": {
+    "actions": {
+      "check-in": "devolucao",
+      "check-out": "retirada"
+    },
+    "description": "Atividade recente de retirada e devolucao",
+    "title": "Historico do ativo"
+  },
+  "branding": {
+    "defaultName": "Portal Breeze"
+  },
+  "customerDeviceList": {
+    "deviceCount": "{{count}} dispositivos vinculados à sua conta",
+    "deviceCount_one": "{{count}} dispositivo vinculado a sua conta",
+    "deviceCount_other": "{{count}} dispositivos vinculados a sua conta",
+    "title": "Meus Dispositivos"
+  },
+  "deviceStatus": {
+    "lastSeen": "Visto por ultimo {{lastSeen}}",
+    "status": {
+      "maintenance": "manutencao",
+      "offline": "offline",
+      "online": "online"
+    },
+    "unknown": "Desconhecido"
+  },
+  "header": {
+    "customerPortal": "Portal do Cliente",
+    "profile": "Perfil",
+    "signOut": "Sair"
+  },
+  "login": {
+    "email": "Email",
+    "emailPlaceholder": "voce@empresa.com",
+    "forgotPassword": "Esqueceu a senha?",
+    "lookup": "Buscar",
+    "needHelp": "Precisa de ajuda?",
+    "organization": "Organizacao",
+    "organizationPlaceholder": "Acme Corp ou ORG-123",
+    "password": "Senha",
+    "passwordPlaceholder": "Digite sua senha",
+    "signingIn": "Entrando...",
+    "submit": "Entrar",
+    "validation": {
+      "email": "Informe um endereco de email valido",
+      "organization": "Informe o nome ou codigo da sua organizacao",
+      "passwordLength": "A senha deve ter pelo menos 8 caracteres"
+    }
+  },
+  "passwordReset": {
+    "confirm": {
+      "code": "Codigo de redefinicao",
+      "codePlaceholder": "123456",
+      "confirmPassword": "Confirmar senha",
+      "confirmPasswordPlaceholder": "Digite novamente a nova senha",
+      "newPassword": "Nova senha",
+      "newPasswordPlaceholder": "Digite uma nova senha",
+      "resetting": "Redefinindo senha...",
+      "submit": "Redefinir senha"
+    },
+    "email": "Email",
+    "emailPlaceholder": "voce@empresa.com",
+    "rememberedPassword": "Lembrou sua senha?",
+    "request": {
+      "sending": "Enviando email de redefinicao...",
+      "submit": "Enviar link de redefinicao"
+    },
+    "signIn": "Entrar",
+    "validation": {
+      "code": "Informe o codigo de redefinicao de 6 digitos",
+      "email": "Informe um endereco de email valido",
+      "passwordLength": "A senha deve ter pelo menos 8 caracteres",
+      "passwordsMatch": "As senhas nao coincidem"
+    }
+  },
+  "sidebar": {
+    "collapse": "Recolher navegacao do portal",
+    "expand": "Expandir navegacao do portal",
+    "items": {
+      "assetCheckout": "Retirada de Ativos",
+      "helpCenter": "Central de Ajuda",
+      "myDevices": "Meus Dispositivos",
+      "overview": "Visao geral",
+      "supportTickets": "Tickets de Suporte"
+    },
+    "navigation": "Navegacao do Portal"
+  }
+}

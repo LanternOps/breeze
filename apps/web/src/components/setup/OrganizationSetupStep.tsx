@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Building2, MapPin, Loader2 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { extractApiError } from '@/lib/apiError';
 
@@ -22,6 +23,7 @@ function slugify(name: string): string {
 }
 
 export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepProps) {
+  const { t } = useTranslation('auth');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
@@ -44,9 +46,9 @@ export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepP
       const partnerRes = await fetchWithAuth('/partner/me');
       let partner: OrgData['partner'];
       if (partnerRes.ok) {
-        try { partner = await partnerRes.json(); } catch { warnings.push('Failed to parse partner data'); }
+        try { partner = await partnerRes.json(); } catch { warnings.push(t('setup.organization.warnings.parsePartnerFailed')); }
       } else {
-        warnings.push('Could not load partner info');
+        warnings.push(t('setup.organization.warnings.loadPartnerFailed'));
       }
 
       // Fetch organizations
@@ -56,9 +58,9 @@ export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepP
         try {
           const orgsData = await orgsRes.json();
           organizations = orgsData.data || orgsData || [];
-        } catch { warnings.push('Failed to parse organization data'); }
+        } catch { warnings.push(t('setup.organization.warnings.parseOrganizationsFailed')); }
       } else {
-        warnings.push('Could not load organizations');
+        warnings.push(t('setup.organization.warnings.loadOrganizationsFailed'));
       }
 
       // Fetch sites
@@ -68,13 +70,13 @@ export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepP
         try {
           const sitesData = await sitesRes.json();
           sites = sitesData.data || sitesData || [];
-        } catch { warnings.push('Failed to parse site data'); }
+        } catch { warnings.push(t('setup.organization.warnings.parseSitesFailed')); }
       } else {
-        warnings.push('Could not load sites');
+        warnings.push(t('setup.organization.warnings.loadSitesFailed'));
       }
 
       if (warnings.length > 0) {
-        setError(`Some data could not be loaded: ${warnings.join('; ')}`);
+        setError(t('setup.organization.warnings.someDataUnavailable', { warnings: warnings.join('; ') }));
       }
 
       setOrgData({ partner, organizations, sites });
@@ -87,7 +89,7 @@ export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepP
       }
       if (sites?.[0]) setSiteName(sites[0].name);
     } catch {
-      setError('Failed to load organization data');
+      setError(t('setup.organization.errors.loadFailed'));
     } finally {
       setLoading(false);
     }
@@ -115,7 +117,7 @@ export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepP
           });
           if (!res.ok) {
             const data = await res.json().catch(() => null);
-            setError(extractApiError(data, 'Failed to update organization name'));
+            setError(extractApiError(data, t('setup.organization.errors.updateOrganizationFailed')));
             setSaving(false);
             return;
           }
@@ -129,7 +131,7 @@ export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepP
         });
         if (!res.ok) {
           const data = await res.json().catch(() => null);
-          setError(extractApiError(data, 'Failed to create organization'));
+          setError(extractApiError(data, t('setup.organization.errors.createOrganizationFailed')));
           setSaving(false);
           return;
         }
@@ -146,7 +148,7 @@ export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepP
           });
           if (!res.ok) {
             const data = await res.json().catch(() => null);
-            setError(extractApiError(data, 'Failed to update site name'));
+            setError(extractApiError(data, t('setup.organization.errors.updateSiteFailed')));
             setSaving(false);
             return;
           }
@@ -160,7 +162,7 @@ export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepP
         });
         if (!res.ok) {
           const data = await res.json().catch(() => null);
-          setError(extractApiError(data, 'Failed to create site'));
+          setError(extractApiError(data, t('setup.organization.errors.createSiteFailed')));
           setSaving(false);
           return;
         }
@@ -170,10 +172,10 @@ export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepP
 
       const finalOrgName = orgName.trim() || 'My Organization';
       const finalSiteName = siteName.trim() || 'Main Office';
-      setSuccess('Organization details saved');
+      setSuccess(t('setup.organization.success'));
       setTimeout(() => onNext(finalOrgId, finalSiteId, finalOrgName, finalSiteName), 600);
     } catch {
-      setError('An unexpected error occurred');
+      setError(t('setup.common.unexpectedError'));
     } finally {
       setSaving(false);
     }
@@ -183,7 +185,7 @@ export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepP
     return (
       <div className="flex flex-col items-center justify-center gap-3 py-12">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-        <p className="text-sm text-muted-foreground">Loading your account...</p>
+        <p className="text-sm text-muted-foreground">{t('setup.organization.loadingAccount')}</p>
       </div>
     );
   }
@@ -191,9 +193,9 @@ export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepP
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-lg font-semibold">Create your first organization</h2>
+        <h2 className="text-lg font-semibold">{t('setup.organization.title')}</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Organizations represent your clients. You can add more later from Settings.
+          {t('setup.organization.description')}
         </p>
       </div>
 
@@ -201,36 +203,38 @@ export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepP
         <div className="space-y-1.5">
           <label htmlFor="setup-org" className="flex items-center gap-2 text-sm font-medium">
             <Building2 className="h-4 w-4 text-muted-foreground" />
-            Organization name
+            {t('setup.organization.organizationName')}
           </label>
           <input
             id="setup-org"
             type="text"
             value={orgName}
             onChange={(e) => setOrgName(e.target.value)}
-            placeholder="e.g. Downtown Dental, Smith Law Office"
+            placeholder={t('setup.organization.organizationPlaceholder')}
             className="mt-1 block w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-xs placeholder:text-muted-foreground focus:border-primary focus:outline-hidden focus:ring-1 focus:ring-primary"
           />
           <p className="text-xs text-muted-foreground">
-            Typically your client's company name. Your own company ({orgData.partner?.name || 'your MSP'}) is already set up as the partner account.
+            {t('setup.organization.organizationHint', {
+              partnerName: orgData.partner?.name || t('setup.organization.yourMsp')
+            })}
           </p>
         </div>
 
         <div className="space-y-1.5">
           <label htmlFor="setup-site" className="flex items-center gap-2 text-sm font-medium">
             <MapPin className="h-4 w-4 text-muted-foreground" />
-            Site name
+            {t('setup.organization.siteName')}
           </label>
           <input
             id="setup-site"
             type="text"
             value={siteName}
             onChange={(e) => setSiteName(e.target.value)}
-            placeholder="e.g. Main Office, HQ, Building A"
+            placeholder={t('setup.organization.sitePlaceholder')}
             className="mt-1 block w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-xs placeholder:text-muted-foreground focus:border-primary focus:outline-hidden focus:ring-1 focus:ring-primary"
           />
           <p className="text-xs text-muted-foreground">
-            A physical location where devices are managed. You can add more sites later.
+            {t('setup.organization.siteHint')}
           </p>
         </div>
 
@@ -253,7 +257,7 @@ export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepP
             className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-xs hover:bg-primary/90 disabled:opacity-50"
           >
             {saving && <Loader2 className="h-4 w-4 animate-spin" />}
-            Save & Continue
+            {t('setup.common.saveAndContinue')}
           </button>
         </div>
       </form>

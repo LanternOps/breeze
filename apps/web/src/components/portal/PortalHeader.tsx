@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { ChevronDown, LogOut, UserCircle } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { sanitizeImageSrc } from '@/lib/safeImageSrc';
 import { useAvatarBlobUrl } from '@/lib/avatarBlobCache';
@@ -24,6 +25,7 @@ export default function PortalHeader({
   onProfile,
   className
 }: PortalHeaderProps) {
+  const { t } = useTranslation('portal');
   const branding = usePortalBranding();
   const [menuOpen, setMenuOpen] = useState(false);
   const safeLogoUrl = sanitizeImageSrc(branding.logoUrl);
@@ -52,7 +54,7 @@ export default function PortalHeader({
         )}
         <div className="leading-tight">
           <div className="text-sm font-semibold text-foreground">{branding.name}</div>
-          <div className="text-xs text-muted-foreground">Customer Portal</div>
+          <div className="text-xs text-muted-foreground">{t('header.customerPortal')}</div>
         </div>
       </div>
 
@@ -89,7 +91,7 @@ export default function PortalHeader({
               className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm hover:bg-muted"
             >
               <UserCircle className="h-4 w-4" />
-              Profile
+              {t('header.profile')}
             </button>
             <button
               type="button"
@@ -97,7 +99,7 @@ export default function PortalHeader({
               className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-destructive hover:bg-muted"
             >
               <LogOut className="h-4 w-4" />
-              Sign out
+              {t('header.signOut')}
             </button>
           </div>
         )}
