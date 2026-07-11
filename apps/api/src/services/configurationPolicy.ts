@@ -1078,10 +1078,13 @@ export async function addFeatureLink(
 
   // Service-level backstop for callers that bypass the HTTP route's validation
   // (the AI manage_policy_feature_link tool calls this directly). Validates the
-  // combined capability + consent shape; decompose below re-picks the consent
-  // subset for the normalized row (#2320).
+  // combined capability + consent shape and stores the PARSED result so unknown
+  // keys are stripped from the JSONB mirror on every path (an AI-guessed key
+  // like `remoteDesktop` must not be persisted-and-echoed as if it took effect
+  // — the runtime readers would silently ignore it). Decompose below re-picks
+  // the consent subset for the normalized row (#2320).
   if (featureType === 'remote_access' && inlineSettings !== undefined && inlineSettings !== null) {
-    remoteAccessInlineSettingsSchema.parse(inlineSettings);
+    inlineSettings = remoteAccessInlineSettingsSchema.parse(inlineSettings);
   }
 
   return db.transaction(async (tx) => {
@@ -1148,8 +1151,24 @@ export async function updateFeatureLink(
     }
 
     // Same service-level backstop as addFeatureLink (AI tool path) — see #2320.
+    // remote_access updates use MERGE semantics: the incoming payload is
+    // validated + stripped, then merged over the (validated) currently stored
+    // blob. The blob is written by two surfaces — the RemoteAccessTab edits the
+    // capability fields, the consent fields (#1694) have no UI and arrive via
+    // the AI tool — and decompose below re-creates the normalized consent row
+    // from scratch with schema defaults. A replace-semantics partial update
+    // (e.g. AI sending only {webrtcDesktop: false}) would silently reset
+    // sessionPromptMode 'consent' → 'notify' and, inversely, a consent-only
+    // update would drop every capability key from the mirror, fail-open
+    // re-enabling deliberately disabled capabilities via the permissive
+    // baseline. Merging closes both holes; fields can only be changed, never
+    // implicitly reset (every field has a spec default anyway).
     if (existing.featureType === 'remote_access' && updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
-      remoteAccessInlineSettingsSchema.parse(updates.inlineSettings);
+      const incoming = remoteAccessInlineSettingsSchema.parse(updates.inlineSettings);
+      // Tolerate malformed/legacy stored blobs on the read side: safeParse and
+      // fall back to {} rather than making the whole update impossible.
+      const stored = remoteAccessInlineSettingsSchema.safeParse(existing.inlineSettings ?? {});
+      updates.inlineSettings = { ...(stored.success ? stored.data : {}), ...incoming };
     }
 
     const setValues: Record<string, unknown> = { updatedAt: new Date() };

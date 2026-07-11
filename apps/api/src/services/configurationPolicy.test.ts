@@ -992,3 +992,184 @@ describe('remote_access feature link — legacy capability JSONB (#2320)', () =>
     ).rejects.toThrow();
   });
 });
+
+describe('remote_access updateFeatureLink — merge semantics (partial updates cannot reset the other surface)', () => {
+  const STORED_MIXED = {
+    webrtcDesktop: true,
+    vncRelay: true,
+    remoteTools: true,
+    clipboardHostToViewer: false,
+    clipboardViewerToHost: true,
+    enableProxy: false,
+    defaultAllowedPorts: [443],
+    autoEnableProxy: false,
+    maxConcurrentTunnels: 5,
+    idleTimeoutMinutes: 5,
+    maxSessionDurationHours: 8,
+    sessionPromptMode: 'consent',
+    consentUnavailableBehavior: 'block',
+    notifyOnSessionEnd: true,
+    showActiveIndicator: true,
+    technicianIdentityLevel: 'generic',
+  };
+
+  function buildUpdateTx(existingInlineSettings: unknown) {
+    const captured: { setValues?: any; normalizedRowValues?: any } = {};
+    const tx = {
+      select: vi.fn(() =>
+        selectLimitRows([
+          {
+            id: 'link-ra',
+            configPolicyId: 'policy-1',
+            featureType: 'remote_access',
+            featurePolicyId: null,
+            inlineSettings: existingInlineSettings,
+          },
+        ])
+      ),
+      update: vi.fn(() => ({
+        set: vi.fn((v: any) => {
+          captured.setValues = v;
+          return {
+            where: vi.fn(() => ({
+              returning: vi.fn(() => Promise.resolve([{ id: 'link-ra' }])),
+            })),
+          };
+        }),
+      })),
+      delete: vi.fn(() => ({ where: vi.fn(() => Promise.resolve([])) })),
+      insert: vi.fn(() => ({
+        values: vi.fn((v: any) => {
+          captured.normalizedRowValues = v;
+          return Promise.resolve([]);
+        }),
+      })),
+    };
+    return { tx, captured };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('a capability-only update preserves the stored consent settings (AI tool path)', async () => {
+    const { tx, captured } = buildUpdateTx({ ...STORED_MIXED });
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    const updated = await updateFeatureLink(
+      'link-ra',
+      { inlineSettings: { webrtcDesktop: false } },
+      'policy-1'
+    );
+    expect(updated).not.toBeNull();
+
+    // The changed field is applied...
+    expect(captured.setValues.inlineSettings.webrtcDesktop).toBe(false);
+    // ...the untouched capability fields survive in the mirror...
+    expect(captured.setValues.inlineSettings.clipboardHostToViewer).toBe(false);
+    expect(captured.setValues.inlineSettings.defaultAllowedPorts).toEqual([443]);
+    // ...and the consent fields do NOT reset to schema defaults — the
+    // re-created normalized row keeps them (would be 'notify'/'name_email'
+    // under replace semantics).
+    expect(captured.setValues.inlineSettings.sessionPromptMode).toBe('consent');
+    expect(captured.normalizedRowValues.sessionPromptMode).toBe('consent');
+    expect(captured.normalizedRowValues.consentUnavailableBehavior).toBe('block');
+    expect(captured.normalizedRowValues.technicianIdentityLevel).toBe('generic');
+  });
+
+  it('a consent-only update preserves the stored capability settings (no fail-open re-enable)', async () => {
+    const { tx, captured } = buildUpdateTx({ ...STORED_MIXED, webrtcDesktop: false, enableProxy: false });
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    const updated = await updateFeatureLink(
+      'link-ra',
+      { inlineSettings: { sessionPromptMode: 'notify' } },
+      'policy-1'
+    );
+    expect(updated).not.toBeNull();
+
+    // Deliberately disabled capabilities must stay disabled in the mirror —
+    // dropping them would let the permissive baseline re-enable them.
+    expect(captured.setValues.inlineSettings.webrtcDesktop).toBe(false);
+    expect(captured.setValues.inlineSettings.enableProxy).toBe(false);
+    expect(captured.setValues.inlineSettings.sessionPromptMode).toBe('notify');
+    expect(captured.normalizedRowValues.sessionPromptMode).toBe('notify');
+    // Consent fields not present in the update keep their stored values.
+    expect(captured.normalizedRowValues.technicianIdentityLevel).toBe('generic');
+  });
+
+  it('unknown keys are stripped from the stored mirror instead of persisted as no-ops', async () => {
+    const { tx, captured } = buildUpdateTx({ ...STORED_MIXED });
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    await updateFeatureLink(
+      'link-ra',
+      // An AI-guessed key: must not be stored and echoed back as if it worked.
+      { inlineSettings: { remoteDesktop: false } as Record<string, unknown> },
+      'policy-1'
+    );
+
+    expect(captured.setValues.inlineSettings).not.toHaveProperty('remoteDesktop');
+    // And nothing else changed.
+    expect(captured.setValues.inlineSettings.webrtcDesktop).toBe(true);
+    expect(captured.setValues.inlineSettings.sessionPromptMode).toBe('consent');
+  });
+
+  it('a malformed legacy stored blob does not block the update (safeParse fallback)', async () => {
+    const { tx, captured } = buildUpdateTx({ webrtcDesktop: 'garbage' });
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    const updated = await updateFeatureLink(
+      'link-ra',
+      { inlineSettings: { webrtcDesktop: false } },
+      'policy-1'
+    );
+    expect(updated).not.toBeNull();
+    expect(captured.setValues.inlineSettings).toEqual({ webrtcDesktop: false });
+  });
+});
+
+describe('remote_access addFeatureLink — unknown keys stripped from the stored mirror', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('does not persist an AI-guessed key alongside the valid fields', async () => {
+    let storedJsonb: any;
+    let insertCall = 0;
+    const tx = {
+      insert: vi.fn(() => ({
+        values: vi.fn((v: any) => {
+          insertCall += 1;
+          if (insertCall === 1) {
+            storedJsonb = v.inlineSettings;
+            return {
+              onConflictDoNothing: vi.fn(() => ({
+                returning: vi.fn(() =>
+                  Promise.resolve([
+                    {
+                      id: 'link-ra',
+                      configPolicyId: 'policy-1',
+                      featureType: 'remote_access',
+                      featurePolicyId: null,
+                      inlineSettings: v.inlineSettings,
+                    },
+                  ])
+                ),
+              })),
+            };
+          }
+          return Promise.resolve([]);
+        }),
+      })),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    await addFeatureLink('policy-1', 'remote_access', null, {
+      webrtcDesktop: false,
+      allowRemoteControl: false, // unknown — must be stripped, not stored
+    });
+
+    expect(storedJsonb).toEqual({ webrtcDesktop: false });
+  });
+});
