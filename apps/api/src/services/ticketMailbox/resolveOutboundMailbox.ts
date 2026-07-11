@@ -1,7 +1,10 @@
 import { and, desc, eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { ticketEmailInbound } from '../../db/schema/emailInbound';
-import { ticketMailboxConnections } from '../../db/schema/ticketMailbox';
+import {
+  ticketMailboxConnections,
+  ticketMailboxTenantOwnerships,
+} from '../../db/schema/ticketMailbox';
 
 export interface OutboundMailbox {
   tenantId: string;
@@ -19,6 +22,13 @@ export async function resolveOutboundMailbox(
     tenantId: ticketMailboxConnections.tenantId,
     mailboxAddress: ticketMailboxConnections.mailboxAddress,
   }).from(ticketMailboxConnections)
+    .innerJoin(
+      ticketMailboxTenantOwnerships,
+      and(
+        eq(ticketMailboxTenantOwnerships.tenantId, ticketMailboxConnections.tenantId),
+        eq(ticketMailboxTenantOwnerships.partnerId, ticketMailboxConnections.partnerId),
+      ),
+    )
     .where(and(
       eq(ticketMailboxConnections.partnerId, partnerId),
       eq(ticketMailboxConnections.status, 'connected'),

@@ -31,6 +31,7 @@ vi.mock('../services/inboundEmailQueue', () => ({ enqueueInboundEmail: vi.fn(asy
 vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 
 import { listConnectedMailboxes, updateDeltaCursor, resetDeltaCursor, setConnectionStatus } from '../services/ticketMailbox/connectionService';
+import { getMailboxToken } from '../services/ticketMailbox/mailboxToken';
 import { listInboxDelta, markRead } from '../services/ticketMailbox/graphMailClient';
 import { enqueueInboundEmail } from '../services/inboundEmailQueue';
 import { runMailboxSweep } from './ticketMailboxPollWorker';
@@ -42,6 +43,22 @@ const conn = (over: Partial<any> = {}) => ({
 
 describe('runMailboxSweep', () => {
   beforeEach(() => vi.clearAllMocks());
+
+  it.each([
+    'reauth-required mailboxes',
+    'disabled mailboxes',
+    'connected mailboxes without verified ownership',
+  ])('does no token or Graph work when verified active selection excludes %s', async () => {
+    // listConnectedMailboxes owns status + ownership filtering. These states are
+    // therefore represented by the real service contract: no selected rows.
+    vi.mocked(listConnectedMailboxes).mockResolvedValue([]);
+
+    await runMailboxSweep();
+
+    expect(getMailboxToken).not.toHaveBeenCalled();
+    expect(listInboxDelta).not.toHaveBeenCalled();
+    expect(markRead).not.toHaveBeenCalled();
+  });
 
   it('enqueues each new message, marks it read, then persists the new deltaLink', async () => {
     vi.mocked(listConnectedMailboxes).mockResolvedValue([conn()] as any);
