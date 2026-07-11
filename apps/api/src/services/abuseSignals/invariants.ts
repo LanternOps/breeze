@@ -45,6 +45,7 @@ export async function computeInvariantSignals(): Promise<ComputedSignal[]> {
     JOIN devices d ON d.org_id = o.id
     WHERE p.status IN ('pending', 'suspended')
       AND d.status NOT IN ('decommissioned', 'quarantined')
+      -- Intentionally omit deleted_at IS NULL: a soft-deleted partner with live devices is itself the anomaly
     GROUP BY p.id, p.name, p.status
   `)) as unknown as Array<{ id: string; name: string; status: string; device_count: string }>;
   for (const p of inactiveWithAgents) {
