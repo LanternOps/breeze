@@ -1145,7 +1145,7 @@
     },
     "empty": {
       "title": "Ainda não há scripts",
-      "description": "Crie seu primeiro script para automatizar tarefas na sua frota."
+      "description": "Crie seu primeiro script para automatizar tarefas nos seus dispositivos."
     },
     "deleteDialog": {
       "title": "Excluir script",
