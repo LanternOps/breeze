@@ -19,12 +19,12 @@ var errNoFilenameToken = errors.New("no bootstrap token in installer filename")
 // Parens are not special in MSI Formatted fields, so they survive intact.
 //
 // A nonstandard server port is carried as an optional `_PORT` suffix
-// (HOST_8443), because `:` is illegal in Windows filenames — Chrome rewrites
-// it to `_` at save time, which used to make the whole match fail and the
-// install silently skip enrollment (#2341). Underscore never appears in a
-// hostname, so the suffix is unambiguous, and since it equals Chrome's
-// sanitization of the old `host:port` form, files downloaded from older
-// servers parse the same way.
+// (HOST_8443), because `:` is illegal in Windows filenames — Chromium-based
+// browsers rewrite it to `_` at save time, which used to make the whole match
+// fail and the install silently skip enrollment (#2341). Underscore never
+// appears in a hostname, so the suffix is unambiguous, and since it equals
+// the Chromium sanitization of the old `host:port` form, files downloaded
+// from older servers parse the same way.
 var installerTokenParenRe = regexp.MustCompile(`\(([A-Z0-9]{10})@([a-zA-Z0-9.\-]+)(?:_([0-9]{1,5}))?\)`)
 
 // installerTokenBracketRe is the legacy form: [TOKEN@HOST] in square brackets

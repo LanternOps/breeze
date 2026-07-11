@@ -928,6 +928,84 @@ describe("GET /public-download/:platform", () => {
     issueSpy.mockRestore();
   });
 
+  it("public windows download encodes a nonstandard port as host_PORT in the filename (#2341)", async () => {
+    // `:` is illegal in Windows filenames — the browser rewrites it at save
+    // time and the agent-side parser never matches, so the device installs
+    // unenrolled with no visible error. The port must ride as `_PORT`.
+    process.env.PUBLIC_API_URL = "https://self-hosted.example.com:8443";
+    const row = makeKeyRow({
+      shortCode: "pubcode1234",
+      installerPlatform: "windows",
+      maxUsage: 1,
+      usageCount: 0,
+    });
+
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([row]),
+        }),
+      }),
+    } as any);
+
+    const issueSpy = vi
+      .spyOn(installerBootstrapTokenIssuance, "issueBootstrapTokenForKey")
+      .mockResolvedValueOnce({
+        id: "btok-1",
+        token: "ABCDE12345",
+        expiresAt: new Date(Date.now() + 3_600_000),
+        parentKeyName: "Test Key",
+      });
+
+    const res = await app.request(
+      `/enrollment-keys/public-download/windows?h=dlh_${"1".repeat(32)}`,
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Disposition")).toBe(
+      'attachment; filename="Breeze Agent (ABCDE12345@self-hosted.example.com_8443).msi"',
+    );
+
+    issueSpy.mockRestore();
+  });
+
+  it("public windows download returns 400 for a non-https server URL without burning a token (#2341)", async () => {
+    // The agent always redeems the filename token over https, so an
+    // http-only server can never enroll through this path — fail the
+    // download with the reason instead of serving a dead MSI.
+    process.env.PUBLIC_API_URL = "http://self-hosted.example.com:8080";
+    const row = makeKeyRow({
+      shortCode: "pubcode1234",
+      installerPlatform: "windows",
+      maxUsage: 1,
+      usageCount: 0,
+    });
+
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([row]),
+        }),
+      }),
+    } as any);
+
+    const issueSpy = vi.spyOn(
+      installerBootstrapTokenIssuance,
+      "issueBootstrapTokenForKey",
+    );
+
+    const res = await app.request(
+      `/enrollment-keys/public-download/windows?h=dlh_${"1".repeat(32)}`,
+    );
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/https/i);
+    expect(issueSpy).not.toHaveBeenCalled();
+
+    issueSpy.mockRestore();
+  });
+
   it("rejects legacy raw token query downloads by default", async () => {
     const res = await app.request(
       `/enrollment-keys/public-download/windows?token=${"a".repeat(64)}`,
@@ -1472,6 +1550,57 @@ describe("GET /:id/installer/macos — app-bundle path", () => {
     expect(res.headers.get("Content-Disposition")).toContain(
       "breeze-agent-macos.zip",
     );
+    expect(vi.mocked(renameAppInZip)).not.toHaveBeenCalled();
+    expect(issueSpy).not.toHaveBeenCalled();
+  });
+
+  it("falls back to legacy zip for a nonstandard-port server URL even when the app asset exists (#2341)", async () => {
+    // The app-bundle installer's Swift-side parser accepts only a bare https
+    // host — no port form — so a ported self-hosted server could hand out a
+    // bundle that can never enroll. The route must skip the app-bundle path
+    // entirely (never even fetch the asset) and serve the legacy zip, which
+    // embeds the full server URL.
+    process.env.PUBLIC_API_URL = "https://self-hosted.example.com:8443";
+    const parentRow = makeKeyRow();
+    const childRow = makeChildKeyRow({ installerPlatform: "macos" });
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([parentRow]),
+          }),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      } as any);
+
+    vi.mocked(db.insert).mockReturnValueOnce({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([childRow]),
+      }),
+    } as any);
+
+    // The asset IS available — the gate must short-circuit before fetching it.
+    vi.mocked(fetchMacosInstallerAppZip).mockResolvedValueOnce(
+      Buffer.from("fixture-app-zip"),
+    );
+
+    const res = await app.request(
+      `/enrollment-keys/${KEY_ID}/installer/macos?count=1`,
+      { headers: { authorization: "Bearer jwt" } },
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Disposition")).toContain(
+      "breeze-agent-macos.zip",
+    );
+    expect(vi.mocked(fetchMacosInstallerAppZip)).not.toHaveBeenCalled();
     expect(vi.mocked(renameAppInZip)).not.toHaveBeenCalled();
     expect(issueSpy).not.toHaveBeenCalled();
   });

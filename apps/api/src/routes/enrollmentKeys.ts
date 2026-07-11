@@ -1051,6 +1051,17 @@ enrollmentKeyRoutes.get(
     //   (a) caller passed ?legacy=1, OR
     //   (b) the installer-app asset is not yet published on GitHub.
     // ----------------------------------------------------------------
+    // Why a macOS download fell through to the legacy zip — recorded in the
+    // legacy path's audit details so operators can tell "working as designed"
+    // (explicit-legacy, nonstandard-host) from an asset-pipeline regression
+    // (asset-unavailable, rename-failed).
+    let macosLegacyFallbackReason:
+      | "explicit-legacy"
+      | "nonstandard-host"
+      | "asset-unavailable"
+      | "rename-failed"
+      | null = null;
+
     if (platform === "macos") {
       const wantLegacy = c.req.query("legacy") === "1";
       // The app-bundle installer carries the API host in its bundle filename /
@@ -1060,8 +1071,17 @@ enrollmentKeyRoutes.get(
       // through it (#2341), so fall through to the legacy zip below, which
       // embeds the full server URL.
       const bundleApiHost = macosBundleApiHost(serverUrl);
-      const appZip =
-        wantLegacy || !bundleApiHost ? null : await fetchMacosInstallerAppZip();
+      if (wantLegacy) {
+        macosLegacyFallbackReason = "explicit-legacy";
+      } else if (!bundleApiHost) {
+        macosLegacyFallbackReason = "nonstandard-host";
+      }
+      const appZip = macosLegacyFallbackReason
+        ? null
+        : await fetchMacosInstallerAppZip();
+      if (!appZip && !macosLegacyFallbackReason) {
+        macosLegacyFallbackReason = "asset-unavailable";
+      }
 
       if (appZip && bundleApiHost) {
         // New path — bootstrap token + renamed app zip. No child enrollment key
@@ -1117,6 +1137,11 @@ enrollmentKeyRoutes.get(
               error: err instanceof Error ? err.message : String(err),
             },
           );
+          // The fallback still hands the user a working installer, so without
+          // a Sentry event a systemic rename regression (e.g. a corrupted
+          // release asset) would be invisible until someone reads raw logs.
+          captureException(err, c);
+          macosLegacyFallbackReason = "rename-failed";
           // Fall through to legacy path — do NOT return.
         }
 
@@ -1193,8 +1218,18 @@ enrollmentKeyRoutes.get(
         msi = await fetchRegularMsi();
       } catch (err) {
         console.error("[installer] failed to fetch signed MSI:", err);
+        captureException(err, c);
         return c.json({ error: "MSI not available" }, 503);
       }
+
+      // Build the response BEFORE the audit write — serveWindowsBootstrapMsi
+      // throws on a non-encoded host (defense in depth, #2341), and the audit
+      // trail must not record a download that never happened.
+      const response = serveWindowsBootstrapMsi(c, {
+        msi,
+        token: issued.token,
+        apiHost,
+      });
 
       writeEnrollmentKeyAudit(c, auth, {
         orgId: parentKey.orgId,
@@ -1209,7 +1244,7 @@ enrollmentKeyRoutes.get(
         },
       });
 
-      return serveWindowsBootstrapMsi(c, { msi, token: issued.token, apiHost });
+      return response;
     }
 
     // Signing-spend cap — enforce BEFORE child key creation or any signing
@@ -1317,6 +1352,9 @@ enrollmentKeyRoutes.get(
           childKeyId: childKey.id,
           shortCode,
           count: childMaxUsage,
+          ...(macosLegacyFallbackReason
+            ? { fallbackReason: macosLegacyFallbackReason }
+            : {}),
         },
       });
 
@@ -1826,8 +1864,18 @@ async function serveInstaller(
       msi = await fetchRegularMsi();
     } catch (err) {
       console.error("[public-download] Failed to fetch MSI:", err);
+      captureException(err, c);
       return c.json({ error: "MSI not available" }, 503);
     }
+
+    // Build the response BEFORE the audit write — serveWindowsBootstrapMsi
+    // throws on a non-encoded host (defense in depth, #2341), and the audit
+    // trail must not record a download that never happened.
+    const response = serveWindowsBootstrapMsi(c, {
+      msi,
+      token: issued.token,
+      apiHost,
+    });
 
     createAuditLogAsync({
       orgId: keyRow.orgId,
@@ -1842,7 +1890,7 @@ async function serveInstaller(
       result: "success",
     });
 
-    return serveWindowsBootstrapMsi(c, { msi, token: issued.token, apiHost });
+    return response;
   }
 
   // ----------------------------------------------------------------

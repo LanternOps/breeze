@@ -5,12 +5,12 @@
  * the download filename — `Breeze Agent (TOKEN@HOST).msi` — and the agent's
  * bootstrap custom action parses it back out. `:` is illegal in Windows
  * filenames, so a raw `URL.host` with a nonstandard port (`host:8443`) gets
- * silently rewritten by the browser at save time (Chrome substitutes `_`),
- * the agent parser stops matching, and the device installs unenrolled with
- * no visible error (#2341).
+ * silently rewritten by the browser at save time (Chromium-based browsers
+ * substitute `_`), the agent parser stops matching, and the device installs
+ * unenrolled with no visible error (#2341).
  *
  * A nonstandard port is therefore carried as `host_PORT` — underscore never
- * appears in a hostname, and it matches Chrome's sanitization of the old
+ * appears in a hostname, and it matches the Chromium sanitization of the old
  * colon form, so files downloaded from pre-fix servers decode identically.
  * The agent-side decoder lives in
  * `agent/internal/agentapp/installer_filename.go`.
@@ -72,11 +72,12 @@ export function isEncodedWindowsFilenameApiHost(apiHost: string): boolean {
  * Host for the macOS app-bundle installer (bundle filename / bootstrap.json
  * payload), or `null` when the server URL is not expressible there.
  *
- * The macOS installer app validates the host against `[A-Za-z0-9.-]+` and
- * promotes it to `https://` (FilenameTokenParser.swift) — it has no port
- * encoding, so a nonstandard port, non-https scheme, or unsafe hostname
- * cannot ride the app-bundle path at all. Callers fall back to the legacy
- * zip installer, which embeds the full server URL and handles all of these.
+ * The macOS installer app validates the host against `[A-Za-z0-9.-]+`
+ * (FilenameTokenParser.swift) and its bootstrap client always talks https
+ * (BootstrapClient.swift) — there is no port encoding, so a nonstandard
+ * port, non-https scheme, or unsafe hostname cannot ride the app-bundle
+ * path at all. Callers fall back to the legacy zip installer, which embeds
+ * the full server URL and handles all of these.
  */
 export function macosBundleApiHost(serverUrl: string): string | null {
   const url = new URL(serverUrl);

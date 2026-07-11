@@ -33,10 +33,11 @@ type bootstrapResult struct {
 // server take precedence (explicit silent-install intent); otherwise the
 // [TOKEN@HOST] in the installer filename is used, with the host (which may
 // carry a decoded `host:port`) promoted to an https:// server URL. The
-// promotion is unconditionally https — the server refuses to emit a
-// filename-token download for a non-https URL, so an http-only server never
-// reaches this path (#2341). Mirrors the macOS payload-then-filename
-// precedence.
+// promotion is unconditionally https; servers running the #2341 fix refuse
+// to emit a filename-token download for a non-https URL, but an MSI from an
+// older self-hosted server may still embed an http-only host — redemption
+// then fails loudly (install rollback), never silently. Mirrors the macOS
+// payload-then-filename precedence.
 func resolveBootstrapInputs(data string) (token, server string, err error) {
 	parts := strings.SplitN(data, "|", 3)
 	var installerPath, propToken, propServer string

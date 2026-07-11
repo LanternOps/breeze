@@ -411,6 +411,10 @@ export async function probeMacosInstallerApp(): Promise<boolean> {
  * is illegal in Windows filenames: the browser rewrites it at save time, the
  * agent parser stops matching, and the install silently never enrolls
  * (#2341). Reject outright rather than serve an MSI that cannot enroll.
+ * Callers pre-validate via windowsFilenameApiHost(), so this throw should be
+ * unreachable; if it ever fires it surfaces through the app's generic
+ * onError handler as a 500 (with Sentry capture), not the friendly 400 the
+ * routes return for an invalid configured URL.
  */
 export function serveWindowsBootstrapMsi(
   c: Context,
