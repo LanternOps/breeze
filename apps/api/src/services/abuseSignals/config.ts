@@ -46,6 +46,8 @@ export function loadSignalConfig(): Record<string, number> {
       }
       cfg[key] = value;
     }
+  } else {
+    console.warn('[AbuseSignals] ABUSE_SIGNAL_OVERRIDES must be a JSON object — using defaults');
   }
   return cfg;
 }

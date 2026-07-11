@@ -30,6 +30,13 @@ describe('loadSignalConfig', () => {
     expect(loadSignalConfig()).toEqual(SIGNAL_DEFAULTS);
     expect(warn).toHaveBeenCalled();
   });
+
+  it('warns and returns defaults on non-object JSON (e.g., array)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    process.env.ABUSE_SIGNAL_OVERRIDES = '[1,2,3]';
+    expect(loadSignalConfig()).toEqual(SIGNAL_DEFAULTS);
+    expect(warn).toHaveBeenCalledWith('[AbuseSignals] ABUSE_SIGNAL_OVERRIDES must be a JSON object — using defaults');
+  });
 });
 
 describe('scoreToSeverity', () => {
@@ -38,6 +45,12 @@ describe('scoreToSeverity', () => {
     expect(scoreToSeverity(75, cfg)).toBe('alert');
     expect(scoreToSeverity(45, cfg)).toBe('watch');
     expect(scoreToSeverity(5, cfg)).toBe('info');
+  });
+
+  it('treats exact threshold scores as the higher band', () => {
+    expect(scoreToSeverity(70, cfg)).toBe('alert');
+    expect(scoreToSeverity(40, cfg)).toBe('watch');
+    expect(scoreToSeverity(0, cfg)).toBe('info');
   });
 });
 
@@ -49,5 +62,10 @@ describe('youngWeight', () => {
     expect(youngWeight(new Date('2026-04-01T00:00:00Z'), now, cfg)).toBe(0);
     const w = youngWeight(new Date('2026-05-16T00:00:00Z'), now, cfg); // 60 days old
     expect(w).toBeCloseTo(0.5, 1);
+  });
+
+  it('is exactly 1 at 30 days and exactly 0 at 90 days', () => {
+    expect(youngWeight(new Date('2026-06-15T00:00:00Z'), now, cfg)).toBe(1);  // exactly 30 days
+    expect(youngWeight(new Date('2026-04-16T00:00:00Z'), now, cfg)).toBe(0);  // exactly 90 days
   });
 });
