@@ -17,7 +17,7 @@ export const backupVerifications = pgTable('backup_verifications', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   deviceId: uuid('device_id').notNull().references(() => devices.id),
-  backupJobId: uuid('backup_job_id').notNull().references(() => backupJobs.id),
+  backupJobId: uuid('backup_job_id').notNull().references(() => backupJobs.id, { onDelete: 'cascade' }),
   snapshotId: uuid('snapshot_id').references(() => backupSnapshots.id),
   verificationType: varchar('verification_type', { length: 30 }).notNull(), // integrity|test_restore
   status: varchar('status', { length: 20 }).notNull(), // passed|failed|partial
