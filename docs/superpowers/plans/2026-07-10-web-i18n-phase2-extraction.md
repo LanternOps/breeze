@@ -41,7 +41,7 @@ The worktree contains ~658 uncommitted lines implementing partner default langua
 - Consumes: Phase-1 primitives (`LocalePreference`, `subscribeLocale`, i18n runtime).
 - Produces: `applyResolvedLocalePreferences(userLocale, partnerLocale)` and `readPartnerLocalePreference()` in `appearance.ts`; `/users/me` response field `partnerDefaultLocale: 'en' | 'pt-BR' | null`. Later tasks treat locale resolution as settled.
 
-- [ ] **Step 1: Confirm the client applies `partnerDefaultLocale` on login/refresh**
+- [x] **Step 1: Confirm the client applies `partnerDefaultLocale` on login/refresh**
 
 Check the wiring end (this is the one piece the diff may have missed):
 
@@ -55,7 +55,7 @@ applyResolvedLocalePreferences(data.preferences?.locale, data.partnerDefaultLoca
 
 (and import `applyResolvedLocalePreferences` from `../lib/appearance`).
 
-- [ ] **Step 2: Run every touched suite**
+- [x] **Step 2: Run every touched suite**
 
 ```bash
 cd apps/api && pnpm vitest run src/routes/users.test.ts src/routes/orgs.test.ts
@@ -64,12 +64,12 @@ cd ../web && pnpm vitest run src/lib src/components/settings src/components/layo
 
 Expected: PASS. If anything fails, fix before committing — this diff has never been verified.
 
-- [ ] **Step 3: Type check**
+- [x] **Step 3: Type check**
 
 Run: `cd apps/web && pnpm astro check 2>&1 | tail -5`
 Expected: no new errors.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add apps/api/src/routes/orgs.ts apps/api/src/routes/orgs.test.ts \
@@ -107,7 +107,7 @@ Today `apps/web/src/lib/i18n/index.ts` statically imports two `common.json` file
   - `setLocale(locale: LocalePreference): void` — unchanged signature; switching to a non-English locale is now async under the hood (loads chunks, then `changeLanguage`).
   - Convention: component files declare `useTranslation('<ns>')` once; shared vocabulary via `t('common:actions.save')`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Replace the language-switch cases in `apps/web/src/lib/i18n/i18n.test.ts` (keep the parity test — Task 3 generalizes it):
 
@@ -151,12 +151,12 @@ describe('i18n runtime (namespaced, lazy locales)', () => {
 
 (add `vi` to the vitest import)
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd apps/web && pnpm vitest run src/lib/i18n/i18n.test.ts`
 Expected: FAIL — `loadLocale` not exported; `settings` bundle missing.
 
-- [ ] **Step 3: Migrate the settings keys**
+- [x] **Step 3: Migrate the settings keys**
 
 Create `apps/web/src/locales/en/settings.json` containing the current `settings` and `partnerSettings` subtrees from `en/common.json` **hoisted one level** (the file name is the namespace):
 
@@ -169,7 +169,7 @@ Create `apps/web/src/locales/en/settings.json` containing the current `settings`
 
 Do the same for `pt-BR/settings.json` from `pt-BR/common.json`. Delete both subtrees from the two `common.json` files (keep `nav`). Update the two call-site components: `ThemingSettings.tsx` and `PartnerRegionalTab.tsx` use `const { t } = useTranslation('settings')` and drop the `settings.`/`partnerSettings.` prefixes (`t('language.title')`, `t('partner.…')`).
 
-- [ ] **Step 4: Rewrite `apps/web/src/lib/i18n/index.ts`**
+- [x] **Step 4: Rewrite `apps/web/src/lib/i18n/index.ts`**
 
 ```ts
 // Shared i18next instance for all React islands.
@@ -255,21 +255,21 @@ export function setLocale(locale: LocalePreference): void {
 }
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `cd apps/web && pnpm vitest run src/lib/i18n src/components/settings src/components/layout src/lib`
 Expected: PASS — including the Sidebar and settings suites against the migrated keys. If a settings test asserts on the old `settings.` key strings, update it with the new namespace-relative keys.
 
-- [ ] **Step 6: Type check + build smoke**
+- [x] **Step 6: Type check + build smoke**
 
 Run: `cd apps/web && pnpm astro check 2>&1 | tail -5 && pnpm build 2>&1 | tail -15`
 Expected: no new type errors; build output shows pt-BR JSON emitted as separate chunks (grep the build log for `pt-BR`), confirming English bundles don't carry them.
 
-- [ ] **Step 7: Update `apps/web/src/locales/README.md`**
+- [x] **Step 7: Update `apps/web/src/locales/README.md`**
 
 Replace the "Adding a string" / "Adding a locale" sections to reflect: namespace-per-domain files, auto-registration (no index.ts edits), one `useTranslation('<ns>')` per component file, `common:` prefix for shared vocabulary, and the machine-draft review flag for PR descriptions.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add apps/web/src/lib/i18n apps/web/src/locales apps/web/src/components/settings/ThemingSettings.tsx apps/web/src/components/settings/PartnerRegionalTab.tsx
@@ -290,7 +290,7 @@ Two tests that make 900-file extraction safe to crowdsource: (1) every locale ha
 - Consumes: the `apps/web/src/locales/` directory layout from Task 2.
 - Produces: red CI whenever (a) a wave adds an `en` key without its pt-BR sibling or vice versa, (b) a `t()` call references a nonexistent key, (c) a file uses keys from a namespace it didn't declare. Waves 1–7 rely on these as their safety net.
 
-- [ ] **Step 1: Write `localeParity.test.ts`** (fails only when locales drift — write it, then verify it passes now and fails when you temporarily delete a pt-BR key)
+- [x] **Step 1: Write `localeParity.test.ts`** (fails only when locales drift — write it, then verify it passes now and fails when you temporarily delete a pt-BR key)
 
 ```ts
 import { describe, expect, it } from 'vitest';
@@ -342,7 +342,7 @@ describe('locale parity', () => {
 
 Remove the now-redundant parity case from `i18n.test.ts`.
 
-- [ ] **Step 2: Write `keyUsage.test.ts`**
+- [x] **Step 2: Write `keyUsage.test.ts`**
 
 ```ts
 import { describe, expect, it } from 'vitest';
@@ -391,14 +391,14 @@ describe('translation key usage', () => {
 });
 ```
 
-- [ ] **Step 3: Run both, verify green, then verify they actually bite**
+- [x] **Step 3: Run both, verify green, then verify they actually bite**
 
 Run: `cd apps/web && pnpm vitest run src/lib/i18n`
 Expected: PASS.
 
 Then temporarily (a) delete one key from `pt-BR/common.json` → parity test FAILS naming the namespace; (b) change one `t('nav.dashboard'…)` in Sidebar.tsx to `t('nav.doesNotExist'…)` → keyUsage FAILS naming file and key. Revert both, re-run, PASS. (The false-positive risk in `keyUsage` is a bare `t(` from a non-i18next helper — if the sweep flags one, tighten the regex or add the marker comment.)
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add apps/web/src/lib/i18n/localeParity.test.ts apps/web/src/lib/i18n/keyUsage.test.ts apps/web/src/lib/i18n/i18n.test.ts
@@ -418,7 +418,7 @@ A `common` vocabulary prevents 50 duplicate "Cancel" keys across namespaces, and
 **Interfaces:**
 - Produces: `common:actions.*`, `common:states.*`, `common:labels.*` vocabulary used by every wave; documented rules for interpolation, plurals, and `<Trans>`.
 
-- [ ] **Step 1: Add the vocabulary to `en/common.json`** (alongside the existing `nav` tree)
+- [x] **Step 1: Add the vocabulary to `en/common.json`** (alongside the existing `nav` tree)
 
 ```json
 {
@@ -472,7 +472,7 @@ pt-BR (`pt-BR/common.json`), same tree:
 }
 ```
 
-- [ ] **Step 2: Document conventions in `apps/web/src/locales/README.md`**
+- [x] **Step 2: Document conventions in `apps/web/src/locales/README.md`**
 
 Append a "Conventions for extraction PRs" section covering, with these exact examples:
 - **Interpolation:** `"deleteConfirm": "Delete {{name}}?"` → `t('deleteConfirm', { name: device.name })`. Never concatenate translated fragments.
@@ -482,7 +482,7 @@ Append a "Conventions for extraction PRs" section covering, with these exact exa
 - **Scope:** visible text, `placeholder`, `title`, `aria-label`, toast/message strings. NOT: `data-testid`, React keys, structural test fields, API values.
 - **Machine-draft flag** for PR descriptions (verbatim line given in Global Constraints).
 
-- [ ] **Step 3: Run enforcement, commit**
+- [x] **Step 3: Run enforcement, commit**
 
 Run: `cd apps/web && pnpm vitest run src/lib/i18n`
 Expected: PASS (parity holds for the new vocabulary).
@@ -507,7 +507,7 @@ Phase 1 landed `formatNumber`/`formatCurrency`/`formatPercent` (`apps/web/src/li
 - Consumes: `formatNumber`/`formatCurrency` from `apps/web/src/lib/i18n/format.ts` (Phase 1).
 - Produces: no new API — behavior-only change (display numbers honor the explicit user locale; unset preference keeps browser-default behavior, so English users see no change).
 
-- [ ] **Step 1: Reimplement `formatMoney` on `formatCurrency`**
+- [x] **Step 1: Reimplement `formatMoney` on `formatCurrency`**
 
 In `apps/web/src/lib/timeFormat.ts`, replace the body (keep the exported signature — it takes API numeric strings and falls back on garbage):
 
@@ -532,7 +532,7 @@ it('honors the stored locale', () => {
 
 Wait — `formatMoney` is USD-denominated (`$`); pt-BR users of USD-billing partners should see `US$ 1.234,50` (pt-BR formatting of USD), not BRL. `formatCurrency(value)` defaults to USD and locale pt-BR renders `US$ 1.234,50` — assert that exact string (verify actual Node ICU output and pin it).
 
-- [ ] **Step 2: Generate the sweep inventory**
+- [x] **Step 2: Generate the sweep inventory**
 
 ```bash
 cd apps/web && grep -rn "\.toFixed(" src/components src/lib --include='*.tsx' --include='*.ts' | grep -v '\.test\.' > /tmp/tofixed-sweep.txt
@@ -540,7 +540,7 @@ grep -rnE "['\`\"]\\\$\\\$?\{|style: *'currency'|\\\$\\\{.*toFixed" src/componen
 wc -l /tmp/tofixed-sweep.txt
 ```
 
-- [ ] **Step 3: Migrate display-path call sites**
+- [x] **Step 3: Migrate display-path call sites**
 
 For each hit, apply exactly one of:
 - **Display number** (`{value.toFixed(1)}%`, table cells, stat tiles): → `formatNumber(value, { maximumFractionDigits: 1 })` / `formatPercent(value / 100, …)` — import from `@/lib/i18n/format` or the correct relative path.
@@ -549,12 +549,12 @@ For each hit, apply exactly one of:
 
 This is mechanical but judgment-laden — suited to a subagent fleet fanning out per directory with the rules above, ~10–15 files per agent.
 
-- [ ] **Step 4: Verify**
+- [x] **Step 4: Verify**
 
 Run: `cd apps/web && pnpm vitest run && pnpm astro check 2>&1 | tail -5`
 Expected: PASS / no new errors. Spot-check in the browser (worktree-stack): set pt-BR, visit a billing or dashboard page with numbers, confirm `1.234,56` separators; switch to English, confirm `1,234.56`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A apps/web/src
@@ -624,15 +624,16 @@ After (ns `settings`, keys in both locale files):
 
 Rough total: ~520 files, ~180k lines, est. 3,500–7,000 keys. **Each wave is a checkpoint** — pausable indefinitely after any wave with everything shipped so far fully functional (untranslated surfaces just render English via `defaultValue`-free keys that don't exist yet — they were never wrapped).
 
-- [ ] **Wave 1** — portal/auth/shell (execute playbook; branch `i18n-wave-1-portal-auth-shell`)
-- [ ] **Wave 2a** — devices first half
-- [ ] **Wave 2b** — devices second half + patches
-- [ ] **Wave 3** — alerts/tickets/scripts/vulnerabilities
-- [ ] **Wave 4** — settings (3 sub-PRs)
-- [ ] **Wave 5** — security/remote/backup
-- [ ] **Wave 6** — billing/integrations/policies/discovery
-- [ ] **Wave 7** — long tail
-- [ ] **Post-wave sweep:** `grep -rn '>\s*[A-Z][a-z].*<' src/components --include='*.tsx'`-style residue hunt + a manual pt-BR click-through of the top 10 pages (worktree-stack), filing stragglers as follow-ups
+- [x] **Wave 1** — portal/auth/shell (execute playbook; branch `i18n-wave-1-portal-auth-shell`)
+- [x] **Wave 2a** — devices first half
+- [x] **Wave 2b** — devices second half + patches
+- [x] **Wave 3** — alerts/tickets/scripts/vulnerabilities
+- [x] **Wave 4** — settings (3 sub-PRs)
+- [x] **Wave 5** — security/remote/backup
+- [x] **Wave 6** — billing/integrations/policies/discovery
+- [x] **Wave 7** — long tail
+- [x] **Post-wave residue sweep:** static visible-string residue hunt, with stragglers fixed and enforcement coverage expanded
+- [ ] **Manual validation:** pt-BR click-through of the top 10 pages (worktree-stack), filing any stragglers as follow-ups
 
 Per-wave execution notes for the orchestrator:
 - Fan out subagents ~10–15 files each **within one namespace/wave at a time**; parallel agents must not edit the same `<ns>.json` — have each agent return its key/value pairs and let a single merge step write the JSON files, or assign each agent a distinct top-level key prefix.

@@ -3563,6 +3563,7 @@ tests never exercised the real browser payloads** — worth a validator/UI-contr
 **Commit:** `b47ab13ca`
 **Tested by:** Codex
 **Result:** PARTIAL
+**Plan progress:** 33 of 34 executable items complete (97%); automated implementation and verification complete, manual browser validation pending.
 
 ### What was tested
 
