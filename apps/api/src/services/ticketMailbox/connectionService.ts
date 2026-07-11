@@ -178,6 +178,26 @@ export async function setConnectionStatus(
     .where(and(eq(ticketMailboxConnections.id, id), eq(ticketMailboxConnections.partnerId, partnerId)));
 }
 
+/** Restore a connection after a transient probe failure. The tenant/partner
+ * composite foreign key is the ownership proof; the status predicate prevents
+ * pending, disabled, and reauth-required rows from being activated here. */
+export async function restoreVerifiedConnection(
+  id: string,
+  partnerId: string,
+  tenantId: string,
+): Promise<void> {
+  const rows = await db.update(ticketMailboxConnections)
+    .set({ status: 'connected', lastError: null, updatedAt: new Date() })
+    .where(and(
+      eq(ticketMailboxConnections.id, id),
+      eq(ticketMailboxConnections.partnerId, partnerId),
+      eq(ticketMailboxConnections.tenantId, tenantId),
+      eq(ticketMailboxConnections.status, 'error'),
+    ))
+    .returning({ id: ticketMailboxConnections.id });
+  if (rows.length !== 1) throw new Error('Verified mailbox connection not found');
+}
+
 /** Worker-only. Self-wraps in system context: ticket_mailbox_connections is
  *  FORCE RLS (partner-axis), and the poll worker runs with no request DB context,
  *  so a bare write would match zero rows silently and the cursor would never

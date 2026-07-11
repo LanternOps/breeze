@@ -32,6 +32,7 @@ import {
   getMailboxConnection,
   listMailboxConnections,
   probeMailbox,
+  restoreVerifiedConnection,
   setConnectionStatus,
   type MailboxConnection,
 } from '../../services/ticketMailbox/connectionService';
@@ -143,20 +144,28 @@ function setBindingCookie(c: Context, phase: CallbackPhase, state: string): bool
 }
 
 function parseCallbackIntent(phase: CallbackPhase, query: CallbackQuery): CallbackIntent | null {
-  const hasError = typeof query.error === 'string' && query.error.length > 0;
-  const hasCode = typeof query.code === 'string' && query.code.length > 0;
-  const hasTenant = typeof query.tenant === 'string' && query.tenant.length > 0;
-  const hasAdminConsent = typeof query.admin_consent === 'string';
+  const has = (field: keyof CallbackQuery): boolean => Object.prototype.hasOwnProperty.call(query, field);
+  const hasError = has('error');
+  const hasCode = has('code');
+  const hasTenant = has('tenant');
+  const hasAdminConsent = has('admin_consent');
+  const hasErrorDescription = has('error_description');
+  const hasNonEmptyError = hasError && Boolean(query.error?.length);
+
+  if (hasErrorDescription && !hasNonEmptyError) return null;
 
   if (phase === 'admin_consent') {
-    if (hasError) {
+    if (hasNonEmptyError) {
       return !hasCode && !hasTenant && !hasAdminConsent ? { kind: 'provider_error' } : null;
     }
     if (
       !hasCode
+      && !hasError
+      && !hasErrorDescription
       && hasTenant
       && query.tenant
       && isM365TenantId(query.tenant)
+      && hasAdminConsent
       && query.admin_consent?.toLowerCase() === 'true'
     ) {
       return { kind: 'admin_success', tenantHint: query.tenant.toLowerCase() };
@@ -164,10 +173,10 @@ function parseCallbackIntent(phase: CallbackPhase, query: CallbackQuery): Callba
     return null;
   }
 
-  if (hasError) {
+  if (hasNonEmptyError) {
     return !hasCode && !hasTenant && !hasAdminConsent ? { kind: 'provider_error' } : null;
   }
-  if (hasCode && query.code && !hasTenant && !hasAdminConsent) {
+  if (hasCode && query.code && !hasError && !hasErrorDescription && !hasTenant && !hasAdminConsent) {
     return { kind: 'identity_success', code: query.code };
   }
   return null;
@@ -358,8 +367,8 @@ mailboxRoutes.get('/callback', zValidator('query', callbackQuery), async (c) => 
         nonce: next.session.nonce,
         codeChallenge: next.codeChallenge,
       }));
-    } catch (error) {
-      captureException(error instanceof Error ? error : new Error('Mailbox identity setup failed'), c);
+    } catch {
+      captureException(new Error('Mailbox identity setup failed'), c);
       return fail('invalid_identity');
     }
   }
@@ -431,13 +440,15 @@ mailboxRoutes.post(
     const { id } = c.req.valid('param');
     const connection = await getMailboxConnection(id, resolved.partnerId);
     if (!connection) return c.json({ error: 'Connection not found' }, 404);
-    if (connection.status !== 'connected' || !connection.tenantId) {
+    if (!['connected', 'error'].includes(connection.status) || !connection.tenantId) {
       return c.json({ error: 'Mailbox re-consent required' }, 409);
     }
 
     const probe = await probeMailbox(connection.tenantId, connection.mailboxAddress);
     if (!probe.ok) {
       await setConnectionStatus(id, resolved.partnerId, 'error', 'Mailbox verification failed');
+    } else if (connection.status === 'error') {
+      await restoreVerifiedConnection(id, resolved.partnerId, connection.tenantId);
     }
     writeRouteAudit(c, {
       orgId: null,

@@ -113,6 +113,7 @@ import {
   listConnectedMailboxes,
   listMailboxConnections,
   probeMailbox,
+  restoreVerifiedConnection,
   setConnectionStatus,
 } from './connectionService';
 
@@ -242,6 +243,33 @@ describe('ticket mailbox connection service', () => {
     await expect(setConnectionStatus(CONNECTION_ID, PARTNER_ID, 'connected', null))
       .rejects.toThrow(/bindVerifiedTenant/);
     expect(dbMocks.updatedValues).toHaveLength(0);
+  });
+
+  it('restores only the matching previously verified error connection', async () => {
+    dbMocks.updateResults.push([{ id: CONNECTION_ID }]);
+
+    await restoreVerifiedConnection(CONNECTION_ID, PARTNER_ID, TENANT_ID);
+
+    expect(dbMocks.updatedValues[0]).toMatchObject({
+      status: 'connected',
+      lastError: null,
+    });
+    expect(dbMocks.updateWheres[0]).toEqual({
+      op: 'and',
+      conditions: [
+        { op: 'eq', column: ticketMailboxConnections.id, value: CONNECTION_ID },
+        { op: 'eq', column: ticketMailboxConnections.partnerId, value: PARTNER_ID },
+        { op: 'eq', column: ticketMailboxConnections.tenantId, value: TENANT_ID },
+        { op: 'eq', column: ticketMailboxConnections.status, value: 'error' },
+      ],
+    });
+  });
+
+  it('fails closed rather than activating a connection without matching verified ownership', async () => {
+    dbMocks.updateResults.push([]);
+
+    await expect(restoreVerifiedConnection(CONNECTION_ID, PARTNER_ID, TENANT_ID))
+      .rejects.toThrow(/verified mailbox connection/i);
   });
 
   it('returns an exact public list DTO with no tenant or processing internals', async () => {
