@@ -545,7 +545,7 @@ expect(transactionCalls).toEqual([
 ]);
 ```
 
-Test uniqueness conflict from another partner, missing connection, probe failure leaving ownership/connection unbound, list DTO exact keys, and `listConnectedMailboxes` joining the ownership table.
+Test uniqueness conflict from another partner, missing connection, list DTO exact keys, and `listConnectedMailboxes` joining the ownership table. Probe-failure ownership behavior belongs to the callback route in Task 6 because the connection service never performs Microsoft Graph probes.
 
 - [ ] **Step 2: Run the service tests and confirm red**
 
@@ -624,6 +624,7 @@ expect(bindVerifiedTenant).not.toHaveBeenCalled();
 ```
 
 Then test the identity callback: valid code uses the verified token `tid`; query injection cannot override it; invalid role/issuer/audience/nonce/tenant/code fails without probe/bind; replayed state fails; cross-partner ownership conflict fails; and only the stored connection mailbox is probed.
+Explicitly assert a failed mailbox probe never calls `bindVerifiedTenant`, leaving ownership and connection state unbound.
 
 - [ ] **Step 2: Run route tests and confirm red**
 
