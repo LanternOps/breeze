@@ -19,11 +19,12 @@ const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
 
 /**
  * Pull a human-readable message out of an API error body. The preview route
- * returns either a plain `{ error: string }` (e.g. 'Site access denied') or the
- * @hono/zod-validator 400 shape `{ success:false, error: { issues: [{ message }] } }`
+ * returns a plain `{ error: string }` (e.g. 'Site access denied', or the
+ * shared zValidator wrapper's string-first 400 body since #2201). The legacy
+ * pre-#2201 shape `{ success:false, error: { issues: [{ message }] } }`
  * (a serialized ZodError — the superRefine criterion/shape messages, the
- * sha256 hash validator). Without this, those messages collapse to a bare HTTP
- * status. Returns '' when no message can be extracted.
+ * sha256 hash validator) is kept defensively for older deployed APIs.
+ * Returns '' when no message can be extracted.
  */
 function extractApiError(body: unknown): string {
   if (!body || typeof body !== 'object') return '';

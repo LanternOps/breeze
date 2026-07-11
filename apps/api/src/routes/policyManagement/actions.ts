@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../../lib/validation';
 import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { automationPolicies, automationRuns, automations, organizations } from '../../db/schema';

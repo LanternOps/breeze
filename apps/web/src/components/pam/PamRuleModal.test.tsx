@@ -248,7 +248,14 @@ describe('PamRuleModal', () => {
         expect(screen.getByTestId('pam-rule-signer')).toBeInTheDocument();
       });
 
-      await user.type(screen.getByTestId('pam-rule-signer'), 'Acme Corp');
+      // Atomic set instead of user.type: mount-fetch re-renders drop keystrokes
+      // mid-type (same race as the 400-preview test below).
+      fireEvent.change(screen.getByTestId('pam-rule-signer'), {
+        target: { value: 'Acme Corp' },
+      });
+      await waitFor(() =>
+        expect(screen.getByTestId('pam-rule-signer')).toHaveValue('Acme Corp'),
+      );
       await user.click(screen.getByTestId('pam-rule-preview-btn'));
 
       await waitFor(() => {

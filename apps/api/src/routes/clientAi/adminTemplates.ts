@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../../lib/validation';
 import { asc, eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { clientAiPromptTemplates } from '../../db/schema/clientAi';

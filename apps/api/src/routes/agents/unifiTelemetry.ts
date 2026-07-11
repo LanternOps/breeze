@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { requireAgentRole } from '../../middleware/requireAgentRole';
 import { db, withSystemDbAccessContext } from '../../db';

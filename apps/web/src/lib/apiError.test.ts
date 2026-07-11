@@ -68,6 +68,22 @@ describe('extractApiError', () => {
     expect(extractApiError({ error: { name: 'ZodError', message: 'not-json' } }, FALLBACK)).toBe(FALLBACK);
   });
 
+  it('renders the shared zValidator wrapper 400 body once, deduping error against details (#2201)', () => {
+    // Contract test: exact body emitted by apps/api/src/lib/validation.ts. The
+    // `error` string uses the same join rules as joinZodFlatten so the details
+    // rendering is identical and must dedupe to a single toast line.
+    const body = {
+      error: 'Unrecognized key: "maxUses"; contacts.0.email: Invalid email',
+      details: {
+        formErrors: ['Unrecognized key: "maxUses"'],
+        fieldErrors: { 'contacts.0.email': ['Invalid email'] },
+      },
+    };
+    expect(extractApiError(body, FALLBACK)).toBe(
+      'Unrecognized key: "maxUses"; contacts.0.email: Invalid email'
+    );
+  });
+
   it('returns body.details when only details is set', () => {
     expect(extractApiError({ details: 'phone numbers required' }, FALLBACK)).toBe('phone numbers required');
   });

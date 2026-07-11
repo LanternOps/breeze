@@ -1,8 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
 import { parseNvd } from './nvdClient';
 import sample from './__fixtures__/nvd-sample.json';
 
 describe('parseNvd', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('extracts CVE, CVSS, and CPE version ranges', () => {
     const recs = parseNvd(sample);
     const chrome = recs.find((record) => record.cveId === 'CVE-2024-0519');
@@ -44,5 +49,31 @@ describe('parseNvd', () => {
     expect(prefixes).toContain('cpe:2.3:a:google:chrome');
     expect(prefixes).toContain('cpe:2.3:a:obscurevendor:obscureproduct');
     expect(prefixes).not.toContain('cpe:2.3:o:fedoraproject:fedora');
+  });
+
+  it('drops records with malformed CVE ids and keeps valid siblings (#2261)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const malformedCveId = 'CVE-2023-38039 mariner - do not use this one';
+    const doc = {
+      vulnerabilities: [
+        { cve: { id: malformedCveId } },
+        { cve: { id: 'CVE-2024-11111' } },
+      ],
+    };
+
+    const records = parseNvd(doc);
+
+    expect(records).toHaveLength(1);
+    expect(records[0]?.cveId).toBe('CVE-2024-11111');
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toContain(malformedCveId);
+  });
+
+  it('throws when EVERY CVE id is malformed (probable feed format change)', () => {
+    const doc = {
+      vulnerabilities: [{ cve: { id: 'CVE-2023-38039 mariner - do not use this one' } }],
+    };
+
+    expect(() => parseNvd(doc)).toThrow(/probable upstream feed format change/);
   });
 });

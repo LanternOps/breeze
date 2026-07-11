@@ -19,12 +19,13 @@ function detectUserOS(): 'windows' | 'macos' | 'linux' {
 
 /**
  * Pull a human-readable message out of an API error body. Handles three
- * shapes: a plain `{ error: string }` / `{ message: string }`, and the
- * @hono/zod-validator 400 shape `{ error: { issues: [{ message }] } }`
- * (where `error` is a serialized ZodError, not a string). Without the
- * last case, validation failures collapse to a bare status code and the
- * server's specific message (e.g. the ttlMinutes/expiresAt conflict) is
- * lost — see PR #739 review.
+ * shapes: a plain `{ error: string }` / `{ message: string }` (the shared
+ * zValidator wrapper emits string-first bodies since #2201), and the
+ * legacy pre-#2201 @hono/zod-validator 400 shape
+ * `{ error: { issues: [{ message }] } }` (where `error` is a serialized
+ * ZodError, not a string) — kept defensively for older deployed APIs.
+ * Without the last case, validation failures against those collapse to a
+ * bare status code — see PR #739 review.
  */
 function extractApiError(body: unknown): string {
   if (!body || typeof body !== 'object') return '';
