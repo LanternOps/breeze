@@ -76,12 +76,27 @@ describe('buildResponseValidator', () => {
     expect(consent.safeParse({ confirmed: true }).success).toBe(true);
     expect(consent.safeParse({ confirmed: false }).success).toBe(false);
   });
+
+  it('select field lacking options does not throw at construction and rejects any value', () => {
+    const broken = { key: 'dept', label: 'Department', type: 'select', required: true } as TicketFormField;
+    let v!: ReturnType<typeof buildResponseValidator>;
+    expect(() => {
+      v = buildResponseValidator([broken]);
+    }).not.toThrow();
+    expect(v.safeParse({ dept: 'Sales' }).success).toBe(false);
+    expect(v.safeParse({ dept: '' }).success).toBe(false);
+  });
 });
 
 describe('coerceFormResponses', () => {
   it('coerces number strings, drops empty strings, passes booleans', () => {
     expect(coerceFormResponses(fields, { affected_user: 'x', license_count: '4', needs_vpn: false, department: '' }))
       .toEqual({ affected_user: 'x', license_count: 4, needs_vpn: false });
+  });
+
+  it('drops whitespace-only strings for all field types', () => {
+    expect(coerceFormResponses(fields, { license_count: ' ' })).toEqual({});
+    expect(coerceFormResponses(fields, { affected_user: '   ', department: '\t\n' })).toEqual({});
   });
 });
 
@@ -102,5 +117,19 @@ describe('rendering', () => {
     expect(out).toContain('- **Affected user:** jdoe@client.com');
     expect(out).toContain('- **Needs VPN:** Yes');
     expect(out).toContain('- **License count:** —');
+  });
+
+  it('indents multiline response values so they cannot forge sibling field lines', () => {
+    const out = renderFormResponses(
+      { name: 'New user onboarding', descriptionIntro: null, fields },
+      { affected_user: 'x\n- **Priority:** urgent', start_date: '2026-07-14', department: 'Sales' }
+    );
+    expect(out).toContain('\n  - **Priority:** urgent');
+    expect(out).not.toContain('\n- **Priority:** urgent');
+  });
+
+  it('collapses newlines in interpolated title values to single-line output', () => {
+    expect(renderTitleTemplate('Onboard {{affected_user}} now', 'New user', { affected_user: 'line1\nline2' }))
+      .toBe('Onboard line1 line2 now');
   });
 });

@@ -89,9 +89,13 @@ export function buildResponseValidator(fields: TicketFormField[]) {
       case 'textarea':
         s = f.required ? z.string().min(1).max(10_000) : z.string().max(10_000);
         break;
-      case 'select':
-        s = z.enum(f.options as [string, ...string[]]);
+      case 'select': {
+        // Defensive: a malformed field list (options missing/empty) must not
+        // throw at schema construction; such a field simply accepts no value.
+        const opts = f.options ?? [];
+        s = opts.length ? z.enum(opts as [string, ...string[]]) : z.never();
         break;
+      }
       case 'checkbox':
         s = f.required ? z.literal(true) : z.boolean();
         break;
@@ -118,7 +122,10 @@ export function coerceFormResponses(
   const out: Record<string, unknown> = {};
   for (const f of fields) {
     const v = raw[f.key];
-    if (v === undefined || v === null || v === '') continue;
+    if (v === undefined || v === null) continue;
+    // Blank (empty or whitespace-only) strings mean "not answered" for every
+    // field type — notably Number(' ') === 0, which would fabricate a value.
+    if (typeof v === 'string' && v.trim() === '') continue;
     if (f.type === 'number' && typeof v === 'string') {
       const n = Number(v);
       out[f.key] = Number.isNaN(n) ? v : n;
@@ -141,6 +148,9 @@ export function renderTitleTemplate(
       const v = responses[key];
       return v === undefined || v === null ? '' : String(v);
     })
+    // Titles are single-line: collapse all whitespace runs (incl. newlines
+    // smuggled in via response values) to single spaces.
+    .replace(/\s+/g, ' ')
     .trim();
   return rendered.length > 0 ? rendered : formName;
 }
@@ -148,7 +158,10 @@ export function renderTitleTemplate(
 export function formatFormResponseValue(field: TicketFormField, value: unknown): string {
   if (value === undefined || value === null || value === '') return '—';
   if (field.type === 'checkbox') return value === true ? 'Yes' : 'No';
-  return String(value);
+  // Indent continuation lines so a multiline value cannot start a new list
+  // item at column 0 and forge sibling field lines (content spoofing /
+  // prompt-injection surface for downstream AI/email/PSA consumers).
+  return String(value).replace(/\r?\n/g, '\n  ');
 }
 
 /**
