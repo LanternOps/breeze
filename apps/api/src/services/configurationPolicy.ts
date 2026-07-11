@@ -34,7 +34,12 @@ import {
 import { and, eq, desc, or, sql, inArray, asc, getTableColumns, SQL } from 'drizzle-orm';
 import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from './partnerWideAccess';
 import { z } from 'zod';
-import { eventLogInlineSettingsSchema, monitoringInlineSettingsSchema, onedriveHelperInlineSettingsSchema } from '@breeze/shared/validators';
+import {
+  eventLogInlineSettingsSchema,
+  monitoringInlineSettingsSchema,
+  onedriveHelperInlineSettingsSchema,
+  remoteAccessInlineSettingsSchema as remoteAccessCapabilitySettingsSchema,
+} from '@breeze/shared/validators';
 import type { AuthContext } from '../middleware/auth';
 import { normalizePatchInlineSettings, tryNormalizePatchInlineSettings } from './configPolicyPatching';
 import { resolvePartnerIdForOrg } from '../routes/patches/helpers';
@@ -44,16 +49,44 @@ import { getPolicyBaselineDefaults } from './policyBaselineDefaults';
 // Inline settings schemas
 // ============================================
 
-// Remote access session consent/notification settings.
-// Exported so routes can import the same schema (single source of truth).
-// All fields are optional with spec-defined defaults so {} is always valid.
-export const remoteAccessInlineSettingsSchema = z.object({
-  sessionPromptMode: z.enum(['off', 'notify', 'consent']).default('notify'),
-  consentUnavailableBehavior: z.enum(['proceed', 'block']).default('proceed'),
+// Remote access session consent/notification enums — shared between the
+// consent-subset schema (decompose path, defaults applied) and the write-path
+// schema (route validation, plain optionals) below.
+const sessionPromptModeSchema = z.enum(['off', 'notify', 'consent']);
+const consentUnavailableBehaviorSchema = z.enum(['proceed', 'block']);
+const technicianIdentityLevelSchema = z.enum(['name_email', 'name', 'generic']);
+
+// Remote access session consent/notification settings (#1694) — the SUBSET of
+// the `remote_access` inlineSettings blob that decomposes into the normalized
+// config_policy_remote_access_settings row. All fields default so {} is valid.
+// Deliberately NOT strict: the same blob also carries the agent-facing
+// capability fields (webrtcDesktop, vncRelay, clipboard*, proxy, limits — see
+// remoteAccessInlineSettingsSchema in @breeze/shared/validators), which this
+// pick must ignore rather than reject (#2320).
+export const remoteAccessConsentSettingsSchema = z.object({
+  sessionPromptMode: sessionPromptModeSchema.default('notify'),
+  consentUnavailableBehavior: consentUnavailableBehaviorSchema.default('proceed'),
   notifyOnSessionEnd: z.boolean().default(true),
   showActiveIndicator: z.boolean().default(true),
-  technicianIdentityLevel: z.enum(['name_email', 'name', 'generic']).default('name_email'),
-}).strict();
+  technicianIdentityLevel: technicianIdentityLevelSchema.default('name_email'),
+});
+
+// Write-path validation for the WHOLE remote_access inlineSettings blob: the
+// capability fields the RemoteAccessTab edits (shared validator — the same
+// shape resolveRemoteAccessForDevice parses on the agent path) plus the
+// consent fields above, all optional. #1694 replaced this with the
+// consent-only .strict() schema, which rejected every capability-shape payload
+// ("Unrecognized keys: webrtcDesktop, ...") and made the Remote Access tab
+// unsavable (#2320). Non-strict on purpose: pre-existing rows can carry stale
+// keys that the tab round-trips back on save — strip them, don't reject.
+// Exported so routes can import the same schema (single source of truth).
+export const remoteAccessInlineSettingsSchema = remoteAccessCapabilitySettingsSchema.extend({
+  sessionPromptMode: sessionPromptModeSchema.optional(),
+  consentUnavailableBehavior: consentUnavailableBehaviorSchema.optional(),
+  notifyOnSessionEnd: z.boolean().optional(),
+  showActiveIndicator: z.boolean().optional(),
+  technicianIdentityLevel: technicianIdentityLevelSchema.optional(),
+});
 
 // Exported so the route can import the same schema (single source of truth).
 // uacInterceptionEnabled defaults to false on the read side (parsePamSettings)
@@ -604,7 +637,12 @@ async function decomposeInlineSettings(
     }
 
     case 'remote_access': {
-      const parsed = remoteAccessInlineSettingsSchema.parse(s);
+      // Pick out only the consent fields (#1694). The blob also carries the
+      // capability fields (webrtcDesktop, ...) that have no normalized columns
+      // — they live in the feature link's JSONB mirror, which the agent path
+      // (resolveRemoteAccessForDevice) reads directly. They must not make this
+      // parse throw (#2320).
+      const parsed = remoteAccessConsentSettingsSchema.parse(s);
       await tx.insert(configPolicyRemoteAccessSettings).values({
         featureLinkId: linkId,
         sessionPromptMode: parsed.sessionPromptMode,
@@ -1038,6 +1076,14 @@ export async function addFeatureLink(
     vulnerabilityInlineSettingsSchema.parse(inlineSettings);
   }
 
+  // Service-level backstop for callers that bypass the HTTP route's validation
+  // (the AI manage_policy_feature_link tool calls this directly). Validates the
+  // combined capability + consent shape; decompose below re-picks the consent
+  // subset for the normalized row (#2320).
+  if (featureType === 'remote_access' && inlineSettings !== undefined && inlineSettings !== null) {
+    remoteAccessInlineSettingsSchema.parse(inlineSettings);
+  }
+
   return db.transaction(async (tx) => {
     const effectiveInlineSettings =
       featureType === 'patch'
@@ -1099,6 +1145,11 @@ export async function updateFeatureLink(
 
     if (existing.featureType === 'vulnerability' && updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
       vulnerabilityInlineSettingsSchema.parse(updates.inlineSettings);
+    }
+
+    // Same service-level backstop as addFeatureLink (AI tool path) — see #2320.
+    if (existing.featureType === 'remote_access' && updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
+      remoteAccessInlineSettingsSchema.parse(updates.inlineSettings);
     }
 
     const setValues: Record<string, unknown> = { updatedAt: new Date() };
@@ -1175,6 +1226,19 @@ export async function listFeatureLinks(configPolicyId: string) {
               apps: storedInline.apps,
             })
           : storedInline;
+      } else if (featureType === 'remote_access' && assembled) {
+        // The normalized row (config_policy_remote_access_settings) holds ONLY
+        // the session-consent fields (#1694); the capability toggles the
+        // RemoteAccessTab edits (webrtcDesktop, vncRelay, clipboard*, proxy,
+        // limits) live ONLY in the feature link's JSONB mirror. Merge the two
+        // (normalized consent row wins) so reads don't hide the capability
+        // settings — otherwise the tab renders defaults and the next save
+        // writes those defaults back over the real values (#2320).
+        const mirror =
+          link.inlineSettings && typeof link.inlineSettings === 'object' && !Array.isArray(link.inlineSettings)
+            ? (link.inlineSettings as Record<string, unknown>)
+            : {};
+        effectiveInlineSettings = { ...mirror, ...(assembled as Record<string, unknown>) };
       } else {
         effectiveInlineSettings = assembled ?? link.inlineSettings;
       }
