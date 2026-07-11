@@ -1,4 +1,5 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import DeviceActivityFeed from './DeviceActivityFeed';
@@ -109,9 +110,39 @@ describe('DeviceActivityFeed', () => {
     await waitFor(() => expect(onHasContentChange).toHaveBeenLastCalledWith(true));
   });
 
-  it('renders a compact one-line empty state in strip layout', async () => {
-    mockFeed([], []);
-    render(<DeviceActivityFeed deviceId="dev-1" layout="strip" />);
-    expect(await screen.findByTestId('activity-empty-strip')).toBeInTheDocument();
+  const evt = (id: string) => ({
+    id,
+    action: 'script.run',
+    message: `Script ${id}`,
+    result: 'success' as const,
+    initiatedBy: null,
+    timestamp: new Date().toISOString(),
+    actor: { type: 'user', name: 'Ada' },
+  });
+
+  it('collapsed: shows a count badge of events plus active alerts', async () => {
+    mockFeed([evt('e1'), evt('e2')], [{ id: 'a1', status: 'active' }]);
+    render(<DeviceActivityFeed deviceId="dev-1" collapsed onToggleCollapse={() => {}} />);
+    const bar = await screen.findByTestId('activity-rail-collapsed');
+    // 2 events + 1 active alert = 3 noteworthy items.
+    expect(within(bar).getByText('3')).toBeInTheDocument();
+  });
+
+  it('collapsed: clicking the bar fires onToggleCollapse to expand', async () => {
+    mockFeed([evt('e1')], []);
+    const onToggleCollapse = vi.fn();
+    render(<DeviceActivityFeed deviceId="dev-1" collapsed onToggleCollapse={onToggleCollapse} />);
+    const bar = await screen.findByTestId('activity-rail-collapsed');
+    await userEvent.click(bar);
+    expect(onToggleCollapse).toHaveBeenCalledTimes(1);
+  });
+
+  it('expanded: the header chevron fires onToggleCollapse to collapse', async () => {
+    mockFeed([evt('e1')], []);
+    const onToggleCollapse = vi.fn();
+    render(<DeviceActivityFeed deviceId="dev-1" onToggleCollapse={onToggleCollapse} />);
+    expect(await screen.findByText('Script e1')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Collapse activity' }));
+    expect(onToggleCollapse).toHaveBeenCalledTimes(1);
   });
 });
