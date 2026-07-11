@@ -1,6 +1,8 @@
 # Git
 .git
 .gitignore
+# Private extension clones must not leak git history/remotes into images.
+extensions/*/.git
 
 # Dependencies (rebuilt in container)
 node_modules

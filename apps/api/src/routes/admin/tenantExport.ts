@@ -2,7 +2,7 @@
  * GET /admin/tenant-export/:orgId  — platform-admin GDPR Right-of-Access dump
  *
  * Returns a `application/zip` body containing one `<table>.json` file
- * per `ORG_CASCADE_DELETE_ORDER` entry that exists in this deployment,
+ * per `getOrgCascadeDeleteOrder()` entry that exists in this deployment,
  * plus a `manifest.json` with sha256 + rowCount per file.
  *
  * Auth: platform admin + requireMfa(). Reads the entire tenant's PII —

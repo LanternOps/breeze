@@ -88,6 +88,11 @@ target/
 !/internal/release-keys/*.pub
 !/internal/release-keys/README.md
 
+# Extension packages (private repos cloned in locally; not for the public repo).
+# /extensions/* (not /extensions) so the README re-inclusion below works.
+/extensions/*
+!/extensions/README.md
+
 # Stray screenshots
 *.png
 !docs/assets/breeze-logo.png
