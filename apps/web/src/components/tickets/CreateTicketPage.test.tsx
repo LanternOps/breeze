@@ -47,6 +47,18 @@ function mockOptionsApi() {
     if (url.startsWith('/tickets/requesters?orgId=')) {
       return makeJsonResponse({ data: [{ id: 'pu-1', name: 'Jane Doe', email: 'jane@example.com' }] });
     }
+    if (url.startsWith('/ticket-forms/available')) {
+      return makeJsonResponse({
+        data: [{
+          id: 'form-1', name: 'New user onboarding', description: 'HR intake', categoryId: 'cat-1',
+          fields: [
+            { key: 'affected_user', label: 'Affected user', type: 'text', required: true },
+            { key: 'needs_vpn', label: 'Needs VPN', type: 'checkbox', required: false }
+          ],
+          defaultPriority: 'high', defaultTags: ['onboarding'], titleTemplate: 'Onboard {{affected_user}}'
+        }]
+      });
+    }
     if (url === '/tickets' && init?.method === 'POST') {
       return makeJsonResponse({ data: { id: 'tk-9', internalNumber: 'T-2026-0009' } });
     }
@@ -206,6 +218,74 @@ describe('CreateTicketPage', () => {
         expect(fetchMock).toHaveBeenCalledWith('/tickets/requesters?orgId=org-b');
       });
       expect(screen.getByTestId('create-ticket-requester-input')).toHaveValue('');
+    });
+  });
+
+  describe('start from a form', () => {
+    it('selecting a form renders its fields and prefills category + priority', async () => {
+      mockOptionsApi();
+      render(<CreateTicketPage />);
+      fireEvent.change(await screen.findByTestId('create-ticket-org-input'), { target: { value: 'org-a' } });
+      const picker = await screen.findByTestId('create-ticket-form-picker');
+      fireEvent.change(picker, { target: { value: 'form-1' } });
+      expect(await screen.findByTestId('ticket-form-field-affected_user')).toBeTruthy();
+      expect((screen.getByTestId('create-ticket-category-input') as HTMLSelectElement).value).toBe('cat-1');
+      expect((screen.getByTestId('create-ticket-priority-input') as HTMLSelectElement).value).toBe('high');
+    });
+
+    it('does not adopt a form category that is not in the loaded options', async () => {
+      // Form points at cat-missing (inactive/unloaded) — the category select must
+      // stay on "None" rather than invisibly attaching an unseen category.
+      fetchMock.mockImplementation(async (input, init) => {
+        const url = String(input);
+        if (url === '/orgs/organizations?limit=100') return makeJsonResponse({ data: [{ id: 'org-a', name: 'Org A' }] });
+        if (url === '/ticket-categories') return makeJsonResponse({ data: [{ id: 'cat-1', name: 'Hardware', isActive: true }] });
+        if (url.startsWith('/devices?orgId=')) return makeJsonResponse({ data: [] });
+        if (url.startsWith('/tickets/requesters?orgId=')) return makeJsonResponse({ data: [] });
+        if (url.startsWith('/ticket-forms/available')) {
+          return makeJsonResponse({
+            data: [{
+              id: 'form-1', name: 'Onboarding', description: null, categoryId: 'cat-missing',
+              fields: [{ key: 'affected_user', label: 'Affected user', type: 'text', required: true }],
+              defaultPriority: null, titleTemplate: null
+            }]
+          });
+        }
+        if (url === '/tickets' && init?.method === 'POST') return makeJsonResponse({ data: { id: 'tk-1', internalNumber: 'T-1' } });
+        return makeJsonResponse({ error: 'unexpected' }, false, 404);
+      });
+      render(<CreateTicketPage />);
+      fireEvent.change(await screen.findByTestId('create-ticket-org-input'), { target: { value: 'org-a' } });
+      fireEvent.change(await screen.findByTestId('create-ticket-form-picker'), { target: { value: 'form-1' } });
+      await screen.findByTestId('ticket-form-field-affected_user');
+      expect((screen.getByTestId('create-ticket-category-input') as HTMLSelectElement).value).toBe('');
+    });
+
+    it('blocks submit with inline error when a required form field is empty', async () => {
+      mockOptionsApi();
+      render(<CreateTicketPage />);
+      fireEvent.change(await screen.findByTestId('create-ticket-org-input'), { target: { value: 'org-a' } });
+      fireEvent.change(await screen.findByTestId('create-ticket-form-picker'), { target: { value: 'form-1' } });
+      fireEvent.click(screen.getByTestId('create-ticket-submit'));
+      expect(await screen.findByTestId('ticket-form-field-error-affected_user')).toBeTruthy();
+      expect(fetchMock.mock.calls.find(([u, i]) => String(u) === '/tickets' && (i as RequestInit)?.method === 'POST')).toBeFalsy();
+    });
+
+    it('submits formId + coerced formResponses and allows an empty subject', async () => {
+      mockOptionsApi();
+      render(<CreateTicketPage />);
+      fireEvent.change(await screen.findByTestId('create-ticket-org-input'), { target: { value: 'org-a' } });
+      fireEvent.change(await screen.findByTestId('create-ticket-form-picker'), { target: { value: 'form-1' } });
+      fireEvent.change(screen.getByTestId('ticket-form-field-affected_user'), { target: { value: 'jdoe@client.example' } });
+      fireEvent.click(screen.getByTestId('create-ticket-submit'));
+      await waitFor(() => {
+        const post = fetchMock.mock.calls.find(([u, i]) => String(u) === '/tickets' && (i as RequestInit)?.method === 'POST');
+        expect(post).toBeTruthy();
+        const body = JSON.parse(String((post![1] as RequestInit).body));
+        expect(body.formId).toBe('form-1');
+        expect(body.formResponses).toEqual({ affected_user: 'jdoe@client.example' });
+        expect(body.subject).toBeUndefined();
+      });
     });
   });
 

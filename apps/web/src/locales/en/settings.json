@@ -2163,6 +2163,7 @@
     "configureTicketStatusesPrioritySLADefaultsCategoriesAndB": "Configure ticket statuses, priority SLA defaults, categories, and billing exports."
   },
   "ticketingSettingsTabs": {
+    "intakeForms": "Intake Forms",
     "statuses": "Statuses",
     "prioritiesSLAs": "Priorities & SLAs",
     "categories": "Categories",

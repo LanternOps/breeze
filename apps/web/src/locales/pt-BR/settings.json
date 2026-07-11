@@ -2163,6 +2163,7 @@
     "configureTicketStatusesPrioritySLADefaultsCategoriesAndB": "Configure os status dos chamados, os padrões de SLA por prioridade, as categorias e as exportações de cobrança."
   },
   "ticketingSettingsTabs": {
+    "intakeForms": "Formulários de abertura",
     "statuses": "Status",
     "prioritiesSLAs": "Prioridades e SLAs",
     "categories": "Categorias",

@@ -327,6 +327,12 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // enforces exactly one axis. Functional forge proof:
   // ssoProvidersPartnerRls.integration.test.ts.
   'sso_providers',
+  // ticket_forms (spec 2026-07-10): an intake form is org-owned (org_id set,
+  // partner_id NULL) OR a partner-wide form (partner_id set, org_id NULL) —
+  // XOR-enforced by ticket_forms_one_owner_chk. First dual-axis table in the
+  // ticketing domain (ticket_categories / ticket_response_templates are
+  // partner-axis-only).
+  'ticket_forms',
 ]);
 
 // Tables that carry a `device_id` FK but no denormalized `org_id`. Their
