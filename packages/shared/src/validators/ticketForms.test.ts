@@ -68,6 +68,35 @@ describe('createTicketFormSchema / updateTicketFormSchema', () => {
     expect(c.success).toBe(true);
   });
 
+  it('update schema does NOT materialize create-time defaults for omitted keys', () => {
+    // .partial() must not re-apply .default() to omitted keys: a partial PUT of
+    // only { name } must never carry defaultTags/showInPortal/isActive/sortOrder,
+    // or every web edit would reset those four API-set fields.
+    const r = updateTicketFormSchema.parse({ name: 'x' });
+    expect('defaultTags' in r).toBe(false);
+    expect('showInPortal' in r).toBe(false);
+    expect('isActive' in r).toBe(false);
+    expect('sortOrder' in r).toBe(false);
+    expect(Object.keys(r)).toEqual(['name']);
+  });
+
+  it('update schema passes through explicit values and explicit nulls', () => {
+    const r = updateTicketFormSchema.parse({
+      defaultTags: ['vip'],
+      showInPortal: false,
+      isActive: false,
+      sortOrder: 5,
+      description: null,
+      titleTemplate: null
+    });
+    expect(r.defaultTags).toEqual(['vip']);
+    expect(r.showInPortal).toBe(false);
+    expect(r.isActive).toBe(false);
+    expect(r.sortOrder).toBe(5);
+    expect(r.description).toBeNull();
+    expect(r.titleTemplate).toBeNull();
+  });
+
   it('update schema refuses ownerScope and orgId', () => {
     const r = updateTicketFormSchema.safeParse({ ownerScope: 'partner', orgId: '3f2f1d8e-1111-4222-8333-444455556666', name: 'x' });
     // .omit() strips the keys from the schema; strict() makes them errors — we use strip semantics, so keys are silently dropped

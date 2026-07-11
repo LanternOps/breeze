@@ -19,7 +19,7 @@ export type TicketFormRow = typeof ticketForms.$inferSelect;
 export class TicketFormError extends Error {
   constructor(
     message: string,
-    public status: number
+    public readonly status: 400 | 404
   ) {
     super(message);
     this.name = 'TicketFormError';

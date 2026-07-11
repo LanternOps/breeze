@@ -36,6 +36,11 @@ export const createTicketSchema = z
     if (!v.formId && (!v.subject || v.subject.trim().length === 0)) {
       ctx.addIssue({ code: 'custom', path: ['subject'], message: 'subject is required unless a formId is provided' });
     }
+    // formResponses only makes sense against a form's field schema; without a
+    // formId there is nothing to validate them against, so reject the combo.
+    if (v.formResponses && !v.formId) {
+      ctx.addIssue({ code: 'custom', path: ['formResponses'], message: 'formResponses requires formId' });
+    }
   });
 
 export const createTicketFromChatSchema = z

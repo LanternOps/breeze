@@ -212,6 +212,26 @@ describe('PUT/DELETE partner-wide gating', () => {
     expect('version' in setArg).toBe(false);
   });
 
+  it('PUT of only { name } does not materialize create-defaults into the update set', async () => {
+    // Regression for the .partial()+.default() bug: a partial PUT must NOT carry
+    // defaultTags/showInPortal/isActive/sortOrder, or every edit would reset the
+    // API-set values for fields the web editor never sends.
+    dbRowsMock.mockResolvedValue([{ id: FORM_ID, orgId: ORG_ID, partnerId: null, version: 1, fields: [] }]);
+    updateReturningMock.mockResolvedValue([{ id: FORM_ID, orgId: ORG_ID, partnerId: null, version: 1, fields: [], name: 'renamed' }]);
+    const res = await makeApp().request(`/ticket-forms/${FORM_ID}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'renamed' })
+    });
+    expect(res.status).toBe(200);
+    const setArg = updateSetMock.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(setArg).toBeTruthy();
+    expect('defaultTags' in setArg).toBe(false);
+    expect('showInPortal' in setArg).toBe(false);
+    expect('isActive' in setArg).toBe(false);
+    expect('sortOrder' in setArg).toBe(false);
+  });
+
   it('404s when the form does not exist', async () => {
     dbRowsMock.mockResolvedValue([]);
     const res = await makeApp().request(`/ticket-forms/${FORM_ID}`, {

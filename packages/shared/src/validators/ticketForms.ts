@@ -4,9 +4,15 @@ import { ticketPrioritySchema } from './tickets';
 export const TICKET_FORM_FIELD_TYPES = ['text', 'textarea', 'select', 'checkbox', 'date', 'number'] as const;
 export type TicketFormFieldType = (typeof TICKET_FORM_FIELD_TYPES)[number];
 
+// Single source of truth for a field key's shape. The anchored form validates a
+// stored key; renderTitleTemplate derives an unanchored `{{key}}` matcher from
+// the same core so the two can never drift.
+const FIELD_KEY_CORE = '[a-z][a-z0-9_]{0,49}';
+export const TICKET_FORM_FIELD_KEY_PATTERN = new RegExp(`^${FIELD_KEY_CORE}$`);
+
 const fieldKeySchema = z
   .string()
-  .regex(/^[a-z][a-z0-9_]{0,49}$/, 'lowercase letters, digits and underscores; must start with a letter');
+  .regex(TICKET_FORM_FIELD_KEY_PATTERN, 'lowercase letters, digits and underscores; must start with a letter');
 
 export const ticketFormFieldSchema = z
   .object({
@@ -41,13 +47,15 @@ export const ticketFormFieldsSchema = z
     }
   });
 
-export const createTicketFormSchema = z.object({
-  // Ownership axis (Partner-Wide First, epic #2135, mirrors software policies
-  // #2126): 'partner' = all-orgs form; the server derives the partner from the
-  // caller's own token — a client-supplied partner id is NEVER trusted.
-  // orgId is only consulted when ownerScope is 'organization' (or absent).
-  ownerScope: z.enum(['organization', 'partner']).optional(),
-  orgId: z.string().guid().optional(),
+// Default-free base with EVERY form field but WITHOUT ownerScope/orgId and
+// WITHOUT any .default(). createTicketFormSchema re-adds the create-time
+// defaults and the ownership axis; updateTicketFormSchema is base.partial().
+// Structuring it this way is load-bearing: in this zod version, a .partial() of
+// a schema whose keys carry .default() still MATERIALIZES those defaults for
+// omitted keys — so a partial PUT of only { name } would silently reset
+// defaultTags/showInPortal/isActive/sortOrder. Keeping the defaults OUT of the
+// base is what makes the update schema truly partial.
+const ticketFormBaseSchema = z.object({
   name: z.string().min(1).max(200),
   // All clearable optionals accept explicit null: the update schema is
   // .partial(), so the web editor must SEND null to clear a stored value —
@@ -58,13 +66,29 @@ export const createTicketFormSchema = z.object({
   titleTemplate: z.string().max(300).nullable().optional(),
   descriptionIntro: z.string().max(5000).nullable().optional(),
   defaultPriority: ticketPrioritySchema.nullable().optional(),
+  defaultTags: z.array(z.string().min(1).max(100)).max(20),
+  showInPortal: z.boolean(),
+  isActive: z.boolean(),
+  sortOrder: z.number().int().min(0).max(10_000)
+});
+
+export const createTicketFormSchema = ticketFormBaseSchema.extend({
+  // Ownership axis (Partner-Wide First, epic #2135, mirrors software policies
+  // #2126): 'partner' = all-orgs form; the server derives the partner from the
+  // caller's own token — a client-supplied partner id is NEVER trusted.
+  // orgId is only consulted when ownerScope is 'organization' (or absent).
+  ownerScope: z.enum(['organization', 'partner']).optional(),
+  orgId: z.string().guid().optional(),
+  // Create-time defaults live ONLY here (never on the base — see above).
   defaultTags: z.array(z.string().min(1).max(100)).max(20).default([]),
   showInPortal: z.boolean().default(true),
   isActive: z.boolean().default(true),
   sortOrder: z.number().int().min(0).max(10_000).default(0)
 });
 
-export const updateTicketFormSchema = createTicketFormSchema.partial().omit({ ownerScope: true, orgId: true });
+// Ownership (ownerScope/orgId) is immutable-by-omission: it is not part of the
+// base, so it can never appear on an update payload.
+export const updateTicketFormSchema = ticketFormBaseSchema.partial();
 
 export type CreateTicketFormInput = z.infer<typeof createTicketFormSchema>;
 export type UpdateTicketFormInput = z.infer<typeof updateTicketFormSchema>;
@@ -147,7 +171,7 @@ export function renderTitleTemplate(
 ): string {
   if (!template || !template.trim()) return formName;
   const rendered = template
-    .replace(/\{\{\s*([a-z][a-z0-9_]{0,49})\s*\}\}/g, (_m, key: string) => {
+    .replace(new RegExp(`\\{\\{\\s*(${FIELD_KEY_CORE})\\s*\\}\\}`, 'g'), (_m, key: string) => {
       const v = responses[key];
       return v === undefined || v === null ? '' : String(v);
     })

@@ -273,7 +273,7 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
       const form = await getTicketFormForOrg(input.formId, { id: org.id, partnerId: org.partnerId });
       intake = applyIntakeForm(form, input.formResponses ?? {});
     } catch (err) {
-      if (err instanceof TicketFormError) throw new TicketServiceError(err.message, err.status as TicketServiceErrorStatus);
+      if (err instanceof TicketFormError) throw new TicketServiceError(err.message, err.status);
       throw err;
     }
   }
