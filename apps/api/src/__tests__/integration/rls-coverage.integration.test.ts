@@ -42,16 +42,23 @@ import { unifiIntegrations, unifiDevices } from '../../db/schema/unifi';
 // Tables that intentionally do not carry RLS isolation policies.
 // Add deliberately, with a comment.
 const EXEMPT_TABLES: ReadonlySet<string> = new Set<string>([
-  // System-scoped: per-deployment infrastructure with no tenant column.
-  // Forced RLS, no policies → only system context can access. See
-  // INTENTIONAL_UNSCOPED below for the documented set.
+  // System-scoped: forced RLS with either no policies or a system-only
+  // policy — in both cases only the system DB context can access the table.
+  // See INTENTIONAL_UNSCOPED below for the documented set (some entries,
+  // like partner_abuse_signals, DO have a tenant column but are
+  // operator-only by design, not tenant-column-less).
   'manifest_signing_keys',
   'partner_abuse_signals',
 ]);
 
-// System-scoped tables: per-deployment infrastructure with no tenant column.
-// These have ENABLE + FORCE ROW LEVEL SECURITY but no permissive policies —
-// only the system DB context (superuser / runOutsideDbContext) can access them.
+// System-scoped tables: forced RLS with either no permissive policies at all,
+// or a single system-only policy (`USING current_setting('breeze.scope',
+// true) = 'system'`) — in both cases only the system DB context (which sets
+// that GUC) can read/write, never the unprivileged breeze_app role under a
+// tenant-scoped context. Some of these have no tenant column at all
+// (per-deployment infrastructure); others (partner_abuse_signals) DO carry a
+// tenant column (partner_id) but are deliberately operator-only, not
+// tenant-readable, so they're listed here rather than under a tenant shape.
 // The auto-discovery query won't surface these (no org_id column, not in any
 // tenant list), but they are enumerated here for explicit documentation and
 // so that a future "all-tables RLS enabled" audit can assert against this list.
@@ -1410,7 +1417,8 @@ describe('manifest_signing_keys RLS — system-only enforcement (#639)', () => {
 // both as `breeze_app`, including the specific threat this table exists to
 // prevent: a partner reading abuse signals about ITSELF via a partner-scoped
 // context whose accessiblePartnerIds includes the row's own partner_id. The
-// system-scope branch confirms the write path Tasks 8-10 rely on still works.
+// system-scope branch confirms the abuse-signals sweep write path
+// (services/abuseSignals/persistence.ts) still works.
 // ===========================================================================
 describe('partner_abuse_signals RLS — system-only enforcement', () => {
   const runSuffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -1448,9 +1456,13 @@ describe('partner_abuse_signals RLS — system-only enforcement', () => {
 
   // Build a tenant-scoped (partner) DbAccessContext. Under this context,
   // breeze_app should be unable to touch partner_abuse_signals — the table
-  // has ENABLE + FORCE RLS and no permissive policies, so only the system
-  // context branch (which bypasses RLS via runOutsideDbContext +
-  // withSystemDbAccessContext) can read/write.
+  // has ENABLE + FORCE RLS and a single system-only policy
+  // (`partner_abuse_signals_system_only`, `USING current_setting
+  // ('breeze.scope', true) = 'system'`), so only a caller whose session has
+  // that GUC set to 'system' can read/write. `withSystemDbAccessContext`
+  // does NOT bypass RLS — it still runs as the unprivileged `breeze_app`
+  // role; it sets `breeze.scope = 'system'`, which is exactly what this
+  // policy checks.
   function partnerContext(accessiblePartnerId: string) {
     return {
       scope: 'partner' as const,

@@ -5,9 +5,13 @@ vi.mock('./urlSafety', () => ({
   SsrfBlockedError: class SsrfBlockedError extends Error {},
 }));
 vi.mock('./email', () => ({ getEmailService: vi.fn(() => null) }));
+vi.mock('./sentry', () => ({ captureException: vi.fn() }));
+vi.mock('./abuseMetrics', () => ({ recordOpsAlertDelivery: vi.fn() }));
 
 import { safeFetch } from './urlSafety';
 import { getEmailService } from './email';
+import { captureException } from './sentry';
+import { recordOpsAlertDelivery } from './abuseMetrics';
 import { sendOpsAlert, isOpsAlertingConfigured } from './opsAlerts';
 
 beforeEach(() => {
@@ -28,6 +32,7 @@ describe('sendOpsAlert', () => {
     const [url, init] = vi.mocked(safeFetch).mock.calls[0]!;
     expect(url).toBe(process.env.OPS_ALERT_WEBHOOK_URL);
     expect(JSON.parse(init!.body as string).content).toContain('Test alert');
+    expect(recordOpsAlertDelivery).toHaveBeenCalledWith('webhook', 'success');
   });
 
   it('prefixes the title with OPS_ALERT_LABEL when set', async () => {
@@ -56,6 +61,21 @@ describe('sendOpsAlert', () => {
   it('returns false on webhook failure and does not throw', async () => {
     vi.mocked(safeFetch).mockRejectedValue(new Error('network down'));
     expect(await sendOpsAlert({ title: 'T', body: 'b' })).toBe(false);
+    expect(captureException).toHaveBeenCalled();
+    expect(recordOpsAlertDelivery).toHaveBeenCalledWith('webhook', 'failure');
+  });
+
+  it('surfaces a non-2xx webhook response to Sentry and the delivery metric, with a body snippet', async () => {
+    vi.mocked(safeFetch).mockResolvedValue(
+      new Response('{"message":"rate limited"}', { status: 429 }),
+    );
+    const ok = await sendOpsAlert({ title: 'T', body: 'b' });
+    expect(ok).toBe(false);
+    expect(captureException).toHaveBeenCalledTimes(1);
+    const err = vi.mocked(captureException).mock.calls[0]![0] as Error;
+    expect(err.message).toContain('429');
+    expect(err.message).toContain('rate limited');
+    expect(recordOpsAlertDelivery).toHaveBeenCalledWith('webhook', 'failure');
   });
 
   it('falls back to email channel when configured', async () => {

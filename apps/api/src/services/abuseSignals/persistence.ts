@@ -1,6 +1,7 @@
 import { eq, isNull, inArray } from 'drizzle-orm';
 import { db } from '../../db';
 import { partnerAbuseSignals } from '../../db/schema';
+import { captureException } from '../sentry';
 import type { ComputedSignal } from './types';
 
 const key = (partnerId: string, signalKey: string) => `${partnerId}|${signalKey}`;
@@ -57,7 +58,17 @@ export async function persistSignals(
         .returning();
       // noUncheckedIndexedAccess: .returning() is typed as possibly-empty;
       // an INSERT that runs without error always returns the inserted row.
-      if (!row) continue;
+      // In practice this should never happen — but if it does, it's a silent
+      // RLS misconfiguration (a row that INSERT reported success for but the
+      // caller can't read back), not something to quietly skip.
+      if (!row) {
+        console.error('[AbuseSignals] INSERT returned no row — possible RLS misconfiguration', {
+          partnerId: s.partnerId,
+          signalKey: s.signalKey,
+        });
+        captureException(new Error('[AbuseSignals] INSERT returned no row — possible RLS misconfiguration'));
+        continue;
+      }
       if (s.severity === 'alert') toNotify.push({ ...s, rowId: row.id });
       continue;
     }
@@ -67,15 +78,42 @@ export async function persistSignals(
       .set({ severity: s.severity, score: s.score, evidence: s.evidence, computedAt: now })
       .where(eq(partnerAbuseSignals.id, open.id));
 
+    // An open row that was never delivered/acknowledged must still notify if
+    // EITHER this sweep's severity is 'alert' OR the row was already sitting
+    // at 'alert' severity before this update — otherwise a decayed-but-
+    // undelivered alert (e.g. score dropped back to 'watch' this sweep
+    // before ever reaching an operator) would silently vanish without ever
+    // having been seen.
+    const hadUndeliveredAlert = open.severity === 'alert' && open.deliveredAt === null;
     const notifiable =
-      s.severity === 'alert' && open.deliveredAt === null && open.acknowledgedAt === null;
+      (s.severity === 'alert' || hadUndeliveredAlert) &&
+      open.deliveredAt === null &&
+      open.acknowledgedAt === null;
     if (notifiable) toNotify.push({ ...s, rowId: open.id });
   }
 
-  const staleIds = openRows
+  const staleRows = openRows
     .filter((r) => !firedKeys.has(key(r.partnerId, r.signalKey)))
-    .filter((r) => r.signalKey.startsWith('invariant.') || evaluatedPartnerIds.has(r.partnerId))
-    .map((r) => r.id);
+    .filter((r) => r.signalKey.startsWith('invariant.') || evaluatedPartnerIds.has(r.partnerId));
+
+  // An alert-grade condition that was never delivered or acknowledged is
+  // about to be auto-resolved as stale — i.e. it will disappear having never
+  // been seen by an operator. That's worth a loud record even though we
+  // still resolve it (the condition genuinely cleared; we just want a trail).
+  for (const r of staleRows) {
+    if (r.severity === 'alert' && r.deliveredAt === null && r.acknowledgedAt === null) {
+      console.error('[AbuseSignals] Resolving an undelivered alert-severity signal as stale', {
+        rowId: r.id,
+        partnerId: r.partnerId,
+        signalKey: r.signalKey,
+      });
+      captureException(
+        new Error('[AbuseSignals] Resolving an undelivered alert-severity signal as stale'),
+      );
+    }
+  }
+
+  const staleIds = staleRows.map((r) => r.id);
   if (staleIds.length > 0) {
     await db
       .update(partnerAbuseSignals)

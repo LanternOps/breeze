@@ -5,7 +5,7 @@ import type { AbuseSeverity } from './types';
  * ABUSE_SIGNAL_OVERRIDES env var (JSON map of key -> number) so adversaries
  * reading this public repo do not learn the live thresholds.
  */
-export const SIGNAL_DEFAULTS: Record<string, number> = {
+export const SIGNAL_DEFAULTS = {
   'sweep.young_full_weight_days': 30,
   'sweep.young_zero_weight_days': 90,
   'severity.watch_score': 40,
@@ -21,9 +21,12 @@ export const SIGNAL_DEFAULTS: Record<string, number> = {
   'resource.enrollment_denied.count_24h': 20,
   'resource.volume_outlier.commands_24h': 500,
   'resource.volume_outlier.scripts_24h': 200,
-};
+} as const satisfies Record<string, number>;
 
-export function loadSignalConfig(): Record<string, number> {
+export type SignalConfigKey = keyof typeof SIGNAL_DEFAULTS;
+export type SignalConfig = Record<SignalConfigKey, number>;
+
+export function loadSignalConfig(): SignalConfig {
   const raw = process.env.ABUSE_SIGNAL_OVERRIDES;
   if (!raw) return { ...SIGNAL_DEFAULTS };
   let parsed: unknown;
@@ -33,7 +36,7 @@ export function loadSignalConfig(): Record<string, number> {
     console.warn('[AbuseSignals] ABUSE_SIGNAL_OVERRIDES is not valid JSON — using defaults');
     return { ...SIGNAL_DEFAULTS };
   }
-  const cfg = { ...SIGNAL_DEFAULTS };
+  const cfg: SignalConfig = { ...SIGNAL_DEFAULTS };
   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
     for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
       if (!(key in SIGNAL_DEFAULTS)) {
@@ -44,7 +47,10 @@ export function loadSignalConfig(): Record<string, number> {
         console.warn(`[AbuseSignals] Non-numeric override ignored: ${key}`);
         continue;
       }
-      cfg[key] = value;
+      // `key in SIGNAL_DEFAULTS` above narrows the runtime string to a known
+      // key, but TS can't carry that narrowing through Object.entries — cast
+      // is safe because of the check on the line above.
+      cfg[key as SignalConfigKey] = value;
     }
   } else {
     console.warn('[AbuseSignals] ABUSE_SIGNAL_OVERRIDES must be a JSON object — using defaults');
@@ -52,21 +58,17 @@ export function loadSignalConfig(): Record<string, number> {
   return cfg;
 }
 
-function cfgValue(cfg: Record<string, number>, key: string): number {
-  return cfg[key] ?? SIGNAL_DEFAULTS[key] ?? 0;
-}
-
-export function scoreToSeverity(score: number, cfg: Record<string, number>): AbuseSeverity {
-  if (score >= cfgValue(cfg, 'severity.alert_score')) return 'alert';
-  if (score >= cfgValue(cfg, 'severity.watch_score')) return 'watch';
+export function scoreToSeverity(score: number, cfg: SignalConfig): AbuseSeverity {
+  if (score >= cfg['severity.alert_score']) return 'alert';
+  if (score >= cfg['severity.watch_score']) return 'watch';
   return 'info';
 }
 
 /** 1.0 for partners younger than young_full_weight_days, linearly decaying to 0 at young_zero_weight_days. */
-export function youngWeight(partnerCreatedAt: Date, now: Date, cfg: Record<string, number>): number {
+export function youngWeight(partnerCreatedAt: Date, now: Date, cfg: SignalConfig): number {
   const ageDays = (now.getTime() - partnerCreatedAt.getTime()) / 86_400_000;
-  const full = cfgValue(cfg, 'sweep.young_full_weight_days');
-  const zero = cfgValue(cfg, 'sweep.young_zero_weight_days');
+  const full = cfg['sweep.young_full_weight_days'];
+  const zero = cfg['sweep.young_zero_weight_days'];
   if (ageDays <= full) return 1;
   if (ageDays >= zero) return 0;
   return (zero - ageDays) / (zero - full);

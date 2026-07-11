@@ -1,6 +1,7 @@
 import { safeFetch } from './urlSafety';
 import { getEmailService } from './email';
 import { captureException } from './sentry';
+import { recordOpsAlertDelivery } from './abuseMetrics';
 
 export interface OpsAlertMessage {
   title: string;
@@ -33,13 +34,23 @@ async function sendWebhook(url: string, msg: OpsAlertMessage): Promise<boolean> 
       redirect: 'error',
     });
     if (!response.ok) {
-      console.error(`[OpsAlerts] Webhook responded ${response.status}`);
+      let snippet = '';
+      try {
+        snippet = (await response.text()).slice(0, 300);
+      } catch {
+        // best-effort — body read failures shouldn't mask the status itself
+      }
+      console.error(`[OpsAlerts] Webhook responded ${response.status}: ${snippet}`);
+      captureException(new Error(`[OpsAlerts] Webhook responded ${response.status}: ${snippet}`));
+      recordOpsAlertDelivery('webhook', 'failure');
       return false;
     }
+    recordOpsAlertDelivery('webhook', 'success');
     return true;
   } catch (error) {
     console.error('[OpsAlerts] Webhook delivery failed:', error instanceof Error ? error.message : error);
     captureException(error);
+    recordOpsAlertDelivery('webhook', 'failure');
     return false;
   } finally {
     clearTimeout(timeoutId);
@@ -59,10 +70,12 @@ async function sendOpsEmail(to: string, msg: OpsAlertMessage): Promise<boolean> 
       text: msg.body,
       html: `<pre>${msg.body.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>`,
     });
+    recordOpsAlertDelivery('email', 'success');
     return true;
   } catch (error) {
     console.error('[OpsAlerts] Email delivery failed:', error instanceof Error ? error.message : error);
     captureException(error);
+    recordOpsAlertDelivery('email', 'failure');
     return false;
   }
 }

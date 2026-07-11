@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { db } from '../../db';
-import { scoreToSeverity, youngWeight, SIGNAL_DEFAULTS } from './config';
+import { scoreToSeverity, youngWeight, type SignalConfig } from './config';
 import type { ComputedSignal } from './types';
 
 export interface PartnerAggregates {
@@ -163,17 +163,10 @@ export async function loadPartnerAggregates(): Promise<PartnerAggregates[]> {
   }));
 }
 
-// Local mirror of config.ts's private cfgValue helper — noUncheckedIndexedAccess
-// makes cfg[key] a `number | undefined`; fall back to the published default,
-// then 0, so callers can index freely without non-null assertions.
-function cfgValue(cfg: Record<string, number>, key: string): number {
-  return cfg[key] ?? SIGNAL_DEFAULTS[key] ?? 0;
-}
-
 /** Pure scoring: no I/O, unit-testable. Scores are 0-100 pre-weighting. */
 export function computeHeuristicSignals(
   aggs: PartnerAggregates[],
-  cfg: Record<string, number>,
+  cfg: SignalConfig,
   now: Date,
 ): ComputedSignal[] {
   const signals: ComputedSignal[] = [];
@@ -193,9 +186,9 @@ export function computeHeuristicSignals(
     };
 
     // rmm.consumer_devices — ratio of throwaway-named consumer machines.
-    if (a.deviceCount >= cfgValue(cfg, 'rmm.consumer_devices.min_devices')) {
+    if (a.deviceCount >= cfg['rmm.consumer_devices.min_devices']) {
       const ratio = a.consumerHostnameCount / a.deviceCount;
-      if (ratio >= cfgValue(cfg, 'rmm.consumer_devices.watch_ratio')) {
+      if (ratio >= cfg['rmm.consumer_devices.watch_ratio']) {
         push('rmm.consumer_devices', ratio * 100, {
           deviceCount: a.deviceCount,
           consumerHostnameCount: a.consumerHostnameCount,
@@ -205,7 +198,7 @@ export function computeHeuristicSignals(
     }
 
     // rmm.enrollment_velocity — burst enrollments in 24h.
-    const velThreshold = cfgValue(cfg, 'rmm.enrollment_velocity.devices_24h');
+    const velThreshold = cfg['rmm.enrollment_velocity.devices_24h'];
     if (a.enrolled24h >= velThreshold) {
       push('rmm.enrollment_velocity', Math.min(100, (a.enrolled24h / velThreshold) * 50), {
         enrolled24h: a.enrolled24h,
@@ -213,8 +206,8 @@ export function computeHeuristicSignals(
     }
 
     // rmm.session_intensity — fast enroll-to-remote is the scammer fingerprint.
-    const fastThreshold = cfgValue(cfg, 'rmm.session_intensity.fast_remote_count_7d');
-    const perDeviceThreshold = cfgValue(cfg, 'rmm.session_intensity.sessions_per_device_7d');
+    const fastThreshold = cfg['rmm.session_intensity.fast_remote_count_7d'];
+    const perDeviceThreshold = cfg['rmm.session_intensity.sessions_per_device_7d'];
     const perDevice = a.deviceCount > 0 ? a.sessions7d / a.deviceCount : 0;
     if (a.fastRemoteSessions7d >= fastThreshold || perDevice >= perDeviceThreshold) {
       const fastScore = (a.fastRemoteSessions7d / fastThreshold) * 70;
@@ -227,9 +220,9 @@ export function computeHeuristicSignals(
     }
 
     // rmm.enrollment_ip_spread — scattered origin IPs (residential-victim proxy until geo lands).
-    if (a.devicesEnrolled30d >= cfgValue(cfg, 'rmm.enrollment_ip_spread.min_devices')) {
+    if (a.devicesEnrolled30d >= cfg['rmm.enrollment_ip_spread.min_devices']) {
       const ratio = a.distinctEnrollmentIps30d / a.devicesEnrolled30d;
-      if (ratio >= cfgValue(cfg, 'rmm.enrollment_ip_spread.distinct_ratio')) {
+      if (ratio >= cfg['rmm.enrollment_ip_spread.distinct_ratio']) {
         push('rmm.enrollment_ip_spread', ratio * 80, {
           devicesEnrolled30d: a.devicesEnrolled30d,
           distinctEnrollmentIps30d: a.distinctEnrollmentIps30d,
@@ -238,7 +231,7 @@ export function computeHeuristicSignals(
     }
 
     // fraud.failed_login_cluster — never age-decayed.
-    const loginThreshold = cfgValue(cfg, 'fraud.failed_login_cluster.count_24h');
+    const loginThreshold = cfg['fraud.failed_login_cluster.count_24h'];
     if (a.failedLogins24h >= loginThreshold) {
       push('fraud.failed_login_cluster', Math.min(100, (a.failedLogins24h / loginThreshold) * 50), {
         failedLogins24h: a.failedLogins24h,
@@ -246,7 +239,7 @@ export function computeHeuristicSignals(
     }
 
     // resource.enrollment_denied — repeated cap/key rejections; never age-decayed.
-    const deniedThreshold = cfgValue(cfg, 'resource.enrollment_denied.count_24h');
+    const deniedThreshold = cfg['resource.enrollment_denied.count_24h'];
     if (a.enrollmentDenied24h >= deniedThreshold) {
       push('resource.enrollment_denied', Math.min(100, (a.enrollmentDenied24h / deniedThreshold) * 50), {
         enrollmentDenied24h: a.enrollmentDenied24h,
@@ -254,8 +247,8 @@ export function computeHeuristicSignals(
     }
 
     // resource.volume_outlier — never age-decayed.
-    const cmdThreshold = cfgValue(cfg, 'resource.volume_outlier.commands_24h');
-    const scriptThreshold = cfgValue(cfg, 'resource.volume_outlier.scripts_24h');
+    const cmdThreshold = cfg['resource.volume_outlier.commands_24h'];
+    const scriptThreshold = cfg['resource.volume_outlier.scripts_24h'];
     if (a.commands24h >= cmdThreshold || a.scriptExecutions24h >= scriptThreshold) {
       push('resource.volume_outlier', Math.min(
         100,

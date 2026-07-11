@@ -282,6 +282,12 @@ const abuseSweepRunsTotal = new Counter({
   labelNames: ['result'] as const,
   registers: [register]
 });
+const opsAlertDeliveriesTotal = new Counter({
+  name: 'breeze_ops_alert_deliveries_total',
+  help: 'Ops-alert delivery attempts by channel and result',
+  labelNames: ['channel', 'result'] as const,
+  registers: [register]
+});
 
 const processStartTimeGauge = new Gauge({
   name: 'process_start_time_seconds',
@@ -322,6 +328,7 @@ agentEnrollmentsTotal.labels('success', 'redacted').inc(0);
 commandsDispatchedTotal.labels('script', 'user', 'redacted').inc(0);
 abuseSignalsFiredTotal.labels('alert').inc(0);
 abuseSweepRunsTotal.labels('success').inc(0);
+opsAlertDeliveriesTotal.labels('webhook', 'success').inc(0);
 nodejsVersionInfoGauge.labels(process.version).set(1);
 
 interface CounterValue {
@@ -640,6 +647,7 @@ setAnomalyMetricsRecorder({
 setAbuseMetricsRecorder({
   onSignalFired: (severity) => abuseSignalsFiredTotal.labels(normalizeMetricLabel(severity, 'unknown')).inc(),
   onSweepRun: (result) => abuseSweepRunsTotal.labels(result).inc(),
+  onAlertDelivery: (channel, result) => opsAlertDeliveriesTotal.labels(normalizeMetricLabel(channel, 'unknown'), result).inc(),
 });
 
 async function refreshBackupOperationalGauges(): Promise<void> {

@@ -200,4 +200,22 @@ describe('createPartner', () => {
     const userCall = insertCalls.find((c) => (c.table as any).__t === 'users')!;
     expect(userCall.values.passwordHash).toBeNull();
   });
+
+  it('tags partner with signup_ip/signup_user_agent (not mcp_origin_*) when origin.mcp is false', async () => {
+    await createPartner({
+      orgName: 'Acme',
+      adminEmail: 'alex@acme.com',
+      adminName: 'Alex',
+      passwordHash: 'hashed',
+      origin: { mcp: false, ip: '198.51.100.7', userAgent: 'ua' },
+      status: 'active',
+    });
+
+    const partnerCall = insertCalls.find((c) => (c.table as any).__t === 'partners')!;
+    expect(partnerCall.values).toMatchObject({
+      signupIp: '198.51.100.7',
+      signupUserAgent: 'ua',
+      mcpOriginIp: null,
+    });
+  });
 });

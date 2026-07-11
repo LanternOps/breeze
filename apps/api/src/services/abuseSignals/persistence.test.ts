@@ -3,6 +3,9 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 const inserted: unknown[] = [];
 const updates: Array<{ set: Record<string, unknown> }> = [];
 
+const { captureException } = vi.hoisted(() => ({ captureException: vi.fn() }));
+vi.mock('../sentry', () => ({ captureException }));
+
 vi.mock('../../db', () => ({
   db: {
     select: vi.fn(),
@@ -41,6 +44,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   inserted.length = 0;
   updates.length = 0;
+  captureException.mockClear();
 });
 
 describe('persistSignals', () => {
@@ -106,6 +110,56 @@ describe('persistSignals', () => {
   it('resolves an open invariant.* row that did not fire this sweep even when its partner is not in the evaluated set', async () => {
     mockOpenRows([{ id: 'stale-invariant', partnerId: 'p9', signalKey: 'invariant.something', severity: 'watch', acknowledgedAt: null, deliveredAt: null }]);
     await persistSignals([], now, new Set(['p1']));
+    expect(updates.some((u) => u.set.resolvedAt instanceof Date)).toBe(true);
+  });
+
+  it('still notifies a decayed-but-undelivered alert (open row was alert, this sweep scored it watch)', async () => {
+    mockOpenRows([{ id: 'row1', partnerId: 'p1', signalKey: 'rmm.consumer_devices', severity: 'alert', acknowledgedAt: null, deliveredAt: null }]);
+    const { toNotify } = await persistSignals(
+      [signal({ severity: 'watch', score: 45 })],
+      now,
+      new Set(['p1']),
+    );
+    expect(toNotify).toHaveLength(1);
+    expect(toNotify[0]!.rowId).toBe('row1');
+  });
+
+  it('does not re-notify a decayed row that was already delivered', async () => {
+    mockOpenRows([{ id: 'row1', partnerId: 'p1', signalKey: 'rmm.consumer_devices', severity: 'alert', acknowledgedAt: null, deliveredAt: new Date() }]);
+    const { toNotify } = await persistSignals(
+      [signal({ severity: 'watch', score: 45 })],
+      now,
+      new Set(['p1']),
+    );
+    expect(toNotify).toHaveLength(0);
+  });
+
+  it('logs and captures an exception when INSERT returns no row', async () => {
+    mockOpenRows([]);
+    vi.mocked(db.insert).mockReturnValueOnce({
+      values: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([]) })),
+    } as never);
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { toNotify } = await persistSignals([signal({})], now, new Set(['p1']));
+    expect(toNotify).toHaveLength(0);
+    expect(captureException).toHaveBeenCalledTimes(1);
+    expect(errSpy).toHaveBeenCalled();
+    errSpy.mockRestore();
+  });
+
+  it('captures an exception (but still resolves) when stale-resolving an undelivered alert-severity row', async () => {
+    mockOpenRows([{ id: 'stale-alert', partnerId: 'p9', signalKey: 'rmm.enrollment_velocity', severity: 'alert', acknowledgedAt: null, deliveredAt: null }]);
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await persistSignals([], now, new Set(['p9']));
+    expect(captureException).toHaveBeenCalledTimes(1);
+    expect(updates.some((u) => u.set.resolvedAt instanceof Date)).toBe(true);
+    errSpy.mockRestore();
+  });
+
+  it('does not capture an exception when stale-resolving a delivered alert-severity row', async () => {
+    mockOpenRows([{ id: 'stale-alert', partnerId: 'p9', signalKey: 'rmm.enrollment_velocity', severity: 'alert', acknowledgedAt: null, deliveredAt: new Date() }]);
+    await persistSignals([], now, new Set(['p9']));
+    expect(captureException).not.toHaveBeenCalled();
     expect(updates.some((u) => u.set.resolvedAt instanceof Date)).toBe(true);
   });
 });

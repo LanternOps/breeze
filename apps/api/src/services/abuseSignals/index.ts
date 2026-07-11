@@ -15,11 +15,18 @@ const { db } = dbModule;
 const runSystemDbCompute = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
   const runOutside = dbModule.runOutsideDbContext;
-  if (typeof withSystem !== 'function') return fn();
-  if (typeof runOutside !== 'function') return withSystem(fn);
+  if (typeof withSystem !== 'function' || typeof runOutside !== 'function') {
+    // Never legitimate in production: running without the system context would
+    // silently read 0 rows under forced RLS and report a "healthy" empty sweep.
+    throw new Error('[AbuseSignals] db context helpers missing — refusing to run sweep without system context');
+  }
   return runOutside(() => withSystem(fn));
 };
 
+// Ordering matters: opsAlerts.formatContent truncates the final message to
+// Discord's 2000-char limit, and the evidence JSON below is itself capped at
+// 800 chars — but neither cap should ever be able to cut off the actionable
+// line (full partner id + playbook pointer). Keep those BEFORE evidence.
 function formatSignalAlert(s: ComputedSignal & { rowId: string }): { title: string; body: string } {
   const shortId = s.partnerId.slice(0, 8);
   return {
@@ -27,8 +34,9 @@ function formatSignalAlert(s: ComputedSignal & { rowId: string }): { title: stri
     body: [
       `Partner: ${String(s.evidence.partnerName ?? 'unknown')} (${shortId})`,
       `Score: ${s.score}`,
-      `Evidence: ${JSON.stringify(s.evidence)}`,
-      `Review: docs/superpowers/specs/2026-07-11-signup-abuse-detection-design.md — suspend playbook applies; partner id ${s.partnerId}`,
+      `Partner id: ${s.partnerId}`,
+      `Review: docs/superpowers/specs/2026-07-11-signup-abuse-detection-design.md — suspend playbook applies`,
+      `Evidence: ${JSON.stringify(s.evidence).slice(0, 800)}`,
     ].join('\n'),
   };
 }

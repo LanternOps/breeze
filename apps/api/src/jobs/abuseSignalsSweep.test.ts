@@ -77,6 +77,16 @@ describe('abuse signals worker processor', () => {
     expect(recordAbuseSweepRun).toHaveBeenCalledTimes(1);
   });
 
+  it('records an error metric scoped to the sweep job and rethrows when runAbuseSweep rejects', async () => {
+    const sweepError = new Error('sweep blew up');
+    vi.mocked(runAbuseSweep).mockRejectedValueOnce(sweepError);
+    const processor = getProcessor();
+
+    await expect(processor({ name: 'abuse-sweep' })).rejects.toThrow(sweepError);
+    expect(recordAbuseSweepRun).toHaveBeenCalledWith('error');
+    expect(recordAbuseSweepRun).toHaveBeenCalledTimes(1);
+  });
+
   it('does not touch the sweep metric when the digest job throws', async () => {
     const digestError = new Error('digest delivery failed');
     vi.mocked(runAbuseDigest).mockRejectedValueOnce(digestError);
