@@ -173,7 +173,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
 
   const scoped = await withDbAccessContext(
     dbContext,
-    async (): Promise<Response | { deviceOrgId: string; mainResponse: Record<string, unknown> }> => {
+    async (): Promise<Response | { deviceOrgId: string; deviceId: string; mainResponse: Record<string, unknown> }> => {
 
   const [device] = await db
     .select()
@@ -780,13 +780,11 @@ if (latestHelper) {
     captureException(err);
   }
 
-  let onedriveSettings: OnedriveConfigUpdate | null = null;
-  try {
-    onedriveSettings = await buildOnedriveHelperConfigUpdate(device.id);
-  } catch (err) {
-    console.error(`[agents] failed to build onedrive_helper config update for ${agentId}:`, err);
-    captureException(err);
-  }
+  // #1105 — onedrive_helper config is built AFTER this org transaction closes
+  // (see the post-scoped section below), because Phase 4 per-UPN Graph
+  // resolution can make uncached external HTTP round-trips. Building it here
+  // would hold a pooled connection in the open org transaction across those
+  // calls. Mirrors buildPolicyProbeConfigUpdate's placement.
 
   // #1872: sole-patch-source enforcement. Omit the block on a resolver error so
   // a transient failure never reverts an endpoint already under enforcement;
@@ -799,17 +797,16 @@ if (latestHelper) {
     captureException(err);
   }
 
+  // onedrive_helper_settings is NOT merged here — it is built post-scoped and
+  // merged into the final configUpdate below (#1105 hoist).
   let mergedConfigUpdate: Record<string, unknown> | null = null;
-  if (eventLogSettings || monitoringSettings || onedriveSettings || patchSourceSettings) {
+  if (eventLogSettings || monitoringSettings || patchSourceSettings) {
     mergedConfigUpdate = {};
     if (eventLogSettings) {
       mergedConfigUpdate.event_log_settings = eventLogSettings;
     }
     if (monitoringSettings) {
       mergedConfigUpdate.monitoring_settings = monitoringSettings;
-    }
-    if (onedriveSettings) {
-      mergedConfigUpdate.onedrive_helper_settings = onedriveSettings;
     }
     if (patchSourceSettings) {
       mergedConfigUpdate.patch_source_settings = patchSourceSettings;
@@ -834,6 +831,7 @@ if (latestHelper) {
   // context closes (see below).
   return {
     deviceOrgId: device.orgId,
+    deviceId: device.id,
     mainResponse: {
       commands: decryptCommandsForDelivery(commands.map(cmd => ({
         id: cmd.id,
@@ -889,9 +887,32 @@ if (latestHelper) {
     console.error(`[agents] failed to build policy probe config update for ${agentId}:`, err);
   }
 
+  // #1105 — onedrive_helper config is built OUTSIDE the org transaction too.
+  // Phase 4 added per-UPN Graph resolution inside resolveDeviceOnedriveSettings,
+  // where an uncached miss makes sequential external HTTP round-trips (token +
+  // Graph) with no timeout, per UPN — exactly the conn-hold class #1105 warns
+  // about. resolveDeviceOnedriveSettings filters every query explicitly
+  // (eq(configurationPolicies.orgId, device.orgId), deviceId-keyed state read),
+  // so the system context here is org-safe and cannot pivot tenants (same
+  // guarantee as the policy-probe pattern above). The onedrive_device_state
+  // upsert happened inside scoped (ingest), and this build runs later, so the
+  // ingest-before-delivery ordering is preserved.
+  let onedriveSettings: OnedriveConfigUpdate | null = null;
+  try {
+    onedriveSettings = await withSystemDbAccessContext(() =>
+      buildOnedriveHelperConfigUpdate(scoped.deviceId)
+    );
+  } catch (err) {
+    console.error(`[agents] failed to build onedrive_helper config update for ${agentId}:`, err);
+    captureException(err);
+  }
+  const onedriveConfigUpdate = onedriveSettings
+    ? { onedrive_helper_settings: onedriveSettings }
+    : null;
+
   const scopedConfigUpdate = scoped.mainResponse.configUpdate as Record<string, unknown> | null;
-  const configUpdate = policyProbeConfig || scopedConfigUpdate
-    ? { ...(policyProbeConfig ?? {}), ...(scopedConfigUpdate ?? {}) }
+  const configUpdate = policyProbeConfig || scopedConfigUpdate || onedriveConfigUpdate
+    ? { ...(policyProbeConfig ?? {}), ...(scopedConfigUpdate ?? {}), ...(onedriveConfigUpdate ?? {}) }
     : null;
 
   return c.json({ ...scoped.mainResponse, configUpdate, manifestTrustKeys });
