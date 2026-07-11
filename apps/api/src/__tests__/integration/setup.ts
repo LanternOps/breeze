@@ -246,10 +246,26 @@ export async function teardownIntegrationTests() {
   }
 }
 
-function isUndefinedTableError(error: unknown): boolean {
-  const code = (error as { code?: string; cause?: { code?: string } } | undefined)?.code
+function sqlStateOf(error: unknown): string | undefined {
+  return (error as { code?: string; cause?: { code?: string } } | undefined)?.code
     ?? (error as { cause?: { code?: string } } | undefined)?.cause?.code;
-  return code === '42P01';
+}
+
+function isUndefinedTableError(error: unknown): boolean {
+  return sqlStateOf(error) === '42P01';
+}
+
+// 40P01 = deadlock_detected, 40001 = serialization_failure. Both are
+// transient lock races, not broken cleanup: the TRUNCATE grabs ACCESS
+// EXCLUSIVE on ~all tenant tables in one statement, and an in-flight
+// background query from the PREVIOUS test (app-pool FK check / SELECT) can
+// still hold a conflicting lock for a few ms. Postgres kills one side; the
+// competitor finishes immediately after, so a retry succeeds. Before #2205
+// these were silently swallowed — leaving the DB dirty; retrying (loudly)
+// is strictly better on both axes.
+function isTransientLockError(error: unknown): boolean {
+  const code = sqlStateOf(error);
+  return code === '40P01' || code === '40001';
 }
 
 async function cleanupAppendOnlyMlFeedbackEvents() {
@@ -370,17 +386,35 @@ export async function cleanupDatabase() {
   // over the union of the same lock set.
   await testClient`ALTER TABLE audit_logs DISABLE TRIGGER audit_log_block_truncate`;
   try {
-    await testClient`TRUNCATE TABLE ${testClient(tablesToTruncate)} CASCADE`;
-  } catch (error) {
-    // No tolerated failures here: missing tables were already filtered out by
-    // resolveCleanupTables(), so ANY error means the DB was NOT reset — fail
-    // loudly instead of letting state leak into the next test (the silent
-    // swallow of this failure is how #2205 stayed hidden).
-    throw new Error(
-      'cleanupDatabase: TRUNCATE ... CASCADE of the core tables failed — the database was not reset. ' +
-      'Failing loudly so leaked tenant state cannot poison later tests (#2205).',
-      { cause: error }
-    );
+    const MAX_TRUNCATE_ATTEMPTS = 3;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await testClient`TRUNCATE TABLE ${testClient(tablesToTruncate)} CASCADE`;
+        break;
+      } catch (error) {
+        // Deadlock/serialization races with a still-in-flight query from the
+        // previous test are transient (see isTransientLockError) — retry a
+        // couple of times, VISIBLY, before giving up.
+        if (isTransientLockError(error) && attempt < MAX_TRUNCATE_ATTEMPTS) {
+          console.warn(
+            `cleanupDatabase: TRUNCATE hit ${sqlStateOf(error)} (attempt ${attempt}/${MAX_TRUNCATE_ATTEMPTS}) — ` +
+            'a query from the previous test was still holding locks; retrying'
+          );
+          await new Promise((r) => setTimeout(r, 100 * attempt));
+          continue;
+        }
+        // No other tolerated failures: missing tables were already filtered
+        // out by resolveCleanupTables(), so ANY other error means the DB was
+        // NOT reset — fail loudly instead of letting state leak into the next
+        // test (the silent swallow of this failure is how #2205 stayed
+        // hidden).
+        throw new Error(
+          'cleanupDatabase: TRUNCATE ... CASCADE of the core tables failed — the database was not reset. ' +
+          'Failing loudly so leaked tenant state cannot poison later tests (#2205).',
+          { cause: error }
+        );
+      }
+    }
   } finally {
     try {
       await testClient`ALTER TABLE audit_logs ENABLE TRIGGER audit_log_block_truncate`;

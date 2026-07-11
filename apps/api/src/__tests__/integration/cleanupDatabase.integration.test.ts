@@ -23,6 +23,10 @@
  *   3. A truncate failure surfaces loudly (no silent swallow) AND still
  *      re-enables the audit trigger via the finally — the two regressions
  *      that would quietly reintroduce #2205.
+ *   4. A transient deadlock (40P01) — a lock race with an in-flight query
+ *      from the previous test, observed in CI — is retried instead of
+ *      failing the run (and instead of being silently swallowed, which is
+ *      what the pre-#2205 code did with it).
  *
  * Run:
  *   pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts \
@@ -164,5 +168,42 @@ describe('#2205 cleanupDatabase() genuinely resets tenant-root tables', () => {
     await cleanupDatabase();
     expect(await countRows('partners')).toBe(0);
     expect(await auditTruncateTriggerEnabled()).toBe('O');
+  });
+
+  it('retries a transient deadlock instead of failing the run', async () => {
+    const db = getTestDb();
+
+    // Simulate the CI failure mode: the combined TRUNCATE deadlocks (40P01)
+    // against an in-flight query from the previous test, exactly once. A
+    // sequence is the one Postgres side effect that survives the statement's
+    // rollback, so the trigger raises on its first invocation only —
+    // deterministic without needing a real two-session lock race.
+    await db.execute(sql`CREATE SEQUENCE IF NOT EXISTS test_2205_deadlock_seq`);
+    await db.execute(sql`
+      CREATE OR REPLACE FUNCTION test_2205_deadlock_once() RETURNS trigger
+      LANGUAGE plpgsql AS $$
+      BEGIN
+        IF nextval('test_2205_deadlock_seq') = 1 THEN
+          RAISE EXCEPTION 'test_2205: simulated deadlock' USING ERRCODE = '40P01';
+        END IF;
+        RETURN NULL;
+      END;
+      $$
+    `);
+    await db.execute(sql`
+      CREATE TRIGGER test_2205_deadlock_once BEFORE TRUNCATE ON alerts
+        FOR EACH STATEMENT EXECUTE FUNCTION test_2205_deadlock_once()
+    `);
+
+    try {
+      // First attempt hits the simulated 40P01; the retry must succeed.
+      await cleanupDatabase();
+      expect(await countRows('partners')).toBe(0);
+      expect(await auditTruncateTriggerEnabled()).toBe('O');
+    } finally {
+      await db.execute(sql`DROP TRIGGER IF EXISTS test_2205_deadlock_once ON alerts`);
+      await db.execute(sql`DROP FUNCTION IF EXISTS test_2205_deadlock_once()`);
+      await db.execute(sql`DROP SEQUENCE IF EXISTS test_2205_deadlock_seq`);
+    }
   });
 });
