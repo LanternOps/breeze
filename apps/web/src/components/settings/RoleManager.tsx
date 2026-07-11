@@ -914,11 +914,12 @@ export function DeleteRoleModal({
       <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
         <h2 className="text-lg font-semibold">{i18n.t('settings:roleManager.deleteRole')}</h2>
         <p className="mt-2 text-sm text-muted-foreground">
-          {i18n.t('settings:roleManager.areYouSureYouWantToDeleteTheRole')}{' '}
-          <span className="font-medium">{role.name}</span>{i18n.t('settings:roleManager.thisActionCannotBeUndone')}</p>
+          {i18n.t('settings:roleManager.deleteConfirmation', { name: role.name })}
+        </p>
         {role.userCount > 0 && (
           <p className="mt-2 text-sm text-destructive">
-            {i18n.t('settings:roleManager.thisRoleHas')}{role.userCount} {i18n.t('settings:roleManager.assigned')}{role.userCount === 1 ? 'user' : 'users'} {i18n.t('settings:roleManager.andCannotBeDeleted')}</p>
+            {i18n.t('settings:roleManager.assignedUsersWarning', { count: role.userCount })}
+          </p>
         )}
         <div className="mt-6 flex justify-end gap-3">
           <button

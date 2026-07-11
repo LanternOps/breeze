@@ -265,6 +265,7 @@
     "couldNotLoadThisContractsLinesPickThe": "Não foi possível carregar as linhas deste contrato. Escolha o contrato novamente para tentar novamente.",
     "couldNotCreateTheContractLine": "Não foi possível criar a linha de contrato.",
     "couldNotLinkTheSubscription": "Não foi possível vincular a assinatura.",
+    "mfaRequiredHint": "Esta alteração exige MFA. Configure ou verifique o MFA no seu perfil e tente novamente.",
     "subscriptionLinked": "Assinatura vinculada",
     "contract": "Contrato",
     "selectAContract": "Selecione um contrato…",

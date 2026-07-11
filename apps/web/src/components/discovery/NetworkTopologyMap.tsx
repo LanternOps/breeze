@@ -50,6 +50,7 @@ export type TopologyNode = {
   // asset. Preserved from the GET payload so a manual node reloaded from the
   // server stays connect/delete-able (#1728).
   kind?: 'manual' | 'discovered';
+  manualRole?: ManualRole;
 };
 
 export type TopologyEdgeMethod = 'lldp' | 'cdp' | 'fdb' | 'manual';
@@ -111,6 +112,7 @@ export type SelectedElement = {
   status?: TopologyNodeStatus | null;
   ipAddress?: string | null;
   subnet?: string | null;
+  manualRole?: ManualRole | null;
 };
 
 // Imperative edit-mode API published once the Cytoscape instance is ready. Used
@@ -283,6 +285,10 @@ const MANUAL_ROLE_LABEL_KEYS: Record<ManualRole, string> = {
 function mapNode(node: ApiTopologyNode): TopologyNode {
   const normalizedType = (node.type ?? 'unknown').toLowerCase();
   const normalizedStatus = (node.status ?? 'online').toLowerCase();
+  const manualRole =
+    node.kind === 'manual' && MANUAL_ROLES.includes(normalizedType as ManualRole)
+      ? (normalizedType as ManualRole)
+      : undefined;
   return {
     id: node.id,
     label: node.label ?? node.id,
@@ -291,7 +297,8 @@ function mapNode(node: ApiTopologyNode): TopologyNode {
       normalizedStatus === 'offline' || normalizedStatus === 'warning' ? normalizedStatus : 'online',
     ipAddress: node.ipAddress ?? undefined,
     siteId: node.siteId ?? undefined,
-    kind: node.kind ?? undefined
+    kind: node.kind ?? undefined,
+    manualRole
   };
 }
 
@@ -597,6 +604,14 @@ export default function NetworkTopologyMap({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
 
+  const localizedNodeLabel = useCallback(
+    (label: string, kind?: 'manual' | 'discovered' | null, role?: ManualRole | null) => {
+      if (kind !== 'manual' || !role || label !== MANUAL_ROLE_LABELS[role]) return label;
+      return t(/* i18n-dynamic */ MANUAL_ROLE_LABEL_KEYS[role]);
+    },
+    [t]
+  );
+
   // Manual-mapping edit mode (issue #1728 Phase 4) — gated by topology:write.
   const { can } = usePermissions();
   const canEdit = can('topology', 'write');
@@ -725,14 +740,15 @@ export default function NetworkTopologyMap({
         id: node.id,
         group: 'nodes',
         kind: node.kind === 'manual' ? 'manual' : 'discovered',
-        label: node.label,
+        label: localizedNodeLabel(node.label, node.kind, node.manualRole),
         nodeType: node.type,
         status: node.status,
         ipAddress: node.ipAddress ?? null,
-        subnet: subnetByNodeId.get(node.id) ?? null
+        subnet: subnetByNodeId.get(node.id) ?? null,
+        manualRole: node.manualRole ?? null
       });
     },
-    [subnetByNodeId]
+    [localizedNodeLabel, subnetByNodeId]
   );
 
   const addManualNode = useCallback(
@@ -754,13 +770,18 @@ export default function NetworkTopologyMap({
         // Drop the new node onto the canvas (Phase 3 cy ref). It re-renders from
         // the server on the next topology fetch; this gives immediate feedback.
         cyRef.current?.add({
-          data: { id: node.id, label: node.label, kind: 'manual', role: node.role }
+          data: {
+            id: node.id,
+            label: localizedNodeLabel(node.label, 'manual', role),
+            kind: 'manual',
+            role
+          }
         });
       } catch (err) {
         handleActionError(err, t('networkTopologyMap.errors.addNodeSentence'));
       }
     },
-    [activeSiteId, t]
+    [activeSiteId, localizedNodeLabel, t]
   );
 
   // Resolve a node id to a manual-edge endpoint descriptor. Manual placeholders
@@ -955,7 +976,7 @@ export default function NetworkTopologyMap({
       const saved = layoutById.get(node.id);
       const data: Record<string, unknown> = {
         id: node.id,
-        label: node.label,
+        label: localizedNodeLabel(node.label, node.kind, node.manualRole),
         type: node.type,
         status: node.status,
         ipAddress: node.ipAddress ?? null,
@@ -963,7 +984,8 @@ export default function NetworkTopologyMap({
         infra: INFRA_TYPES.has(node.type) ? 1 : 0,
         // Preserve provenance so a server-reloaded manual node is still
         // connect/delete-able (endpointFor + the tap handler key off data.kind).
-        kind: node.kind ?? 'discovered'
+        kind: node.kind ?? 'discovered',
+        manualRole: node.manualRole ?? null
       };
       if (parent && parentIds.has(parent)) data.parent = parent;
       const def: cytoscape.ElementDefinition = { data };
@@ -1168,7 +1190,7 @@ export default function NetworkTopologyMap({
       cy.destroy();
       cyRef.current = null;
     };
-  }, [nodes, links, layout, subnetGroups, subnetByNodeId, persistDrag]);
+  }, [nodes, links, layout, subnetGroups, subnetByNodeId, persistDrag, localizedNodeLabel]);
 
   // Selection highlight: ring the selected element only — no dimming of the rest
   // of the graph. In edit mode a selected node is the pending connect source
@@ -1739,7 +1761,9 @@ export default function NetworkTopologyMap({
                   )}
                 >
                   <NodeBadge type={n.type} size={20} />
-                  <span className="min-w-0 flex-1 truncate font-medium text-foreground">{n.label}</span>
+                  <span className="min-w-0 flex-1 truncate font-medium text-foreground">
+                    {localizedNodeLabel(n.label, n.kind, n.manualRole)}
+                  </span>
                   <span className="hidden items-center gap-1 text-muted-foreground sm:inline-flex">
                     <span className={cn('h-1.5 w-1.5 rounded-full', statusDotClass[n.status])} aria-hidden />
                     {t(/* i18n-dynamic */ statusLabelKey[n.status])}

@@ -21,6 +21,7 @@ import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 type PatchResult = {
   id?: string;
@@ -141,7 +142,7 @@ function formatRelativeTime(dateString: string | undefined, t: TFunction<'patche
   if (diffHour < 24) return t('patchInstallHistory.relative.hoursAgo', { count: diffHour });
   if (diffDay < 7) return t('patchInstallHistory.relative.daysAgo', { count: diffDay });
 
-  return date.toLocaleDateString('en-US', {
+  return formatDateTime(date, {
     year: 'numeric',
     month: 'short',
     day: 'numeric',
@@ -154,7 +155,7 @@ function formatAbsoluteDate(dateString: string | undefined, t: TFunction<'patche
   if (!dateString) return t('patchInstallHistory.emptyValue');
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
-  return date.toLocaleDateString('en-US', {
+  return formatDateTime(date, {
     year: 'numeric',
     month: 'short',
     day: 'numeric',

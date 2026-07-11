@@ -5,6 +5,7 @@ const listContracts = vi.fn();
 const getContract = vi.fn();
 const addContractLine = vi.fn();
 const fetchWithAuth = vi.fn();
+const { showToast } = vi.hoisted(() => ({ showToast: vi.fn() }));
 
 vi.mock("../../lib/api/contracts", async (orig) => ({
   ...(await orig<typeof import("../../lib/api/contracts")>()),
@@ -14,6 +15,9 @@ vi.mock("../../lib/api/contracts", async (orig) => ({
 }));
 vi.mock("../../stores/auth", () => ({
   fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a),
+}));
+vi.mock("../shared/Toast", () => ({
+  showToast: (...a: unknown[]) => showToast(...a),
 }));
 
 import LinkSubscriptionPicker from "./LinkSubscriptionPicker";
@@ -33,6 +37,7 @@ beforeEach(() => {
   getContract.mockReset();
   addContractLine.mockReset();
   fetchWithAuth.mockReset();
+  showToast.mockReset();
   listContracts.mockResolvedValue(
     ok([{ id: "c1", orgId: "org-1", name: "Acme Monthly", status: "active" }]),
   );
@@ -254,5 +259,36 @@ describe("LinkSubscriptionPicker", () => {
     await waitFor(() => screen.getByTestId("pax8-link-error"));
     // The dropdown must not silently look like "no contracts".
     expect(addContractLine).not.toHaveBeenCalled();
+  });
+
+  it("surfaces the localized MFA setup hint when linking is denied", async () => {
+    fetchWithAuth.mockResolvedValue(
+      new Response(JSON.stringify({ error: "MFA required" }), { status: 403 }),
+    );
+    render(
+      <LinkSubscriptionPicker
+        integrationId="int-1"
+        subscription={sub}
+        onDone={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+    await waitFor(() => screen.getByTestId("pax8-link-contract"));
+    fireEvent.change(screen.getByTestId("pax8-link-contract"), {
+      target: { value: "c1" },
+    });
+    await waitFor(() => screen.getByTestId("pax8-link-line"));
+    fireEvent.change(screen.getByTestId("pax8-link-line"), {
+      target: { value: "line-existing" },
+    });
+    fireEvent.click(screen.getByTestId("pax8-link-submit"));
+
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith({
+        type: "error",
+        message:
+          "This change requires MFA. Set up or verify MFA in your profile, then retry.",
+      });
+    });
   });
 });

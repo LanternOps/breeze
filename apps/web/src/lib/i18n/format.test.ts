@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { formatCurrency, formatNumber, formatPercent } from './format';
-import { i18n, loadLocale } from './index';
+import { applyLocale, i18n, loadLocale } from './index';
 import { LOCALE_STORAGE_KEY } from '../appearance';
 import { formatDate } from '../dateTimeFormat';
 
@@ -38,7 +38,7 @@ describe('locale-aware number formatting', () => {
       configurable: true,
     });
     window.localStorage.clear();
-    await i18n.changeLanguage('en');
+    await applyLocale('en');
   });
 
   it('formats with pt-BR separators when the preference is set', () => {
@@ -64,6 +64,22 @@ describe('locale-aware number formatting', () => {
     await i18n.changeLanguage('pt-BR');
     expect(formatNumber(1234.5, { minimumFractionDigits: 2 })).toBe('1.234,50');
   });
+
+  it('uses the active English runtime after a pt-BR chunk load fails', async () => {
+    window.localStorage.setItem(LOCALE_STORAGE_KEY, 'pt-BR');
+    expect(formatNumber(1234.5, { minimumFractionDigits: 2 })).toBe('1.234,50');
+
+    await applyLocale('pt-BR', {
+      loadLocale: (locale) => locale === 'pt-BR'
+        ? Promise.reject(new Error('chunk unavailable'))
+        : Promise.resolve(),
+      changeLanguage: (locale) => i18n.changeLanguage(locale),
+    });
+
+    expect(i18n.language).toBe('en');
+    expect(formatNumber(1234.5, { minimumFractionDigits: 2 })).toBe('1,234.50');
+    expect(formatDate('2026-03-09T12:00:00Z', { timeZone: 'UTC' })).toBe('3/9/2026');
+  });
 });
 
 describe('dateTimeFormat honors the resolved locale', () => {
@@ -74,7 +90,7 @@ describe('dateTimeFormat honors the resolved locale', () => {
       configurable: true,
     });
     window.localStorage.clear();
-    await i18n.changeLanguage('en');
+    await applyLocale('en');
   });
 
   it('renders pt-BR date order when the preference is set', () => {

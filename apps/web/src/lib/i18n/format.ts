@@ -5,10 +5,14 @@
 // `.toFixed()` / hardcoded '$' / bare number `toLocaleString()` display paths
 // onto these helpers.
 import { readLocalePreference } from '../appearance';
-import { i18n } from './index';
+import { getFallbackFormattingLocale, i18n } from './index';
 
 export function resolvedFormattingLocale(): string | undefined {
-  return readLocalePreference() ?? i18n.resolvedLanguage ?? i18n.language ?? undefined;
+  return getFallbackFormattingLocale()
+    ?? readLocalePreference()
+    ?? i18n.resolvedLanguage
+    ?? i18n.language
+    ?? undefined;
 }
 
 export function formatNumber(value: number, options: Intl.NumberFormatOptions = {}): string {

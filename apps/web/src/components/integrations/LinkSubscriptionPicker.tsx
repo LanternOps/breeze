@@ -14,8 +14,6 @@ import "@/lib/i18n";
 
 const NEW_LINE = "__new__";
 const MONEY_RE = /^\d+(\.\d{1,2})?$/;
-const MFA_HINT =
-  "This change requires MFA. Set up or verify MFA in your profile, then retry.";
 
 /** Pax8 link/create writes are MFA-gated server-side; a 403 "MFA required" should
  *  read as a setup hint, mirroring the sibling actions in Pax8Integration. */
@@ -163,7 +161,10 @@ export default function LinkSubscriptionPicker({
       // rather than the generic fallback (the 403 body is plain text, so runAction
       // can't recover it on its own).
       if (isMfaError(err)) {
-        showToast({ type: "error", message: MFA_HINT });
+        showToast({
+          type: "error",
+          message: t("linkSubscriptionPicker.mfaRequiredHint"),
+        });
         return;
       }
       handleActionError(

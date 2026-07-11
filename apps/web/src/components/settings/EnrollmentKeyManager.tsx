@@ -9,6 +9,7 @@ import { showToast } from '../shared/Toast';
 import { runAction, ActionError } from '../../lib/runAction';
 import { Trans, useTranslation } from 'react-i18next';
 import '@/lib/i18n';
+import { formatDate } from '@/lib/dateTimeFormat';
 
 interface EnrollmentKey {
   id: string;
@@ -462,11 +463,11 @@ export default function EnrollmentKeyManager() {
                       </td>
                       <td className="px-4 py-3 text-muted-foreground">
                         {key.expiresAt
-                          ? new Date(key.expiresAt).toLocaleDateString()
+                          ? formatDate(key.expiresAt)
                           : t('enrollmentKeys.never')}
                       </td>
                       <td className="px-4 py-3 text-muted-foreground">
-                        {new Date(key.createdAt).toLocaleDateString()}
+                        {formatDate(key.createdAt)}
                       </td>
                       <td className="px-4 py-3 text-right">
                         <div className="relative inline-flex items-center gap-1">

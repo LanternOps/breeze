@@ -82,6 +82,18 @@ const defaultLocaleRuntimeDependencies: LocaleRuntimeDependencies = {
 
 let latestLocaleRequest = 0;
 let localeChangeQueue: Promise<void> = Promise.resolve();
+// A failed lazy-locale request can leave the persisted preference pointing at
+// a locale whose resources are unavailable. In that case formatters must
+// follow the language actually rendered by i18next, not the stored preference.
+// This override is cleared synchronously when a new request begins so an
+// explicit preference still affects number/date formatting immediately while
+// its locale chunk is loading.
+let fallbackFormattingLocale: LocalePreference | undefined;
+
+/** @internal Formatting bridge for the lazy-locale fallback state. */
+export function getFallbackFormattingLocale(): LocalePreference | undefined {
+  return fallbackFormattingLocale;
+}
 
 async function changeLanguageIfLatest(
   requestId: number,
@@ -103,6 +115,7 @@ export async function applyLocale(
   dependencies: LocaleRuntimeDependencies = defaultLocaleRuntimeDependencies
 ): Promise<void> {
   const requestId = ++latestLocaleRequest;
+  fallbackFormattingLocale = undefined;
 
   try {
     await dependencies.loadLocale(locale);
@@ -115,6 +128,7 @@ export async function applyLocale(
     try {
       await dependencies.loadLocale('en');
       await changeLanguageIfLatest(requestId, 'en', dependencies);
+      if (requestId === latestLocaleRequest) fallbackFormattingLocale = 'en';
     } catch {
       // Locale changes are best-effort UI state and must not create an
       // unhandled rejection in appearance-store subscribers.

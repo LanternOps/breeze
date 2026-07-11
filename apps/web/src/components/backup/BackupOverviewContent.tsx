@@ -458,10 +458,10 @@ export default function BackupOverviewContent(props: BackupOverviewContentProps)
               {t('backupOverviewContent.noEligibleDevicesAreReadyForAManual')} </p>
             <div className="mt-3 space-y-1 text-sm text-muted-foreground">
               {runAllPreview.alreadyRunning > 0 && (
-                <p>{runAllPreview.alreadyRunning} {t('backupOverviewContent.device')}{runAllPreview.alreadyRunning !== 1 ? 's are' : ' is'} {t('backupOverviewContent.alreadyRunningABackup')}</p>
+                <p>{t('backupOverviewContent.alreadyRunningCount', { count: runAllPreview.alreadyRunning })}</p>
               )}
               {runAllPreview.offline > 0 && (
-                <p>{runAllPreview.offline} {t('backupOverviewContent.device')}{runAllPreview.offline !== 1 ? 's are' : ' is'} {t('backupOverviewContent.offline')}</p>
+                <p>{t('backupOverviewContent.offlineCount', { count: runAllPreview.offline })}</p>
               )}
             </div>
             <div className="mt-4 flex justify-end">
@@ -476,16 +476,17 @@ export default function BackupOverviewContent(props: BackupOverviewContentProps)
         ) : (
           <>
             <p className="mt-2 text-sm text-muted-foreground">
-              {t('backupOverviewContent.thisWillStartManualBackupJobsFor')}{' '}
-              <span className="font-medium text-foreground">{runAllPreview?.deviceCount ?? 0} {t('backupOverviewContent.device')}{(runAllPreview?.deviceCount ?? 0) !== 1 ? 's' : ''}</span>.
+              <span className="font-medium text-foreground">
+                {t('backupOverviewContent.runAllDescription', { count: runAllPreview?.deviceCount ?? 0 })}
+              </span>
             </p>
             {((runAllPreview?.alreadyRunning ?? 0) > 0 || (runAllPreview?.offline ?? 0) > 0) && (
               <div className="mt-3 space-y-1 text-sm text-muted-foreground">
                 {(runAllPreview?.alreadyRunning ?? 0) > 0 && (
-                  <p>{runAllPreview?.alreadyRunning} {t('backupOverviewContent.alreadyRunning')} {runAllPreview?.alreadyRunning === 1 ? 'device will' : 'devices will'} {t('backupOverviewContent.beSkipped')}</p>
+                  <p>{t('backupOverviewContent.alreadyRunningSkipped', { count: runAllPreview?.alreadyRunning ?? 0 })}</p>
                 )}
                 {(runAllPreview?.offline ?? 0) > 0 && (
-                  <p>{runAllPreview?.offline} {t('backupOverviewContent.offline2')} {runAllPreview?.offline === 1 ? 'device will' : 'devices will'} {t('backupOverviewContent.beSkipped')}</p>
+                  <p>{t('backupOverviewContent.offlineSkipped', { count: runAllPreview?.offline ?? 0 })}</p>
                 )}
               </div>
             )}

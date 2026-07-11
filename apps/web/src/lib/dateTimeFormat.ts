@@ -1,5 +1,5 @@
 import type { TimeFormat } from '@breeze/shared';
-import { normalizeTimeFormat, readLocalePreference, readTimeFormatPreference } from './appearance';
+import { normalizeTimeFormat, readTimeFormatPreference } from './appearance';
 import { resolvedFormattingLocale } from './i18n/format';
 
 type DateInput = string | number | Date | null | undefined;
@@ -67,7 +67,7 @@ export function withUserTimeFormatOptions(
 function splitFormatOptions({ fallback, locale, timeFormat, ...intlOptions }: UserDateTimeFormatOptions) {
   return {
     fallback,
-    locale: locale ?? readLocalePreference() ?? resolvedFormattingLocale(),
+    locale: locale ?? resolvedFormattingLocale(),
     timeFormat: getEffectiveTimeFormat(timeFormat),
     intlOptions,
   };

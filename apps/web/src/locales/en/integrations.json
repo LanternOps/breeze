@@ -265,6 +265,7 @@
     "couldNotLoadThisContractsLinesPickThe": "Could not load this contract’s lines. Pick the contract again to retry.",
     "couldNotCreateTheContractLine": "Could not create the contract line.",
     "couldNotLinkTheSubscription": "Could not link the subscription.",
+    "mfaRequiredHint": "This change requires MFA. Set up or verify MFA in your profile, then retry.",
     "subscriptionLinked": "Subscription linked",
     "contract": "Contract",
     "selectAContract": "Select a contract…",

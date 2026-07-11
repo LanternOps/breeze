@@ -222,6 +222,16 @@ describe('NetworkTopologyMap edit mode (#1728 phase 4)', () => {
         label: 'Patch Panel'
       });
     });
+
+    // The API value stays canonical, but the node dropped onto the current
+    // pt-BR canvas must use the localized default label immediately.
+    await waitFor(() => {
+      expect(cyInstance.add).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ id: 'n1', label: 'Painel de conexão' })
+        })
+      );
+    });
   });
 
   it('connectNodes posts a manual edge via runAction and adds it to the canvas', async () => {
@@ -507,6 +517,51 @@ describe('NetworkTopologyMap edit mode (#1728 phase 4)', () => {
     // connect/delete-able; the discovered node carries kind:'discovered'.
     expect(m1?.data.kind).toBe('manual');
     expect(a1?.data.kind).toBe('discovered');
+  });
+
+  it('localizes persisted default manual-node labels in pt-BR but preserves custom labels', async () => {
+    canMock.mockReturnValue(true);
+    await loadLocale('pt-BR');
+    await i18n.changeLanguage('pt-BR');
+    mockTopologyResponse({
+      subnets: [],
+      edges: [],
+      layout: [],
+      nodes: [
+        {
+          id: 'default-panel',
+          label: 'Patch Panel',
+          type: 'patch_panel',
+          status: 'online',
+          siteId: 'site-1',
+          kind: 'manual'
+        },
+        {
+          id: 'custom-switch',
+          label: 'Core SW',
+          type: 'switch',
+          status: 'online',
+          siteId: 'site-1',
+          kind: 'manual'
+        }
+      ]
+    });
+
+    render(<NetworkTopologyMap />);
+    await waitFor(() => expect(cytoscapeFactory).toHaveBeenCalled());
+
+    const cfg = cytoscapeFactory.mock.calls[cytoscapeFactory.mock.calls.length - 1][0] as {
+      elements: Array<{ data: Record<string, unknown> }>;
+    };
+    expect(cfg.elements.find((el) => el.data.id === 'default-panel')?.data.label).toBe(
+      'Painel de conexão'
+    );
+    expect(cfg.elements.find((el) => el.data.id === 'custom-switch')?.data.label).toBe('Core SW');
+
+    expect(await screen.findByTestId('topology-device-row-default-panel')).toHaveTextContent(
+      'Painel de conexão'
+    );
+    expect(screen.getByTestId('topology-device-row-custom-switch')).toHaveTextContent('Core SW');
   });
 
   it('persistDrag sends the dragged node ACTUAL nodeType (manual_node vs discovered_asset)', async () => {

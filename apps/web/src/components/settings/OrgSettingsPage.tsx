@@ -37,7 +37,7 @@ import { useOrgStore } from '../../stores/orgStore';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '@/lib/runAction';
-import { formatTime as formatUserTime } from '@/lib/dateTimeFormat';
+import { formatDate, formatTime as formatUserTime } from '@/lib/dateTimeFormat';
 
 type TabKey =
   | 'general' | 'branding' | 'portal' | 'notifications' | 'security'
@@ -605,7 +605,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
                   <dt className="text-xs uppercase text-muted-foreground">{t('common:labels.status')}</dt>
                   <dd className="mt-2 text-base font-semibold capitalize">{displayOrg.status}</dd>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    {t('orgSettingsPage.overview.created', { date: new Date(displayOrg.createdAt).toLocaleDateString() })}
+                    {t('orgSettingsPage.overview.created', { date: formatDate(displayOrg.createdAt) })}
                   </p>
                 </div>
                 <div className="rounded-md border bg-muted/40 p-4">
@@ -641,12 +641,12 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
                   <dt className="text-xs uppercase text-muted-foreground">{t('orgSettingsPage.overview.contract')}</dt>
                   <dd className="mt-2 text-base font-semibold">
                     {orgDetails?.contractEnd
-                      ? new Date(orgDetails.contractEnd).toLocaleDateString()
+                      ? formatDate(orgDetails.contractEnd)
                       : t('orgSettingsPage.overview.noEndDate')}
                   </dd>
                   <p className="mt-1 text-xs text-muted-foreground">
                     {orgDetails?.contractStart
-                      ? t('orgSettingsPage.overview.started', { date: new Date(orgDetails.contractStart).toLocaleDateString() })
+                      ? t('orgSettingsPage.overview.started', { date: formatDate(orgDetails.contractStart) })
                       : t('orgSettingsPage.overview.noContractDates')}
                   </p>
                 </div>
