@@ -834,3 +834,62 @@ describe('DevicesPage — show-decommissioned filter rewrite edge cases (#2251)'
     expect(list.getAttribute('data-include-decommissioned')).toBe('true');
   });
 });
+
+// -----------------------------------------------------------------------------
+// vm_host bulk link chain (#2308) — the 'link-vm-host' action string is the
+// contract between DeviceList's bulk menu and DevicesPage.handleBulkAction. If
+// either side drifts, the menu item goes silently dead: this drives the full
+// chain (action → REAL LinkVmHostModal → confirm → service call → refetch).
+// -----------------------------------------------------------------------------
+describe('DevicesPage — vm_host bulk link chain (#2308)', () => {
+  it("handles 'link-vm-host': opens the host picker, confirms, calls the service with host + ids, refetches", async () => {
+    const { linkDevicesVmHost } = await import('../../services/deviceActions');
+    vi.mocked(linkDevicesVmHost).mockResolvedValue({ id: 'grp-vm' } as never);
+
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+
+    fireEvent.click(screen.getByTestId('bulk-link-vm-host'));
+
+    // The real modal (not a stub) renders over the selection.
+    await screen.findByTestId('vm-host-modal');
+
+    // Confirm is disabled until a host is picked.
+    expect(screen.getByTestId('vm-host-confirm')).toBeDisabled();
+    fireEvent.click(screen.getByTestId(`vm-host-option-${DEV_1}`).querySelector('input')!);
+
+    const fetchCountBefore = vi.mocked(fetchAllDevices).mock.calls.length;
+    fireEvent.click(screen.getByTestId('vm-host-confirm'));
+
+    await waitFor(() => {
+      expect(linkDevicesVmHost).toHaveBeenCalledWith(DEV_1, [DEV_1, DEV_2, DEV_3]);
+    });
+    // Success closes the modal and refetches the fleet.
+    await waitFor(() => {
+      expect(screen.queryByTestId('vm-host-modal')).toBeNull();
+    });
+    expect(vi.mocked(fetchAllDevices).mock.calls.length).toBeGreaterThan(fetchCountBefore);
+  });
+
+  it('surfaces a service failure as an error toast and keeps the modal open for retry', async () => {
+    const { linkDevicesVmHost } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(linkDevicesVmHost).mockRejectedValue(new Error('All linked devices must belong to the same organization'));
+
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+
+    fireEvent.click(screen.getByTestId('bulk-link-vm-host'));
+    await screen.findByTestId('vm-host-modal');
+    fireEvent.click(screen.getByTestId(`vm-host-option-${DEV_2}`).querySelector('input')!);
+    fireEvent.click(screen.getByTestId('vm-host-confirm'));
+
+    await waitFor(() => {
+      expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error', message: expect.stringContaining('same organization') }),
+      );
+    });
+    // Modal stays open — the user can pick again or cancel.
+    expect(screen.getByTestId('vm-host-modal')).toBeInTheDocument();
+  });
+});

@@ -361,6 +361,15 @@ describe('vm_host link groups (#2308)', () => {
     // Roles surfaced on members so the UI can nest without a second fetch.
     expect(body.members.find((m) => m.deviceId === UUID_A)?.role).toBe('host');
     expect(body.members.find((m) => m.deviceId === UUID_B)?.role).toBe('guest');
+    // Audit trail records the kind and the host decision.
+    const { writeRouteAudit } = await import('../../services/auditEvents');
+    expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'device_link_group.create',
+        details: expect.objectContaining({ kind: 'vm_host', hostDeviceId: UUID_A }),
+      }),
+    );
   });
 
   it('creates a multiboot group with a single peer claim (role NULL)', async () => {
