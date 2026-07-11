@@ -268,7 +268,7 @@ export default function DeviceWarrantyCard({
             {t('deviceWarrantyCard.compactTitle')}
           </div>
           <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${cfg.color}`}>
-            {t(`deviceWarrantyCard.status.${cfg.label}`)}
+            {t(/* i18n-dynamic */ `deviceWarrantyCard.status.${cfg.label}`)}
           </span>
         </div>
         <p className="mt-2 text-sm font-medium">
@@ -293,7 +293,7 @@ export default function DeviceWarrantyCard({
           <ShieldCheck className="h-5 w-5 text-muted-foreground" />
           <h3 className="text-lg font-semibold">{t('deviceWarrantyCard.title')}</h3>
           <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${cfg.color}`}>
-            {t(`deviceWarrantyCard.status.${cfg.label}`)}
+            {t(/* i18n-dynamic */ `deviceWarrantyCard.status.${cfg.label}`)}
           </span>
         </div>
         <button

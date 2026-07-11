@@ -262,7 +262,7 @@ export default function NotificationChannelList({
                           </span>
                         )}
                       </div>
-                      <p className="text-xs text-muted-foreground">{t(`notificationChannelList.channelType.${channel.type}`)}</p>
+                      <p className="text-xs text-muted-foreground">{t(/* i18n-dynamic */ `notificationChannelList.channelType.${channel.type}`)}</p>
                     </div>
                   </div>
                   <span

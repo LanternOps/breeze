@@ -22,7 +22,7 @@ const defaults: EventLogSettings = {
   collectionIntervalMinutes: 5,
   rateLimitPerHour: 12000,
 };
-const allCategories = [
+const createAllCategories = () => [
   {
     value: "security",
     label: i18n.t(
@@ -48,7 +48,7 @@ const allCategories = [
     ),
   },
 ];
-const levelOptions = [
+const createLevelOptions = () => [
   {
     value: "info",
     label: i18n.t(
@@ -82,6 +82,8 @@ export default function EventLogTab({
   parentLink,
 }: FeatureTabProps) {
   useTranslation("policies");
+  const allCategories = createAllCategories();
+  const levelOptions = createLevelOptions();
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const isInherited = !!parentLink && !existingLink;
   const effectiveLink = existingLink ?? parentLink;

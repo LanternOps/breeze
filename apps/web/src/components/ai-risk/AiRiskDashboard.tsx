@@ -190,7 +190,7 @@ export default function AiRiskDashboard() {
                       : "text-muted-foreground hover:text-foreground"
                   } ${r.value === "24h" ? "rounded-l-lg" : ""} ${r.value === "30d" ? "rounded-r-lg" : ""}`}
                 >
-                  {t(r.labelKey)}
+                  {t(/* i18n-dynamic */ r.labelKey)}
                 </button>
               ))}
             </div>
@@ -240,7 +240,7 @@ export default function AiRiskDashboard() {
                 }`}
               >
                 <Icon className="h-4 w-4" />
-                {t(tab.labelKey)}
+                {t(/* i18n-dynamic */ tab.labelKey)}
               </button>
             );
           })}

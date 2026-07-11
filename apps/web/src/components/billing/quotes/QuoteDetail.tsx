@@ -147,7 +147,7 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
             <div className="mb-3 flex items-center justify-between">
               <StatusPill
                 role={STATUS_ROLES[quote.status].role}
-              label={t(`quotes.status.${quote.status}`)}
+              label={t(/* i18n-dynamic */ `quotes.status.${quote.status}`)}
                 className={STATUS_ROLES[quote.status].className}
                 testId="quote-detail-status"
               />
@@ -363,7 +363,7 @@ function LineTable({ lines, currency, label, testId, taxRate, showTax }: { lines
                   <td className="px-3 py-2 text-right tabular-nums">{formatMoney(l.unitPrice, currency)}</td>
                   <td className="px-3 py-2">
                     <span className="inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[hsl(220_12%_40%)] dark:text-muted-foreground">
-                      {t(`quotes.recurrence.${l.recurrence}`)}
+                      {t(/* i18n-dynamic */ `quotes.recurrence.${l.recurrence}`)}
                     </span>
                   </td>
                   {showTax && (

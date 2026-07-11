@@ -115,7 +115,7 @@ export default function UserList({ users, currentUserId, onInvite, onEdit, onRem
                       statusStyles[user.status] ?? 'bg-muted text-muted-foreground'
                     )}
                   >
-                    {statusLabelKeys[user.status as UserStatus] ? t(statusLabelKeys[user.status as UserStatus]) : user.status}
+                    {statusLabelKeys[user.status as UserStatus] ? t(/* i18n-dynamic */ statusLabelKeys[user.status as UserStatus]) : user.status}
                   </span>
                 </td>
                 <td className="px-4 py-3 text-muted-foreground">{user.lastLogin}</td>

@@ -220,7 +220,7 @@ export function DeviceTargetSelector({
               }`}
             >
               <Icon className="h-4 w-4" />
-              {t(`filters.targets.modes.${mode}`, { defaultValue: MODE_LABELS[mode] })}
+              {t(/* i18n-dynamic */ `filters.targets.modes.${mode}`, { defaultValue: MODE_LABELS[mode] })}
             </button>
           );
         })}

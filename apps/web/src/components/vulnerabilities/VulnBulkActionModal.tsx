@@ -84,12 +84,12 @@ export function VulnBulkActionModal({
   // hides findings until the expiry date but NOTHING auto-reopens them (they
   // surface via the "Accepted, expiring soon" card); mitigate only records the
   // note as a compensating control.
-  const consequence = t(`vulnBulkActionModal.consequence.${ACTION_KEYS[kind]}`, { // i18n-dynamic
+  const consequence = t(/* i18n-dynamic */ `vulnBulkActionModal.consequence.${ACTION_KEYS[kind]}`, {
     count,
     deviceText: t('vulnBulkActionModal.counts.devices', { count: deviceCount }),
     findingText: t('vulnBulkActionModal.counts.findings', { count }),
   });
-  const heading = t(`vulnBulkActionModal.headings.${ACTION_KEYS[kind]}`); // i18n-dynamic
+  const heading = t(/* i18n-dynamic */ `vulnBulkActionModal.headings.${ACTION_KEYS[kind]}`);
 
   return (
     <Dialog
@@ -174,7 +174,7 @@ export function VulnBulkActionModal({
               )
             }
           >
-            {busy ? t('vulnBulkActionModal.actions.working') : t(`vulnBulkActionModal.actions.${ACTION_KEYS[kind]}`)/* i18n-dynamic */}
+            {busy ? t('vulnBulkActionModal.actions.working') : t(/* i18n-dynamic */ `vulnBulkActionModal.actions.${ACTION_KEYS[kind]}`)/* i18n-dynamic */}
           </button>
         </div>
       </div>

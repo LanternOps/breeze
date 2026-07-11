@@ -295,7 +295,7 @@ export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: 
               )}
             />
             <span className={statusConfig[status].color}>
-              {t(statusConfig[status].labelKey)}
+              {t(/* i18n-dynamic */ statusConfig[status].labelKey)}
             </span>
           </div>
           {status === 'connected' && (

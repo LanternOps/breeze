@@ -1157,7 +1157,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
         <div className="rounded-lg border bg-card p-6 shadow-xs">
           <div className="flex items-center gap-2">
             <NativeIcon className="h-4 w-4 text-gray-600" />
-            <h3 className="text-sm font-semibold">{t(`devicePatchStatusTab.${displayCopy.pendingNativeTitle}`)}</h3>
+            <h3 className="text-sm font-semibold">{t(/* i18n-dynamic */ `devicePatchStatusTab.${displayCopy.pendingNativeTitle}`)}</h3>
             {pendingNative.length > 0 && (
               <span className="inline-flex items-center rounded-full bg-yellow-100 px-2 py-0.5 text-xs font-medium text-yellow-700">
                 {pendingNative.length}
@@ -1169,7 +1169,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
               <table className="min-w-full divide-y">
                 <thead className="bg-muted/40 sticky top-0">
                   <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    <th className="px-4 py-3">{t(`devicePatchStatusTab.${displayCopy.pendingNativePrimaryColumn}`)}</th>
+                    <th className="px-4 py-3">{t(/* i18n-dynamic */ `devicePatchStatusTab.${displayCopy.pendingNativePrimaryColumn}`)}</th>
                     {normalizedOsType === 'windows' && <th className="px-4 py-3">{t('devicePatchStatusTab.table.kb')}</th>}
                     <th className="px-4 py-3">{t('devicePatchStatusTab.table.source')}</th>
                     <th className="px-4 py-3">{t('devicePatchStatusTab.table.category')}</th>
@@ -1181,7 +1181,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                   {pendingNative.length === 0 ? (
                     <tr>
                       <td colSpan={normalizedOsType === 'windows' ? 6 : 5} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                        {t(`devicePatchStatusTab.${displayCopy.pendingNativeEmpty}`)}
+                        {t(/* i18n-dynamic */ `devicePatchStatusTab.${displayCopy.pendingNativeEmpty}`)}
                       </td>
                     </tr>
                   ) : (
@@ -1307,7 +1307,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
         <div className="rounded-lg border bg-card p-6 shadow-xs">
           <div className="flex items-center gap-2">
             <AlertTriangle className="h-4 w-4 text-yellow-500" />
-            <h3 className="text-sm font-semibold">{t(`devicePatchStatusTab.${displayCopy.pendingThirdPartyTitle}`)}</h3>
+            <h3 className="text-sm font-semibold">{t(/* i18n-dynamic */ `devicePatchStatusTab.${displayCopy.pendingThirdPartyTitle}`)}</h3>
             {pendingOther.length > 0 && (
               <span className="inline-flex items-center rounded-full bg-yellow-100 px-2 py-0.5 text-xs font-medium text-yellow-700">
                 {pendingOther.length}
@@ -1319,9 +1319,9 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
               <table className="min-w-full divide-y">
                 <thead className="bg-muted/40 sticky top-0">
                   <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    <th className="px-4 py-3">{t(`devicePatchStatusTab.${displayCopy.pendingThirdPartyPrimaryColumn}`)}</th>
+                    <th className="px-4 py-3">{t(/* i18n-dynamic */ `devicePatchStatusTab.${displayCopy.pendingThirdPartyPrimaryColumn}`)}</th>
                     <th className="px-4 py-3">{t('devicePatchStatusTab.table.source')}</th>
-                    <th className="px-4 py-3">{t(`devicePatchStatusTab.${displayCopy.pendingThirdPartySecondaryColumn}`)}</th>
+                    <th className="px-4 py-3">{t(/* i18n-dynamic */ `devicePatchStatusTab.${displayCopy.pendingThirdPartySecondaryColumn}`)}</th>
                     <th className="px-4 py-3">{t('devicePatchStatusTab.table.approval')}</th>
                     <th className="w-16 px-2 py-3" />
                   </tr>
@@ -1330,7 +1330,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                   {pendingOther.length === 0 ? (
                     <tr>
                       <td colSpan={5} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                        {t(`devicePatchStatusTab.${displayCopy.pendingThirdPartyEmpty}`)}
+                        {t(/* i18n-dynamic */ `devicePatchStatusTab.${displayCopy.pendingThirdPartyEmpty}`)}
                       </td>
                     </tr>
                   ) : (
@@ -1470,7 +1470,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
           <div className="flex items-center gap-2">
             <CheckCircle className="h-4 w-4 text-green-500" />
             <NativeIcon className="h-4 w-4 text-gray-600" />
-            <h3 className="text-sm font-semibold">{t(`devicePatchStatusTab.${displayCopy.installedNativeTitle}`)}</h3>
+            <h3 className="text-sm font-semibold">{t(/* i18n-dynamic */ `devicePatchStatusTab.${displayCopy.installedNativeTitle}`)}</h3>
             <span className="text-xs text-muted-foreground">({displayedInstalledNative.length})</span>
           </div>
           <div className="mt-4 overflow-hidden rounded-md border">
@@ -1478,7 +1478,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
               <table className="min-w-full divide-y">
                 <thead className="bg-muted/40 sticky top-0">
                   <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    <th className="px-4 py-3">{t(`devicePatchStatusTab.${displayCopy.installedNativePrimaryColumn}`)}</th>
+                    <th className="px-4 py-3">{t(/* i18n-dynamic */ `devicePatchStatusTab.${displayCopy.installedNativePrimaryColumn}`)}</th>
                     {normalizedOsType === 'windows' && <th className="px-4 py-3">{t('devicePatchStatusTab.table.kb')}</th>}
                     <th className="px-4 py-3">{t('devicePatchStatusTab.table.category')}</th>
                     <th className="px-4 py-3">{t('devicePatchStatusTab.table.installed')}</th>
@@ -1488,7 +1488,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                   {displayedInstalledNative.length === 0 ? (
                     <tr>
                       <td colSpan={normalizedOsType === 'windows' ? 4 : 3} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                        {t(`devicePatchStatusTab.${displayCopy.installedNativeEmpty}`)}
+                        {t(/* i18n-dynamic */ `devicePatchStatusTab.${displayCopy.installedNativeEmpty}`)}
                       </td>
                     </tr>
                   ) : (
@@ -1540,7 +1540,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
           <div className="flex items-center gap-2">
             <CheckCircle className="h-4 w-4 text-green-500" />
             <Package className="h-4 w-4 text-blue-500" />
-            <h3 className="text-sm font-semibold">{t(`devicePatchStatusTab.${displayCopy.installedThirdPartyTitle}`)}</h3>
+            <h3 className="text-sm font-semibold">{t(/* i18n-dynamic */ `devicePatchStatusTab.${displayCopy.installedThirdPartyTitle}`)}</h3>
             <span className="text-xs text-muted-foreground">({installedThirdParty.length})</span>
           </div>
           <div className="mt-4 overflow-hidden rounded-md border">

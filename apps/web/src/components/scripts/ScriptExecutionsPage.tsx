@@ -214,7 +214,7 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
           <div className="grid gap-4 sm:grid-cols-4">
             <div>
               <p className="text-xs font-medium text-muted-foreground">{t('scriptExecutionsPage.fields.language')}</p>
-              <p className="text-sm font-medium capitalize">{t(`scriptExecutionsPage.languages.${script.language}`)}</p>
+              <p className="text-sm font-medium capitalize">{t(/* i18n-dynamic */ `scriptExecutionsPage.languages.${script.language}`)}</p>
             </div>
             <div>
               <p className="text-xs font-medium text-muted-foreground">{t('scriptExecutionsPage.fields.category')}</p>
@@ -222,11 +222,11 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
             </div>
             <div>
               <p className="text-xs font-medium text-muted-foreground">{t('scriptExecutionsPage.fields.targetOs')}</p>
-              <p className="text-sm font-medium">{script.osTypes.map(os => t(`scriptExecutionsPage.os.${os}`)).join(', ')}</p>
+              <p className="text-sm font-medium">{script.osTypes.map(os => t(/* i18n-dynamic */ `scriptExecutionsPage.os.${os}`)).join(', ')}</p>
             </div>
             <div>
               <p className="text-xs font-medium text-muted-foreground">{t('common:labels.status')}</p>
-              <p className="text-sm font-medium capitalize">{script.status ? t(`scriptExecutionsPage.status.${script.status}`) : t('common:states.unknown')}</p>
+              <p className="text-sm font-medium capitalize">{script.status ? t(/* i18n-dynamic */ `scriptExecutionsPage.status.${script.status}`) : t('common:states.unknown')}</p>
             </div>
           </div>
           {script.description && (

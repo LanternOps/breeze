@@ -4,6 +4,7 @@ import '@/lib/i18n';
 import { ShieldAlert, ShieldCheck, Activity, AlertTriangle } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import { formatNumber } from '@/lib/i18n/format';
 
 interface DnsStats {
   total: number;
@@ -177,7 +178,7 @@ function StatCard({
         {label}
       </div>
       <div className={`mt-1 text-2xl font-semibold tabular-nums ${toneClass}`}>
-        {loading ? <span className="text-muted-foreground">—</span> : value.toLocaleString()}
+        {loading ? <span className="text-muted-foreground">—</span> : formatNumber(value)}
       </div>
     </div>
   );

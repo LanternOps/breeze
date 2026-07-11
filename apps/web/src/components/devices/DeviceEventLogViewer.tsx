@@ -23,6 +23,7 @@ import {
   Bot,
 } from "lucide-react";
 import { formatDateTime as formatUserDateTime } from "@/lib/dateTimeFormat";
+import { formatNumber } from "@/lib/i18n/format";
 import { fetchWithAuth } from "../../stores/auth";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
@@ -362,7 +363,7 @@ export default function DeviceEventLogViewer({
             </h3>
             {!loading && (
               <span className="ml-1 text-sm text-muted-foreground">
-                ({pagination.total.toLocaleString()}{" "}
+                ({formatNumber(pagination.total)}{" "}
                 {t("deviceEventLogViewer.total")}{" "}
               </span>
             )}
@@ -697,7 +698,7 @@ export default function DeviceEventLogViewer({
               {(page - 1) * pagination.limit + 1}
               {t("deviceEventLogViewer.text")}
               {Math.min(page * pagination.limit, pagination.total)}{" "}
-              {t("deviceEventLogViewer.of")} {pagination.total.toLocaleString()}
+              {t("deviceEventLogViewer.of")} {formatNumber(pagination.total)}
             </p>
             <div className="flex items-center gap-1">
               <button

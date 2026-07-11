@@ -134,7 +134,7 @@ export default function BaselineDetailPage({ baselineId }: Props) {
               )}
             >
               <Icon className="h-4 w-4" />
-              {t(`auditBaselinesBaselineDetailPage.tabs.${tab.labelKey}`)}
+              {t(/* i18n-dynamic */ `auditBaselinesBaselineDetailPage.tabs.${tab.labelKey}`)}
             </button>
           );
         })}

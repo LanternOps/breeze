@@ -36,10 +36,10 @@ const statusStyles: Record<ApiKeyStatus, string> = {
   expired: 'bg-amber-500/10 text-amber-700'
 };
 
-const statusLabels: Record<ApiKeyStatus, string> = {
-  active: i18n.t('settings:apiKeyList.active'),
-  revoked: i18n.t('settings:apiKeyList.revoked'),
-  expired: i18n.t('settings:apiKeyList.expired')
+const statusLabelKeys: Record<ApiKeyStatus, string> = {
+  active: 'apiKeyList.active',
+  revoked: 'apiKeyList.revoked',
+  expired: 'apiKeyList.expired'
 };
 
 export default function ApiKeyList({
@@ -117,7 +117,7 @@ export default function ApiKeyList({
           >
             {statusOptions.map(status => (
               <option key={status} value={status}>
-                {status === 'all' ? t('apiKeyList.allStatuses') : statusLabels[status as ApiKeyStatus]}
+                {status === 'all' ? t('apiKeyList.allStatuses') : t(/* i18n-dynamic */ statusLabelKeys[status as ApiKeyStatus])}
               </option>
             ))}
           </select>
@@ -194,7 +194,7 @@ export default function ApiKeyList({
                         statusStyles[apiKey.status]
                       )}
                     >
-                      {statusLabels[apiKey.status]}
+                      {t(/* i18n-dynamic */ statusLabelKeys[apiKey.status])}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-right">

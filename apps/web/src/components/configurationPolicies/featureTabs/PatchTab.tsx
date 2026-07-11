@@ -61,10 +61,10 @@ function normalizeSources(raw: unknown): PatchSourceOption[] {
     result.push("third_party");
   return result.length > 0 ? result : ["os"];
 }
-const scheduleOptions: {
+const createScheduleOptions = (): {
   value: ScheduleFrequency;
   label: string;
-}[] = [
+}[] => [
   {
     value: "daily",
     label: i18n.t("policies:configurationPolicies.featureTabs.patchTab.daily"),
@@ -80,11 +80,11 @@ const scheduleOptions: {
     ),
   },
 ];
-const rebootOptions: {
+const createRebootOptions = (): {
   value: RebootPolicy;
   label: string;
   description: string;
-}[] = [
+}[] => [
   {
     value: "never",
     label: i18n.t(
@@ -122,7 +122,7 @@ const rebootOptions: {
     ),
   },
 ];
-const dayOfWeekOptions = [
+const createDayOfWeekOptions = () => [
   {
     value: "mon",
     label: i18n.t("policies:configurationPolicies.featureTabs.patchTab.monday"),
@@ -168,6 +168,9 @@ export default function PatchTab({
   parentLink,
 }: FeatureTabProps) {
   useTranslation("policies");
+  const scheduleOptions = createScheduleOptions();
+  const rebootOptions = createRebootOptions();
+  const dayOfWeekOptions = createDayOfWeekOptions();
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const isInherited = !!parentLink && !existingLink;
   const effectiveLink = existingLink ?? parentLink;

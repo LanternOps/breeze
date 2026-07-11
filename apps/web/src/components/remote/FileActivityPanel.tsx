@@ -151,7 +151,7 @@ export default function FileActivityPanel({
                     <div className="flex items-center gap-2">
                       <ActionIcon className={cn('h-3.5 w-3.5 shrink-0', config.color)} />
                       <span className="text-xs font-medium text-gray-200">
-                        {t(config.labelKey)}
+                        {t(/* i18n-dynamic */ config.labelKey)}
                       </span>
                     </div>
                     <div className="flex items-center gap-2">

@@ -319,7 +319,7 @@ export function Chip({ condition, onChange, onRemove, orgs, sites, softwareOptio
 
       {open && (
         <div className="absolute left-0 top-7 z-30 w-72 rounded-md border bg-popover p-3 shadow-lg" role="dialog">
-          <div className="mb-2 text-sm font-semibold">{t(`filterChipBar.fields.${field.key}`, { defaultValue: field.label })}</div>
+          <div className="mb-2 text-sm font-semibold">{t(/* i18n-dynamic */ `filterChipBar.fields.${field.key}`, { defaultValue: field.label })}</div>
           <FilterValueEditor
             field={field}
             condition={condition}

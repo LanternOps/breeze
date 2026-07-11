@@ -59,7 +59,7 @@ export default function OrganizationList({
 
   const renderStatusBadge = (org: Organization) => (
     <span className="inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium">
-      {t(STATUS_LABEL_KEYS[org.status])}
+      {t(/* i18n-dynamic */ STATUS_LABEL_KEYS[org.status])}
     </span>
   );
 
@@ -112,7 +112,7 @@ export default function OrganizationList({
           >
             {statusOptions.map(status => (
               <option key={status} value={status}>
-                {status === 'all' ? t('organizationList.allStatuses') : t(STATUS_LABEL_KEYS[status as Organization['status']])}
+                {status === 'all' ? t('organizationList.allStatuses') : t(/* i18n-dynamic */ STATUS_LABEL_KEYS[status as Organization['status']])}
               </option>
             ))}
           </select>

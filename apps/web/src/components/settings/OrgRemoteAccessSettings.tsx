@@ -306,7 +306,7 @@ export default function OrgRemoteAccessSettings({ orgId, sites: propSites, onDir
                                     </td>
                                     <td className="py-2 pr-3">
                                       <span className={`inline-block rounded px-1.5 py-0.5 text-xs font-medium ${BADGE[rule.source] ?? ''}`}>
-                                        {t(SOURCE_LABEL_KEYS[rule.source])}
+                                        {t(/* i18n-dynamic */ SOURCE_LABEL_KEYS[rule.source])}
                                       </span>
                                     </td>
                                     <td className="py-2 pr-3 text-xs text-muted-foreground">
@@ -386,7 +386,7 @@ export default function OrgRemoteAccessSettings({ orgId, sites: propSites, onDir
                                       <span className="inline-flex items-center gap-1 text-xs">
                                         {tunnel.type === 'vnc' ? <Monitor className="h-3.5 w-3.5 text-muted-foreground" />
                                           : <Network className="h-3.5 w-3.5 text-muted-foreground" />}
-                                        {t(`orgRemoteAccessSettings.tunnels.types.${tunnel.type}`)}
+                                        {t(/* i18n-dynamic */ `orgRemoteAccessSettings.tunnels.types.${tunnel.type}`)}
                                       </span>
                                     </td>
                                     <td className="py-2 pr-3"><code className="font-mono text-xs">{tunnel.target}</code></td>

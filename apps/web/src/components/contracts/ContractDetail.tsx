@@ -81,13 +81,13 @@ export default function ContractDetail({ detail, onChanged }: Props) {
     try {
       await runAction({
         request: () => contractTransition(contract.id, verb),
-        errorFallback: t(`contracts.contractDetail.errors.transition.${verb}`),
-        successMessage: t(`contracts.contractDetail.toast.transition.${verb}`),
+        errorFallback: t(/* i18n-dynamic */ `contracts.contractDetail.errors.transition.${verb}`),
+        successMessage: t(/* i18n-dynamic */ `contracts.contractDetail.toast.transition.${verb}`),
         onUnauthorized: UNAUTHORIZED,
       });
       refresh();
     } catch (err) {
-      handleActionError(err, t(`contracts.contractDetail.errors.transition.${verb}`));
+      handleActionError(err, t(/* i18n-dynamic */ `contracts.contractDetail.errors.transition.${verb}`));
     } finally {
       setBusy(false);
     }
@@ -147,7 +147,7 @@ export default function ContractDetail({ detail, onChanged }: Props) {
             <dl className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
               <div>
                 <dt className="text-xs uppercase text-muted-foreground">{t('contracts.contractDetail.fields.billingTiming')}</dt>
-                <dd className="mt-1 font-medium capitalize">{t(`contracts.shared.billingTiming.${contract.billingTiming}`)}</dd>
+                <dd className="mt-1 font-medium capitalize">{t(/* i18n-dynamic */ `contracts.shared.billingTiming.${contract.billingTiming}`)}</dd>
               </div>
               <div>
                 <dt className="text-xs uppercase text-muted-foreground">{t('contracts.contractDetail.fields.cadence')}</dt>
@@ -230,7 +230,7 @@ export default function ContractDetail({ detail, onChanged }: Props) {
                 ) : (
                   lines.map((l) => (
                     <tr key={l.id} className="border-t" data-testid={`contract-detail-line-${l.id}`}>
-                      <td className="px-3 py-2">{t(LINE_TYPE_LABELS[l.lineType])}</td>
+                      <td className="px-3 py-2">{t(/* i18n-dynamic */ LINE_TYPE_LABELS[l.lineType])}</td>
                       <td className="px-3 py-2">{l.description}</td>
                       <td className="px-3 py-2 text-right">{formatMoney(l.unitPrice, currency)}</td>
                       <td className="px-3 py-2 text-right">
@@ -301,7 +301,7 @@ export default function ContractDetail({ detail, onChanged }: Props) {
               visible badge moved to the header. */}
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="contract-detail-summary">
             <span className="sr-only" data-testid="contract-detail-status">
-              {t(`contracts.shared.status.${contract.status}`)}
+              {t(/* i18n-dynamic */ `contracts.shared.status.${contract.status}`)}
             </span>
             <p className="text-sm text-muted-foreground">
               {canGenerate
@@ -330,7 +330,7 @@ export default function ContractDetail({ detail, onChanged }: Props) {
                           : 'border hover:bg-muted'
                     }`}
                   >
-                    {t(TRANSITION_LABELS[verb])}
+                    {t(/* i18n-dynamic */ TRANSITION_LABELS[verb])}
                   </button>
                 );
               })}

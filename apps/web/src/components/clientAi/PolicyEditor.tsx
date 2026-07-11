@@ -639,7 +639,7 @@ export default function PolicyEditor({
           {DLP_BUILTINS.map((b) => (
             <label key={b.key} className="block text-sm">
               <span className="text-muted-foreground">
-                {t(`policyEditor.builtins.${b.key}`)}
+                {t(/* i18n-dynamic */ `policyEditor.builtins.${b.key}`)}
               </span>{" "}
               {/* i18n-dynamic */}
               <select
@@ -655,7 +655,7 @@ export default function PolicyEditor({
               >
                 {DLP_ACTIONS.map((a) => (
                   <option key={a.value} value={a.value}>
-                    {t(`policyEditor.actions.${a.value}`)} {/* i18n-dynamic */}
+                    {t(/* i18n-dynamic */ `policyEditor.actions.${a.value}`)} {/* i18n-dynamic */}
                   </option>
                 ))}
               </select>
@@ -733,7 +733,7 @@ export default function PolicyEditor({
                     >
                       {DLP_ACTIONS.filter((a) => a.value !== "off").map((a) => (
                         <option key={a.value} value={a.value}>
-                          {t(`policyEditor.actions.${a.value}`)}{" "}
+                          {t(/* i18n-dynamic */ `policyEditor.actions.${a.value}`)}{" "}
                           {/* i18n-dynamic */}
                         </option>
                       ))}

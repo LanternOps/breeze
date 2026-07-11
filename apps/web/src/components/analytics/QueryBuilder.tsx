@@ -182,7 +182,7 @@ export default function QueryBuilder({ value, onChange, onQueryResult, deviceIds
           >
             {metricTypeOptions.map(option => (
               <option key={option.value} value={option.value}>
-                {t(option.labelKey)}
+                {t(/* i18n-dynamic */ option.labelKey)}
               </option>
             ))}
           </select>
@@ -196,7 +196,7 @@ export default function QueryBuilder({ value, onChange, onQueryResult, deviceIds
           >
             {metricOptions.map(option => (
               <option key={option.value} value={option.value}>
-                {t(option.labelKey)}
+                {t(/* i18n-dynamic */ option.labelKey)}
               </option>
             ))}
           </select>
@@ -210,7 +210,7 @@ export default function QueryBuilder({ value, onChange, onQueryResult, deviceIds
           >
             {aggregationOptions.map(option => (
               <option key={option.value} value={option.value}>
-                {t(option.labelKey)}
+                {t(/* i18n-dynamic */ option.labelKey)}
               </option>
             ))}
           </select>
@@ -224,7 +224,7 @@ export default function QueryBuilder({ value, onChange, onQueryResult, deviceIds
           >
             {timeRangeOptions.map(option => (
               <option key={option.value} value={option.value}>
-                {t(option.labelKey)}
+                {t(/* i18n-dynamic */ option.labelKey)}
               </option>
             ))}
           </select>

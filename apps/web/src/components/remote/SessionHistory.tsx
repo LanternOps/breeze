@@ -466,7 +466,7 @@ export default function SessionHistory({
                         sessionTypeConfig[session.type].color
                       )}>
                         <TypeIcon className="h-3 w-3" />
-                        {t(sessionTypeConfig[session.type].labelKey)}
+                        {t(/* i18n-dynamic */ sessionTypeConfig[session.type].labelKey)}
                       </div>
                     </td>
                     <td className="px-4 py-3">
@@ -482,7 +482,7 @@ export default function SessionHistory({
                       </div>
                     </td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">
-                      {formatDateTime(session.startedAt || session.createdAt, (key, options) => t(key, options))}
+                      {formatDateTime(session.startedAt || session.createdAt, (key, options) => t(/* i18n-dynamic */ key, options))}
                     </td>
                     <td className="px-4 py-3 text-sm">
                       {formatDuration(session.durationSeconds)}
@@ -495,7 +495,7 @@ export default function SessionHistory({
                         'inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium',
                         sessionStatusConfig[session.status].color
                       )}>
-                        {t(sessionStatusConfig[session.status].labelKey)}
+                        {t(/* i18n-dynamic */ sessionStatusConfig[session.status].labelKey)}
                       </span>
                     </td>
                     <td className="px-4 py-3">

@@ -30,38 +30,38 @@ type DeploymentRecord = {
 const statusConfig: Record<
   DeploymentStatus,
   {
-    label: string;
+    labelKey: string;
     color: string;
     icon: typeof PlayCircle;
   }
 > = {
   pending: {
-    label: i18n.t("common:states.pending"),
+    labelKey: "common:states.pending",
     color: "bg-yellow-500/20 text-yellow-700 border-yellow-500/40",
     icon: PlayCircle,
   },
   running: {
-    label: i18n.t("policies:software.deploymentList.running"),
+    labelKey: "policies:software.deploymentList.running",
     color: "bg-blue-500/20 text-blue-700 border-blue-500/40",
     icon: PlayCircle,
   },
   completed: {
-    label: i18n.t("policies:software.deploymentList.completed"),
+    labelKey: "policies:software.deploymentList.completed",
     color: "bg-emerald-500/20 text-emerald-700 border-emerald-500/40",
     icon: CheckCircle,
   },
   failed: {
-    label: i18n.t("policies:software.deploymentList.failed"),
+    labelKey: "policies:software.deploymentList.failed",
     color: "bg-red-500/20 text-red-700 border-red-500/40",
     icon: AlertTriangle,
   },
   paused: {
-    label: i18n.t("policies:software.deploymentList.paused"),
+    labelKey: "policies:software.deploymentList.paused",
     color: "bg-gray-500/20 text-gray-700 border-gray-500/40",
     icon: PauseCircle,
   },
   canceled: {
-    label: i18n.t("policies:software.deploymentList.canceled"),
+    labelKey: "policies:software.deploymentList.canceled",
     color: "bg-slate-500/20 text-slate-700 border-slate-500/40",
     icon: XCircle,
   },
@@ -127,7 +127,7 @@ interface DeploymentListProps {
   timezone?: string;
 }
 export default function DeploymentList({ timezone }: DeploymentListProps) {
-  useTranslation("policies");
+  const { t } = useTranslation(["policies", "common"]);
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [typeFilter, setTypeFilter] = useState<string>("all");
   const [dateFrom, setDateFrom] = useState("");
@@ -316,7 +316,7 @@ export default function DeploymentList({ timezone }: DeploymentListProps) {
                           )}
                         >
                           <StatusIcon className="h-3.5 w-3.5" />
-                          {status.label}
+                          {t(/* i18n-dynamic */ status.labelKey)}
                         </span>
                       </td>
                       <td className="px-4 py-3">

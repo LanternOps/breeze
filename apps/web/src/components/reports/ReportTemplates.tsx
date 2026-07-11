@@ -450,13 +450,13 @@ export default function ReportTemplates() {
     void navigateTo('/reports');
   }, []);
 
-  const getReportTypeLabel = (type: string) => t(`reports.reportTemplates.reportTypes.${type}`); // i18n-dynamic
-  const getScheduleLabel = (schedule: ReportSchedule) => t(`reports.reportTemplates.schedules.${schedule}`); // i18n-dynamic
-  const getFormatLabel = (format: ReportFormat) => t(`reports.reportTemplates.formats.${format}`); // i18n-dynamic
+  const getReportTypeLabel = (type: string) => t(/* i18n-dynamic */ `reports.reportTemplates.reportTypes.${type}`);
+  const getScheduleLabel = (schedule: ReportSchedule) => t(/* i18n-dynamic */ `reports.reportTemplates.schedules.${schedule}`);
+  const getFormatLabel = (format: ReportFormat) => t(/* i18n-dynamic */ `reports.reportTemplates.formats.${format}`);
   const getTemplateDisplayName = (template: ReportTemplate) =>
-    t(`reports.reportTemplates.templates.${template.id}.name`, { defaultValue: template.name }); // i18n-dynamic
+    t(/* i18n-dynamic */ `reports.reportTemplates.templates.${template.id}.name`, { defaultValue: template.name });
   const getTemplateDescription = (template: ReportTemplate) =>
-    t(`reports.reportTemplates.templates.${template.id}.description`, { defaultValue: template.description }); // i18n-dynamic
+    t(/* i18n-dynamic */ `reports.reportTemplates.templates.${template.id}.description`, { defaultValue: template.description });
 
   return (
     <div className="space-y-6">

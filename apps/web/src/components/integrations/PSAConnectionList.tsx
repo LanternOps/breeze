@@ -124,7 +124,7 @@ export default function PSAConnectionList() {
                   className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs ${status.className}`}
                 >
                   <StatusIcon className="h-3.5 w-3.5" />
-                  {t(status.labelKey)}
+                  {t(/* i18n-dynamic */ status.labelKey)}
                 </span>
               </div>
               <div className="mt-4 flex items-center justify-between text-sm text-muted-foreground">

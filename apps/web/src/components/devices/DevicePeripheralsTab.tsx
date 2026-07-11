@@ -179,7 +179,7 @@ export default function DevicePeripheralsTab({ deviceId, timezone }: DevicePerip
                     </td>
                     <td className="px-4 py-3">
                       <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${eventTypeBadge[event.eventType] ?? 'bg-muted text-muted-foreground'}`}>
-                        {t(`devicePeripheralsTab.eventTypes.${event.eventType}`, { defaultValue: event.eventType.replace('_', ' ') })}
+                        {t(/* i18n-dynamic */ `devicePeripheralsTab.eventTypes.${event.eventType}`, { defaultValue: event.eventType.replace('_', ' ') })}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-muted-foreground">{event.peripheralType}</td>
@@ -229,7 +229,7 @@ export default function DevicePeripheralsTab({ deviceId, timezone }: DevicePerip
                     </td>
                     <td className="px-4 py-3">
                       <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${actionBadge[p.action] ?? 'bg-muted text-muted-foreground'}`}>
-                        {t(`devicePeripheralsTab.actions.${p.action}`, { defaultValue: p.action.replace('_', ' ') })}
+                        {t(/* i18n-dynamic */ `devicePeripheralsTab.actions.${p.action}`, { defaultValue: p.action.replace('_', ' ') })}
                       </span>
                     </td>
                     <td className="px-4 py-3 capitalize text-muted-foreground">{p.targetType}</td>

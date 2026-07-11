@@ -137,7 +137,7 @@ export default function AddDnsIntegrationModal({ onClose, onCreated }: AddDnsInt
         }),
         errorFallback: t('dnsSecurityAddDnsIntegrationModal.messages.createFailed'),
         successMessage: t('dnsSecurityAddDnsIntegrationModal.messages.createSuccess', {
-          provider: t(`dnsSecurityAddDnsIntegrationModal.${spec.labelKey}`),
+          provider: t(/* i18n-dynamic */ `dnsSecurityAddDnsIntegrationModal.${spec.labelKey}`),
           name,
         }),
         onUnauthorized: () => void navigateTo('/login', { replace: true }),
@@ -186,13 +186,13 @@ export default function AddDnsIntegrationModal({ onClose, onCreated }: AddDnsInt
                   {(Object.entries(PROVIDERS) as Array<[SupportedProvider, ProviderFieldSpec]>).map(
                     ([key, p]) => (
                       <option key={key} value={key}>
-                        {t(`dnsSecurityAddDnsIntegrationModal.${p.labelKey}`)}
+                        {t(/* i18n-dynamic */ `dnsSecurityAddDnsIntegrationModal.${p.labelKey}`)}
                       </option>
                     ),
                   )}
                 </select>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  {t(`dnsSecurityAddDnsIntegrationModal.${spec.helpTextKey}`)}
+                  {t(/* i18n-dynamic */ `dnsSecurityAddDnsIntegrationModal.${spec.helpTextKey}`)}
                 </p>
               </>
             )}
@@ -227,7 +227,7 @@ export default function AddDnsIntegrationModal({ onClose, onCreated }: AddDnsInt
             )}
           </Field>
 
-          <Field label={t(`dnsSecurityAddDnsIntegrationModal.${spec.apiKey.labelKey}`)}>
+          <Field label={t(/* i18n-dynamic */ `dnsSecurityAddDnsIntegrationModal.${spec.apiKey.labelKey}`)}>
             {(id) => (
               <input
                 id={id}
@@ -236,14 +236,14 @@ export default function AddDnsIntegrationModal({ onClose, onCreated }: AddDnsInt
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
                 required
-                placeholder={t(`dnsSecurityAddDnsIntegrationModal.${spec.apiKey.placeholderKey}`)}
+                placeholder={t(/* i18n-dynamic */ `dnsSecurityAddDnsIntegrationModal.${spec.apiKey.placeholderKey}`)}
                 className="h-9 w-full rounded-md border bg-background px-2 text-sm font-mono"
               />
             )}
           </Field>
 
           {spec.apiSecret && (
-            <Field label={t(`dnsSecurityAddDnsIntegrationModal.${spec.apiSecret.labelKey}`)}>
+            <Field label={t(/* i18n-dynamic */ `dnsSecurityAddDnsIntegrationModal.${spec.apiSecret.labelKey}`)}>
               {(id) => (
                 <input
                   id={id}
@@ -252,7 +252,7 @@ export default function AddDnsIntegrationModal({ onClose, onCreated }: AddDnsInt
                   value={apiSecret}
                   onChange={(e) => setApiSecret(e.target.value)}
                   required
-                  placeholder={t(`dnsSecurityAddDnsIntegrationModal.${spec.apiSecret!.placeholderKey}`)}
+                  placeholder={t(/* i18n-dynamic */ `dnsSecurityAddDnsIntegrationModal.${spec.apiSecret!.placeholderKey}`)}
                   className="h-9 w-full rounded-md border bg-background px-2 text-sm font-mono"
                 />
               )}
@@ -260,14 +260,14 @@ export default function AddDnsIntegrationModal({ onClose, onCreated }: AddDnsInt
           )}
 
           {spec.configFields?.map((field) => (
-            <Field key={field.key} label={t(`dnsSecurityAddDnsIntegrationModal.${field.labelKey}`)}>
+            <Field key={field.key} label={t(/* i18n-dynamic */ `dnsSecurityAddDnsIntegrationModal.${field.labelKey}`)}>
               {(id) => (
                 <input
                   id={id}
                   type={field.type ?? 'text'}
                   value={config[field.key] ?? ''}
                   onChange={(e) => updateConfig(field.key, e.target.value)}
-                  placeholder={t(`dnsSecurityAddDnsIntegrationModal.${field.placeholderKey}`)}
+                  placeholder={t(/* i18n-dynamic */ `dnsSecurityAddDnsIntegrationModal.${field.placeholderKey}`)}
                   className="h-9 w-full rounded-md border bg-background px-2 text-sm"
                 />
               )}

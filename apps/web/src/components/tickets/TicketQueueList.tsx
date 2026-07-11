@@ -31,13 +31,13 @@ function timeAgo(iso: string, t: TFunction): string {
 }
 
 function translatedPriorityLabel(config: TicketConfig | null, priority: TicketPriority, t: TFunction): string {
-  return config?.priorities[priority]?.label ?? t(`ticketQueueList.priority.${priority}`);
+  return config?.priorities[priority]?.label ?? t(/* i18n-dynamic */ `ticketQueueList.priority.${priority}`);
 }
 
 function translatedStatusLabel(config: TicketConfig | null, status: TicketStatus, statusName: string | null | undefined, t: TFunction): string {
   if (statusName) return statusName;
   const systemRow = config?.statuses.find((s) => s.coreStatus === status && s.isSystem);
-  return systemRow?.name ?? t(`ticketQueueList.status.${status}`);
+  return systemRow?.name ?? t(/* i18n-dynamic */ `ticketQueueList.status.${status}`);
 }
 
 function TicketQueueList({ tickets, selectedId, onSelect, loading, config = null, onClearFilters, bulkSelectedIds, onToggleSelect }: Props) {

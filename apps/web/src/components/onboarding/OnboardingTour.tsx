@@ -169,7 +169,7 @@ export default function OnboardingTour() {
         }}
       >
         <div className="flex items-start justify-between mb-2">
-          <h4 className="text-sm font-semibold text-foreground">{t(step.titleKey)}</h4>
+          <h4 className="text-sm font-semibold text-foreground">{t(/* i18n-dynamic */ step.titleKey)}</h4>
           <button
             onClick={handleDismiss}
             className="rounded p-0.5 text-muted-foreground hover:text-foreground transition-colors"
@@ -179,7 +179,7 @@ export default function OnboardingTour() {
             <X className="h-3.5 w-3.5" />
           </button>
         </div>
-        <p className="text-xs text-muted-foreground leading-relaxed mb-3">{t(step.descriptionKey)}</p>
+        <p className="text-xs text-muted-foreground leading-relaxed mb-3">{t(/* i18n-dynamic */ step.descriptionKey)}</p>
         <div className="flex items-center justify-between">
           <span className="text-xs text-muted-foreground/70">
             {t('longTail.onboarding.OnboardingTour.progress', { current: currentStep + 1, total: TOUR_STEPS.length })}

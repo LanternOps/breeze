@@ -29,17 +29,17 @@ const typeLabels: Record<SsoProvider['type'], string> = {
   saml: 'SAML'
 };
 
-const statusConfig: Record<SsoProvider['status'], { label: string; className: string }> = {
+const statusConfig: Record<SsoProvider['status'], { labelKey: string; className: string }> = {
   active: {
-    label: i18n.t('settings:ssoProviderList.active'),
+    labelKey: 'ssoProviderList.active',
     className: 'border-green-200 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-950 dark:text-green-400'
   },
   inactive: {
-    label: i18n.t('settings:ssoProviderList.inactive'),
+    labelKey: 'ssoProviderList.inactive',
     className: 'border-gray-200 bg-gray-50 text-gray-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-400'
   },
   testing: {
-    label: i18n.t('settings:ssoProviderList.testing'),
+    labelKey: 'ssoProviderList.testing',
     className: 'border-yellow-200 bg-yellow-50 text-yellow-700 dark:border-yellow-800 dark:bg-yellow-950 dark:text-yellow-400'
   }
 };
@@ -101,7 +101,7 @@ export default function SsoProviderList({
           >
             {statusOptions.map(status => (
               <option key={status} value={status}>
-                {status === 'all' ? t('ssoProviderList.allStatuses') : statusConfig[status as SsoProvider['status']].label}
+                {status === 'all' ? t('ssoProviderList.allStatuses') : t(/* i18n-dynamic */ statusConfig[status as SsoProvider['status']].labelKey)}
               </option>
             ))}
           </select>
@@ -179,7 +179,7 @@ export default function SsoProviderList({
                     </td>
                     <td className="px-4 py-3 text-sm">
                       <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusStyle.className}`}>
-                        {statusStyle.label}
+                        {t(/* i18n-dynamic */ statusStyle.labelKey)}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-sm">

@@ -433,9 +433,9 @@ export default function InboundEmailCard() {
                   onClick={() => setAutoBody((b) => `${b}{{${v.key}}}`)}
                   className="rounded border px-1.5 py-0.5 text-xs text-muted-foreground hover:text-foreground"
                   data-testid={`inbound-autoreply-var-${v.key}`}
-                  title={t(`inboundEmail.variables.${v.key}`)}
+                  title={t(/* i18n-dynamic */ `inboundEmail.variables.${v.key}`)}
                 >
-                  {t(`inboundEmail.variables.${v.key}`)}
+                  {t(/* i18n-dynamic */ `inboundEmail.variables.${v.key}`)}
                 </button>
               ))}
             </div>

@@ -217,7 +217,7 @@ export default function InboundReviewQueue({ onTotalChange }: InboundReviewQueue
                   <div className="font-medium">{r.fromAddress ?? t('inboundReviewQueue.unknownSender')}</div>
                   <div className="text-muted-foreground">{r.subject ?? t('inboundReviewQueue.noSubject')}</div>
                   <div className="mt-0.5 text-xs text-muted-foreground">
-                    <span className="rounded border px-1 py-0.5">{t(`inboundReviewQueue.parseStatus.${r.parseStatus}`)}</span>{' '}
+                    <span className="rounded border px-1 py-0.5">{t(/* i18n-dynamic */ `inboundReviewQueue.parseStatus.${r.parseStatus}`)}</span>{' '}
                     {formatDateTime(r.createdAt)}
                     {r.parseStatus === 'failed' && r.error && (
                       <span className="ml-2 text-red-600">{r.error}</span>

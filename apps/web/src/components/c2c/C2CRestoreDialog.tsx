@@ -168,7 +168,7 @@ export default function C2CRestoreDialog({
 
   const itemTypeLabel = (type: string) => {
     const key = `longTail.c2c.C2CRestoreDialog.itemTypes.${type}`;
-    const label = t(key);
+    const label = t(/* i18n-dynamic */ key);
     return label === key ? type : label;
   };
 

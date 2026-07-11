@@ -267,7 +267,7 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
             >
               {themeOptions.map(option => (
                 <option key={option.value} value={option.value}>
-                  {t(option.labelKey)}
+                  {t(/* i18n-dynamic */ option.labelKey)}
                 </option>
               ))}
             </select>
@@ -364,7 +364,7 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
                     </div>
                   </div>
                   <span className="rounded-full bg-white/20 px-2 py-1 text-xs uppercase tracking-wide">
-                    {t(themeOptions.find(option => option.value === theme)?.labelKey ?? 'orgBrandingEditor.theme.options.system')}
+                    {t(/* i18n-dynamic */ themeOptions.find(option => option.value === theme)?.labelKey ?? 'orgBrandingEditor.theme.options.system')}
                   </span>
                 </div>
 

@@ -78,9 +78,9 @@
   },
   "aiContextBadge": { "context": "Contexto", "dashboard": "Painel" },
   "aiCostIndicator": {
-    "messageCount": "{{count}} msgs",
-    "messageCount_one": "{{count}} msg",
-    "messageCount_other": "{{count}} msgs"
+    "messageCount": "{{count}} mens.",
+    "messageCount_one": "{{count}} mensagem",
+    "messageCount_other": "{{count}} mensagens"
   },
   "aiPlanProgressBar": {
     "completed": "Plano concluído ({{completed}}/{{total}})",

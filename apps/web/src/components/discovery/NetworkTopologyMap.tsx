@@ -259,13 +259,25 @@ const INFRA_TYPES = new Set<TopologyNodeType>(['router', 'switch', 'firewall', '
 const MANUAL_ROLES = ['switch', 'router', 'ap', 'firewall', 'patch_panel', 'other'] as const;
 type ManualRole = (typeof MANUAL_ROLES)[number];
 
+// Persist a locale-independent default label. Manual node labels are API data,
+// so translating this value would make the stored topology depend on whichever
+// language the creator happened to be using.
+const MANUAL_ROLE_LABELS: Record<ManualRole, string> = {
+  switch: 'Switch',
+  router: 'Router',
+  ap: 'Access Point',
+  firewall: 'Firewall',
+  patch_panel: 'Patch Panel',
+  other: 'Other'
+};
+
 const MANUAL_ROLE_LABEL_KEYS: Record<ManualRole, string> = {
   switch: 'assetTypes.switch',
   router: 'assetTypes.router',
   ap: 'assetTypes.accessPoint',
   firewall: 'assetTypes.firewall',
-  patch_panel: 'networkTopologyMap.manualRoles.patchPanel',
-  other: 'networkTopologyMap.manualRoles.other'
+  patch_panel: 'assetTypes.patchPanel',
+  other: 'assetTypes.other'
 };
 
 function mapNode(node: ApiTopologyNode): TopologyNode {
@@ -731,7 +743,7 @@ export default function NetworkTopologyMap({
           request: () =>
             fetchWithAuth('/discovery/topology/manual-node', {
               method: 'POST',
-              body: JSON.stringify({ siteId: activeSiteId, role, label: t(MANUAL_ROLE_LABEL_KEYS[role]) })
+              body: JSON.stringify({ siteId: activeSiteId, role, label: MANUAL_ROLE_LABELS[role] })
             }),
           errorFallback: t('networkTopologyMap.errors.addNode'),
           successMessage: t('networkTopologyMap.messages.nodeAdded'),
@@ -1411,13 +1423,13 @@ export default function NetworkTopologyMap({
                 disabled={!activeSiteId}
                 title={
                   activeSiteId
-                    ? t('networkTopologyMap.actions.addPlaceholderTitle', { role: t(MANUAL_ROLE_LABEL_KEYS[r]) })
+                    ? t('networkTopologyMap.actions.addPlaceholderTitle', { role: t(/* i18n-dynamic */ MANUAL_ROLE_LABEL_KEYS[r]) })
                     : t('networkTopologyMap.actions.selectSingleSiteTitle')
                 }
                 onClick={() => void addManualNode(r)}
                 className="rounded border px-2 py-1 text-xs font-medium text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {t(MANUAL_ROLE_LABEL_KEYS[r])}
+                {t(/* i18n-dynamic */ MANUAL_ROLE_LABEL_KEYS[r])}
               </button>
             ))}
           </div>
@@ -1445,7 +1457,7 @@ export default function NetworkTopologyMap({
                   {selected.status && (
                     <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
                       <span className={cn('h-1.5 w-1.5 rounded-full', statusDotClass[selected.status])} />
-                      {t(statusLabelKey[selected.status])}
+                      {t(/* i18n-dynamic */ statusLabelKey[selected.status])}
                     </span>
                   )}
                   {selected.kind === 'manual' && (
@@ -1455,7 +1467,7 @@ export default function NetworkTopologyMap({
                   )}
                 </div>
                 <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
-                  <span>{t(typeLabelKey[selected.nodeType ?? 'unknown'])}</span>
+                  <span>{t(/* i18n-dynamic */ typeLabelKey[selected.nodeType ?? 'unknown'])}</span>
                   {selected.ipAddress && (
                     <>
                       <span className="text-muted-foreground/40">·</span>
@@ -1529,7 +1541,7 @@ export default function NetworkTopologyMap({
                         : { backgroundColor: EDGE_METHOD_META[selected.method ?? 'manual']?.color ?? '#64748b' }
                     }
                   >
-                    {t(EDGE_METHOD_META[selected.method ?? 'manual']?.labelKey ?? 'common:states.unknown')}
+                    {t(/* i18n-dynamic */ EDGE_METHOD_META[selected.method ?? 'manual']?.labelKey ?? 'common:states.unknown')}
                   </span>
                   {selected.method === 'manual' ? (
                     <span className="text-xs text-muted-foreground">{t('networkTopologyMap.handMapped')}</span>
@@ -1612,7 +1624,7 @@ export default function NetworkTopologyMap({
               {(['online', 'warning', 'offline'] as TopologyNodeStatus[]).map((s) => (
                 <span key={s} className="flex items-center gap-1.5">
                   <span className={cn('h-2 w-2 rounded-full ring-2 ring-background', statusDotClass[s])} />
-                  {t(statusLabelKey[s])}
+                  {t(/* i18n-dynamic */ statusLabelKey[s])}
                 </span>
               ))}
             </div>
@@ -1643,7 +1655,7 @@ export default function NetworkTopologyMap({
                 {presentTypes.map((type) => (
                   <span key={type} className="flex items-center gap-1">
                     <NodeBadge type={type} size={14} />
-                    {t(typeLabelKey[type] ?? 'common:states.unknown')}
+                    {t(/* i18n-dynamic */ typeLabelKey[type] ?? 'common:states.unknown')}
                   </span>
                 ))}
               </div>
@@ -1730,9 +1742,9 @@ export default function NetworkTopologyMap({
                   <span className="min-w-0 flex-1 truncate font-medium text-foreground">{n.label}</span>
                   <span className="hidden items-center gap-1 text-muted-foreground sm:inline-flex">
                     <span className={cn('h-1.5 w-1.5 rounded-full', statusDotClass[n.status])} aria-hidden />
-                    {t(statusLabelKey[n.status])}
+                    {t(/* i18n-dynamic */ statusLabelKey[n.status])}
                   </span>
-                  <span className="text-muted-foreground">{t(typeLabelKey[n.type])}</span>
+                  <span className="text-muted-foreground">{t(/* i18n-dynamic */ typeLabelKey[n.type])}</span>
                   {n.ipAddress && (
                     <span className="hidden font-mono text-muted-foreground md:inline">{n.ipAddress}</span>
                   )}

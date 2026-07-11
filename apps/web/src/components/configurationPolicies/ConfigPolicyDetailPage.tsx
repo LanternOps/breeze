@@ -71,13 +71,13 @@ type PolicyDetail = {
   updatedAt?: string;
   featureLinks: FeatureLink[];
 };
-const statusConfig: Record<
+const createStatusConfig = (): Record<
   string,
   {
     label: string;
     color: string;
   }
-> = {
+> => ({
   active: {
     label: i18n.t("common:states.active"),
     color: "bg-success/15 text-success border-success/30",
@@ -92,7 +92,7 @@ const statusConfig: Record<
     ),
     color: "bg-muted text-muted-foreground border-border",
   },
-};
+});
 // Exhaustive over FeatureType (full Record, not Partial) so a new canonical
 // feature type fails to compile until it gets a tab-bar icon. (#2004)
 const featureTabIcons: Record<FeatureType, React.ReactNode> = {
@@ -128,6 +128,7 @@ export default function ConfigPolicyDetailPage({
   policyId,
 }: ConfigPolicyDetailPageProps) {
   useTranslation("policies");
+  const statusConfig = createStatusConfig();
   const [activeTab, setActiveTab] = useState<Tab>("overview");
   const [policy, setPolicy] = useState<PolicyDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -444,9 +445,7 @@ export default function ConfigPolicyDetailPage({
             label: i18n.t(
               "policies:configurationPolicies.configPolicyDetailPage.configurationPolicies",
             ),
-            href: i18n.t(
-              "policies:configurationPolicies.configPolicyDetailPage.configurationPolicies2",
-            ),
+            href: "/configuration-policies",
           },
           {
             label:

@@ -108,7 +108,7 @@ export default function ContractWorkspace({ contractId }: Props) {
             <h1 className="truncate text-xl font-semibold" data-testid="contract-workspace-title">{contract.name}</h1>
             <StatusPill
               role={CONTRACT_STATUS_ROLES[contract.status].role}
-              label={t(`contracts.shared.status.${contract.status}`)}
+              label={t(/* i18n-dynamic */ `contracts.shared.status.${contract.status}`)}
               className={CONTRACT_STATUS_ROLES[contract.status].className}
             />
           </div>

@@ -322,7 +322,7 @@ function StatusBadge({ status }: { status: TaskStatus }) {
       )}
     >
       <Icon className={cn('h-3 w-3', status === 'running' && 'animate-spin')} />
-      {t(config.labelKey)}
+      {t(/* i18n-dynamic */ config.labelKey)}
     </span>
   );
 }

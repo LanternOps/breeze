@@ -305,7 +305,7 @@ export default function DiscoveryProfileForm({
                   onChange={() => handleToggleMethod(option.id)}
                   className="h-4 w-4 rounded border-border"
                 />
-                {t(option.labelKey)}
+                {t(/* i18n-dynamic */ option.labelKey)}
               </label>
             ))}
           </div>
@@ -409,7 +409,7 @@ export default function DiscoveryProfileForm({
               >
                 {dayOptions.map(day => (
                   <option key={day} value={day}>
-                    {t(`discoveryProfileForm.days.${day.toLowerCase()}`)}
+                    {t(/* i18n-dynamic */ `discoveryProfileForm.days.${day.toLowerCase()}`)}
                   </option>
                 ))}
               </select>
@@ -628,7 +628,7 @@ export default function DiscoveryProfileForm({
                   }))}
                   className="h-4 w-4 rounded border"
                 />
-                {t(`discoveryProfileForm.alerting.${key}`)}
+                {t(/* i18n-dynamic */ `discoveryProfileForm.alerting.${key}`)}
               </label>
             ))}
             <div className="pt-1">

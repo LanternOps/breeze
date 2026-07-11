@@ -12,8 +12,8 @@ type TFunction = ReturnType<typeof useTranslation>['t'];
 
 function systemLine(c: TicketComment, t: TFunction): string {
   if (c.commentType === 'status_change') {
-    const from = statusConfig[c.oldValue as TicketStatus] ? t(`ticketFeed.status.${c.oldValue}`) : c.oldValue;
-    const to = statusConfig[c.newValue as TicketStatus] ? t(`ticketFeed.status.${c.newValue}`) : c.newValue;
+    const from = statusConfig[c.oldValue as TicketStatus] ? t(/* i18n-dynamic */ `ticketFeed.status.${c.oldValue}`) : c.oldValue;
+    const to = statusConfig[c.newValue as TicketStatus] ? t(/* i18n-dynamic */ `ticketFeed.status.${c.newValue}`) : c.newValue;
     return t('ticketFeed.system.statusChanged', {
       author: c.authorName ?? t('ticketFeed.system.systemAuthor'),
       from,

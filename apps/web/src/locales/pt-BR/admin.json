@@ -150,7 +150,7 @@
         "description": "Quando um usuário desta organização autorizar um cliente MCP, ele aparecerá aqui."
       },
       "table": {
-        "app": "App",
+        "app": "Aplicativo",
         "activeUsers": "Usuários ativos",
         "lastUsed": "Último uso",
         "status": "Status",
@@ -209,7 +209,7 @@
         "description": "Todos os dispositivos têm certificados mTLS válidos. Dispositivos com certificados expirados ou revogados aparecerão aqui para revisão."
       },
       "table": {
-        "hostname": "Hostname",
+        "hostname": "Nome do host",
         "os": "SO",
         "quarantinedAt": "Em quarentena em",
         "reason": "Motivo",
@@ -409,7 +409,7 @@
         "json": "JSON"
       },
       "columnLabels": {
-        "timestamp": "Timestamp",
+        "timestamp": "Data/hora",
         "user": "Usuário",
         "action": "Ação",
         "resource": "Recurso",
@@ -473,7 +473,7 @@
       "userInfo": "Informações do usuário",
       "requestMetadata": "Metadados da solicitação",
       "fields": {
-        "timestamp": "Timestamp:",
+        "timestamp": "Data/hora:",
         "action": "Ação:",
         "resource": "Recurso:",
         "details": "Detalhes:",
@@ -496,7 +496,7 @@
         "load": "Falha ao carregar logs de auditoria"
       },
       "columns": {
-        "timestamp": "Timestamp",
+        "timestamp": "Data/hora",
         "user": "Usuário",
         "action": "Ação",
         "resource": "Recurso",

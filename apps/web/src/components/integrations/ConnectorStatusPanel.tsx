@@ -119,18 +119,18 @@ export default function ConnectorStatusPanel() {
                   <td className="px-4 py-3">
                     <div className="font-medium">{integration.name}</div>
                     <div className="text-xs text-muted-foreground">
-                      {t(integration.categoryKey)}
+                      {t(/* i18n-dynamic */ integration.categoryKey)}
                     </div>
                   </td>
                   <td className="px-4 py-3">
                     <span
                       className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs ${health.className}`}
                     >
-                      {t(health.labelKey)}
+                      {t(/* i18n-dynamic */ health.labelKey)}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-muted-foreground">
-                    {t(integration.lastActivityKey)}
+                    {t(/* i18n-dynamic */ integration.lastActivityKey)}
                   </td>
                   <td className="px-4 py-3">
                     <div className="inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-xs text-muted-foreground">

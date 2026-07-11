@@ -182,7 +182,7 @@ export default function DnsSecurityPoliciesTab() {
                             : 'bg-success/15 text-success'
                         }`}
                       >
-                        {t(`dnsSecurityDnsSecurityPoliciesTab.policyTypes.${policy.type}`)}
+                        {t(/* i18n-dynamic */ `dnsSecurityDnsSecurityPoliciesTab.policyTypes.${policy.type}`)}
                       </span>
                     </div>
                     <div className="text-xs text-muted-foreground">

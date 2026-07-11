@@ -43,7 +43,7 @@ export default function SourceFilterChips({ counts, value, onChange }: Props) {
                 : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
             }`}
           >
-            {t(labelKeys[source])}{' '}
+            {t(/* i18n-dynamic */ labelKeys[source])}{' '}
             <span data-testid={`patches-count-${source}`} className="ml-1 opacity-80">
               {count}
             </span>

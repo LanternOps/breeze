@@ -687,7 +687,7 @@ export default function SecurityDashboard({
                     scoreMeta.badge,
                   )}
                 >
-                  {t(scoreMeta.labelKey)}
+                  {t(/* i18n-dynamic */ scoreMeta.labelKey)}
                 </div>
                 <div className="h-2 w-full rounded-full bg-muted">
                   <div

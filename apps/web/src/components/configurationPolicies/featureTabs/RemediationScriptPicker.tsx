@@ -25,36 +25,23 @@ type RemediationScriptPickerProps = {
 const languageConfig: Record<
   ScriptLanguage,
   {
-    label: string;
     color: string;
     icon: string;
   }
 > = {
   powershell: {
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.remediationScriptPicker.powerShell",
-    ),
     color: "bg-blue-500/20 text-blue-700",
     icon: "PS",
   },
   bash: {
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.remediationScriptPicker.bash",
-    ),
     color: "bg-green-500/20 text-green-700",
     icon: "$",
   },
   python: {
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.remediationScriptPicker.python",
-    ),
     color: "bg-yellow-500/20 text-yellow-700",
     icon: "Py",
   },
   cmd: {
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.remediationScriptPicker.cMD",
-    ),
     color: "bg-gray-500/20 text-gray-700",
     icon: ">",
   },

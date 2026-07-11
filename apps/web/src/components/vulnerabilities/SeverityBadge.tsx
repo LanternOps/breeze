@@ -20,7 +20,7 @@ export function SeverityBadge({ severity }: { severity: string | null }) {
   };
   return (
     <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${badge.className}`}>
-      {severity && !SEVERITY_BADGES[key] ? severity : t(`severityBadge.${badge.label}`)}{/* i18n-dynamic */}
+      {severity && !SEVERITY_BADGES[key] ? severity : t(/* i18n-dynamic */ `severityBadge.${badge.label}`)}{/* i18n-dynamic */}
     </span>
   );
 }

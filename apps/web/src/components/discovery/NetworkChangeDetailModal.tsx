@@ -93,7 +93,7 @@ export default function NetworkChangeDetailModal({
             <div className="flex items-center gap-2">
               <h2 className="text-lg font-semibold">{event.hostname || event.ipAddress}</h2>
               <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${typeInfo.color}`}>
-                {t(`networkEvents.type.${event.eventType}`)}
+                {t(/* i18n-dynamic */ `networkEvents.type.${event.eventType}`)}
               </span>
               <span
                 className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${

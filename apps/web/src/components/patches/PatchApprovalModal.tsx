@@ -202,8 +202,8 @@ export default function PatchApprovalModal({
               >
                 <Icon className="mt-0.5 h-4 w-4" />
                 <div>
-                  <div className="text-sm font-medium">{t(config.labelKey)}</div>
-                  <div className="text-xs text-muted-foreground">{t(config.descriptionKey)}</div>
+                  <div className="text-sm font-medium">{t(/* i18n-dynamic */ config.labelKey)}</div>
+                  <div className="text-xs text-muted-foreground">{t(/* i18n-dynamic */ config.descriptionKey)}</div>
                 </div>
               </button>
             );
@@ -267,7 +267,7 @@ export default function PatchApprovalModal({
           >
             <span className="inline-flex items-center gap-2">
               {isSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}
-              {t(actionConfig[action].labelKey)}
+              {t(/* i18n-dynamic */ actionConfig[action].labelKey)}
             </span>
           </button>
         </div>
@@ -285,7 +285,7 @@ export default function PatchApprovalModal({
       confirmLabel={t('patchApprovalModal.actions.approve.label')}
       confirmTestId="confirm-fleet-action"
       message={t(
-        (ringDeviceCount ?? 1) === 1
+        /* i18n-dynamic */ (ringDeviceCount ?? 1) === 1
           ? 'patchApprovalModal.confirm.messageOne'
           : 'patchApprovalModal.confirm.messageMany',
         {

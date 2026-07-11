@@ -63,10 +63,10 @@ export default function DeviceTicketsTab({ deviceId }: { deviceId: string }) {
             <span className="font-mono text-xs text-muted-foreground">{ticket.internalNumber}</span>
             <span className="truncate font-medium">{ticket.subject}</span>
             <span className={cn('ml-auto inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs font-medium', statusConfig[ticket.status].color)}>
-              {t(`deviceTicketsTab.status.${ticket.status}`)}
+              {t(/* i18n-dynamic */ `deviceTicketsTab.status.${ticket.status}`)}
             </span>
             <span className={cn('inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs font-medium', priorityConfig[ticket.priority].color)}>
-              {t(`deviceTicketsTab.priority.${ticket.priority}`)}
+              {t(/* i18n-dynamic */ `deviceTicketsTab.priority.${ticket.priority}`)}
             </span>
             <SlaChip ticket={ticket} />
           </a>

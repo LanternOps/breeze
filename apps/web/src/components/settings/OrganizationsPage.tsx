@@ -582,7 +582,7 @@ export default function OrganizationsPage() {
                           <span
                             className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium leading-none ${statusColors[org.status]}`}
                           >
-                            {t(statusLabelKeys[org.status])}
+                            {t(/* i18n-dynamic */ statusLabelKeys[org.status])}
                           </span>
                           <span className="text-xs text-muted-foreground">
                             {t('organizationsPage.deviceCount', { count: org.deviceCount })}
@@ -644,7 +644,7 @@ export default function OrganizationsPage() {
                       <span
                         className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${statusColors[selectedOrg.status]}`}
                       >
-                        {t(statusLabelKeys[selectedOrg.status])}
+                        {t(/* i18n-dynamic */ statusLabelKeys[selectedOrg.status])}
                       </span>
                       <span>
                         {t('organizationsPage.deviceCount', { count: selectedOrg.deviceCount })}

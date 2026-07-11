@@ -254,7 +254,7 @@ export default function WebhookList({ onAdd, onEdit }: WebhookListProps) {
                     <span
                       className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs ${status.className}`}
                     >
-                      {t(status.labelKey)}
+                      {t(/* i18n-dynamic */ status.labelKey)}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-muted-foreground">

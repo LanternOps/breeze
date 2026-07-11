@@ -45,7 +45,7 @@ export default function AssetHistory({ entries, timezone }: AssetHistoryProps) {
                   actionStyles[entry.action]
                 )}
               >
-                {t(`assetHistory.actions.${entry.action}`)}
+                {t(/* i18n-dynamic */ `assetHistory.actions.${entry.action}`)}
               </span>
               {entry.notes && (
                 <span className="text-xs text-muted-foreground">{entry.notes}</span>

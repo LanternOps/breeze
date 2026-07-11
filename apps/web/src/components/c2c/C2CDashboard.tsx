@@ -67,7 +67,7 @@ interface C2CItem {
 
 function statusBadge(status: string, t: (key: string) => string) {
   const lower = status.toLowerCase();
-  const label = t(`longTail.c2c.C2CDashboard.status.${lower}`);
+  const label = t(/* i18n-dynamic */ `longTail.c2c.C2CDashboard.status.${lower}`);
   const displayStatus = label === `longTail.c2c.C2CDashboard.status.${lower}` ? status : label;
   if (lower === 'active' || lower === 'completed') {
     return (

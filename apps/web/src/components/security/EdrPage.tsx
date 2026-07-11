@@ -66,7 +66,7 @@ export default function EdrPage() {
             ) : (
               <Activity className="h-4 w-4" />
             )}
-            {t(tab.labelKey)}
+            {t(/* i18n-dynamic */ tab.labelKey)}
           </button>
         ))}
       </div>

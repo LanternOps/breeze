@@ -61,7 +61,7 @@ export function DeviceClassSegment({
             }`}
           >
             <Icon className="h-3.5 w-3.5" />
-            {t(labelKey)}
+            {t(/* i18n-dynamic */ labelKey)}
             <span
               className={`rounded-full px-1.5 text-xs tabular-nums ${
                 active

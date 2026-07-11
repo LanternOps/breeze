@@ -157,8 +157,8 @@ export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCre
                       : 'hover:bg-muted/50'
                   }`}
                 >
-                  <p className="text-sm font-medium">{t(type.labelKey)}</p>
-                  <p className="text-xs text-muted-foreground">{t(type.descriptionKey)}</p>
+                  <p className="text-sm font-medium">{t(/* i18n-dynamic */ type.labelKey)}</p>
+                  <p className="text-xs text-muted-foreground">{t(/* i18n-dynamic */ type.descriptionKey)}</p>
                 </button>
               ))}
             </div>

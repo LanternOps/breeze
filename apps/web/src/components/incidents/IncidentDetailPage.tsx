@@ -177,7 +177,7 @@ export default function IncidentDetailPage({ incidentId }: IncidentDetailProps) 
             {incident.severity.toUpperCase()}
           </span>
           <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium capitalize ${statusColors[incident.status]}`}>
-            {t(`longTail.incidents.IncidentDetailPage.status.${incident.status}`)}
+            {t(/* i18n-dynamic */ `longTail.incidents.IncidentDetailPage.status.${incident.status}`)}
           </span>
           {incident.classification && (
             <span className="inline-flex items-center rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground">

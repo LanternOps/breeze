@@ -146,7 +146,7 @@ export default function CisRemediationsTab({ refreshKey }: CisRemediationsTabPro
                   <td className="px-4 py-3 font-medium">{rem.deviceHostname}</td>
                   <td className="px-4 py-3 text-muted-foreground">{rem.baselineName ?? '-'}</td>
                   <td className="px-4 py-3 capitalize text-muted-foreground">
-                    {t(`cisHardeningCisRemediationsTab.actions.${rem.action}`, { defaultValue: rem.action })}
+                    {t(/* i18n-dynamic */ `cisHardeningCisRemediationsTab.actions.${rem.action}`, { defaultValue: rem.action })}
                   </td>
                   <td className="px-4 py-3">
                     <span
@@ -155,7 +155,7 @@ export default function CisRemediationsTab({ refreshKey }: CisRemediationsTabPro
                         statusBadge[rem.status] ?? statusBadge.cancelled
                       )}
                     >
-                      {t(`cisHardeningCisRemediationsTab.status.${rem.status}`, {
+                      {t(/* i18n-dynamic */ `cisHardeningCisRemediationsTab.status.${rem.status}`, {
                         defaultValue: rem.status.replace(/_/g, ' '),
                       })}
                     </span>
@@ -167,7 +167,7 @@ export default function CisRemediationsTab({ refreshKey }: CisRemediationsTabPro
                         approvalBadge[rem.approvalStatus] ?? approvalBadge.pending
                       )}
                     >
-                      {t(`cisHardeningCisRemediationsTab.approval.${rem.approvalStatus}`, {
+                      {t(/* i18n-dynamic */ `cisHardeningCisRemediationsTab.approval.${rem.approvalStatus}`, {
                         defaultValue: rem.approvalStatus.replace(/_/g, ' '),
                       })}
                     </span>

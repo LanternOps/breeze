@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import type { SupportedLocale } from '@breeze/shared';
 import { zValidator } from '@hono/zod-validator';
 import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
@@ -471,7 +472,7 @@ userRoutes.get('/me', async (c) => {
   // The partner default is derived only from the authenticated tenant context.
   // Do not accept a partner id from query/body input here: doing so would let a
   // caller probe another tenant's settings while loading their own profile.
-  let partnerDefaultLocale: 'en' | 'pt-BR' | null = null;
+  let partnerDefaultLocale: SupportedLocale | null = null;
   if (auth.partnerId) {
     const [partner] = await db
       .select({ settings: partners.settings })

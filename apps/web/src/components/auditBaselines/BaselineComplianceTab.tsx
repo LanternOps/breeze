@@ -144,7 +144,7 @@ export default function BaselineComplianceTab({ baseline }: Props) {
                     : 'text-muted-foreground hover:text-foreground'
                 )}
               >
-                {t(`auditBaselinesBaselineComplianceTab.filters.${f === 'non-compliant' ? 'nonCompliant' : f}`)}
+                {t(/* i18n-dynamic */ `auditBaselinesBaselineComplianceTab.filters.${f === 'non-compliant' ? 'nonCompliant' : f}`)}
               </button>
             ))}
           </div>

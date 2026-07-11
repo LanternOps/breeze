@@ -170,7 +170,7 @@ export default function DnsSecurityIntegrationsTab() {
                   <td className="px-4 py-2 font-medium">{it.name}</td>
                   <td className="px-4 py-2">
                     {PROVIDER_LABEL_KEYS[it.provider]
-                      ? t(`dnsSecurityDnsSecurityIntegrationsTab.${PROVIDER_LABEL_KEYS[it.provider]}`)
+                      ? t(/* i18n-dynamic */ `dnsSecurityDnsSecurityIntegrationsTab.${PROVIDER_LABEL_KEYS[it.provider]}`)
                       : it.provider}
                   </td>
                   <td className="px-4 py-2">

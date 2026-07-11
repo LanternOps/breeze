@@ -200,20 +200,20 @@ export default function CommunicationIntegrations() {
   const severityLabels: Record<Severity, { label: string; className: string }> =
     {
       critical: {
-        label: t(severityLabelKeys.critical),
+        label: t(/* i18n-dynamic */ severityLabelKeys.critical),
         className: severityStyles.critical,
       },
       high: {
-        label: t(severityLabelKeys.high),
+        label: t(/* i18n-dynamic */ severityLabelKeys.high),
         className: severityStyles.high,
       },
       medium: {
-        label: t(severityLabelKeys.medium),
+        label: t(/* i18n-dynamic */ severityLabelKeys.medium),
         className: severityStyles.medium,
       },
-      low: { label: t(severityLabelKeys.low), className: severityStyles.low },
+      low: { label: t(/* i18n-dynamic */ severityLabelKeys.low), className: severityStyles.low },
       info: {
-        label: t(severityLabelKeys.info),
+        label: t(/* i18n-dynamic */ severityLabelKeys.info),
         className: severityStyles.info,
       },
     };

@@ -82,10 +82,10 @@ const defaultItem: ComplianceItem = {
   enforcementLevel: "monitor",
   checkIntervalMinutes: 60,
 };
-const ruleTypeOptions: {
+const createRuleTypeOptions = (): {
   value: RuleType;
   label: string;
-}[] = [
+}[] => [
   {
     value: "required_software",
     label: i18n.t(
@@ -123,11 +123,11 @@ const ruleTypeOptions: {
     ),
   },
 ];
-const enforcementOptions: {
+const createEnforcementOptions = (): {
   value: EnforcementLevel;
   label: string;
   description: string;
-}[] = [
+}[] => [
   {
     value: "monitor",
     label: i18n.t(
@@ -156,7 +156,7 @@ const enforcementOptions: {
     ),
   },
 ];
-const versionOperators = [
+const createVersionOperators = () => [
   {
     value: "eq",
     label: i18n.t(
@@ -245,7 +245,7 @@ function enforcementPill(level: EnforcementLevel) {
     warn: "bg-yellow-500",
     enforce: "bg-red-500",
   };
-  const opt = enforcementOptions.find((o) => o.value === level);
+  const opt = createEnforcementOptions().find((o) => o.value === level);
   return (
     <span className="inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium">
       <span
@@ -263,6 +263,9 @@ export default function ComplianceTab({
   parentLink,
 }: FeatureTabProps) {
   useTranslation("policies");
+  const ruleTypeOptions = createRuleTypeOptions();
+  const enforcementOptions = createEnforcementOptions();
+  const versionOperators = createVersionOperators();
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const isInherited = !!parentLink && !existingLink;
   const effectiveLink = existingLink ?? parentLink;

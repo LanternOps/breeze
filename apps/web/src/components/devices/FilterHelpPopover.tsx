@@ -42,7 +42,7 @@ export function FilterHelpPopover({ open, onClose }: FilterHelpPopoverProps) {
         {SHORTCUTS.map(s => (
           <li key={s.keys} className="flex items-center justify-between gap-2 text-xs">
             <kbd className="rounded border bg-muted px-1.5 py-0.5 font-mono text-[10px]">{s.keys}</kbd>
-            <span className="text-muted-foreground">{t(`filterHelpPopover.shortcuts.${s.id}`, { defaultValue: s.description })}</span>
+            <span className="text-muted-foreground">{t(/* i18n-dynamic */ `filterHelpPopover.shortcuts.${s.id}`, { defaultValue: s.description })}</span>
           </li>
         ))}
       </ul>

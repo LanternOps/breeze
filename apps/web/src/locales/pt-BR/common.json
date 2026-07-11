@@ -237,7 +237,7 @@
       "widgetsPlaced_one": "{{count}} widget posicionado",
       "widgetsPlaced_other": "{{count}} widgets posicionados",
       "dashboardSettings": "Configurações do painel",
-      "layout": "Layout",
+      "layout": "Disposição",
       "dashboardName": "Nome do painel",
       "widgetSettings": "Configurações do widget",
       "widgetTitle": "Título",
@@ -1593,7 +1593,7 @@
           "v3": "v3"
         },
         "pollingIntervalSeconds": "Intervalo de Polling (segundos)",
-        "communityString": "Community String",
+        "communityString": "Comunidade SNMP",
         "leaveBlankToKeepCurrent": "(deixe em branco para manter atual)",
         "communityPlaceholder": "public",
         "username": "Nome de usuário",
@@ -1806,7 +1806,7 @@
         "loading": "Carregando...",
         "resultsCount": "{{shown}} exibido(s) de {{total}} no total",
         "table": {
-          "timestamp": "Timestamp",
+          "timestamp": "Data/hora",
           "level": "Nível",
           "category": "Categoria",
           "message": "Mensagem"

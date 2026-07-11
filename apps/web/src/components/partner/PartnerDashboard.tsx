@@ -479,7 +479,7 @@ export default function PartnerDashboard() {
                         <p className="text-sm font-semibold text-foreground">{customer.name}</p>
                         <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                           <span className={cn('h-2.5 w-2.5 rounded-full', health.dot)} />
-                          <span className={cn('font-medium', health.text)}>{t(`longTail.partner.PartnerDashboard.health.${customer.healthLabel}`)}</span>
+                          <span className={cn('font-medium', health.text)}>{t(/* i18n-dynamic */ `longTail.partner.PartnerDashboard.health.${customer.healthLabel}`)}</span>
                           <span className="text-muted-foreground">•</span>
                           <span>
                             {customer.healthScore !== null
@@ -686,7 +686,7 @@ export default function PartnerDashboard() {
                           statusConfig.badge
                         )}
                       >
-                        {t(`longTail.partner.PartnerDashboard.status.${device.status}`)}
+                        {t(/* i18n-dynamic */ `longTail.partner.PartnerDashboard.status.${device.status}`)}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-right text-foreground">

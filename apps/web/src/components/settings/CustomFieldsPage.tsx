@@ -340,7 +340,7 @@ export default function CustomFieldsPage() {
           <option value="">{t('customFieldsPage.allTypes')}</option>
           {FIELD_TYPES.map((type) => (
             <option key={type.value} value={type.value}>
-              {t(type.labelKey)}
+              {t(/* i18n-dynamic */ type.labelKey)}
             </option>
           ))}
         </select>
@@ -509,9 +509,9 @@ export default function CustomFieldsPage() {
                           : 'hover:bg-muted'
                       }`}
                     >
-                      <div className="font-medium text-sm">{t(type.labelKey)}</div>
+                      <div className="font-medium text-sm">{t(/* i18n-dynamic */ type.labelKey)}</div>
                       <div className="text-xs text-muted-foreground">
-                        {t(type.descriptionKey)}
+                        {t(/* i18n-dynamic */ type.descriptionKey)}
                       </div>
                     </button>
                   ))}
@@ -652,7 +652,7 @@ export default function CustomFieldsPage() {
                         onChange={() => handleToggleDeviceType(dt.value)}
                         className="sr-only"
                       />
-                      {t(dt.labelKey)}
+                      {t(/* i18n-dynamic */ dt.labelKey)}
                     </label>
                   ))}
                 </div>

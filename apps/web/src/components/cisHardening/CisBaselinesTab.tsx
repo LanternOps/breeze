@@ -150,7 +150,7 @@ export default function CisBaselinesTab({ refreshKey, onMutate }: CisBaselinesTa
                         levelBadge[bl.level] ?? levelBadge.custom
                       )}
                     >
-                      {t(`cisHardeningCisBaselinesTab.levels.${bl.level}`, { defaultValue: bl.level })}
+                      {t(/* i18n-dynamic */ `cisHardeningCisBaselinesTab.levels.${bl.level}`, { defaultValue: bl.level })}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-muted-foreground">{bl.benchmarkVersion}</td>

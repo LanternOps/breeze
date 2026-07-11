@@ -219,7 +219,7 @@ export default function ScriptExecutionModal({
             <div className="grid gap-4 sm:grid-cols-3">
               <div>
                 <p className="text-xs font-medium text-muted-foreground">{t('scriptExecutionModal.fields.language')}</p>
-                <p className="text-sm font-medium">{t(`scriptExecutionModal.languages.${script.language}`)}</p>
+                <p className="text-sm font-medium">{t(/* i18n-dynamic */ `scriptExecutionModal.languages.${script.language}`)}</p>
               </div>
               <div>
                 <p className="text-xs font-medium text-muted-foreground">{t('scriptExecutionModal.fields.category')}</p>
@@ -227,7 +227,7 @@ export default function ScriptExecutionModal({
               </div>
               <div>
                 <p className="text-xs font-medium text-muted-foreground">{t('scriptExecutionModal.fields.targetOs')}</p>
-                <p className="text-sm font-medium">{script.osTypes.map(os => t(`scriptExecutionModal.os.${os}`)).join(', ')}</p>
+                <p className="text-sm font-medium">{script.osTypes.map(os => t(/* i18n-dynamic */ `scriptExecutionModal.os.${os}`)).join(', ')}</p>
               </div>
             </div>
             {script.description && (
@@ -359,7 +359,7 @@ export default function ScriptExecutionModal({
               {filteredDevices.length === 0 ? (
                 <div className="p-4 text-center text-sm text-muted-foreground">
                   {t('scriptExecutionModal.empty.noCompatibleDevices', {
-                    os: script.osTypes.map(os => t(`scriptExecutionModal.os.${os}`)).join(t('scriptExecutionModal.orSeparator'))
+                    os: script.osTypes.map(os => t(/* i18n-dynamic */ `scriptExecutionModal.os.${os}`)).join(t('scriptExecutionModal.orSeparator'))
                   })}
                 </div>
               ) : (
@@ -392,7 +392,7 @@ export default function ScriptExecutionModal({
                           device.status === 'offline' && 'bg-destructive/15 text-destructive',
                           device.status === 'maintenance' && 'bg-warning/15 text-warning'
                         )}>
-                          {device.status === 'maintenance' ? t('scriptExecutionModal.status.maintenance') : t(`common:states.${device.status}`)}
+                          {device.status === 'maintenance' ? t('scriptExecutionModal.status.maintenance') : t(/* i18n-dynamic */ `common:states.${device.status}`)}
                         </span>
                       </div>
                     </label>

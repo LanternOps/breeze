@@ -42,24 +42,24 @@ type ActionMenu = {
 const policyBadge: Record<
   string,
   {
-    label: string;
+    labelKey: string;
     className: string;
   }
 > = {
   allowed: {
-    label: i18n.t("policies:software.softwareInventory.allowed"),
+    labelKey: "software.softwareInventory.allowed",
     className: "bg-green-100 text-green-700 border-green-300",
   },
   blocked: {
-    label: i18n.t("policies:software.softwareInventory.blocked"),
+    labelKey: "software.softwareInventory.blocked",
     className: "bg-red-100 text-red-700 border-red-300",
   },
   audit: {
-    label: i18n.t("policies:software.softwareInventory.audit"),
+    labelKey: "software.softwareInventory.audit",
     className: "bg-yellow-100 text-yellow-700 border-yellow-300",
   },
   no_policy: {
-    label: i18n.t("policies:software.softwareInventory.noPolicy"),
+    labelKey: "software.softwareInventory.noPolicy",
     className: "bg-muted text-muted-foreground border-muted",
   },
 };
@@ -73,7 +73,7 @@ type SoftwareInventoryProps = {
 export default function SoftwareInventory({
   onSwitchToPolicies,
 }: SoftwareInventoryProps = {}) {
-  useTranslation("policies");
+  const { t } = useTranslation("policies");
   const [data, setData] = useState<SoftwareRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -401,7 +401,7 @@ export default function SoftwareInventory({
                         <span
                           className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium ${badge.className}`}
                         >
-                          {badge.label}
+                          {t(/* i18n-dynamic */ badge.labelKey)}
                         </span>
                       </td>
                       <td className="px-4 py-3">

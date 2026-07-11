@@ -391,7 +391,7 @@ export default function SecurityPolicyEditor({
                   >
                     {dayOfWeekOptions.map((option) => (
                       <option key={option.value} value={option.value}>
-                        {option.labelKey ? t(option.labelKey) : option.value}
+                        {option.labelKey ? t(/* i18n-dynamic */ option.labelKey) : option.value}
                       </option>
                     ))}
                   </select>

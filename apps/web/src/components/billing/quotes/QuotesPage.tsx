@@ -384,7 +384,7 @@ export function QuotesPage() {
           className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         >
           {STATUS_OPTION_VALUES.map((status) => (
-            <option key={status} value={status}>{status === '' ? t('quotes.page.filters.allStatuses') : t(`quotes.status.${status}`)}</option>
+            <option key={status} value={status}>{status === '' ? t('quotes.page.filters.allStatuses') : t(/* i18n-dynamic */ `quotes.status.${status}`)}</option>
           ))}
         </select>
       </div>
@@ -510,7 +510,7 @@ export function QuotesPage() {
                         <div className="flex flex-wrap items-center gap-1.5">
                           <StatusPill
                             role={STATUS_ROLES[qt.status].role}
-                            label={t(`quotes.status.${qt.status}`)}
+                            label={t(/* i18n-dynamic */ `quotes.status.${qt.status}`)}
                             className={STATUS_ROLES[qt.status].className}
                             testId={`quotes-status-${qt.id}`}
                           />

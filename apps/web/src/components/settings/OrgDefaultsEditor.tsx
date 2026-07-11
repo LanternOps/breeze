@@ -224,7 +224,7 @@ export default function OrgDefaultsEditor({
         <div className="grid gap-4 md:grid-cols-3">
           {policyFields.map(policy => (
             <label key={policy.id} className="space-y-2 rounded-lg border bg-muted/40 p-4 text-sm">
-              <span className="font-medium">{t(policy.labelKey)}</span>
+              <span className="font-medium">{t(/* i18n-dynamic */ policy.labelKey)}</span>
               <select
                 value={policyDefaults[policy.id as keyof typeof policyDefaults]}
                 onChange={event => {
@@ -238,7 +238,7 @@ export default function OrgDefaultsEditor({
               >
                 {policyOptions.map(option => (
                   <option key={option.value} value={option.value}>
-                    {t(option.labelKey)}
+                    {t(/* i18n-dynamic */ option.labelKey)}
                   </option>
                 ))}
               </select>
@@ -263,7 +263,7 @@ export default function OrgDefaultsEditor({
           >
             {groupOptions.map(option => (
               <option key={option.value} value={option.value}>
-                {t(option.labelKey)}
+                {t(/* i18n-dynamic */ option.labelKey)}
               </option>
             ))}
           </select>
@@ -287,7 +287,7 @@ export default function OrgDefaultsEditor({
           >
             {alertThresholds.map(option => (
               <option key={option.value} value={option.value}>
-                {t(option.labelKey)}
+                {t(/* i18n-dynamic */ option.labelKey)}
               </option>
             ))}
           </select>
@@ -423,7 +423,7 @@ export default function OrgDefaultsEditor({
                       <option value="">{t('orgDefaultsEditor.maintenance.everyDay')}</option>
                       {maintenanceDays.map(day => (
                         <option key={day.value} value={day.value}>
-                          {t(day.labelKey)}
+                          {t(/* i18n-dynamic */ day.labelKey)}
                         </option>
                       ))}
                     </select>

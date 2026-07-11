@@ -517,13 +517,13 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
 
   const renderTypeBadge = (asset: DiscoveredAsset) => (
     <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${typeConfig[asset.type].color}`}>
-      {t(typeConfig[asset.type].labelKey)}
+      {t(/* i18n-dynamic */ typeConfig[asset.type].labelKey)}
     </span>
   );
 
   const renderApprovalBadge = (asset: DiscoveredAsset) => (
     <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${approvalStatusConfig[asset.approvalStatus].color}`}>
-      {t(approvalStatusConfig[asset.approvalStatus].labelKey)}
+      {t(/* i18n-dynamic */ approvalStatusConfig[asset.approvalStatus].labelKey)}
     </span>
   );
 
@@ -589,7 +589,7 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
           showIcon
           chips={(Object.keys(approvalStatusConfig) as DiscoveredAssetApprovalStatus[]).map(s => ({
             key: s,
-            label: t(approvalStatusConfig[s].labelKey),
+            label: t(/* i18n-dynamic */ approvalStatusConfig[s].labelKey),
             count: approvalCounts[s] ?? 0,
             color: approvalStatusConfig[s].color,
           }))}
@@ -604,7 +604,7 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
               label={t('common:labels.type')}
               chips={(Object.keys(typeConfig) as DiscoveredAssetType[]).map(assetType => ({
                 key: assetType,
-                label: t(typeConfig[assetType].labelKey),
+                label: t(/* i18n-dynamic */ typeConfig[assetType].labelKey),
                 count: typeCounts[assetType] ?? 0,
                 color: typeConfig[assetType].color,
               }))}

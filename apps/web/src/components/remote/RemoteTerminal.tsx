@@ -478,7 +478,7 @@ export default function RemoteTerminal({
                 )}
               />
               <span className={statusConfig[status].color}>
-                {t(statusConfig[status].labelKey)}
+                {t(/* i18n-dynamic */ statusConfig[status].labelKey)}
               </span>
               {status === 'connected' && connectionTime && (
                 <>

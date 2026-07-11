@@ -155,7 +155,7 @@ export default function BaselineFormModal({ baseline, onClose, onSaved }: Props)
               >
                 {OS_OPTIONS.map((opt) => (
                   <option key={opt.value} value={opt.value}>
-                    {t(`auditBaselinesBaselineFormModal.os.${opt.labelKey}`)}
+                    {t(/* i18n-dynamic */ `auditBaselinesBaselineFormModal.os.${opt.labelKey}`)}
                   </option>
                 ))}
               </select>
@@ -173,7 +173,7 @@ export default function BaselineFormModal({ baseline, onClose, onSaved }: Props)
               >
                 {PROFILE_OPTIONS.map((opt) => (
                   <option key={opt.value} value={opt.value}>
-                    {t(`auditBaselinesBaselineFormModal.profiles.${opt.labelKey}`)}
+                    {t(/* i18n-dynamic */ `auditBaselinesBaselineFormModal.profiles.${opt.labelKey}`)}
                   </option>
                 ))}
               </select>

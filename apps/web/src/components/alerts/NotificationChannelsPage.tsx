@@ -852,7 +852,7 @@ function RoutingRuleForm({
                   : 'hover:bg-muted'
               }`}
             >
-              {t(`notificationChannelsPage.severity.${sev}`)}
+              {t(/* i18n-dynamic */ `notificationChannelsPage.severity.${sev}`)}
             </button>
           ))}
         </div>

@@ -29,7 +29,7 @@
       },
       "lastUpdated": "Atualizado {{time}}",
       "subtitle": "Insights sobre sua frota e seus serviços",
-      "title": "Analytics",
+      "title": "Análises",
       "trend": {
         "operationalHealth": "Saúde operacional"
       },
@@ -183,7 +183,7 @@
   },
   "reports": {
     "dashboardWidgets": {
-      "accessDenied": "Voce nao tem permissao para ver estes dados do painel.",
+      "accessDenied": "Voce não tem permissao para ver estes dados do painel.",
       "activeAlerts": "Alertas Ativos",
       "averages": "Medias",
       "complianceScore": "Pontuacao de Conformidade",
@@ -207,26 +207,26 @@
       "totalDevices": "Total de Dispositivos"
     },
     "reportBuilderPage": {
-      "configurationTitle": "Configuracao do Relatorio",
-      "description": "Gere um relatorio unico sem salva-lo.",
+      "configurationTitle": "Configuracao do Relatório",
+      "description": "Gere um relatório unico sem salva-lo.",
       "errors": {
         "exportFailed": "Falha na exportacao. Tente novamente.",
-        "generatePreview": "Falha ao gerar pre-visualizacao",
-        "generateReportPreview": "Falha ao gerar pre-visualizacao do relatorio"
+        "generatePreview": "Falha ao gerar pre-visualização",
+        "generateReportPreview": "Falha ao gerar pre-visualização do relatório"
       },
-      "title": "Construtor de Relatorio Avulso"
+      "title": "Construtor de Relatório Avulso"
     },
     "reportEditPage": {
-      "backToReports": "Voltar para Relatorios",
-      "description": "Atualize a configuracao de \"{{name}}\".",
+      "backToReports": "Voltar para Relatórios",
+      "description": "Atualize a configuração de \"{{name}}\".",
       "errors": {
-        "fetchReport": "Falha ao buscar relatorio",
+        "fetchReport": "Falha ao buscar relatório",
         "generic": "Ocorreu um erro"
       },
-      "loading": "Carregando relatorio...",
-      "notFound": "Relatorio nao encontrado",
-      "reportsBreadcrumb": "Relatorios",
-      "title": "Editar Relatorio"
+      "loading": "Carregando relatório...",
+      "notFound": "Relatório não encontrado",
+      "reportsBreadcrumb": "Relatórios",
+      "title": "Editar Relatório"
     },
     "reportPreview": {
       "charts": {
@@ -242,8 +242,8 @@
         "topCpuConsumers": "Maiores Consumidores de CPU",
         "totalDevices": "Total de Dispositivos"
       },
-      "emptyDescription": "Configure as opcoes do relatorio e clique em Pre-visualizar para ver os dados.",
-      "emptyTitle": "Nenhuma pre-visualizacao disponivel",
+      "emptyDescription": "Configure as opcoes do relatório e clique em Pre-visualizar para ver os dados.",
+      "emptyTitle": "Nenhuma pre-visualização disponivel",
       "formats": {
         "csv": "CSV",
         "excel": "Excel",
@@ -251,7 +251,7 @@
       },
       "generated": "Gerado em {{date}}",
       "generatedWithRecords": "Gerado em {{date}} - {{count}} registros",
-      "generating": "Gerando pre-visualizacao do relatorio...",
+      "generating": "Gerando pre-visualização do relatório...",
       "noDataMatches": "Nenhum dado corresponde aos filtros atuais.",
       "pagination": {
         "page": "Pagina {{current}} de {{total}}",
@@ -260,16 +260,16 @@
       "refresh": "Atualizar",
       "reportTypes": {
         "alert_summary": "Resumo de Alertas",
-        "compliance": "Relatorio de Conformidade",
+        "compliance": "Relatório de Conformidade",
         "device_inventory": "Inventario de Dispositivos",
         "executive_summary": "Resumo Executivo",
-        "performance": "Relatorio de Desempenho",
+        "performance": "Relatório de Desempenho",
         "security_compliance_posture": "Postura de Seguranca e Conformidade",
         "software_inventory": "Inventario de Software"
       },
       "tryAgain": "Tentar novamente",
       "values": {
-        "no": "Nao",
+        "no": "Não",
         "yes": "Sim"
       },
       "viewModes": {
@@ -283,21 +283,21 @@
         "edit": "Editar",
         "generateNow": "Gerar agora"
       },
-      "adhocReport": "Relatorio avulso",
+      "adhocReport": "Relatório avulso",
       "confirmDelete": "Tem certeza de que deseja excluir \"{{name}}\"?",
-      "createReport": "Criar Relatorio",
-      "description": "Gere e agende relatorios para sua infraestrutura.",
+      "createReport": "Criar Relatório",
+      "description": "Gere e agende relatórios para sua infraestrutura.",
       "download": "Baixar",
       "emailRecipients": "Destinatarios de e-mail",
-      "emptyReportsDescription": "Crie seu primeiro relatorio para comecar.",
-      "emptyReportsTitle": "Ainda nao ha relatorios",
-      "emptyRunsDescription": "Gere um relatorio para ve-lo aqui.",
-      "emptyRunsTitle": "Nenhuma execucao recente",
+      "emptyReportsDescription": "Crie seu primeiro relatório para comecar.",
+      "emptyReportsTitle": "Ainda não ha relatórios",
+      "emptyRunsDescription": "Gere um relatório para ve-lo aqui.",
+      "emptyRunsTitle": "Nenhuma execução recente",
       "errors": {
-        "deleteReport": "Falha ao excluir relatorio",
+        "deleteReport": "Falha ao excluir relatório",
         "downloadFailed": "Falha no download",
-        "fetchReports": "Falha ao buscar relatorios",
-        "generateReport": "Falha ao gerar relatorio",
+        "fetchReports": "Falha ao buscar relatórios",
+        "generateReport": "Falha ao gerar relatório",
         "generic": "Ocorreu um erro"
       },
       "formats": {
@@ -305,23 +305,23 @@
         "excel": "Excel",
         "pdf": "PDF"
       },
-      "loading": "Carregando relatorios...",
+      "loading": "Carregando relatórios...",
       "never": "Nunca",
-      "newReport": "Novo Relatorio",
+      "newReport": "Novo Relatório",
       "nextOccurrence": "Proximo: {{next}}",
       "reportTypes": {
         "alert_summary": "Resumo de Alertas",
-        "compliance": "Relatorio de Conformidade",
+        "compliance": "Relatório de Conformidade",
         "device_inventory": "Inventario de Dispositivos",
         "executive_summary": "Resumo Executivo",
-        "performance": "Relatorio de Desempenho",
+        "performance": "Relatório de Desempenho",
         "security_compliance_posture": "Postura de Seguranca e Conformidade",
         "software_inventory": "Inventario de Software"
       },
       "runsTable": {
         "actions": "Acoes",
         "completed": "Concluido",
-        "report": "Relatorio",
+        "report": "Relatório",
         "started": "Iniciado",
         "status": "Status"
       },
@@ -335,7 +335,7 @@
         "completed": "concluido",
         "failed": "falhou",
         "pending": "pendente",
-        "running": "em execucao"
+        "running": "em execução"
       },
       "table": {
         "actions": "Acoes",
@@ -347,25 +347,25 @@
       },
       "tabs": {
         "recentRuns": "Execucoes Recentes",
-        "savedReports": "Relatorios Salvos"
+        "savedReports": "Relatórios Salvos"
       },
       "templates": "Modelos",
-      "title": "Relatorios",
+      "title": "Relatórios",
       "tryAgain": "Tentar novamente",
-      "unknownReport": "Relatorio Desconhecido"
+      "unknownReport": "Relatório Desconhecido"
     },
     "reportBuilder": {
       "actions": {
         "cancel": "Cancelar",
-        "generateReport": "Gerar relatorio",
+        "generateReport": "Gerar relatório",
         "preview": "Pre-visualizar",
-        "saveReport": "Salvar relatorio",
-        "updateReport": "Atualizar relatorio"
+        "saveReport": "Salvar relatório",
+        "updateReport": "Atualizar relatório"
       },
-      "addCondition": "Adicionar condicao",
+      "addCondition": "Adicionar condição",
       "addRecipient": "Adicionar destinatario",
       "aggregation": "Agregacao",
-      "aggregationField": "Campo de agregacao",
+      "aggregationField": "Campo de agregação",
       "aggregationOptions": {
         "avg": "Media",
         "count": "Contagem",
@@ -373,8 +373,8 @@
       },
       "availableFields": "Campos disponiveis",
       "chart": {
-        "notEnoughData": "Dados insuficientes para gerar grafico.",
-        "pieChartPreview": "Pre-visualizacao de grafico de pizza"
+        "notEnoughData": "Dados insuficientes para gerar gráfico.",
+        "pieChartPreview": "Pre-visualização de gráfico de pizza"
       },
       "chartTypes": {
         "bar": "Barras",
@@ -457,7 +457,7 @@
             "label": "Incluir excecoes"
           },
           "policySet": {
-            "label": "Conjunto de politicas",
+            "label": "Conjunto de políticas",
             "options": {
               "cis": "Benchmarks CIS",
               "custom": "Politicas personalizadas",
@@ -474,7 +474,7 @@
             }
           },
           "scoring": {
-            "label": "Metodo de pontuacao",
+            "label": "Metodo de pontuação",
             "options": {
               "pass_fail": "Aprovado / reprovado",
               "weighted": "Pontuacao ponderada"
@@ -498,7 +498,7 @@
             "options": {
               "all": "Todos os dispositivos",
               "managed": "Dispositivos gerenciados",
-              "unmanaged": "Dispositivos nao gerenciados"
+              "unmanaged": "Dispositivos não gerenciados"
             }
           },
           "platform": {
@@ -558,17 +558,17 @@
       "dataSourceSummary": "{{label}}: {{value}}",
       "dayOfMonth": "Dia do mes",
       "dayOfWeek": "Dia da semana",
-      "deviceFilterDescription": "Restrinja este relatorio a dispositivos que correspondam ao filtro abaixo.",
+      "deviceFilterDescription": "Restrinja este relatório a dispositivos que correspondam ao filtro abaixo.",
       "emailDistributionList": "Lista de distribuicao de e-mail",
       "errors": {
-        "generatePreview": "Falha ao gerar pre-visualizacao",
+        "generatePreview": "Falha ao gerar pre-visualização",
         "generic": "Ocorreu um erro",
-        "loadLivePreview": "Falha ao carregar pre-visualizacao ao vivo",
-        "reportNameRequired": "O nome do relatorio e obrigatorio.",
-        "saveReport": "Falha ao salvar relatorio",
+        "loadLivePreview": "Falha ao carregar pre-visualização ao vivo",
+        "reportNameRequired": "O nome do relatório e obrigatorio.",
+        "saveReport": "Falha ao salvar relatório",
         "selectExportFormat": "Selecione pelo menos um formato de exportacao.",
         "templateNameRequired": "O nome do modelo e obrigatorio.",
-        "validEmail": "Insira um endereco de e-mail valido."
+        "validEmail": "Insira um endereço de e-mail válido."
       },
       "exportFormats": {
         "csv": {
@@ -589,7 +589,7 @@
         "activity": {
           "action": "Acao",
           "duration_seconds": "Duracao (seg)",
-          "ip_address": "Endereco IP",
+          "ip_address": "Endereço IP",
           "location": "Localizacao",
           "resource": "Recurso",
           "result": "Resultado",
@@ -620,13 +620,13 @@
         "devices": {
           "cpu": "Uso de CPU",
           "disk_usage": "Uso de disco",
-          "hostname": "Hostname",
+          "hostname": "Nome do host",
           "last_seen": "Visto por ultimo",
-          "memory": "Uso de memoria",
+          "memory": "Uso de memória",
           "os": "SO",
           "owner": "Proprietario",
           "patch_level": "Nivel de patch",
-          "serial": "Serial",
+          "serial": "Número de série",
           "site": "Site",
           "status": "Status"
         },
@@ -638,12 +638,12 @@
           "release_date": "Data de lancamento",
           "severity": "Severidade",
           "status": "Status",
-          "title": "Titulo",
+          "title": "Título",
           "vendor": "Fornecedor"
         }
       },
       "fieldsShared": {
-        "reportName": "Nome do relatorio",
+        "reportName": "Nome do relatório",
         "saveAsTemplate": "Salvar como modelo",
         "templateName": "Nome do modelo"
       },
@@ -655,7 +655,7 @@
         "contains": "Contem",
         "gt": "Maior que",
         "is": "E",
-        "is_not": "Nao e",
+        "is_not": "Não e",
         "lt": "Menor que"
       },
       "groupBy": "Agrupar por",
@@ -666,19 +666,19 @@
         "value": "Valor"
       },
       "livePreview": {
-        "description": "Atualiza conforme voce configura o relatorio.",
-        "loading": "Carregando pre-visualizacao ao vivo...",
-        "noData": "Sem dados de pre-visualizacao para a configuracao atual.",
-        "previewRows": "Linhas da pre-visualizacao",
-        "title": "Pre-visualizacao ao vivo",
-        "untitledReport": "Relatorio sem titulo"
+        "description": "Atualiza conforme voce configura o relatório.",
+        "loading": "Carregando pre-visualização ao vivo...",
+        "noData": "Sem dados de pre-visualização para a configuração atual.",
+        "previewRows": "Linhas da pre-visualização",
+        "title": "Pre-visualização ao vivo",
+        "untitledReport": "Relatório sem título"
       },
       "logic": {
         "and": "E",
         "or": "OU"
       },
       "noFieldsSelected": "Nenhum campo selecionado ainda.",
-      "noFilters": "Ainda nao ha filtros. Adicione sua primeira condicao.",
+      "noFilters": "Ainda não ha filtros. Adicione sua primeira condição.",
       "noGrouping": "Sem agrupamento",
       "noNumericFields": "Nenhum campo numerico",
       "placeholders": {
@@ -688,7 +688,7 @@
         "value": "Valor"
       },
       "previewTable": {
-        "selectFields": "Selecione campos para preencher a tabela de pre-visualizacao."
+        "selectFields": "Selecione campos para preencher a tabela de pre-visualização."
       },
       "reportTypes": {
         "activity": {
@@ -700,19 +700,19 @@
           "label": "Alertas"
         },
         "compliance": {
-          "description": "Prontidao para auditoria e visibilidade de alinhamento de politicas",
+          "description": "Prontidão para auditoria e visibilidade de alinhamento de políticas",
           "label": "Conformidade"
         },
         "devices": {
-          "description": "Inventario e postura de saude nos endpoints gerenciados",
+          "description": "Inventario e postura de saúde nos endpoints gerenciados",
           "label": "Dispositivos"
         },
         "patches": {
-          "description": "Prontidao de patches, status de implantacao e exposicao",
+          "description": "Prontidão de patches, status de implantacao e exposicao",
           "label": "Patches"
         }
       },
-      "runTime": "Horario de execucao",
+      "runTime": "Horário de execução",
       "schedule": "Agenda",
       "scheduleDetail": {
         "day": "Dia {{date}}",
@@ -731,15 +731,15 @@
       },
       "sections": {
         "chartType": {
-          "description": "Escolha como o relatorio sera visualizado.",
-          "title": "Tipo de grafico"
+          "description": "Escolha como o relatório será visualizado.",
+          "title": "Tipo de gráfico"
         },
         "columns": {
           "description": "Escolha campos e arraste para reordenar.",
           "title": "Colunas e campos"
         },
         "dataSource": {
-          "description": "Configure o conjunto de dados para este tipo de relatorio.",
+          "description": "Configure o conjunto de dados para este tipo de relatório.",
           "title": "Fonte de dados"
         },
         "delivery": {
@@ -747,20 +747,20 @@
           "title": "Agenda e entrega"
         },
         "filters": {
-          "description": "Filtre os dados do relatorio por registros ou propriedades de dispositivos.",
+          "description": "Filtre os dados do relatório por registros ou propriedades de dispositivos.",
           "title": "Filtros"
         },
         "grouping": {
           "description": "Resuma dados com contagens, somas ou medias.",
-          "title": "Agrupamento e agregacao"
+          "title": "Agrupamento e agregação"
         },
         "reportDetails": {
-          "description": "Nomeie o relatorio e decida se ele vira um modelo.",
-          "title": "Detalhes do relatorio"
+          "description": "Nomeie o relatório e decida se ele vira um modelo.",
+          "title": "Detalhes do relatório"
         },
         "reportType": {
-          "description": "Escolha o tipo de relatorio que voce esta criando.",
-          "title": "Tipo de relatorio"
+          "description": "Escolha o tipo de relatório que voce esta criando.",
+          "title": "Tipo de relatório"
         }
       },
       "selectedFields": "Campos selecionados",
@@ -781,14 +781,14 @@
       "where": "Onde"
     },
     "reportTemplates": {
-      "blankConfigurationDescription": "Configure um relatorio do zero ou comece com uma configuracao em branco.",
+      "blankConfigurationDescription": "Configure um relatório do zero ou comece com uma configuração em branco.",
       "createCustomTemplate": "Criar Modelo Personalizado",
       "custom": "Personalizado",
       "description": "Comece com modelos selecionados e ajuste os detalhes antes de publicar.",
       "errors": {
-        "createReport": "Falha ao criar relatorio",
-        "fetchTemplates": "Falha ao buscar modelos de relatorio",
-        "loadTemplates": "Nao foi possivel carregar modelos"
+        "createReport": "Falha ao criar relatório",
+        "fetchTemplates": "Falha ao buscar modelos de relatório",
+        "loadTemplates": "Não foi possível carregar modelos"
       },
       "formats": {
         "csv": "CSV",
@@ -796,17 +796,17 @@
         "pdf": "PDF"
       },
       "last30Days": "ultimos 30 dias",
-      "previewAlt": "Pre-visualizacao de {{name}}",
+      "previewAlt": "Pre-visualização de {{name}}",
       "reportTypes": {
         "activity": "Atividade",
         "alert_summary": "Resumo de Alertas",
         "alerts": "Alertas",
-        "compliance": "Relatorio de Conformidade",
+        "compliance": "Relatório de Conformidade",
         "device_inventory": "Inventario de Dispositivos",
         "devices": "Dispositivos",
         "executive_summary": "Resumo Executivo",
         "patches": "Patches",
-        "performance": "Relatorio de Desempenho",
+        "performance": "Relatório de Desempenho",
         "security_compliance_posture": "Postura de Seguranca e Conformidade",
         "software_inventory": "Inventario de Software"
       },
@@ -818,49 +818,49 @@
       },
       "spec": {
         "cadence": "Cadencia",
-        "defaultRange": "Intervalo padrao",
+        "defaultRange": "Intervalo padrão",
         "format": "Formato"
       },
       "success": {
-        "created": "\"{{name}}\" criado. Gere-o na lista de Relatorios."
+        "created": "\"{{name}}\" criado. Gere-o na lista de Relatórios."
       },
       "syncing": "Sincronizando modelos...",
       "template": "Modelo",
       "templates": {
         "alert_summary": {
-          "description": "Principais alertas, tendencias de severidade e carga de resposta.",
-          "name": "Relatorio de Resumo de Alertas"
+          "description": "Principais alertas, tendências de severidade e carga de resposta.",
+          "name": "Relatório de Resumo de Alertas"
         },
         "billing_usage": {
           "description": "Utilizacao de licencas, faixas de uso e resumos de chargeback.",
-          "name": "Relatorio de Cobranca/Uso"
+          "name": "Relatório de Cobrança/Uso"
         },
         "device_health": {
-          "description": "Tendencias de CPU, memoria e uptime com pontuacao de saude dos dispositivos.",
-          "name": "Relatorio de Saude dos Dispositivos"
+          "description": "Tendências de CPU, memória e uptime com pontuação de saúde dos dispositivos.",
+          "name": "Relatório de Saude dos Dispositivos"
         },
         "executive_summary": {
-          "description": "KPIs de alto nivel, postura de risco e tendencias estrategicas para lideranca.",
+          "description": "KPIs de alto nivel, postura de risco e tendências estrategicas para lideranca.",
           "name": "Resumo Executivo"
         },
         "patch_compliance": {
           "description": "Cobertura de patches, atualizacoes atrasadas e status de remediacao.",
-          "name": "Relatorio de Conformidade de Patches"
+          "name": "Relatório de Conformidade de Patches"
         },
         "security_compliance_posture": {
-          "description": "Evidencias prontas para seguro/vetting: cobertura de EDR, criptografia, firewall, patches, vulnerabilidades, acesso privilegiado e integracoes de seguranca com consolidacoes percentuais de implementacao.",
+          "description": "Evidências prontas para seguro/vetting: cobertura de EDR, criptografia, firewall, patches, vulnerabilidades, acesso privilegiado e integrações de segurança com consolidações percentuais de implementação.",
           "name": "Postura de Seguranca e Conformidade (Seguro)"
         },
         "sla_compliance": {
           "description": "Aderencia a SLA, risco de violacao e linhas do tempo de resposta.",
-          "name": "Relatorio de Conformidade de SLA"
+          "name": "Relatório de Conformidade de SLA"
         },
         "technician_activity": {
-          "description": "Volume de tickets, interacoes com dispositivos e velocidade de resolucao.",
-          "name": "Relatorio de Atividade de Tecnicos"
+          "description": "Volume de tickets, interações com dispositivos e velocidade de resolução.",
+          "name": "Relatório de Atividade de Tecnicos"
         }
       },
-      "title": "Modelos de Relatorio",
+      "title": "Modelos de Relatório",
       "useTemplate": "Usar modelo",
       "useTemplateTitle": "Usar {{name}}"
     }

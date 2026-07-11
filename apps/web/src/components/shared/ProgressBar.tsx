@@ -115,7 +115,7 @@ export function ProgressItemList({
               itemStatusStyles[item.status],
             )}
           >
-            {t(`shared.progress.status.${item.status}`)}
+            {t(/* i18n-dynamic */ `shared.progress.status.${item.status}`)}
           </span>
         </div>
       ))}

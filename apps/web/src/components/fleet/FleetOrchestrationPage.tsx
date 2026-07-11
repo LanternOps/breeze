@@ -6,6 +6,7 @@ import {
   ChevronRight, AlertTriangle, CheckCircle2
 } from 'lucide-react';
 import { cn, widthPercentClass } from '@/lib/utils';
+import { formatNumber } from '@/lib/i18n/format';
 import { fetchWithAuth } from '../../stores/auth';
 import { useAiStore } from '@/stores/aiStore';
 
@@ -411,7 +412,7 @@ export default function FleetOrchestrationPage() {
                          transition-colors cursor-pointer"
             >
               <action.icon className="h-4 w-4" />
-              {t(action.labelKey)}
+              {t(/* i18n-dynamic */ action.labelKey)}
               <ChevronRight className="h-3 w-3 opacity-50" />
             </button>
           ))}
@@ -543,7 +544,7 @@ function StatCard({
         )}
       </div>
       <div className="mt-4">
-        <div className="text-2xl font-bold">{value.toLocaleString()}</div>
+        <div className="text-2xl font-bold">{formatNumber(value)}</div>
         <div className="text-sm text-muted-foreground">{title}</div>
         <div className="text-xs text-muted-foreground/70 mt-1">{subtitle}</div>
       </div>
@@ -580,7 +581,7 @@ function MiniStat({ label, value, icon: Icon, color }: {
   return (
     <div className="flex flex-col items-center gap-1">
       <Icon className={cn('h-5 w-5', color)} />
-      <span className="text-xl font-bold">{value.toLocaleString()}</span>
+      <span className="text-xl font-bold">{formatNumber(value)}</span>
       <span className="text-xs text-muted-foreground">{label}</span>
     </div>
   );

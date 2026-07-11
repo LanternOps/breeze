@@ -170,12 +170,12 @@ export default function BaselineList() {
                         osBadge[bl.osType] ?? ''
                       )}
                     >
-                      {osLabelKey[bl.osType] ? t(`auditBaselinesBaselineList.os.${osLabelKey[bl.osType]}`) : bl.osType}
+                      {osLabelKey[bl.osType] ? t(/* i18n-dynamic */ `auditBaselinesBaselineList.os.${osLabelKey[bl.osType]}`) : bl.osType}
                     </span>
                   </td>
                   <td className="px-4 py-3">
                     <span className="inline-flex rounded-full border bg-muted/30 px-2.5 py-0.5 text-xs font-medium">
-                      {profileLabelKey[bl.profile] ? t(`auditBaselinesBaselineList.profiles.${profileLabelKey[bl.profile]}`) : bl.profile}
+                      {profileLabelKey[bl.profile] ? t(/* i18n-dynamic */ `auditBaselinesBaselineList.profiles.${profileLabelKey[bl.profile]}`) : bl.profile}
                     </span>
                   </td>
                   <td className="px-4 py-3">

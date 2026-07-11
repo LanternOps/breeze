@@ -379,7 +379,7 @@ export default function OrgNotificationSettings({
                   <th className="px-2 py-2">{t('orgNotificationSettings.preferences.alertType')}</th>
                   {channelOptions.map(channel => (
                     <th key={channel.id} className="px-2 py-2">
-                      {t(channel.labelKey)}
+                      {t(/* i18n-dynamic */ channel.labelKey)}
                     </th>
                   ))}
                 </tr>
@@ -387,7 +387,7 @@ export default function OrgNotificationSettings({
               <tbody>
                 {alertTypes.map(alert => (
                   <tr key={alert.id} className="border-t">
-                    <td className="px-2 py-2 text-sm font-medium">{t(alert.labelKey)}</td>
+                    <td className="px-2 py-2 text-sm font-medium">{t(/* i18n-dynamic */ alert.labelKey)}</td>
                     {channelOptions.map(channel => (
                       <td key={channel.id} className={`px-2 py-2 ${isLocked('preferences') ? 'opacity-60' : ''}`}>
                         <input

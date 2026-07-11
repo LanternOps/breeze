@@ -85,7 +85,7 @@ export function QuickAddChips({ value, onChange }: QuickAddChipsProps) {
             }`}
           >
             {added && <Check className="h-3 w-3" />}
-            {t(`quickAddChips.chips.${chip.id}`, { defaultValue: chip.label })}
+            {t(/* i18n-dynamic */ `quickAddChips.chips.${chip.id}`, { defaultValue: chip.label })}
           </button>
         );
       })}

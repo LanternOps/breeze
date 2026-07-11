@@ -296,7 +296,7 @@ export default function PatchList({
     const severity = severityConfig[patch.severity];
     return (
       <span className={cn('inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium', severity.color)}>
-        {t(severity.labelKey)}
+        {t(/* i18n-dynamic */ severity.labelKey)}
       </span>
     );
   };
@@ -307,7 +307,7 @@ export default function PatchList({
     return (
       <span className={cn('inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium', approval.color)}>
         <ApprovalIcon className="h-3.5 w-3.5" />
-        {t(approval.labelKey)}
+        {t(/* i18n-dynamic */ approval.labelKey)}
       </span>
     );
   };
@@ -576,9 +576,9 @@ export default function PatchList({
                           'group flex items-center gap-1 uppercase tracking-wide hover:text-foreground',
                           active ? 'text-foreground' : 'text-muted-foreground'
                         )}
-                        title={t('patchList.sortBy', { label: t(label) })}
+                        title={t('patchList.sortBy', { label: t(/* i18n-dynamic */ label) })}
                       >
-                        {t(label)}
+                        {t(/* i18n-dynamic */ label)}
                         <SortIcon className={cn('h-3.5 w-3.5', active ? 'opacity-100' : 'opacity-40 group-hover:opacity-70')} />
                       </button>
                     </th>

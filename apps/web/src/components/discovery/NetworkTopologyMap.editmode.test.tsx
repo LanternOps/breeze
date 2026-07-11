@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 import NetworkTopologyMap, { type TopologyEditApi } from './NetworkTopologyMap';
+import { i18n, loadLocale } from '../../lib/i18n';
 
 // jsdom lacks ResizeObserver; Cytoscape (and the layout plugins) reference it.
 class ResizeObserverStub {
@@ -103,7 +104,8 @@ function mockTopologyResponse(body: unknown) {
 }
 
 describe('NetworkTopologyMap edit mode (#1728 phase 4)', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    await i18n.changeLanguage('en');
     fetchWithAuth.mockReset();
     runAction.mockClear();
     handleActionError.mockClear();
@@ -188,6 +190,38 @@ describe('NetworkTopologyMap edit mode (#1728 phase 4)', () => {
       );
     });
     expect(handleActionError).not.toHaveBeenCalled();
+  });
+
+  it('keeps the manual-node API label canonical when the UI is in pt-BR', async () => {
+    canMock.mockReturnValue(true);
+    await loadLocale('pt-BR');
+    await i18n.changeLanguage('pt-BR');
+    const user = userEvent.setup();
+
+    render(<NetworkTopologyMap />);
+    await user.click(await screen.findByTestId('topology-edit-toggle'));
+
+    fetchWithAuth.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ id: 'n1', role: 'patch_panel', label: 'Patch Panel', kind: 'manual' })
+    } as unknown as Response);
+
+    const addButton = await screen.findByTestId('topology-add-node-patch_panel');
+    expect(addButton).toHaveTextContent('Painel de conexão');
+    await user.click(addButton);
+
+    await waitFor(() => {
+      const postCall = fetchWithAuth.mock.calls.find(
+        ([url]) => url === '/discovery/topology/manual-node'
+      );
+      expect(postCall).toBeTruthy();
+      const body = JSON.parse((postCall![1] as { body?: string }).body ?? '{}');
+      expect(body).toMatchObject({
+        siteId: 'site-1',
+        role: 'patch_panel',
+        label: 'Patch Panel'
+      });
+    });
   });
 
   it('connectNodes posts a manual edge via runAction and adds it to the canvas', async () => {

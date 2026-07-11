@@ -111,7 +111,7 @@ export function OrgApprovalSecurityTab() {
           return (
             <div key={tier} className="flex items-center justify-between gap-4 rounded-md border p-3">
               <span className="text-sm font-medium capitalize">
-                {t(TIER_LABEL_KEYS[tier])}
+                {t(/* i18n-dynamic */ TIER_LABEL_KEYS[tier])}
               </span>
               <select
                 data-testid={`level-${tier}`}
@@ -124,7 +124,7 @@ export function OrgApprovalSecurityTab() {
                   .filter((lvl) => lvl >= floor)
                   .map((lvl) => (
                     <option key={lvl} value={lvl}>
-                      {t(LEVEL_LABEL_KEYS[lvl])}
+                      {t(/* i18n-dynamic */ LEVEL_LABEL_KEYS[lvl])}
                     </option>
                   ))}
               </select>

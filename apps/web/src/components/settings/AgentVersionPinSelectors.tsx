@@ -108,7 +108,7 @@ export default function AgentVersionPinSelectors({
 
           return (
             <label key={key} className="space-y-1 text-sm">
-              <span className="font-medium">{t(`agentVersionPins.components.${key}`)}</span>
+              <span className="font-medium">{t(/* i18n-dynamic */ `agentVersionPins.components.${key}`)}</span>
               <select
                 value={selectValue}
                 onChange={(e) => setPin(key, e.target.value)}

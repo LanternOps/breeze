@@ -38,12 +38,12 @@ function skipReasonLabel(code: string, t: TFunction): string {
 }
 
 function translatedPriorityLabel(config: TicketConfig | null, priority: TicketPriority, t: TFunction): string {
-  return config?.priorities[priority]?.label ?? t(`ticketsPage.priority.${priority}`);
+  return config?.priorities[priority]?.label ?? t(/* i18n-dynamic */ `ticketsPage.priority.${priority}`);
 }
 
 function translatedStatusLabel(config: TicketConfig | null, status: TicketStatus, t: TFunction): string {
   const systemRow = config?.statuses.find((s) => s.coreStatus === status && s.isSystem);
-  return systemRow?.name ?? t(`ticketsPage.status.${status}`);
+  return systemRow?.name ?? t(/* i18n-dynamic */ `ticketsPage.status.${status}`);
 }
 
 // Shared toast for a POST /tickets/bulk aggregate result. `verb` is the past-
@@ -576,7 +576,7 @@ export default function TicketsPage() {
               tab === tabItem.id ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'
             )}
           >
-            {t(`ticketsPage.tabs.${tabItem.labelKey}`)}
+            {t(/* i18n-dynamic */ `ticketsPage.tabs.${tabItem.labelKey}`)}
             {tabCount(tabItem.id) !== null && <span className="ml-1.5 text-xs text-muted-foreground">{tabCount(tabItem.id)}</span>}
           </button>
         ))}
@@ -692,7 +692,7 @@ export default function TicketsPage() {
           className={filterSelectClass(sort !== 'triage')}
         >
           {SORT_OPTIONS.map((o) => (
-            <option key={o.value} value={o.value}>{t(`ticketsPage.sort.${o.labelKey}`)}</option>
+            <option key={o.value} value={o.value}>{t(/* i18n-dynamic */ `ticketsPage.sort.${o.labelKey}`)}</option>
           ))}
         </select>
       </div>

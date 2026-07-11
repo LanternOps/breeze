@@ -206,7 +206,7 @@ export default function ExecutionDetails({
                   'text-lg font-semibold',
                   statusConfig[execution.status].color
                 )}>
-                  {t(`executionDetails.${statusConfig[execution.status].label}`)}
+                  {t(/* i18n-dynamic */ `executionDetails.${statusConfig[execution.status].label}`)}
                 </p>
                 <p className="text-sm text-muted-foreground">
                   {execution.status === 'running'

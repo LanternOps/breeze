@@ -728,7 +728,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
           <AlertTriangle className="mt-0.5 h-5 w-5" />
           <div>
             <p className="text-sm font-medium">
-              {t('orgSettingsPage.unsaved.title', { section: t(TAB_BY_KEY[activeTab].label) })}
+              {t('orgSettingsPage.unsaved.title', { section: t(/* i18n-dynamic */ TAB_BY_KEY[activeTab].label) })}
             </p>
             <p className="text-xs text-amber-800">
               {t('orgSettingsPage.unsaved.description')}
@@ -746,11 +746,11 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
       <div className="grid gap-6 lg:grid-cols-[240px_minmax(0,1fr)]">
         <SettingsSectionNav
           groups={TAB_GROUPS.map(group => ({
-            label: t(group.label),
+            label: t(/* i18n-dynamic */ group.label),
             items: group.items.map(item => ({
               ...item,
-              label: t(item.label),
-              description: t(item.description),
+              label: t(/* i18n-dynamic */ item.label),
+              description: t(/* i18n-dynamic */ item.description),
               dirty: saveState.hasUnsavedChanges && item.key === activeTab,
             })),
           }))}

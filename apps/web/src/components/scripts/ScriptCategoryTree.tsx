@@ -525,7 +525,7 @@ export default function ScriptCategoryTree({
                         <p className="text-xs text-muted-foreground">{t('scriptCategoryTree.idLabel', { id: script.id })}</p>
                       </div>
                       <span className={cn('rounded-full px-2 py-0.5 text-xs font-medium', statusStyles[script.status])}>
-                        {t(`scriptCategoryTree.status.${script.status}`)}
+                        {t(/* i18n-dynamic */ `scriptCategoryTree.status.${script.status}`)}
                       </span>
                     </div>
                   );

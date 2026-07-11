@@ -380,7 +380,7 @@ export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScript
                   )} />
                   <div>
                     <p className={cn('text-lg font-semibold', config.color)}>
-                      {t(config.label)}
+                      {t(/* i18n-dynamic */ config.label)}
                     </p>
                     <p className="text-sm text-muted-foreground">
                       {getStatusDescription(selectedStatus, selectedExecution.errorMessage, t)}

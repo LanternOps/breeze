@@ -252,10 +252,10 @@ export default function DeviceSecurityTab({ deviceId, orgId, timezone }: DeviceS
                     <p className="text-sm font-medium">{threat.name}</p>
                     <div className="flex flex-wrap items-center gap-2">
                       <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold ${severityBadge[threat.severity]}`}>
-                        {t(`deviceSecurityTab.severity.${threat.severity}`)}
+                        {t(/* i18n-dynamic */ `deviceSecurityTab.severity.${threat.severity}`)}
                       </span>
                       <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold ${statusBadge[threat.status]}`}>
-                        {t(`deviceSecurityTab.threatStatus.${threat.status}`)}
+                        {t(/* i18n-dynamic */ `deviceSecurityTab.threatStatus.${threat.status}`)}
                       </span>
                     </div>
                   </div>
@@ -327,9 +327,9 @@ export default function DeviceSecurityTab({ deviceId, orgId, timezone }: DeviceS
               {scans.map((scan) => (
                 <div key={scan.id} className="rounded-md border bg-background p-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <p className="text-sm font-medium capitalize">{t('deviceSecurityTab.scanType', { type: t(`deviceSecurityTab.scanTypes.${scan.scanType}`) })}</p>
+                    <p className="text-sm font-medium capitalize">{t('deviceSecurityTab.scanType', { type: t(/* i18n-dynamic */ `deviceSecurityTab.scanTypes.${scan.scanType}`) })}</p>
                     <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold ${scanStatusBadge[scan.status]}`}>
-                      {t(`deviceSecurityTab.scanStatus.${scan.status}`)}
+                      {t(/* i18n-dynamic */ `deviceSecurityTab.scanStatus.${scan.status}`)}
                     </span>
                   </div>
 

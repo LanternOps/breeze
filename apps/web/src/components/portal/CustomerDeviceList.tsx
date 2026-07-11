@@ -50,7 +50,7 @@ export default function CustomerDeviceList({ devices, onSelect }: CustomerDevice
                 statusBadge[device.status]
               )}
             >
-              {t(`deviceStatus.status.${device.status}`)}
+              {t(/* i18n-dynamic */ `deviceStatus.status.${device.status}`)}
             </span>
           </button>
         ))}

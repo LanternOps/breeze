@@ -307,7 +307,7 @@ export default function PolicyList({
                         )}
                       >
                         <EnforcementIcon className="h-3 w-3" />
-                        {t(`policyList.${enforcementConfig[policy.enforcementLevel].label}`)}
+                        {t(/* i18n-dynamic */ `policyList.${enforcementConfig[policy.enforcementLevel].label}`)}
                       </span>
                     </td>
                     <td className="px-4 py-3">

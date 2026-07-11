@@ -201,7 +201,7 @@ export default function AssetMonitoringSection({ assetId, ipAddress, open }: Ass
                     <div className="min-w-0">
                       <p className="truncate font-medium">{monitor.name}</p>
                       <p className="truncate text-muted-foreground">
-                        {t(`assetMonitoringSection.monitorTypes.${monitor.monitorType}`, { defaultValue: monitor.monitorType })} • {monitor.target}
+                        {t(/* i18n-dynamic */ `assetMonitoringSection.monitorTypes.${monitor.monitorType}`, { defaultValue: monitor.monitorType })} • {monitor.target}
                       </p>
                     </div>
                     <span

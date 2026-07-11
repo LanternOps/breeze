@@ -282,7 +282,7 @@ export default function LogSearch() {
                 checked={selectedLevels.includes(level)}
                 onChange={() => toggleLevel(level)}
               />
-              {t(`longTail.logs.LogSearch.levels.${level}`)}
+              {t(/* i18n-dynamic */ `longTail.logs.LogSearch.levels.${level}`)}
             </label>
           ))}
         </div>

@@ -149,7 +149,7 @@ export default function AlertDetails({
                     severityConfig[alert.severity].color
                   )}
                 >
-                  {t(`alertDetails.severity.${alert.severity}`)}
+                  {t(/* i18n-dynamic */ `alertDetails.severity.${alert.severity}`)}
                 </span>
                 <span
                   className={cn(
@@ -157,7 +157,7 @@ export default function AlertDetails({
                     statusConfig[alert.status].color
                   )}
                 >
-                  {t(`alertDetails.status.${alert.status}`)}
+                  {t(/* i18n-dynamic */ `alertDetails.status.${alert.status}`)}
                 </span>
               </div>
             </div>
@@ -303,10 +303,10 @@ export default function AlertDetails({
                         <span className="text-sm font-medium">
                           {change.fromStatus
                             ? t('alertDetails.statusChange', {
-                                from: t(`alertDetails.status.${change.fromStatus}`),
-                                to: t(`alertDetails.status.${change.toStatus}`),
+                                from: t(/* i18n-dynamic */ `alertDetails.status.${change.fromStatus}`),
+                                to: t(/* i18n-dynamic */ `alertDetails.status.${change.toStatus}`),
                               })
-                            : t(`alertDetails.status.${change.toStatus}`)}
+                            : t(/* i18n-dynamic */ `alertDetails.status.${change.toStatus}`)}
                         </span>
                         <span className="text-xs text-muted-foreground">
                           {formatRelativeTime(change.changedAt)}
@@ -370,7 +370,7 @@ export default function AlertDetails({
                                 : 'bg-warning/15 text-warning border-warning/30'
                           )}
                         >
-                          {t(`alertDetails.notificationStatus.${notification.status}`)}
+                          {t(/* i18n-dynamic */ `alertDetails.notificationStatus.${notification.status}`)}
                         </span>
                         <span className="text-xs text-muted-foreground flex items-center gap-1">
                           <Clock className="h-3 w-3" />

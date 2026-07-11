@@ -68,7 +68,7 @@ export function InvoiceDocument({ detail, customerName }: DocumentProps) {
   const isEmpty = visibleLines.length === 0;
   const invoiceStatusLabel = invoice.status === 'sent' && !invoice.sentAt
     ? t('invoice.status.issued')
-    : t(`invoice.status.${invoice.status}`);
+    : t(/* i18n-dynamic */ `invoice.status.${invoice.status}`);
   const amountPaid = Number(invoice.amountPaid);
   // Only surface the per-line Tax column when this invoice carries tax — mirrors
   // the header Tax row's visibility (otherwise it's a column of dashes).

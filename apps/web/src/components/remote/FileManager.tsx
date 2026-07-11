@@ -1247,7 +1247,7 @@ export default function FileManager({
                         <span className="truncate">{candidate.path}</span>
                       </span>
                       <span className="whitespace-nowrap text-muted-foreground">
-                        {t(`fileManager.disk.categories.${candidate.category}`, { defaultValue: cleanupCategoryLabels[candidate.category] ?? candidate.category })} · {formatSize(candidate.sizeBytes)}
+                        {t(/* i18n-dynamic */ `fileManager.disk.categories.${candidate.category}`, { defaultValue: cleanupCategoryLabels[candidate.category] ?? candidate.category })} · {formatSize(candidate.sizeBytes)}
                       </span>
                     </label>
                   ))}

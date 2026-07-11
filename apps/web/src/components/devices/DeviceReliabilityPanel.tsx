@@ -72,7 +72,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 function formatCount(value: number): string {
   if (!Number.isFinite(value)) return '—';
   if (value >= COUNT_CAP) return `${COUNT_CAP - 1}+`;
-  return value.toLocaleString();
+  return formatNumber(value);
 }
 
 // Observed device age in whole days, or null when enrollment time is unknown.
@@ -271,7 +271,7 @@ function OffenderGroup({
                 {when && <span>{when}</span>}
                 <span
                   className="rounded bg-muted px-1.5 py-0.5 font-semibold text-foreground"
-                  title={offender.count.toLocaleString()}
+                  title={formatNumber(offender.count)}
                 >
                   {formatCount(offender.count)}×
                 </span>
@@ -477,7 +477,7 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
   const topDragCount = topDrag ? factorCount30d(snapshot, topDrag.factor) : null;
   const atRiskDragLabel = topDrag?.label ?? (
     snapshot.topIssues[0]
-      ? t(`deviceReliabilityPanel.issueLabels.${issueLabels[snapshot.topIssues[0].type]}`)
+      ? t(/* i18n-dynamic */ `deviceReliabilityPanel.issueLabels.${issueLabels[snapshot.topIssues[0].type]}`)
       : null
   );
   const showTopDragStat = uptimeDriver?.weight === 0 && topDrag !== undefined && topDrag.lostPoints > 0;
@@ -520,7 +520,7 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
                 <HelpTooltip
                   text={t('deviceReliabilityPanel.scoreTooltip', {
                     score: snapshot.reliabilityScore,
-                    band: t(`deviceReliabilityPanel.scoreBands.${scoreBandLabel(snapshot.reliabilityScore)}`),
+                    band: t(/* i18n-dynamic */ `deviceReliabilityPanel.scoreBands.${scoreBandLabel(snapshot.reliabilityScore)}`),
                   })}
                 />
               </div>
@@ -530,7 +530,7 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
             </div>
             <div>
               <div className="text-xs text-muted-foreground">{t('deviceReliabilityPanel.trend')}</div>
-              <div className="text-sm font-medium capitalize">{t(`deviceReliabilityPanel.trends.${snapshot.trendDirection}`)}</div>
+              <div className="text-sm font-medium capitalize">{t(/* i18n-dynamic */ `deviceReliabilityPanel.trends.${snapshot.trendDirection}`)}</div>
             </div>
             {showTopDragStat && topDrag ? (
               <div>
@@ -712,9 +712,9 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
         <div className="mt-5 grid gap-3 lg:grid-cols-3">
           {snapshot.topIssues.slice(0, 3).map((issue) => (
             <div key={issue.type} className="rounded-md border p-3">
-              <p className="text-sm font-medium">{t(`deviceReliabilityPanel.issueLabels.${issueLabels[issue.type]}`)}</p>
-              <p className="mt-1 text-xs capitalize text-muted-foreground">{t(`deviceReliabilityPanel.severity.${issue.severity}`)}</p>
-              <p className="mt-3 text-lg font-semibold tabular-nums" title={issue.count.toLocaleString()}>
+              <p className="text-sm font-medium">{t(/* i18n-dynamic */ `deviceReliabilityPanel.issueLabels.${issueLabels[issue.type]}`)}</p>
+              <p className="mt-1 text-xs capitalize text-muted-foreground">{t(/* i18n-dynamic */ `deviceReliabilityPanel.severity.${issue.severity}`)}</p>
+              <p className="mt-3 text-lg font-semibold tabular-nums" title={formatNumber(issue.count)}>
                 {formatCount(issue.count)}
               </p>
             </div>

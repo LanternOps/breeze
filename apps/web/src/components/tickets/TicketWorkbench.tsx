@@ -34,7 +34,7 @@ interface TagEditorProps {
 type TFunction = ReturnType<typeof useTranslation>['t'];
 
 function translatedPriorityLabel(config: TicketConfig | null, priority: TicketPriority, t: TFunction): string {
-  return config?.priorities[priority]?.label ?? t(`ticketWorkbench.priority.${priority}`);
+  return config?.priorities[priority]?.label ?? t(/* i18n-dynamic */ `ticketWorkbench.priority.${priority}`);
 }
 
 function TagEditor({ value, max = 20, onChange, 'data-testid': testId }: TagEditorProps) {
@@ -707,7 +707,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
             >
               {activeStatusesByCore(config).map(({ coreStatus, statuses }) =>
                 statuses.length > 0 ? (
-                  <optgroup key={coreStatus} label={t(`ticketWorkbench.status.${coreStatus}`)}>
+                  <optgroup key={coreStatus} label={t(/* i18n-dynamic */ `ticketWorkbench.status.${coreStatus}`)}>
                     {statuses.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
                   </optgroup>
                 ) : null
@@ -721,7 +721,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               data-testid="ticket-workbench-status"
               aria-label={t('common:labels.status')}
             >
-              {STATUS_OPTIONS.map((s) => <option key={s} value={s}>{t(`ticketWorkbench.status.${s}`)}</option>)}
+              {STATUS_OPTIONS.map((s) => <option key={s} value={s}>{t(/* i18n-dynamic */ `ticketWorkbench.status.${s}`)}</option>)}
             </select>
           )}
           <select

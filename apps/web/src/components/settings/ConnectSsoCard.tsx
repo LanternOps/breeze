@@ -8,11 +8,10 @@ type LinkOption = { id: string; name: string; type: string; linked: boolean };
 
 // User-facing copy for the callback's typed reason codes
 // (`/settings/profile?ssoLinkError=<reason>`).
-const LINK_ERROR_COPY: Record<string, string> = {
-  email_mismatch:
-    i18n.t('settings:connectSsoCard.emailMismatch'),
-  identity_in_use: i18n.t('settings:connectSsoCard.identityInUse'),
-  user_gone: i18n.t('settings:connectSsoCard.userGone')
+const LINK_ERROR_KEYS: Record<string, string> = {
+  email_mismatch: 'connectSsoCard.emailMismatch',
+  identity_in_use: 'connectSsoCard.identityInUse',
+  user_gone: 'connectSsoCard.userGone'
 };
 
 export default function ConnectSsoCard() {
@@ -62,7 +61,7 @@ export default function ConnectSsoCard() {
     if (err) {
       setNotice({
         type: 'error',
-        message: LINK_ERROR_COPY[err] ?? t('connectSsoCard.couldNotConnectSingleSignOn')
+        message: LINK_ERROR_KEYS[err] ? t(/* i18n-dynamic */ LINK_ERROR_KEYS[err]) : t('connectSsoCard.couldNotConnectSingleSignOn')
       });
     }
   }, [t]);

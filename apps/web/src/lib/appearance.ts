@@ -1,4 +1,4 @@
-import type { TimeFormat } from '@breeze/shared';
+import type { SupportedLocale, TimeFormat } from '@breeze/shared';
 
 export const THEME_OPTIONS = ['light', 'dark', 'system'] as const;
 export type ThemePreference = (typeof THEME_OPTIONS)[number];
@@ -13,7 +13,7 @@ export const TIME_FORMAT_OPTIONS = ['12h', '24h'] as const satisfies readonly Ti
 export type TimeFormatPreference = TimeFormat;
 
 export const LOCALE_OPTIONS = ['en', 'pt-BR'] as const;
-export type LocalePreference = (typeof LOCALE_OPTIONS)[number];
+export type LocalePreference = SupportedLocale;
 
 /**
  * Devices-list presentation of linked multi-boot profiles (#2138). 'on' =

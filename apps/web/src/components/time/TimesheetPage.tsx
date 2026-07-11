@@ -119,7 +119,7 @@ export default function TimesheetPage() {
   const [loadError, setLoadError] = useState(false);
   const friendly = useCallback((code: string): string | undefined => {
     const key = FRIENDLY[code];
-    return key ? t(`longTail.time.TimesheetPage.${key}`) : undefined;
+    return key ? t(/* i18n-dynamic */ `longTail.time.TimesheetPage.${key}`) : undefined;
   }, [t]);
 
   // Load users once on mount

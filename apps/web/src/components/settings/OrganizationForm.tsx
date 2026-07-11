@@ -164,7 +164,7 @@ export default function OrganizationForm({
           >
             {typeOptions.map(option => (
               <option key={option.value} value={option.value}>
-                {t(option.labelKey)}
+                {t(/* i18n-dynamic */ option.labelKey)}
               </option>
             ))}
           </select>
@@ -182,7 +182,7 @@ export default function OrganizationForm({
           >
             {statusOptions.map(option => (
               <option key={option.value} value={option.value}>
-                {t(option.labelKey)}
+                {t(/* i18n-dynamic */ option.labelKey)}
               </option>
             ))}
           </select>

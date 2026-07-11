@@ -245,7 +245,7 @@ export default function PeripheralActivityLog({
                       <span
                         className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${eventTypeBadge[event.eventType] ?? "bg-muted text-muted-foreground"}`}
                       >
-                        {t(`peripheralActivityLog.events.${event.eventType}`, {
+                        {t(/* i18n-dynamic */ `peripheralActivityLog.events.${event.eventType}`, {
                           defaultValue: event.eventType.replace("_", " "),
                         })}{" "}
                         {/* i18n-dynamic */}

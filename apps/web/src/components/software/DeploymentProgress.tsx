@@ -22,24 +22,24 @@ type DeploymentProgressProps = {
 const statusStyles: Record<
   DeviceStatus,
   {
-    label: string;
+    labelKey: string;
     color: string;
   }
 > = {
   queued: {
-    label: i18n.t("policies:software.deploymentProgress.queued"),
+    labelKey: "software.deploymentProgress.queued",
     color: "bg-slate-500/20 text-slate-700 border-slate-500/40",
   },
   running: {
-    label: i18n.t("policies:software.deploymentProgress.running"),
+    labelKey: "software.deploymentProgress.running",
     color: "bg-blue-500/20 text-blue-700 border-blue-500/40",
   },
   completed: {
-    label: i18n.t("policies:software.deploymentProgress.completed"),
+    labelKey: "software.deploymentProgress.completed",
     color: "bg-emerald-500/20 text-emerald-700 border-emerald-500/40",
   },
   failed: {
-    label: i18n.t("policies:software.deploymentProgress.failed"),
+    labelKey: "software.deploymentProgress.failed",
     color: "bg-red-500/20 text-red-700 border-red-500/40",
   },
 };
@@ -77,7 +77,7 @@ export default function DeploymentProgress({
   devices = defaultDevices,
   onRetryFailed,
 }: DeploymentProgressProps) {
-  useTranslation("policies");
+  const { t } = useTranslation("policies");
   const stats = useMemo(() => {
     const total = devices.length;
     const completed = devices.filter(
@@ -232,7 +232,7 @@ export default function DeploymentProgress({
                         statusStyles[device.status].color,
                       )}
                     >
-                      {statusStyles[device.status].label}
+                      {t(/* i18n-dynamic */ statusStyles[device.status].labelKey)}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-muted-foreground">

@@ -1215,7 +1215,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                     addType === o.value ? 'border-primary bg-primary/10 text-primary' : 'hover:bg-muted'
                   }`}
                 >
-                  {t(o.labelKey)}
+                  {t(/* i18n-dynamic */ o.labelKey)}
                 </button>
               ))}
             </div>
@@ -1368,7 +1368,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
               <div className="mt-2 space-y-0.5 border-t pt-2 text-sm text-muted-foreground" data-testid="quote-category-breakdown">
                 {railBreakdown.map((b) => (
                   <div key={b.category} className="flex justify-between gap-2">
-                    <span>{t(`quotes.editor.categories.${b.category}`, { defaultValue: b.category })}</span>
+                    <span>{t(/* i18n-dynamic */ `quotes.editor.categories.${b.category}`, { defaultValue: b.category })}</span>
                     <span className="tabular-nums">
                       {[
                         Number(b.oneTimeTotal) > 0 ? formatMoney(b.oneTimeTotal, currency) : null,
@@ -1723,7 +1723,7 @@ function BlockCard({
     <div className="rounded-lg border bg-card shadow-xs" data-testid={`quote-block-${block.id}`}>
       <div className="flex items-center justify-between border-b px-4 py-2">
         <span className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          {BLOCK_TYPE_LABEL_KEYS[block.blockType] ? t(BLOCK_TYPE_LABEL_KEYS[block.blockType]) : block.blockType}
+          {BLOCK_TYPE_LABEL_KEYS[block.blockType] ? t(/* i18n-dynamic */ BLOCK_TYPE_LABEL_KEYS[block.blockType]) : block.blockType}
           {isTable && tableLabel ? ` · ${tableLabel}` : ''}
           <SrSaved show={blockSaved} testId={`quote-block-saved-${block.id}`} />
         </span>
@@ -2149,7 +2149,7 @@ function ReadonlyLineRow({ line: l, quoteId, currency, taxRate, isFirst, showInt
         <td className="px-2 py-2 text-right tabular-nums">{formatMoney(l.unitPrice, currency)}</td>
         <td className="px-2 py-2">
           <span className="inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            {t(`quotes.editor.recurrence.${l.recurrence}`)}
+            {t(/* i18n-dynamic */ `quotes.editor.recurrence.${l.recurrence}`)}
           </span>
         </td>
         <td className="px-2 py-2 text-center text-muted-foreground" data-testid={`quote-line-taxable-${l.id}`}>

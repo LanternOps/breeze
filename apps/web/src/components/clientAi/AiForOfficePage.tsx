@@ -79,7 +79,7 @@ export default function AiForOfficePage() {
                 }`}
                 data-testid={`ai-office-tab-${tab}`}
               >
-                {t(`aiForOfficePage.tabs.${tab}`)}
+                {t(/* i18n-dynamic */ `aiForOfficePage.tabs.${tab}`)}
               </button>
             );
           })}

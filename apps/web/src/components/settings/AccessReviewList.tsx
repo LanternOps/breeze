@@ -30,10 +30,10 @@ const statusStyles: Record<AccessReviewStatus, string> = {
   completed: 'bg-emerald-500/10 text-emerald-700'
 };
 
-const statusLabels: Record<AccessReviewStatus, string> = {
-  pending: i18n.t('settings:accessReviewList.pending'),
-  in_progress: i18n.t('settings:accessReviewList.inProgress'),
-  completed: i18n.t('settings:accessReviewList.completed')
+const statusLabelKeys: Record<AccessReviewStatus, string> = {
+  pending: 'accessReviewList.pending',
+  in_progress: 'accessReviewList.inProgress',
+  completed: 'accessReviewList.completed'
 };
 
 const dayMs = 1000 * 60 * 60 * 24;
@@ -170,7 +170,7 @@ export default function AccessReviewList({
                       statusStyles[review.status]
                     )}
                   >
-                    {statusLabels[review.status]}
+                    {t(/* i18n-dynamic */ statusLabelKeys[review.status])}
                   </span>
                 </td>
                 <td className="px-4 py-3 text-muted-foreground">

@@ -634,7 +634,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
   ) : null;
 
   const headlessTitle = t('connectDesktopButton.unavailable.headless');
-  const desktopAccessUnavailable = desktopAccessUnavailableReason(desktopAccess, remoteAccessPolicy, (key) => t(key));
+  const desktopAccessUnavailable = desktopAccessUnavailableReason(desktopAccess, remoteAccessPolicy, (key) => t(/* i18n-dynamic */ key));
   const policyDisabled = remoteAccessPolicy?.webrtcDesktop === false;
   const policyTitle = policyDisabled
     ? remoteAccessPolicy?.policyName

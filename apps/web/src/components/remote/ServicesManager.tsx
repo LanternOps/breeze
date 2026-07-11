@@ -336,7 +336,7 @@ export default function ServicesManager({
           <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-lg">
             <h3 className="text-lg font-semibold">{t('servicesManager.confirmAction')}</h3>
             <p className="mt-2 text-sm text-muted-foreground">
-              {t('servicesManager.serviceConfirm', { action: t(`servicesManager.action.${confirmAction.type}`), service: confirmAction.serviceDisplayName })}
+              {t('servicesManager.serviceConfirm', { action: t(/* i18n-dynamic */ `servicesManager.action.${confirmAction.type}`), service: confirmAction.serviceDisplayName })}
             </p>
             <div className="mt-4 flex justify-end gap-3">
               <button

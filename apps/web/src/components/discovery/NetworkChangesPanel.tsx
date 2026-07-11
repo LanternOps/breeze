@@ -423,7 +423,7 @@ export default function NetworkChangesPanel({
       <>
         <div className="flex items-center gap-2">
           <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${type.color}`}>
-            {t(`networkEvents.type.${change.eventType}`)}
+            {t(/* i18n-dynamic */ `networkEvents.type.${change.eventType}`)}
           </span>
           <span className="font-mono text-sm">{change.ipAddress}</span>
         </div>

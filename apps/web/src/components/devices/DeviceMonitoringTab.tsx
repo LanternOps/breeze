@@ -169,7 +169,7 @@ export default function DeviceMonitoringTab({ deviceId, timezone }: DeviceMonito
                           STATUS_STYLES[row.status] ?? 'bg-muted text-muted-foreground border-border'
                         }`}
                       >
-                        {STATUS_LABELS[row.status] ? t(`deviceMonitoringTab.${STATUS_LABELS[row.status]}`) : row.status}
+                        {STATUS_LABELS[row.status] ? t(/* i18n-dynamic */ `deviceMonitoringTab.${STATUS_LABELS[row.status]}`) : row.status}
                       </span>
                       {row.autoRestartAttempted ? (
                         <span className="ml-2 text-xs text-muted-foreground">

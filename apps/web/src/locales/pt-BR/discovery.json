@@ -9,7 +9,7 @@
       "linkAsset": "Vincular ativo",
       "linking": "Vinculando...",
       "resetType": "Redefinir para o tipo detectado automaticamente",
-      "unlink": "Unlink",
+      "unlink": "Desvincular",
       "working": "Processando..."
     },
     "assetInfoTitle": "Informações do ativo",
@@ -615,7 +615,7 @@
     "adjacencyNote": "As linhas de conexão aparecem somente onde a adjacência real é medida (LLDP/CDP/SNMP). Nenhuma foi coletada ainda; por isso, os ativos são agrupados por sub-rede sem vínculos inferidos.",
     "allDevices": "Todos os dispositivos ({{count}})",
     "canvasAriaEmpty": "Mapa da topologia de rede: nenhum dispositivo descoberto ainda.",
-    "canvasAriaWithDevices": "Mapa da topologia de rede: {{count}} dispositivo(s). Use a lista abaixo para inspecionar cada dispositivo com o teclado.",
+    "canvasAriaWithDevices": "Mapa da topologia de rede: {{count}} dispositivo{{suffix}}. Use a lista abaixo para inspecionar cada dispositivo com o teclado.",
     "confidence": "confiança {{confidence}}",
     "connectHint": "Toque em outro nó para conectar",
     "connection": "Conexão",

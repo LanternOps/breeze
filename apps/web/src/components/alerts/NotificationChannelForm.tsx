@@ -329,8 +329,8 @@ export default function NotificationChannelForm({
                       <Icon className="h-5 w-5" />
                     </div>
                     <div>
-                      <p className="text-sm font-medium">{t(`notificationChannelForm.channelTypeOption.${opt.value}.label`)}</p>
-                      <p className="text-xs text-muted-foreground">{t(`notificationChannelForm.channelTypeOption.${opt.value}.description`)}</p>
+                      <p className="text-sm font-medium">{t(/* i18n-dynamic */ `notificationChannelForm.channelTypeOption.${opt.value}.label`)}</p>
+                      <p className="text-xs text-muted-foreground">{t(/* i18n-dynamic */ `notificationChannelForm.channelTypeOption.${opt.value}.description`)}</p>
                     </div>
                   </button>
                 );

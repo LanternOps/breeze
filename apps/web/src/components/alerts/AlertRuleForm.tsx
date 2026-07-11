@@ -233,7 +233,7 @@ export default function AlertRuleForm({
                     )}
                   >
                     <span className={cn('h-3 w-3 rounded-full', opt.color)} />
-                    {t(`alertRuleForm.severityOption.${opt.value}`)}
+                    {t(/* i18n-dynamic */ `alertRuleForm.severityOption.${opt.value}`)}
                   </button>
                 ))}
               </div>
@@ -295,7 +295,7 @@ export default function AlertRuleForm({
               >
                 {targetTypeOptions.map(opt => (
                   <option key={opt.value} value={opt.value}>
-                    {t(`alertRuleForm.targetTypeOption.${opt.value}`)}
+                    {t(/* i18n-dynamic */ `alertRuleForm.targetTypeOption.${opt.value}`)}
                   </option>
                 ))}
               </select>
@@ -304,7 +304,7 @@ export default function AlertRuleForm({
             {watchTargetType !== 'all' && targetOptions.length > 0 && (
               <div className="space-y-2">
                 <label className="text-sm font-medium">
-                  {t('alertRuleForm.selectTargetType', { target: t(`alertRuleForm.targetPlural.${watchTargetType}`) })}
+                  {t('alertRuleForm.selectTargetType', { target: t(/* i18n-dynamic */ `alertRuleForm.targetPlural.${watchTargetType}`) })}
                 </label>
                 <div className="max-h-48 overflow-y-auto rounded-md border bg-background p-2">
                   {targetOptions.map(target => (
@@ -327,7 +327,7 @@ export default function AlertRuleForm({
 
             {watchTargetType !== 'all' && targetOptions.length === 0 && (
               <p className="text-sm text-muted-foreground">
-                {t('alertRuleForm.noTargetsAvailable', { target: t(`alertRuleForm.targetPluralLower.${watchTargetType}`) })}
+                {t('alertRuleForm.noTargetsAvailable', { target: t(/* i18n-dynamic */ `alertRuleForm.targetPluralLower.${watchTargetType}`) })}
               </p>
             )}
           </div>
@@ -396,7 +396,7 @@ export default function AlertRuleForm({
                       >
                         {conditionTypeOptions.map(opt => (
                           <option key={opt.value} value={opt.value}>
-                            {t(`alertRuleForm.conditionTypeOption.${opt.value}`)}
+                            {t(/* i18n-dynamic */ `alertRuleForm.conditionTypeOption.${opt.value}`)}
                           </option>
                         ))}
                       </select>
@@ -412,7 +412,7 @@ export default function AlertRuleForm({
                           >
                             {metricOptions.map(opt => (
                               <option key={opt.value} value={opt.value}>
-                                {t(`alertRuleForm.metricOption.${opt.value}`)}
+                                {t(/* i18n-dynamic */ `alertRuleForm.metricOption.${opt.value}`)}
                               </option>
                             ))}
                           </select>
@@ -425,7 +425,7 @@ export default function AlertRuleForm({
                           >
                             {operatorOptions.map(opt => (
                               <option key={opt.value} value={opt.value}>
-                                {t(`alertRuleForm.operatorOption.${opt.value}`)}
+                                {t(/* i18n-dynamic */ `alertRuleForm.operatorOption.${opt.value}`)}
                               </option>
                             ))}
                           </select>

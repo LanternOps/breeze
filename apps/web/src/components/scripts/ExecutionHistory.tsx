@@ -306,7 +306,7 @@ export default function ExecutionHistory({
                           'h-3 w-3',
                           execution.status === 'running' && 'animate-spin'
                         )} />
-                        {t(`executionHistory.${statusConfig[execution.status].label}`)}
+                        {t(/* i18n-dynamic */ `executionHistory.${statusConfig[execution.status].label}`)}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">

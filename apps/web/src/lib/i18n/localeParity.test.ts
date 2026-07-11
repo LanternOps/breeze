@@ -14,6 +14,28 @@ function flattenKeys(obj: Record<string, unknown>, prefix = ''): string[] {
   });
 }
 
+function flattenValues(
+  obj: Record<string, unknown>,
+  prefix = '',
+  result = new Map<string, string>(),
+): Map<string, string> {
+  for (const [key, value] of Object.entries(obj)) {
+    const path = prefix ? `${prefix}.${key}` : key;
+    if (value !== null && typeof value === 'object') {
+      flattenValues(value as Record<string, unknown>, path, result);
+    } else {
+      result.set(path, String(value));
+    }
+  }
+  return result;
+}
+
+function interpolationTokens(value: string): string[] {
+  return [...value.matchAll(/{{\s*([^},\s]+)[^}]*}}/g)]
+    .map((match) => match[1])
+    .sort();
+}
+
 function readNamespaces(locale: string): Map<string, string[]> {
   const dir = join(localesDir, locale);
   return new Map(
@@ -26,11 +48,24 @@ function readNamespaces(locale: string): Map<string, string[]> {
   );
 }
 
+function readNamespaceValues(locale: string): Map<string, Map<string, string>> {
+  const dir = join(localesDir, locale);
+  return new Map(
+    readdirSync(dir)
+      .filter((file) => file.endsWith('.json'))
+      .map((file) => [
+        file,
+        flattenValues(JSON.parse(readFileSync(join(dir, file), 'utf8'))),
+      ]),
+  );
+}
+
 describe('locale parity', () => {
   const locales = readdirSync(localesDir, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name);
   const reference = readNamespaces('en');
+  const referenceValues = readNamespaceValues('en');
 
   it('has at least en and pt-BR', () => {
     expect(locales).toEqual(expect.arrayContaining(['en', 'pt-BR']));
@@ -42,6 +77,18 @@ describe('locale parity', () => {
       expect([...target.keys()].sort()).toEqual([...reference.keys()].sort());
       for (const [namespace, keys] of reference) {
         expect(target.get(namespace), `namespace ${namespace}`).toEqual(keys);
+      }
+    });
+
+    it(`${locale} preserves interpolation variables`, () => {
+      const targetValues = readNamespaceValues(locale);
+      for (const [namespace, values] of referenceValues) {
+        for (const [key, english] of values) {
+          expect(
+            interpolationTokens(targetValues.get(namespace)?.get(key) ?? ''),
+            `${namespace}:${key}`,
+          ).toEqual(interpolationTokens(english));
+        }
       }
     });
   }

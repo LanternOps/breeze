@@ -35,11 +35,11 @@ const defaultItem: AlertItem = {
   cooldownMinutes: 15,
   autoResolve: false,
 };
-const severityOptions: {
+const createSeverityOptions = (): {
   value: AlertSeverity;
   label: string;
   color: string;
-}[] = [
+}[] => [
   {
     value: "critical",
     label: i18n.t(
@@ -81,7 +81,7 @@ const severityOptions: {
 // removed: there is no network-usage percentage column to compare against,
 // so the option never fired (issue #1857). Bandwidth alerting has its own
 // dedicated condition type and is not exposed via this simple % dropdown.
-const metricOptions = [
+const createMetricOptions = () => [
   {
     value: "cpu",
     label: i18n.t(
@@ -101,7 +101,7 @@ const metricOptions = [
     ),
   },
 ];
-const operatorOptions = [
+const createOperatorOptions = () => [
   {
     value: "gt",
     label: i18n.t(
@@ -139,7 +139,7 @@ const operatorOptions = [
     ),
   },
 ];
-const conditionTypeOptions = [
+const createConditionTypeOptions = () => [
   {
     value: "metric",
     label: i18n.t(
@@ -207,7 +207,7 @@ function loadItems(existingLink: FeatureTabProps["existingLink"]): AlertItem[] {
   return [];
 }
 function severityPill(severity: AlertSeverity) {
-  const opt = severityOptions.find((o) => o.value === severity);
+  const opt = createSeverityOptions().find((o) => o.value === severity);
   return (
     <span className="inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium">
       <span className={`h-2 w-2 rounded-full ${opt?.color ?? "bg-gray-400"}`} />
@@ -223,6 +223,10 @@ export default function AlertRuleTab({
   parentLink,
 }: FeatureTabProps) {
   useTranslation("policies");
+  const severityOptions = createSeverityOptions();
+  const metricOptions = createMetricOptions();
+  const operatorOptions = createOperatorOptions();
+  const conditionTypeOptions = createConditionTypeOptions();
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const isInherited = !!parentLink && !existingLink;
   const effectiveLink = existingLink ?? parentLink;

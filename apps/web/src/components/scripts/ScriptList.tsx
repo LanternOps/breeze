@@ -312,7 +312,7 @@ export default function ScriptList({
                       languageConfig[script.language].color
                     )}>
                       <span className="font-mono text-[10px]">{languageConfig[script.language].icon}</span>
-                      {t(`scriptList.${languageConfig[script.language].label}`)}
+                      {t(/* i18n-dynamic */ `scriptList.${languageConfig[script.language].label}`)}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-sm">{script.category}</td>
@@ -323,7 +323,7 @@ export default function ScriptList({
                           key={os}
                           className="inline-flex items-center rounded bg-muted px-1.5 py-0.5 text-xs"
                         >
-                          {t(`scriptList.${osLabels[os]}`)}
+                          {t(/* i18n-dynamic */ `scriptList.${osLabels[os]}`)}
                         </span>
                       ))}
                     </div>
@@ -339,7 +339,7 @@ export default function ScriptList({
                           'inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium',
                           cfg.color
                         )}>
-                          {t(`scriptList.${cfg.label}`)}
+                          {t(/* i18n-dynamic */ `scriptList.${cfg.label}`)}
                         </span>
                       );
                     })()}

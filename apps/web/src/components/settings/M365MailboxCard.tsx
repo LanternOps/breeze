@@ -161,7 +161,7 @@ export default function M365MailboxCard() {
                   ) : null}
                 </div>
                 <span className="text-sm" data-testid="m365-status">
-                  {t(`m365Mailbox.status.${c.status}`)}
+                  {t(/* i18n-dynamic */ `m365Mailbox.status.${c.status}`)}
                 </span>
               </div>
               {c.lastError ? <p className="text-xs text-destructive">{c.lastError}</p> : null}

@@ -184,7 +184,7 @@ export default function PsaConnectionList({
           >
             {statusOptions.map(status => (
               <option key={status} value={status}>
-                {status === 'all' ? t('longTail.psa.PsaConnectionList.filters.allStatuses') : t(statusConfig[status as PsaConnectionStatus].labelKey)}
+                {status === 'all' ? t('longTail.psa.PsaConnectionList.filters.allStatuses') : t(/* i18n-dynamic */ statusConfig[status as PsaConnectionStatus].labelKey)}
               </option>
             ))}
           </select>
@@ -245,7 +245,7 @@ export default function PsaConnectionList({
                     <td className="px-4 py-3 text-sm font-medium">{connection.name}</td>
                     <td className="px-4 py-3 text-sm">
                       <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusStyle.className}`}>
-                        {t(statusStyle.labelKey)}
+                        {t(/* i18n-dynamic */ statusStyle.labelKey)}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">

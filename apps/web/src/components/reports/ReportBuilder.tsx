@@ -23,6 +23,7 @@ import {
   X
 } from 'lucide-react';
 import { cn, widthPercentClass } from '@/lib/utils';
+import { formatNumber } from '@/lib/i18n/format';
 import type { ReportFormat, ReportSchedule, ReportType as LegacyReportType } from './ReportsList';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
@@ -767,28 +768,28 @@ export default function ReportBuilder({
   );
 
   const getReportTypeOptionLabel = (type: BuilderReportType) =>
-    t(`reports.reportBuilder.reportTypes.${type}.label`); // i18n-dynamic
+    t(/* i18n-dynamic */ `reports.reportBuilder.reportTypes.${type}.label`);
   const getReportTypeOptionDescription = (type: BuilderReportType) =>
-    t(`reports.reportBuilder.reportTypes.${type}.description`); // i18n-dynamic
+    t(/* i18n-dynamic */ `reports.reportBuilder.reportTypes.${type}.description`);
   const getDataSourceFieldLabel = (fieldId: string) =>
-    t(`reports.reportBuilder.dataSource.${builderType}.${fieldId}.label`); // i18n-dynamic
+    t(/* i18n-dynamic */ `reports.reportBuilder.dataSource.${builderType}.${fieldId}.label`);
   const getDataSourceOptionLabel = (fieldId: string, value: string) =>
-    t(`reports.reportBuilder.dataSource.${builderType}.${fieldId}.options.${value}`); // i18n-dynamic
+    t(/* i18n-dynamic */ `reports.reportBuilder.dataSource.${builderType}.${fieldId}.options.${value}`);
   const getFilterOperatorLabel = (operator: string) =>
-    t(`reports.reportBuilder.filterOperators.${operator}`); // i18n-dynamic
-  const getWeekDayLabel = (day: string) => t(`reports.reportBuilder.weekDays.${day}`); // i18n-dynamic
+    t(/* i18n-dynamic */ `reports.reportBuilder.filterOperators.${operator}`);
+  const getWeekDayLabel = (day: string) => t(/* i18n-dynamic */ `reports.reportBuilder.weekDays.${day}`);
   const getScheduleOptionLabel = (value: ReportSchedule) =>
-    t(`reports.reportBuilder.scheduleOptions.${value}.label`); // i18n-dynamic
+    t(/* i18n-dynamic */ `reports.reportBuilder.scheduleOptions.${value}.label`);
   const getExportFormatLabel = (value: ReportFormat) =>
-    t(`reports.reportBuilder.exportFormats.${value}.label`); // i18n-dynamic
+    t(/* i18n-dynamic */ `reports.reportBuilder.exportFormats.${value}.label`);
   const getExportFormatDescription = (value: ReportFormat) =>
-    t(`reports.reportBuilder.exportFormats.${value}.description`); // i18n-dynamic
-  const getChartTypeLabel = (value: ChartType) => t(`reports.reportBuilder.chartTypes.${value}`); // i18n-dynamic
+    t(/* i18n-dynamic */ `reports.reportBuilder.exportFormats.${value}.description`);
+  const getChartTypeLabel = (value: ChartType) => t(/* i18n-dynamic */ `reports.reportBuilder.chartTypes.${value}`);
 
   const fieldLabelMap = useMemo(() => {
     const map = new Map<string, string>();
     fieldDefinitions.forEach(field => {
-      map.set(field.id, t(`reports.reportBuilder.fields.${builderType}.${field.id}`)); // i18n-dynamic
+      map.set(field.id, t(/* i18n-dynamic */ `reports.reportBuilder.fields.${builderType}.${field.id}`));
     });
     return map;
   }, [builderType, fieldDefinitions, t]);
@@ -805,7 +806,7 @@ export default function ReportBuilder({
     if (!groupBy) return '';
     if (aggregation.type === 'count') return t('reports.reportBuilder.groupedMetric.count');
     const fieldLabel = aggregation.field ? getFieldLabel(aggregation.field) : t('reports.reportBuilder.groupedMetric.value');
-    return t(`reports.reportBuilder.groupedMetric.${aggregation.type}`, { field: fieldLabel }); // i18n-dynamic
+    return t(/* i18n-dynamic */ `reports.reportBuilder.groupedMetric.${aggregation.type}`, { field: fieldLabel });
   }, [aggregation, groupBy, fieldLabelMap, t]);
 
   useEffect(() => {
@@ -1168,7 +1169,7 @@ export default function ReportBuilder({
 
   const formatCellValue = (value: unknown) => {
     if (value === null || value === undefined || value === '') return '-';
-    if (typeof value === 'number') return value.toLocaleString();
+    if (typeof value === 'number') return formatNumber(value);
     return String(value);
   };
 

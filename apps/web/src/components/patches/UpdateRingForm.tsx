@@ -151,7 +151,7 @@ function SeverityChips({
                 : 'border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground'
             )}
           >
-            {t(sev.labelKey)}
+            {t(/* i18n-dynamic */ sev.labelKey)}
           </button>
         );
       })}
@@ -414,7 +414,7 @@ export default function UpdateRingForm({
                       .filter((c) => c.value === rule?.category || !usedCategories.includes(c.value))
                       .map((c) => (
                         <option key={c.value} value={c.value}>
-                          {t(c.labelKey)}
+                          {t(/* i18n-dynamic */ c.labelKey)}
                         </option>
                       ))}
                   </select>
@@ -470,7 +470,7 @@ export default function UpdateRingForm({
       {usage?.deviceCount != null && usage.deviceCount > 0 && (
         <p className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
           {t(
-            usage.deviceCount === 1
+            /* i18n-dynamic */ usage.deviceCount === 1
               ? 'updateRingForm.usage.messageOne'
               : 'updateRingForm.usage.messageMany',
             { count: usage.deviceCount }

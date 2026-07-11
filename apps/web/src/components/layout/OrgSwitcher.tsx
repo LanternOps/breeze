@@ -87,7 +87,7 @@ function StatusBadge({ status }: { status: string }) {
         statusColors[status] || statusColors.inactive
       )}
     >
-      {t(`layout.org.status.${status}`, { defaultValue: status })}
+      {t(/* i18n-dynamic */ `layout.org.status.${status}`, { defaultValue: status })}
     </span>
   );
 }

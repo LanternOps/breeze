@@ -610,7 +610,7 @@ export default function CommandPalette() {
                   <div key={section.id} className="border-t first:border-t-0">
                     <div className="flex items-center gap-2 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                       <section.icon className="h-4 w-4" />
-                      {t(`layout.search.sections.${section.id}`, { defaultValue: section.label })}
+                      {t(/* i18n-dynamic */ `layout.search.sections.${section.id}`, { defaultValue: section.label })}
                     </div>
                     <div className="space-y-1 px-2 pb-2">
                       {section.items.map((item) => {

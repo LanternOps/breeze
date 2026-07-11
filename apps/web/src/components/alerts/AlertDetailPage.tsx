@@ -255,7 +255,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
                     severityConfig[alert.severity].color
                   )}
                 >
-                  {t(`alertDetailPage.severity.${alert.severity}`)}
+                  {t(/* i18n-dynamic */ `alertDetailPage.severity.${alert.severity}`)}
                 </span>
                 <span
                   className={cn(
@@ -264,7 +264,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
                   )}
                 >
                   <StatusIcon className="h-3 w-3" />
-                  {t(`alertDetailPage.status.${alert.status}`)}
+                  {t(/* i18n-dynamic */ `alertDetailPage.status.${alert.status}`)}
                 </span>
               </div>
             </div>

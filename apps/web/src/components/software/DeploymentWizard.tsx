@@ -55,11 +55,11 @@ export function extractDeployFailure(
   if (result?.status === "failed") return result.message ?? "Deployment failed";
   return null;
 }
-const steps: {
+const createSteps = (): {
   id: WizardStep;
   label: string;
   icon: typeof CheckCircle;
-}[] = [
+}[] => [
   {
     id: "software",
     label: i18n.t("policies:software.deploymentWizard.selectSoftware"),
@@ -81,7 +81,7 @@ const steps: {
     icon: CheckCircle,
   },
 ];
-const scheduleOptions = [
+const createScheduleOptions = () => [
   {
     id: "immediate",
     label: i18n.t("policies:software.deploymentWizard.deployImmediately"),
@@ -193,6 +193,8 @@ export default function DeploymentWizard({
   initialCatalogId,
 }: DeploymentWizardProps = {}) {
   useTranslation("policies");
+  const steps = createSteps();
+  const scheduleOptions = createScheduleOptions();
   const [activeStepIndex, setActiveStepIndex] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();

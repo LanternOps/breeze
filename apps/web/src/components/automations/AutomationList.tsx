@@ -268,7 +268,7 @@ export default function AutomationList({
                         )}
                       >
                         <TriggerIcon className="h-3 w-3" />
-                        {t(`automationList.${triggerConfig[automation.triggerType].label}`)}
+                        {t(/* i18n-dynamic */ `automationList.${triggerConfig[automation.triggerType].label}`)}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">
@@ -285,7 +285,7 @@ export default function AutomationList({
                       <div className="flex items-center gap-1.5">
                         <StatusIcon className={cn('h-4 w-4', statusConfig[lastStatus].color)} />
                         <span className={cn('text-sm', statusConfig[lastStatus].color)}>
-                          {t(`automationList.${statusConfig[lastStatus].label}`)}
+                          {t(/* i18n-dynamic */ `automationList.${statusConfig[lastStatus].label}`)}
                         </span>
                       </div>
                       {automation.recentRuns && automation.recentRuns.length > 0 && (

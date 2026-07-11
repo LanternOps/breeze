@@ -109,7 +109,7 @@ export default function CisHardeningPage() {
                       : 'border-transparent text-muted-foreground hover:border-muted-foreground/40 hover:text-foreground'
                   )}
                 >
-                  {t(`cisHardeningCisHardeningPage.tabs.${tab}`)}
+                  {t(/* i18n-dynamic */ `cisHardeningCisHardeningPage.tabs.${tab}`)}
                 </button>
               ))}
             </nav>

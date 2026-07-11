@@ -79,7 +79,7 @@ export default function PasswordStrength({ password }: PasswordStrengthProps) {
               <span aria-hidden="true" className="font-mono leading-none">
                 {passed ? '✓' : '·'}
               </span>
-              <span>{t(`passwordStrength.rules.${rule.key}`, { defaultValue: rule.label })}</span>
+              <span>{t(/* i18n-dynamic */ `passwordStrength.rules.${rule.key}`, { defaultValue: rule.label })}</span>
             </li>
           );
         })}

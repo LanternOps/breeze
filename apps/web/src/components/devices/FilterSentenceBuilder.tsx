@@ -269,7 +269,7 @@ function ConditionRow({ condition, onChange, onRemove, orgs, sites, softwareOpti
         className="rounded border bg-background px-1 py-0.5 text-xs"
       >
         {V2_FILTER_FIELDS.map(f => (
-          <option key={f.key} value={f.key}>{t(`filterSentenceBuilder.fields.${f.key}`, { defaultValue: f.label })}</option>
+          <option key={f.key} value={f.key}>{t(/* i18n-dynamic */ `filterSentenceBuilder.fields.${f.key}`, { defaultValue: f.label })}</option>
         ))}
       </select>
       {/* operator label preview — actual operator picker lives inside the value editor */}

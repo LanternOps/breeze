@@ -260,7 +260,7 @@ export default function PatchesPage() {
     if (failedIds.length > 0) {
       throw new Error(
         t(
-          failedIds.length === 1
+          /* i18n-dynamic */ failedIds.length === 1
             ? 'patchesPage.errors.approveCountOne'
             : 'patchesPage.errors.approveCountMany',
           { count: failedIds.length }
@@ -404,7 +404,7 @@ export default function PatchesPage() {
       const skipped =
         (scanBody.skipped?.missingDeviceIds?.length ?? 0) +
         (scanBody.skipped?.inaccessibleDeviceIds?.length ?? 0);
-      const noun = (n: number) => t(n === 1 ? 'patchesPage.scan.deviceOne' : 'patchesPage.scan.deviceMany');
+      const noun = (n: number) => t(/* i18n-dynamic */ n === 1 ? 'patchesPage.scan.deviceOne' : 'patchesPage.scan.deviceMany');
       const shortfall = [
         failed > 0 ? t('patchesPage.scan.failedToQueue', { count: failed }) : null,
         skipped > 0 ? t('patchesPage.scan.skipped', { count: skipped }) : null,
@@ -694,7 +694,7 @@ export default function PatchesPage() {
           pendingScan
             ? pendingScan.orgNames.length <= 1
               ? t(
-                  pendingScan.deviceIds.length === 1
+                  /* i18n-dynamic */ pendingScan.deviceIds.length === 1
                     ? 'patchesPage.scan.confirmMessageOne'
                     : 'patchesPage.scan.confirmMessageMany',
                   {

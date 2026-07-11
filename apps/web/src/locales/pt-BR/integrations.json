@@ -274,7 +274,7 @@
     "lineDescription": "Descrição da linha",
     "unitPriceEG3600": "Preço unitário (por exemplo, 36,00)",
     "keepQuantityInSync": "Mantenha a quantidade sincronizada ",
-    "link": "Link"
+    "link": "Vincular"
   },
   "m365Integration": {
     "connectionVerifiedAndSaved": "Conexão verificada e salva.",
@@ -735,7 +735,7 @@
     "clients2": "Clientes (",
     "noClientsReported": "Nenhum cliente relatado.",
     "host": "Hospedar",
-    "link": "Link",
+    "link": "Vincular",
     "signal": "Sinal",
     "syncHistory": "Histórico de sincronização",
     "theMostRecentSyncRunsNewestFirst": "A sincronização mais recente é executada (a mais recente primeiro).",

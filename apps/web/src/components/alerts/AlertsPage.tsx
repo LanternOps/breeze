@@ -338,7 +338,7 @@ export default function AlertsPage() {
       });
       await fetchAlerts();
 
-      const past = BULK_PAST_TENSE_KEY[action] ? t(`alertsPage.bulkPast.${BULK_PAST_TENSE_KEY[action]}`) : action;
+      const past = BULK_PAST_TENSE_KEY[action] ? t(/* i18n-dynamic */ `alertsPage.bulkPast.${BULK_PAST_TENSE_KEY[action]}`) : action;
       const updated = result?.updated ?? 0;
       const skipped = result?.skipped ?? 0;
       const failed = result?.failed ?? 0;

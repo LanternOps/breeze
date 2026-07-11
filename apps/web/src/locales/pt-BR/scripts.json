@@ -1080,7 +1080,7 @@
       "cmd": "CMD"
     },
     "empty": "Nenhum modelo encontrado para os critérios informados.",
-    "downloadCount": "{{count}} downloads",
+    "downloadCount": "{{count}} baixamentos",
     "actions": {
       "useTemplate": "Usar modelo"
     }

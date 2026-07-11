@@ -66,7 +66,7 @@ function ToggleRow({
 const minuteOptions = ["0", "15", "30", "45"];
 const hourOptions = ["0", "2", "6", "12", "18"];
 const dayOfMonthOptions = ["*", "1", "15"];
-const dayOfWeekOptions = [
+const createDayOfWeekOptions = () => [
   {
     label: i18n.t("policies:configurationPolicies.featureTabs.securityTab.any"),
     value: "*",
@@ -107,6 +107,7 @@ export default function SecurityTab({
   linkedPolicyId,
 }: FeatureTabProps) {
   useTranslation("policies");
+  const dayOfWeekOptions = createDayOfWeekOptions();
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const [settings, setSettings] = useState<SecuritySettings>(() => {
     const stored = existingLink?.inlineSettings as

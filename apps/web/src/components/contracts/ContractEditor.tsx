@@ -690,7 +690,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                     data-testid="contract-form-interval"
                     className={`${baseInput} ${fieldRing(false, isSaved('interval'))}`}
                   >
-                    {INTERVAL_PRESETS.map((p) => <option key={p.value} value={p.value}>{t(p.label)}</option>)}
+                    {INTERVAL_PRESETS.map((p) => <option key={p.value} value={p.value}>{t(/* i18n-dynamic */ p.label)}</option>)}
                     <option value="custom">{t('contracts.contractEditor.schedule.customCadence')}</option>
                   </select>
                 </label>
@@ -865,7 +865,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                       lines.map((l, idx) => (
                         <tr key={l.id} className="border-t" data-testid={`line-row-${idx}`}>
                           <td className="px-3 py-2">
-                            {t(LINE_TYPE_LABELS[l.lineType])}
+                            {t(/* i18n-dynamic */ LINE_TYPE_LABELS[l.lineType])}
                             {l.lineType === 'per_device' && l.siteId
                               ? <span className="block text-xs text-muted-foreground">{siteName(l.siteId)}</span>
                               : null}
@@ -947,7 +947,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                       className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
                     >
                       {(Object.keys(LINE_TYPE_LABELS) as ContractLineType[]).map((type) => (
-                        <option key={type} value={type}>{t(LINE_TYPE_LABELS[type])}</option>
+                        <option key={type} value={type}>{t(/* i18n-dynamic */ LINE_TYPE_LABELS[type])}</option>
                       ))}
                     </select>
                   </label>

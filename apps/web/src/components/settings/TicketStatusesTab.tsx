@@ -46,14 +46,12 @@ export function moveFlatList(statuses: StatusRow[], id: string, dir: -1 | 1): st
   return order;
 }
 
-const FRIENDLY_CODES: Record<string, string> = {
-  STATUS_NAME_TAKEN: i18n.t('settings:ticketStatusesTab.statusNameTaken'),
-  SYSTEM_STATUS_IMMUTABLE: i18n.t('settings:ticketStatusesTab.systemStatusImmutable'),
-  SYSTEM_STATUS_REQUIRED: i18n.t('settings:ticketStatusesTab.systemStatusRequired'),
-  STATUS_INACTIVE: i18n.t('settings:ticketStatusesTab.statusInactive'),
+const FRIENDLY_CODE_KEYS: Record<string, string> = {
+  STATUS_NAME_TAKEN: 'ticketStatusesTab.statusNameTaken',
+  SYSTEM_STATUS_IMMUTABLE: 'ticketStatusesTab.systemStatusImmutable',
+  SYSTEM_STATUS_REQUIRED: 'ticketStatusesTab.systemStatusRequired',
+  STATUS_INACTIVE: 'ticketStatusesTab.statusInactive',
 };
-
-const friendlyCode = (code: string): string | undefined => FRIENDLY_CODES[code];
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 
@@ -61,6 +59,8 @@ const DEFAULT_COLOR = '#1c8a9e';
 
 export default function TicketStatusesTab() {
   const { t } = useTranslation('settings');
+  const friendlyCode = (code: string): string | undefined =>
+    FRIENDLY_CODE_KEYS[code] ? t(/* i18n-dynamic */ FRIENDLY_CODE_KEYS[code]) : undefined;
   const [statuses, setStatuses] = useState<StatusRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);

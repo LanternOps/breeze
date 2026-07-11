@@ -173,7 +173,7 @@ function TestStatusBadge({ result }: { result: TestResult }) {
       <Icon
         className={`h-3.5 w-3.5 ${result.state === "testing" ? "animate-spin" : ""}`}
       />
-      {t(config.labelKey)}
+      {t(/* i18n-dynamic */ config.labelKey)}
     </span>
   );
 }

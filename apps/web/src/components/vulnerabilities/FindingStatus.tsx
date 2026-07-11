@@ -15,7 +15,7 @@ export function FindingStatus({ status, acceptedUntil }: { status: string; accep
       </span>
     );
   }
-  return <span className="text-xs capitalize text-muted-foreground">{t(`findingStatus.status.${status}`, { defaultValue: status })}{/* i18n-dynamic */}</span>;
+  return <span className="text-xs capitalize text-muted-foreground">{t(/* i18n-dynamic */ `findingStatus.status.${status}`, { defaultValue: status })}{/* i18n-dynamic */}</span>;
 }
 
 export default FindingStatus;

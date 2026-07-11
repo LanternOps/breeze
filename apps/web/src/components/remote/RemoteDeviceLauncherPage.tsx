@@ -157,8 +157,8 @@ export default function RemoteDeviceLauncherPage({ mode }: RemoteDeviceLauncherP
           <ArrowLeft className="h-5 w-5" />
         </a>
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">{t(config.titleKey)}</h1>
-          <p className="text-muted-foreground">{t(config.descriptionKey)}</p>
+          <h1 className="text-xl font-semibold tracking-tight">{t(/* i18n-dynamic */ config.titleKey)}</h1>
+          <p className="text-muted-foreground">{t(/* i18n-dynamic */ config.descriptionKey)}</p>
         </div>
       </div>
 
@@ -250,7 +250,7 @@ export default function RemoteDeviceLauncherPage({ mode }: RemoteDeviceLauncherP
                         onClick={() => handleLaunch(device.id)}
                         className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
                       >
-                        {t(config.actionLabelKey)}
+                        {t(/* i18n-dynamic */ config.actionLabelKey)}
                       </button>
                     </td>
                   </tr>

@@ -169,7 +169,7 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
                     data-testid={`portal-user-status-${u.id}`}
                     className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_BADGE_CLASS[u.effectiveStatus]}`}
                   >
-                    {t(STATUS_LABEL_KEYS[u.effectiveStatus])}
+                    {t(/* i18n-dynamic */ STATUS_LABEL_KEYS[u.effectiveStatus])}
                   </span>
                 </td>
                 <td className="py-2">{u.lastLoginAt ? new Date(u.lastLoginAt).toLocaleDateString() : '—'}</td>

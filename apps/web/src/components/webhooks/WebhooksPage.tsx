@@ -123,7 +123,7 @@ export default function WebhooksPage() {
 
   const labelMap = useMemo(() => {
     const map = new Map<string, string>();
-    webhookEventOptions.forEach(option => map.set(option.value, t(option.labelKey)));
+    webhookEventOptions.forEach(option => map.set(option.value, t(/* i18n-dynamic */ option.labelKey)));
     return map;
   }, [t]);
 

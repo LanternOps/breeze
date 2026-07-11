@@ -1,12 +1,13 @@
 import { i18n } from '@/lib/i18n';
+import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { useMemo, useEffect, useState } from 'react';
 import { useForm, useWatch } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 
-const ssoProviderSchema = z.object({
-  name: z.string().min(1, i18n.t('settings:ssoProviderForm.providerNameIsRequired')),
+const createSsoProviderSchema = (t: TFunction) => z.object({
+  name: z.string().min(1, t('ssoProviderForm.providerNameIsRequired')),
   type: z.enum(['oidc', 'saml']),
   // Ownership axis (#2183, mirrors software policies #2126): 'partner' = a
   // partner-wide provider used for technician login. Surfaced on create only,
@@ -19,8 +20,8 @@ const ssoProviderSchema = z.object({
   clientSecret: z.string().optional(),
   scopes: z.string().optional(),
   attributeMapping: z.object({
-    email: z.string().min(1, i18n.t('settings:ssoProviderForm.emailAttributeIsRequired')),
-    name: z.string().min(1, i18n.t('settings:ssoProviderForm.nameAttributeIsRequired')),
+    email: z.string().min(1, t('ssoProviderForm.emailAttributeIsRequired')),
+    name: z.string().min(1, t('ssoProviderForm.nameAttributeIsRequired')),
     firstName: z.string().optional(),
     lastName: z.string().optional(),
     groups: z.string().optional()
@@ -31,7 +32,7 @@ const ssoProviderSchema = z.object({
   enforceSSO: z.boolean()
 });
 
-export type SsoProviderFormValues = z.infer<typeof ssoProviderSchema>;
+export type SsoProviderFormValues = z.infer<ReturnType<typeof createSsoProviderSchema>>;
 
 export type ProviderPreset = {
   id: string;
@@ -71,11 +72,11 @@ type SsoProviderFormProps = {
 };
 
 const presetOptions = [
-  { value: '', label: i18n.t('settings:ssoProviderForm.customConfiguration') },
-  { value: 'azure', label: i18n.t('settings:ssoProviderForm.azureADEntraID') },
-  { value: 'okta', label: i18n.t('settings:ssoProviderForm.okta') },
-  { value: 'google', label: i18n.t('settings:ssoProviderForm.googleWorkspace') },
-  { value: 'auth0', label: i18n.t('settings:ssoProviderForm.auth0') }
+  { value: '', labelKey: 'ssoProviderForm.customConfiguration' },
+  { value: 'azure', labelKey: 'ssoProviderForm.azureADEntraID' },
+  { value: 'okta', labelKey: 'ssoProviderForm.okta' },
+  { value: 'google', labelKey: 'ssoProviderForm.googleWorkspace' },
+  { value: 'auth0', labelKey: 'ssoProviderForm.auth0' }
 ];
 
 export default function SsoProviderForm({
@@ -102,7 +103,7 @@ export default function SsoProviderForm({
     setValue,
     control,
   } = useForm<SsoProviderFormValues>({
-    resolver: zodResolver(ssoProviderSchema),
+    resolver: zodResolver(createSsoProviderSchema(t)),
     defaultValues: {
       name: '',
       type: 'oidc',
@@ -212,7 +213,7 @@ export default function SsoProviderForm({
             >
               {presetOptions.map(option => (
                 <option key={option.value} value={option.value}>
-                  {option.label}
+                  {t(/* i18n-dynamic */ option.labelKey)}
                 </option>
               ))}
             </select>

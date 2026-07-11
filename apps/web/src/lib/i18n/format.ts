@@ -1,13 +1,18 @@
 // Locale-aware number formatting for the web console.
 //
-// Uses the user's explicit language preference when set; otherwise passes
-// `undefined` to Intl so the browser locale applies (same behavior as the
-// bare `toLocaleString()` calls these helpers replace). Phase 2 migrates
-// scattered `.toFixed()` / hardcoded '$' call sites onto these helpers.
+// Uses the user's explicit language preference when set, otherwise the locale
+// resolved from user → partner → browser by i18next. Phase 2 migrates scattered
+// `.toFixed()` / hardcoded '$' / bare number `toLocaleString()` display paths
+// onto these helpers.
 import { readLocalePreference } from '../appearance';
+import { i18n } from './index';
+
+export function resolvedFormattingLocale(): string | undefined {
+  return readLocalePreference() ?? i18n.resolvedLanguage ?? i18n.language ?? undefined;
+}
 
 export function formatNumber(value: number, options: Intl.NumberFormatOptions = {}): string {
-  return new Intl.NumberFormat(readLocalePreference(), options).format(value);
+  return new Intl.NumberFormat(resolvedFormattingLocale(), options).format(value);
 }
 
 export function formatCurrency(
@@ -15,7 +20,7 @@ export function formatCurrency(
   currency = 'USD',
   options: Intl.NumberFormatOptions = {}
 ): string {
-  return new Intl.NumberFormat(readLocalePreference(), {
+  return new Intl.NumberFormat(resolvedFormattingLocale(), {
     style: 'currency',
     currency,
     ...options,
@@ -24,5 +29,5 @@ export function formatCurrency(
 
 /** value is a fraction: 0.42 → "42%" */
 export function formatPercent(value: number, options: Intl.NumberFormatOptions = {}): string {
-  return new Intl.NumberFormat(readLocalePreference(), { style: 'percent', ...options }).format(value);
+  return new Intl.NumberFormat(resolvedFormattingLocale(), { style: 'percent', ...options }).format(value);
 }

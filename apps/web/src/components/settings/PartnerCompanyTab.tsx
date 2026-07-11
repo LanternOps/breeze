@@ -129,7 +129,7 @@ export default function PartnerCompanyTab({
               className={inputClass}
             >
               {COUNTRY_CODES.map((code) => (
-                <option key={code} value={code}>{t(`partnerCompany.countries.${code || 'select'}`)}</option>
+                <option key={code} value={code}>{t(/* i18n-dynamic */ `partnerCompany.countries.${code || 'select'}`)}</option>
               ))}
             </select>
           </div>

@@ -144,10 +144,10 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
               />
               <span>
                 <span className="block text-sm font-medium">
-                  {t(labelKey)}
+                  {t(/* i18n-dynamic */ labelKey)}
                 </span>
                 <span className="block text-xs text-muted-foreground">
-                  {t(descriptionKey)}
+                  {t(/* i18n-dynamic */ descriptionKey)}
                 </span>
               </span>
             </label>

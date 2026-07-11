@@ -1,4 +1,5 @@
 import { i18n } from '@/lib/i18n';
+import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { cn, widthPercentClass } from '@/lib/utils';
@@ -55,10 +56,10 @@ const decisionStyles: Record<AccessReviewDecision, string> = {
   revoked: 'bg-destructive/10 text-destructive'
 };
 
-const decisionLabels: Record<AccessReviewDecision, string> = {
-  pending: i18n.t('settings:accessReviewPage.pending'),
-  approved: i18n.t('settings:accessReviewPage.approved'),
-  revoked: i18n.t('settings:accessReviewPage.revoked')
+const decisionLabelKeys: Record<AccessReviewDecision, string> = {
+  pending: 'accessReviewPage.pending',
+  approved: 'accessReviewPage.approved',
+  revoked: 'accessReviewPage.revoked'
 };
 
 const dayMs = 1000 * 60 * 60 * 24;
@@ -114,7 +115,7 @@ function escapeCsvValue(value: string): string {
   return `"${safe.replace(/"/g, '""')}"`;
 }
 
-function buildReviewCsv(review: AccessReviewDetail): string {
+function buildReviewCsv(review: AccessReviewDetail, t: TFunction): string {
   const rows: string[][] = [
     ['Review Name', review.name],
     ['Status', review.status],
@@ -131,7 +132,7 @@ function buildReviewCsv(review: AccessReviewDetail): string {
       item.roleName,
       (item.permissions ?? []).join(' | '),
       item.lastActiveAt ? formatDate(item.lastActiveAt) : i18n.t('settings:accessReviewPage.never'),
-      decisionLabels[item.decision],
+      t(/* i18n-dynamic */ decisionLabelKeys[item.decision]),
       item.notes ?? '',
       item.reviewedAt ? formatDate(item.reviewedAt) : ''
     ]);
@@ -407,7 +408,7 @@ export default function AccessReviewPage() {
         if (!detail) {
           throw new Error(t('accessReviewPage.failedToFetchReviewDetailsForReport'));
         }
-        const csv = buildReviewCsv(detail);
+        const csv = buildReviewCsv(detail, t);
         const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
@@ -423,7 +424,7 @@ export default function AccessReviewPage() {
         setReporting(false);
       }
     },
-    [selectedReview]
+    [selectedReview, t]
   );
 
   const handleCompleteReview = async () => {
@@ -880,7 +881,7 @@ export default function AccessReviewPage() {
                               decisionStyles[item.decision]
                             )}
                           >
-                            {decisionLabels[item.decision]}
+                            {t(/* i18n-dynamic */ decisionLabelKeys[item.decision])}
                           </span>
                         </td>
                         <td className="px-4 py-3">

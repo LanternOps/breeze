@@ -52,7 +52,7 @@ function StatusBadge({ status }: { status: string }) {
   };
   return (
     <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${badge.className}`}>
-      {t(`deviceVulnerabilitiesTab.status.${badge.label}`, { defaultValue: badge.label })}
+      {t(/* i18n-dynamic */ `deviceVulnerabilitiesTab.status.${badge.label}`, { defaultValue: badge.label })}
     </span>
   );
 }
@@ -65,7 +65,7 @@ function SeverityBadge({ severity }: { severity: string | null }) {
   };
   return (
     <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${badge.className}`}>
-      {t(`deviceVulnerabilitiesTab.severity.${badge.label}`, { defaultValue: badge.label })}
+      {t(/* i18n-dynamic */ `deviceVulnerabilitiesTab.severity.${badge.label}`, { defaultValue: badge.label })}
     </span>
   );
 }
@@ -377,7 +377,7 @@ export function DeviceVulnerabilitiesTab({ deviceId }: DeviceVulnerabilitiesTabP
   }
 
   const statTiles: Array<{ key: keyof DeviceVulnStats; label: string }> = [
-    { key: 'openTotal', label: t(`deviceVulnerabilitiesTab.stats.${STATUS_TOTAL_LABELS[statusFilter] ?? 'total'}`) },
+    { key: 'openTotal', label: t(/* i18n-dynamic */ `deviceVulnerabilitiesTab.stats.${STATUS_TOTAL_LABELS[statusFilter] ?? 'total'}`) },
     { key: 'critical', label: t('deviceVulnerabilitiesTab.severity.critical') },
     { key: 'high', label: t('deviceVulnerabilitiesTab.severity.high') },
     { key: 'medium', label: t('deviceVulnerabilitiesTab.severity.medium') },
@@ -424,7 +424,7 @@ export function DeviceVulnerabilitiesTab({ deviceId }: DeviceVulnerabilitiesTabP
             : statusFilter === 'all'
               ? t('deviceVulnerabilitiesTab.emptyAll')
               : t('deviceVulnerabilitiesTab.emptyStatus', {
-                  status: t(`deviceVulnerabilitiesTab.status.${statusFilter}`, { defaultValue: statusFilter }),
+                  status: t(/* i18n-dynamic */ `deviceVulnerabilitiesTab.status.${statusFilter}`, { defaultValue: statusFilter }),
                 })}
         </div>
       ) : (

@@ -35,26 +35,91 @@ for (const [path, mod] of Object.entries(eagerEnglish)) {
 }
 
 const loadedLocales = new Set<string>(['en']);
+const localeLoadPromises = new Map<LocalePreference, Promise<void>>();
 
 /** Idempotently load a locale's namespace chunks into i18next. */
-export async function loadLocale(locale: LocalePreference): Promise<void> {
-  if (loadedLocales.has(locale)) return;
+export function loadLocale(locale: LocalePreference): Promise<void> {
+  if (loadedLocales.has(locale)) return Promise.resolve();
+
+  const inFlight = localeLoadPromises.get(locale);
+  if (inFlight) return inFlight;
+
   const entries = Object.entries(lazyLocales).filter(
     ([path]) => parseLocalePath(path)?.locale === locale
   );
-  await Promise.all(
+  const loadPromise = Promise.all(
     entries.map(async ([path, loader]) => {
       const parsed = parseLocalePath(path);
       if (!parsed) return;
       const mod = (await loader()) as { default: Record<string, unknown> };
       i18next.addResourceBundle(locale, parsed.ns, mod.default, true, true);
     })
-  );
-  loadedLocales.add(locale);
+  )
+    .then(() => {
+      loadedLocales.add(locale);
+    })
+    .finally(() => {
+      if (localeLoadPromises.get(locale) === loadPromise) {
+        localeLoadPromises.delete(locale);
+      }
+    });
+
+  localeLoadPromises.set(locale, loadPromise);
+  return loadPromise;
 }
 
-function applyLocale(locale: LocalePreference): void {
-  void loadLocale(locale).then(() => i18next.changeLanguage(locale));
+type LocaleRuntimeDependencies = {
+  loadLocale: (locale: LocalePreference) => Promise<void>;
+  changeLanguage: (locale: LocalePreference) => Promise<unknown>;
+  reportError?: (error: unknown) => void;
+};
+
+const defaultLocaleRuntimeDependencies: LocaleRuntimeDependencies = {
+  loadLocale,
+  changeLanguage: locale => i18next.changeLanguage(locale),
+  reportError: error => console.error('Failed to apply locale; falling back to English.', error),
+};
+
+let latestLocaleRequest = 0;
+let localeChangeQueue: Promise<void> = Promise.resolve();
+
+async function changeLanguageIfLatest(
+  requestId: number,
+  locale: LocalePreference,
+  dependencies: LocaleRuntimeDependencies
+): Promise<void> {
+  const change = localeChangeQueue.then(async () => {
+    if (requestId !== latestLocaleRequest) return;
+    await dependencies.changeLanguage(locale);
+  });
+  // Keep later requests moving even if an injected/runtime change rejects.
+  localeChangeQueue = change.catch(() => undefined);
+  await change;
+}
+
+/** @internal Exported so the asynchronous request coordinator can be tested. */
+export async function applyLocale(
+  locale: LocalePreference,
+  dependencies: LocaleRuntimeDependencies = defaultLocaleRuntimeDependencies
+): Promise<void> {
+  const requestId = ++latestLocaleRequest;
+
+  try {
+    await dependencies.loadLocale(locale);
+    await changeLanguageIfLatest(requestId, locale, dependencies);
+  } catch (error) {
+    // A stale failure must never undo a newer locale request. If the latest
+    // locale cannot load, deterministically retain/switch to eager English.
+    if (requestId !== latestLocaleRequest) return;
+    dependencies.reportError?.(error);
+    try {
+      await dependencies.loadLocale('en');
+      await changeLanguageIfLatest(requestId, 'en', dependencies);
+    } catch {
+      // Locale changes are best-effort UI state and must not create an
+      // unhandled rejection in appearance-store subscribers.
+    }
+  }
 }
 
 if (!i18next.isInitialized) {
@@ -70,9 +135,11 @@ if (!i18next.isInitialized) {
 
   if (typeof window !== 'undefined') {
     const resolved = readResolvedLocalePreference();
-    if (resolved !== 'en') applyLocale(resolved);
+    if (resolved !== 'en') void applyLocale(resolved);
   }
-  subscribeLocale(applyLocale);
+  subscribeLocale(locale => {
+    void applyLocale(locale);
+  });
 }
 
 export const i18n = i18next;

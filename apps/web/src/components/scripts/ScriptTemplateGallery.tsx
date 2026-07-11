@@ -4,6 +4,7 @@ import { Download, Search } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import { formatNumber } from '@/lib/i18n/format';
 
 export type ScriptTemplate = {
   id: string;
@@ -197,14 +198,14 @@ export default function ScriptTemplateGallery({ onUseTemplate }: ScriptTemplateG
                     languageConfig[template.language]?.color || 'bg-gray-500/20 text-gray-700 border-gray-500/40'
                   )}
                 >
-                  {languageConfig[template.language] ? t(`scriptTemplateGallery.${languageConfig[template.language].label}`) : template.language}
+                  {languageConfig[template.language] ? t(/* i18n-dynamic */ `scriptTemplateGallery.${languageConfig[template.language].label}`) : template.language}
                 </span>
               </div>
               <p className="mt-3 text-sm text-muted-foreground">{template.description}</p>
               <div className="mt-4 flex items-center justify-between text-xs text-muted-foreground">
                 <span className="flex items-center gap-1">
                   <Download className="h-3 w-3" />
-                  {t('scriptTemplateGallery.downloadCount', { count: template.downloads.toLocaleString() })}
+                  {t('scriptTemplateGallery.downloadCount', { count: formatNumber(template.downloads) })}
                 </span>
                 <button
                   type="button"

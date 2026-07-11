@@ -217,7 +217,7 @@ export default function IncidentsPage() {
                         {isTracked ? (
                           row.status ? (
                             <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium capitalize ${statusColors[row.status as IncidentStatus] ?? fallbackStatusBadge}`}>
-                              {t(`longTail.incidents.IncidentsPage.status.${row.status}`)}
+                              {t(/* i18n-dynamic */ `longTail.incidents.IncidentsPage.status.${row.status}`)}
                             </span>
                           ) : (
                             <span className="text-muted-foreground">-</span>

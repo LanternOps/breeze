@@ -29,10 +29,11 @@ import PartnerBrandingTab from './PartnerBrandingTab';
 import PartnerAiBudgetsTab from './PartnerAiBudgetsTab';
 import PartnerRemoteAccessTab from './PartnerRemoteAccessTab';
 import PartnerCompanyTab from './PartnerCompanyTab';
-import PartnerRegionalTab, { DEFAULT_BUSINESS_HOURS, type PartnerLocale } from './PartnerRegionalTab';
+import PartnerRegionalTab, { DEFAULT_BUSINESS_HOURS } from './PartnerRegionalTab';
 import LoginBrandingCard from './LoginBrandingCard';
 import type {
   PartnerSettings,
+  SupportedLocale,
   BusinessHoursPreset,
   DateFormat,
   TimeFormat,
@@ -178,7 +179,7 @@ export default function PartnerSettingsPage() {
   const [timezone, setTimezone] = useState('UTC');
   const [dateFormat, setDateFormat] = useState<DateFormat>('MM/DD/YYYY');
   const [timeFormat, setTimeFormat] = useState<TimeFormat>('12h');
-  const [language, setLanguage] = useState<PartnerLocale>('en');
+  const [language, setLanguage] = useState<SupportedLocale>('en');
   const [businessHoursPreset, setBusinessHoursPreset] = useState<BusinessHoursPreset>('business');
   const [customHours, setCustomHours] = useState<Record<string, DaySchedule>>(DEFAULT_BUSINESS_HOURS);
   const [contactName, setContactName] = useState('');
@@ -535,8 +536,8 @@ export default function PartnerSettingsPage() {
       <div className="grid gap-6 lg:grid-cols-[240px_minmax(0,1fr)]">
         <SettingsSectionNav
           groups={TAB_GROUPS.map(group => ({
-            label: t(group.label),
-            items: group.tabs.map(tab => ({ ...tab, label: t(tab.label), description: t(tab.description), dirty: !!dirtyTabs[tab.key] })),
+            label: t(/* i18n-dynamic */ group.label),
+            items: group.tabs.map(tab => ({ ...tab, label: t(/* i18n-dynamic */ tab.label), description: t(/* i18n-dynamic */ tab.description), dirty: !!dirtyTabs[tab.key] })),
           }))}
           activeKey={activeTab}
           onNavigate={key => navigateToTab(key as TabKey)}

@@ -304,7 +304,7 @@ export default function PatchInstallHistory({ deviceId }: PatchInstallHistoryPro
           <div>
             <h3 className="text-lg font-semibold">{t('patchInstallHistory.title')}</h3>
             <p className="text-sm text-muted-foreground">
-              {t(total === 1 ? 'patchInstallHistory.operationCountOne' : 'patchInstallHistory.operationCountMany', { count: total })}
+              {t(/* i18n-dynamic */ total === 1 ? 'patchInstallHistory.operationCountOne' : 'patchInstallHistory.operationCountMany', { count: total })}
             </p>
           </div>
         </div>
@@ -484,7 +484,7 @@ function HistoryRow({
         <td className="px-4 py-3">
           <div className="flex items-center gap-2">
             <TypeIcon className="h-4 w-4 text-muted-foreground" />
-            <span className="font-medium">{typeConf.labelKey ? t(typeConf.labelKey) : typeConf.label}</span>
+            <span className="font-medium">{typeConf.labelKey ? t(/* i18n-dynamic */ typeConf.labelKey) : typeConf.label}</span>
           </div>
           {entry.createdByEmail && (
             <p className="text-xs text-muted-foreground mt-0.5">{entry.createdByEmail}</p>
@@ -500,7 +500,7 @@ function HistoryRow({
             <StatusIcon
               className={cn('h-3.5 w-3.5', isRunning && 'animate-spin')}
             />
-            {t(statusConf.labelKey)}
+            {t(/* i18n-dynamic */ statusConf.labelKey)}
           </span>
         </td>
         <td className="px-4 py-3 text-muted-foreground">{patchCount}</td>

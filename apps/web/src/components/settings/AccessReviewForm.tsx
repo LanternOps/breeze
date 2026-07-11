@@ -1,12 +1,13 @@
 import { i18n } from '@/lib/i18n';
+import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { useMemo, useState, useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 
-const accessReviewSchema = z.object({
-  name: z.string().min(1, i18n.t('settings:accessReviewForm.reviewNameIsRequired')).max(255),
+const createAccessReviewSchema = (t: TFunction) => z.object({
+  name: z.string().min(1, t('accessReviewForm.reviewNameIsRequired')).max(255),
   description: z.string().optional(),
   scope: z.enum(['current', 'organization', 'partner']),
   reviewerIds: z.array(z.string()).optional(),
@@ -14,7 +15,7 @@ const accessReviewSchema = z.object({
   notifyReviewers: z.boolean().optional()
 });
 
-type AccessReviewFormValues = z.infer<typeof accessReviewSchema>;
+type AccessReviewFormValues = z.infer<ReturnType<typeof createAccessReviewSchema>>;
 
 type ReviewerOption = {
   id: string;
@@ -49,7 +50,7 @@ export default function AccessReviewForm({
     watch,
     trigger
   } = useForm<AccessReviewFormValues>({
-    resolver: zodResolver(accessReviewSchema),
+    resolver: zodResolver(createAccessReviewSchema(t)),
     defaultValues: {
       name: '',
       description: '',

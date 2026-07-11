@@ -35,7 +35,7 @@ const defaults: MaintenanceSettings = {
   notifyOnStart: true,
   notifyOnEnd: true,
 };
-const recurrenceOptions = [
+const createRecurrenceOptions = () => [
   {
     value: "once",
     label: i18n.t(
@@ -61,7 +61,7 @@ const recurrenceOptions = [
     ),
   },
 ];
-const timezoneOptions = [
+const createTimezoneOptions = () => [
   "America/New_York",
   "America/Chicago",
   "America/Denver",
@@ -118,6 +118,8 @@ export default function MaintenanceTab({
   parentLink,
 }: FeatureTabProps) {
   useTranslation("policies");
+  const recurrenceOptions = createRecurrenceOptions();
+  const timezoneOptions = createTimezoneOptions();
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const isInherited = !!parentLink && !existingLink;
   const effectiveLink = existingLink ?? parentLink;

@@ -312,7 +312,7 @@ export default function DiscoveryJobList({ timezone, profileFilter, profileSubne
       <>
         <span className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-xs font-medium ${status.color}`}>
           <StatusIcon className="h-3.5 w-3.5" />
-          {t(`discoveryJobList.status.${job.status}`)}
+          {t(/* i18n-dynamic */ `discoveryJobList.status.${job.status}`)}
         </span>
         {job.errors && (
           <span className="mt-1 block text-xs text-destructive">{job.errors}</span>
@@ -408,7 +408,7 @@ export default function DiscoveryJobList({ timezone, profileFilter, profileSubne
                     isActive ? cfg.color : 'border-transparent text-muted-foreground hover:bg-muted'
                   }`}
                 >
-                  {t(`discoveryJobList.status.${s}`)}
+                  {t(/* i18n-dynamic */ `discoveryJobList.status.${s}`)}
                   <span className="opacity-60">{count}</span>
                 </button>
               );

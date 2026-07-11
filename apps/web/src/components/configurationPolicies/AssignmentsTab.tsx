@@ -28,31 +28,28 @@ type TargetOption = {
 // reusable library (#2280) — assignment scope (all orgs or a subset) is handled
 // by the dedicated OrganizationScopePanel below, not this level picker.
 const orgOwnedAssignmentLevels = [
-  { value: "organization", label: i18n.t("common:labels.organization") },
-  { value: "site", label: i18n.t("common:labels.site") },
+  { value: "organization", labelKey: "common:labels.organization" },
+  { value: "site", labelKey: "common:labels.site" },
   {
     value: "device_group",
-    label: i18n.t("policies:configurationPolicies.assignmentsTab.deviceGroup"),
+    labelKey: "policies:configurationPolicies.assignmentsTab.deviceGroup",
   },
-  { value: "device", label: i18n.t("common:labels.device") },
+  { value: "device", labelKey: "common:labels.device" },
 ];
 const osFilterOptions = [
   {
     value: "windows",
-    label: i18n.t("policies:configurationPolicies.assignmentsTab.windows"),
+    labelKey: "policies:configurationPolicies.assignmentsTab.windows",
   },
   {
     value: "macos",
-    label: i18n.t("policies:configurationPolicies.assignmentsTab.macOS"),
+    labelKey: "policies:configurationPolicies.assignmentsTab.macOS",
   },
   {
     value: "linux",
-    label: i18n.t("policies:configurationPolicies.assignmentsTab.linux"),
+    labelKey: "policies:configurationPolicies.assignmentsTab.linux",
   },
 ];
-function getOsLabel(value: string): string {
-  return osFilterOptions.find((o) => o.value === value)?.label ?? value;
-}
 type Props = {
   policyId: string;
   // null for partner-owned ("all organizations") policies.
@@ -70,7 +67,11 @@ export default function AssignmentsTab({
   orgName,
   partnerId,
 }: Props) {
-  useTranslation("policies");
+  const { t } = useTranslation(["policies", "common"]);
+  const getOsLabel = (value: string): string => {
+    const option = osFilterOptions.find((o) => o.value === value);
+    return option ? t(/* i18n-dynamic */ option.labelKey) : value;
+  };
   const isPartnerOwned = !!partnerId;
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [assignmentsLoading, setAssignmentsLoading] = useState(false);
@@ -429,7 +430,7 @@ export default function AssignmentsTab({
                     : "border-muted bg-muted/30 text-muted-foreground hover:bg-muted/60",
                 )}
               >
-                {os.label}
+                {t(/* i18n-dynamic */ os.labelKey)}
               </button>
             );
           })}
@@ -639,7 +640,7 @@ export default function AssignmentsTab({
             >
               {orgOwnedAssignmentLevels.map((level) => (
                 <option key={level.value} value={level.value}>
-                  {level.label}
+                  {t(/* i18n-dynamic */ level.labelKey)}
                 </option>
               ))}
             </select>

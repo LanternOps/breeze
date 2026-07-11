@@ -446,7 +446,7 @@ export default function ProcessManager({
                             statusColors[proc.status]
                           )}
                         >
-                          {t(statusLabelKeys[proc.status])}
+                          {t(/* i18n-dynamic */ statusLabelKeys[proc.status])}
                         </span>
                       </td>
                       <td className="px-4 py-3">

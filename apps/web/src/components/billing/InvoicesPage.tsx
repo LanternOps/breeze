@@ -416,7 +416,7 @@ export function InvoicesPage() {
           className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         >
           {STATUS_OPTION_VALUES.map((status) => (
-            <option key={status} value={status}>{status === '' ? t('invoicesPage.filters.allStatuses') : t(`invoice.status.${status}`)}</option>
+            <option key={status} value={status}>{status === '' ? t('invoicesPage.filters.allStatuses') : t(/* i18n-dynamic */ `invoice.status.${status}`)}</option>
           ))}
         </select>
         <input
@@ -579,7 +579,7 @@ export function InvoicesPage() {
                           <div className="flex flex-wrap items-center gap-1.5">
                             <StatusPill
                               role={STATUS_ROLES[inv.status].role}
-                              label={inv.status === 'sent' && !inv.sentAt ? t('invoice.status.issued') : t(`invoice.status.${inv.status}`)}
+                              label={inv.status === 'sent' && !inv.sentAt ? t('invoice.status.issued') : t(/* i18n-dynamic */ `invoice.status.${inv.status}`)}
                               className={STATUS_ROLES[inv.status].className}
                               testId={`invoices-status-${inv.id}`}
                             />
@@ -640,7 +640,7 @@ export function InvoicesPage() {
                       <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
                         <StatusPill
                           role={STATUS_ROLES[inv.status].role}
-                          label={inv.status === 'sent' && !inv.sentAt ? t('invoice.status.issued') : t(`invoice.status.${inv.status}`)}
+                          label={inv.status === 'sent' && !inv.sentAt ? t('invoice.status.issued') : t(/* i18n-dynamic */ `invoice.status.${inv.status}`)}
                           className={['shrink-0', STATUS_ROLES[inv.status].className].filter(Boolean).join(' ')}
                           testId={`invoices-card-status-${inv.id}`}
                         />

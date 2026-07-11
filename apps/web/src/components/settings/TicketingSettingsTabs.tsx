@@ -1,4 +1,3 @@
-import { i18n } from '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
 import { useEffect, useMemo, useState } from 'react';
 import { cn } from '@/lib/utils';
@@ -19,11 +18,11 @@ type Tab = (typeof VALID_TABS)[number];
 // capability on the client, so gate the tab on partner scope — any partner user
 // can use the settings; the card's own 403 handler is the defense-in-depth
 // backstop that hides the queue for non-admins reached directly via hash.
-const BASE_TABS: Array<{ id: Tab; label: string }> = [
-  { id: 'statuses', label: i18n.t('settings:ticketingSettingsTabs.statuses') },
-  { id: 'priorities', label: i18n.t('settings:ticketingSettingsTabs.prioritiesSLAs') },
-  { id: 'categories', label: i18n.t('settings:ticketingSettingsTabs.categories') },
-  { id: 'export', label: i18n.t('settings:ticketingSettingsTabs.export') }
+const BASE_TABS: Array<{ id: Tab; labelKey: string }> = [
+  { id: 'statuses', labelKey: 'ticketingSettingsTabs.statuses' },
+  { id: 'priorities', labelKey: 'ticketingSettingsTabs.prioritiesSLAs' },
+  { id: 'categories', labelKey: 'ticketingSettingsTabs.categories' },
+  { id: 'export', labelKey: 'ticketingSettingsTabs.export' }
 ];
 
 function parseHash(): Tab {
@@ -83,12 +82,12 @@ export default function TicketingSettingsTabs({
     () =>
       canManageInbound
         ? [
-            ...BASE_TABS,
-            { id: 'inbound' as Tab, label: t('ticketingSettingsTabs.inboundEmail') },
-            { id: 'canned' as Tab, label: t('ticketingSettingsTabs.cannedResponses') }
+            ...BASE_TABS.map((tab) => ({ ...tab, label: t(/* i18n-dynamic */ tab.labelKey) })),
+            { id: 'inbound' as Tab, labelKey: 'ticketingSettingsTabs.inboundEmail', label: t('ticketingSettingsTabs.inboundEmail') },
+            { id: 'canned' as Tab, labelKey: 'ticketingSettingsTabs.cannedResponses', label: t('ticketingSettingsTabs.cannedResponses') }
           ]
-        : BASE_TABS,
-    [canManageInbound]
+        : BASE_TABS.map((tab) => ({ ...tab, label: t(/* i18n-dynamic */ tab.labelKey) })),
+    [canManageInbound, t]
   );
 
   const switchTab = (tab: Tab) => {

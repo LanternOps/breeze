@@ -171,7 +171,7 @@ export default function PsaConnectionForm({
                 </option>
               ))}
             </select>
-            <p className="text-xs text-muted-foreground">{t(credentialHint.hintKey)}</p>
+            <p className="text-xs text-muted-foreground">{t(/* i18n-dynamic */ credentialHint.hintKey)}</p>
           </div>
         </div>
       </div>
@@ -377,7 +377,7 @@ export default function PsaConnectionForm({
               >
                 {Object.entries(syncIntervalLabelKeys).map(([value, labelKey]) => (
                   <option key={value} value={value}>
-                    {t(labelKey)}
+                    {t(/* i18n-dynamic */ labelKey)}
                   </option>
                 ))}
               </select>
@@ -395,7 +395,7 @@ export default function PsaConnectionForm({
               >
                 {Object.entries(syncDirectionLabelKeys).map(([value, labelKey]) => (
                   <option key={value} value={value}>
-                    {t(labelKey)}
+                    {t(/* i18n-dynamic */ labelKey)}
                   </option>
                 ))}
               </select>

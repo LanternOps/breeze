@@ -454,7 +454,7 @@ export default function EnrollmentKeyManager() {
                       </td>
                       <td className="px-4 py-3">
                         <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${status.className}`}>
-                          {t(`enrollmentKeys.status.${status.key}`)}
+                          {t(/* i18n-dynamic */ `enrollmentKeys.status.${status.key}`)}
                         </span>
                       </td>
                       <td className="px-4 py-3 tabular-nums">

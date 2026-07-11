@@ -44,14 +44,14 @@ export default function BaselineOverviewTab({ baseline, onUpdated }: Props) {
         <div className="rounded-lg border bg-card p-4 shadow-xs">
           <p className="text-xs text-muted-foreground">{t('auditBaselinesBaselineOverviewTab.fields.osType')}</p>
           <p className="mt-1 font-medium">
-            {osLabelKey[baseline.osType] ? t(`auditBaselinesBaselineOverviewTab.os.${osLabelKey[baseline.osType]}`) : baseline.osType}
+            {osLabelKey[baseline.osType] ? t(/* i18n-dynamic */ `auditBaselinesBaselineOverviewTab.os.${osLabelKey[baseline.osType]}`) : baseline.osType}
           </p>
         </div>
         <div className="rounded-lg border bg-card p-4 shadow-xs">
           <p className="text-xs text-muted-foreground">{t('auditBaselinesBaselineOverviewTab.fields.profile')}</p>
           <p className="mt-1 font-medium">
             {profileLabelKey[baseline.profile]
-              ? t(`auditBaselinesBaselineOverviewTab.profiles.${profileLabelKey[baseline.profile]}`)
+              ? t(/* i18n-dynamic */ `auditBaselinesBaselineOverviewTab.profiles.${profileLabelKey[baseline.profile]}`)
               : baseline.profile}
           </p>
         </div>

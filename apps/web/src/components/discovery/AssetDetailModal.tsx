@@ -31,7 +31,7 @@ const SNMP_FIELD_LABEL_KEYS: Record<string, string> = {
 };
 
 function snmpFieldLabel(key: string, t: (key: string) => string): string {
-  return SNMP_FIELD_LABEL_KEYS[key] ? t(SNMP_FIELD_LABEL_KEYS[key]) : key;
+  return SNMP_FIELD_LABEL_KEYS[key] ? t(/* i18n-dynamic */ SNMP_FIELD_LABEL_KEYS[key]) : key;
 }
 
 type AssetDetailModalProps = {
@@ -383,10 +383,10 @@ export default function AssetDetailModal({
             <div className="flex items-center gap-2">
               <h2 className="text-lg font-semibold">{asset.label || asset.hostname || asset.ip}</h2>
               <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${typeConfig[asset.type].color}`}>
-                {t(typeConfig[asset.type].labelKey)}
+                {t(/* i18n-dynamic */ typeConfig[asset.type].labelKey)}
               </span>
               <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${approvalStatusConfig[asset.approvalStatus].color}`}>
-                {t(approvalStatusConfig[asset.approvalStatus].labelKey)}
+                {t(/* i18n-dynamic */ approvalStatusConfig[asset.approvalStatus].labelKey)}
               </span>
             </div>
             <p className="mt-1 text-sm text-muted-foreground">
@@ -493,7 +493,7 @@ export default function AssetDetailModal({
                       onChange={(e) => setEditType(e.target.value as DiscoveredAssetType)}
                     >
                       {(Object.keys(typeConfig) as DiscoveredAssetType[]).map((assetType) => (
-                        <option key={assetType} value={assetType}>{t(typeConfig[assetType].labelKey)}</option>
+                        <option key={assetType} value={assetType}>{t(/* i18n-dynamic */ typeConfig[assetType].labelKey)}</option>
                       ))}
                     </select>
                     {asset.typeSource === 'manual' && (

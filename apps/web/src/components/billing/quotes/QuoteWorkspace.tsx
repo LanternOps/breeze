@@ -115,7 +115,7 @@ export default function QuoteWorkspace({ id }: Props) {
   // on a non-draft falls back to Detail.
   const tabs: DocumentTab[] = TAB_LABELS.map((tabDef) => ({
     id: tabDef.value,
-    label: t(tabDef.labelKey),
+    label: t(/* i18n-dynamic */ tabDef.labelKey),
     hidden: tabDef.value === 'editor' && !isDraft,
   }));
   const activeTab: Tab = tabs.some((t) => t.id === tab && !t.hidden) ? tab : 'detail';

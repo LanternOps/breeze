@@ -145,7 +145,7 @@ function ExecutionRow({
             <span>{t('devicePlaybookHistory.triggeredBy', { user: execution.triggeredBy })}</span>
           </div>
         </div>
-        <span className={`text-xs font-medium ${config.color}`}>{t(config.label)}</span>
+        <span className={`text-xs font-medium ${config.color}`}>{t(/* i18n-dynamic */ config.label)}</span>
         {expanded ? (
           <ChevronUp className="h-4 w-4 shrink-0 text-muted-foreground" />
         ) : (
@@ -191,7 +191,7 @@ function ExecutionRow({
                     <span className="text-xs text-muted-foreground">
                       {formatDurationMs(step.durationMs)}
                     </span>
-                    <span className={`text-xs font-medium ${sc.color}`}>{t(sc.label)}</span>
+                    <span className={`text-xs font-medium ${sc.color}`}>{t(/* i18n-dynamic */ sc.label)}</span>
                   </div>
                 );
               })}

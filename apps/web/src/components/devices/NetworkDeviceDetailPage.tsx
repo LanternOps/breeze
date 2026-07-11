@@ -266,8 +266,8 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
   // throw during render (which, with no error boundary, would blank the page).
   const typeMeta = typeConfig[asset.type];
   const approvalMeta = approvalStatusConfig[asset.approvalStatus];
-  const typeLabel = typeMeta ? t(typeMeta.labelKey) : asset.type;
-  const approvalLabel = approvalMeta ? t(approvalMeta.labelKey) : asset.approvalStatus;
+  const typeLabel = typeMeta ? t(/* i18n-dynamic */ typeMeta.labelKey) : asset.type;
+  const approvalLabel = approvalMeta ? t(/* i18n-dynamic */ approvalMeta.labelKey) : asset.approvalStatus;
 
   return (
     <div className="space-y-6" data-testid="network-device-detail">
@@ -343,7 +343,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
                 : 'border-transparent text-muted-foreground hover:text-foreground'
             }`}
           >
-            {t(`networkDeviceDetailPage.tabs.${tab}`)}
+            {t(/* i18n-dynamic */ `networkDeviceDetailPage.tabs.${tab}`)}
           </button>
         ))}
       </div>
@@ -370,7 +370,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
                       onChange={(e) => void changeType(e.target.value as DiscoveredAssetType)}
                     >
                       {(Object.keys(typeConfig) as DiscoveredAssetType[]).map((type) => (
-                        <option key={type} value={type}>{t(typeConfig[type].labelKey)}</option>
+                        <option key={type} value={type}>{t(/* i18n-dynamic */ typeConfig[type].labelKey)}</option>
                       ))}
                     </select>
                     {asset.typeSource === 'manual' && (
@@ -388,7 +388,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
                   {asset.typeSource === 'manual' && (
                     <p className="mt-1 text-[11px] text-muted-foreground">
                       {asset.detectedType
-                        ? t('networkDeviceDetailPage.manuallySetWithDetected', { type: t(typeConfig[asset.detectedType].labelKey) })
+                        ? t('networkDeviceDetailPage.manuallySetWithDetected', { type: t(/* i18n-dynamic */ typeConfig[asset.detectedType].labelKey) })
                         : t('networkDeviceDetailPage.manuallySet')}
                     </p>
                   )}

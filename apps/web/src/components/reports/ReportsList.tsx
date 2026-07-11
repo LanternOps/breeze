@@ -200,10 +200,10 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
 
   const [downloadingRunId, setDownloadingRunId] = useState<string | null>(null);
 
-  const getReportTypeLabel = (type: ReportType) => t(`reports.reportsList.reportTypes.${type}`); // i18n-dynamic
-  const getScheduleLabel = (schedule: ReportSchedule) => t(`reports.reportsList.schedules.${schedule}`); // i18n-dynamic
-  const getFormatLabel = (format: ReportFormat) => t(`reports.reportsList.formats.${format}`); // i18n-dynamic
-  const getStatusLabel = (status: ReportRun['status']) => t(`reports.reportsList.status.${status}`); // i18n-dynamic
+  const getReportTypeLabel = (type: ReportType) => t(/* i18n-dynamic */ `reports.reportsList.reportTypes.${type}`);
+  const getScheduleLabel = (schedule: ReportSchedule) => t(/* i18n-dynamic */ `reports.reportsList.schedules.${schedule}`);
+  const getFormatLabel = (format: ReportFormat) => t(/* i18n-dynamic */ `reports.reportsList.formats.${format}`);
+  const getStatusLabel = (status: ReportRun['status']) => t(/* i18n-dynamic */ `reports.reportsList.status.${status}`);
 
   const handleDownload = async (run: ReportRun) => {
     setDownloadingRunId(run.id);

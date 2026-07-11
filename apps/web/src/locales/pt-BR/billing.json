@@ -384,7 +384,7 @@
         "removeSectionWithLines_one": "Isso remove a tabela de preços e seu {{count}} item de linha. Isso não pode ser desfeito.",
         "removeSectionWithLines_other": "Isso remove a tabela de preços e seus {{count}} itens de linha. Isso não pode ser desfeito.",
         "thisLine": "esta linha",
-        "removeSectionWithLines": "Remove Section With Lines"
+        "removeSectionWithLines": "Remover seção com linhas"
       },
       "deposit": {
         "due": "Depósito devido",

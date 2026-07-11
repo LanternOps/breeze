@@ -109,7 +109,7 @@ export default function CatalogItemPicker({
                   </span>
                 )}
                 <span className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${CATALOG_TYPE_CHIP[item.itemType]}`}>
-                  {t(`longTail.catalog.CatalogItemPicker.itemTypes.${item.itemType}`)}
+                  {t(/* i18n-dynamic */ `longTail.catalog.CatalogItemPicker.itemTypes.${item.itemType}`)}
                 </span>
                 {item.sku && <span className="font-mono chart-legend-xs text-muted-foreground">{item.sku}</span>}
                 <span className="tabular-nums text-muted-foreground">{formatMoney(item.unitPrice)}</span>

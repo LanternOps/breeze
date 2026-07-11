@@ -131,10 +131,10 @@ const scheduleDefaults: BackupScheduleSettings = {
   bandwidthLimitMbps: 0,
   priority: 50,
 };
-const scheduleOptions: {
+const createScheduleOptions = (): {
   value: ScheduleFrequency;
   label: string;
-}[] = [
+}[] => [
   {
     value: "daily",
     label: i18n.t("policies:configurationPolicies.featureTabs.backupTab.daily"),
@@ -152,12 +152,12 @@ const scheduleOptions: {
     ),
   },
 ];
-const retentionPresets: {
+const createRetentionPresets = (): {
   value: RetentionPreset;
   label: string;
   days: number;
   versions: number;
-}[] = [
+}[] => [
   {
     value: "standard",
     label: i18n.t(
@@ -191,7 +191,7 @@ const retentionPresets: {
     versions: 0,
   },
 ];
-const dayOfWeekOptions = [
+const createDayOfWeekOptions = () => [
   {
     value: 0,
     label: i18n.t(
@@ -235,7 +235,7 @@ const dayOfWeekOptions = [
     ),
   },
 ];
-const shortDayOfWeekOptions = [
+const createShortDayOfWeekOptions = () => [
   {
     value: 0,
     label: i18n.t("policies:configurationPolicies.featureTabs.backupTab.sun"),
@@ -265,12 +265,12 @@ const shortDayOfWeekOptions = [
     label: i18n.t("policies:configurationPolicies.featureTabs.backupTab.sat"),
   },
 ];
-const providerOptions: {
+const createProviderOptions = (): {
   value: BackupProvider;
   label: string;
   description: string;
   icon: typeof Cloud;
-}[] = [
+}[] => [
   {
     value: "s3",
     label: i18n.t(
@@ -292,11 +292,11 @@ const providerOptions: {
     icon: Server,
   },
 ];
-const providerLabels: Record<string, string> = {
+const createProviderLabels = (): Record<string, string> => ({
   s3: "Amazon S3",
   local: "Local / NAS",
-};
-const commonExclusions = [
+});
+const createCommonExclusions = () => [
   {
     pattern: "*.tmp",
     label: i18n.t(
@@ -439,7 +439,7 @@ function PathList({
 function scheduleDescription(s: BackupScheduleSettings): string {
   const time = s.scheduleTime || "03:00";
   const dayName =
-    dayOfWeekOptions.find((d) => d.value === s.scheduleDayOfWeek)?.label ??
+    createDayOfWeekOptions().find((d) => d.value === s.scheduleDayOfWeek)?.label ??
     "Sunday";
   switch (s.scheduleFrequency) {
     case "daily":
@@ -597,6 +597,13 @@ export default function BackupTab({
   parentLink,
 }: FeatureTabProps) {
   useTranslation("policies");
+  const scheduleOptions = createScheduleOptions();
+  const retentionPresets = createRetentionPresets();
+  const dayOfWeekOptions = createDayOfWeekOptions();
+  const shortDayOfWeekOptions = createShortDayOfWeekOptions();
+  const providerOptions = createProviderOptions();
+  const providerLabels = createProviderLabels();
+  const commonExclusions = createCommonExclusions();
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const isInherited = !!parentLink && !existingLink;
   const effectiveLink = existingLink ?? parentLink;

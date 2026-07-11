@@ -91,7 +91,7 @@ export function CreateVulnTicketModal({
               className={INPUT}
             >
               {VULN_TICKET_PRIORITIES.map((p) => (
-                <option key={p} value={p}>{t(`createVulnTicketModal.priorities.${p}`)}{/* i18n-dynamic */}</option>
+                <option key={p} value={p}>{t(/* i18n-dynamic */ `createVulnTicketModal.priorities.${p}`)}{/* i18n-dynamic */}</option>
               ))}
             </select>
           </label>

@@ -225,7 +225,7 @@ export default function PeripheralPoliciesList() {
                         className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${deviceClassBadge[policy.deviceClass] ?? "bg-muted text-muted-foreground"}`}
                       >
                         {t(
-                          `peripheralPoliciesList.classes.${policy.deviceClass}`,
+                          /* i18n-dynamic */ `peripheralPoliciesList.classes.${policy.deviceClass}`,
                           {
                             defaultValue: policy.deviceClass.replace("_", " "),
                           },
@@ -237,7 +237,7 @@ export default function PeripheralPoliciesList() {
                       <span
                         className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${actionBadge[policy.action] ?? "bg-muted text-muted-foreground"}`}
                       >
-                        {t(`peripheralPoliciesList.actions.${policy.action}`, {
+                        {t(/* i18n-dynamic */ `peripheralPoliciesList.actions.${policy.action}`, {
                           defaultValue: policy.action.replace("_", " "),
                         })}{" "}
                         {/* i18n-dynamic */}

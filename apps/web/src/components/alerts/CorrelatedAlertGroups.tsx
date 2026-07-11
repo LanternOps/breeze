@@ -654,7 +654,7 @@ export default function CorrelatedAlertGroups() {
                               severityStyles[group.rootCause.severity]
                             )}
                           >
-                            {t(`correlatedAlertGroups.severity.${group.rootCause.severity}`)}
+                            {t(/* i18n-dynamic */ `correlatedAlertGroups.severity.${group.rootCause.severity}`)}
                           </span>
                           {group.status && (
                             <span
@@ -663,7 +663,7 @@ export default function CorrelatedAlertGroups() {
                                 statusStyles[group.status] ?? 'bg-muted text-muted-foreground border-border'
                               )}
                             >
-                              {t(`correlatedAlertGroups.status.${group.status}`)}
+                              {t(/* i18n-dynamic */ `correlatedAlertGroups.status.${group.status}`)}
                             </span>
                           )}
                           <span>{group.rootCause.device}</span>
@@ -763,7 +763,7 @@ export default function CorrelatedAlertGroups() {
                                       severityStyles[alert.severity]
                                     )}
                                   >
-                                    {t(`correlatedAlertGroups.severity.${alert.severity}`)}
+                                    {t(/* i18n-dynamic */ `correlatedAlertGroups.severity.${alert.severity}`)}
                                   </span>
                                   <span
                                     className={cn(
@@ -771,7 +771,7 @@ export default function CorrelatedAlertGroups() {
                                       statusStyles[alert.status] ?? 'bg-muted text-muted-foreground border-border'
                                     )}
                                   >
-                                    {t(`correlatedAlertGroups.status.${alert.status}`)}
+                                    {t(/* i18n-dynamic */ `correlatedAlertGroups.status.${alert.status}`)}
                                   </span>
                                 </div>
                               </div>

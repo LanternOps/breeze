@@ -86,7 +86,7 @@ export function VulnFilterBar({
         >
           <option value="">{t('common:labels.all')}</option>
           {SEVERITY_OPTIONS.map((s) => (
-            <option key={s} value={s}>{t(`severityBadge.${s}`)}{/* i18n-dynamic */}</option>
+            <option key={s} value={s}>{t(/* i18n-dynamic */ `severityBadge.${s}`)}{/* i18n-dynamic */}</option>
           ))}
         </select>
       </label>
@@ -102,7 +102,7 @@ export function VulnFilterBar({
           className={selectCls}
         >
           {STATUS_OPTIONS.map((s) => (
-            <option key={s.value} value={s.value}>{t(`vulnFilterBar.statusOptions.${s.labelKey}`)}{/* i18n-dynamic */}</option>
+            <option key={s.value} value={s.value}>{t(/* i18n-dynamic */ `vulnFilterBar.statusOptions.${s.labelKey}`)}{/* i18n-dynamic */}</option>
           ))}
         </select>
       </label>

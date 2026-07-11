@@ -265,7 +265,7 @@ export default function C2CConnectionWizard({ onClose, onComplete }: C2CConnecti
                       onChange={() => toggleScope(scope.id)}
                       className="h-4 w-4 rounded border-gray-300"
                     />
-                    <span className="text-sm font-medium">{t(`longTail.c2c.C2CConnectionWizard.scopes.${scope.id}`)}</span>
+                    <span className="text-sm font-medium">{t(/* i18n-dynamic */ `longTail.c2c.C2CConnectionWizard.scopes.${scope.id}`)}</span>
                   </label>
                 ))}
               </div>
@@ -382,7 +382,7 @@ export default function C2CConnectionWizard({ onClose, onComplete }: C2CConnecti
                       onChange={() => toggleScope(scope.id)}
                       className="h-4 w-4 rounded border-gray-300"
                     />
-                    <span className="text-sm font-medium">{t(`longTail.c2c.C2CConnectionWizard.scopes.${scope.id}`)}</span>
+                    <span className="text-sm font-medium">{t(/* i18n-dynamic */ `longTail.c2c.C2CConnectionWizard.scopes.${scope.id}`)}</span>
                   </label>
                 ))}
               </div>

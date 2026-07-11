@@ -172,7 +172,7 @@ function scheduleToDisplay(schedule: ApiDiscoverySchedule | undefined, t: TFunct
 
   switch (parsed.cadence) {
     case 'weekly':
-      return { label: t('discoveryPage.schedule.weekly', { day: t(`discoveryPage.days.${parsed.dayOfWeek.toLowerCase()}`), time: parsed.time }), status: 'active' };
+      return { label: t('discoveryPage.schedule.weekly', { day: t(/* i18n-dynamic */ `discoveryPage.days.${parsed.dayOfWeek.toLowerCase()}`), time: parsed.time }), status: 'active' };
     case 'monthly':
       return { label: t('discoveryPage.schedule.monthly', { day: parsed.dayOfMonth, time: parsed.time }), status: 'active' };
     default:

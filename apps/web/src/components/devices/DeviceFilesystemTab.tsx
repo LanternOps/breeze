@@ -672,7 +672,7 @@ export default function DeviceFilesystemTab({
                   {t("deviceFilesystemTab.cleanupCandidates")}
                 </p>
                 <p className="mt-1 text-sm font-medium">
-                  {cleanupCandidateCount.toLocaleString()}
+                  {formatNumber(cleanupCandidateCount)}
                 </p>
               </div>
             </div>
@@ -687,13 +687,13 @@ export default function DeviceFilesystemTab({
                     {t("deviceFilesystemTab.filesScanned")}
                   </span>
                   <span className="text-right font-medium">
-                    {(summary.filesScanned ?? 0).toLocaleString()}
+                    {formatNumber(summary.filesScanned ?? 0)}
                   </span>
                   <span className="text-muted-foreground">
                     {t("deviceFilesystemTab.directoriesScanned")}
                   </span>
                   <span className="text-right font-medium">
-                    {(summary.dirsScanned ?? 0).toLocaleString()}
+                    {formatNumber(summary.dirsScanned ?? 0)}
                   </span>
                   <span className="text-muted-foreground">
                     {t("deviceFilesystemTab.maxDepthReached")}
@@ -719,13 +719,13 @@ export default function DeviceFilesystemTab({
                     {t("deviceFilesystemTab.oldDownloads")}
                   </span>
                   <span className="text-right font-medium">
-                    {oldDownloadsCount.toLocaleString()}
+                    {formatNumber(oldDownloadsCount)}
                   </span>
                   <span className="text-muted-foreground">
                     {t("deviceFilesystemTab.unrotatedLogs")}
                   </span>
                   <span className="text-right font-medium">
-                    {unrotatedLogCount.toLocaleString()}
+                    {formatNumber(unrotatedLogCount)}
                   </span>
                   <span className="text-muted-foreground">
                     {t("deviceFilesystemTab.trashSize")}
@@ -737,13 +737,13 @@ export default function DeviceFilesystemTab({
                     {t("deviceFilesystemTab.duplicateGroups")}
                   </span>
                   <span className="text-right font-medium">
-                    {duplicateGroupCount.toLocaleString()}
+                    {formatNumber(duplicateGroupCount)}
                   </span>
                   <span className="text-muted-foreground">
                     {t("deviceFilesystemTab.scanErrors")}
                   </span>
                   <span className="text-right font-medium">
-                    {scanErrorCount.toLocaleString()}
+                    {formatNumber(scanErrorCount)}
                   </span>
                 </div>
               </div>
@@ -865,7 +865,7 @@ export default function DeviceFilesystemTab({
                 {t("deviceFilesystemTab.candidateCount")}
               </p>
               <p className="mt-1 text-sm font-medium">
-                {cleanupPreview.candidateCount.toLocaleString()}
+                {formatNumber(cleanupPreview.candidateCount)}
               </p>
             </div>
             <div className="rounded-md border bg-muted/20 p-3">

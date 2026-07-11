@@ -5,25 +5,25 @@ import { cn } from '@/lib/utils';
 
 export type ApiKeyScope = {
   id: string;
-  label: string;
-  description: string;
+  labelKey: string;
+  descriptionKey: string;
   adminOnly?: boolean;
 };
 
 export const API_KEY_SCOPES: ApiKeyScope[] = [
-  { id: 'devices:read', label: i18n.t('settings:apiKeyForm.devicesRead'), description: i18n.t('settings:apiKeyForm.viewDeviceInformationAndStatus') },
-  { id: 'devices:write', label: i18n.t('settings:apiKeyForm.devicesWrite'), description: i18n.t('settings:apiKeyForm.createUpdateAndDeleteDevices') },
-  { id: 'scripts:read', label: i18n.t('settings:apiKeyForm.scriptsRead'), description: i18n.t('settings:apiKeyForm.viewScriptsAndExecutionHistory') },
-  { id: 'scripts:write', label: i18n.t('settings:apiKeyForm.scriptsWrite'), description: i18n.t('settings:apiKeyForm.createAndModifyScripts') },
-  { id: 'scripts:execute', label: i18n.t('settings:apiKeyForm.scriptsExecute'), description: i18n.t('settings:apiKeyForm.runScriptsOnDevices') },
-  { id: 'alerts:read', label: i18n.t('settings:apiKeyForm.alertsRead'), description: i18n.t('settings:apiKeyForm.viewAlertsAndNotifications') },
-  { id: 'alerts:write', label: i18n.t('settings:apiKeyForm.alertsWrite'), description: i18n.t('settings:apiKeyForm.createAndManageAlertRules') },
-  { id: 'reports:read', label: i18n.t('settings:apiKeyForm.reportsRead'), description: i18n.t('settings:apiKeyForm.viewAndDownloadReports') },
-  { id: 'reports:write', label: i18n.t('settings:apiKeyForm.reportsWrite'), description: i18n.t('settings:apiKeyForm.createAndScheduleReports') },
-  { id: 'ai:read', label: i18n.t('settings:apiKeyForm.aIRead'), description: i18n.t('settings:apiKeyForm.queryDevicesAlertsAndMetricsViaAIMCP') },
-  { id: 'ai:write', label: i18n.t('settings:apiKeyForm.aIWrite'), description: i18n.t('settings:apiKeyForm.createAutomationsAndManageAlertsViaAIMCP') },
-  { id: 'ai:execute', label: i18n.t('settings:apiKeyForm.aIExecute'), description: i18n.t('settings:apiKeyForm.executeCommandsAndScriptsViaAIMCP'), adminOnly: true },
-  { id: 'users:read', label: i18n.t('settings:apiKeyForm.usersRead'), description: i18n.t('settings:apiKeyForm.viewUserInformation'), adminOnly: true }
+  { id: 'devices:read', labelKey: 'apiKeyForm.devicesRead', descriptionKey: 'apiKeyForm.viewDeviceInformationAndStatus' },
+  { id: 'devices:write', labelKey: 'apiKeyForm.devicesWrite', descriptionKey: 'apiKeyForm.createUpdateAndDeleteDevices' },
+  { id: 'scripts:read', labelKey: 'apiKeyForm.scriptsRead', descriptionKey: 'apiKeyForm.viewScriptsAndExecutionHistory' },
+  { id: 'scripts:write', labelKey: 'apiKeyForm.scriptsWrite', descriptionKey: 'apiKeyForm.createAndModifyScripts' },
+  { id: 'scripts:execute', labelKey: 'apiKeyForm.scriptsExecute', descriptionKey: 'apiKeyForm.runScriptsOnDevices' },
+  { id: 'alerts:read', labelKey: 'apiKeyForm.alertsRead', descriptionKey: 'apiKeyForm.viewAlertsAndNotifications' },
+  { id: 'alerts:write', labelKey: 'apiKeyForm.alertsWrite', descriptionKey: 'apiKeyForm.createAndManageAlertRules' },
+  { id: 'reports:read', labelKey: 'apiKeyForm.reportsRead', descriptionKey: 'apiKeyForm.viewAndDownloadReports' },
+  { id: 'reports:write', labelKey: 'apiKeyForm.reportsWrite', descriptionKey: 'apiKeyForm.createAndScheduleReports' },
+  { id: 'ai:read', labelKey: 'apiKeyForm.aIRead', descriptionKey: 'apiKeyForm.queryDevicesAlertsAndMetricsViaAIMCP' },
+  { id: 'ai:write', labelKey: 'apiKeyForm.aIWrite', descriptionKey: 'apiKeyForm.createAutomationsAndManageAlertsViaAIMCP' },
+  { id: 'ai:execute', labelKey: 'apiKeyForm.aIExecute', descriptionKey: 'apiKeyForm.executeCommandsAndScriptsViaAIMCP', adminOnly: true },
+  { id: 'users:read', labelKey: 'apiKeyForm.usersRead', descriptionKey: 'apiKeyForm.viewUserInformation', adminOnly: true }
 ];
 
 export type ApiKeyFormValues = {
@@ -356,13 +356,13 @@ export default function ApiKeyForm({
                     />
                     <div>
                       <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium">{scope.label}</span>
+                        <span className="text-sm font-medium">{t(/* i18n-dynamic */ scope.labelKey)}</span>
                         {scope.adminOnly && (
                           <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-xs font-medium text-amber-700">
                             {t('apiKeyForm.adminOnly')}</span>
                         )}
                       </div>
-                      <p className="text-xs text-muted-foreground">{scope.description}</p>
+                      <p className="text-xs text-muted-foreground">{t(/* i18n-dynamic */ scope.descriptionKey)}</p>
                     </div>
                   </label>
                 );

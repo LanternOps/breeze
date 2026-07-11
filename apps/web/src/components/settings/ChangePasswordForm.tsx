@@ -1,4 +1,5 @@
 import { i18n } from '@/lib/i18n';
+import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { useMemo } from 'react';
 import { useForm } from 'react-hook-form';
@@ -6,22 +7,22 @@ import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { cn, widthPercentClass } from '@/lib/utils';
 
-const changePasswordSchema = z
+const createChangePasswordSchema = (t: TFunction) => z
   .object({
-    currentPassword: z.string().min(1, i18n.t('settings:changePasswordForm.currentPasswordIsRequired')),
-    newPassword: z.string().min(8, i18n.t('settings:changePasswordForm.passwordMustBeAtLeast8Characters')),
-    confirmPassword: z.string().min(8, i18n.t('settings:changePasswordForm.confirmYourNewPassword'))
+    currentPassword: z.string().min(1, t('changePasswordForm.currentPasswordIsRequired')),
+    newPassword: z.string().min(8, t('changePasswordForm.passwordMustBeAtLeast8Characters')),
+    confirmPassword: z.string().min(8, t('changePasswordForm.confirmYourNewPassword'))
   })
   .refine(data => data.newPassword === data.confirmPassword, {
-    message: i18n.t('settings:changePasswordForm.passwordsDoNotMatch'),
-    path: [i18n.t('settings:changePasswordForm.confirmPassword')]
+    message: t('changePasswordForm.passwordsDoNotMatch'),
+    path: ['confirmPassword']
   })
   .refine(data => data.currentPassword !== data.newPassword, {
-    message: i18n.t('settings:changePasswordForm.newPasswordMustBeDifferentFromCurrentPassword'),
-    path: [i18n.t('settings:changePasswordForm.newPassword2')]
+    message: t('changePasswordForm.newPasswordMustBeDifferentFromCurrentPassword'),
+    path: ['newPassword']
   });
 
-type ChangePasswordFormValues = z.infer<typeof changePasswordSchema>;
+type ChangePasswordFormValues = z.infer<ReturnType<typeof createChangePasswordSchema>>;
 
 type ChangePasswordFormProps = {
   onSubmit?: (values: ChangePasswordFormValues) => void | Promise<void>;
@@ -32,17 +33,17 @@ type ChangePasswordFormProps = {
 };
 
 type StrengthConfig = {
-  label: string;
+  labelKey: string;
   className: string;
   minScore: number;
 };
 
 const strengthScale: StrengthConfig[] = [
-  { label: i18n.t('settings:changePasswordForm.tooWeak'), className: 'bg-destructive', minScore: 0 },
-  { label: i18n.t('settings:changePasswordForm.weak'), className: 'bg-destructive/70', minScore: 2 },
-  { label: i18n.t('settings:changePasswordForm.fair'), className: 'bg-amber-500', minScore: 3 },
-  { label: i18n.t('settings:changePasswordForm.good'), className: 'bg-emerald-500', minScore: 4 },
-  { label: i18n.t('settings:changePasswordForm.strong'), className: 'bg-emerald-600', minScore: 5 }
+  { labelKey: 'changePasswordForm.tooWeak', className: 'bg-destructive', minScore: 0 },
+  { labelKey: 'changePasswordForm.weak', className: 'bg-destructive/70', minScore: 2 },
+  { labelKey: 'changePasswordForm.fair', className: 'bg-amber-500', minScore: 3 },
+  { labelKey: 'changePasswordForm.good', className: 'bg-emerald-500', minScore: 4 },
+  { labelKey: 'changePasswordForm.strong', className: 'bg-emerald-600', minScore: 5 }
 ];
 
 function getStrengthScore(password: string) {
@@ -82,7 +83,7 @@ export default function ChangePasswordForm({
     reset,
     formState: { errors, isSubmitting }
   } = useForm<ChangePasswordFormValues>({
-    resolver: zodResolver(changePasswordSchema),
+    resolver: zodResolver(createChangePasswordSchema(t)),
     defaultValues: {
       currentPassword: '',
       newPassword: '',
@@ -111,11 +112,11 @@ export default function ChangePasswordForm({
     const defaultTier = { label: t('changePasswordForm.weak'), className: 'bg-destructive', minScore: 0 };
 
     return {
-      label: tier?.label ?? defaultTier.label,
+      label: tier ? t(/* i18n-dynamic */ tier.labelKey) : defaultTier.label,
       className: tier?.className ?? defaultTier.className,
       percent
     };
-  }, [newPasswordValue]);
+  }, [newPasswordValue, t]);
 
   const handleFormSubmit = async (values: ChangePasswordFormValues) => {
     await onSubmit?.(values);

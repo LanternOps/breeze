@@ -299,7 +299,7 @@ export default function NetworkMonitorList({ assetId }: NetworkMonitorListProps)
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-1.5">
                         <TypeIcon className="h-3.5 w-3.5 text-muted-foreground" />
-                        <span className="text-sm">{typeLabelKeys[monitor.monitorType] ? t(typeLabelKeys[monitor.monitorType]) : monitor.monitorType}</span>
+                        <span className="text-sm">{typeLabelKeys[monitor.monitorType] ? t(/* i18n-dynamic */ typeLabelKeys[monitor.monitorType]) : monitor.monitorType}</span>
                       </div>
                     </td>
                     <td className="px-4 py-3 text-sm font-mono text-muted-foreground max-w-[200px] truncate" title={monitor.target}>
@@ -308,7 +308,7 @@ export default function NetworkMonitorList({ assetId }: NetworkMonitorListProps)
                     <td className="px-4 py-3">
                       <span className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium ${sc.color}`}>
                         <StatusIcon className="h-3 w-3" />
-                        {t(sc.labelKey)}
+                        {t(/* i18n-dynamic */ sc.labelKey)}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">

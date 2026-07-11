@@ -111,7 +111,7 @@ export default function AlertsSummary({
                 alert.severity === 'high' && hasAlerts && 'ring-orange-500/30',
                 'cursor-pointer'
               )}
-              title={t('alertsSummary.viewSeverityAlerts', { severity: t(`alertsSummary.severity.${alert.severity}`).toLowerCase() })}
+              title={t('alertsSummary.viewSeverityAlerts', { severity: t(/* i18n-dynamic */ `alertsSummary.severity.${alert.severity}`).toLowerCase() })}
             >
               <span className={cn(
                 'font-bold tabular-nums',
@@ -124,7 +124,7 @@ export default function AlertsSummary({
                 'chart-legend-xs mt-0.5',
                 hasAlerts ? 'text-muted-foreground font-medium' : 'text-muted-foreground/50'
               )}>
-                {t(`alertsSummary.severity.${alert.severity}`)}
+                {t(/* i18n-dynamic */ `alertsSummary.severity.${alert.severity}`)}
               </span>
               {trend.direction !== 'stable' && (
                 <div
@@ -211,7 +211,7 @@ export function AlertsSummaryCompact({
                 config.color,
                 'cursor-pointer'
               )}
-              title={t('alertsSummary.severityAlertCount', { count: alert.count, severity: t(`alertsSummary.severity.${alert.severity}`).toLowerCase() })}
+              title={t('alertsSummary.severityAlertCount', { count: alert.count, severity: t(/* i18n-dynamic */ `alertsSummary.severity.${alert.severity}`).toLowerCase() })}
             >
               {alert.count}
             </button>

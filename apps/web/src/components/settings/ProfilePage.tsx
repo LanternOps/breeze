@@ -1,4 +1,5 @@
 import { i18n } from '@/lib/i18n';
+import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
@@ -15,11 +16,11 @@ import { navigateTo } from '@/lib/navigation';
 import { useAvatarBlobUrl } from '@/lib/avatarBlobCache';
 import { formatNumber } from '@/lib/i18n/format';
 
-const profileSchema = z.object({
-  name: z.string().min(2, i18n.t('settings:profilePage.nameMustBeAtLeast2Characters')),
+const createProfileSchema = (t: TFunction) => z.object({
+  name: z.string().min(2, t('profilePage.nameMustBeAtLeast2Characters')),
 });
 
-type ProfileFormValues = z.infer<typeof profileSchema>;
+type ProfileFormValues = z.infer<ReturnType<typeof createProfileSchema>>;
 
 type User = {
   id: string;
@@ -101,7 +102,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     reset,
     formState: { errors, isSubmitting }
   } = useForm<ProfileFormValues>({
-    resolver: zodResolver(profileSchema),
+    resolver: zodResolver(createProfileSchema(t)),
     defaultValues: {
       name: user?.name ?? '',
     }

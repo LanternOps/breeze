@@ -6,7 +6,7 @@ import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
-const DETECTION_CLASSES = [
+const createDetectionClasses = () => [
   {
     value: "credential",
     label: i18n.t(
@@ -103,6 +103,7 @@ export default function SensitiveDataTab({
   linkedPolicyId,
 }: FeatureTabProps) {
   useTranslation("policies");
+  const DETECTION_CLASSES = createDetectionClasses();
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const [settings, setSettings] = useState<SensitiveDataSettings>(() => {
     const stored = existingLink?.inlineSettings as

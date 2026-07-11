@@ -113,7 +113,7 @@ export default function RegisterForm({
     const defaultTier = { label: t('register.strength.weak', { defaultValue: 'Weak' }), className: 'bg-destructive', minScore: 0 };
 
     return {
-      label: tier?.label ? t(`register.strength.${tier.label.toLowerCase().replace(' ', '')}`, { defaultValue: tier.label }) : defaultTier.label,
+      label: tier?.label ? t(/* i18n-dynamic */ `register.strength.${tier.label.toLowerCase().replace(' ', '')}`, { defaultValue: tier.label }) : defaultTier.label,
       className: tier?.className ?? defaultTier.className,
       percent
     };

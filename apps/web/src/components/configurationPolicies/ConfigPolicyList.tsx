@@ -35,13 +35,13 @@ type ConfigPolicyListProps = {
   onDelete?: (policy: ConfigPolicy) => void;
   pageSize?: number;
 };
-const statusConfig: Record<
+const createStatusConfig = (): Record<
   ConfigPolicyStatus,
   {
     label: string;
     color: string;
   }
-> = {
+> => ({
   active: {
     label: i18n.t("common:states.active"),
     color: "bg-success/15 text-success border-success/30",
@@ -54,7 +54,7 @@ const statusConfig: Record<
     label: i18n.t("policies:configurationPolicies.configPolicyList.archived"),
     color: "bg-muted text-muted-foreground border-border",
   },
-};
+});
 const featureTypeLabels: Record<string, string> = {
   patch: "Patch",
   alert_rule: "Alert Rule",
@@ -78,6 +78,7 @@ export default function ConfigPolicyList({
   pageSize = 10,
 }: ConfigPolicyListProps) {
   useTranslation("policies");
+  const statusConfig = createStatusConfig();
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [currentPage, setCurrentPage] = useState(1);

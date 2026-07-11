@@ -195,7 +195,7 @@ export default function MonitorDetailModal({ monitorId, onClose, onDeleted, onUp
           <div>
             <h2 className="text-lg font-semibold">{monitor.name}</h2>
             <p className="mt-1 text-sm text-muted-foreground">
-              {typeLabelKeys[monitor.monitorType] ? t(typeLabelKeys[monitor.monitorType]) : monitor.monitorType} &middot; {monitor.target}
+              {typeLabelKeys[monitor.monitorType] ? t(/* i18n-dynamic */ typeLabelKeys[monitor.monitorType]) : monitor.monitorType} &middot; {monitor.target}
             </p>
           </div>
           <button type="button" onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted">
@@ -209,7 +209,7 @@ export default function MonitorDetailModal({ monitorId, onClose, onDeleted, onUp
             <span className="text-xs text-muted-foreground">{t('longTail.monitors.MonitorDetailModal.labels.status')}</span>
             <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium ${sc.color}`}>
               <StatusIcon className="h-3 w-3" />
-              {t(sc.labelKey)}
+              {t(/* i18n-dynamic */ sc.labelKey)}
             </span>
           </div>
           <div className="text-xs text-muted-foreground">
@@ -329,7 +329,7 @@ export default function MonitorDetailModal({ monitorId, onClose, onDeleted, onUp
                         <td className="px-3 py-1.5 text-muted-foreground">{formatRelativeTime(r.timestamp, t)}</td>
                         <td className="px-3 py-1.5">
                           <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs ${rsc.color}`}>
-                            {t(rsc.labelKey)}
+                            {t(/* i18n-dynamic */ rsc.labelKey)}
                           </span>
                         </td>
                         <td className="px-3 py-1.5 text-right font-mono">

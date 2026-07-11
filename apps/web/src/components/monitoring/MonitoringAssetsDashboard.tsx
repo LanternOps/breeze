@@ -89,7 +89,7 @@ const statusColors: Record<string, string> = {
 
 function getStatusLabel(status: string, t: (key: string) => string): string {
   const key = `longTail.monitoring.MonitoringAssetsDashboard.status.${status}`;
-  const label = t(key);
+  const label = t(/* i18n-dynamic */ key);
   return label === key ? status : label;
 }
 

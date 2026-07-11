@@ -117,7 +117,7 @@ export default function DiscoveryProfileList({
         statusConfig[profile.status].color
       }`}
     >
-      {t(`discoveryProfileList.status.${profile.status}`)}
+      {t(/* i18n-dynamic */ `discoveryProfileList.status.${profile.status}`)}
     </span>
   );
 

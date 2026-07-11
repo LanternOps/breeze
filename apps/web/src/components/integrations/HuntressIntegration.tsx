@@ -112,7 +112,7 @@ function SeverityBadge({ severity }: { severity: string | null }) {
     <span
       className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs capitalize ${style}`}
     >
-      {t(`huntressIntegration.severity.${label.toLowerCase()}`, {
+      {t(/* i18n-dynamic */ `huntressIntegration.severity.${label.toLowerCase()}`, {
         defaultValue: label,
       })}
     </span>

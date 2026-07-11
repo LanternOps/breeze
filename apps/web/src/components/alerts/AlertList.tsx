@@ -518,7 +518,7 @@ export default function AlertList({
                           severityConfig[alert.severity].color
                         )}
                       >
-                        {t(`alertList.severityLabel.${alert.severity}`)}
+                        {t(/* i18n-dynamic */ `alertList.severityLabel.${alert.severity}`)}
                       </span>
                     </td>
                     <td className="px-4 py-3">
@@ -528,7 +528,7 @@ export default function AlertList({
                           statusConfig[alert.status].color
                         )}
                       >
-                        {t(`alertList.statusLabel.${alert.status}`)}
+                        {t(/* i18n-dynamic */ `alertList.statusLabel.${alert.status}`)}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">

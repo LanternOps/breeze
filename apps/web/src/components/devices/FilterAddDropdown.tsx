@@ -92,7 +92,7 @@ export function FilterAddDropdown({ onSelect, renderTrigger, align = 'left', onC
             {groups.map(([cat, fields]) => (
               <div key={cat} className="mb-2">
                 <div className="px-2 pb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  {t(`filterAddDropdown.categories.${cat}`, { defaultValue: fieldCategoryLabel(cat) })}
+                  {t(/* i18n-dynamic */ `filterAddDropdown.categories.${cat}`, { defaultValue: fieldCategoryLabel(cat) })}
                 </div>
                 <ul>
                   {fields.map(f => (
@@ -107,7 +107,7 @@ export function FilterAddDropdown({ onSelect, renderTrigger, align = 'left', onC
                         }}
                         className="w-full rounded px-2 py-1 text-left text-sm hover:bg-muted"
                       >
-                        {t(`filterAddDropdown.fields.${f.key}`, { defaultValue: f.label })}
+                        {t(/* i18n-dynamic */ `filterAddDropdown.fields.${f.key}`, { defaultValue: f.label })}
                       </button>
                     </li>
                   ))}

@@ -31,7 +31,7 @@ export default function AccountSubNav({ current }: AccountSubNavProps) {
                 }
               >
                 <Icon className="h-4 w-4" aria-hidden />
-                {t(link.labelKey)}
+                {t(/* i18n-dynamic */ link.labelKey)}
               </a>
             </li>
           );

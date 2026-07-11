@@ -129,7 +129,7 @@ function ToolStatusBadge({ status }: { status: string }) {
     <span
       className={`rounded-full border px-2 py-0.5 text-xs ${styles[status] ?? "border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-500/30 dark:bg-slate-500/10 dark:text-slate-400"}`}
     >
-      {t(`sessionsTab.toolStatus.${status}`, { defaultValue: status })}{" "}
+      {t(/* i18n-dynamic */ `sessionsTab.toolStatus.${status}`, { defaultValue: status })}{" "}
       {/* i18n-dynamic */}
     </span>
   );

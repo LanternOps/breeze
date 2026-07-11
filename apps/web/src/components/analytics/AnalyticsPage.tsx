@@ -370,7 +370,7 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
   const rangeLabel = useMemo(
-    () => t(dateRanges.find(option => option.value === dateRange)?.labelKey ?? 'analytics.analyticsPage.dateRanges.customRange'),
+    () => t(/* i18n-dynamic */ dateRanges.find(option => option.value === dateRange)?.labelKey ?? 'analytics.analyticsPage.dateRanges.customRange'),
     [dateRange, t]
   );
 
@@ -734,7 +734,7 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
           >
             {dashboardOptions.map(option => (
               <option key={option.value} value={option.value}>
-                {t(option.labelKey)}
+                {t(/* i18n-dynamic */ option.labelKey)}
               </option>
             ))}
           </select>
@@ -745,7 +745,7 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
           >
             {dateRanges.map(option => (
               <option key={option.value} value={option.value}>
-                {t(option.labelKey)}
+                {t(/* i18n-dynamic */ option.labelKey)}
               </option>
             ))}
           </select>

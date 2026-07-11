@@ -6,6 +6,7 @@ import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { useAiStore } from '@/stores/aiStore';
 import { useTranslation } from 'react-i18next';
+import { formatNumber } from '@/lib/i18n/format';
 
 interface DashboardStatsData {
   totalDevices: number;
@@ -38,7 +39,7 @@ export default function DashboardStats() {
   // deps the stats are stale after a scope change.
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
 
-  useEffect(() => { setGreeting(t(getGreetingKey())); }, [t]);
+  useEffect(() => { setGreeting(t(/* i18n-dynamic */ getGreetingKey())); }, [t]);
 
   useEffect(() => {
     const fetchStats = async () => {
@@ -114,7 +115,7 @@ export default function DashboardStats() {
     {
       name: 'Total Devices',
       label: t('dashboard.stats.totalDevices'),
-      value: stats.totalDevices.toLocaleString(),
+      value: formatNumber(stats.totalDevices),
       icon: Monitor,
       href: '/devices',
       change: '',
@@ -123,7 +124,7 @@ export default function DashboardStats() {
     {
       name: 'Online',
       label: t('states.online'),
-      value: stats.onlineDevices.toLocaleString(),
+      value: formatNumber(stats.onlineDevices),
       icon: CheckCircle,
       href: '/devices?status=online',
       change: `${stats.onlinePercentage}%`,
@@ -132,7 +133,7 @@ export default function DashboardStats() {
     {
       name: 'Warnings',
       label: t('dashboard.stats.warnings'),
-      value: stats.warningAlerts.toLocaleString(),
+      value: formatNumber(stats.warningAlerts),
       icon: AlertTriangle,
       href: '/alerts?severity=warning&status=active',
       change: '',
@@ -141,7 +142,7 @@ export default function DashboardStats() {
     {
       name: 'Critical',
       label: t('dashboard.stats.critical'),
-      value: stats.criticalAlerts.toLocaleString(),
+      value: formatNumber(stats.criticalAlerts),
       icon: XCircle,
       href: '/alerts?severity=critical&status=active',
       change: '',

@@ -343,7 +343,7 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
             className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
             {STATUS_OPTIONS.map((s) => (
-              <option key={s.value} value={s.value}>{t(s.label)}</option>
+              <option key={s.value} value={s.value}>{t(/* i18n-dynamic */ s.label)}</option>
             ))}
           </select>
         </label>
@@ -467,7 +467,7 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
                       <td className="px-3 py-3">
                         <StatusPill
                           role={CONTRACT_STATUS_ROLES[ctr.status].role}
-                          label={t(`contracts.shared.status.${ctr.status}`)}
+                          label={t(/* i18n-dynamic */ `contracts.shared.status.${ctr.status}`)}
                           className={CONTRACT_STATUS_ROLES[ctr.status].className}
                           testId={`contract-status-${ctr.id}`}
                         />

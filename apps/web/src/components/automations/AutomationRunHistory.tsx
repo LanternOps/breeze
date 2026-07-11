@@ -221,11 +221,11 @@ function RunItem({
                   statusConfig[run.status].color
                 )}
               >
-                {t(`automationRunHistory.${statusConfig[run.status].label}`)}
+                {t(/* i18n-dynamic */ `automationRunHistory.${statusConfig[run.status].label}`)}
               </span>
             </div>
             <p className="text-xs text-muted-foreground">
-              {t(`automationRunHistory.${triggerLabels[run.triggeredBy]}`)} -{' '}
+              {t(/* i18n-dynamic */ `automationRunHistory.${triggerLabels[run.triggeredBy]}`)} -{' '}
               {t('automationRunHistory.deviceCount', { count: run.devicesTotal })}
             </p>
           </div>

@@ -854,7 +854,7 @@ export default function RemoteToolsPage({
               }`}
             >
               <Icon className="h-4 w-4" />
-              {t(`remoteToolsPage.tabs.${tab.id}`)}
+              {t(/* i18n-dynamic */ `remoteToolsPage.tabs.${tab.id}`)}
             </button>
           );
         })}

@@ -273,12 +273,12 @@ export default function ScriptForm({
   const isLoading = useMemo(() => loading ?? isSubmitting, [loading, isSubmitting]);
   const resolvedSubmitLabel = submitLabel ?? t('scriptForm.actions.saveScript');
 
-  const languageLabel = (value: string) => t(`scriptForm.languages.${value}`);
-  const runAsLabel = (value: string) => t(`scriptForm.runAs.${value}.label`);
-  const runAsDescription = (value: string) => t(`scriptForm.runAs.${value}.description`);
-  const parameterTypeLabel = (value: string) => t(`scriptForm.parameterTypes.${value}`);
-  const severityLabel = (value: string) => t(`scriptForm.severity.${value}`);
-  const osLabel = (os: OSType) => t(`scriptForm.os.${os}`);
+  const languageLabel = (value: string) => t(/* i18n-dynamic */ `scriptForm.languages.${value}`);
+  const runAsLabel = (value: string) => t(/* i18n-dynamic */ `scriptForm.runAs.${value}.label`);
+  const runAsDescription = (value: string) => t(/* i18n-dynamic */ `scriptForm.runAs.${value}.description`);
+  const parameterTypeLabel = (value: string) => t(/* i18n-dynamic */ `scriptForm.parameterTypes.${value}`);
+  const severityLabel = (value: string) => t(/* i18n-dynamic */ `scriptForm.severity.${value}`);
+  const osLabel = (os: OSType) => t(/* i18n-dynamic */ `scriptForm.os.${os}`);
 
   const handleOsToggle = (os: OSType) => {
     const current = watchOsTypes || [];

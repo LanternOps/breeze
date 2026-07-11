@@ -81,7 +81,7 @@ export default function DnsSecurityEventsTab() {
           <p className="text-xs text-muted-foreground">
             {loading
               ? t('dnsSecurityDnsSecurityEventsTab.loading')
-              : t(showAll
+              : t(/* i18n-dynamic */ showAll
                 ? 'dnsSecurityDnsSecurityEventsTab.eventCount'
                 : 'dnsSecurityDnsSecurityEventsTab.blockedEventCount', {
                   count: total,
@@ -173,7 +173,7 @@ export default function DnsSecurityEventsTab() {
                   </td>
                   <td className="px-3 py-1.5">
                     <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${ACTION_BADGE[e.action]}`}>
-                      {t(`dnsSecurityDnsSecurityEventsTab.actions.${e.action}`)}
+                      {t(/* i18n-dynamic */ `dnsSecurityDnsSecurityEventsTab.actions.${e.action}`)}
                     </span>
                   </td>
                 </tr>

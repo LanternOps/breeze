@@ -47,7 +47,7 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
   const currency = invoice.currencyCode;
   const invoiceStatusLabel = invoice.status === 'sent' && !invoice.sentAt
     ? t('invoice.status.issued')
-    : t(`invoice.status.${invoice.status}`);
+    : t(/* i18n-dynamic */ `invoice.status.${invoice.status}`);
   const stripeConnected = detail.stripeConnected === true;
 
   const [accountingView, setAccountingView] = useState(false);
@@ -520,7 +520,7 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
                   <li key={p.id} className="flex items-center justify-between gap-2 py-2" data-testid={`invoice-payment-${p.id}`}>
                     <span className="flex flex-wrap items-center gap-1.5">
                       <span className="tabular-nums">{formatMoney(p.amount, currency)}</span>
-                      <span className="text-muted-foreground">· {t(`invoiceDetail.paymentMethods.${p.method}`)} · {formatDate(p.receivedAt)}</span>
+                      <span className="text-muted-foreground">· {t(/* i18n-dynamic */ `invoiceDetail.paymentMethods.${p.method}`)} · {formatDate(p.receivedAt)}</span>
                       {p.source === 'stripe' && (
                         <span
                           className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
@@ -587,7 +587,7 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
                     className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   >
                     {(Object.keys(PAYMENT_METHOD_LABELS) as PaymentMethod[]).map((m) => (
-                      <option key={m} value={m}>{t(`invoiceDetail.paymentMethods.${m}`)}</option>
+                      <option key={m} value={m}>{t(/* i18n-dynamic */ `invoiceDetail.paymentMethods.${m}`)}</option>
                     ))}
                   </select>
                   <input
@@ -631,7 +631,7 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
         title={t('invoiceDetail.payments.reverseConfirm.title')}
         message={reversePayment ? t('invoiceDetail.payments.reverseConfirm.message', {
           amount: formatMoney(reversePayment.amount, currency),
-          method: t(`invoiceDetail.paymentMethods.${reversePayment.method}`),
+          method: t(/* i18n-dynamic */ `invoiceDetail.paymentMethods.${reversePayment.method}`),
         }) : ''}
         confirmLabel={t('invoiceDetail.payments.reverseConfirm.label')}
         confirmTestId="invoice-payment-reverse-confirm"
@@ -647,7 +647,7 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
         title={t('invoiceDetail.payments.recordConfirm.title')}
         message={t('invoiceDetail.payments.recordConfirm.message', {
           amount: formatMoney(Number(payAmount), currency),
-          method: t(`invoiceDetail.paymentMethods.${payMethod}`),
+          method: t(/* i18n-dynamic */ `invoiceDetail.paymentMethods.${payMethod}`),
           date: formatDate(payDate),
         })}
         confirmLabel={t('invoiceDetail.payments.record')}

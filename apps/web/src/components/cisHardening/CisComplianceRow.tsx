@@ -73,7 +73,7 @@ export default function CisComplianceRow({ entry }: CisComplianceRowProps) {
                       severityBadge[finding.severity ?? 'medium'] ?? severityBadge.medium
                     )}
                   >
-                    {t(`cisHardeningCisComplianceRow.severity.${finding.severity ?? 'medium'}`, {
+                    {t(/* i18n-dynamic */ `cisHardeningCisComplianceRow.severity.${finding.severity ?? 'medium'}`, {
                       defaultValue: finding.severity ?? 'medium',
                     })}
                   </span>

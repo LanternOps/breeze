@@ -1,10 +1,8 @@
 import { Clock, Globe } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import KnownGuestsSettings from './KnownGuestsSettings';
-import type { BusinessHoursPreset, DateFormat, TimeFormat, DaySchedule } from '@breeze/shared';
+import type { BusinessHoursPreset, DateFormat, TimeFormat, DaySchedule, SupportedLocale } from '@breeze/shared';
 import '@/lib/i18n';
-
-export type PartnerLocale = 'en' | 'pt-BR';
 
 const TIMEZONES = [
   'UTC', 'America/New_York', 'America/Chicago', 'America/Denver',
@@ -35,13 +33,13 @@ type PartnerRegionalTabProps = {
   timezone: string;
   dateFormat: DateFormat;
   timeFormat: TimeFormat;
-  language: PartnerLocale;
+  language: SupportedLocale;
   businessHoursPreset: BusinessHoursPreset;
   customHours: Record<string, DaySchedule>;
   onTimezoneChange: (value: string) => void;
   onDateFormatChange: (value: DateFormat) => void;
   onTimeFormatChange: (value: TimeFormat) => void;
-  onLanguageChange: (value: PartnerLocale) => void;
+  onLanguageChange: (value: SupportedLocale) => void;
   onBusinessHoursPresetChange: (value: BusinessHoursPreset) => void;
   onCustomHoursChange: (day: string, field: keyof DaySchedule, value: string | boolean) => void;
 };
@@ -86,7 +84,7 @@ export default function PartnerRegionalTab({
             <label htmlFor="partner-date-format" className="text-sm font-medium">{t('partner.regional.dateFormat')}</label>
             <select id="partner-date-format" value={dateFormat} onChange={e => onDateFormatChange(e.target.value as DateFormat)}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm">
-              {DATE_FORMATS.map(fmt => <option key={fmt.value} value={fmt.value}>{fmt.value} ({t(`partner.regional.dateFormats.${fmt.labelKey}`)})</option>)}
+              {DATE_FORMATS.map(fmt => <option key={fmt.value} value={fmt.value}>{fmt.value} ({t(/* i18n-dynamic */ `partner.regional.dateFormats.${fmt.labelKey}`)})</option>)}
             </select>
           </div>
           <div className="space-y-2">
@@ -107,7 +105,7 @@ export default function PartnerRegionalTab({
           <div className="space-y-2">
             <label htmlFor="partner-language" className="text-sm font-medium">{t('partner.regional.language')}</label>
             <select id="partner-language" value={language}
-              onChange={e => onLanguageChange(e.target.value as PartnerLocale)}
+              onChange={e => onLanguageChange(e.target.value as SupportedLocale)}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm">
               <option value="en">{t('language.englishLabel')}</option>
               <option value="pt-BR">{t('language.ptBRLabel')}</option>
@@ -139,8 +137,8 @@ export default function PartnerRegionalTab({
                 <input type="radio" name="businessHoursPreset" value={preset.value}
                   checked={businessHoursPreset === preset.value}
                   onChange={() => onBusinessHoursPresetChange(preset.value)} className="sr-only" />
-                <div className="font-medium">{t(`partner.regional.businessHours.presets.${preset.key}.label`)}</div>
-                <div className="text-xs text-muted-foreground">{t(`partner.regional.businessHours.presets.${preset.key}.description`)}</div>
+                <div className="font-medium">{t(/* i18n-dynamic */ `partner.regional.businessHours.presets.${preset.key}.label`)}</div>
+                <div className="text-xs text-muted-foreground">{t(/* i18n-dynamic */ `partner.regional.businessHours.presets.${preset.key}.description`)}</div>
               </label>
             ))}
           </div>
@@ -149,7 +147,7 @@ export default function PartnerRegionalTab({
               <p className="text-sm font-medium">{t('partner.regional.businessHours.customSchedule')}</p>
               {DAYS.map(day => (
                 <div key={day} className="flex items-center gap-4">
-                  <div className="w-24 text-sm font-medium">{t(`partner.regional.days.${day}`)}</div>
+                  <div className="w-24 text-sm font-medium">{t(/* i18n-dynamic */ `partner.regional.days.${day}`)}</div>
                   <label className="flex items-center gap-2">
                     <input type="checkbox" checked={!customHours[day]?.closed}
                       onChange={e => onCustomHoursChange(day, 'closed', !e.target.checked)} className="h-4 w-4" />

@@ -746,7 +746,7 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
           message={
             pendingConfirm.orgNames.length <= 1
               ? t(
-                  pendingConfirm.deviceCount === 1
+                  /* i18n-dynamic */ pendingConfirm.deviceCount === 1
                     ? 'patchComplianceView.confirm.messageOne'
                     : 'patchComplianceView.confirm.messageMany',
                   {

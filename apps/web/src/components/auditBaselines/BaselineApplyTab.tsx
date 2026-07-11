@@ -298,7 +298,7 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
                   : 'text-muted-foreground hover:text-foreground'
               )}
             >
-              {t(`auditBaselinesBaselineApplyTab.steps.${s}`)}
+              {t(/* i18n-dynamic */ `auditBaselinesBaselineApplyTab.steps.${s}`)}
             </button>
           </div>
         ))}
@@ -527,7 +527,7 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
                       )}
                     >
                       <StatusIcon className="h-3 w-3" />
-                      {t(`auditBaselinesBaselineApplyTab.status.${sc.labelKey}`)}
+                      {t(/* i18n-dynamic */ `auditBaselinesBaselineApplyTab.status.${sc.labelKey}`)}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-right">{deviceCount}</td>

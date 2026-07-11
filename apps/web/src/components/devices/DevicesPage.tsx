@@ -572,7 +572,7 @@ export default function DevicesPage() {
           await sendDeviceCommand(device.id, action);
           const label = action === 'reboot_safe_mode'
             ? t('devicesPage.actions.rebootSafeMode')
-            : t(`devicesPage.actions.${action}`, { defaultValue: action.charAt(0).toUpperCase() + action.slice(1) });
+            : t(/* i18n-dynamic */ `devicesPage.actions.${action}`, { defaultValue: action.charAt(0).toUpperCase() + action.slice(1) });
           showToast({ type: 'success', message: t('devicesPage.toasts.commandSent', { action: label, hostname: device.hostname }) });
           break;
         }
@@ -792,7 +792,7 @@ export default function DevicesPage() {
           const skippedCount = result.skipped?.length ?? 0;
           const bulkLabel = action === 'reboot_safe_mode'
             ? t('devicesPage.actions.rebootSafeMode')
-            : t(`devicesPage.actions.${action}`, { defaultValue: action.charAt(0).toUpperCase() + action.slice(1) });
+            : t(/* i18n-dynamic */ `devicesPage.actions.${action}`, { defaultValue: action.charAt(0).toUpperCase() + action.slice(1) });
           const skippedTail = skippedCount > 0 ? t('devicesPage.toasts.alreadyPendingTail', { count: skippedCount }) : '';
 
           if (failedCount === 0) {

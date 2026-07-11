@@ -178,7 +178,7 @@ export default function IntegrationsPage({
               <span className="flex h-8 w-8 items-center justify-center rounded-full bg-muted/60">
                 <Icon className="h-4 w-4" />
               </span>
-              <span className="font-medium">{t(tab.labelKey)}</span>
+              <span className="font-medium">{t(/* i18n-dynamic */ tab.labelKey)}</span>
             </button>
           );
         })}
@@ -200,7 +200,7 @@ export default function IntegrationsPage({
                     : "border-border bg-background text-muted-foreground hover:text-foreground"
                 }`}
               >
-                {t(sub.labelKey)}
+                {t(/* i18n-dynamic */ sub.labelKey)}
               </button>
             );
           })}
@@ -223,7 +223,7 @@ export default function IntegrationsPage({
                     : "border-border bg-background text-muted-foreground hover:text-foreground"
                 }`}
               >
-                {t(sub.labelKey)}
+                {t(/* i18n-dynamic */ sub.labelKey)}
               </button>
             );
           })}
@@ -246,7 +246,7 @@ export default function IntegrationsPage({
                     : "border-border bg-background text-muted-foreground hover:text-foreground"
                 }`}
               >
-                {t(sub.labelKey)}
+                {t(/* i18n-dynamic */ sub.labelKey)}
               </button>
             );
           })}
@@ -269,7 +269,7 @@ export default function IntegrationsPage({
                     : "border-border bg-background text-muted-foreground hover:text-foreground"
                 }`}
               >
-                {t(sub.labelKey)}
+                {t(/* i18n-dynamic */ sub.labelKey)}
               </button>
             );
           })}

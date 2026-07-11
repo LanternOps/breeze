@@ -79,7 +79,7 @@ export default function PortalSidebar({
 
       <nav className="flex-1 space-y-1 p-2">
         {navItems.map(item => {
-          const label = items ? item.name : t(defaultLabelKeys[item.href]); // i18n-dynamic
+          const label = items ? item.name : t(/* i18n-dynamic */ defaultLabelKeys[item.href]);
           const isActive =
             item.href === '/portal'
               ? resolvedPath === '/portal'

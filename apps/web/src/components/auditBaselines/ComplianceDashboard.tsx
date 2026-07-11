@@ -203,7 +203,7 @@ export default function ComplianceDashboard() {
                         osBadge[bl.osType] ?? ''
                       )}
                     >
-                      {osLabelKey[bl.osType] ? t(`auditBaselinesComplianceDashboard.os.${osLabelKey[bl.osType]}`) : bl.osType}
+                      {osLabelKey[bl.osType] ? t(/* i18n-dynamic */ `auditBaselinesComplianceDashboard.os.${osLabelKey[bl.osType]}`) : bl.osType}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-right">{bl.total}</td>

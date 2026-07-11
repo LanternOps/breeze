@@ -167,7 +167,7 @@ export default function ReportPreview({
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h3 className="text-lg font-semibold">{t(`reports.reportPreview.reportTypes.${data.type}`)/* i18n-dynamic */}</h3>
+          <h3 className="text-lg font-semibold">{t(/* i18n-dynamic */ `reports.reportPreview.reportTypes.${data.type}`)/* i18n-dynamic */}</h3>
           <p className="text-sm text-muted-foreground">
             {data.data.rowCount !== undefined
               ? t('reports.reportPreview.generatedWithRecords', {

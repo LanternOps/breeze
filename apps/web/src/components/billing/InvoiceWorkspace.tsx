@@ -113,7 +113,7 @@ export default function InvoiceWorkspace({ invoiceId }: Props) {
   // on a non-draft falls back to Detail.
   const tabs: DocumentTab[] = TAB_LABELS.map((tabDef) => ({
     id: tabDef.value,
-    label: t(tabDef.labelKey),
+    label: t(/* i18n-dynamic */ tabDef.labelKey),
     hidden: tabDef.value === 'editor' && !isDraft,
   }));
   const activeTab: Tab = tabs.some((t) => t.id === tab && !t.hidden) ? tab : 'detail';
@@ -121,7 +121,7 @@ export default function InvoiceWorkspace({ invoiceId }: Props) {
   const roles = STATUS_ROLES[detail.invoice.status];
   const invoiceStatusLabel = detail.invoice.status === 'sent' && !detail.invoice.sentAt
     ? t('invoice.status.issued')
-    : t(`invoice.status.${detail.invoice.status}`);
+    : t(/* i18n-dynamic */ `invoice.status.${detail.invoice.status}`);
   const statusPill = (
     <StatusPill
       role={roles.role}

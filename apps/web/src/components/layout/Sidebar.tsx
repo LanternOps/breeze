@@ -581,7 +581,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     const narrow = forMobileOverlay ? false : isNarrow;
     const badgeCount = item.badgeKind === 'deletion-requests' ? deletionRequestsCount : undefined;
     const showBadge = typeof badgeCount === 'number' && badgeCount > 0;
-    const label = item.labelKey ? t(item.labelKey, { defaultValue: item.name }) : item.name;
+    const label = item.labelKey ? t(/* i18n-dynamic */ item.labelKey, { defaultValue: item.name }) : item.name;
     return (
       <a
         key={item.name}
@@ -633,7 +633,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
             className="flex items-center justify-between w-full px-2 py-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground/70 hover:text-muted-foreground cursor-pointer transition-colors"
             style={{ fontSize: '12px' }}
           >
-            <span>{section.labelKey ? t(section.labelKey, { defaultValue: section.label }) : section.label}</span>
+            <span>{section.labelKey ? t(/* i18n-dynamic */ section.labelKey, { defaultValue: section.label }) : section.label}</span>
             <ChevronDown
               className={cn(
                 'h-3.5 w-3.5 transition-transform duration-200',

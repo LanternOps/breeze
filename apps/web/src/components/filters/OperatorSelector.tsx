@@ -82,7 +82,7 @@ export function OperatorSelector({
     >
       {availableOperators.map((operator) => (
         <option key={operator} value={operator}>
-          {t(`filters.operators.${operator}`, { defaultValue: OPERATOR_LABELS[operator] || operator })}
+          {t(/* i18n-dynamic */ `filters.operators.${operator}`, { defaultValue: OPERATOR_LABELS[operator] || operator })}
         </option>
       ))}
     </select>

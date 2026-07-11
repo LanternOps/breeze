@@ -152,11 +152,11 @@ const defaultAlertRuleItem: AlertRuleItem = {
   cooldownMinutes: 15,
   autoResolve: false,
 };
-const severityOptions: {
+const createSeverityOptions = (): {
   value: AlertSeverity;
   label: string;
   color: string;
-}[] = [
+}[] => [
   {
     value: "critical",
     label: i18n.t(
@@ -193,10 +193,10 @@ const severityOptions: {
     color: "bg-gray-500",
   },
 ];
-const categoryOptions: {
+const createCategoryOptions = (): {
   value: EventLogCategory;
   label: string;
-}[] = [
+}[] => [
   {
     value: "security",
     label: i18n.t(
@@ -222,10 +222,10 @@ const categoryOptions: {
     ),
   },
 ];
-const levelOptions: {
+const createLevelOptions = (): {
   value: EventLogLevel;
   label: string;
-}[] = [
+}[] => [
   {
     value: "warning",
     label: i18n.t(
@@ -245,7 +245,7 @@ const levelOptions: {
     ),
   },
 ];
-const metricOptions = [
+const createMetricOptions = () => [
   {
     value: "cpu",
     label: i18n.t(
@@ -271,7 +271,7 @@ const metricOptions = [
     ),
   },
 ];
-const operatorOptions = [
+const createOperatorOptions = () => [
   {
     value: "gt",
     label: i18n.t(
@@ -309,7 +309,7 @@ const operatorOptions = [
     ),
   },
 ];
-const conditionTypeOptions = [
+const createConditionTypeOptions = () => [
   {
     value: "metric",
     label: i18n.t(
@@ -364,6 +364,7 @@ const conditionTypeOptions = [
 // ============================================
 function SeverityPill({ severity }: { severity: AlertSeverity }) {
   useTranslation("policies");
+  const severityOptions = createSeverityOptions();
   const opt = severityOptions.find((o) => o.value === severity);
   return (
     <span className="inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium">
@@ -379,6 +380,8 @@ function SeverityButtonGroup({
   value: AlertSeverity;
   onChange: (v: AlertSeverity) => void;
 }) {
+  useTranslation("policies");
+  const severityOptions = createSeverityOptions();
   return (
     <div className="flex flex-wrap gap-2">
       {severityOptions.map((opt) => (
@@ -1336,6 +1339,8 @@ function EventLogAlertCard({
   nameInputRef?: React.RefObject<HTMLInputElement | null>;
 }) {
   const panelId = useId();
+  const categoryOptions = createCategoryOptions();
+  const levelOptions = createLevelOptions();
   return (
     <div className="rounded-md border bg-background">
       {/* Header */}
@@ -1617,6 +1622,9 @@ function AlertRuleCard({
   nameInputRef?: React.RefObject<HTMLInputElement | null>;
 }) {
   const panelId = useId();
+  const metricOptions = createMetricOptions();
+  const operatorOptions = createOperatorOptions();
+  const conditionTypeOptions = createConditionTypeOptions();
   return (
     <div className="rounded-md border bg-background">
       {/* Header */}

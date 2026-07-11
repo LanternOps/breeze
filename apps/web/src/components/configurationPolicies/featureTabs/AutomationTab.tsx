@@ -54,230 +54,133 @@ const defaultItem: AutomationItem = {
   onFailure: "stop",
 };
 const timezoneOptions = [
-  {
-    value: "UTC",
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.automationTab.uTC",
-    ),
-  },
-  {
-    value: "America/New_York",
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.automationTab.easternAmericaNewYork",
-    ),
-  },
-  {
-    value: "America/Chicago",
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.automationTab.centralAmericaChicago",
-    ),
-  },
-  {
-    value: "America/Denver",
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.automationTab.mountainAmericaDenver",
-    ),
-  },
-  {
-    value: "America/Los_Angeles",
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.automationTab.pacificAmericaLosAngeles",
-    ),
-  },
-  {
-    value: "Europe/London",
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.automationTab.europeLondon",
-    ),
-  },
-  {
-    value: "Europe/Paris",
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.automationTab.europeParis",
-    ),
-  },
-  {
-    value: "Asia/Tokyo",
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.automationTab.asiaTokyo",
-    ),
-  },
-  {
-    value: "Australia/Sydney",
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.automationTab.australiaSydney",
-    ),
-  },
+  { value: "UTC", labelKey: "configurationPolicies.featureTabs.automationTab.uTC" },
+  { value: "America/New_York", labelKey: "configurationPolicies.featureTabs.automationTab.easternAmericaNewYork" },
+  { value: "America/Chicago", labelKey: "configurationPolicies.featureTabs.automationTab.centralAmericaChicago" },
+  { value: "America/Denver", labelKey: "configurationPolicies.featureTabs.automationTab.mountainAmericaDenver" },
+  { value: "America/Los_Angeles", labelKey: "configurationPolicies.featureTabs.automationTab.pacificAmericaLosAngeles" },
+  { value: "Europe/London", labelKey: "configurationPolicies.featureTabs.automationTab.europeLondon" },
+  { value: "Europe/Paris", labelKey: "configurationPolicies.featureTabs.automationTab.europeParis" },
+  { value: "Asia/Tokyo", labelKey: "configurationPolicies.featureTabs.automationTab.asiaTokyo" },
+  { value: "Australia/Sydney", labelKey: "configurationPolicies.featureTabs.automationTab.australiaSydney" },
 ];
 const triggerOptions: {
   value: TriggerType;
-  label: string;
+  labelKey: string;
   icon: React.ReactNode;
 }[] = [
   {
     value: "schedule",
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.automationTab.schedule",
-    ),
+    labelKey: "configurationPolicies.featureTabs.automationTab.schedule",
     icon: <Clock className="h-3.5 w-3.5" />,
   },
   {
     value: "event",
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.automationTab.event",
-    ),
+    labelKey: "configurationPolicies.featureTabs.automationTab.event",
     icon: <Radio className="h-3.5 w-3.5" />,
   },
   {
     value: "manual",
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.automationTab.manual",
-    ),
+    labelKey: "configurationPolicies.featureTabs.automationTab.manual",
     icon: <Hand className="h-3.5 w-3.5" />,
   },
 ];
 const actionTypeOptions: {
   value: ActionType;
-  label: string;
+  labelKey: string;
 }[] = [
   {
     value: "run_script",
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.automationTab.runScript",
-    ),
+    labelKey: "configurationPolicies.featureTabs.automationTab.runScript",
   },
   {
     value: "send_notification",
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.automationTab.sendNotification",
-    ),
+    labelKey: "configurationPolicies.featureTabs.automationTab.sendNotification",
   },
   {
     value: "create_alert",
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.automationTab.createAlert",
-    ),
+    labelKey: "configurationPolicies.featureTabs.automationTab.createAlert",
   },
   {
     value: "execute_command",
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.automationTab.executeCommand",
-    ),
+    labelKey: "configurationPolicies.featureTabs.automationTab.executeCommand",
   },
   {
     value: "deploy_software",
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.automationTab.deploySoftware",
-    ),
+    labelKey: "configurationPolicies.featureTabs.automationTab.deploySoftware",
   },
 ];
 const onFailureOptions: {
   value: OnFailure;
-  label: string;
-  description: string;
+  labelKey: string;
+  descriptionKey: string;
 }[] = [
   {
     value: "stop",
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.automationTab.stop",
-    ),
-    description: i18n.t(
-      "policies:configurationPolicies.featureTabs.automationTab.haltExecutionOnFirstFailure",
-    ),
+    labelKey: "configurationPolicies.featureTabs.automationTab.stop",
+    descriptionKey: "configurationPolicies.featureTabs.automationTab.haltExecutionOnFirstFailure",
   },
   {
     value: "continue",
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.automationTab.continue",
-    ),
-    description: i18n.t(
-      "policies:configurationPolicies.featureTabs.automationTab.skipFailedStepAndContinue",
-    ),
+    labelKey: "configurationPolicies.featureTabs.automationTab.continue",
+    descriptionKey: "configurationPolicies.featureTabs.automationTab.skipFailedStepAndContinue",
   },
   {
     value: "notify",
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.automationTab.notify",
-    ),
-    description: i18n.t(
-      "policies:configurationPolicies.featureTabs.automationTab.continueAndSendANotification",
-    ),
+    labelKey: "configurationPolicies.featureTabs.automationTab.notify",
+    descriptionKey: "configurationPolicies.featureTabs.automationTab.continueAndSendANotification",
   },
 ];
 const cronPresets = [
   {
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.automationTab.every5Min",
-    ),
+    labelKey: "configurationPolicies.featureTabs.automationTab.every5Min",
     value: "*/5 * * * *",
   },
   {
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.automationTab.everyHour",
-    ),
+    labelKey: "configurationPolicies.featureTabs.automationTab.everyHour",
     value: "0 * * * *",
   },
   {
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.automationTab.every6Hours",
-    ),
+    labelKey: "configurationPolicies.featureTabs.automationTab.every6Hours",
     value: "0 */6 * * *",
   },
   {
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.automationTab.dailyAtMidnight",
-    ),
+    labelKey: "configurationPolicies.featureTabs.automationTab.dailyAtMidnight",
     value: "0 0 * * *",
   },
   {
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.automationTab.weekdaysAt9am",
-    ),
+    labelKey: "configurationPolicies.featureTabs.automationTab.weekdaysAt9am",
     value: "0 9 * * 1-5",
   },
   {
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.automationTab.weeklySunday",
-    ),
+    labelKey: "configurationPolicies.featureTabs.automationTab.weeklySunday",
     value: "0 0 * * 0",
   },
 ];
 const eventTypes = [
   {
     value: "device.offline",
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.automationTab.deviceOffline",
-    ),
+    labelKey: "configurationPolicies.featureTabs.automationTab.deviceOffline",
   },
   {
     value: "device.online",
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.automationTab.deviceOnline",
-    ),
+    labelKey: "configurationPolicies.featureTabs.automationTab.deviceOnline",
   },
   {
     value: "alert.triggered",
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.automationTab.alertTriggered",
-    ),
+    labelKey: "configurationPolicies.featureTabs.automationTab.alertTriggered",
   },
   {
     value: "alert.resolved",
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.automationTab.alertResolved",
-    ),
+    labelKey: "configurationPolicies.featureTabs.automationTab.alertResolved",
   },
   {
     value: "compliance.failed",
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.automationTab.complianceFailed",
-    ),
+    labelKey: "configurationPolicies.featureTabs.automationTab.complianceFailed",
   },
   {
     value: "patch.available",
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.automationTab.patchAvailable",
-    ),
+    labelKey: "configurationPolicies.featureTabs.automationTab.patchAvailable",
   },
 ];
 function normalizeItem(item: AutomationItem): AutomationItem {
@@ -319,7 +222,7 @@ export default function AutomationTab({
   linkedPolicyId,
   parentLink,
 }: FeatureTabProps) {
-  useTranslation("policies");
+  const { t } = useTranslation("policies");
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const isInherited = !!parentLink && !existingLink;
   const effectiveLink = existingLink ?? parentLink;
@@ -532,12 +435,11 @@ export default function AutomationTab({
                   </span>
                   <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium">
                     {
-                      triggerOptions.find((t) => t.value === item.triggerType)
+                      triggerOptions.find((option) => option.value === item.triggerType)
                         ?.icon
                     }
                     {
-                      triggerOptions.find((t) => t.value === item.triggerType)
-                        ?.label
+                      t(/* i18n-dynamic */ triggerOptions.find((option) => option.value === item.triggerType)!.labelKey)
                     }
                   </span>
                   <span className="text-xs text-muted-foreground">
@@ -621,7 +523,7 @@ export default function AutomationTab({
                           }`}
                         >
                           {opt.icon}
-                          {opt.label}
+                          {t(/* i18n-dynamic */ opt.labelKey)}
                         </button>
                       ))}
                     </div>
@@ -662,7 +564,7 @@ export default function AutomationTab({
                                   : "text-muted-foreground hover:bg-muted"
                               }`}
                             >
-                              {preset.label}
+                              {t(/* i18n-dynamic */ preset.labelKey)}
                             </button>
                           ))}
                         </div>
@@ -682,7 +584,7 @@ export default function AutomationTab({
                         >
                           {timezoneOptions.map((tz) => (
                             <option key={tz.value} value={tz.value}>
-                              {tz.label}
+                              {t(/* i18n-dynamic */ tz.labelKey)}
                             </option>
                           ))}
                         </select>
@@ -712,7 +614,7 @@ export default function AutomationTab({
                         </option>
                         {eventTypes.map((e) => (
                           <option key={e.value} value={e.value}>
-                            {e.label}
+                            {t(/* i18n-dynamic */ e.labelKey)}
                           </option>
                         ))}
                       </select>
@@ -763,7 +665,7 @@ export default function AutomationTab({
                                 >
                                   {actionTypeOptions.map((o) => (
                                     <option key={o.value} value={o.value}>
-                                      {o.label}
+                                      {t(/* i18n-dynamic */ o.labelKey)}
                                     </option>
                                   ))}
                                 </select>
@@ -994,10 +896,10 @@ export default function AutomationTab({
                             className="hidden"
                           />
                           <span className="font-medium text-foreground">
-                            {opt.label}
+                            {t(/* i18n-dynamic */ opt.labelKey)}
                           </span>
                           <span className="text-xs text-muted-foreground">
-                            {opt.description}
+                            {t(/* i18n-dynamic */ opt.descriptionKey)}
                           </span>
                         </label>
                       ))}

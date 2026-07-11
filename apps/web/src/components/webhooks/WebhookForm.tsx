@@ -235,8 +235,8 @@ export default function WebhookForm({
                 {...register('events')}
               />
               <div>
-                <p className="text-sm font-medium">{t(option.labelKey)}</p>
-                <p className="text-xs text-muted-foreground">{t(option.descriptionKey)}</p>
+                <p className="text-sm font-medium">{t(/* i18n-dynamic */ option.labelKey)}</p>
+                <p className="text-xs text-muted-foreground">{t(/* i18n-dynamic */ option.descriptionKey)}</p>
               </div>
             </label>
           ))}

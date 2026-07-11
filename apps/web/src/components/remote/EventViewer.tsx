@@ -570,7 +570,7 @@ export default function EventViewer({
                           )}
                         >
                           <Icon className={cn('h-3.5 w-3.5', isActive ? config.color : 'text-muted-foreground')} />
-                          {t(`eventViewer.levels.${level.toLowerCase()}`)}
+                          {t(/* i18n-dynamic */ `eventViewer.levels.${level.toLowerCase()}`)}
                         </button>
                       );
                     })}
@@ -711,14 +711,14 @@ export default function EventViewer({
                             config.color
                           )}>
                             <Icon className="h-3.5 w-3.5" />
-                            {t(`eventViewer.levels.${normalized.toLowerCase()}`)}
+                            {t(/* i18n-dynamic */ `eventViewer.levels.${normalized.toLowerCase()}`)}
                           </div>
                         </td>
                         <td className="px-4 py-3 text-sm">
                           <div className="flex flex-col">
                             <span>{formatDateTime(event.timeCreated)}</span>
                             <span className="text-xs text-muted-foreground">
-                              {formatRelativeTime(event.timeCreated, (key, options) => t(key, options))}
+                              {formatRelativeTime(event.timeCreated, (key, options) => t(/* i18n-dynamic */ key, options))}
                             </span>
                           </div>
                         </td>
@@ -828,7 +828,7 @@ export default function EventViewer({
                           cfg.color
                         )}>
                           <LevelIcon className="h-4 w-4" />
-                          {t(`eventViewer.levels.${normalized.toLowerCase()}`)}
+                          {t(/* i18n-dynamic */ `eventViewer.levels.${normalized.toLowerCase()}`)}
                         </div>
                       );
                     })()}

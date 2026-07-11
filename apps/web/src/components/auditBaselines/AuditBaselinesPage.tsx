@@ -65,7 +65,7 @@ export default function AuditBaselinesPage() {
               )}
             >
               <Icon className="h-4 w-4" />
-              {t(`auditBaselinesAuditBaselinesPage.tabs.${tab.labelKey}`)}
+              {t(/* i18n-dynamic */ `auditBaselinesAuditBaselinesPage.tabs.${tab.labelKey}`)}
             </button>
           );
         })}

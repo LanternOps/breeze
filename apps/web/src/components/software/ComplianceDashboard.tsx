@@ -265,12 +265,12 @@ export default function ComplianceDashboard({
             data as {
               error?: string;
             }
-          ).error || i18n.t(isEdit ? "policies:software.complianceDashboard.failedToUpdatePolicy" : "policies:software.complianceDashboard.failedToCreatePolicy"),
+          ).error || i18n.t(/* i18n-dynamic */ isEdit ? "policies:software.complianceDashboard.failedToUpdatePolicy" : "policies:software.complianceDashboard.failedToCreatePolicy"),
         );
       }
       showToast({
         type: "success",
-        message: i18n.t(isEdit ? "policies:software.complianceDashboard.policyUpdated" : "policies:software.complianceDashboard.policyCreated"),
+        message: i18n.t(/* i18n-dynamic */ isEdit ? "policies:software.complianceDashboard.policyUpdated" : "policies:software.complianceDashboard.policyCreated"),
       });
       setModalMode("closed");
       setSelectedPolicy(null);

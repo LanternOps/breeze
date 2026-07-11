@@ -423,7 +423,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
                   badge.className
                 )}
               >
-                {t(badge.labelKey)}
+                {t(/* i18n-dynamic */ badge.labelKey)}
               </span>
             </div>
             {org && (
@@ -474,7 +474,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
                   }`}
                 >
                   <Icon className="h-4 w-4" />
-                  <span>{t(tab.labelKey)}</span>
+                  <span>{t(/* i18n-dynamic */ tab.labelKey)}</span>
                 </button>
               );
             })}

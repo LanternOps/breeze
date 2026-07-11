@@ -180,7 +180,7 @@ export default function CreateTicketFromAlertDialog({
                 data-testid="alert-ticket-priority"
               >
                 {PRIORITIES.map((p) => (
-                  <option key={p} value={p}>{t(`createTicketFromAlertDialog.priorityOption.${p}`)}</option>
+                  <option key={p} value={p}>{t(/* i18n-dynamic */ `createTicketFromAlertDialog.priorityOption.${p}`)}</option>
                 ))}
               </select>
             </div>

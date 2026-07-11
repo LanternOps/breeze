@@ -84,7 +84,7 @@ function UserSessionBadge({ session }: { session: ActiveSessionInfo }) {
 
   const stateLabel =
     idleText ??
-    t(`aiApprovalDialog.sessionStates.${state}`, { defaultValue: state }); // i18n-dynamic
+    t(/* i18n-dynamic */ `aiApprovalDialog.sessionStates.${state}`, { defaultValue: state });
 
   return (
     <span className="inline-flex items-center gap-1.5 text-xs">

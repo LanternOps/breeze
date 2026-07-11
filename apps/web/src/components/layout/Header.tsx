@@ -360,7 +360,7 @@ export default function Header() {
                   className="flex w-full items-center gap-3 px-3 py-2 text-sm transition hover:bg-muted"
                 >
                   <Icon className="h-4 w-4 text-muted-foreground" />
-                  <span className="flex-1 text-left">{t(labelKey)}</span>
+                  <span className="flex-1 text-left">{t(/* i18n-dynamic */ labelKey)}</span>
                   {theme === value && <Check className="h-4 w-4 text-primary" />}
                 </button>
               ))}
@@ -377,11 +377,11 @@ export default function Header() {
                   key={value}
                   type="button"
                   onClick={() => applyDensity(value)}
-                  aria-label={t('layout.header.densityOptionLabel', { label: t(labelKey) })}
+                  aria-label={t('layout.header.densityOptionLabel', { label: t(/* i18n-dynamic */ labelKey) })}
                   className="flex w-full items-center gap-3 px-3 py-2 text-sm transition hover:bg-muted"
                 >
                   <Icon className="h-4 w-4 text-muted-foreground" />
-                  <span className="flex-1 text-left">{t(labelKey)}</span>
+                  <span className="flex-1 text-left">{t(/* i18n-dynamic */ labelKey)}</span>
                   {density === value && <Check className="h-4 w-4 text-primary" />}
                 </button>
               ))}

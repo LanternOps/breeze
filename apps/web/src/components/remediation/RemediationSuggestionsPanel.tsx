@@ -434,7 +434,7 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId, orgI
                         <span className="text-sm font-semibold">{suggestion.title}</span>
                         <span className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground">{targetLabel(suggestion, t)}</span>
                         <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${riskClasses[suggestion.riskTier]}`}>
-                          {t(`longTail.remediation.RemediationSuggestionsPanel.risk.${suggestion.riskTier}`)}
+                          {t(/* i18n-dynamic */ `longTail.remediation.RemediationSuggestionsPanel.risk.${suggestion.riskTier}`)}
                         </span>
                         {suggestion.confidence != null && (
                           <span className="text-xs text-muted-foreground">{Math.round(suggestion.confidence * 100)}%</span>
@@ -445,7 +445,7 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId, orgI
                       {suggestion.status !== 'suggested' && (
                         <p className="mt-2 text-xs font-medium text-muted-foreground">
                           {t('longTail.remediation.RemediationSuggestionsPanel.statusLine', {
-                            status: t(`longTail.remediation.RemediationSuggestionsPanel.status.${suggestion.status}`),
+                            status: t(/* i18n-dynamic */ `longTail.remediation.RemediationSuggestionsPanel.status.${suggestion.status}`),
                           })}
                         </p>
                       )}
@@ -467,7 +467,7 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId, orgI
                             </div>
                             <div className="min-w-0">
                               <dt className="font-medium text-muted-foreground">{t('longTail.remediation.RemediationSuggestionsPanel.preview.risk')}</dt>
-                              <dd className="wrap-break-word text-foreground">{t(`longTail.remediation.RemediationSuggestionsPanel.risk.${suggestion.riskTier}`)}</dd>
+                              <dd className="wrap-break-word text-foreground">{t(/* i18n-dynamic */ `longTail.remediation.RemediationSuggestionsPanel.risk.${suggestion.riskTier}`)}</dd>
                             </div>
                             <div className="min-w-0 sm:col-span-2">
                               <dt className="font-medium text-muted-foreground">{t('longTail.remediation.RemediationSuggestionsPanel.preview.why')}</dt>

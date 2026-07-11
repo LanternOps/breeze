@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { formatCurrency, formatNumber, formatPercent } from './format';
+import { i18n, loadLocale } from './index';
 import { LOCALE_STORAGE_KEY } from '../appearance';
 import { formatDate } from '../dateTimeFormat';
 
@@ -30,13 +31,14 @@ function makeMemoryStorage(): Storage {
 }
 
 describe('locale-aware number formatting', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     Object.defineProperty(window, 'localStorage', {
       value: makeMemoryStorage(),
       writable: true,
       configurable: true,
     });
     window.localStorage.clear();
+    await i18n.changeLanguage('en');
   });
 
   it('formats with pt-BR separators when the preference is set', () => {
@@ -56,16 +58,23 @@ describe('locale-aware number formatting', () => {
     // No stored preference: must not throw, must return a formatted string.
     expect(typeof formatNumber(1234.5)).toBe('string');
   });
+
+  it('uses the resolved partner/browser locale when no explicit preference is stored', async () => {
+    await loadLocale('pt-BR');
+    await i18n.changeLanguage('pt-BR');
+    expect(formatNumber(1234.5, { minimumFractionDigits: 2 })).toBe('1.234,50');
+  });
 });
 
-describe('dateTimeFormat honors the stored locale', () => {
-  beforeEach(() => {
+describe('dateTimeFormat honors the resolved locale', () => {
+  beforeEach(async () => {
     Object.defineProperty(window, 'localStorage', {
       value: makeMemoryStorage(),
       writable: true,
       configurable: true,
     });
     window.localStorage.clear();
+    await i18n.changeLanguage('en');
   });
 
   it('renders pt-BR date order when the preference is set', () => {
@@ -77,5 +86,11 @@ describe('dateTimeFormat honors the stored locale', () => {
   it('explicit locale option still wins', () => {
     window.localStorage.setItem(LOCALE_STORAGE_KEY, 'pt-BR');
     expect(formatDate('2026-03-09T12:00:00Z', { locale: 'en-US', timeZone: 'UTC' })).toBe('3/9/2026');
+  });
+
+  it('uses the resolved partner/browser locale when no explicit preference is stored', async () => {
+    await loadLocale('pt-BR');
+    await i18n.changeLanguage('pt-BR');
+    expect(formatDate('2026-03-09T12:00:00Z', { timeZone: 'UTC' })).toBe('09/03/2026');
   });
 });
