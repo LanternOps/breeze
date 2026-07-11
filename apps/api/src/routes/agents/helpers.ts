@@ -2763,7 +2763,10 @@ async function resolveDeviceOnedriveSettings(deviceId: string): Promise<Onedrive
   // transitive Entra membership includes the rule's groupId. Fail closed:
   // no UPNs / no groupId / Graph error → no tag → the agent never mounts it.
   const graphRules = libs.filter((l) => l.targetingMode === 'graph_group' && l.groupId);
-  const upns = ((state?.signedInUpns as string[] | undefined) ?? []).filter(
+  // Guard the jsonb shape: a corrupt/non-array signedInUpns value degrades to
+  // no-tagging (delivery of non-graph libraries must survive) instead of throwing.
+  const rawUpns = state?.signedInUpns;
+  const upns = (Array.isArray(rawUpns) ? rawUpns : []).filter(
     (u): u is string => typeof u === 'string' && u.length > 0
   );
   const allowedByLib = new Map<string, string[]>();
