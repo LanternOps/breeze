@@ -1,0 +1,41 @@
+{
+  "language": {
+    "title": "Idioma",
+    "description": "Idioma do console Breeze. Mais idiomas em breve — contribuições são bem-vindas.",
+    "englishLabel": "English",
+    "englishDescription": "Inglês (Estados Unidos)",
+    "ptBRLabel": "Português (Brasil)",
+    "ptBRDescription": "Português (Brasil)"
+  },
+  "partner": {
+    "regional": {
+      "title": "Configurações regionais",
+      "description": "Esses padrões se aplicam a novas organizações e sites.",
+      "timezone": "Fuso horário",
+      "dateFormat": "Formato de data",
+      "dateFormats": { "us": "EUA", "international": "Internacional", "iso": "ISO" },
+      "timeFormat": "Formato de hora",
+      "twelveHour": "12 horas",
+      "twentyFourHour": "24 horas",
+      "language": "Idioma",
+      "languageDescription": "Idioma padrão das configurações do parceiro.",
+      "businessHours": {
+        "title": "Horário comercial",
+        "description": "Defina seu horário padrão de operação para suporte e alertas.",
+        "presets": {
+          "always": { "label": "24/7", "description": "Sempre disponível" },
+          "business": { "label": "Horário comercial", "description": "Seg-Sex, das 9h às 17h" },
+          "extended": { "label": "Horário estendido", "description": "Seg-Sex, das 7h às 19h; Sáb, das 9h às 13h" },
+          "custom": { "label": "Personalizado", "description": "Defina seu próprio horário" }
+        },
+        "customSchedule": "Horário personalizado",
+        "open": "Aberto",
+        "to": "até"
+      },
+      "days": {
+        "mon": "Segunda-feira", "tue": "Terça-feira", "wed": "Quarta-feira", "thu": "Quinta-feira",
+        "fri": "Sexta-feira", "sat": "Sábado", "sun": "Domingo"
+      }
+    }
+  }
+}

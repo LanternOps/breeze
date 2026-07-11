@@ -61,55 +61,5 @@
     "sectionBackup": "Backup",
     "sectionReporting": "Reporting",
     "sectionSettings": "Settings"
-  },
-  "partnerSettings": {
-    "regional": {
-      "title": "Regional Settings",
-      "description": "These defaults apply to new organizations and sites.",
-      "timezone": "Timezone",
-      "dateFormat": "Date Format",
-      "dateFormats": {
-        "us": "US",
-        "international": "International",
-        "iso": "ISO"
-      },
-      "timeFormat": "Time Format",
-      "twelveHour": "12-hour",
-      "twentyFourHour": "24-hour",
-      "language": "Language",
-      "languageDescription": "Default language for partner settings.",
-      "businessHours": {
-        "title": "Business Hours",
-        "description": "Set your standard operating hours for support and alerts.",
-        "presets": {
-          "always": { "label": "24/7", "description": "Always available" },
-          "business": { "label": "Business Hours", "description": "Mon-Fri 9am-5pm" },
-          "extended": { "label": "Extended Hours", "description": "Mon-Fri 7am-7pm, Sat 9am-1pm" },
-          "custom": { "label": "Custom", "description": "Set your own schedule" }
-        },
-        "customSchedule": "Custom Schedule",
-        "open": "Open",
-        "to": "to"
-      },
-      "days": {
-        "mon": "Monday",
-        "tue": "Tuesday",
-        "wed": "Wednesday",
-        "thu": "Thursday",
-        "fri": "Friday",
-        "sat": "Saturday",
-        "sun": "Sunday"
-      }
-    }
-  },
-  "settings": {
-    "language": {
-      "title": "Language",
-      "description": "Language for the Breeze console. More languages coming — contributions welcome.",
-      "englishLabel": "English",
-      "englishDescription": "English (United States)",
-      "ptBRLabel": "Português (Brasil)",
-      "ptBRDescription": "Portuguese (Brazil)"
-    }
   }
 }

@@ -20,7 +20,7 @@ vi.mock('../../lib/authScope', () => ({ getJwtClaims: () => ({ scope: 'partner' 
 vi.mock('./BrandHeader', () => ({ default: () => null }));
 
 import Sidebar, { navSections, topLevelNav } from './Sidebar';
-import { i18n } from '../../lib/i18n';
+import { i18n, loadLocale } from '../../lib/i18n';
 import en from '../../locales/en/common.json';
 import ptBR from '../../locales/pt-BR/common.json';
 
@@ -36,6 +36,7 @@ beforeEach(async () => {
     removeEventListener: vi.fn(),
   })) as unknown as typeof window.matchMedia;
   await i18n.changeLanguage('en');
+  await loadLocale('pt-BR');
 });
 
 afterEach(async () => {

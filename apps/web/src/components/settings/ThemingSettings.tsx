@@ -51,8 +51,8 @@ const timeFormatOptions = [
 ];
 
 const localeOptions = [
-  { value: 'en' as const, labelKey: 'settings.language.englishLabel', defaultLabel: 'English', descriptionKey: 'settings.language.englishDescription', defaultDescription: 'English (United States)' },
-  { value: 'pt-BR' as const, labelKey: 'settings.language.ptBRLabel', defaultLabel: 'Português (Brasil)', descriptionKey: 'settings.language.ptBRDescription', defaultDescription: 'Portuguese (Brazil)' },
+  { value: 'en' as const, labelKey: 'language.englishLabel', defaultLabel: 'English', descriptionKey: 'language.englishDescription', defaultDescription: 'English (United States)' },
+  { value: 'pt-BR' as const, labelKey: 'language.ptBRLabel', defaultLabel: 'Português (Brasil)', descriptionKey: 'language.ptBRDescription', defaultDescription: 'Portuguese (Brazil)' },
 ];
 
 function resolveAppearance(preferences?: UserPreferences | null): Required<UserPreferences> {
@@ -71,7 +71,7 @@ type ThemingSettingsProps = {
 };
 
 export default function ThemingSettings({ preferences, onSaved }: ThemingSettingsProps) {
-  const { t } = useTranslation();
+  const { t } = useTranslation('settings');
   const [themePreference, setThemePreference] = useState<ThemePreference>('system');
   const [densityPreference, setDensityPreference] = useState<Density>('comfortable');
   const [fontPreference, setFontPreference] = useState<FontPreference>('breeze');
@@ -252,10 +252,10 @@ export default function ThemingSettings({ preferences, onSaved }: ThemingSetting
 
         <fieldset className="space-y-2">
           <legend className="text-sm font-medium">
-            {t('settings.language.title', { defaultValue: 'Language' })}
+            {t('language.title', { defaultValue: 'Language' })}
           </legend>
           <p className="text-xs text-muted-foreground">
-            {t('settings.language.description', {
+            {t('language.description', {
               defaultValue: 'Language for the Breeze console. More languages coming — contributions welcome.',
             })}
           </p>

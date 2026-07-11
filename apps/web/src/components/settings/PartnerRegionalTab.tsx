@@ -60,7 +60,7 @@ export default function PartnerRegionalTab({
   onBusinessHoursPresetChange,
   onCustomHoursChange,
 }: PartnerRegionalTabProps) {
-  const { t } = useTranslation();
+  const { t } = useTranslation('settings');
 
   return (
     <>
@@ -68,51 +68,51 @@ export default function PartnerRegionalTab({
         <div className="mb-6">
           <div className="flex items-center gap-2">
             <Globe className="h-5 w-5 text-muted-foreground" />
-            <h2 className="text-lg font-semibold">{t('partnerSettings.regional.title')}</h2>
+            <h2 className="text-lg font-semibold">{t('partner.regional.title')}</h2>
           </div>
           <p className="mt-1 text-sm text-muted-foreground">
-            {t('partnerSettings.regional.description')}
+            {t('partner.regional.description')}
           </p>
         </div>
         <div className="grid gap-6 sm:grid-cols-2">
           <div className="space-y-2">
-            <label htmlFor="partner-timezone" className="text-sm font-medium">{t('partnerSettings.regional.timezone')}</label>
+            <label htmlFor="partner-timezone" className="text-sm font-medium">{t('partner.regional.timezone')}</label>
             <select id="partner-timezone" value={timezone} onChange={e => onTimezoneChange(e.target.value)}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm">
               {TIMEZONES.map(tz => <option key={tz} value={tz}>{tz}</option>)}
             </select>
           </div>
           <div className="space-y-2">
-            <label htmlFor="partner-date-format" className="text-sm font-medium">{t('partnerSettings.regional.dateFormat')}</label>
+            <label htmlFor="partner-date-format" className="text-sm font-medium">{t('partner.regional.dateFormat')}</label>
             <select id="partner-date-format" value={dateFormat} onChange={e => onDateFormatChange(e.target.value as DateFormat)}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm">
-              {DATE_FORMATS.map(fmt => <option key={fmt.value} value={fmt.value}>{fmt.value} ({t(`partnerSettings.regional.dateFormats.${fmt.labelKey}`)})</option>)}
+              {DATE_FORMATS.map(fmt => <option key={fmt.value} value={fmt.value}>{fmt.value} ({t(`partner.regional.dateFormats.${fmt.labelKey}`)})</option>)}
             </select>
           </div>
           <div className="space-y-2">
-            <label className="text-sm font-medium">{t('partnerSettings.regional.timeFormat')}</label>
+            <label className="text-sm font-medium">{t('partner.regional.timeFormat')}</label>
             <div className="flex gap-4">
               <label className="flex items-center gap-2">
                 <input type="radio" name="timeFormat" checked={timeFormat === '12h'}
                   onChange={() => onTimeFormatChange('12h')} className="h-4 w-4" />
-                <span className="text-sm">{t('partnerSettings.regional.twelveHour')}</span>
+                <span className="text-sm">{t('partner.regional.twelveHour')}</span>
               </label>
               <label className="flex items-center gap-2">
                 <input type="radio" name="timeFormat" checked={timeFormat === '24h'}
                   onChange={() => onTimeFormatChange('24h')} className="h-4 w-4" />
-                <span className="text-sm">{t('partnerSettings.regional.twentyFourHour')}</span>
+                <span className="text-sm">{t('partner.regional.twentyFourHour')}</span>
               </label>
             </div>
           </div>
           <div className="space-y-2">
-            <label htmlFor="partner-language" className="text-sm font-medium">{t('partnerSettings.regional.language')}</label>
+            <label htmlFor="partner-language" className="text-sm font-medium">{t('partner.regional.language')}</label>
             <select id="partner-language" value={language}
               onChange={e => onLanguageChange(e.target.value as PartnerLocale)}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm">
-              <option value="en">{t('settings.language.englishLabel')}</option>
-              <option value="pt-BR">{t('settings.language.ptBRLabel')}</option>
+              <option value="en">{t('language.englishLabel')}</option>
+              <option value="pt-BR">{t('language.ptBRLabel')}</option>
             </select>
-            <p className="text-xs text-muted-foreground">{t('partnerSettings.regional.languageDescription')}</p>
+            <p className="text-xs text-muted-foreground">{t('partner.regional.languageDescription')}</p>
           </div>
         </div>
       </section>
@@ -122,10 +122,10 @@ export default function PartnerRegionalTab({
         <div className="mb-6">
           <div className="flex items-center gap-2">
             <Clock className="h-5 w-5 text-muted-foreground" />
-            <h2 className="text-lg font-semibold">{t('partnerSettings.regional.businessHours.title')}</h2>
+            <h2 className="text-lg font-semibold">{t('partner.regional.businessHours.title')}</h2>
           </div>
           <p className="mt-1 text-sm text-muted-foreground">
-            {t('partnerSettings.regional.businessHours.description')}
+            {t('partner.regional.businessHours.description')}
           </p>
         </div>
         <div className="space-y-4">
@@ -139,28 +139,28 @@ export default function PartnerRegionalTab({
                 <input type="radio" name="businessHoursPreset" value={preset.value}
                   checked={businessHoursPreset === preset.value}
                   onChange={() => onBusinessHoursPresetChange(preset.value)} className="sr-only" />
-                <div className="font-medium">{t(`partnerSettings.regional.businessHours.presets.${preset.key}.label`)}</div>
-                <div className="text-xs text-muted-foreground">{t(`partnerSettings.regional.businessHours.presets.${preset.key}.description`)}</div>
+                <div className="font-medium">{t(`partner.regional.businessHours.presets.${preset.key}.label`)}</div>
+                <div className="text-xs text-muted-foreground">{t(`partner.regional.businessHours.presets.${preset.key}.description`)}</div>
               </label>
             ))}
           </div>
           {businessHoursPreset === 'custom' && (
             <div className="mt-4 space-y-3 rounded-lg border bg-muted/40 p-4">
-              <p className="text-sm font-medium">{t('partnerSettings.regional.businessHours.customSchedule')}</p>
+              <p className="text-sm font-medium">{t('partner.regional.businessHours.customSchedule')}</p>
               {DAYS.map(day => (
                 <div key={day} className="flex items-center gap-4">
-                  <div className="w-24 text-sm font-medium">{t(`partnerSettings.regional.days.${day}`)}</div>
+                  <div className="w-24 text-sm font-medium">{t(`partner.regional.days.${day}`)}</div>
                   <label className="flex items-center gap-2">
                     <input type="checkbox" checked={!customHours[day]?.closed}
                       onChange={e => onCustomHoursChange(day, 'closed', !e.target.checked)} className="h-4 w-4" />
-                    <span className="text-sm">{t('partnerSettings.regional.businessHours.open')}</span>
+                    <span className="text-sm">{t('partner.regional.businessHours.open')}</span>
                   </label>
                   {!customHours[day]?.closed && (
                     <>
                       <input type="time" value={customHours[day]?.start || '09:00'}
                         onChange={e => onCustomHoursChange(day, 'start', e.target.value)}
                         className="h-8 rounded-md border bg-background px-2 text-sm" />
-                      <span className="text-sm text-muted-foreground">{t('partnerSettings.regional.businessHours.to')}</span>
+                      <span className="text-sm text-muted-foreground">{t('partner.regional.businessHours.to')}</span>
                       <input type="time" value={customHours[day]?.end || '17:00'}
                         onChange={e => onCustomHoursChange(day, 'end', e.target.value)}
                         className="h-8 rounded-md border bg-background px-2 text-sm" />

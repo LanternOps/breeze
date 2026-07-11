@@ -7,7 +7,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { showToast } from '../shared/Toast';
 import { getJwtClaims } from '../../lib/authScope';
-import { i18n } from '../../lib/i18n';
+import { i18n, loadLocale } from '../../lib/i18n';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn()
@@ -212,7 +212,10 @@ describe('PartnerSettingsPage language control', () => {
   });
 
   it('renders the Regional Settings surface in pt-BR', async () => {
-    await act(async () => { await i18n.changeLanguage('pt-BR'); });
+    await act(async () => {
+      await loadLocale('pt-BR');
+      await i18n.changeLanguage('pt-BR');
+    });
     await renderPartner('pt-BR');
 
     expect(screen.getByText('Configurações regionais')).not.toBeNull();
