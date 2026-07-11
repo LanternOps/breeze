@@ -174,6 +174,43 @@ describe('TicketFormsCard', () => {
     expect(await screen.findByTestId('ticket-form-row-f-1')).toBeTruthy();
   });
 
+  it('degrades (not hard-fails) when the orgs fetch REJECTS, and shows an inline org-load notice in the scope fieldset', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/ticket-forms' && (!init || !init.method)) return makeJsonResponse({ data: [FORM] });
+      if (url === '/ticket-categories') return makeJsonResponse({ data: [{ id: 'cat-1', name: 'Hardware', isActive: true }] });
+      if (url === '/orgs/organizations?limit=100') throw new Error('network down');
+      return makeJsonResponse({ error: 'unexpected' }, false, 404);
+    });
+    render(<TicketFormsCard />);
+    // Card still renders the forms list despite the orgs fetch rejecting.
+    expect(await screen.findByTestId('ticket-form-row-f-1')).toBeTruthy();
+    expect(screen.queryByTestId('ticket-forms-error')).toBeNull();
+    expect(warnSpy).toHaveBeenCalled();
+    // Open editor, choose org scope → inline org-load notice appears (no misleading "select an org").
+    fireEvent.click(screen.getByTestId('ticket-form-create'));
+    fireEvent.click(screen.getByTestId('ticket-form-owner-org'));
+    expect(await screen.findByTestId('ticket-form-orgs-error')).toBeTruthy();
+    warnSpy.mockRestore();
+  });
+
+  it('blocks save with an inline issue when the title template references an unknown field key', async () => {
+    render(<TicketFormsCard />);
+    await screen.findByTestId('ticket-form-row-f-1');
+    fireEvent.click(screen.getByTestId('ticket-form-create'));
+    fireEvent.change(screen.getByTestId('ticket-form-name'), { target: { value: 'Typo form' } });
+    fireEvent.click(screen.getByTestId('ticket-form-field-add'));
+    fireEvent.change(screen.getByTestId('ticket-form-field-label-0'), { target: { value: 'Device name' } });
+    // Typo: {{devcie_name}} — field key is device_name.
+    fireEvent.change(screen.getByTestId('ticket-form-title-template'), { target: { value: '{{devcie_name}}' } });
+    fireEvent.click(screen.getByTestId('ticket-form-save'));
+    expect(await screen.findByTestId('ticket-form-issues')).toBeTruthy();
+    expect(screen.getByTestId('ticket-form-issues').textContent).toContain('devcie_name');
+    // No POST fired.
+    expect(fetchMock.mock.calls.some(([u, i]) => String(u) === '/ticket-forms' && (i as RequestInit)?.method === 'POST')).toBe(false);
+  });
+
   it('two-step delete: first click arms, second click fires DELETE', async () => {
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);

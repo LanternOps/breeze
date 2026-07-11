@@ -148,11 +148,19 @@ export default function CreateTicketPage() {
     void (async () => {
       try {
         const res = await fetchWithAuth(`/ticket-forms/available?orgId=${encodeURIComponent(orgId)}`);
-        if (res.ok && !cancelled) {
+        if (cancelled) return;
+        if (res.ok) {
           const body = await res.json();
           setForms((body.data ?? []) as AvailableTicketForm[]);
+        } else {
+          // Forms are additive — degrade to a blank ticket (no toast), but leave
+          // a breadcrumb so a broken picker isn't invisible in the console.
+          console.warn('[create-ticket] forms fetch failed', res.status);
         }
-      } catch { /* forms are additive — degrade to a blank ticket */ }
+      } catch (err) {
+        if (!cancelled) console.warn('[create-ticket] forms fetch failed', err);
+        /* forms are additive — degrade to a blank ticket */
+      }
     })();
     return () => { cancelled = true; };
   }, [orgId]);
@@ -175,6 +183,11 @@ export default function CreateTicketPage() {
           const key = String(issue.path[0] ?? '');
           // 'invalid_type: received undefined' on a missing required field reads badly — normalize.
           if (key && !errs[key]) errs[key] = issue.code === 'invalid_type' && coerced[key] === undefined ? 'This field is required' : issue.message;
+        }
+        // Guard against a silent no-op: if no issue mapped to a field key, surface
+        // a generic form-level error so validation failure is never invisible.
+        if (Object.keys(errs).length === 0) {
+          errs.__form = 'Some responses are invalid. Please review the form and try again.';
         }
         setFormErrors(errs);
         return;
@@ -258,7 +271,10 @@ export default function CreateTicketPage() {
                 const defaults: Record<string, unknown> = {};
                 for (const f of next.fields) if (f.defaultValue !== undefined) defaults[f.key] = f.defaultValue;
                 setFormValues(defaults);
-                if (next.categoryId) setCategoryId(next.categoryId);
+                // Only adopt the form's category when it's actually in the loaded
+                // options — otherwise we'd invisibly attach an inactive/unloaded
+                // category the user can neither see nor change.
+                if (next.categoryId && categories.some((c) => c.id === next.categoryId)) setCategoryId(next.categoryId);
                 if (next.defaultPriority) setPriority(next.defaultPriority);
               } else {
                 setFormValues({});
@@ -272,12 +288,17 @@ export default function CreateTicketPage() {
         </div>
       )}
       {selectedForm && (
-        <TicketFormFields
-          fields={selectedForm.fields}
-          values={formValues}
-          errors={formErrors}
-          onChange={(key, value) => setFormValues((v) => ({ ...v, [key]: value }))}
-        />
+        <>
+          {formErrors.__form && (
+            <p className="text-sm text-destructive" data-testid="create-ticket-form-error">{formErrors.__form}</p>
+          )}
+          <TicketFormFields
+            fields={selectedForm.fields}
+            values={formValues}
+            errors={formErrors}
+            onChange={(key, value) => setFormValues((v) => ({ ...v, [key]: value }))}
+          />
+        </>
       )}
       <div>
         <label className="text-sm font-medium" htmlFor="ct-subject">Subject</label>

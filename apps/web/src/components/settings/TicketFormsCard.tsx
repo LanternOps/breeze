@@ -181,6 +181,7 @@ export default function TicketFormsCard() {
   const [categories, setCategories] = useState<CategoryOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [orgsLoadFailed, setOrgsLoadFailed] = useState(false);
   const [editing, setEditing] = useState<Editing>(null);
   const [saving, setSaving] = useState(false);
   const [issues, setIssues] = useState<string[]>([]);
@@ -190,35 +191,44 @@ export default function TicketFormsCard() {
   const load = useCallback(async () => {
     setLoading(true);
     setError(false);
-    try {
-      const [formsRes, catsRes, orgsRes] = await Promise.all([
-        fetchWithAuth('/ticket-forms'),
-        fetchWithAuth('/ticket-categories'),
-        fetchWithAuth('/orgs/organizations?limit=100')
-      ]);
-      // The forms list is the critical resource — its failure is a hard error.
-      if (!formsRes.ok) {
-        setError(true);
-        setLoading(false);
-        return;
-      }
-      const formsBody = (await formsRes.json()) as { data?: TicketForm[] };
-      setForms(formsBody.data ?? []);
-      // Categories / orgs are option lists for the editor — degrade to empty.
-      if (catsRes.ok) {
-        const b = (await catsRes.json()) as { data?: CategoryOption[] };
-        setCategories((b.data ?? []).filter((c) => c.isActive !== false));
-      } else {
-        setCategories([]);
-      }
-      if (orgsRes.ok) {
-        const b = (await orgsRes.json()) as { data?: OrgOption[] };
-        setOrgs(b.data ?? []);
-      } else {
-        setOrgs([]);
-      }
-    } catch {
+    setOrgsLoadFailed(false);
+    // allSettled so a REJECTED optional fetch (network error) degrades the same
+    // as a non-ok response — only the forms list is allowed to hard-fail.
+    const [formsR, catsR, orgsR] = await Promise.allSettled([
+      fetchWithAuth('/ticket-forms'),
+      fetchWithAuth('/ticket-categories'),
+      fetchWithAuth('/orgs/organizations?limit=100')
+    ]);
+    // The forms list is the critical resource — a rejection OR non-ok is a hard error.
+    if (formsR.status !== 'fulfilled' || !formsR.value.ok) {
       setError(true);
+      setLoading(false);
+      return;
+    }
+    const formsBody = (await formsR.value.json()) as { data?: TicketForm[] };
+    setForms(formsBody.data ?? []);
+    // Categories / orgs are editor option lists — degrade to empty on rejection
+    // OR non-ok, never hard-failing the card.
+    if (catsR.status === 'fulfilled' && catsR.value.ok) {
+      const b = (await catsR.value.json()) as { data?: CategoryOption[] };
+      setCategories((b.data ?? []).filter((c) => c.isActive !== false));
+    } else {
+      console.warn(
+        '[ticket-forms] categories failed to load; editor category list will be empty',
+        catsR.status === 'rejected' ? catsR.reason : catsR.value.status
+      );
+      setCategories([]);
+    }
+    if (orgsR.status === 'fulfilled' && orgsR.value.ok) {
+      const b = (await orgsR.value.json()) as { data?: OrgOption[] };
+      setOrgs(b.data ?? []);
+    } else {
+      console.warn(
+        '[ticket-forms] organizations failed to load; org-scoped form creation is blocked',
+        orgsR.status === 'rejected' ? orgsR.reason : orgsR.value.status
+      );
+      setOrgs([]);
+      setOrgsLoadFailed(true);
     }
     setLoading(false);
   }, []);
@@ -274,7 +284,12 @@ export default function TicketFormsCard() {
     const d = editing.draft;
     const localIssues: string[] = [];
     if (!d.name.trim()) localIssues.push('Name is required.');
-    if (editing.id === undefined && d.ownerScope === 'organization' && !d.orgId) {
+    // Org-scoped create needs an org. If orgs FAILED to load, the inline
+    // `ticket-form-orgs-error` notice (with retry) is the honest feedback — emit
+    // the "select an org" line only when orgs are actually available to pick.
+    const orgScopeBlockedByLoad =
+      editing.id === undefined && d.ownerScope === 'organization' && !d.orgId && orgsLoadFailed;
+    if (editing.id === undefined && d.ownerScope === 'organization' && !d.orgId && !orgsLoadFailed) {
       localIssues.push('Select an organization for an organization-scoped form.');
     }
     const built = buildFields(d.fields);
@@ -285,8 +300,28 @@ export default function TicketFormsCard() {
         localIssues.push(`${path}${issue.message}`);
       }
     }
+    // Title-template typo guard: every {{token}} must name a derived field key,
+    // else the rendered ticket title silently drops it. Cheap, deterministic.
+    if (d.titleTemplate.trim()) {
+      const keys = new Set(built.map((f) => f.key));
+      const seen = new Set<string>();
+      for (const m of d.titleTemplate.matchAll(/\{\{\s*([^}]*?)\s*\}\}/g)) {
+        const token = m[1];
+        if (!token || keys.has(token) || seen.has(token)) continue;
+        seen.add(token);
+        localIssues.push(
+          `Title template references unknown field "{{${token}}}". Available keys: ${built.map((f) => f.key).join(', ') || 'none'}.`
+        );
+      }
+    }
     if (localIssues.length) {
       setIssues(localIssues);
+      return;
+    }
+    // Org-scope create blocked purely because orgs couldn't load: block the POST
+    // (the inline notice already explains why) without a misleading issue line.
+    if (orgScopeBlockedByLoad) {
+      setIssues([]);
       return;
     }
     setIssues([]);
@@ -340,7 +375,7 @@ export default function TicketFormsCard() {
     } finally {
       setSaving(false);
     }
-  }, [editing, saving, load]);
+  }, [editing, saving, load, orgsLoadFailed]);
 
   const remove = useCallback(
     async (id: string) => {
@@ -429,6 +464,19 @@ export default function TicketFormsCard() {
                           </option>
                         ))}
                       </select>
+                    )}
+                    {draft.ownerScope === 'organization' && orgsLoadFailed && (
+                      <p className="text-xs text-destructive" data-testid="ticket-form-orgs-error">
+                        Organizations failed to load, so an org-scoped form can't be created yet.{' '}
+                        <button
+                          type="button"
+                          onClick={() => void load()}
+                          className="underline hover:text-foreground"
+                          data-testid="ticket-form-orgs-retry"
+                        >
+                          Retry
+                        </button>
+                      </p>
                     )}
                   </fieldset>
                 )}

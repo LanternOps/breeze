@@ -233,6 +233,34 @@ describe('CreateTicketPage', () => {
       expect((screen.getByTestId('create-ticket-priority-input') as HTMLSelectElement).value).toBe('high');
     });
 
+    it('does not adopt a form category that is not in the loaded options', async () => {
+      // Form points at cat-missing (inactive/unloaded) — the category select must
+      // stay on "None" rather than invisibly attaching an unseen category.
+      fetchMock.mockImplementation(async (input, init) => {
+        const url = String(input);
+        if (url === '/orgs/organizations?limit=100') return makeJsonResponse({ data: [{ id: 'org-a', name: 'Org A' }] });
+        if (url === '/ticket-categories') return makeJsonResponse({ data: [{ id: 'cat-1', name: 'Hardware', isActive: true }] });
+        if (url.startsWith('/devices?orgId=')) return makeJsonResponse({ data: [] });
+        if (url.startsWith('/tickets/requesters?orgId=')) return makeJsonResponse({ data: [] });
+        if (url.startsWith('/ticket-forms/available')) {
+          return makeJsonResponse({
+            data: [{
+              id: 'form-1', name: 'Onboarding', description: null, categoryId: 'cat-missing',
+              fields: [{ key: 'affected_user', label: 'Affected user', type: 'text', required: true }],
+              defaultPriority: null, titleTemplate: null
+            }]
+          });
+        }
+        if (url === '/tickets' && init?.method === 'POST') return makeJsonResponse({ data: { id: 'tk-1', internalNumber: 'T-1' } });
+        return makeJsonResponse({ error: 'unexpected' }, false, 404);
+      });
+      render(<CreateTicketPage />);
+      fireEvent.change(await screen.findByTestId('create-ticket-org-input'), { target: { value: 'org-a' } });
+      fireEvent.change(await screen.findByTestId('create-ticket-form-picker'), { target: { value: 'form-1' } });
+      await screen.findByTestId('ticket-form-field-affected_user');
+      expect((screen.getByTestId('create-ticket-category-input') as HTMLSelectElement).value).toBe('');
+    });
+
     it('blocks submit with inline error when a required form field is empty', async () => {
       mockOptionsApi();
       render(<CreateTicketPage />);
