@@ -154,14 +154,20 @@ function translationProblems(
           }
         } else {
           const raw = argument.text;
-          const [namespace, key] = raw.includes(':')
+          const [explicitNamespace, key] = raw.includes(':')
             ? raw.split(':', 2)
-            : [localNamespaces?.[0] ?? (isLegacyT ? fileNamespaces[0] : 'common'), raw];
-          const pluralExists = hasCountOption(node.arguments[1])
-            && exists(`${key}_one`, namespace)
-            && exists(`${key}_other`, namespace);
-          if (!exists(key, namespace) && !pluralExists) {
-            problems.push(`${location}: t('${raw}') → missing en ${namespace}:${key}`);
+            : [undefined, raw];
+          const namespaces = explicitNamespace
+            ? [explicitNamespace]
+            : localNamespaces ?? (isLegacyT ? fileNamespaces : ['common']);
+          const found = namespaces.some(namespace => {
+            if (exists(key, namespace)) return true;
+            return hasCountOption(node.arguments[1])
+              && exists(`${key}_one`, namespace)
+              && exists(`${key}_other`, namespace);
+          });
+          if (!found) {
+            problems.push(`${location}: t('${raw}') → missing en ${namespaces.join('|')}:${key}`);
           }
         }
       }
@@ -190,7 +196,7 @@ describe('translation key usage', () => {
     const source = `
       function Policies() {
         const { t } = useTranslation(['policies', 'common']);
-        return t('policyTitle');
+        return [t('policyTitle'), t('sharedAction')];
       }
       function Devices() {
         const { t } = useTranslation('devices');
@@ -199,9 +205,16 @@ describe('translation key usage', () => {
     `;
     expect(translationProblems(source, 'fixture.tsx', (key, namespace) => {
       checked.push(`${namespace}:${key}`);
-      return true;
+      return (namespace === 'policies' && key === 'policyTitle')
+        || (namespace === 'common' && key === 'sharedAction')
+        || (namespace === 'devices' && key === 'deviceTitle');
     })).toEqual([]);
-    expect(checked).toEqual(['policies:policyTitle', 'devices:deviceTitle']);
+    expect(checked).toEqual([
+      'policies:policyTitle',
+      'policies:sharedAction',
+      'common:sharedAction',
+      'devices:deviceTitle',
+    ]);
   });
 
   it('continues to require the marker for dynamic keys with namespace arrays', () => {

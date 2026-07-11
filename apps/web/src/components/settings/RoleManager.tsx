@@ -345,7 +345,7 @@ export default function RoleManager({
                       onClick={() => onViewUsers?.(role)}
                       className="text-primary hover:underline"
                     >
-                      {role.userCount} {role.userCount === 1 ? 'user' : 'users'}
+                      {t('roleManager.userCount', { count: role.userCount })}
                     </button>
                   </td>
                   <td className="px-4 py-3 text-sm text-muted-foreground">
@@ -966,9 +966,9 @@ export function RoleUsersModal({
       <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="text-lg font-semibold">{i18n.t('settings:roleManager.usersWithRole')}{role.name}</h2>
+            <h2 className="text-lg font-semibold">{i18n.t('settings:roleManager.usersWithRoleName', { role: role.name })}</h2>
             <p className="text-sm text-muted-foreground">
-              {users.length} {users.length === 1 ? 'user' : 'users'} {i18n.t('settings:roleManager.assignedToThisRole')}</p>
+              {i18n.t('settings:roleManager.assignedUserCount', { count: users.length })}</p>
           </div>
           <button
             type="button"

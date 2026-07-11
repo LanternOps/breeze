@@ -18,8 +18,16 @@ describe('i18n extraction quality', () => {
       'components/settings/EnrollmentKeyManager.tsx',
     ];
 
-    const bypasses = adoptedFiles.filter((file) =>
-      readSource(file).includes('.toLocaleDateString('),
+    const directDateFormatters = [
+      '.toLocaleDateString(',
+      '.toLocaleTimeString(',
+      '.toLocaleString(',
+      'Intl.DateTimeFormat(',
+    ];
+    const bypasses = adoptedFiles.flatMap((file) =>
+      directDateFormatters
+        .filter(formatter => readSource(file).includes(formatter))
+        .map(formatter => `${file}: ${formatter}`),
     );
 
     expect(bypasses, bypasses.join('\n')).toEqual([]);
