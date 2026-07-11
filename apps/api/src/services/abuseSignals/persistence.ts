@@ -15,16 +15,22 @@ export async function persistSignals(
   computed: ComputedSignal[],
   now: Date,
 ): Promise<{ toNotify: Array<ComputedSignal & { rowId: string }> }> {
+  // Defensive: one entry per (partner, signal) — the open-row unique index
+  // would reject a duplicate INSERT mid-loop. Last write wins.
+  const dedupedByKey = new Map<string, ComputedSignal>();
+  for (const s of computed) dedupedByKey.set(key(s.partnerId, s.signalKey), s);
+  const deduped = [...dedupedByKey.values()];
+
   const openRows = await db
     .select()
     .from(partnerAbuseSignals)
     .where(isNull(partnerAbuseSignals.resolvedAt));
 
   const openByKey = new Map(openRows.map((r) => [key(r.partnerId, r.signalKey), r]));
-  const firedKeys = new Set(computed.map((s) => key(s.partnerId, s.signalKey)));
+  const firedKeys = new Set(deduped.map((s) => key(s.partnerId, s.signalKey)));
   const toNotify: Array<ComputedSignal & { rowId: string }> = [];
 
-  for (const s of computed) {
+  for (const s of deduped) {
     const open = openByKey.get(key(s.partnerId, s.signalKey));
     if (!open) {
       const [row] = await db

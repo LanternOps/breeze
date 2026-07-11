@@ -61,6 +61,8 @@ describe('persistSignals', () => {
     expect(inserted).toHaveLength(0);
     expect(updates.length).toBeGreaterThan(0);
     expect(toNotify).toHaveLength(0);
+    expect(updates[0]!.set).not.toHaveProperty('firstFiredAt');
+    expect(updates[0]!.set).not.toHaveProperty('resolvedAt');
   });
 
   it('notifies on escalation to alert (open watch row, never delivered)', async () => {
@@ -80,5 +82,33 @@ describe('persistSignals', () => {
     mockOpenRows([{ id: 'stale', partnerId: 'p9', signalKey: 'rmm.enrollment_velocity', severity: 'watch', acknowledgedAt: null, deliveredAt: null }]);
     await persistSignals([], now);
     expect(updates.some((u) => u.set.resolvedAt instanceof Date)).toBe(true);
+  });
+
+  it('dedupes duplicate (partner, signal) entries within one batch, last write wins', async () => {
+    mockOpenRows([]);
+    const { toNotify } = await persistSignals(
+      [signal({ score: 50, severity: 'watch' }), signal({ score: 90, severity: 'alert' })],
+      now,
+    );
+    expect(inserted).toHaveLength(1);
+    expect((inserted[0] as { score: number }).score).toBe(90);
+    expect(toNotify).toHaveLength(1);
+  });
+});
+
+describe('markDelivered', () => {
+  it('marks rows as delivered with the given date', async () => {
+    const { markDelivered } = await import('./persistence');
+    updates.length = 0;
+    await markDelivered(['r1', 'r2'], now);
+    expect(updates).toHaveLength(1);
+    expect(updates[0]!.set.deliveredAt).toEqual(now);
+  });
+
+  it('does not call update when rowIds is empty', async () => {
+    const { markDelivered } = await import('./persistence');
+    updates.length = 0;
+    await markDelivered([], now);
+    expect(updates).toHaveLength(0);
   });
 });
