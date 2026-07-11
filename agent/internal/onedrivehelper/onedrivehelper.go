@@ -49,7 +49,8 @@ type DriftEntry struct {
 }
 
 // DeviceState is reported in the heartbeat payload as onedriveDeviceState and
-// must match the zod schema in apps/api/src/routes/agents/heartbeat.ts.
+// must match the zod schema in apps/api/src/routes/agents/schemas.ts
+// (heartbeatSchema.onedriveDeviceState).
 type DeviceState struct {
 	SignedIn          bool              `json:"signedIn"`
 	SignedInUpns      []string          `json:"signedInUpns"`
@@ -111,6 +112,9 @@ func PartitionLibraries(rules []LibraryRule, isLocalGroupMember func(groupName s
 	return apply, pending
 }
 
+// containsFold is a case-insensitive membership check (pairs with the server
+// cache's lowercased UPN keying). An empty needle never matches (fail closed:
+// a session with no resolvable UPN can't satisfy an allow-list entry).
 func containsFold(xs []string, x string) bool {
 	if x == "" {
 		return false
