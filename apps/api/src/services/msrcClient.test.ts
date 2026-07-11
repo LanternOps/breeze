@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { parseCvrf } from './msrcClient';
 import sample from './__fixtures__/msrc-sample.json';
 
@@ -23,5 +23,59 @@ describe('parseCvrf', () => {
     if (record) {
       expect(['Critical', 'High', 'Medium', 'Low']).toContain(record.severity);
     }
+  });
+
+  describe('malformed CVE ids (#2261)', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    const malformedCveId = 'CVE-2023-38039 mariner - do not use this one';
+    const doc = {
+      ProductTree: {
+        FullProductName: [
+          { ProductID: '1', CPE: 'cpe:2.3:o:microsoft:cbl-mariner:*:*:*:*:*:*:*:*', Value: 'CBL Mariner 2.0 x64' },
+        ],
+      },
+      Vulnerability: [
+        {
+          // The literal malformed record Microsoft ships in the CBL-Mariner
+          // CVRF feed — 44 chars, longer than vulnerabilities.cve_id varchar(32).
+          CVE: malformedCveId,
+          Remediations: [{ Type: 2, FixedBuild: '2.0.20230801', ProductID: ['1'] }],
+        },
+        {
+          CVE: 'CVE-2023-38040',
+          Remediations: [{ Type: 2, FixedBuild: '2.0.20230801', ProductID: ['1'] }],
+        },
+      ],
+    };
+
+    it('drops the malformed record and keeps valid siblings', () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const records = parseCvrf(doc);
+
+      expect(records).toHaveLength(1);
+      expect(records[0]?.cveId).toBe('CVE-2023-38040');
+    });
+
+    it('warns once with the offending id', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      parseCvrf(doc);
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]?.[0]).toContain(malformedCveId);
+    });
+
+    it('throws when EVERY CVE id is malformed (probable feed format change)', () => {
+      const allMalformed = {
+        ...doc,
+        Vulnerability: [doc.Vulnerability[0]],
+      };
+
+      expect(() => parseCvrf(allMalformed)).toThrow(/probable upstream feed format change/);
+    });
   });
 });

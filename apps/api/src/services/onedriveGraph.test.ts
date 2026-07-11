@@ -12,6 +12,8 @@ import { captureException } from './sentry';
 import {
   clearGroupMembershipCache,
   GROUP_MEMBERSHIP_CACHE_TTL_MS,
+  GROUP_MEMBERSHIP_NEGATIVE_TTL_MS,
+  GROUP_MEMBERSHIP_CACHE_MAX,
   listSharePointLibraries,
   resolveUserGroupMembership,
   resolveUserGroupMembershipCached,
@@ -299,4 +301,130 @@ describe('resolveUserGroupMembershipCached', () => {
     expect((b as any).data.groupIds).toEqual(['g-9']);
     expect(graphFetch).toHaveBeenCalledTimes(2);
   });
+});
+
+describe('resolveUserGroupMembershipCached negative caching', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearGroupMembershipCache();
+    // The default mock factory return value only applies until the first
+    // mockResolvedValueOnce is consumed; restore it explicitly so tests in
+    // this file that override getToken with a persistent value can't leak
+    // into a later test.
+    (getToken as any).mockResolvedValue({ token: 'tok' });
+  });
+
+  it('caches a deterministic error code (no_connection) — no second token round-trip within the negative TTL', async () => {
+    (getToken as any).mockResolvedValueOnce({ kind: 'error', code: 'no_connection', message: 'no conn' });
+    const a = await resolveUserGroupMembershipCached('org-1', 'u@contoso.com');
+    expect(a.kind).toBe('error');
+    expect((a as any).code).toBe('no_connection');
+    const b = await resolveUserGroupMembershipCached('org-1', 'u@contoso.com');
+    expect(b).toEqual(a);
+    // A cache hit returns before ever calling getToken again.
+    expect(getToken).toHaveBeenCalledTimes(1);
+  });
+
+  it('caches connection_key_error, bad_request, and too_many_groups the same way', async () => {
+    for (const code of ['connection_key_error', 'bad_request', 'too_many_groups']) {
+      vi.clearAllMocks();
+      clearGroupMembershipCache();
+      (getToken as any).mockResolvedValueOnce({ kind: 'error', code, message: 'x' });
+      await resolveUserGroupMembershipCached('org-1', 'u@contoso.com');
+      await resolveUserGroupMembershipCached('org-1', 'u@contoso.com');
+      expect(getToken).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('does NOT cache a transient error code (graph_unreachable) — next call retries', async () => {
+    (graphFetch as any)
+      .mockResolvedValueOnce({ kind: 'error', code: 'graph_unreachable', message: 'x' })
+      .mockResolvedValueOnce({ kind: 'ok', data: { value: [{ id: 'g-1' }] } });
+    const a = await resolveUserGroupMembershipCached('org-1', 'u@contoso.com');
+    expect(a.kind).toBe('error');
+    const b = await resolveUserGroupMembershipCached('org-1', 'u@contoso.com');
+    expect((b as any).data.groupIds).toEqual(['g-1']);
+    expect(graphFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('does NOT cache not_found — a just-provisioned user can resolve promptly', async () => {
+    (graphFetch as any)
+      .mockResolvedValueOnce({ kind: 'error', code: 'not_found', message: 'x' })
+      .mockResolvedValueOnce({ kind: 'ok', data: { value: [{ id: 'g-1' }] } });
+    const a = await resolveUserGroupMembershipCached('org-1', 'u@contoso.com');
+    expect(a.kind).toBe('error');
+    const b = await resolveUserGroupMembershipCached('org-1', 'u@contoso.com');
+    expect((b as any).data.groupIds).toEqual(['g-1']);
+    expect(graphFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('a negative entry expires after GROUP_MEMBERSHIP_NEGATIVE_TTL_MS', async () => {
+    vi.useFakeTimers();
+    try {
+      (graphFetch as any)
+        .mockResolvedValueOnce({ kind: 'error', code: 'bad_request', message: 'x' })
+        .mockResolvedValueOnce({ kind: 'ok', data: { value: [{ id: 'g-1' }] } });
+      const a = await resolveUserGroupMembershipCached('org-1', 'u@contoso.com');
+      expect(a.kind).toBe('error');
+
+      // Still within the negative TTL — served from cache, no second call.
+      vi.advanceTimersByTime(GROUP_MEMBERSHIP_NEGATIVE_TTL_MS - 1);
+      const mid = await resolveUserGroupMembershipCached('org-1', 'u@contoso.com');
+      expect(mid).toEqual(a);
+      expect(graphFetch).toHaveBeenCalledTimes(1);
+
+      // Past the negative TTL — refetches.
+      vi.advanceTimersByTime(2);
+      const b = await resolveUserGroupMembershipCached('org-1', 'u@contoso.com');
+      expect((b as any).data.groupIds).toEqual(['g-1']);
+      expect(graphFetch).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('positive results are unaffected by negative caching (still use the 30-min TTL)', async () => {
+    vi.useFakeTimers();
+    try {
+      (graphFetch as any)
+        .mockResolvedValueOnce({ kind: 'ok', data: { value: [{ id: 'g-1' }] } })
+        .mockResolvedValueOnce({ kind: 'ok', data: { value: [{ id: 'g-2' }] } });
+      const a = await resolveUserGroupMembershipCached('org-1', 'u@contoso.com');
+      // Past the (much shorter) negative TTL, still within the positive TTL.
+      vi.advanceTimersByTime(GROUP_MEMBERSHIP_NEGATIVE_TTL_MS + 1);
+      const b = await resolveUserGroupMembershipCached('org-1', 'u@contoso.com');
+      expect(b).toEqual(a);
+      expect(graphFetch).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('resolveUserGroupMembershipCached bound', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearGroupMembershipCache();
+    (getToken as any).mockResolvedValue({ token: 'tok' });
+  });
+
+  it('evicts the oldest entries once the cache exceeds GROUP_MEMBERSHIP_CACHE_MAX', async () => {
+    (graphFetch as any).mockResolvedValue({ kind: 'ok', data: { value: [] } });
+    const overflow = 5;
+    for (let i = 0; i < GROUP_MEMBERSHIP_CACHE_MAX + overflow; i++) {
+      await resolveUserGroupMembershipCached('org-1', `user${i}@contoso.com`);
+    }
+    const callsAfterFill = (graphFetch as any).mock.calls.length;
+    expect(callsAfterFill).toBe(GROUP_MEMBERSHIP_CACHE_MAX + overflow);
+
+    // The earliest-inserted keys were evicted — asking again refetches.
+    await resolveUserGroupMembershipCached('org-1', 'user0@contoso.com');
+    expect((graphFetch as any).mock.calls.length).toBe(callsAfterFill + 1);
+
+    // The most-recently-inserted key is still cached — no additional fetch.
+    const callsAfterRefetch = (graphFetch as any).mock.calls.length;
+    const lastKey = GROUP_MEMBERSHIP_CACHE_MAX + overflow - 1;
+    await resolveUserGroupMembershipCached('org-1', `user${lastKey}@contoso.com`);
+    expect((graphFetch as any).mock.calls.length).toBe(callsAfterRefetch);
+  }, 20_000);
 });

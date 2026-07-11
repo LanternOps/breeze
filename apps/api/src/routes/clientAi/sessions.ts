@@ -16,7 +16,7 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { streamSSE } from 'hono/streaming';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { and, asc, count, desc, eq, inArray } from 'drizzle-orm';
 import { db, withDbAccessContext } from '../../db';

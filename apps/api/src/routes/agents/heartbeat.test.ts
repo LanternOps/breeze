@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 // ---------- mocks ----------
@@ -231,6 +231,16 @@ const minimalHeartbeatBody = {
   },
 };
 
+const originalAgentBackupServerUrl = process.env.AGENT_BACKUP_SERVER_URL;
+
+afterEach(() => {
+  if (originalAgentBackupServerUrl === undefined) {
+    delete process.env.AGENT_BACKUP_SERVER_URL;
+  } else {
+    process.env.AGENT_BACKUP_SERVER_URL = originalAgentBackupServerUrl;
+  }
+});
+
 describe('POST /agents/:id/heartbeat — manifestTrustKeys delivery (#639)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -305,6 +315,38 @@ describe('POST /agents/:id/heartbeat — manifestTrustKeys delivery (#639)', () 
     expect(resp.status).toBe(200);
     const body = (await resp.json()) as Record<string, unknown>;
     expect(body.manifestTrustKeys).toEqual([]);
+  });
+
+  it('always includes backup_server_url in configUpdate — value when env set', async () => {
+    process.env.AGENT_BACKUP_SERVER_URL = 'https://new.example.com';
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    const configUpdate = body.configUpdate as Record<string, unknown>;
+    expect(configUpdate.backup_server_url).toBe('https://new.example.com');
+  });
+
+  it('always includes backup_server_url in configUpdate — empty string when env unset (clear signal)', async () => {
+    delete process.env.AGENT_BACKUP_SERVER_URL;
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    const configUpdate = body.configUpdate as Record<string, unknown>;
+    expect(configUpdate.backup_server_url).toBe('');
   });
 
   it('#1105: fetches the trust keyset AFTER the org DB context is released (not while holding the tx)', async () => {
@@ -1720,6 +1762,65 @@ describe('POST /agents/:id/heartbeat — watchdogVersion telemetry (#1802)', () 
     expect(resp.status).toBe(200);
     const body = await resp.json() as { watchdogUpgradeTo?: string | null };
     expect(body.watchdogUpgradeTo).toBe('0.66.0');
+  });
+});
+
+// ---------------------------------------------------------------------
+// #2288 — active control-plane URL persistence
+// ---------------------------------------------------------------------
+
+describe('POST /agents/:id/heartbeat — active server URL telemetry (#2288)', () => {
+  const deviceRow = {
+    id: 'device-1', orgId: 'org-1', siteId: 'site-1', hostname: 'host',
+    osType: 'windows', architecture: 'amd64', agentVersion: '0.66.0',
+    deviceRoleSource: 'auto', lastSeenAt: new Date(), mainAgentSilentSince: null,
+  };
+
+  let capturedDeviceUpdate: Record<string, unknown>;
+
+  function arrange() {
+    vi.clearAllMocks();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
+    selectMock.mockReturnValue(selectChainResolving([]));
+    updateMock.mockReturnValue({
+      set: vi.fn((values: Record<string, unknown>) => {
+        capturedDeviceUpdate = values;
+        return { where: vi.fn().mockResolvedValue(undefined) };
+      }),
+    });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+  }
+
+  async function postHeartbeat(body: Record<string, unknown>) {
+    arrange();
+    return buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it('persists a valid serverUrl to devices.agent_server_url', async () => {
+    await postHeartbeat({ ...minimalHeartbeatBody, serverUrl: 'https://old.example.com' });
+    expect(capturedDeviceUpdate.agentServerUrl).toBe('https://old.example.com');
+  });
+
+  it('ignores a malformed serverUrl instead of failing the heartbeat', async () => {
+    const res = await postHeartbeat({ ...minimalHeartbeatBody, serverUrl: 'not a url' });
+    expect(res.status).toBe(200);
+    expect(capturedDeviceUpdate.agentServerUrl).toBeUndefined();
+  });
+
+  it('drops parseable-but-non-http(s) serverUrl schemes (value is echoed into the web UI)', async () => {
+    const res = await postHeartbeat({ ...minimalHeartbeatBody, serverUrl: 'javascript:alert(1)' });
+    expect(res.status).toBe(200);
+    expect(capturedDeviceUpdate.agentServerUrl).toBeUndefined();
+  });
+
+  it('leaves stored value untouched when serverUrl absent (old agent)', async () => {
+    await postHeartbeat(minimalHeartbeatBody);
+    expect(Object.hasOwn(capturedDeviceUpdate, 'agentServerUrl')).toBe(false);
   });
 });
 

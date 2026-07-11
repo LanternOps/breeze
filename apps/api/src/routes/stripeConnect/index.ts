@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../../lib/validation';
 import { HTTPException } from 'hono/http-exception';
 import { authMiddleware, requireMfa, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';

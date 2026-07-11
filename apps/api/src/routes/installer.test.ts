@@ -36,9 +36,88 @@ function makeApp() {
 beforeEach(() => {
   vi.clearAllMocks();
   delete process.env.MACOS_INSTALLER_ALLOW_LEGACY_GET_BOOTSTRAP;
+  delete process.env.AGENT_BACKUP_SERVER_URL;
 });
 
+async function redeemBootstrapOk(): Promise<Record<string, unknown>> {
+  const tokenRow = {
+    id: "backup-url-token",
+    token: "HHHHHHHHHH",
+    orgId: "backup-url-org",
+    parentEnrollmentKeyId: "backup-url-parent-key",
+    siteId: "backup-url-site",
+    maxUsage: 1,
+    consumedCount: 0,
+    createdBy: "backup-url-user",
+    consumedAt: null,
+    expiresAt: new Date(Date.now() + 60_000),
+  };
+
+  vi.mocked(db.select)
+    .mockReturnValueOnce({
+      from: () => ({
+        where: () => ({ limit: () => Promise.resolve([tokenRow]) }),
+      }),
+    } as any)
+    .mockReturnValueOnce({
+      from: () => ({
+        where: () => ({
+          limit: () => Promise.resolve([{
+            id: "backup-url-parent-key",
+            name: "Backup URL parent",
+            orgId: "backup-url-org",
+            siteId: "backup-url-site",
+            keySecretHash: "parent-secret-hash",
+            expiresAt: new Date(Date.now() + 60_000),
+          }]),
+        }),
+      }),
+    } as any)
+    .mockReturnValueOnce({
+      from: () => ({
+        where: () => ({
+          limit: () => Promise.resolve([{ id: "backup-url-org", name: "Backup URL Org" }]),
+        }),
+      }),
+    } as any);
+
+  vi.mocked(db.insert).mockReturnValue({
+    values: () => ({
+      returning: () => Promise.resolve([{
+        id: "backup-url-child-key",
+        orgId: "backup-url-org",
+        siteId: "backup-url-site",
+      }]),
+    }),
+  } as any);
+  vi.mocked(db.update).mockReturnValue({
+    set: () => ({
+      where: () => ({
+        returning: () => Promise.resolve([{ ...tokenRow, consumedAt: new Date() }]),
+      }),
+    }),
+  } as any);
+
+  const res = await makeApp().request("/api/v1/installer/bootstrap", {
+    method: "POST",
+    headers: { "X-Breeze-Bootstrap-Token": "HHHHHHHHHH" },
+  });
+  expect(res.status).toBe(200);
+  return await res.json() as Record<string, unknown>;
+}
+
 describe("POST /api/v1/installer/bootstrap", () => {
+  it("includes backupServerUrl when AGENT_BACKUP_SERVER_URL is set", async () => {
+    process.env.AGENT_BACKUP_SERVER_URL = "https://new.example.com";
+    const body = await redeemBootstrapOk();
+    expect(body.backupServerUrl).toBe("https://new.example.com");
+  });
+
+  it("omits/empty backupServerUrl when env unset", async () => {
+    const body = await redeemBootstrapOk();
+    expect(body.backupServerUrl ?? "").toBe("");
+  });
+
   it("returns 400 for malformed token", async () => {
     const app = makeApp();
     const res = await app.request("/api/v1/installer/bootstrap", {

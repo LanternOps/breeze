@@ -19,11 +19,21 @@ import (
 var log = logging.L("onedrivehelper")
 
 const (
-	policyKeyPath    = `SOFTWARE\Policies\Microsoft\OneDrive`
-	autoMountSubKey  = policyKeyPath + `\TenantAutoMount`
-	accountKeySuffix = `SOFTWARE\Microsoft\OneDrive\Accounts\Business1`
-	sentinelValue    = "BreezeOneDriveManaged"
+	policyKeyPath   = `SOFTWARE\Policies\Microsoft\OneDrive`
+	autoMountSubKey = policyKeyPath + `\TenantAutoMount`
+	sentinelValue   = "BreezeOneDriveManaged"
+
+	// maxBusinessAccounts is the number of OneDrive work-account slots we scan
+	// (Business1..Business9). Accounts can be sparse after unlinking one, so
+	// every slot must be checked — stopping at the first miss is not safe.
+	maxBusinessAccounts = 9
 )
+
+// businessAccountKeyPath returns the HKU-relative key path for work-account
+// slot n (1-based; OneDrive names these Business1..Business9).
+func businessAccountKeyPath(n int) string {
+	return fmt.Sprintf(`SOFTWARE\Microsoft\OneDrive\Accounts\Business%d`, n)
+}
 
 // userSession is one active interactive session resolved to a SID + group set.
 type userSession struct {
@@ -33,8 +43,8 @@ type userSession struct {
 }
 
 // Apply enforces base config in HKLM and per-user TenantAutoMount values in
-// HKU\<SID>, then reads back device state. Additive-only: toggles turned off
-// stop being enforced but are not scrubbed (unmount/revert is Sub-project B).
+// HKU\<SID>, scrubs stale Breeze-* values for rules no longer entitled, then
+// reads back device state.
 func Apply(cfg Config) (*DeviceState, error) {
 	baseChanged, baseErr := applyBaseConfig(cfg)
 	errs := []error{baseErr}
@@ -45,22 +55,23 @@ func Apply(cfg Config) (*DeviceState, error) {
 	var applied []LibraryRule
 	for _, s := range sessions {
 		isMember := func(groupName string) bool { return isTokenGroupMember(s, groupName) }
-		upn := sessionUpn(s.sid)
-		apply, _ := PartitionLibraries(cfg.Libraries, isMember, upn)
-		changed, err := applyUserAutoMount(s.sid, apply)
+		upns := sessionUpns(s.sid)
+		apply, _ := PartitionLibraries(cfg.Libraries, isMember, upns)
+		written, changed, err := applyUserAutoMount(s.sid, apply)
 		if err != nil {
-			// One broken user hive must not stop the others — but a hive that
-			// can't be written means that user's libraries silently never
-			// mount, so the failure must still surface (the heartbeat caller
-			// logs Apply's returned error).
+			// One broken user hive must not stop the others — but any value
+			// that failed to write/scrub must still surface (the heartbeat
+			// caller logs Apply's returned error). Values that DID succeed
+			// (written) are still counted below: reporting a library as
+			// neither entitled nor drifted when it's actually sitting on
+			// disk mounted is the fail-open edge this is fixing.
 			errs = append(errs, fmt.Errorf("session %s: %w", s.sid, err))
-			continue
 		}
 		if changed {
 			anyUserChanged = true
 			pokeAutoMountTimer(s.sid)
 		}
-		for _, r := range apply {
+		for _, r := range written {
 			if !containsString(entitled, r.LibraryID) {
 				entitled = append(entitled, r.LibraryID)
 				applied = append(applied, r)
@@ -167,39 +178,69 @@ func boolToDword(b bool) uint32 {
 }
 
 // applyUserAutoMount writes one TenantAutoMount value per applied rule under
-// HKU\<SID>. Idempotent: skips values already correct. Additive-only: values
-// for rules no longer delivered are left in place (v1 — see spec).
-func applyUserAutoMount(sid string, rules []LibraryRule) (bool, error) {
-	if len(rules) == 0 {
-		return false, nil
-	}
+// HKU\<SID>, then scrubs any Breeze-* value no longer in the desired set.
+// Idempotent: skips values already correct. The scrub closes a fail-open
+// edge: a value written for a previously-allowlisted user must not persist
+// after the rule stops applying — a different, non-allowlisted user signing
+// into the same Windows profile would otherwise inherit that mount.
+//
+// Returns the subset of rules whose values were confirmed written (already
+// correct or freshly set) so a per-value failure doesn't hide the rules that
+// DID succeed from entitlement/drift bookkeeping (Apply folds partial writes
+// into the caller's returned error via errors.Join rather than discarding
+// them).
+func applyUserAutoMount(sid string, rules []LibraryRule) (written []LibraryRule, changed bool, err error) {
 	path := sid + `\` + autoMountSubKey
-	k, _, err := registry.CreateKey(registry.USERS, path, registry.SET_VALUE|registry.QUERY_VALUE)
-	if err != nil {
-		return false, fmt.Errorf("open/create HKU automount key for %s: %w", sid, err)
+	k, _, kerr := registry.CreateKey(registry.USERS, path, registry.SET_VALUE|registry.QUERY_VALUE)
+	if kerr != nil {
+		return nil, false, fmt.Errorf("open/create HKU automount key for %s: %w", sid, kerr)
 	}
 	defer k.Close()
 
-	changed := false
+	var errs []error
+	desired := make([]string, 0, len(rules))
 	for _, r := range rules {
 		name := ValueName(r.LibraryID)
+		desired = append(desired, name)
 		if got, _, e := k.GetStringValue(name); e == nil && got == r.LibraryID {
+			written = append(written, r)
 			continue
 		}
 		if e := k.SetStringValue(name, r.LibraryID); e != nil {
-			return changed, fmt.Errorf("set automount %s: %w", name, e)
+			log.Warn("set automount value failed", "value", name, "error", e.Error())
+			errs = append(errs, fmt.Errorf("set automount %s: %w", name, e))
+			continue
 		}
 		changed = true
+		written = append(written, r)
 	}
-	return changed, nil
+
+	names, nerr := k.ReadValueNames(-1)
+	if nerr != nil {
+		errs = append(errs, fmt.Errorf("enumerate automount values for %s: %w", sid, nerr))
+	} else {
+		for _, stale := range StaleValueNames(names, desired) {
+			if e := k.DeleteValue(stale); e != nil {
+				log.Warn("delete stale automount value failed", "value", stale, "error", e.Error())
+				errs = append(errs, fmt.Errorf("delete stale automount %s: %w", stale, e))
+				continue
+			}
+			log.Info("removed stale automount value", "value", stale)
+			changed = true
+		}
+	}
+
+	return written, changed, errors.Join(errs...)
 }
 
 // pokeAutoMountTimer forces OneDrive to process AutoMount promptly (it
 // otherwise runs on an up-to-8h timer). Only possible when the user has a
 // Business1 account key (i.e. is signed in); missing key is fine — OneDrive
-// will process on sign-in.
+// will process on sign-in. Business1 specifically: any signed-in business
+// account's OneDrive process serves the same AutoMount timer, so poking the
+// primary slot is sufficient — no need to enumerate Business2..9 here.
 func pokeAutoMountTimer(sid string) {
-	k, err := registry.OpenKey(registry.USERS, sid+`\`+accountKeySuffix, registry.SET_VALUE)
+	k, err := registry.OpenKey(registry.USERS, sid+`\`+businessAccountKeyPath(1), registry.SET_VALUE)
 	if err != nil {
 		return
 	}
@@ -256,21 +297,29 @@ func isTokenGroupMember(s userSession, groupName string) bool {
 	return s.groupSIDs[strings.ToUpper(sid.String())]
 }
 
-// sessionUpn reads the signed-in user's UPN from the session's own OneDrive
-// account key. Empty when the user isn't signed in to OneDrive Business or the
-// value is unreadable — callers treat empty as "cannot match graph_group rules"
-// (fail closed).
-func sessionUpn(sid string) string {
-	k, err := registry.OpenKey(registry.USERS, sid+`\`+accountKeySuffix, registry.QUERY_VALUE)
-	if err != nil {
-		return ""
+// sessionUpns reads the signed-in user's UPNs across all of the session's
+// OneDrive work-account slots (Business1..Business9 — OneDrive supports
+// multiple linked work accounts, and slots can be sparse after unlinking one,
+// so every slot is checked). Empty when the user isn't signed in to any
+// OneDrive Business account or no value is readable — callers treat an empty
+// slice as "cannot match graph_group rules" (fail closed).
+func sessionUpns(sid string) []string {
+	var upns []string
+	for n := 1; n <= maxBusinessAccounts; n++ {
+		k, err := registry.OpenKey(registry.USERS, sid+`\`+businessAccountKeyPath(n), registry.QUERY_VALUE)
+		if err != nil {
+			continue
+		}
+		v, _, verr := k.GetStringValue("UserEmail")
+		k.Close()
+		if verr != nil || v == "" || len(v) > 320 {
+			continue
+		}
+		if !containsFold(upns, v) {
+			upns = append(upns, v)
+		}
 	}
-	defer k.Close()
-	v, _, err := k.GetStringValue("UserEmail")
-	if err != nil {
-		return ""
-	}
-	return v
+	return upns
 }
 
 // restartOneDrive best-effort kills + relaunches OneDrive in each session so
@@ -345,8 +394,11 @@ var shellFolderValues = map[string]string{
 }
 
 // readDeviceState reads OneDrive state across the active sessions. Flattening
-// rule (device-level row, per-user reality): signedIn/version/KFM come from the
-// first signed-in session; mounted libraries and signedInUpns are the union of
+// rule (device-level row, per-user reality): signedIn/version/KFM come from
+// the first session that has ANY signed-in business account (Business1
+// preferred, else the first present Business2..9 slot for that session, kept
+// simple rather than trying to merge version/KFM across accounts); mounted
+// libraries and signedInUpns are the union of all business accounts across
 // all sessions (UPNs deduped case-insensitively, capped at 16).
 func readDeviceState(sessions []userSession, entitled []string, applied []LibraryRule) *DeviceState {
 	if entitled == nil {
@@ -370,32 +422,52 @@ func readDeviceState(sessions []userSession, entitled []string, applied []Librar
 
 	primaryFound := false
 	for _, s := range sessions {
-		acct, err := registry.OpenKey(registry.USERS, s.sid+`\`+accountKeySuffix, registry.QUERY_VALUE)
-		if err != nil {
-			continue // this user isn't signed in to OneDrive Business
-		}
-		state.SignedIn = true
-		// Cap at 16 entries and 320 chars per UPN to match the server-side zod
-		// schema (schemas.ts signedInUpns) — a violating value drops the whole
-		// UPN list server-side, so enforce the bounds here and make any
-		// truncation visible instead of silently losing sessions 17+.
-		if upn, _, e := acct.GetStringValue("UserEmail"); e == nil && upn != "" && len(upn) <= 320 && !containsFold(state.SignedInUpns, upn) {
-			if len(state.SignedInUpns) < 16 {
-				state.SignedInUpns = append(state.SignedInUpns, upn)
-			} else {
-				log.Warn("signed-in UPN cap reached; not reporting this session's UPN",
-					"cap", 16, "sessionID", s.sessionID)
+		// Business1..Business9: accounts can be sparse after unlinking one, so
+		// every slot must be checked for this session (stop-early is not
+		// safe). accountKeyPaths collects the slots actually present, in
+		// Business1..9 order, so accountKeyPaths[0] is Business1 if present,
+		// else the first present secondary slot.
+		var accountKeyPaths []string
+		for n := 1; n <= maxBusinessAccounts; n++ {
+			keyPath := businessAccountKeyPath(n)
+			acct, err := registry.OpenKey(registry.USERS, s.sid+`\`+keyPath, registry.QUERY_VALUE)
+			if err != nil {
+				continue // this slot isn't signed in
 			}
+			state.SignedIn = true
+			accountKeyPaths = append(accountKeyPaths, keyPath)
+			// Cap at 16 entries and 320 chars per UPN to match the server-side zod
+			// schema (schemas.ts signedInUpns) — a violating value drops the whole
+			// UPN list server-side, so enforce the bounds here and make any
+			// truncation visible instead of silently losing entries beyond the cap.
+			if upn, _, e := acct.GetStringValue("UserEmail"); e == nil && upn != "" && len(upn) <= 320 && !containsFold(state.SignedInUpns, upn) {
+				if len(state.SignedInUpns) < 16 {
+					state.SignedInUpns = append(state.SignedInUpns, upn)
+				} else {
+					log.Warn("signed-in UPN cap reached; not reporting this account's UPN",
+						"cap", 16, "sessionID", s.sessionID)
+				}
+			}
+			acct.Close()
 		}
+
+		if len(accountKeyPaths) == 0 {
+			continue // this user isn't signed in to any OneDrive Business account
+		}
+		primaryKeyPath := accountKeyPaths[0]
+
 		if !primaryFound {
 			primaryFound = true
-			if v, _, e := acct.GetStringValue("OneDriveVersion"); e == nil {
-				state.OneDriveVersion = v
-			} else if k2, e2 := registry.OpenKey(registry.USERS, s.sid+`\SOFTWARE\Microsoft\OneDrive`, registry.QUERY_VALUE); e2 == nil {
-				if v2, _, e3 := k2.GetStringValue("Version"); e3 == nil {
-					state.OneDriveVersion = v2
+			if acct, err := registry.OpenKey(registry.USERS, s.sid+`\`+primaryKeyPath, registry.QUERY_VALUE); err == nil {
+				if v, _, e := acct.GetStringValue("OneDriveVersion"); e == nil {
+					state.OneDriveVersion = v
+				} else if k2, e2 := registry.OpenKey(registry.USERS, s.sid+`\SOFTWARE\Microsoft\OneDrive`, registry.QUERY_VALUE); e2 == nil {
+					if v2, _, e3 := k2.GetStringValue("Version"); e3 == nil {
+						state.OneDriveVersion = v2
+					}
+					k2.Close()
 				}
-				k2.Close()
+				acct.Close()
 			}
 			// KFM redirection per managed folder, from User Shell Folders.
 			if usf, e := registry.OpenKey(registry.USERS,
@@ -419,21 +491,22 @@ func readDeviceState(sessions []userSession, entitled []string, applied []Librar
 			}
 		}
 
-		// Personal OneDrive folder for this account, read before acct.Close() so
-		// we can exclude it below when collecting Tenants value names.
-		userFolder, _, _ := acct.GetStringValue("UserFolder")
-		acct.Close()
-
-		// Mounted scopes: Tenants\<TenantName> value names are local folder paths.
-		// The tenant cache also lists the signed-in user's own personal OneDrive
-		// folder (Business1's UserFolder) alongside real SharePoint library
-		// mounts — live spike validation (2026-06-19 doc; live-validated
-		// 2026-07-09) confirmed every signed-in device was misreporting its
-		// personal folder as a mounted library. Skip it explicitly.
-		if tenants, e := registry.OpenKey(registry.USERS, s.sid+`\`+accountKeySuffix+`\Tenants`, registry.ENUMERATE_SUB_KEYS); e == nil {
+		// Mounted scopes, read from this session's primary account slot:
+		// Tenants\<TenantName> value names are local folder paths. The tenant
+		// cache also lists the signed-in user's own personal OneDrive folder
+		// (the account's UserFolder) alongside real SharePoint library mounts
+		// — live spike validation (2026-06-19 doc; live-validated 2026-07-09)
+		// confirmed every signed-in device was misreporting its personal
+		// folder as a mounted library. Skip it explicitly.
+		userFolder := ""
+		if acct, err := registry.OpenKey(registry.USERS, s.sid+`\`+primaryKeyPath, registry.QUERY_VALUE); err == nil {
+			userFolder, _, _ = acct.GetStringValue("UserFolder")
+			acct.Close()
+		}
+		if tenants, e := registry.OpenKey(registry.USERS, s.sid+`\`+primaryKeyPath+`\Tenants`, registry.ENUMERATE_SUB_KEYS); e == nil {
 			if subs, se := tenants.ReadSubKeyNames(-1); se == nil {
 				for _, sub := range subs {
-					if tk, te := registry.OpenKey(registry.USERS, s.sid+`\`+accountKeySuffix+`\Tenants\`+sub, registry.QUERY_VALUE); te == nil {
+					if tk, te := registry.OpenKey(registry.USERS, s.sid+`\`+primaryKeyPath+`\Tenants\`+sub, registry.QUERY_VALUE); te == nil {
 						if names, ne := tk.ReadValueNames(-1); ne == nil {
 							for _, n := range names {
 								if userFolder != "" && strings.EqualFold(n, userFolder) {

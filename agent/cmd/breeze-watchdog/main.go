@@ -53,6 +53,52 @@ func (h *tokenHolder) Reveal() string {
 
 var version = "0.1.0"
 
+const backupProbeThreshold = 10 // keep in sync with agent/internal/heartbeat
+
+// decideWatchdogServerURL picks the failover client's base URL after a failed
+// poll (#2288). Priority: a server_url the agent swapped on disk since we
+// last looked (lastDiskURL is the anchor — NOT the client's own mutable URL,
+// which this function itself may have pointed at the backup transiently);
+// then, past the probe threshold, alternate between the disk URL and the
+// backup every threshold ticks, so with both control planes down whichever
+// returns first wins without flapping (and journal-spamming) on every poll.
+// Transient, in memory only. The watchdog never persists
+// server_url/backup_server_url; the agent owns those. (Token persistence to
+// secrets.yaml elsewhere in this file is a separate, deliberate exception.)
+func decideWatchdogServerURL(current, lastDiskURL string, reloaded *config.Config, consecutiveFailures int) string {
+	if reloaded.ServerURL != "" && reloaded.ServerURL != lastDiskURL && reloaded.ServerURL != current {
+		return reloaded.ServerURL
+	}
+	if consecutiveFailures >= backupProbeThreshold && reloaded.BackupServerURL != "" &&
+		consecutiveFailures%backupProbeThreshold == 0 {
+		if current == reloaded.BackupServerURL && reloaded.ServerURL != "" {
+			return reloaded.ServerURL
+		}
+		return reloaded.BackupServerURL
+	}
+	return current
+}
+
+// noteFailoverHeartbeatFailure re-reads the on-disk config after a failed
+// failover heartbeat and retargets the client per decideWatchdogServerURL.
+// Returns the server_url now on disk so the caller can carry it into the
+// next tick as the disk-swap anchor (unchanged on reload error).
+func noteFailoverHeartbeatFailure(fc *watchdog.FailoverClient, journal *watchdog.Journal, lastDiskURL string, consecutiveFailures int) string {
+	reloaded, err := config.Load("")
+	if err != nil {
+		// The watchdog may be the only reporter left when this fires —
+		// surface why failover retargeting has degraded to "never switch".
+		journal.Log(watchdog.LevelWarn, "failover.config_reload_failed", map[string]any{"error": err.Error()})
+		return lastDiskURL
+	}
+	current := fc.BaseURL()
+	if next := decideWatchdogServerURL(current, lastDiskURL, reloaded, consecutiveFailures); next != current {
+		journal.Log(watchdog.LevelInfo, "failover.server_url_switch", map[string]any{"to": next})
+		fc.SetBaseURL(next)
+	}
+	return reloaded.ServerURL
+}
+
 var rootCmd = &cobra.Command{
 	Use:   "breeze-watchdog",
 	Short: "Breeze RMM Agent Watchdog",
@@ -293,6 +339,8 @@ func runWatchdog(stopCh <-chan struct{}) {
 	defer failoverTicker.Stop()
 
 	var failoverClient *watchdog.FailoverClient
+	var failoverFailures int
+	var lastDiskServerURL string
 
 	for {
 		select {
@@ -373,7 +421,7 @@ func runWatchdog(stopCh <-chan struct{}) {
 			if wd.State() != watchdog.StateFailover || failoverClient == nil {
 				continue
 			}
-			handleFailoverPoll(failoverClient, wd, journal, cfg, tokenStore, recovery, cfg.Watchdog.MaxRestartsPer24h)
+			handleFailoverPoll(failoverClient, wd, journal, cfg, tokenStore, recovery, cfg.Watchdog.MaxRestartsPer24h, &failoverFailures, &lastDiskServerURL)
 		}
 
 		// State-driven actions after each tick.
@@ -452,19 +500,35 @@ func runWatchdog(stopCh <-chan struct{}) {
 				pendingVerify = nil
 			}
 			if failoverClient == nil && tokenStore.Reveal() != "" {
+				// Re-read the on-disk config at every failover-window start:
+				// the agent may have promote-swapped server_url since this
+				// process booted (or since the last failover window), and a
+				// client built from the stale startup URL would keep working
+				// against the rolled-back control plane if that URL answers —
+				// the failure-only reload path below would then never run.
+				failoverBaseURL := cfg.ServerURL
+				if reloaded, rerr := config.Load(""); rerr == nil && reloaded.ServerURL != "" {
+					failoverBaseURL = reloaded.ServerURL
+				} else if rerr != nil {
+					journal.Log(watchdog.LevelWarn, "failover.config_reload_failed", map[string]any{"error": rerr.Error()})
+				}
 				failoverClient = watchdog.NewFailoverClient(
-					cfg.ServerURL, cfg.AgentID, tokenStore.Reveal(), nil,
+					failoverBaseURL, cfg.AgentID, tokenStore.Reveal(), nil,
 				)
-				journal.Log(watchdog.LevelInfo, "failover.start", nil)
+				lastDiskServerURL = failoverBaseURL
+				journal.Log(watchdog.LevelInfo, "failover.start", map[string]any{"server": failoverBaseURL})
 
 				// Send initial failover heartbeat.
 				stats := currentRestartStats(recovery, cfg.Watchdog.MaxRestartsPer24h)
 				resp, err := failoverClient.SendHeartbeat(version, wd.State(), journal.Recent(10), stats)
 				if err != nil {
+					failoverFailures++
+					lastDiskServerURL = noteFailoverHeartbeatFailure(failoverClient, journal, lastDiskServerURL, failoverFailures)
 					journal.Log(watchdog.LevelError, "failover.heartbeat_failed", map[string]any{
 						"error": err.Error(),
 					})
 				} else {
+					failoverFailures = 0
 					handleInitialFailoverHeartbeatResponse(failoverClient, resp, wd, journal, cfg, tokenStore, recovery)
 				}
 			}
@@ -486,6 +550,7 @@ func runWatchdog(stopCh <-chan struct{}) {
 			if failoverClient != nil {
 				failoverClient = nil
 			}
+			failoverFailures = 0
 		}
 	}
 }
@@ -559,16 +624,21 @@ func handleFailoverPoll(
 	tokens *tokenHolder,
 	recovery *watchdog.RecoveryManager,
 	maxPer24h int,
+	failoverFailures *int,
+	lastDiskServerURL *string,
 ) {
 	// Send failover heartbeat.
 	stats := currentRestartStats(recovery, maxPer24h)
 	resp, err := fc.SendHeartbeat(version, wd.State(), journal.Recent(10), stats)
 	if err != nil {
+		*failoverFailures = *failoverFailures + 1
+		*lastDiskServerURL = noteFailoverHeartbeatFailure(fc, journal, *lastDiskServerURL, *failoverFailures)
 		journal.Log(watchdog.LevelError, "failover.heartbeat_failed", map[string]any{
 			"error": err.Error(),
 		})
 		return
 	}
+	*failoverFailures = 0
 	heartbeatCmds := processHeartbeatResponse(resp, wd, journal, cfg, tokens, recovery)
 
 	// Commands targeted at the watchdog are claimed by the heartbeat (the

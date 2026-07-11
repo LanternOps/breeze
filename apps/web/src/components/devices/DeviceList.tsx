@@ -41,6 +41,7 @@ import {
   type LinkedProfileCollapsePreference,
 } from '@/lib/appearance';
 import { groupLinkedDevices } from './linkedDevices';
+import DecommissionedHiddenHint from './DecommissionedHiddenHint';
 import { OSIcon } from './osIcons';
 import { formatDeviceOsVersion } from './osDisplay';
 import { type ListFilters, DEFAULT_LIST_FILTERS } from './deviceListFilters';
@@ -84,6 +85,13 @@ export type Device = {
   siteName: string;
   agentVersion: string;
   watchdogVersion?: string | null;
+  /**
+   * Control-plane URL the agent last heartbeated to (devices.agent_server_url,
+   * #2288). The opt-in Server column renders only its hostname. Any current
+   * agent reports it on every heartbeat (failover or not); absent only on
+   * responses from older API versions or agents too old to send it.
+   */
+  agentServerUrl?: string | null;
   tags: string[];
   lastUser?: string;
   uptimeSeconds?: number;
@@ -194,6 +202,10 @@ type DeviceListProps = {
   // true only when the active filter group explicitly targets the
   // 'decommissioned' status, so filtering FOR decommissioned still shows them.
   includeDecommissioned?: boolean;
+  // Applies the Decommissioned status filter upstream (#2251) — the existing
+  // unhide mechanism. Wired by DevicesPage; when absent (standalone renders /
+  // tests) the "N decommissioned hidden — show" hint is not rendered.
+  onShowDecommissioned?: () => void;
   // Unified-list network arm (#1322). Off by default behind a build-time flag
   // (PUBLIC_ENABLE_NETWORK_DEVICES_IN_LIST); when false the Class/Type columns
   // and the All/Agent/Network facet are hidden entirely so the list is the
@@ -287,6 +299,17 @@ const statusSortRank: Record<DeviceStatus, number> = {
 // union on every render.
 const nameCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
 
+// Hostname of the agent's active control-plane URL (#2288); null on
+// missing/malformed values so the cell falls back to the dash.
+function serverHost(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  try {
+    return new URL(raw).hostname;
+  } catch {
+    return null;
+  }
+}
+
 // One comparable value per column, mirroring what the cell displays.
 // `null` means "renders as a dash" — those rows sort last in BOTH
 // directions so blanks never bury the real data. Strings compare with
@@ -331,6 +354,7 @@ const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
   lastSeen: d => new Date(d.lastSeen).getTime() || null,
   agentVersion: d => d.agentVersion || null,
   watchdogVersion: d => d.watchdogVersion?.trim() || null,
+  serverUrl: d => serverHost(d.agentServerUrl),
   tags: d => (d.tags && d.tags.length > 0 ? d.tags.join(', ') : null),
   lastUser: d => d.lastUser || null,
   uptime: d => (d.status === 'online' && d.uptimeSeconds != null ? d.uptimeSeconds : null),
@@ -358,6 +382,7 @@ export default function DeviceList({
   onBulkAction,
   pageSize = 10,
   includeDecommissioned = false,
+  onShowDecommissioned,
   serverFilterIds = null,
   serverFilterLoading = false,
   networkDevicesEnabled = false,
@@ -549,6 +574,17 @@ export default function DeviceList({
       return matchesClass && matchesVpn && matchesQuery;
     });
   }, [devices, query, classFilter, vpnFilter, serverFilterIds, includeDecommissioned]);
+
+  // How many decommissioned devices the default view is hiding (#2251). Zero
+  // when they're already visible (includeDecommissioned) so the hint and the
+  // count math below stay consistent with what the table actually shows.
+  const hiddenDecommissionedCount = useMemo(
+    () =>
+      includeDecommissioned
+        ? 0
+        : devices.filter(d => d.status === 'decommissioned').length,
+    [devices, includeDecommissioned]
+  );
 
   // Providers present across the loaded set — drives the VPN facet options so
   // techs only see providers that actually exist in their fleet.
@@ -1120,6 +1156,19 @@ export default function DeviceList({
         </td>
       ),
     },
+    serverUrl: {
+      header: () => sortHeader('serverUrl', 'Server', 'Sort by server URL'),
+      cell: (device) => (
+        <td
+          key="serverUrl"
+          className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap"
+          title={device.agentServerUrl ?? undefined}
+          data-testid={`device-${device.id}-server-url`}
+        >
+          {serverHost(device.agentServerUrl) || dash}
+        </td>
+      ),
+    },
     tags: {
       header: () => sortHeader('tags', 'Tags', 'Sort by tags'),
       cell: (device) => (
@@ -1271,12 +1320,20 @@ export default function DeviceList({
       <div className="flex flex-col gap-3">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-sm text-muted-foreground">
-            {filteredDevices.length} of {includeDecommissioned ? devices.length : devices.filter(d => d.status !== 'decommissioned').length} devices
+            {filteredDevices.length} of {devices.length - hiddenDecommissionedCount} devices
             {serverFilterIds !== null && (
               <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
                 <Filter className="h-3 w-3" />
                 Advanced filter active
                 {serverFilterLoading && <span className="ml-1 animate-pulse">...</span>}
+              </span>
+            )}
+            {onShowDecommissioned && hiddenDecommissionedCount > 0 && (
+              <span className="ml-2">
+                <DecommissionedHiddenHint
+                  count={hiddenDecommissionedCount}
+                  onShow={onShowDecommissioned}
+                />
               </span>
             )}
           </p>

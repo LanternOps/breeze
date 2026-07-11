@@ -84,7 +84,7 @@ func TestPartitionLibraries(t *testing.T) {
 		{LibraryID: "l-graph-untagged", TargetingMode: "graph_group", GroupID: "g-1"},
 		{LibraryID: "l-unknown", TargetingMode: "future_mode"},
 	}
-	apply, pending := PartitionLibraries(rules, member, "todd@contoso.com")
+	apply, pending := PartitionLibraries(rules, member, []string{"todd@contoso.com"})
 
 	wantApply := []string{"l-every", "l-local-yes", "l-graph-yes"}
 	if len(apply) != len(wantApply) {
@@ -114,7 +114,7 @@ func TestPartitionLibraries(t *testing.T) {
 		}
 	}
 
-	applyWithoutSession, pendingWithoutSession := PartitionLibraries(rules, member, "")
+	applyWithoutSession, pendingWithoutSession := PartitionLibraries(rules, member, nil)
 	graphRules := map[string]bool{"l-graph-yes": true, "l-graph-no": true, "l-graph-untagged": true}
 	for _, r := range applyWithoutSession {
 		if graphRules[r.LibraryID] {
@@ -126,6 +126,33 @@ func TestPartitionLibraries(t *testing.T) {
 	}
 	if len(graphRules) != 0 {
 		t.Errorf("graph_group rules not pending without a session UPN: %v", graphRules)
+	}
+
+	// Empty (non-nil) slice behaves the same as nil: fail closed.
+	applyEmptySlice, pendingEmptySlice := PartitionLibraries(rules, member, []string{})
+	if len(applyEmptySlice) != 2 { // l-every, l-local-yes only (no graph rules)
+		t.Fatalf("apply with empty session UPN slice = %d rules, want 2", len(applyEmptySlice))
+	}
+	pendingIDs := map[string]bool{}
+	for _, r := range pendingEmptySlice {
+		pendingIDs[r.LibraryID] = true
+	}
+	for _, id := range []string{"l-graph-yes", "l-graph-no", "l-graph-untagged", "l-unknown"} {
+		if !pendingIDs[id] {
+			t.Errorf("%s must be pending with empty session UPN slice", id)
+		}
+	}
+
+	// Multiple session UPNs: a rule applies if ANY of them matches.
+	multiRules := []LibraryRule{
+		{LibraryID: "l-second-match", TargetingMode: "graph_group", AllowedUpns: []string{"second@contoso.com"}},
+	}
+	applyMulti, pendingMulti := PartitionLibraries(multiRules, member, []string{"first@contoso.com", "Second@Contoso.com"})
+	if len(applyMulti) != 1 || applyMulti[0].LibraryID != "l-second-match" {
+		t.Errorf("apply with second-of-two matching UPN = %v, want [l-second-match]", applyMulti)
+	}
+	if len(pendingMulti) != 0 {
+		t.Errorf("pending with second-of-two matching UPN = %v, want none", pendingMulti)
 	}
 }
 
@@ -146,6 +173,64 @@ func TestContainsFold(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := containsFold(tt.xs, tt.x); got != tt.wanted {
 				t.Errorf("containsFold(%v, %q) = %v, want %v", tt.xs, tt.x, got, tt.wanted)
+			}
+		})
+	}
+}
+
+func TestStaleValueNames(t *testing.T) {
+	tests := []struct {
+		name     string
+		existing []string
+		desired  []string
+		want     []string
+	}{
+		{
+			name:     "mixed prefixes",
+			existing: []string{"Breeze-aaa", "Breeze-bbb", "AdminManaged", "Breeze-ccc"},
+			desired:  []string{"Breeze-bbb"},
+			want:     []string{"Breeze-aaa", "Breeze-ccc"},
+		},
+		{
+			name:     "empty desired",
+			existing: []string{"Breeze-aaa", "Breeze-bbb", "NotOurs"},
+			desired:  nil,
+			want:     []string{"Breeze-aaa", "Breeze-bbb"},
+		},
+		{
+			name:     "empty existing",
+			existing: nil,
+			desired:  []string{"Breeze-aaa"},
+			want:     nil,
+		},
+		{
+			name:     "exact name kept",
+			existing: []string{"Breeze-aaa"},
+			desired:  []string{"Breeze-aaa"},
+			want:     nil,
+		},
+		{
+			name:     "non-prefixed names never returned",
+			existing: []string{"AdminManaged", "IntuneValue"},
+			desired:  nil,
+			want:     nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := StaleValueNames(tt.existing, tt.desired)
+			if len(got) != len(tt.want) {
+				t.Fatalf("StaleValueNames() = %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("StaleValueNames()[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+			for _, n := range got {
+				if !strings.HasPrefix(n, "Breeze-") {
+					t.Errorf("StaleValueNames() returned non-Breeze-prefixed name %q", n)
+				}
 			}
 		})
 	}

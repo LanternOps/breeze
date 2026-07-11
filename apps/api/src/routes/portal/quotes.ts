@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../../lib/validation';
 import { and, desc, eq, ne } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { quotes, quoteBlocks, quoteLines } from '../../db/schema/quotes';
@@ -10,7 +10,7 @@ import { acceptQuoteSchema, declineQuoteSchema } from '@breeze/shared';
 import { markQuoteViewed, declineQuoteByActor } from '../../services/quoteLifecycle';
 import { acceptQuote, emitAcceptInvoiceIssued } from '../../services/quoteAcceptService';
 import { createQuotePayLink } from '../../services/quotePay';
-import { computeQuoteTotals, type QuoteLineForMath } from '../../services/quoteMath';
+import { computeQuoteTotals, toQuoteDepositConfig, type QuoteLineForMath } from '../../services/quoteMath';
 import { readQuoteImage } from '../../services/quoteImageStorage';
 import { QuoteServiceError } from '../../services/quoteTypes';
 import { toCustomerLines } from '../../services/quoteService';
@@ -45,7 +45,7 @@ quoteRoutes.get('/quotes/:id', zValidator('param', idParam), async (c) => {
   // Derive the amount accept actually invoices (one-time only) so the customer
   // sees an accurate "due on acceptance" instead of the recurring-inclusive total,
   // plus the deposit due + per-category subtotals for the summary panel.
-  const totals = computeQuoteTotals(lines as QuoteLineForMath[], quote.taxRate ? parseFloat(quote.taxRate) : null, { type: quote.depositType, percent: quote.depositPercent });
+  const totals = computeQuoteTotals(lines as QuoteLineForMath[], quote.taxRate ? parseFloat(quote.taxRate) : null, toQuoteDepositConfig(quote.depositType, quote.depositPercent));
   return c.json({ data: { quote: { ...quote, dueOnAcceptanceTotal: totals.dueOnAcceptanceTotal, depositDueTotal: totals.depositDueTotal, categoryBreakdown: totals.categoryBreakdown }, blocks, lines } });
 });
 
@@ -61,7 +61,7 @@ quoteRoutes.get('/quotes/:id/pdf', zValidator('param', idParam), async (c) => {
   // "Remaining balance" line matches the portal detail view instead of falling
   // back to renderQuotePdf's oneTimeTotal default (tax-exclusive on taxed
   // deposit quotes).
-  const totals = computeQuoteTotals(lines as QuoteLineForMath[], quote.taxRate ? parseFloat(quote.taxRate) : null, { type: quote.depositType, percent: quote.depositPercent });
+  const totals = computeQuoteTotals(lines as QuoteLineForMath[], quote.taxRate ? parseFloat(quote.taxRate) : null, toQuoteDepositConfig(quote.depositType, quote.depositPercent));
   // partners is a partner-axis RLS table — the portal request runs in ORG scope,
   // where breeze_has_partner_access is false. A bare read returns 0 rows with NO
   // error (the #1375 class), causing buildSellerSnapshot(undefined) to produce an

@@ -87,10 +87,12 @@ func ParseConfig(raw any) (Config, bool) {
 //   - everyone            → apply
 //   - local_ad_group      → apply iff the user is a member of GroupName;
 //     a miss (or empty GroupName) is simply not entitled.
-//   - graph_group         → apply when the server tagged the session's UPN;
-//     an untagged or unmatched rule stays pending.
+//   - graph_group         → apply when the server tagged ANY of the session's
+//     UPNs (case-insensitive); a rule stays pending when sessionUpns is
+//     nil/empty (fail closed — no resolvable UPN can't satisfy an allow-list
+//     entry) or when none of the UPNs match.
 //   - anything unknown    → pending (fail closed)
-func PartitionLibraries(rules []LibraryRule, isLocalGroupMember func(groupName string) bool, sessionUpn string) (apply, pending []LibraryRule) {
+func PartitionLibraries(rules []LibraryRule, isLocalGroupMember func(groupName string) bool, sessionUpns []string) (apply, pending []LibraryRule) {
 	for _, r := range rules {
 		switch r.TargetingMode {
 		case "everyone":
@@ -100,7 +102,7 @@ func PartitionLibraries(rules []LibraryRule, isLocalGroupMember func(groupName s
 				apply = append(apply, r)
 			}
 		case "graph_group":
-			if sessionUpn != "" && containsFold(r.AllowedUpns, sessionUpn) {
+			if anyContainsFold(r.AllowedUpns, sessionUpns) {
 				apply = append(apply, r)
 			} else {
 				pending = append(pending, r)
@@ -125,6 +127,41 @@ func containsFold(xs []string, x string) bool {
 		}
 	}
 	return false
+}
+
+// anyContainsFold reports whether any needle in needles case-insensitively
+// matches a candidate in xs. A nil/empty needles never matches (fail closed:
+// a session with no resolvable UPNs can't satisfy an allow-list entry).
+func anyContainsFold(xs []string, needles []string) bool {
+	for _, n := range needles {
+		if containsFold(xs, n) {
+			return true
+		}
+	}
+	return false
+}
+
+// StaleValueNames returns the entries of existing that carry the exact
+// "Breeze-" prefix (our own deterministic value names) and are not present in
+// desired. Names without that prefix are never returned — those are
+// admin/Intune-managed values and must never be touched by the helper's
+// scrub pass.
+func StaleValueNames(existing, desired []string) []string {
+	want := make(map[string]bool, len(desired))
+	for _, d := range desired {
+		want[d] = true
+	}
+	var stale []string
+	for _, name := range existing {
+		if !strings.HasPrefix(name, "Breeze-") {
+			continue
+		}
+		if want[name] {
+			continue
+		}
+		stale = append(stale, name)
+	}
+	return stale
 }
 
 // ValueName derives the deterministic TenantAutoMount registry value name for a

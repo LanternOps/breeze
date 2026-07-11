@@ -259,6 +259,7 @@ async function redeemBootstrapToken(c: Context, token: string) {
 
   return c.json({
     serverUrl: process.env.PUBLIC_API_URL ?? process.env.API_URL ?? "",
+    backupServerUrl: (process.env.AGENT_BACKUP_SERVER_URL ?? "").trim() || undefined,
     enrollmentKey: result.rawChildKey,
     enrollmentSecret: process.env.AGENT_ENROLLMENT_SECRET || null,
     siteId: result.siteId,

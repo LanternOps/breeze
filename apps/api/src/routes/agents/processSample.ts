@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../../lib/validation';
 import { bodyLimit } from 'hono/body-limit';
 import { db } from '../../db';
 import { deviceProcessSamples } from '../../db/schema';

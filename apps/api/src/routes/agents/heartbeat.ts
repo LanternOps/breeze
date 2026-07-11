@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../../lib/validation';
 import { and, desc, eq, notInArray } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import {
@@ -408,6 +408,25 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     deviceUpdates.watchdogVersion = data.watchdogVersion;
   }
 
+  // #2288 — active control-plane URL. Absent (old agent) leaves the stored
+  // value untouched; a malformed value is dropped, never a heartbeat failure.
+  // http(s) only: this is agent-reported telemetry that gets echoed into the
+  // web UI, so exotic-but-parseable schemes (javascript:, file:, data:) are
+  // rejected too. The drop is logged — a real agent only ever reports the
+  // URL it just POSTed to, so garbage here means an agent-side bug.
+  if (data.serverUrl) {
+    try {
+      const parsed = new URL(data.serverUrl);
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+        deviceUpdates.agentServerUrl = data.serverUrl;
+      } else {
+        console.warn(`[heartbeat] dropping non-http(s) serverUrl from device ${agent.deviceId}`);
+      }
+    } catch {
+      console.warn(`[heartbeat] dropping malformed serverUrl from device ${agent.deviceId}`);
+    }
+  }
+
   // Orthogonal virtualization attribute (issue #1387). Old agents omit
   // isVirtual entirely (undefined) — leave the stored value untouched in that
   // case. A present value (true/false) is authoritative; the platform is
@@ -804,20 +823,23 @@ if (latestHelper) {
     captureException(err);
   }
 
+  // #2288 — backup control-plane URL. ALWAYS present: the configured value,
+  // or '' so agents clear a previously-pushed backup (absent = old API =
+  // no change; '' = authoritative clear). Always non-null, so the final
+  // configUpdate assembly below always carries the key.
   // onedrive_helper_settings is NOT merged here — it is built post-scoped and
   // merged into the final configUpdate below (#1105 hoist).
-  let mergedConfigUpdate: Record<string, unknown> | null = null;
-  if (eventLogSettings || monitoringSettings || patchSourceSettings) {
-    mergedConfigUpdate = {};
-    if (eventLogSettings) {
-      mergedConfigUpdate.event_log_settings = eventLogSettings;
-    }
-    if (monitoringSettings) {
-      mergedConfigUpdate.monitoring_settings = monitoringSettings;
-    }
-    if (patchSourceSettings) {
-      mergedConfigUpdate.patch_source_settings = patchSourceSettings;
-    }
+  const mergedConfigUpdate: Record<string, unknown> = {
+    backup_server_url: (process.env.AGENT_BACKUP_SERVER_URL ?? '').trim(),
+  };
+  if (eventLogSettings) {
+    mergedConfigUpdate.event_log_settings = eventLogSettings;
+  }
+  if (monitoringSettings) {
+    mergedConfigUpdate.monitoring_settings = monitoringSettings;
+  }
+  if (patchSourceSettings) {
+    mergedConfigUpdate.patch_source_settings = patchSourceSettings;
   }
 
   const authenticatedWithPreviousToken = c.get('agentTokenRotationRequired') === true;

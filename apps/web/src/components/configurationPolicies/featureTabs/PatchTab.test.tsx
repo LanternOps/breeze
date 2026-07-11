@@ -43,13 +43,48 @@ describe('PatchTab', () => {
     saveMock.mockResolvedValue({ id: 'link-1', featureType: 'patch', inlineSettings: {} });
   });
 
-  // Approval rules and patch sources now live exclusively on Update Rings.
-  it('does not render the Patch Sources section', async () => {
+  // Auto-approval rules live on Update Rings, but patch *sources* are the policy's
+  // own install-scope gate (evaluator source-filters on settings.sources). #1428
+  // wrongly stripped this control, stranding third-party patching as unreachable —
+  // it's restored as a single third-party toggle (OS is always included).
+  it('renders the Patch Sources third-party toggle, off by default', async () => {
     render(<PatchTab {...baseProps} />);
     await screen.findByText('Approval Ring');
-    expect(screen.queryByText('Patch Sources')).toBeNull();
-    expect(screen.queryByLabelText(/os updates/i)).toBeNull();
-    expect(screen.queryByLabelText(/third-party applications/i)).toBeNull();
+    expect(screen.getByText('Patch Sources')).toBeInTheDocument();
+    const toggle = screen.getByTestId('patch-third-party-sources-toggle');
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+  });
+
+  it('adds third_party to sources on save when the toggle is switched on', async () => {
+    render(<PatchTab {...baseProps} />);
+    fireEvent.click(await screen.findByTestId('patch-third-party-sources-toggle'));
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+    const [, payload] = saveMock.mock.calls[0];
+    expect(payload.inlineSettings.sources).toEqual(['os', 'third_party']);
+  });
+
+  it('hydrates the third-party toggle on, and drops third_party back to [os] when switched off', async () => {
+    render(
+      <PatchTab
+        {...baseProps}
+        existingLink={{
+          id: 'link-1',
+          featureType: 'patch',
+          featurePolicyId: null,
+          inlineSettings: { sources: ['os', 'third_party'] },
+        }}
+      />
+    );
+    const toggle = await screen.findByTestId('patch-third-party-sources-toggle');
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+    const [, payload] = saveMock.mock.calls[0];
+    expect(payload.inlineSettings.sources).toEqual(['os']);
   });
 
   it('does not render the Automatic Approval section', async () => {

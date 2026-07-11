@@ -488,6 +488,24 @@ describe('buildOnedriveHelperConfigUpdate', () => {
     expect(cfg!.libraries[0]!.allowedUpns).toEqual(['member@contoso.com']);
   });
 
+  runDb('case-variant duplicate UPNs dedupe to one entry and one Graph resolution', async () => {
+    const { deviceId, orgId } = await seedDeviceWithOnedrivePolicy({
+      base: {},
+      libraries: [
+        { libraryId: 'lib-fin', displayName: 'Finance', targetingMode: 'graph_group', groupId: 'g-fin' },
+      ],
+    });
+    await seedSignedInUpns(deviceId, orgId, ['Todd@contoso.com', 'todd@contoso.com']);
+    vi.mocked(resolveUserGroupMembershipCached).mockResolvedValue({
+      kind: 'ok', data: { groupIds: ['g-fin'] },
+    });
+
+    const cfg = await withSystemDbAccessContext(() => buildOnedriveHelperConfigUpdate(deviceId));
+
+    expect(cfg!.libraries[0]!.allowedUpns).toEqual(['Todd@contoso.com']); // first occurrence's casing
+    expect(resolveUserGroupMembershipCached).toHaveBeenCalledTimes(1);
+  });
+
   runDb('multiple matching UPNs all land in allowedUpns', async () => {
     const { deviceId, orgId } = await seedDeviceWithOnedrivePolicy({
       base: {},
