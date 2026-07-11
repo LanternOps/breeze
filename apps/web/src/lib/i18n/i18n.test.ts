@@ -1,5 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { applyLocale, i18n, loadLocale, setLocale, syncDocumentLocaleMetadata } from './index';
+import {
+  applyLocale,
+  i18n,
+  loadLocale,
+  scheduleStoredLocaleAfterHydration,
+  setLocale,
+  syncDocumentLocaleMetadata,
+} from './index';
 import { LOCALE_STORAGE_KEY } from '../appearance';
 
 describe('i18n runtime (namespaced, lazy locales)', () => {
@@ -24,6 +31,23 @@ describe('i18n runtime (namespaced, lazy locales)', () => {
 
     expect(second).toBe(first);
     await first;
+  });
+
+  it('defers the stored locale until Astro finishes initial hydration', async () => {
+    window.localStorage.setItem(LOCALE_STORAGE_KEY, 'pt-BR');
+    let scheduledTask: (() => void) | undefined;
+
+    scheduleStoredLocaleAfterHydration(task => {
+      scheduledTask = task;
+    });
+
+    expect(i18n.language).toBe('en');
+    expect(scheduledTask).toBeTypeOf('function');
+
+    scheduledTask?.();
+
+    await vi.waitFor(() => expect(i18n.language).toBe('pt-BR'));
+    expect(i18n.t('nav.dashboard')).toBe('Painel');
   });
 
   it('lazy-loads pt-BR and translates after setLocale', async () => {

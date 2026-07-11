@@ -66,6 +66,43 @@ export function syncDocumentLocaleMetadata(
   }
 }
 
+function scheduleAfterAstroHydration(task: () => void): void {
+  const pendingSelector = 'astro-island[ssr][client="load"], astro-island[ssr][client="idle"]';
+  const hasPendingIslands = () => document.querySelector(pendingSelector) !== null;
+
+  if (!hasPendingIslands()) {
+    task();
+    return;
+  }
+
+  const observer = new MutationObserver(() => {
+    if (hasPendingIslands()) return;
+    observer.disconnect();
+    task();
+  });
+  observer.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ['ssr'],
+    subtree: true,
+  });
+
+  // Close the query/observe race if the final island hydrated between them.
+  if (!hasPendingIslands()) {
+    observer.disconnect();
+    task();
+  }
+}
+
+/** Apply the persisted locale after Astro's SSR islands finish hydrating. */
+export function scheduleStoredLocaleAfterHydration(
+  schedule: (task: () => void) => unknown = scheduleAfterAstroHydration,
+): void {
+  schedule(() => {
+    const resolved = readResolvedLocalePreference();
+    if (resolved !== i18next.language) void applyLocale(resolved);
+  });
+}
+
 /** Idempotently load a locale's namespace chunks into i18next. */
 export function loadLocale(locale: LocalePreference): Promise<void> {
   if (loadedLocales.has(locale)) return Promise.resolve();
@@ -182,8 +219,12 @@ if (!i18next.isInitialized) {
     document.addEventListener('astro:page-load', syncMetadata);
     syncMetadata();
 
-    const resolved = readResolvedLocalePreference();
-    if (resolved !== 'en') void applyLocale(resolved);
+    // Astro renders islands on the server with eager English resources. Applying
+    // a stored non-English locale during module evaluation lets the client race
+    // ahead of React hydration and guarantees text/attribute mismatches. Astro
+    // removes each island's `ssr` marker when hydration completes; wait for all
+    // eager/idle islands before switching the shared runtime.
+    scheduleStoredLocaleAfterHydration();
   }
   subscribeLocale(locale => {
     void applyLocale(locale);
