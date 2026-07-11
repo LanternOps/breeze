@@ -24,3 +24,13 @@ like core tables (see CLAUDE.md "Tenant Isolation / RLS"). Tables with an
 With `extensions/` empty, every build, test, and boot path behaves exactly as
 before — the seam is a no-op. Set `BREEZE_EXTENSIONS_ENABLED=false` to skip
 loading even when extensions are present.
+
+## Lockfile policy
+
+Extension importers must NOT be committed to the public `pnpm-lock.yaml` — a
+private extension's dependency graph would leak. Running `pnpm install` with an
+extension present adds an `extensions/<name>` importer hunk locally; leave it
+out of commits (`git checkout pnpm-lock.yaml` before staging). Docker builds
+account for this: the builder stage runs a scoped
+`pnpm install --filter './extensions/*' --no-frozen-lockfile` before building
+extensions, so the committed lockfile stays extension-free.

@@ -17,8 +17,13 @@ COPY . .
 RUN pnpm --filter @breeze/api build
 # Build any extension packages present in the build context (gitignored dir —
 # empty on public builds; hosted builds clone extensions in beforehand).
+# The deps stage installs only core workspace packages, and the committed
+# lockfile deliberately carries no extension importers (a private extension's
+# dependency graph must not leak into the public lockfile) — so extensions get
+# a scoped, non-frozen install here before building.
 # `|| true` is NOT used: if an extension is present but fails to build, fail the image.
 RUN if [ -n "$(ls -A extensions 2>/dev/null | grep -v README.md)" ]; then \
+      pnpm install --filter './extensions/*' --no-frozen-lockfile --prefer-offline && \
       pnpm --filter './extensions/*' build; \
     fi
 # Create a self-contained deployment (resolves pnpm symlinks).
