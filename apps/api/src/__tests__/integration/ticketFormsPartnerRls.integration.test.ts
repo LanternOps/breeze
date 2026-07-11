@@ -99,6 +99,7 @@ describe('ticket_forms partner RLS', () => {
     const [partnerForm] = await withDbAccessContext(systemContext(), () =>
       db.insert(ticketForms).values({ ...baseForm, name: 'Partner-wide', partnerId: partner.id, orgId: null }).returning()
     );
+    if (!orgForm || !partnerForm) throw new Error('insert returned no row');
     created.push(orgForm.id, partnerForm.id);
 
     const visibleToOrgB = await withDbAccessContext(orgContext(orgB.id), () =>
