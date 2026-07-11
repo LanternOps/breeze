@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -9,14 +9,16 @@ import {
   RefreshCw,
   Save,
   Shield,
-  Unplug
-} from 'lucide-react';
-import { fetchWithAuth } from '../../stores/auth';
-import { runAction, handleActionError, ActionError } from '../../lib/runAction';
-import { navigateTo } from '@/lib/navigation';
-import { loginPathWithNext } from '../../lib/authScope';
-import { type Organization, useOrgStore } from '../../stores/orgStore';
-import { formatDateTime } from '@/lib/dateTimeFormat';
+  Unplug,
+} from "lucide-react";
+import { fetchWithAuth } from "../../stores/auth";
+import { runAction, handleActionError, ActionError } from "../../lib/runAction";
+import { navigateTo } from "@/lib/navigation";
+import { loginPathWithNext } from "../../lib/authScope";
+import { type Organization, useOrgStore } from "../../stores/orgStore";
+import { formatDateTime } from "@/lib/dateTimeFormat";
+import { useTranslation } from "react-i18next";
+import "@/lib/i18n";
 
 type Integration = {
   id: string;
@@ -52,55 +54,72 @@ type SiteRow = {
   provisional: boolean;
 };
 
-type SaveState = { status: 'idle' | 'saving' | 'saved' | 'error'; message?: string };
-type SyncState = { status: 'idle' | 'syncing' | 'done' | 'error'; message?: string };
+type SaveState = {
+  status: "idle" | "saving" | "saved" | "error";
+  message?: string;
+};
+type SyncState = {
+  status: "idle" | "syncing" | "done" | "error";
+  message?: string;
+};
 
-const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
+const UNAUTHORIZED = () =>
+  void navigateTo(loginPathWithNext(), { replace: true });
 
 function readError(json: unknown, fallback: string): string {
-  if (json && typeof json === 'object' && 'error' in json) {
+  if (json && typeof json === "object" && "error" in json) {
     return String((json as { error?: unknown }).error ?? fallback);
   }
   return fallback;
 }
 
-function syncStatusBadge(integration: Integration | null) {
+function syncStatusBadge(
+  integration: Integration | null,
+  t: (key: string) => string,
+) {
   if (!integration) {
     return (
       <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-600">
-        <Unplug className="h-3.5 w-3.5" /> Not configured
+        <Unplug className="h-3.5 w-3.5" />{" "}
+        {t("securityIntegration.notConfigured")}
       </span>
     );
   }
-  if (integration.lastSyncStatus === 'success' || integration.lastSyncStatus === 'partial') {
+  if (
+    integration.lastSyncStatus === "success" ||
+    integration.lastSyncStatus === "partial"
+  ) {
     return (
       <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs text-emerald-700">
-        <CheckCircle2 className="h-3.5 w-3.5" /> Connected
+        <CheckCircle2 className="h-3.5 w-3.5" /> {t("common:states.active")}
       </span>
     );
   }
-  if (integration.lastSyncStatus === 'running') {
+  if (integration.lastSyncStatus === "running") {
     return (
       <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs text-amber-700">
-        <Loader2 className="h-3.5 w-3.5 animate-spin" /> Syncing
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />{" "}
+        {t("securityIntegration.syncing")}
       </span>
     );
   }
-  if (integration.lastSyncStatus === 'error') {
+  if (integration.lastSyncStatus === "error") {
     return (
       <span className="inline-flex items-center gap-1.5 rounded-full border border-red-200 bg-red-50 px-3 py-1 text-xs text-red-700">
-        <AlertTriangle className="h-3.5 w-3.5" /> Error
+        <AlertTriangle className="h-3.5 w-3.5" />{" "}
+        {t("securityIntegration.error")}
       </span>
     );
   }
   return (
     <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-600">
-      <Activity className="h-3.5 w-3.5" /> Pending
+      <Activity className="h-3.5 w-3.5" /> {t("common:states.pending")}
     </span>
   );
 }
 
 export default function SecurityIntegration() {
+  const { t } = useTranslation("integrations");
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -116,14 +135,16 @@ export default function SecurityIntegration() {
   const [integrationId, setIntegrationId] = useState<string | null>(null);
   const [orgOptions, setOrgOptions] = useState<Organization[]>([]);
 
-  const [name, setName] = useState('');
-  const [managementUrl, setManagementUrl] = useState('');
-  const [apiToken, setApiToken] = useState('');
+  const [name, setName] = useState("");
+  const [managementUrl, setManagementUrl] = useState("");
+  const [apiToken, setApiToken] = useState("");
   const [showToken, setShowToken] = useState(false);
 
-  const [saveState, setSaveState] = useState<SaveState>({ status: 'idle' });
-  const [syncState, setSyncState] = useState<SyncState>({ status: 'idle' });
-  const [mappingSaving, setMappingSaving] = useState<Record<string, boolean>>({});
+  const [saveState, setSaveState] = useState<SaveState>({ status: "idle" });
+  const [syncState, setSyncState] = useState<SyncState>({ status: "idle" });
+  const [mappingSaving, setMappingSaving] = useState<Record<string, boolean>>(
+    {},
+  );
   const [mappingError, setMappingError] = useState<string | null>(null);
 
   // SentinelOne is configured once at the partner level (no org selected) and
@@ -131,36 +152,45 @@ export default function SecurityIntegration() {
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
   const isPartnerView = !currentOrgId;
 
-  const unmappedCount = useMemo(() => sites.filter((row) => !row.mappedOrgId).length, [sites]);
+  const unmappedCount = useMemo(
+    () => sites.filter((row) => !row.mappedOrgId).length,
+    [sites],
+  );
   const canSave =
     name.trim().length > 0 &&
     managementUrl.trim().length > 0 &&
     (apiToken.trim().length > 0 || !!integration);
 
   const fetchIntegration = useCallback(async () => {
-    const res = await fetchWithAuth('/s1/integration');
+    const res = await fetchWithAuth("/s1/integration");
     const json = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(readError(json, `Failed to load integration (${res.status})`));
+    if (!res.ok)
+      throw new Error(
+        readError(json, `Failed to load integration (${res.status})`),
+      );
     const data = (json as { data?: Integration | null }).data ?? null;
     const mapped = (json as { mapped?: boolean }).mapped !== false;
     // Partner is connected if we got the full integration object back, or the
     // org-unmapped branch flagged `connected: true`.
-    const connected = data !== null || (json as { connected?: boolean }).connected === true;
+    const connected =
+      data !== null || (json as { connected?: boolean }).connected === true;
     setMappedForOrg(mapped);
     setPartnerConnected(connected);
     setIntegration(data);
     if (data) {
       setName(data.name);
       setManagementUrl(data.managementUrl);
-      setApiToken('');
+      setApiToken("");
     }
   }, []);
 
   const fetchStatus = useCallback(async () => {
-    const res = await fetchWithAuth('/s1/status');
+    const res = await fetchWithAuth("/s1/status");
     const json = await res.json().catch(() => ({}));
     if (!res.ok) {
-      console.error(`[SecurityIntegration] Status fetch failed: HTTP ${res.status}`);
+      console.error(
+        `[SecurityIntegration] Status fetch failed: HTTP ${res.status}`,
+      );
       return;
     }
     setMappedForOrg((json as { mapped?: boolean }).mapped !== false);
@@ -169,10 +199,12 @@ export default function SecurityIntegration() {
 
   const fetchSites = useCallback(async () => {
     if (!isPartnerView) return;
-    const res = await fetchWithAuth('/s1/sites');
+    const res = await fetchWithAuth("/s1/sites");
     const json = await res.json().catch(() => ({}));
     if (!res.ok) {
-      console.error(`[SecurityIntegration] Sites fetch failed: HTTP ${res.status}`);
+      console.error(
+        `[SecurityIntegration] Sites fetch failed: HTTP ${res.status}`,
+      );
       return;
     }
     setSites((json as { data?: SiteRow[] }).data ?? []);
@@ -182,10 +214,12 @@ export default function SecurityIntegration() {
 
   const fetchOrgs = useCallback(async () => {
     if (!isPartnerView) return;
-    const res = await fetchWithAuth('/orgs/organizations');
+    const res = await fetchWithAuth("/orgs/organizations");
     const json = await res.json().catch(() => ({}));
     if (!res.ok) {
-      console.error(`[SecurityIntegration] Organizations fetch failed: HTTP ${res.status}`);
+      console.error(
+        `[SecurityIntegration] Organizations fetch failed: HTTP ${res.status}`,
+      );
       return;
     }
     const data = (json as { data?: Organization[] }).data;
@@ -199,7 +233,11 @@ export default function SecurityIntegration() {
       await fetchIntegration();
       await Promise.all([fetchStatus(), fetchSites(), fetchOrgs()]);
     } catch (err) {
-      setLoadError(err instanceof Error ? err.message : 'Failed to load SentinelOne integration');
+      setLoadError(
+        err instanceof Error
+          ? err.message
+          : t("securityIntegration.failedToLoadSentinelOneIntegration"),
+      );
     } finally {
       setLoading(false);
     }
@@ -211,50 +249,78 @@ export default function SecurityIntegration() {
 
   const handleSave = useCallback(async () => {
     if (!isPartnerView) return;
-    setSaveState({ status: 'saving' });
+    setSaveState({ status: "saving" });
     try {
       const body: Record<string, unknown> = {
         name: name.trim(),
         managementUrl: managementUrl.trim(),
-        isActive: true
+        isActive: true,
       };
       if (apiToken.trim().length > 0) body.apiToken = apiToken.trim();
 
       const result = await runAction<{ warning?: string }>({
-        request: () => fetchWithAuth('/s1/integration', { method: 'POST', body: JSON.stringify(body) }),
-        errorFallback: 'Failed to save the SentinelOne integration.',
-        successMessage: integration ? 'SentinelOne integration updated' : 'SentinelOne integration connected',
-        onUnauthorized: UNAUTHORIZED
+        request: () =>
+          fetchWithAuth("/s1/integration", {
+            method: "POST",
+            body: JSON.stringify(body),
+          }),
+        errorFallback: t(
+          "securityIntegration.failedToSaveTheSentinelOneIntegration",
+        ),
+        successMessage: integration
+          ? t("securityIntegration.integrationUpdated")
+          : t("securityIntegration.integrationConnected"),
+        onUnauthorized: UNAUTHORIZED,
       });
-      setSaveState({ status: 'saved', message: result?.warning ?? 'Integration saved' });
-      setApiToken('');
+      setSaveState({
+        status: "saved",
+        message: result?.warning ?? t("securityIntegration.integrationSaved"),
+      });
+      setApiToken("");
       await load();
     } catch (err) {
-      const message = err instanceof ActionError ? err.message : 'Network error';
-      setSaveState({ status: 'error', message });
-      handleActionError(err, 'Failed to save the SentinelOne integration.');
+      const message =
+        err instanceof ActionError ? err.message : "Network error";
+      setSaveState({ status: "error", message });
+      handleActionError(
+        err,
+        t("securityIntegration.failedToSaveTheSentinelOneIntegration"),
+      );
     }
   }, [isPartnerView, name, managementUrl, apiToken, integration, load]);
 
   const handleSync = useCallback(async () => {
     if (!isPartnerView) return;
-    setSyncState({ status: 'syncing' });
+    setSyncState({ status: "syncing" });
     try {
       await runAction({
-        request: () => fetchWithAuth('/s1/sync', { method: 'POST', body: JSON.stringify({}) }),
-        errorFallback: 'Failed to schedule a SentinelOne sync.',
-        successMessage: 'SentinelOne sync triggered',
-        onUnauthorized: UNAUTHORIZED
+        request: () =>
+          fetchWithAuth("/s1/sync", {
+            method: "POST",
+            body: JSON.stringify({}),
+          }),
+        errorFallback: t(
+          "securityIntegration.failedToScheduleASentinelOneSync",
+        ),
+        successMessage: t("securityIntegration.sentineloneSyncTriggered"),
+        onUnauthorized: UNAUTHORIZED,
       });
-      setSyncState({ status: 'done', message: 'Sync triggered' });
+      setSyncState({
+        status: "done",
+        message: t("securityIntegration.syncTriggered"),
+      });
       // The sync runs in the background; re-load shortly to surface lastSync*.
       setTimeout(() => {
         void load();
       }, 3000);
     } catch (err) {
-      const message = err instanceof ActionError ? err.message : 'Network error';
-      setSyncState({ status: 'error', message });
-      handleActionError(err, 'Failed to schedule a SentinelOne sync.');
+      const message =
+        err instanceof ActionError ? err.message : "Network error";
+      setSyncState({ status: "error", message });
+      handleActionError(
+        err,
+        t("securityIntegration.failedToScheduleASentinelOneSync"),
+      );
     }
   }, [isPartnerView, load]);
 
@@ -266,29 +332,39 @@ export default function SecurityIntegration() {
       try {
         await runAction({
           request: () =>
-            fetchWithAuth('/s1/organizations/map', {
-              method: 'POST',
-              body: JSON.stringify({ integrationId, s1SiteId, orgId })
+            fetchWithAuth("/s1/organizations/map", {
+              method: "POST",
+              body: JSON.stringify({ integrationId, s1SiteId, orgId }),
             }),
-          errorFallback: 'Failed to map the SentinelOne site.',
-          successMessage: orgId ? 'SentinelOne site mapped' : 'SentinelOne site unmapped',
-          onUnauthorized: UNAUTHORIZED
+          errorFallback: t("securityIntegration.failedToMapTheSentinelOneSite"),
+          successMessage: orgId
+            ? t("securityIntegration.siteMapped")
+            : t("securityIntegration.siteUnmapped"),
+          onUnauthorized: UNAUTHORIZED,
         });
         await fetchSites();
         await fetchStatus();
       } catch (err) {
-        setMappingError(err instanceof ActionError ? err.message : 'Network error');
-        handleActionError(err, 'Failed to map the SentinelOne site.');
+        setMappingError(
+          err instanceof ActionError ? err.message : "Network error",
+        );
+        handleActionError(
+          err,
+          t("securityIntegration.failedToMapTheSentinelOneSite"),
+        );
       } finally {
         setMappingSaving((prev) => ({ ...prev, [s1SiteId]: false }));
       }
     },
-    [integrationId, fetchSites, fetchStatus]
+    [integrationId, fetchSites, fetchStatus],
   );
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center py-20" data-testid="s1-loading">
+      <div
+        className="flex items-center justify-center py-20"
+        data-testid="s1-loading"
+      >
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
       </div>
     );
@@ -301,67 +377,100 @@ export default function SecurityIntegration() {
           <Shield className="h-5 w-5" />
         </div>
         <div>
-          <h1 className="text-2xl font-semibold">SentinelOne Integration</h1>
+          <h1 className="text-2xl font-semibold">
+            {t("securityIntegration.sentineloneIntegration")}
+          </h1>
           <p className="text-sm text-muted-foreground">
-            Connect one partner-level SentinelOne tenant and map SentinelOne sites to Breeze organizations.
+            {t(
+              "securityIntegration.connectOnePartnerLevelSentinelOneTenantAndMap",
+            )}
           </p>
         </div>
       </div>
 
       {loadError && (
-        <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700" data-testid="s1-load-error">
+        <div
+          className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700"
+          data-testid="s1-load-error"
+        >
           {loadError}
         </div>
       )}
 
       {/* Org scope, partner not connected: SentinelOne is partner-level. */}
       {!isPartnerView && !partnerConnected && (
-        <div className="rounded-xl border bg-card p-8 text-center shadow-xs" data-testid="s1-org-not-connected">
+        <div
+          className="rounded-xl border bg-card p-8 text-center shadow-xs"
+          data-testid="s1-org-not-connected"
+        >
           <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-lg bg-muted text-muted-foreground">
             <Unplug className="h-5 w-5" />
           </div>
-          <h2 className="mt-3 text-lg font-semibold">SentinelOne isn&apos;t connected yet</h2>
+          <h2 className="mt-3 text-lg font-semibold">
+            {t("securityIntegration.sentineloneIsntConnectedYet")}
+          </h2>
           <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
-            SentinelOne is configured once at the partner level and shared across every organization. Switch your
-            scope to <span className="font-medium text-foreground">All orgs</span> to add the management URL and API token.
+            {t(
+              "securityIntegration.sentineloneIsConfiguredOnceAtThePartnerLevel",
+            )}
+            <span className="font-medium text-foreground">
+              {t("securityIntegration.allOrgs")}
+            </span>{" "}
+            {t("securityIntegration.toAddTheManagementURLAndAPIToken")}
           </p>
         </div>
       )}
 
       {/* Org scope, partner connected but this org isn't mapped to a site. */}
       {!isPartnerView && partnerConnected && !mappedForOrg && (
-        <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800" data-testid="s1-org-unmapped">
-          This organization isn&apos;t mapped to a SentinelOne site yet. Switch to All orgs as a partner admin to map it.
+        <div
+          className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800"
+          data-testid="s1-org-unmapped"
+        >
+          {t(
+            "securityIntegration.thisOrganizationIsntMappedToASentinelOneSite",
+          )}
         </div>
       )}
 
       {/* Partner connection form */}
       {isPartnerView && (
-        <div className="rounded-xl border bg-card p-6 shadow-xs" data-testid="s1-connection">
+        <div
+          className="rounded-xl border bg-card p-6 shadow-xs"
+          data-testid="s1-connection"
+        >
           <div className="flex items-start justify-between gap-4">
             <div>
-              <h2 className="text-lg font-semibold">Partner connection</h2>
+              <h2 className="text-lg font-semibold">
+                {t("securityIntegration.partnerConnection")}
+              </h2>
               <p className="text-sm text-muted-foreground">
-                One management URL and API token covers every SentinelOne site under this partner account.
+                {t(
+                  "securityIntegration.oneManagementURLAndAPITokenCoversEvery",
+                )}
               </p>
             </div>
-            {syncStatusBadge(integration)}
+            {syncStatusBadge(integration, t)}
           </div>
 
           <div className="mt-5 grid gap-4 md:grid-cols-2">
             <div>
-              <label className="mb-1 block text-sm font-medium">Name</label>
+              <label className="mb-1 block text-sm font-medium">
+                {t("common:labels.name")}
+              </label>
               <input
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="My S1 Tenant"
+                placeholder={t("securityIntegration.myS1Tenant")}
                 className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-hidden focus:ring-2 focus:ring-primary/30"
                 data-testid="s1-name"
               />
             </div>
             <div>
-              <label className="mb-1 block text-sm font-medium">Management URL</label>
+              <label className="mb-1 block text-sm font-medium">
+                {t("securityIntegration.managementURL")}
+              </label>
               <input
                 type="url"
                 value={managementUrl}
@@ -373,25 +482,39 @@ export default function SecurityIntegration() {
             </div>
             <div className="md:col-span-2">
               <label className="mb-1 block text-sm font-medium">
-                API Token
-                {integration && <span className="ml-1 text-xs text-muted-foreground">(leave blank to keep existing)</span>}
+                {t("securityIntegration.apiToken")}
+                {integration && (
+                  <span className="ml-1 text-xs text-muted-foreground">
+                    {t("securityIntegration.leaveBlankToKeepExisting")}
+                  </span>
+                )}
               </label>
               <div className="relative">
                 <input
-                  type={showToken ? 'text' : 'password'}
+                  type={showToken ? "text" : "password"}
                   value={apiToken}
                   onChange={(e) => setApiToken(e.target.value)}
-                  placeholder={integration ? '••••••••••••••••' : 'Paste your API token'}
+                  placeholder={
+                    integration ? "••••••••••••••••" : "Paste your API token"
+                  }
                   className="h-10 w-full rounded-md border bg-background px-3 pr-10 text-sm outline-hidden focus:ring-2 focus:ring-primary/30"
                   data-testid="s1-api-token"
                 />
                 <button
                   type="button"
-                  aria-label={showToken ? 'Hide API token' : 'Show API token'}
+                  aria-label={
+                    showToken
+                      ? t("securityIntegration.hideApiToken")
+                      : t("securityIntegration.showApiToken")
+                  }
                   onClick={() => setShowToken((value) => !value)}
                   className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
                 >
-                  {showToken ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  {showToken ? (
+                    <EyeOff className="h-4 w-4" />
+                  ) : (
+                    <Eye className="h-4 w-4" />
+                  )}
                 </button>
               </div>
             </div>
@@ -401,32 +524,47 @@ export default function SecurityIntegration() {
             <button
               type="button"
               onClick={() => void handleSave()}
-              disabled={!canSave || saveState.status === 'saving'}
+              disabled={!canSave || saveState.status === "saving"}
               className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
               data-testid="s1-save"
             >
-              {saveState.status === 'saving' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-              {integration ? 'Update' : 'Save & Connect'}
+              {saveState.status === "saving" ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Save className="h-4 w-4" />
+              )}
+              {integration
+                ? t("securityIntegration.update")
+                : t("securityIntegration.saveAndConnect")}
             </button>
             {integration && (
               <button
                 type="button"
                 onClick={() => void handleSync()}
-                disabled={syncState.status === 'syncing'}
+                disabled={syncState.status === "syncing"}
                 className="inline-flex h-10 items-center gap-2 rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
                 data-testid="s1-sync"
               >
-                {syncState.status === 'syncing' ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-                Sync Now
+                {syncState.status === "syncing" ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-4 w-4" />
+                )}
+                {t("securityIntegration.syncNow")}
               </button>
             )}
             {saveState.message && (
-              <span className={`text-sm ${saveState.status === 'error' ? 'text-red-600' : 'text-emerald-600'}`} data-testid="s1-save-message">
+              <span
+                className={`text-sm ${saveState.status === "error" ? "text-red-600" : "text-emerald-600"}`}
+                data-testid="s1-save-message"
+              >
                 {saveState.message}
               </span>
             )}
             {syncState.message && (
-              <span className={`text-sm ${syncState.status === 'error' ? 'text-red-600' : 'text-emerald-600'}`}>
+              <span
+                className={`text-sm ${syncState.status === "error" ? "text-red-600" : "text-emerald-600"}`}
+              >
                 {syncState.message}
               </span>
             )}
@@ -437,32 +575,71 @@ export default function SecurityIntegration() {
       {/* Sync status + coverage (any scope, once connected) */}
       {integration && (
         <div className="grid gap-6 lg:grid-cols-[1fr_1fr]">
-          <div className="rounded-xl border bg-card p-6 shadow-xs" data-testid="s1-sync-status">
+          <div
+            className="rounded-xl border bg-card p-6 shadow-xs"
+            data-testid="s1-sync-status"
+          >
             <div className="flex items-center justify-between gap-4">
-              <h2 className="text-lg font-semibold">Sync status</h2>
-              {syncStatusBadge(integration)}
+              <h2 className="text-lg font-semibold">
+                {t("securityIntegration.syncStatus")}
+              </h2>
+              {syncStatusBadge(integration, t)}
             </div>
             <div className="mt-4 space-y-2 text-sm">
               <div className="flex justify-between text-muted-foreground">
-                <span>Last sync</span>
-                <span className="text-foreground">{integration.lastSyncAt ? formatDateTime(integration.lastSyncAt) : 'Never'}</span>
+                <span>{t("securityIntegration.lastSync")}</span>
+                <span className="text-foreground">
+                  {integration.lastSyncAt
+                    ? formatDateTime(integration.lastSyncAt)
+                    : "Never"}
+                </span>
               </div>
               {integration.lastSyncError && (
-                <div className="rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-700">{integration.lastSyncError}</div>
+                <div className="rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-700">
+                  {integration.lastSyncError}
+                </div>
               )}
             </div>
           </div>
 
           {summary && (
-            <div className="rounded-xl border bg-card p-6 shadow-xs" data-testid="s1-coverage">
-              <h2 className="text-lg font-semibold">Coverage</h2>
+            <div
+              className="rounded-xl border bg-card p-6 shadow-xs"
+              data-testid="s1-coverage"
+            >
+              <h2 className="text-lg font-semibold">
+                {t("securityIntegration.coverage")}
+              </h2>
               <div className="mt-4 grid grid-cols-2 gap-4">
-                <Metric label="S1 Agents" value={summary.totalAgents ?? 0} />
-                <Metric label="Mapped Devices" value={summary.mappedDevices ?? 0} />
-                <Metric label="Infected" value={summary.infectedAgents ?? 0} warn={(summary.infectedAgents ?? 0) > 0} danger />
-                <Metric label="Active Threats" value={summary.activeThreats ?? 0} warn={(summary.activeThreats ?? 0) > 0} danger />
-                <Metric label="Pending Actions" value={summary.pendingActions ?? 0} />
-                <Metric label="High/Critical" value={summary.highOrCriticalThreats ?? 0} warn={(summary.highOrCriticalThreats ?? 0) > 0} />
+                <Metric
+                  label={t("securityIntegration.s1Agents")}
+                  value={summary.totalAgents ?? 0}
+                />
+                <Metric
+                  label={t("securityIntegration.mappedDevices")}
+                  value={summary.mappedDevices ?? 0}
+                />
+                <Metric
+                  label={t("securityIntegration.infected")}
+                  value={summary.infectedAgents ?? 0}
+                  warn={(summary.infectedAgents ?? 0) > 0}
+                  danger
+                />
+                <Metric
+                  label={t("securityIntegration.activeThreats")}
+                  value={summary.activeThreats ?? 0}
+                  warn={(summary.activeThreats ?? 0) > 0}
+                  danger
+                />
+                <Metric
+                  label={t("securityIntegration.pendingActions")}
+                  value={summary.pendingActions ?? 0}
+                />
+                <Metric
+                  label="High/Critical"
+                  value={summary.highOrCriticalThreats ?? 0}
+                  warn={(summary.highOrCriticalThreats ?? 0) > 0}
+                />
               </div>
             </div>
           )}
@@ -471,23 +648,33 @@ export default function SecurityIntegration() {
 
       {/* Site → organization mapping (partner scope, once connected) */}
       {isPartnerView && integration && (
-        <div className="rounded-xl border bg-card p-6 shadow-xs" data-testid="s1-mapping">
+        <div
+          className="rounded-xl border bg-card p-6 shadow-xs"
+          data-testid="s1-mapping"
+        >
           <div className="flex items-start justify-between gap-4">
             <div>
-              <h2 className="text-lg font-semibold">Site mapping</h2>
+              <h2 className="text-lg font-semibold">
+                {t("securityIntegration.siteMapping")}
+              </h2>
               <p className="text-sm text-muted-foreground">
-                Map each SentinelOne site to a Breeze organization. Unmapped sites stay quarantined until assigned.
+                {t(
+                  "securityIntegration.mapEachSentinelOneSiteToABreezeOrganization",
+                )}
               </p>
             </div>
             {unmappedCount > 0 && (
               <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs text-amber-700">
-                {unmappedCount} unmapped
+                {unmappedCount} {t("securityIntegration.unmapped")}
               </span>
             )}
           </div>
 
           {mappingError && (
-            <div className="mt-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700" data-testid="s1-mapping-error">
+            <div
+              className="mt-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700"
+              data-testid="s1-mapping-error"
+            >
               {mappingError}
             </div>
           )}
@@ -496,39 +683,59 @@ export default function SecurityIntegration() {
             <table className="w-full min-w-[720px] text-sm">
               <thead>
                 <tr className="border-b text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  <th className="pb-2 pr-4">S1 site</th>
-                  <th className="pb-2 pr-4">Agents</th>
-                  <th className="pb-2 pr-4">Breeze organization</th>
-                  <th className="pb-2">Status</th>
+                  <th className="pb-2 pr-4">
+                    {t("securityIntegration.s1Site")}
+                  </th>
+                  <th className="pb-2 pr-4">
+                    {t("securityIntegration.agents")}
+                  </th>
+                  <th className="pb-2 pr-4">
+                    {t("securityIntegration.breezeOrganization")}
+                  </th>
+                  <th className="pb-2">{t("common:labels.status")}</th>
                 </tr>
               </thead>
               <tbody>
                 {sites.map((site) => (
-                  <tr key={site.s1SiteId} className="border-b last:border-0" data-testid={`s1-site-${site.s1SiteId}`}>
+                  <tr
+                    key={site.s1SiteId}
+                    className="border-b last:border-0"
+                    data-testid={`s1-site-${site.s1SiteId}`}
+                  >
                     <td className="py-3 pr-4">
-                      <div className="font-medium">{site.s1SiteName || site.s1SiteId}</div>
+                      <div className="font-medium">
+                        {site.s1SiteName || site.s1SiteId}
+                      </div>
                       <div className="text-xs text-muted-foreground">
                         ID {site.s1SiteId}
                         {site.provisional && (
                           <span className="ml-2 inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-700">
-                            pending sync
+                            {t("securityIntegration.pendingSync")}
                           </span>
                         )}
                       </div>
                     </td>
-                    <td className="py-3 pr-4 text-muted-foreground">{site.agentsCount}</td>
+                    <td className="py-3 pr-4 text-muted-foreground">
+                      {site.agentsCount}
+                    </td>
                     <td className="py-3 pr-4">
                       <select
-                        value={site.mappedOrgId ?? ''}
-                        onChange={(e) => void handleMap(site.s1SiteId, e.target.value || null)}
+                        value={site.mappedOrgId ?? ""}
+                        onChange={(e) =>
+                          void handleMap(site.s1SiteId, e.target.value || null)
+                        }
                         disabled={mappingSaving[site.s1SiteId]}
                         className="h-9 w-full max-w-xs rounded-md border bg-background px-2 text-sm outline-hidden focus:ring-2 focus:ring-primary/30 disabled:opacity-50"
                         data-testid={`s1-site-map-${site.s1SiteId}`}
                         aria-label={`Map ${site.s1SiteName || site.s1SiteId} to a Breeze organization`}
                       >
-                        <option value="">Select organization</option>
+                        <option value="">
+                          {t("securityIntegration.selectOrganization")}
+                        </option>
                         {orgOptions.map((org) => (
-                          <option key={org.id} value={org.id}>{org.name}</option>
+                          <option key={org.id} value={org.id}>
+                            {org.name}
+                          </option>
                         ))}
                       </select>
                     </td>
@@ -545,8 +752,14 @@ export default function SecurityIntegration() {
                 ))}
                 {sites.length === 0 && (
                   <tr>
-                    <td colSpan={4} className="py-6 text-sm text-muted-foreground" data-testid="s1-sites-empty">
-                      No SentinelOne sites discovered yet. Save credentials and run Sync Now.
+                    <td
+                      colSpan={4}
+                      className="py-6 text-sm text-muted-foreground"
+                      data-testid="s1-sites-empty"
+                    >
+                      {t(
+                        "securityIntegration.noSentinelOneSitesDiscoveredYetSaveCredentialsAnd",
+                      )}
                     </td>
                   </tr>
                 )}
@@ -559,8 +772,18 @@ export default function SecurityIntegration() {
   );
 }
 
-function Metric({ label, value, warn = false, danger = false }: { label: string; value: number; warn?: boolean; danger?: boolean }) {
-  const color = warn ? (danger ? 'text-red-600' : 'text-amber-600') : '';
+function Metric({
+  label,
+  value,
+  warn = false,
+  danger = false,
+}: {
+  label: string;
+  value: number;
+  warn?: boolean;
+  danger?: boolean;
+}) {
+  const color = warn ? (danger ? "text-red-600" : "text-amber-600") : "";
   return (
     <div>
       <p className={`text-2xl font-bold ${color}`}>{value}</p>

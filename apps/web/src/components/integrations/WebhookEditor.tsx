@@ -1,7 +1,9 @@
-import { useMemo, useState } from 'react';
-import { Check, Plus, Trash2, TriangleAlert } from 'lucide-react';
-import { fetchWithAuth } from '../../stores/auth';
-import { extractApiError } from '@/lib/apiError';
+import { useMemo, useState } from "react";
+import { Check, Plus, Trash2, TriangleAlert } from "lucide-react";
+import { fetchWithAuth } from "../../stores/auth";
+import { extractApiError } from "@/lib/apiError";
+import { useTranslation } from "react-i18next";
+import "@/lib/i18n";
 
 type HeaderRow = { id: string; key: string; value: string };
 
@@ -12,14 +14,14 @@ const createHeaderId = () => {
 };
 
 const availableEvents = [
-  'device.offline',
-  'device.online',
-  'ticket.created',
-  'ticket.updated',
-  'patch.completed',
-  'backup.failed',
-  'security.alert',
-  'user.signed_in'
+  "device.offline",
+  "device.online",
+  "ticket.created",
+  "ticket.updated",
+  "patch.completed",
+  "backup.failed",
+  "security.alert",
+  "user.signed_in",
 ];
 
 type WebhookEditorProps = {
@@ -43,12 +45,20 @@ type WebhookEditorProps = {
   onTest?: () => void;
 };
 
-export default function WebhookEditor({ webhookId, initialValues, onSave, onTest }: WebhookEditorProps) {
-  const [name, setName] = useState(initialValues?.name ?? '');
-  const [url, setUrl] = useState(initialValues?.url ?? '');
+export default function WebhookEditor({
+  webhookId,
+  initialValues,
+  onSave,
+  onTest,
+}: WebhookEditorProps) {
+  const { t } = useTranslation("integrations");
+  const [name, setName] = useState(initialValues?.name ?? "");
+  const [url, setUrl] = useState(initialValues?.url ?? "");
   const [events, setEvents] = useState<string[]>(initialValues?.events ?? []);
-  const [headers, setHeaders] = useState<HeaderRow[]>(initialValues?.headers ?? []);
-  const [secret, setSecret] = useState(initialValues?.secret ?? '');
+  const [headers, setHeaders] = useState<HeaderRow[]>(
+    initialValues?.headers ?? [],
+  );
+  const [secret, setSecret] = useState(initialValues?.secret ?? "");
   const [active, setActive] = useState(initialValues?.active ?? true);
   const [touchedUrl, setTouchedUrl] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -57,31 +67,42 @@ export default function WebhookEditor({ webhookId, initialValues, onSave, onTest
   const [success, setSuccess] = useState<string>();
 
   const urlError = useMemo(() => {
-    if (!touchedUrl) return '';
+    if (!touchedUrl) return "";
     try {
       const parsed = new URL(url);
-      return parsed.protocol.startsWith('http') ? '' : 'URL must start with http or https';
+      return parsed.protocol.startsWith("http")
+        ? ""
+        : "URL must start with http or https";
     } catch {
-      return 'Enter a valid URL';
+      return "Enter a valid URL";
     }
   }, [touchedUrl, url]);
 
   const toggleEvent = (eventName: string) => {
-    setEvents(prev =>
-      prev.includes(eventName) ? prev.filter(item => item !== eventName) : [...prev, eventName]
+    setEvents((prev) =>
+      prev.includes(eventName)
+        ? prev.filter((item) => item !== eventName)
+        : [...prev, eventName],
     );
   };
 
-  const updateHeader = (id: string, field: 'key' | 'value', value: string) => {
-    setHeaders(prev => prev.map(header => (header.id === id ? { ...header, [field]: value } : header)));
+  const updateHeader = (id: string, field: "key" | "value", value: string) => {
+    setHeaders((prev) =>
+      prev.map((header) =>
+        header.id === id ? { ...header, [field]: value } : header,
+      ),
+    );
   };
 
   const addHeader = () => {
-    setHeaders(prev => [...prev, { id: createHeaderId(), key: '', value: '' }]);
+    setHeaders((prev) => [
+      ...prev,
+      { id: createHeaderId(), key: "", value: "" },
+    ]);
   };
 
   const removeHeader = (id: string) => {
-    setHeaders(prev => prev.filter(header => header.id !== id));
+    setHeaders((prev) => prev.filter((header) => header.id !== id));
   };
 
   const handleSave = async () => {
@@ -95,8 +116,8 @@ export default function WebhookEditor({ webhookId, initialValues, onSave, onTest
       if (onSave) {
         onSave(payload);
       } else {
-        const endpoint = webhookId ? `/webhooks/${webhookId}` : '/webhooks';
-        const method = webhookId ? 'PUT' : 'POST';
+        const endpoint = webhookId ? `/webhooks/${webhookId}` : "/webhooks";
+        const method = webhookId ? "PUT" : "POST";
 
         const response = await fetchWithAuth(endpoint, {
           method,
@@ -104,21 +125,27 @@ export default function WebhookEditor({ webhookId, initialValues, onSave, onTest
             name,
             url,
             events,
-            headers: headers.filter(h => h.key),
+            headers: headers.filter((h) => h.key),
             secret,
-            enabled: active
-          })
+            enabled: active,
+          }),
         });
 
         if (!response.ok) {
           const data = await response.json().catch(() => null);
-          throw new Error(extractApiError(data, 'Failed to save webhook'));
+          throw new Error(
+            extractApiError(data, t("webhookEditor.failedToSaveWebhook")),
+          );
         }
 
-        setSuccess('Webhook saved successfully.');
+        setSuccess("Webhook saved successfully.");
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save webhook');
+      setError(
+        err instanceof Error
+          ? err.message
+          : t("webhookEditor.failedToSaveWebhook"),
+      );
     } finally {
       setSaving(false);
     }
@@ -134,19 +161,21 @@ export default function WebhookEditor({ webhookId, initialValues, onSave, onTest
         onTest();
       } else if (webhookId) {
         const response = await fetchWithAuth(`/webhooks/${webhookId}/test`, {
-          method: 'POST',
-          body: JSON.stringify({ event: events[0] || 'device.online' })
+          method: "POST",
+          body: JSON.stringify({ event: events[0] || "device.online" }),
         });
 
         if (!response.ok) {
           const data = await response.json().catch(() => ({}));
-          throw new Error(extractApiError(data, 'Test failed'));
+          throw new Error(extractApiError(data, t("webhookEditor.testFailed")));
         }
 
-        setSuccess('Test webhook sent successfully.');
+        setSuccess("Test webhook sent successfully.");
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Test failed');
+      setError(
+        err instanceof Error ? err.message : t("webhookEditor.testFailed"),
+      );
     } finally {
       setTesting(false);
     }
@@ -156,18 +185,26 @@ export default function WebhookEditor({ webhookId, initialValues, onSave, onTest
     <div className="rounded-xl border bg-card p-6 shadow-xs">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-semibold">Webhook editor</h2>
-          <p className="text-sm text-muted-foreground">Configure delivery, security, and events.</p>
+          <h2 className="text-lg font-semibold">
+            {t("webhookEditor.webhookEditor")}
+          </h2>
+          <p className="text-sm text-muted-foreground">
+            {t("webhookEditor.configureDeliverySecurityAndEvents")}
+          </p>
         </div>
         <button
           type="button"
-          onClick={() => setActive(prev => !prev)}
+          onClick={() => setActive((prev) => !prev)}
           className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold ${
-            active ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-slate-50 text-slate-600'
+            active
+              ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+              : "border-slate-200 bg-slate-50 text-slate-600"
           }`}
         >
-          <span className={`h-2 w-2 rounded-full ${active ? 'bg-emerald-500' : 'bg-slate-400'}`} />
-          {active ? 'Active' : 'Disabled'}
+          <span
+            className={`h-2 w-2 rounded-full ${active ? "bg-emerald-500" : "bg-slate-400"}`}
+          />
+          {active ? t("common:states.active") : t("common:states.disabled")}
         </button>
       </div>
 
@@ -186,23 +223,27 @@ export default function WebhookEditor({ webhookId, initialValues, onSave, onTest
       <div className="mt-6 grid gap-6 lg:grid-cols-2">
         <div className="space-y-4">
           <div>
-            <label className="text-sm font-medium">Name</label>
+            <label className="text-sm font-medium">
+              {t("common:labels.name")}
+            </label>
             <input
               type="text"
               value={name}
-              onChange={event => setName(event.target.value)}
+              onChange={(event) => setName(event.target.value)}
               className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
           </div>
           <div>
-            <label className="text-sm font-medium">URL</label>
+            <label className="text-sm font-medium">
+              {t("webhookEditor.url")}
+            </label>
             <input
               type="url"
               value={url}
               onBlur={() => setTouchedUrl(true)}
-              onChange={event => setUrl(event.target.value)}
+              onChange={(event) => setUrl(event.target.value)}
               className={`mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring ${
-                urlError ? 'border-destructive/60' : ''
+                urlError ? "border-destructive/60" : ""
               }`}
             />
             {urlError && (
@@ -213,24 +254,31 @@ export default function WebhookEditor({ webhookId, initialValues, onSave, onTest
             )}
           </div>
           <div>
-            <label className="text-sm font-medium">Signing secret</label>
+            <label className="text-sm font-medium">
+              {t("webhookEditor.signingSecret")}
+            </label>
             <input
               type="password"
               value={secret}
-              onChange={event => setSecret(event.target.value)}
+              onChange={(event) => setSecret(event.target.value)}
               className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
             <p className="mt-2 text-xs text-muted-foreground">
-              Use the shared secret to verify signatures on incoming events.
+              {t("webhookEditor.useTheSharedSecretToVerifySignaturesOn")}
             </p>
           </div>
         </div>
 
         <div>
-          <label className="text-sm font-medium">Events</label>
+          <label className="text-sm font-medium">
+            {t("webhookEditor.events")}
+          </label>
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
-            {availableEvents.map(eventName => (
-              <label key={eventName} className="flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm">
+            {availableEvents.map((eventName) => (
+              <label
+                key={eventName}
+                className="flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm"
+              >
                 <input
                   type="checkbox"
                   checked={events.includes(eventName)}
@@ -241,15 +289,21 @@ export default function WebhookEditor({ webhookId, initialValues, onSave, onTest
               </label>
             ))}
           </div>
-          <p className="mt-3 text-xs text-muted-foreground">{events.length} selected</p>
+          <p className="mt-3 text-xs text-muted-foreground">
+            {events.length} {t("webhookEditor.selected")}
+          </p>
         </div>
       </div>
 
       <div className="mt-8">
         <div className="flex items-center justify-between">
           <div>
-            <h3 className="text-sm font-semibold">Headers</h3>
-            <p className="text-xs text-muted-foreground">Send additional metadata with each request.</p>
+            <h3 className="text-sm font-semibold">
+              {t("webhookEditor.headers")}
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              {t("webhookEditor.sendAdditionalMetadataWithEachRequest")}
+            </p>
           </div>
           <button
             type="button"
@@ -257,24 +311,31 @@ export default function WebhookEditor({ webhookId, initialValues, onSave, onTest
             className="inline-flex items-center gap-2 rounded-md border px-3 py-1 text-xs font-semibold text-foreground hover:bg-muted"
           >
             <Plus className="h-3.5 w-3.5" />
-            Add header
+            {t("webhookEditor.addHeader")}
           </button>
         </div>
         <div className="mt-4 space-y-3">
-          {headers.map(header => (
-            <div key={header.id} className="grid gap-2 md:grid-cols-[1fr_1fr_auto]">
+          {headers.map((header) => (
+            <div
+              key={header.id}
+              className="grid gap-2 md:grid-cols-[1fr_1fr_auto]"
+            >
               <input
                 type="text"
-                placeholder="Header key"
+                placeholder={t("webhookEditor.headerKey")}
                 value={header.key}
-                onChange={event => updateHeader(header.id, 'key', event.target.value)}
+                onChange={(event) =>
+                  updateHeader(header.id, "key", event.target.value)
+                }
                 className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
               <input
                 type="text"
-                placeholder="Header value"
+                placeholder={t("webhookEditor.headerValue")}
                 value={header.value}
-                onChange={event => updateHeader(header.id, 'value', event.target.value)}
+                onChange={(event) =>
+                  updateHeader(header.id, "value", event.target.value)
+                }
                 className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
               <button
@@ -297,7 +358,9 @@ export default function WebhookEditor({ webhookId, initialValues, onSave, onTest
           className="inline-flex h-10 items-center justify-center gap-2 rounded-md border px-4 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
         >
           <Check className="h-4 w-4" />
-          {testing ? 'Testing...' : 'Test webhook'}
+          {testing
+            ? t("webhookEditor.testing")
+            : t("webhookEditor.testWebhook")}
         </button>
         <button
           type="button"
@@ -305,7 +368,7 @@ export default function WebhookEditor({ webhookId, initialValues, onSave, onTest
           disabled={saving}
           className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          {saving ? 'Saving...' : 'Save changes'}
+          {saving ? t("webhookEditor.saving") : t("webhookEditor.saveChanges")}
         </button>
       </div>
     </div>

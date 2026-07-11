@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -14,11 +14,13 @@ import {
   Shield,
   Unplug,
   Webhook,
-  X
-} from 'lucide-react';
-import { fetchWithAuth, resolveApiOrigin } from '../../stores/auth';
-import { type Organization, useOrgStore } from '../../stores/orgStore';
-import { formatDateTime } from '@/lib/dateTimeFormat';
+  X,
+} from "lucide-react";
+import { fetchWithAuth, resolveApiOrigin } from "../../stores/auth";
+import { type Organization, useOrgStore } from "../../stores/orgStore";
+import { formatDateTime } from "@/lib/dateTimeFormat";
+import { useTranslation } from "react-i18next";
+import "@/lib/i18n";
 
 type Integration = {
   id: string;
@@ -86,86 +88,115 @@ type HuntressOrgMapping = {
   lastSeenAt: string | null;
 };
 
-type SaveState = { status: 'idle' | 'saving' | 'saved' | 'error'; message?: string };
-type SyncState = { status: 'idle' | 'syncing' | 'done' | 'warning' | 'error'; message?: string };
-
-const LIVE_STATUS_ERROR =
-  'Live Huntress status could not be fully loaded. Coverage and incident data below may be incomplete or out of date.';
+type SaveState = {
+  status: "idle" | "saving" | "saved" | "error";
+  message?: string;
+};
+type SyncState = {
+  status: "idle" | "syncing" | "done" | "warning" | "error";
+  message?: string;
+};
 
 const severityStyles: Record<string, string> = {
-  critical: 'border-rose-200 bg-rose-50 text-rose-700',
-  high: 'border-orange-200 bg-orange-50 text-orange-700',
-  medium: 'border-amber-200 bg-amber-50 text-amber-700',
-  low: 'border-slate-200 bg-slate-50 text-slate-600'
+  critical: "border-rose-200 bg-rose-50 text-rose-700",
+  high: "border-orange-200 bg-orange-50 text-orange-700",
+  medium: "border-amber-200 bg-amber-50 text-amber-700",
+  low: "border-slate-200 bg-slate-50 text-slate-600",
 };
 
 function SeverityBadge({ severity }: { severity: string | null }) {
-  const label = severity || 'unknown';
+  const { t } = useTranslation("integrations");
+  const label = severity || "unknown";
   const style = severityStyles[label.toLowerCase()] ?? severityStyles.low;
   return (
-    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs capitalize ${style}`}>
-      {label}
+    <span
+      className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs capitalize ${style}`}
+    >
+      {t(`huntressIntegration.severity.${label.toLowerCase()}`, {
+        defaultValue: label,
+      })}
     </span>
   );
 }
 
 function readError(json: unknown, fallback: string): string {
-  if (json && typeof json === 'object' && 'error' in json) {
+  if (json && typeof json === "object" && "error" in json) {
     return String((json as { error?: unknown }).error ?? fallback);
   }
   return fallback;
 }
 
-function pluralize(count: number, noun: string): string {
-  return `${count} ${noun}${count === 1 ? '' : 's'}`;
-}
-
 // "Synced 12 agents · 3 incidents · 26 orgs" from the persisted last-run counts.
-function formatSyncResult(integration: Integration): string {
+function formatSyncResult(
+  integration: Integration,
+  t: (key: string, options?: Record<string, unknown>) => string,
+): string {
   const parts: string[] = [];
-  if (typeof integration.lastSyncAgents === 'number') parts.push(pluralize(integration.lastSyncAgents, 'agent'));
-  if (typeof integration.lastSyncIncidents === 'number') parts.push(pluralize(integration.lastSyncIncidents, 'incident'));
-  if (typeof integration.lastSyncOrgs === 'number') parts.push(pluralize(integration.lastSyncOrgs, 'org'));
-  return parts.length > 0 ? `Synced ${parts.join(' · ')}` : 'Sync complete';
+  if (typeof integration.lastSyncAgents === "number")
+    parts.push(
+      t("huntressIntegration.agentCount", {
+        count: integration.lastSyncAgents,
+      }),
+    );
+  if (typeof integration.lastSyncIncidents === "number")
+    parts.push(
+      t("huntressIntegration.incidentCount", {
+        count: integration.lastSyncIncidents,
+      }),
+    );
+  if (typeof integration.lastSyncOrgs === "number")
+    parts.push(
+      t("huntressIntegration.orgCount", { count: integration.lastSyncOrgs }),
+    );
+  return parts.length > 0
+    ? t("huntressIntegration.syncedSummary", { summary: parts.join(" · ") })
+    : t("huntressIntegration.syncComplete");
 }
 
-function syncStatusBadge(integration: Integration | null) {
+function syncStatusBadge(
+  integration: Integration | null,
+  t: (key: string) => string,
+) {
   if (!integration) {
     return (
       <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-600">
-        <Unplug className="h-3.5 w-3.5" /> Not configured
+        <Unplug className="h-3.5 w-3.5" />{" "}
+        {t("huntressIntegration.notConfigured")}
       </span>
     );
   }
-  if (integration.lastSyncStatus === 'success') {
+  if (integration.lastSyncStatus === "success") {
     return (
       <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs text-emerald-700">
-        <CheckCircle2 className="h-3.5 w-3.5" /> Connected
+        <CheckCircle2 className="h-3.5 w-3.5" /> {t("common:states.active")}
       </span>
     );
   }
-  if (integration.lastSyncStatus === 'running') {
+  if (integration.lastSyncStatus === "running") {
     return (
       <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs text-amber-700">
-        <Loader2 className="h-3.5 w-3.5 animate-spin" /> Syncing
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />{" "}
+        {t("huntressIntegration.syncing")}
       </span>
     );
   }
-  if (integration.lastSyncStatus === 'error') {
+  if (integration.lastSyncStatus === "error") {
     return (
       <span className="inline-flex items-center gap-1.5 rounded-full border border-red-200 bg-red-50 px-3 py-1 text-xs text-red-700">
-        <AlertTriangle className="h-3.5 w-3.5" /> Error
+        <AlertTriangle className="h-3.5 w-3.5" />{" "}
+        {t("huntressIntegration.error")}
       </span>
     );
   }
   return (
     <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-600">
-      <Activity className="h-3.5 w-3.5" /> Pending
+      <Activity className="h-3.5 w-3.5" /> {t("common:states.pending")}
     </span>
   );
 }
 
 export default function HuntressIntegration() {
+  const { t } = useTranslation("integrations");
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
@@ -177,13 +208,13 @@ export default function HuntressIntegration() {
   const [huntressOrgs, setHuntressOrgs] = useState<HuntressOrgMapping[]>([]);
   const [orgOptions, setOrgOptions] = useState<Organization[]>([]);
 
-  const [name, setName] = useState('');
-  const [apiKey, setApiKey] = useState('');
-  const [apiSecret, setApiSecret] = useState('');
-  const [accountId, setAccountId] = useState('');
-  const [accountKey, setAccountKey] = useState('');
+  const [name, setName] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [apiSecret, setApiSecret] = useState("");
+  const [accountId, setAccountId] = useState("");
+  const [accountKey, setAccountKey] = useState("");
   const [showAccountKey, setShowAccountKey] = useState(false);
-  const [webhookSecret, setWebhookSecret] = useState('');
+  const [webhookSecret, setWebhookSecret] = useState("");
   const [showApiKey, setShowApiKey] = useState(false);
   const [showApiSecret, setShowApiSecret] = useState(false);
   const [showWebhookSecret, setShowWebhookSecret] = useState(false);
@@ -191,37 +222,54 @@ export default function HuntressIntegration() {
   // stays until the user saves (which clears webhookSecret) or dismisses it.
   const [generatedSecretNotice, setGeneratedSecretNotice] = useState(false);
 
-  const [saveState, setSaveState] = useState<SaveState>({ status: 'idle' });
-  const [syncState, setSyncState] = useState<SyncState>({ status: 'idle' });
-  const [mappingSaving, setMappingSaving] = useState<Record<string, boolean>>({});
+  const [saveState, setSaveState] = useState<SaveState>({ status: "idle" });
+  const [syncState, setSyncState] = useState<SyncState>({ status: "idle" });
+  const [mappingSaving, setMappingSaving] = useState<Record<string, boolean>>(
+    {},
+  );
   const [mappingError, setMappingError] = useState<string | null>(null);
-  const [mappingSearch, setMappingSearch] = useState('');
+  const [mappingSearch, setMappingSearch] = useState("");
   const [showUnmappedOnly, setShowUnmappedOnly] = useState(false);
   const [mappingPage, setMappingPage] = useState(0);
 
   // Each sync run gets a monotonic token; the poll loop bails the moment a newer
   // run starts or the component unmounts, so stale polls never clobber state.
   const syncPollRef = useRef(0);
-  useEffect(() => () => { syncPollRef.current = -1; }, []);
+  useEffect(
+    () => () => {
+      syncPollRef.current = -1;
+    },
+    [],
+  );
 
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
   const isPartnerView = !currentOrgId;
 
-  const hasCredentialInput = apiKey.trim().length > 0 || apiSecret.trim().length > 0;
-  const hasCompleteCredential = apiKey.trim().length > 0 && apiSecret.trim().length > 0;
-  const credentialPairError = hasCredentialInput && !hasCompleteCredential
-    ? 'Enter both the API Key and API Secret from Huntress, or leave both blank to keep the existing credential.'
-    : null;
-  const canSave = name.trim().length > 0 && (integration ? !hasCredentialInput || hasCompleteCredential : hasCompleteCredential);
-  const unmappedCount = useMemo(() => huntressOrgs.filter((row) => !row.mappedOrgId).length, [huntressOrgs]);
+  const hasCredentialInput =
+    apiKey.trim().length > 0 || apiSecret.trim().length > 0;
+  const hasCompleteCredential =
+    apiKey.trim().length > 0 && apiSecret.trim().length > 0;
+  const credentialPairError =
+    hasCredentialInput && !hasCompleteCredential
+      ? t("huntressIntegration.enterBothCredentials")
+      : null;
+  const canSave =
+    name.trim().length > 0 &&
+    (integration
+      ? !hasCredentialInput || hasCompleteCredential
+      : hasCompleteCredential);
+  const unmappedCount = useMemo(
+    () => huntressOrgs.filter((row) => !row.mappedOrgId).length,
+    [huntressOrgs],
+  );
 
   // Region-correct inbound webhook endpoint to paste into Huntress. Built from
   // the API origin (PUBLIC_API_URL, or the current page origin behind Caddy) and
   // the per-integration id used by the receiver to resolve tenancy.
   const webhookUrl = useMemo(() => {
-    if (!integration) return '';
-    const origin = resolveApiOrigin().replace(/\/$/, '');
-    if (!origin) return '';
+    if (!integration) return "";
+    const origin = resolveApiOrigin().replace(/\/$/, "");
+    if (!origin) return "";
     return `${origin}/api/v1/huntress/webhook?integrationId=${encodeURIComponent(integration.id)}`;
   }, [integration]);
 
@@ -229,7 +277,9 @@ export default function HuntressIntegration() {
     // 32 random bytes → 64 hex chars. Surfaced once for copy; saved encrypted.
     const bytes = new Uint8Array(32);
     crypto.getRandomValues(bytes);
-    const secret = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+    const secret = Array.from(bytes, (b) =>
+      b.toString(16).padStart(2, "0"),
+    ).join("");
     setWebhookSecret(secret);
     setShowWebhookSecret(true);
     setGeneratedSecretNotice(true);
@@ -241,31 +291,46 @@ export default function HuntressIntegration() {
       if (showUnmappedOnly && row.mappedOrgId) return false;
       if (!q) return true;
       return (
-        (row.huntressOrgName ?? '').toLowerCase().includes(q)
-        || row.huntressOrgId.toLowerCase().includes(q)
-        || (row.huntressOrgKey ?? '').toLowerCase().includes(q)
-        || (row.mappedOrgName ?? '').toLowerCase().includes(q)
+        (row.huntressOrgName ?? "").toLowerCase().includes(q) ||
+        row.huntressOrgId.toLowerCase().includes(q) ||
+        (row.huntressOrgKey ?? "").toLowerCase().includes(q) ||
+        (row.mappedOrgName ?? "").toLowerCase().includes(q)
       );
     });
   }, [huntressOrgs, mappingSearch, showUnmappedOnly]);
 
-  const pageCount = Math.max(1, Math.ceil(filteredOrgs.length / MAPPING_PAGE_SIZE));
+  const pageCount = Math.max(
+    1,
+    Math.ceil(filteredOrgs.length / MAPPING_PAGE_SIZE),
+  );
   const safePage = Math.min(mappingPage, pageCount - 1);
   const pagedOrgs = useMemo(
-    () => filteredOrgs.slice(safePage * MAPPING_PAGE_SIZE, safePage * MAPPING_PAGE_SIZE + MAPPING_PAGE_SIZE),
-    [filteredOrgs, safePage]
+    () =>
+      filteredOrgs.slice(
+        safePage * MAPPING_PAGE_SIZE,
+        safePage * MAPPING_PAGE_SIZE + MAPPING_PAGE_SIZE,
+      ),
+    [filteredOrgs, safePage],
   );
 
   // Snap back to the first page whenever the result set changes underneath us.
-  useEffect(() => { setMappingPage(0); }, [mappingSearch, showUnmappedOnly]);
+  useEffect(() => {
+    setMappingPage(0);
+  }, [mappingSearch, showUnmappedOnly]);
 
   // Raw read used by both the initial load and the post-sync poll. Kept separate
   // from fetchIntegration so polling does NOT reset the credential/name form
   // fields the user may be editing.
-  const fetchIntegrationData = useCallback(async (): Promise<{ data: Integration | null; mapped: boolean }> => {
-    const res = await fetchWithAuth('/huntress/integration');
+  const fetchIntegrationData = useCallback(async (): Promise<{
+    data: Integration | null;
+    mapped: boolean;
+  }> => {
+    const res = await fetchWithAuth("/huntress/integration");
     const json = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(readError(json, `Failed to load integration (${res.status})`));
+    if (!res.ok)
+      throw new Error(
+        readError(json, `Failed to load integration (${res.status})`),
+      );
     return {
       data: (json as { data?: Integration | null }).data ?? null,
       mapped: (json as { mapped?: boolean }).mapped !== false,
@@ -278,43 +343,63 @@ export default function HuntressIntegration() {
     setIntegration(data);
     if (data) {
       setName(data.name);
-      setAccountId(data.accountId ?? '');
-      setApiKey('');
-      setApiSecret('');
+      setAccountId(data.accountId ?? "");
+      setApiKey("");
+      setApiSecret("");
     }
   }, [fetchIntegrationData]);
 
   const fetchStatus = useCallback(async () => {
-    const res = await fetchWithAuth('/huntress/status');
+    const res = await fetchWithAuth("/huntress/status");
     const json = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(readError(json, LIVE_STATUS_ERROR));
+    if (!res.ok)
+      throw new Error(
+        readError(json, t("huntressIntegration.liveStatusError")),
+      );
     setMappedForOrg((json as { mapped?: boolean }).mapped !== false);
     setCoverage((json as { coverage?: StatusSummary }).coverage ?? null);
     setIncidents((json as { incidents?: IncidentSummary }).incidents ?? null);
   }, []);
 
   const fetchRecentIncidents = useCallback(async () => {
-    const res = await fetchWithAuth('/huntress/incidents?limit=5');
+    const res = await fetchWithAuth("/huntress/incidents?limit=5");
     const json = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(readError(json, LIVE_STATUS_ERROR));
+    if (!res.ok)
+      throw new Error(
+        readError(json, t("huntressIntegration.liveStatusError")),
+      );
     setRecentIncidents((json as { data?: Incident[] }).data ?? []);
   }, []);
 
   const fetchMappings = useCallback(async () => {
     if (!isPartnerView) return;
     const [mappingRes, orgRes] = await Promise.all([
-      fetchWithAuth('/huntress/organizations'),
-      fetchWithAuth('/orgs/organizations')
+      fetchWithAuth("/huntress/organizations"),
+      fetchWithAuth("/orgs/organizations"),
     ]);
     const mappingJson = await mappingRes.json().catch(() => ({}));
-    if (!mappingRes.ok) throw new Error(readError(mappingJson, `Failed to load Huntress organizations (${mappingRes.status})`));
+    if (!mappingRes.ok)
+      throw new Error(
+        readError(
+          mappingJson,
+          `Failed to load Huntress organizations (${mappingRes.status})`,
+        ),
+      );
     const orgJson = await orgRes.json().catch(() => ({}));
-    if (!orgRes.ok) throw new Error(readError(orgJson, `Failed to load Breeze organizations (${orgRes.status})`));
-    setHuntressOrgs((mappingJson as { data?: HuntressOrgMapping[] }).data ?? []);
+    if (!orgRes.ok)
+      throw new Error(
+        readError(
+          orgJson,
+          `Failed to load Breeze organizations (${orgRes.status})`,
+        ),
+      );
+    setHuntressOrgs(
+      (mappingJson as { data?: HuntressOrgMapping[] }).data ?? [],
+    );
     setOrgOptions(
       Array.isArray((orgJson as { data?: unknown }).data)
         ? (orgJson as { data: Organization[] }).data
-        : []
+        : [],
     );
   }, [isPartnerView]);
 
@@ -326,17 +411,21 @@ export default function HuntressIntegration() {
       await fetchIntegration();
       await Promise.all([
         fetchStatus().catch((err) => {
-          console.error('[HuntressIntegration] Failed to load status:', err);
-          setStatusError(LIVE_STATUS_ERROR);
+          console.error("[HuntressIntegration] Failed to load status:", err);
+          setStatusError(t("huntressIntegration.liveStatusError"));
         }),
         fetchRecentIncidents().catch((err) => {
-          console.error('[HuntressIntegration] Failed to load incidents:', err);
-          setStatusError(LIVE_STATUS_ERROR);
+          console.error("[HuntressIntegration] Failed to load incidents:", err);
+          setStatusError(t("huntressIntegration.liveStatusError"));
         }),
         fetchMappings(),
       ]);
     } catch (err) {
-      setLoadError(err instanceof Error ? err.message : 'Failed to load Huntress integration');
+      setLoadError(
+        err instanceof Error
+          ? err.message
+          : t("huntressIntegration.failedToLoadIntegration"),
+      );
     } finally {
       setLoading(false);
     }
@@ -348,32 +437,55 @@ export default function HuntressIntegration() {
 
   const handleSave = async () => {
     if (!isPartnerView) return;
-    setSaveState({ status: 'saving' });
+    setSaveState({ status: "saving" });
     try {
       if (credentialPairError) {
-        setSaveState({ status: 'error', message: credentialPairError });
+        setSaveState({ status: "error", message: credentialPairError });
         return;
       }
       const body: Record<string, unknown> = { name, isActive: true };
-      if (hasCompleteCredential) body.apiKey = `${apiKey.trim()}:${apiSecret.trim()}`;
+      if (hasCompleteCredential)
+        body.apiKey = `${apiKey.trim()}:${apiSecret.trim()}`;
       if (accountId.trim()) body.accountId = accountId;
       if (accountKey.trim()) body.accountKey = accountKey.trim();
       if (webhookSecret.trim()) body.webhookSecret = webhookSecret;
 
-      const res = await fetchWithAuth('/huntress/integration', { method: 'POST', body: JSON.stringify(body) });
+      const res = await fetchWithAuth("/huntress/integration", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setSaveState({ status: 'error', message: readError(json, `Failed to save (${res.status})`) });
+        setSaveState({
+          status: "error",
+          message: readError(
+            json,
+            t("huntressIntegration.failedToSaveStatus", {
+              status: res.status,
+            }),
+          ),
+        });
         return;
       }
-      setSaveState({ status: 'saved', message: (json as { syncWarning?: string }).syncWarning ?? 'Integration saved' });
-      setApiKey('');
-      setApiSecret('');
-      setWebhookSecret('');
+      setSaveState({
+        status: "saved",
+        message:
+          (json as { syncWarning?: string }).syncWarning ??
+          t("huntressIntegration.integrationSaved"),
+      });
+      setApiKey("");
+      setApiSecret("");
+      setWebhookSecret("");
       setGeneratedSecretNotice(false);
       await load();
     } catch (err) {
-      setSaveState({ status: 'error', message: err instanceof Error ? err.message : 'Network error' });
+      setSaveState({
+        status: "error",
+        message:
+          err instanceof Error
+            ? err.message
+            : t("huntressIntegration.networkError"),
+      });
     }
   };
 
@@ -384,17 +496,35 @@ export default function HuntressIntegration() {
     // 'running' write landed and without waiting on lastSyncAt (success-only).
     const baselineUpdatedAt = integration?.updatedAt ?? null;
     const token = ++syncPollRef.current;
-    setSyncState({ status: 'syncing', message: 'Sync queued…' });
+    setSyncState({
+      status: "syncing",
+      message: t("huntressIntegration.syncQueued"),
+    });
 
     try {
-      const res = await fetchWithAuth('/huntress/sync', { method: 'POST', body: JSON.stringify({}) });
+      const res = await fetchWithAuth("/huntress/sync", {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setSyncState({ status: 'error', message: readError(json, `Sync failed (${res.status})`) });
+        setSyncState({
+          status: "error",
+          message: readError(
+            json,
+            t("huntressIntegration.syncFailedStatus", { status: res.status }),
+          ),
+        });
         return;
       }
     } catch (err) {
-      setSyncState({ status: 'error', message: err instanceof Error ? err.message : 'Network error' });
+      setSyncState({
+        status: "error",
+        message:
+          err instanceof Error
+            ? err.message
+            : t("huntressIntegration.networkError"),
+      });
       return;
     }
 
@@ -403,8 +533,13 @@ export default function HuntressIntegration() {
     const settle = (data: Integration | null): SyncState | null => {
       if (!data) return null;
       const changed = data.updatedAt !== baselineUpdatedAt;
-      if (data.lastSyncStatus === 'success' && changed) return { status: 'done', message: formatSyncResult(data) };
-      if (data.lastSyncStatus === 'error' && changed) return { status: 'error', message: data.lastSyncError ?? 'Sync failed' };
+      if (data.lastSyncStatus === "success" && changed)
+        return { status: "done", message: formatSyncResult(data, t) };
+      if (data.lastSyncStatus === "error" && changed)
+        return {
+          status: "error",
+          message: data.lastSyncError ?? t("huntressIntegration.syncFailed"),
+        };
       return null;
     };
 
@@ -415,7 +550,9 @@ export default function HuntressIntegration() {
     const deadline = Date.now() + SYNC_POLL_MAX_MS;
     let consecutiveFailures = 0;
     while (Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, SYNC_POLL_INTERVAL_MS));
+      await new Promise((resolve) =>
+        setTimeout(resolve, SYNC_POLL_INTERVAL_MS),
+      );
       if (syncPollRef.current !== token) return; // superseded or unmounted
 
       let data: Integration | null;
@@ -425,10 +562,15 @@ export default function HuntressIntegration() {
         // Don't silently ride a broken endpoint to the deadline: log every
         // failed read and bail with a real error after several in a row.
         consecutiveFailures += 1;
-        console.warn('[HuntressIntegration] Failed to poll sync status:', err);
+        console.warn("[HuntressIntegration] Failed to poll sync status:", err);
         if (consecutiveFailures >= SYNC_POLL_MAX_FAILURES) {
           if (syncPollRef.current !== token) return;
-          setSyncState({ status: 'error', message: 'Could not read sync status. Refresh to check the latest state.' });
+          setSyncState({
+            status: "error",
+            message: t(
+              "huntressIntegration.couldNotReadSyncStatusRefreshToCheck",
+            ),
+          });
           return;
         }
         continue;
@@ -436,8 +578,11 @@ export default function HuntressIntegration() {
       if (syncPollRef.current !== token) return;
       consecutiveFailures = 0;
 
-      if (data?.lastSyncStatus === 'running') {
-        setSyncState({ status: 'syncing', message: 'Syncing…' });
+      if (data?.lastSyncStatus === "running") {
+        setSyncState({
+          status: "syncing",
+          message: t("huntressIntegration.syncing2"),
+        });
         continue;
       }
       const settled = settle(data);
@@ -461,10 +606,13 @@ export default function HuntressIntegration() {
         return;
       }
     } catch (err) {
-      console.warn('[HuntressIntegration] Final sync-status read failed:', err);
+      console.warn("[HuntressIntegration] Final sync-status read failed:", err);
     }
     if (syncPollRef.current !== token) return;
-    setSyncState({ status: 'warning', message: 'Sync is taking longer than expected — it will finish in the background.' });
+    setSyncState({
+      status: "warning",
+      message: t("huntressIntegration.syncIsTakingLongerThanExpectedItWill"),
+    });
     await load();
   };
 
@@ -473,19 +621,34 @@ export default function HuntressIntegration() {
     setMappingSaving((prev) => ({ ...prev, [huntressOrgId]: true }));
     setMappingError(null);
     try {
-      const res = await fetchWithAuth('/huntress/organizations/map', {
-        method: 'POST',
-        body: JSON.stringify({ integrationId: integration.id, huntressOrgId, orgId })
+      const res = await fetchWithAuth("/huntress/organizations/map", {
+        method: "POST",
+        body: JSON.stringify({
+          integrationId: integration.id,
+          huntressOrgId,
+          orgId,
+        }),
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setMappingError(readError(json, `Failed to map Huntress organization (${res.status})`));
+        setMappingError(
+          readError(
+            json,
+            `Failed to map Huntress organization (${res.status})`,
+          ),
+        );
         return;
       }
       await fetchMappings();
-      await Promise.all([fetchStatus(), fetchRecentIncidents()]).catch(() => setStatusError(LIVE_STATUS_ERROR));
+      await Promise.all([fetchStatus(), fetchRecentIncidents()]).catch(() =>
+        setStatusError(t("huntressIntegration.liveStatusError")),
+      );
     } catch (err) {
-      setMappingError(err instanceof Error ? err.message : 'Network error');
+      setMappingError(
+        err instanceof Error
+          ? err.message
+          : t("huntressIntegration.networkError"),
+      );
     } finally {
       setMappingSaving((prev) => ({ ...prev, [huntressOrgId]: false }));
     }
@@ -506,15 +669,21 @@ export default function HuntressIntegration() {
           <Shield className="h-5 w-5" />
         </div>
         <div>
-          <h1 className="text-2xl font-semibold">Huntress Integration</h1>
+          <h1 className="text-2xl font-semibold">
+            {t("huntressIntegration.huntressIntegration")}
+          </h1>
           <p className="text-sm text-muted-foreground">
-            Connect one partner-level Huntress account and map Huntress organizations to Breeze organizations.
+            {t(
+              "huntressIntegration.connectOnePartnerLevelHuntressAccountAndMap",
+            )}
           </p>
         </div>
       </div>
 
       {loadError && (
-        <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{loadError}</div>
+        <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+          {loadError}
+        </div>
       )}
       {statusError && (
         <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-700">
@@ -527,16 +696,21 @@ export default function HuntressIntegration() {
           <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-lg bg-muted text-muted-foreground">
             <Unplug className="h-5 w-5" />
           </div>
-          <h2 className="mt-3 text-lg font-semibold">Huntress isn&apos;t connected yet</h2>
+          <h2 className="mt-3 text-lg font-semibold">
+            {t("huntressIntegration.huntressIsntConnectedYet")}
+          </h2>
           <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
-            Huntress is configured once at the partner level and shared across every organization. Switch your scope to{' '}
-            <span className="font-medium text-foreground">All orgs</span> to add the API Key and Secret.
+            {t("huntressIntegration.huntressIsConfiguredOnceAtThePartnerLevel")}{" "}
+            <span className="font-medium text-foreground">
+              {t("huntressIntegration.allOrgs")}
+            </span>{" "}
+            {t("huntressIntegration.toAddTheAPIKeyAndSecret")}
           </p>
         </div>
       )}
       {!isPartnerView && integration && !mappedForOrg && (
         <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
-          This Breeze organization is not mapped to a Huntress organization yet. Switch to All orgs as a partner admin to map it.
+          {t("huntressIntegration.thisBreezeOrganizationIsNotMappedToA")}
         </div>
       )}
 
@@ -544,87 +718,115 @@ export default function HuntressIntegration() {
         <div className="rounded-xl border bg-card p-6 shadow-xs">
           <div className="flex items-start justify-between gap-4">
             <div>
-              <h2 className="text-lg font-semibold">Partner connection</h2>
+              <h2 className="text-lg font-semibold">
+                {t("huntressIntegration.partnerConnection")}
+              </h2>
               <p className="text-sm text-muted-foreground">
-                One API Key and Secret covers every Huntress organization under this partner account.
+                {t("huntressIntegration.oneAPIKeyAndSecretCoversEveryHuntress")}
               </p>
             </div>
-            {syncStatusBadge(integration)}
+            {syncStatusBadge(integration, t)}
           </div>
 
           <div className="mt-5 grid gap-4 md:grid-cols-2">
             <div>
-              <label className="mb-1 block text-sm font-medium">Name</label>
+              <label className="mb-1 block text-sm font-medium">
+                {t("common:labels.name")}
+              </label>
               <input
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="Partner Huntress"
+                placeholder={t("huntressIntegration.partnerHuntress")}
                 className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-hidden focus:ring-2 focus:ring-primary/30"
               />
             </div>
             <div>
               <label className="mb-1 block text-sm font-medium">
-                Account ID <span className="text-xs text-muted-foreground">(optional)</span>
+                {t("huntressIntegration.accountID")}
+                <span className="text-xs text-muted-foreground">
+                  {t("huntressIntegration.optional")}
+                </span>
               </label>
               <input
                 type="text"
                 value={accountId}
                 onChange={(e) => setAccountId(e.target.value)}
-                placeholder="Huntress account ID"
+                placeholder={t("huntressIntegration.huntressAccountID")}
                 className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-hidden focus:ring-2 focus:ring-primary/30"
               />
             </div>
             <SecretInput
-              label="Deployment Account Key"
+              label={t("huntressIntegration.deploymentAccountKey")}
               hint={
                 integration?.hasAccountKey
-                  ? 'saved — leave blank to keep existing'
-                  : 'required to deploy the Huntress agent from the Software Library'
+                  ? t("huntressIntegration.savedLeaveBlank")
+                  : t("huntressIntegration.accountKeyRequired")
               }
               value={accountKey}
               onChange={setAccountKey}
               visible={showAccountKey}
               onToggle={() => setShowAccountKey((value) => !value)}
-              placeholder={integration?.hasAccountKey ? '************' : 'Account Key from the Huntress agent download page'}
+              placeholder={
+                integration?.hasAccountKey
+                  ? "************"
+                  : t("huntressIntegration.accountKeyPlaceholder")
+              }
             />
             <SecretInput
-              label="API Key"
+              label={t("huntressIntegration.apiKey")}
               value={apiKey}
               onChange={setApiKey}
               visible={showApiKey}
               onToggle={() => setShowApiKey((value) => !value)}
-              placeholder={integration ? 'hk_************' : 'hk_...'}
+              placeholder={integration ? "hk_************" : "hk_..."}
             />
             <SecretInput
-              label="API Secret"
-              hint={integration ? 'leave key and secret blank to keep existing' : undefined}
+              label={t("huntressIntegration.apiSecret")}
+              hint={
+                integration
+                  ? t("huntressIntegration.leaveCredentialsBlank")
+                  : undefined
+              }
               value={apiSecret}
               onChange={setApiSecret}
               visible={showApiSecret}
               onToggle={() => setShowApiSecret((value) => !value)}
-              placeholder={integration ? 'hs_************' : 'hs_...'}
+              placeholder={integration ? "hs_************" : "hs_..."}
             />
             <div className="md:col-span-2">
               <p className="text-xs text-muted-foreground">
-                Copy the API Key and API Secret from Huntress. Breeze formats the Basic auth credential automatically.
+                {t("huntressIntegration.copyTheAPIKeyAndAPISecretFrom")}
               </p>
-              {credentialPairError && <p className="mt-1 text-xs text-red-600">{credentialPairError}</p>}
+              {credentialPairError && (
+                <p className="mt-1 text-xs text-red-600">
+                  {credentialPairError}
+                </p>
+              )}
             </div>
             <div className="md:col-span-2">
               <div className="flex items-end gap-2">
                 <div className="flex-1">
                   <SecretInput
-                    label="Webhook Secret"
-                    hint={integration?.hasWebhookSecret ? 'leave blank to keep existing' : 'optional — used to verify inbound Huntress webhooks'}
+                    label={t("huntressIntegration.webhookSecret")}
+                    hint={
+                      integration?.hasWebhookSecret
+                        ? t("huntressIntegration.leaveBlankToKeepExisting")
+                        : t("huntressIntegration.webhookSecretHint")
+                    }
                     value={webhookSecret}
                     onChange={(value) => {
                       setWebhookSecret(value);
-                      if (generatedSecretNotice) setGeneratedSecretNotice(false);
+                      if (generatedSecretNotice)
+                        setGeneratedSecretNotice(false);
                     }}
                     visible={showWebhookSecret}
                     onToggle={() => setShowWebhookSecret((value) => !value)}
-                    placeholder={integration?.hasWebhookSecret ? '************' : 'Enter or generate a webhook secret'}
+                    placeholder={
+                      integration?.hasWebhookSecret
+                        ? "************"
+                        : t("huntressIntegration.webhookSecretPlaceholder")
+                    }
                   />
                 </div>
                 <button
@@ -632,17 +834,27 @@ export default function HuntressIntegration() {
                   onClick={handleGenerateWebhookSecret}
                   className="inline-flex h-10 shrink-0 items-center gap-2 rounded-md border px-3 text-sm font-medium hover:bg-muted"
                 >
-                  <RefreshCw className="h-4 w-4" /> Generate
+                  <RefreshCw className="h-4 w-4" />{" "}
+                  {t("huntressIntegration.generate")}
                 </button>
               </div>
               {generatedSecretNotice && (
                 <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
-                  <p className="font-medium">Copy this webhook secret now, then click Update to save it.</p>
-                  <p className="mt-1">
-                    Paste the same value into Huntress&apos;s webhook configuration. After saving, Breeze stores it
-                    encrypted and never displays it again.
+                  <p className="font-medium">
+                    {t(
+                      "huntressIntegration.copyThisWebhookSecretNowThenClickUpdate",
+                    )}
                   </p>
-                  <CopyButton value={webhookSecret} label="Copy secret" className="mt-2" />
+                  <p className="mt-1">
+                    {t(
+                      "huntressIntegration.pasteTheSameValueIntoHuntresssWebhookConfiguration",
+                    )}
+                  </p>
+                  <CopyButton
+                    value={webhookSecret}
+                    label={t("huntressIntegration.copySecret")}
+                    className="mt-2"
+                  />
                 </div>
               )}
             </div>
@@ -652,28 +864,46 @@ export default function HuntressIntegration() {
             <button
               type="button"
               onClick={handleSave}
-              disabled={!canSave || saveState.status === 'saving'}
+              disabled={!canSave || saveState.status === "saving"}
               className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
             >
-              {saveState.status === 'saving' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-              {integration ? 'Update' : 'Save & Connect'}
+              {saveState.status === "saving" ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Save className="h-4 w-4" />
+              )}
+              {integration
+                ? t("huntressIntegration.update")
+                : t("huntressIntegration.saveAndConnect")}
             </button>
             {integration && (
               <button
                 type="button"
                 onClick={handleSync}
-                disabled={syncState.status === 'syncing'}
+                disabled={syncState.status === "syncing"}
                 className="inline-flex h-10 items-center gap-2 rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
               >
-                {syncState.status === 'syncing' ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-                Sync Now
+                {syncState.status === "syncing" ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-4 w-4" />
+                )}
+                {t("huntressIntegration.syncNow")}
               </button>
             )}
             {saveState.message && (
-              <span className={`text-sm ${saveState.status === 'error' ? 'text-red-600' : 'text-emerald-600'}`}>{saveState.message}</span>
+              <span
+                className={`text-sm ${saveState.status === "error" ? "text-red-600" : "text-emerald-600"}`}
+              >
+                {saveState.message}
+              </span>
             )}
             {syncState.message && (
-              <span className={`text-sm ${syncState.status === 'error' ? 'text-red-600' : syncState.status === 'warning' ? 'text-amber-600' : 'text-emerald-600'}`}>{syncState.message}</span>
+              <span
+                className={`text-sm ${syncState.status === "error" ? "text-red-600" : syncState.status === "warning" ? "text-amber-600" : "text-emerald-600"}`}
+              >
+                {syncState.message}
+              </span>
             )}
           </div>
         </div>
@@ -686,27 +916,44 @@ export default function HuntressIntegration() {
               <Webhook className="h-4 w-4" />
             </div>
             <div>
-              <h2 className="text-lg font-semibold">Inbound webhook (push from Huntress)</h2>
+              <h2 className="text-lg font-semibold">
+                {t("huntressIntegration.inboundWebhookPushFromHuntress")}
+              </h2>
               <p className="text-sm text-muted-foreground">
-                Paste this endpoint into Huntress so it can push events to Breeze in near-real-time, instead of
-                waiting for the next poll. Inbound webhooks require a webhook secret (above) for signature verification.
+                {t("huntressIntegration.pasteThisEndpointIntoHuntressSoItCan")}
               </p>
             </div>
           </div>
 
           <div className="mt-4">
-            <label className="mb-1 block text-sm font-medium">Webhook URL</label>
+            <label className="mb-1 block text-sm font-medium">
+              {t("huntressIntegration.webhookURL")}
+            </label>
             {webhookUrl ? (
               <div className="flex items-center gap-2 rounded-md border bg-muted/40 px-3 py-2">
-                <code className="flex-1 truncate font-mono text-xs" title={webhookUrl}>{webhookUrl}</code>
-                <CopyButton value={webhookUrl} label="Copy" className="shrink-0" />
+                <code
+                  className="flex-1 truncate font-mono text-xs"
+                  title={webhookUrl}
+                >
+                  {webhookUrl}
+                </code>
+                <CopyButton
+                  value={webhookUrl}
+                  label={t("common:actions.copy")}
+                  className="shrink-0"
+                />
               </div>
             ) : (
-              <p className="text-sm text-muted-foreground">Resolving webhook URL…</p>
+              <p className="text-sm text-muted-foreground">
+                {t("huntressIntegration.resolvingWebhookURL")}
+              </p>
             )}
             <p className="mt-1 text-xs text-muted-foreground">
-              The <code className="font-mono">integrationId</code> query parameter tells Breeze which partner the
-              events belong to. Keep it in the URL.
+              {t("huntressIntegration.the")}
+              <code className="font-mono">integrationId</code>{" "}
+              {t(
+                "huntressIntegration.queryParameterTellsBreezeWhichPartnerTheEvents",
+              )}
             </p>
           </div>
 
@@ -714,27 +961,36 @@ export default function HuntressIntegration() {
             <div className="mt-3 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
               <span>
-                No webhook secret is set yet. Generate or enter a Webhook Secret above and click Update — inbound
-                webhooks are rejected with 403 until a secret is configured.
+                {t("huntressIntegration.noWebhookSecretIsSetYetGenerateOr")}
               </span>
             </div>
           )}
 
           <div className="mt-4 rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
-            <p className="font-medium text-foreground">Signing scheme to configure on Huntress</p>
+            <p className="font-medium text-foreground">
+              {t("huntressIntegration.signingSchemeToConfigureOnHuntress")}
+            </p>
             <ul className="mt-1 list-disc space-y-1 pl-4">
               <li>
-                Header <code className="font-mono">x-huntress-signature</code>:{' '}
-                <code className="font-mono">sha256=HMAC-SHA256(&#123;timestamp&#125;.&#123;rawBody&#125;, secret)</code>
+                {t("huntressIntegration.header")}
+                <code className="font-mono">x-huntress-signature</code>:{" "}
+                <code className="font-mono">
+                  sha256=HMAC-SHA256(&#123;timestamp&#125;.&#123;rawBody&#125;,
+                  secret)
+                </code>
               </li>
               <li>
-                Header <code className="font-mono">x-huntress-timestamp</code>: Unix seconds, signed alongside the
-                body (requests older than 10 minutes are rejected).
+                {t("huntressIntegration.header")}
+                <code className="font-mono">x-huntress-timestamp</code>
+                {t(
+                  "huntressIntegration.unixSecondsSignedAlongsideTheBodyRequestsOlder",
+                )}
               </li>
               <li>
-                Optional <code className="font-mono">x-huntress-account-id</code> /{' '}
-                <code className="font-mono">x-huntress-integration-id</code> headers are also accepted in place of
-                the query parameter.
+                {t("common:labels.optional")}
+                <code className="font-mono">x-huntress-account-id</code> /{" "}
+                <code className="font-mono">x-huntress-integration-id</code>{" "}
+                {t("huntressIntegration.headersAreAlsoAcceptedInPlaceOfThe")}
               </li>
             </ul>
           </div>
@@ -745,47 +1001,83 @@ export default function HuntressIntegration() {
         <div className="grid gap-6 lg:grid-cols-[1fr_1fr]">
           <div className="rounded-xl border bg-card p-6 shadow-xs">
             <div className="flex items-center justify-between gap-4">
-              <h2 className="text-lg font-semibold">Sync status</h2>
-              {syncStatusBadge(integration)}
+              <h2 className="text-lg font-semibold">
+                {t("huntressIntegration.syncStatus")}
+              </h2>
+              {syncStatusBadge(integration, t)}
             </div>
             <div className="mt-4 space-y-2 text-sm">
               <div className="flex justify-between text-muted-foreground">
-                <span>Last sync</span>
-                <span className="text-foreground">{integration.lastSyncAt ? formatDateTime(integration.lastSyncAt) : 'Never'}</span>
+                <span>{t("huntressIntegration.lastSync")}</span>
+                <span className="text-foreground">
+                  {integration.lastSyncAt
+                    ? formatDateTime(integration.lastSyncAt)
+                    : "Never"}
+                </span>
               </div>
-              {integration.lastSyncStatus === 'success' && (
+              {integration.lastSyncStatus === "success" && (
                 <div className="flex justify-between text-muted-foreground">
-                  <span>Last result</span>
-                  <span className="text-foreground">{formatSyncResult(integration)}</span>
+                  <span>{t("huntressIntegration.lastResult")}</span>
+                  <span className="text-foreground">
+                    {formatSyncResult(integration, t)}
+                  </span>
                 </div>
               )}
-              {integration.lastSyncStatus === 'error' && integration.lastSyncError && (
-                <div className="rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-700">
-                  <span className="font-medium">Last sync failed:</span> {integration.lastSyncError}
-                </div>
-              )}
+              {integration.lastSyncStatus === "error" &&
+                integration.lastSyncError && (
+                  <div className="rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-700">
+                    <span className="font-medium">
+                      {t("huntressIntegration.lastSyncFailed")}
+                    </span>{" "}
+                    {integration.lastSyncError}
+                  </div>
+                )}
             </div>
           </div>
 
           <div className="rounded-xl border bg-card p-6 shadow-xs">
-            <h2 className="text-lg font-semibold">Coverage</h2>
+            <h2 className="text-lg font-semibold">
+              {t("huntressIntegration.coverage")}
+            </h2>
             {coverage && (
               <div className="mt-4 grid grid-cols-2 gap-4">
-                <Metric label="Total agents" value={coverage.totalAgents} />
-                <Metric label="Mapped devices" value={coverage.mappedAgents} />
-                <Metric label="Unmapped devices" value={coverage.unmappedAgents} warn={coverage.unmappedAgents > 0} />
-                <Metric label="Offline agents" value={coverage.offlineAgents} />
+                <Metric
+                  label={t("huntressIntegration.totalAgents")}
+                  value={coverage.totalAgents}
+                />
+                <Metric
+                  label={t("huntressIntegration.mappedDevices")}
+                  value={coverage.mappedAgents}
+                />
+                <Metric
+                  label={t("huntressIntegration.unmappedDevices")}
+                  value={coverage.unmappedAgents}
+                  warn={coverage.unmappedAgents > 0}
+                />
+                <Metric
+                  label={t("huntressIntegration.offlineAgents")}
+                  value={coverage.offlineAgents}
+                />
               </div>
             )}
             {incidents && (
               <div className="mt-4 space-y-2">
                 <div className="flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">Open incidents</span>
-                  <span className={`font-semibold ${incidents.open > 0 ? 'text-red-600' : ''}`}>{incidents.open}</span>
+                  <span className="text-muted-foreground">
+                    {t("huntressIntegration.openIncidents")}
+                  </span>
+                  <span
+                    className={`font-semibold ${incidents.open > 0 ? "text-red-600" : ""}`}
+                  >
+                    {incidents.open}
+                  </span>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   {incidents.bySeverity.map((row) => (
-                    <span key={row.severity ?? 'unknown'} className="text-xs text-muted-foreground">
+                    <span
+                      key={row.severity ?? "unknown"}
+                      className="text-xs text-muted-foreground"
+                    >
                       <SeverityBadge severity={row.severity} /> {row.count}
                     </span>
                   ))}
@@ -800,18 +1092,26 @@ export default function HuntressIntegration() {
         <div className="rounded-xl border bg-card p-6 shadow-xs">
           <div className="flex items-start justify-between gap-4">
             <div>
-              <h2 className="text-lg font-semibold">Organization mapping</h2>
+              <h2 className="text-lg font-semibold">
+                {t("huntressIntegration.organizationMapping")}
+              </h2>
               <p className="text-sm text-muted-foreground">
-                Unmapped Huntress organizations stay quarantined until assigned to a Breeze organization.
+                {t(
+                  "huntressIntegration.unmappedHuntressOrganizationsStayQuarantinedUntilAssignedTo",
+                )}
               </p>
             </div>
             {unmappedCount > 0 && (
               <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs text-amber-700">
-                {unmappedCount} unmapped
+                {unmappedCount} {t("huntressIntegration.unmapped")}
               </span>
             )}
           </div>
-          {mappingError && <div className="mt-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{mappingError}</div>}
+          {mappingError && (
+            <div className="mt-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+              {mappingError}
+            </div>
+          )}
 
           {huntressOrgs.length > 0 && (
             <div className="mt-4 flex flex-wrap items-center gap-3">
@@ -821,14 +1121,16 @@ export default function HuntressIntegration() {
                   type="text"
                   value={mappingSearch}
                   onChange={(event) => setMappingSearch(event.target.value)}
-                  placeholder="Search Huntress or Breeze organizations"
+                  placeholder={t(
+                    "huntressIntegration.searchHuntressOrBreezeOrganizations",
+                  )}
                   className="h-9 w-full rounded-md border bg-background pl-9 pr-8 text-sm outline-hidden focus:ring-2 focus:ring-primary/30"
                 />
                 {mappingSearch && (
                   <button
                     type="button"
-                    aria-label="Clear search"
-                    onClick={() => setMappingSearch('')}
+                    aria-label={t("huntressIntegration.clearSearch")}
+                    onClick={() => setMappingSearch("")}
                     className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
                   >
                     <X className="h-4 w-4" />
@@ -839,10 +1141,12 @@ export default function HuntressIntegration() {
                 <input
                   type="checkbox"
                   checked={showUnmappedOnly}
-                  onChange={(event) => setShowUnmappedOnly(event.target.checked)}
+                  onChange={(event) =>
+                    setShowUnmappedOnly(event.target.checked)
+                  }
                   className="h-4 w-4 rounded border-input"
                 />
-                Unmapped only
+                {t("huntressIntegration.unmappedOnly")}
               </label>
             </div>
           )}
@@ -851,45 +1155,75 @@ export default function HuntressIntegration() {
             <table className="w-full min-w-[820px] text-sm">
               <thead>
                 <tr className="border-b text-left text-xs font-semibold uppercase text-muted-foreground">
-                  <th className="pb-2 pr-4">Huntress org</th>
-                  <th className="pb-2 pr-4">Agents</th>
-                  <th className="pb-2 pr-4">Incidents</th>
-                  <th className="pb-2 pr-4">Breeze organization</th>
-                  <th className="pb-2">Status</th>
+                  <th className="pb-2 pr-4">
+                    {t("huntressIntegration.huntressOrg")}
+                  </th>
+                  <th className="pb-2 pr-4">
+                    {t("huntressIntegration.agents")}
+                  </th>
+                  <th className="pb-2 pr-4">
+                    {t("huntressIntegration.incidents")}
+                  </th>
+                  <th className="pb-2 pr-4">
+                    {t("huntressIntegration.breezeOrganization")}
+                  </th>
+                  <th className="pb-2">{t("common:labels.status")}</th>
                 </tr>
               </thead>
               <tbody>
                 {pagedOrgs.map((row) => (
-                  <tr key={row.huntressOrgId} className="border-b last:border-0">
+                  <tr
+                    key={row.huntressOrgId}
+                    className="border-b last:border-0"
+                  >
                     <td className="py-3 pr-4">
-                      <div className="font-medium">{row.huntressOrgName || row.huntressOrgId}</div>
+                      <div className="font-medium">
+                        {row.huntressOrgName || row.huntressOrgId}
+                      </div>
                       <div className="text-xs text-muted-foreground">
-                        ID {row.huntressOrgId}{row.huntressOrgKey ? ` - ${row.huntressOrgKey}` : ''}
+                        ID {row.huntressOrgId}
+                        {row.huntressOrgKey ? ` - ${row.huntressOrgKey}` : ""}
                       </div>
                     </td>
-                    <td className="py-3 pr-4 text-muted-foreground">{row.agentsCount}</td>
-                    <td className="py-3 pr-4 text-muted-foreground">{row.incidentsCount}</td>
+                    <td className="py-3 pr-4 text-muted-foreground">
+                      {row.agentsCount}
+                    </td>
+                    <td className="py-3 pr-4 text-muted-foreground">
+                      {row.incidentsCount}
+                    </td>
                     <td className="py-3 pr-4">
                       <div className="flex items-center gap-2">
                         <select
-                          value={row.mappedOrgId ?? ''}
-                          onChange={(event) => void handleMap(row.huntressOrgId, event.target.value || null)}
+                          value={row.mappedOrgId ?? ""}
+                          onChange={(event) =>
+                            void handleMap(
+                              row.huntressOrgId,
+                              event.target.value || null,
+                            )
+                          }
                           disabled={mappingSaving[row.huntressOrgId]}
                           className="h-9 w-full max-w-xs rounded-md border bg-background px-2 text-sm outline-hidden focus:ring-2 focus:ring-primary/30 disabled:opacity-50"
                         >
-                          <option value="">Select organization</option>
+                          <option value="">
+                            {t("huntressIntegration.selectOrganization")}
+                          </option>
                           {orgOptions.map((org) => (
-                            <option key={org.id} value={org.id}>{org.name}</option>
+                            <option key={org.id} value={org.id}>
+                              {org.name}
+                            </option>
                           ))}
                         </select>
                         {row.mappedOrgId && (
                           <button
                             type="button"
-                            onClick={() => void handleMap(row.huntressOrgId, null)}
+                            onClick={() =>
+                              void handleMap(row.huntressOrgId, null)
+                            }
                             disabled={mappingSaving[row.huntressOrgId]}
                             className="inline-flex h-9 shrink-0 items-center gap-1 rounded-md border px-2 text-xs font-medium text-muted-foreground hover:bg-muted disabled:opacity-50"
                           >
-                            <Unplug className="h-3.5 w-3.5" /> Unmap
+                            <Unplug className="h-3.5 w-3.5" />{" "}
+                            {t("huntressIntegration.unmap")}
                           </button>
                         )}
                       </div>
@@ -907,15 +1241,25 @@ export default function HuntressIntegration() {
                 ))}
                 {huntressOrgs.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="py-6 text-sm text-muted-foreground">
-                      No Huntress organizations discovered yet. Save credentials and run Sync Now.
+                    <td
+                      colSpan={5}
+                      className="py-6 text-sm text-muted-foreground"
+                    >
+                      {t(
+                        "huntressIntegration.noHuntressOrganizationsDiscoveredYetSaveCredentialsAnd",
+                      )}
                     </td>
                   </tr>
                 )}
                 {huntressOrgs.length > 0 && filteredOrgs.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="py-6 text-sm text-muted-foreground">
-                      No organizations match the current filter.
+                    <td
+                      colSpan={5}
+                      className="py-6 text-sm text-muted-foreground"
+                    >
+                      {t(
+                        "huntressIntegration.noOrganizationsMatchTheCurrentFilter",
+                      )}
                     </td>
                   </tr>
                 )}
@@ -926,25 +1270,40 @@ export default function HuntressIntegration() {
           {filteredOrgs.length > MAPPING_PAGE_SIZE && (
             <div className="mt-4 flex items-center justify-between text-sm text-muted-foreground">
               <span>
-                Showing {safePage * MAPPING_PAGE_SIZE + 1}–{Math.min((safePage + 1) * MAPPING_PAGE_SIZE, filteredOrgs.length)} of {filteredOrgs.length}
+                {t("huntressIntegration.showing")}
+                {safePage * MAPPING_PAGE_SIZE + 1}–
+                {Math.min(
+                  (safePage + 1) * MAPPING_PAGE_SIZE,
+                  filteredOrgs.length,
+                )}{" "}
+                {t("huntressIntegration.of")}
+                {filteredOrgs.length}
               </span>
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => setMappingPage((page) => Math.max(0, page - 1))}
+                  onClick={() =>
+                    setMappingPage((page) => Math.max(0, page - 1))
+                  }
                   disabled={safePage === 0}
                   className="inline-flex h-8 items-center rounded-md border px-3 hover:bg-muted disabled:opacity-50"
                 >
-                  Previous
+                  {t("huntressIntegration.previous")}
                 </button>
-                <span className="text-foreground">Page {safePage + 1} of {pageCount}</span>
+                <span className="text-foreground">
+                  {t("huntressIntegration.page")}
+                  {safePage + 1} {t("huntressIntegration.of")}
+                  {pageCount}
+                </span>
                 <button
                   type="button"
-                  onClick={() => setMappingPage((page) => Math.min(pageCount - 1, page + 1))}
+                  onClick={() =>
+                    setMappingPage((page) => Math.min(pageCount - 1, page + 1))
+                  }
                   disabled={safePage >= pageCount - 1}
                   className="inline-flex h-8 items-center rounded-md border px-3 hover:bg-muted disabled:opacity-50"
                 >
-                  Next
+                  {t("huntressIntegration.next")}
                 </button>
               </div>
             </div>
@@ -954,14 +1313,22 @@ export default function HuntressIntegration() {
 
       {integration && recentIncidents.length > 0 && (
         <div className="rounded-xl border bg-card p-6 shadow-xs">
-          <h2 className="text-lg font-semibold">Recent incidents</h2>
+          <h2 className="text-lg font-semibold">
+            {t("huntressIntegration.recentIncidents")}
+          </h2>
           <div className="mt-4 space-y-3">
             {recentIncidents.map((incident) => (
-              <div key={incident.id} className="flex items-center justify-between gap-4 border-b pb-3 last:border-0 last:pb-0">
+              <div
+                key={incident.id}
+                className="flex items-center justify-between gap-4 border-b pb-3 last:border-0 last:pb-0"
+              >
                 <div>
                   <div className="font-medium">{incident.title}</div>
                   <div className="text-xs text-muted-foreground">
-                    {incident.reportedAt ? formatDateTime(incident.reportedAt) : 'Unknown time'} - {incident.status}
+                    {incident.reportedAt
+                      ? formatDateTime(incident.reportedAt)
+                      : t("huntressIntegration.unknownTime")}{" "}
+                    - {incident.status}
                   </div>
                 </div>
                 <SeverityBadge severity={incident.severity} />
@@ -987,11 +1354,15 @@ function SecretInput(props: {
     <div>
       <label className="mb-1 block text-sm font-medium">
         {props.label}
-        {props.hint && <span className="ml-1 text-xs text-muted-foreground">({props.hint})</span>}
+        {props.hint && (
+          <span className="ml-1 text-xs text-muted-foreground">
+            ({props.hint})
+          </span>
+        )}
       </label>
       <div className="relative">
         <input
-          type={props.visible ? 'text' : 'password'}
+          type={props.visible ? "text" : "password"}
           value={props.value}
           onChange={(event) => props.onChange(event.target.value)}
           placeholder={props.placeholder}
@@ -999,18 +1370,33 @@ function SecretInput(props: {
         />
         <button
           type="button"
-          aria-label={props.visible ? `Hide ${props.label}` : `Show ${props.label}`}
+          aria-label={
+            props.visible ? `Hide ${props.label}` : `Show ${props.label}`
+          }
           onClick={props.onToggle}
           className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
         >
-          {props.visible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+          {props.visible ? (
+            <EyeOff className="h-4 w-4" />
+          ) : (
+            <Eye className="h-4 w-4" />
+          )}
         </button>
       </div>
     </div>
   );
 }
 
-function CopyButton({ value, label = 'Copy', className }: { value: string; label?: string; className?: string }) {
+function CopyButton({
+  value,
+  label = "Copy",
+  className,
+}: {
+  value: string;
+  label?: string;
+  className?: string;
+}) {
+  const { t } = useTranslation("integrations");
   const [copied, setCopied] = useState(false);
   const onCopy = async () => {
     if (!value) return;
@@ -1028,18 +1414,36 @@ function CopyButton({ value, label = 'Copy', className }: { value: string; label
       type="button"
       onClick={onCopy}
       disabled={!value}
-      className={`inline-flex items-center gap-1.5 rounded-md border bg-background px-3 py-1 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60 ${className ?? ''}`}
+      className={`inline-flex items-center gap-1.5 rounded-md border bg-background px-3 py-1 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60 ${className ?? ""}`}
     >
-      {copied ? <Check className="h-3.5 w-3.5 text-emerald-600" /> : <Copy className="h-3.5 w-3.5" />}
-      {copied ? 'Copied' : label}
+      {copied ? (
+        <Check className="h-3.5 w-3.5 text-emerald-600" />
+      ) : (
+        <Copy className="h-3.5 w-3.5" />
+      )}
+      {copied
+        ? t("common:states.copied")
+        : label === "Copy"
+          ? t("common:actions.copy")
+          : label}
     </button>
   );
 }
 
-function Metric({ label, value, warn = false }: { label: string; value: number; warn?: boolean }) {
+function Metric({
+  label,
+  value,
+  warn = false,
+}: {
+  label: string;
+  value: number;
+  warn?: boolean;
+}) {
   return (
     <div>
-      <p className={`text-2xl font-bold ${warn ? 'text-amber-600' : ''}`}>{value}</p>
+      <p className={`text-2xl font-bold ${warn ? "text-amber-600" : ""}`}>
+        {value}
+      </p>
       <p className="text-xs text-muted-foreground">{label}</p>
     </div>
   );
