@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { asc, eq, sql, type SQL } from 'drizzle-orm';
+import { and, asc, eq, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { createTicketFormSchema, updateTicketFormSchema } from '@breeze/shared';
 import { db } from '../../db';
@@ -46,6 +46,26 @@ function ticketFormAccessCondition(auth: AuthContext): SQL | undefined {
     return sql`(${orgCond} OR (${ticketForms.orgId} IS NULL AND ${ticketForms.partnerId} = ${auth.partnerId}))`;
   }
   return orgCond;
+}
+
+/**
+ * Fetch a mutation target with the caller's access condition ANDed in —
+ * app-layer defense-in-depth mirroring getPolicyWithAccess in
+ * softwarePolicies.ts. RLS is the primary tenant boundary, but the app layer
+ * must not rely on it alone: without this, a caller naming another tenant's
+ * org-owned form by id would pass the partner-wide gate (orgId non-null) and
+ * reach the mutation. A row outside the caller's tenancy 404s here instead.
+ */
+async function getFormWithAccess(formId: string, auth: AuthContext) {
+  const conditions: SQL[] = [eq(ticketForms.id, formId)];
+  const accessCondition = ticketFormAccessCondition(auth);
+  if (accessCondition) conditions.push(accessCondition);
+  const rows = await db
+    .select()
+    .from(ticketForms)
+    .where(and(...conditions))
+    .limit(1);
+  return rows[0] ?? null;
 }
 
 /** Resolve the partner a category must belong to, for either ownership axis. */
@@ -184,9 +204,7 @@ ticketFormRoutes.put(
     const { id } = c.req.valid('param');
     const payload = c.req.valid('json');
 
-    // Request-context read (RLS already scopes visibility for the row).
-    const rows = await db.select().from(ticketForms).where(eq(ticketForms.id, id)).limit(1);
-    const row = rows[0];
+    const row = await getFormWithAccess(id, auth);
     if (!row) return c.json({ error: 'Ticket form not found' }, 404);
 
     if (row.orgId === null && !canManagePartnerWidePolicies(auth)) {
@@ -241,8 +259,7 @@ ticketFormRoutes.delete(
     const auth = c.get('auth');
     const { id } = c.req.valid('param');
 
-    const rows = await db.select().from(ticketForms).where(eq(ticketForms.id, id)).limit(1);
-    const row = rows[0];
+    const row = await getFormWithAccess(id, auth);
     if (!row) return c.json({ error: 'Ticket form not found' }, 404);
 
     if (row.orgId === null && !canManagePartnerWidePolicies(auth)) {

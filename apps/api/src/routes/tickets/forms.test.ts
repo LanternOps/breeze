@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-const { authRef, dbRowsMock, insertReturningMock, updateReturningMock, deleteWhereMock, listForOrgMock, writeRouteAuditMock } = vi.hoisted(() => ({
+const { authRef, dbRowsMock, insertReturningMock, updateReturningMock, deleteWhereMock, listForOrgMock, writeRouteAuditMock, selectWhereArgs } = vi.hoisted(() => ({
+  /** Every db.select()...where(...) arg, so tests can assert fetch conditions. */
+  selectWhereArgs: [] as unknown[],
   authRef: {
     current: {
       scope: 'partner' as string,
@@ -10,7 +12,7 @@ const { authRef, dbRowsMock, insertReturningMock, updateReturningMock, deleteWhe
       partnerOrgAccess: 'all' as string,
       orgId: null as string | null,
       accessibleOrgIds: ['org-1'] as string[] | null,
-      orgCondition: () => undefined,
+      orgCondition: (() => undefined) as () => unknown,
       canAccessOrg: (_id: string) => true as boolean
     }
   },
@@ -50,10 +52,13 @@ vi.mock('../../db', () => ({
   db: {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
-        where: vi.fn(() => Object.assign(Promise.resolve(dbRowsMock()), {
-          orderBy: vi.fn(() => dbRowsMock()),
-          limit: vi.fn(() => dbRowsMock())
-        }))
+        where: vi.fn((...args: unknown[]) => {
+          selectWhereArgs.push(...args);
+          return Object.assign(Promise.resolve(dbRowsMock()), {
+            orderBy: vi.fn(() => dbRowsMock()),
+            limit: vi.fn(() => dbRowsMock())
+          });
+        })
       }))
     })),
     insert: vi.fn(() => ({ values: vi.fn(() => ({ returning: vi.fn(() => insertReturningMock()) })) })),
@@ -62,7 +67,14 @@ vi.mock('../../db', () => ({
   }
 }));
 
+import { sql, type SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { ticketFormRoutes } from './forms';
+
+/** Render a captured Drizzle condition to a SQL string for shape assertions. */
+function renderSql(condition: unknown): string {
+  return new PgDialect().sqlToQuery(condition as SQL).sql;
+}
 
 function makeApp() {
   const app = new Hono();
@@ -78,7 +90,8 @@ const validBody = {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  authRef.current = { ...authRef.current, scope: 'partner', partnerId: 'p-1', partnerOrgAccess: 'all', orgId: null, canAccessOrg: () => true };
+  selectWhereArgs.length = 0;
+  authRef.current = { ...authRef.current, scope: 'partner', partnerId: 'p-1', partnerOrgAccess: 'all', orgId: null, orgCondition: () => undefined, canAccessOrg: () => true };
 });
 
 describe('POST /ticket-forms', () => {
@@ -197,5 +210,53 @@ describe('PUT/DELETE partner-wide gating', () => {
     expect(body).toEqual({ success: true });
     expect(deleteWhereMock).toHaveBeenCalled();
     expect(writeRouteAuditMock).toHaveBeenCalled();
+  });
+});
+
+describe('PUT/DELETE app-layer tenant scoping on the row fetch', () => {
+  // App-layer defense-in-depth (mirrors getPolicyWithAccess in
+  // softwarePolicies.ts): the mutation-target fetch must AND the caller's
+  // access condition into the WHERE, not rely on RLS alone. A row outside the
+  // caller's tenancy then 404s before any gate or mutation runs.
+  const FORM_ID = '9a8b7c6d-1111-4222-8333-444455556666';
+
+  function orgScopedAuth() {
+    authRef.current = {
+      ...authRef.current,
+      scope: 'organization',
+      partnerId: null,
+      orgId: ORG_ID,
+      // Real SQL condition (the raw marker survives into the rendered query)
+      // standing in for the org-scope eq(orgId, ...) the middleware builds.
+      orgCondition: () => sql.raw(`org_scope_marker = org_scope_marker`) as SQL
+    };
+  }
+
+  it('PUT 404s a foreign row: fetch WHERE is composed with the access condition', async () => {
+    orgScopedAuth();
+    dbRowsMock.mockResolvedValue([]); // scoped fetch misses the foreign row
+    const res = await makeApp().request(`/ticket-forms/${FORM_ID}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'renamed' })
+    });
+    expect(res.status).toBe(404);
+    expect(updateReturningMock).not.toHaveBeenCalled();
+    expect(selectWhereArgs.length).toBeGreaterThan(0);
+    const rendered = renderSql(selectWhereArgs[0]);
+    expect(rendered).toContain('org_scope_marker'); // access condition present
+    expect(rendered).toContain('and');              // composed, not bare id eq
+  });
+
+  it('DELETE 404s a foreign row: fetch WHERE is composed with the access condition', async () => {
+    orgScopedAuth();
+    dbRowsMock.mockResolvedValue([]);
+    const res = await makeApp().request(`/ticket-forms/${FORM_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(404);
+    expect(deleteWhereMock).not.toHaveBeenCalled();
+    expect(selectWhereArgs.length).toBeGreaterThan(0);
+    const rendered = renderSql(selectWhereArgs[0]);
+    expect(rendered).toContain('org_scope_marker');
+    expect(rendered).toContain('and');
   });
 });
