@@ -29,6 +29,7 @@ import {
   setS1MetricsRecorder
 } from '../services/sentinelOne/metrics';
 import { setAnomalyMetricsRecorder } from '../services/anomalyMetrics';
+import { setAbuseMetricsRecorder } from '../services/abuseMetrics';
 
 export {
   recordBackupCommandTimeout,
@@ -267,6 +268,21 @@ const commandsDispatchedTotal = new Counter({
   registers: [register]
 });
 
+// Droplet-abuse-detection sweep signals. `abuseMetrics.ts` is the thin
+// recorder (same import-cycle rationale as `anomalyMetrics.ts` above).
+const abuseSignalsFiredTotal = new Counter({
+  name: 'breeze_abuse_signals_fired_total',
+  help: 'Abuse signals fired by the sweep, by severity',
+  labelNames: ['severity'] as const,
+  registers: [register]
+});
+const abuseSweepRunsTotal = new Counter({
+  name: 'breeze_abuse_sweep_runs_total',
+  help: 'Abuse sweep job runs by result',
+  labelNames: ['result'] as const,
+  registers: [register]
+});
+
 const processStartTimeGauge = new Gauge({
   name: 'process_start_time_seconds',
   help: 'Start time of the process since unix epoch in seconds',
@@ -304,6 +320,8 @@ s1ActionPollTransitionsTotal.labels('queued').inc(0);
 failedLoginsTotal.labels('invalid_password', 'redacted').inc(0);
 agentEnrollmentsTotal.labels('success', 'redacted').inc(0);
 commandsDispatchedTotal.labels('script', 'user', 'redacted').inc(0);
+abuseSignalsFiredTotal.labels('alert').inc(0);
+abuseSweepRunsTotal.labels('success').inc(0);
 nodejsVersionInfoGauge.labels(process.version).set(1);
 
 interface CounterValue {
@@ -617,6 +635,11 @@ setAnomalyMetricsRecorder({
   onFailedLogin: recordFailedLoginMetric,
   onAgentEnrollment: recordAgentEnrollmentMetric,
   onCommandDispatch: recordCommandDispatchMetric,
+});
+
+setAbuseMetricsRecorder({
+  onSignalFired: (severity) => abuseSignalsFiredTotal.labels(normalizeMetricLabel(severity, 'unknown')).inc(),
+  onSweepRun: (result) => abuseSweepRunsTotal.labels(result).inc(),
 });
 
 async function refreshBackupOperationalGauges(): Promise<void> {
