@@ -1,10 +1,10 @@
-import { useMemo } from 'react';
-import { Activity, AlertTriangle, RefreshCcw } from 'lucide-react';
-import { cn } from '@/lib/utils';
-import ProgressBar from '../shared/ProgressBar';
-
-type DeviceStatus = 'queued' | 'running' | 'completed' | 'failed';
-
+import { useMemo } from "react";
+import { Activity, AlertTriangle, RefreshCcw } from "lucide-react";
+import { cn } from "@/lib/utils";
+import ProgressBar from "../shared/ProgressBar";
+import { useTranslation } from "react-i18next";
+import { i18n } from "@/lib/i18n";
+type DeviceStatus = "queued" | "running" | "completed" | "failed";
 export type DeviceProgress = {
   id: string;
   name: string;
@@ -13,75 +13,90 @@ export type DeviceProgress = {
   completedAt?: string;
   error?: string;
 };
-
 type DeploymentProgressProps = {
   title?: string;
   subtitle?: string;
   devices?: DeviceProgress[];
   onRetryFailed?: () => void;
 };
-
-const statusStyles: Record<DeviceStatus, { label: string; color: string }> = {
-  queued: { label: 'Queued', color: 'bg-slate-500/20 text-slate-700 border-slate-500/40' },
-  running: { label: 'Running', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40' },
-  completed: { label: 'Completed', color: 'bg-emerald-500/20 text-emerald-700 border-emerald-500/40' },
-  failed: { label: 'Failed', color: 'bg-red-500/20 text-red-700 border-red-500/40' }
+const statusStyles: Record<
+  DeviceStatus,
+  {
+    label: string;
+    color: string;
+  }
+> = {
+  queued: {
+    label: i18n.t("policies:software.deploymentProgress.queued"),
+    color: "bg-slate-500/20 text-slate-700 border-slate-500/40",
+  },
+  running: {
+    label: i18n.t("policies:software.deploymentProgress.running"),
+    color: "bg-blue-500/20 text-blue-700 border-blue-500/40",
+  },
+  completed: {
+    label: i18n.t("policies:software.deploymentProgress.completed"),
+    color: "bg-emerald-500/20 text-emerald-700 border-emerald-500/40",
+  },
+  failed: {
+    label: i18n.t("policies:software.deploymentProgress.failed"),
+    color: "bg-red-500/20 text-red-700 border-red-500/40",
+  },
 };
-
 const defaultDevices: DeviceProgress[] = [
   {
-    id: 'dev-fin-021',
-    name: 'FIN-LT-021',
-    status: 'completed',
-    startedAt: '2024-03-18 09:12',
-    completedAt: '2024-03-18 09:18'
+    id: "dev-fin-021",
+    name: "FIN-LT-021",
+    status: "completed",
+    startedAt: "2024-03-18 09:12",
+    completedAt: "2024-03-18 09:18",
   },
   {
-    id: 'dev-fin-024',
-    name: 'FIN-DT-024',
-    status: 'running',
-    startedAt: '2024-03-18 09:14'
+    id: "dev-fin-024",
+    name: "FIN-DT-024",
+    status: "running",
+    startedAt: "2024-03-18 09:14",
   },
   {
-    id: 'dev-hr-011',
-    name: 'HR-MB-011',
-    status: 'queued'
+    id: "dev-hr-011",
+    name: "HR-MB-011",
+    status: "queued",
   },
   {
-    id: 'dev-hr-012',
-    name: 'HR-MB-012',
-    status: 'failed',
-    startedAt: '2024-03-18 09:10',
-    completedAt: '2024-03-18 09:15',
-    error: 'Insufficient disk space'
-  }
+    id: "dev-hr-012",
+    name: "HR-MB-012",
+    status: "failed",
+    startedAt: "2024-03-18 09:10",
+    completedAt: "2024-03-18 09:15",
+    error: "Insufficient disk space",
+  },
 ];
-
 export default function DeploymentProgress({
-  title = 'Deployment Progress',
-  subtitle = 'Chrome 122 · Finance rollout',
+  title = "Deployment Progress",
+  subtitle = "Chrome 122 · Finance rollout",
   devices = defaultDevices,
   onRetryFailed,
 }: DeploymentProgressProps) {
+  useTranslation("policies");
   const stats = useMemo(() => {
     const total = devices.length;
-    const completed = devices.filter(item => item.status === 'completed').length;
-    const running = devices.filter(item => item.status === 'running').length;
-    const failed = devices.filter(item => item.status === 'failed').length;
-    const queued = devices.filter(item => item.status === 'queued').length;
-
+    const completed = devices.filter(
+      (item) => item.status === "completed",
+    ).length;
+    const running = devices.filter((item) => item.status === "running").length;
+    const failed = devices.filter((item) => item.status === "failed").length;
+    const queued = devices.filter((item) => item.status === "queued").length;
     return { total, completed, running, failed, queued };
   }, [devices]);
-
   const isActive = stats.running > 0 || stats.queued > 0;
-  const progressVariant = stats.failed > 0 && stats.completed === 0
-    ? 'error' as const
-    : stats.failed > 0
-      ? 'warning' as const
-      : stats.completed === stats.total
-        ? 'success' as const
-        : 'default' as const;
-
+  const progressVariant =
+    stats.failed > 0 && stats.completed === 0
+      ? ("error" as const)
+      : stats.failed > 0
+        ? ("warning" as const)
+        : stats.completed === stats.total
+          ? ("success" as const)
+          : ("default" as const);
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -92,7 +107,7 @@ export default function DeploymentProgress({
         {isActive && (
           <div className="flex items-center gap-2 rounded-full border px-3 py-1 text-xs text-muted-foreground">
             <Activity className="h-3.5 w-3.5 text-emerald-500" />
-            Live updates enabled
+            {i18n.t("policies:software.deploymentProgress.liveUpdatesEnabled")}
           </div>
         )}
       </div>
@@ -100,17 +115,29 @@ export default function DeploymentProgress({
       <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-center justify-between mb-4">
           <div>
-            <p className="text-sm font-semibold">Overall progress</p>
+            <p className="text-sm font-semibold">
+              {i18n.t("policies:software.deploymentProgress.overallProgress")}
+            </p>
             <p className="text-xs text-muted-foreground">
-              {stats.completed} of {stats.total} devices completed
+              {stats.completed}
+              {i18n.t("policies:software.deploymentProgress.of")}
+              {stats.total}
+              {i18n.t("policies:software.deploymentProgress.devicesCompleted")}
             </p>
           </div>
           <div className="text-right">
             <p className="text-2xl font-semibold">
-              {stats.total > 0 ? Math.round((stats.completed / stats.total) * 100) : 0}%
+              {stats.total > 0
+                ? Math.round((stats.completed / stats.total) * 100)
+                : 0}
+              %
             </p>
             <p className="text-xs text-muted-foreground">
-              {stats.completed === stats.total ? 'Deployment complete' : 'In progress'}
+              {stats.completed === stats.total
+                ? i18n.t(
+                    "policies:software.deploymentProgress.deploymentComplete",
+                  )
+                : i18n.t("policies:software.deploymentProgress.inProgress")}
             </p>
           </div>
         </div>
@@ -124,20 +151,30 @@ export default function DeploymentProgress({
 
         <div className="mt-4 grid gap-4 sm:grid-cols-4">
           <div className="rounded-md border bg-muted/30 p-4">
-            <p className="text-xs uppercase text-muted-foreground">Completed</p>
+            <p className="text-xs uppercase text-muted-foreground">
+              {i18n.t("policies:software.deploymentProgress.completed2")}
+            </p>
             <p className="mt-2 text-lg font-semibold">{stats.completed}</p>
           </div>
           <div className="rounded-md border bg-muted/30 p-4">
-            <p className="text-xs uppercase text-muted-foreground">Running</p>
+            <p className="text-xs uppercase text-muted-foreground">
+              {i18n.t("policies:software.deploymentProgress.running2")}
+            </p>
             <p className="mt-2 text-lg font-semibold">{stats.running}</p>
           </div>
           <div className="rounded-md border bg-muted/30 p-4">
-            <p className="text-xs uppercase text-muted-foreground">Queued</p>
+            <p className="text-xs uppercase text-muted-foreground">
+              {i18n.t("policies:software.deploymentProgress.queued2")}
+            </p>
             <p className="mt-2 text-lg font-semibold">{stats.queued}</p>
           </div>
           <div className="rounded-md border bg-muted/30 p-4">
-            <p className="text-xs uppercase text-muted-foreground">Failed</p>
-            <p className="mt-2 text-lg font-semibold text-destructive">{stats.failed}</p>
+            <p className="text-xs uppercase text-muted-foreground">
+              {i18n.t("policies:software.deploymentProgress.failed2")}
+            </p>
+            <p className="mt-2 text-lg font-semibold text-destructive">
+              {stats.failed}
+            </p>
           </div>
         </div>
 
@@ -149,43 +186,61 @@ export default function DeploymentProgress({
               className="inline-flex h-9 items-center justify-center gap-2 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted"
             >
               <RefreshCcw className="h-4 w-4" />
-              Retry failed
+              {i18n.t("policies:software.deploymentProgress.retryFailed")}
             </button>
           </div>
         )}
       </div>
 
       <div className="rounded-lg border bg-card p-6 shadow-xs">
-        <h2 className="text-lg font-semibold">Per-device status</h2>
-        <p className="text-sm text-muted-foreground">Track status updates as devices report back.</p>
+        <h2 className="text-lg font-semibold">
+          {i18n.t("policies:software.deploymentProgress.perDeviceStatus")}
+        </h2>
+        <p className="text-sm text-muted-foreground">
+          {i18n.t(
+            "policies:software.deploymentProgress.trackStatusUpdatesAsDevicesReportBack",
+          )}
+        </p>
 
         <div className="mt-4 overflow-x-auto rounded-md border">
           <table className="min-w-full divide-y">
             <thead className="bg-muted/40">
               <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                <th className="px-4 py-3">Device</th>
-                <th className="px-4 py-3">Status</th>
-                <th className="px-4 py-3">Started</th>
-                <th className="px-4 py-3">Completed</th>
-                <th className="px-4 py-3">Error</th>
+                <th className="px-4 py-3">{i18n.t("common:labels.device")}</th>
+                <th className="px-4 py-3">{i18n.t("common:labels.status")}</th>
+                <th className="px-4 py-3">
+                  {i18n.t("policies:software.deploymentProgress.started")}
+                </th>
+                <th className="px-4 py-3">
+                  {i18n.t("policies:software.deploymentProgress.completed3")}
+                </th>
+                <th className="px-4 py-3">
+                  {i18n.t("policies:software.deploymentProgress.error")}
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y">
-              {devices.map(device => (
+              {devices.map((device) => (
                 <tr key={device.id} className="text-sm">
-                  <td className="px-4 py-3 font-medium text-foreground">{device.name}</td>
+                  <td className="px-4 py-3 font-medium text-foreground">
+                    {device.name}
+                  </td>
                   <td className="px-4 py-3">
                     <span
                       className={cn(
-                        'inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium',
-                        statusStyles[device.status].color
+                        "inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium",
+                        statusStyles[device.status].color,
                       )}
                     >
                       {statusStyles[device.status].label}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-muted-foreground">{device.startedAt ?? '—'}</td>
-                  <td className="px-4 py-3 text-muted-foreground">{device.completedAt ?? '—'}</td>
+                  <td className="px-4 py-3 text-muted-foreground">
+                    {device.startedAt ?? "—"}
+                  </td>
+                  <td className="px-4 py-3 text-muted-foreground">
+                    {device.completedAt ?? "—"}
+                  </td>
                   <td className="px-4 py-3 text-muted-foreground">
                     {device.error ? (
                       <span className="inline-flex items-center gap-1 text-xs text-destructive">
@@ -193,7 +248,7 @@ export default function DeploymentProgress({
                         {device.error}
                       </span>
                     ) : (
-                      '—'
+                      "—"
                     )}
                   </td>
                 </tr>

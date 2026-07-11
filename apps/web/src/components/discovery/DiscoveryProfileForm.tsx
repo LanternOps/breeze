@@ -1,4 +1,6 @@
 import { useEffect, useState, type FormEvent, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 
 export type DiscoverySchedule = {
   cadence: 'hourly' | 'interval' | 'daily' | 'weekly' | 'monthly';
@@ -65,10 +67,10 @@ type DiscoveryProfileFormProps = {
 };
 
 const methodOptions = [
-  { id: 'ping', label: 'ICMP Ping' },
-  { id: 'arp', label: 'ARP Sweep' },
-  { id: 'snmp', label: 'SNMP Probe' },
-  { id: 'port_scan', label: 'TCP Port Scan' }
+  { id: 'ping', labelKey: 'discoveryProfileForm.methods.ping' },
+  { id: 'arp', labelKey: 'discoveryProfileForm.methods.arp' },
+  { id: 'snmp', labelKey: 'discoveryProfileForm.methods.snmp' },
+  { id: 'port_scan', labelKey: 'discoveryProfileForm.methods.portScan' }
 ];
 
 const dayOptions = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
@@ -77,7 +79,7 @@ const hourlyIntervalOptions = [1, 2, 3, 4, 6, 8, 12, 24];
 const CIDR_REGEX = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,3}$/;
 const IP_REGEX = /^(\d{1,3}\.){3}\d{1,3}$/;
 
-function validateSubnets(text: string): string[] {
+function validateSubnets(text: string, t: TFunction): string[] {
   const lines = text
     .split(/\n|,/)
     .map(v => v.trim())
@@ -90,18 +92,18 @@ function validateSubnets(text: string): string[] {
       const octets = ip.split('.').map(Number);
       const prefixNum = Number(prefix);
       if (octets.some(o => o > 255)) {
-        errors.push(`"${line}": octet value exceeds 255`);
+        errors.push(t('discoveryProfileForm.validation.octet', { value: line }));
       } else if (prefixNum > 32) {
-        errors.push(`"${line}": prefix length must be 0–32`);
+        errors.push(t('discoveryProfileForm.validation.prefix', { value: line }));
       }
     } else if (IP_REGEX.test(line)) {
       const octets = line.split('.').map(Number);
       if (octets.some(o => o > 255)) {
-        errors.push(`"${line}": octet value exceeds 255`);
+        errors.push(t('discoveryProfileForm.validation.octet', { value: line }));
       }
       // bare IP is accepted (treated as /32)
     } else {
-      errors.push(`"${line}": not a valid CIDR range or IP address`);
+      errors.push(t('discoveryProfileForm.validation.invalidCidr', { value: line }));
     }
   }
   return errors;
@@ -141,14 +143,16 @@ export default function DiscoveryProfileForm({
   sites = [],
   onSubmit,
   onCancel,
-  submitLabel = 'Save Profile',
+  submitLabel,
   disabled = false,
   error
 }: DiscoveryProfileFormProps) {
+  const { t } = useTranslation('discovery');
   const [formValues, setFormValues] = useState<DiscoveryProfileFormValues>(initialValues ?? defaultValues);
   const [subnetsText, setSubnetsText] = useState((initialValues?.subnets ?? []).join('\n'));
   const [subnetErrors, setSubnetErrors] = useState<string[]>([]);
   const isSnmpEnabled = formValues.methods.includes('snmp');
+  const resolvedSubmitLabel = submitLabel ?? t('discoveryProfileForm.actions.saveProfile');
 
   useEffect(() => {
     setSubnetErrors([]);
@@ -186,11 +190,11 @@ export default function DiscoveryProfileForm({
       .filter(Boolean);
 
     if (subnets.length === 0) {
-      setSubnetErrors(['At least one subnet or IP address is required.']);
+      setSubnetErrors([t('discoveryProfileForm.validation.subnetRequired')]);
       return;
     }
 
-    const errors = validateSubnets(subnetsText);
+    const errors = validateSubnets(subnetsText, t);
     if (errors.length > 0) {
       setSubnetErrors(errors);
       return;
@@ -210,35 +214,35 @@ export default function DiscoveryProfileForm({
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
       <div className="rounded-lg border bg-card p-6 shadow-xs">
-        <h2 className="text-lg font-semibold">Profile Details</h2>
-        <p className="text-sm text-muted-foreground">Define the network scope and discovery methods.</p>
+        <h2 className="text-lg font-semibold">{t('discoveryProfileForm.profileDetails.title')}</h2>
+        <p className="text-sm text-muted-foreground">{t('discoveryProfileForm.profileDetails.description')}</p>
 
         <div className="mt-4 grid gap-4 md:grid-cols-2">
           <div>
-            <label className="text-sm font-medium">Profile name</label>
+            <label className="text-sm font-medium">{t('discoveryProfileForm.fields.profileName')}</label>
             <input
               type="text"
               value={formValues.name}
               onChange={event => setFormValues(prev => ({ ...prev, name: event.target.value }))}
-              placeholder="Headquarters scan"
+              placeholder={t('discoveryProfileForm.placeholders.profileName')}
               className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
           </div>
           <div>
-            <label className="text-sm font-medium">Site</label>
+            <label className="text-sm font-medium">{t('common:labels.site')}</label>
             <select
               value={formValues.siteId}
               onChange={event => setFormValues(prev => ({ ...prev, siteId: event.target.value }))}
               className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
-              <option value="">Select a site...</option>
+              <option value="">{t('discoveryProfileForm.options.selectSite')}</option>
               {sites.map(site => (
                 <option key={site.id} value={site.id}>{site.name}</option>
               ))}
             </select>
           </div>
           <div>
-            <label className="text-sm font-medium">Schedule cadence</label>
+            <label className="text-sm font-medium">{t('discoveryProfileForm.fields.scheduleCadence')}</label>
             <select
               value={formValues.schedule.cadence}
               onChange={event => {
@@ -259,23 +263,23 @@ export default function DiscoveryProfileForm({
               }}
               className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
-              <option value="hourly">Hourly</option>
-              <option value="interval">Custom interval</option>
-              <option value="daily">Daily</option>
-              <option value="weekly">Weekly</option>
-              <option value="monthly">Monthly</option>
+              <option value="hourly">{t('discoveryProfileForm.cadence.hourly')}</option>
+              <option value="interval">{t('discoveryProfileForm.cadence.interval')}</option>
+              <option value="daily">{t('discoveryProfileForm.cadence.daily')}</option>
+              <option value="weekly">{t('discoveryProfileForm.cadence.weekly')}</option>
+              <option value="monthly">{t('discoveryProfileForm.cadence.monthly')}</option>
             </select>
           </div>
           <div className="md:col-span-2">
-            <label className="text-sm font-medium">Subnets to scan</label>
+            <label className="text-sm font-medium">{t('discoveryProfileForm.fields.subnets')}</label>
             <textarea
               value={subnetsText}
               onChange={event => handleSubnetsChange(event.target.value)}
-              placeholder={"10.0.0.0/24\n10.0.1.0/24"}
+              placeholder={t('discoveryProfileForm.placeholders.subnets')}
               className={`mt-2 h-24 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring ${subnetErrors.length > 0 ? 'border-destructive' : ''}`}
             />
             <p className="mt-2 text-xs text-muted-foreground">
-              Enter CIDR ranges separated by commas or new lines.
+              {t('discoveryProfileForm.subnetsHelp')}
             </p>
             {subnetErrors.length > 0 && (
               <div className="mt-1 space-y-0.5">
@@ -288,7 +292,7 @@ export default function DiscoveryProfileForm({
         </div>
 
         <div className="mt-6">
-          <label className="text-sm font-medium">Discovery methods</label>
+          <label className="text-sm font-medium">{t('discoveryProfileForm.fields.methods')}</label>
           <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {methodOptions.map(option => (
               <label
@@ -301,7 +305,7 @@ export default function DiscoveryProfileForm({
                   onChange={() => handleToggleMethod(option.id)}
                   className="h-4 w-4 rounded border-border"
                 />
-                {option.label}
+                {t(option.labelKey)}
               </label>
             ))}
           </div>
@@ -309,13 +313,13 @@ export default function DiscoveryProfileForm({
       </div>
 
       <div className="rounded-lg border bg-card p-6 shadow-xs">
-        <h2 className="text-lg font-semibold">Schedule</h2>
-        <p className="text-sm text-muted-foreground">Set when discovery jobs should run.</p>
+        <h2 className="text-lg font-semibold">{t('discoveryProfileForm.schedule.title')}</h2>
+        <p className="text-sm text-muted-foreground">{t('discoveryProfileForm.schedule.description')}</p>
 
         <div className="mt-4 grid gap-4 md:grid-cols-3">
           {formValues.schedule.cadence === 'hourly' ? (
             <div>
-              <label className="text-sm font-medium">Repeat every</label>
+              <label className="text-sm font-medium">{t('discoveryProfileForm.fields.repeatEvery')}</label>
               <select
                 value={formValues.schedule.intervalHours ?? 1}
                 onChange={event =>
@@ -328,14 +332,14 @@ export default function DiscoveryProfileForm({
               >
                 {hourlyIntervalOptions.map(hours => (
                   <option key={hours} value={hours}>
-                    {hours === 1 ? 'Every hour' : `Every ${hours} hours`}
+                    {t('discoveryProfileForm.options.everyHours', { count: hours })}
                   </option>
                 ))}
               </select>
             </div>
           ) : formValues.schedule.cadence === 'interval' ? (
             <div>
-              <label className="text-sm font-medium">Repeat every (minutes)</label>
+              <label className="text-sm font-medium">{t('discoveryProfileForm.fields.repeatEveryMinutes')}</label>
               <input
                 type="number"
                 min={1}
@@ -356,7 +360,7 @@ export default function DiscoveryProfileForm({
           ) : (
             <>
               <div>
-                <label className="text-sm font-medium">Time</label>
+                <label className="text-sm font-medium">{t('discoveryProfileForm.fields.time')}</label>
                 <input
                   type="time"
                   value={formValues.schedule.time}
@@ -370,7 +374,7 @@ export default function DiscoveryProfileForm({
                 />
               </div>
               <div>
-                <label className="text-sm font-medium">Timezone</label>
+                <label className="text-sm font-medium">{t('discoveryProfileForm.fields.timezone')}</label>
                 <select
                   value={formValues.schedule.timezone}
                   onChange={event =>
@@ -392,7 +396,7 @@ export default function DiscoveryProfileForm({
           )}
           {formValues.schedule.cadence === 'weekly' && (
             <div>
-              <label className="text-sm font-medium">Day of week</label>
+              <label className="text-sm font-medium">{t('discoveryProfileForm.fields.dayOfWeek')}</label>
               <select
                 value={formValues.schedule.dayOfWeek}
                 onChange={event =>
@@ -405,7 +409,7 @@ export default function DiscoveryProfileForm({
               >
                 {dayOptions.map(day => (
                   <option key={day} value={day}>
-                    {day}
+                    {t(`discoveryProfileForm.days.${day.toLowerCase()}`)}
                   </option>
                 ))}
               </select>
@@ -413,7 +417,7 @@ export default function DiscoveryProfileForm({
           )}
           {formValues.schedule.cadence === 'monthly' && (
             <div>
-              <label className="text-sm font-medium">Day of month</label>
+              <label className="text-sm font-medium">{t('discoveryProfileForm.fields.dayOfMonth')}</label>
               <input
                 type="number"
                 min={1}
@@ -434,12 +438,12 @@ export default function DiscoveryProfileForm({
 
       {isSnmpEnabled && (
         <div className="rounded-lg border bg-card p-6 shadow-xs" data-testid="discovery-snmp-settings">
-          <h2 className="text-lg font-semibold">SNMP Settings</h2>
-          <p className="text-sm text-muted-foreground">Credentials used for SNMP discovery probes.</p>
+          <h2 className="text-lg font-semibold">{t('discoveryProfileForm.snmp.title')}</h2>
+          <p className="text-sm text-muted-foreground">{t('discoveryProfileForm.snmp.description')}</p>
 
           <div className="mt-4 grid gap-4 md:grid-cols-2">
             <div>
-              <label className="text-sm font-medium">SNMP version</label>
+              <label className="text-sm font-medium">{t('discoveryProfileForm.fields.snmpVersion')}</label>
               <select
                 value={formValues.snmp.version}
                 onChange={event =>
@@ -455,7 +459,7 @@ export default function DiscoveryProfileForm({
               </select>
             </div>
             <div>
-              <label className="text-sm font-medium">Port</label>
+              <label className="text-sm font-medium">{t('discoveryProfileForm.fields.port')}</label>
               <input
                 type="number"
                 value={formValues.snmp.port}
@@ -469,7 +473,7 @@ export default function DiscoveryProfileForm({
               />
             </div>
             <div>
-              <label className="text-sm font-medium">Timeout (ms)</label>
+              <label className="text-sm font-medium">{t('discoveryProfileForm.fields.timeout')}</label>
               <input
                 type="number"
                 value={formValues.snmp.timeout}
@@ -483,7 +487,7 @@ export default function DiscoveryProfileForm({
               />
             </div>
             <div>
-              <label className="text-sm font-medium">Retries</label>
+              <label className="text-sm font-medium">{t('discoveryProfileForm.fields.retries')}</label>
               <input
                 type="number"
                 value={formValues.snmp.retries}
@@ -499,7 +503,7 @@ export default function DiscoveryProfileForm({
 
             {formValues.snmp.version === 'v2c' ? (
               <div className="md:col-span-2">
-                <label className="text-sm font-medium">Community string</label>
+                <label className="text-sm font-medium">{t('discoveryProfileForm.fields.community')}</label>
                 <input
                   type="text"
                   value={formValues.snmp.community}
@@ -515,7 +519,7 @@ export default function DiscoveryProfileForm({
             ) : (
               <>
                 <div>
-                  <label className="text-sm font-medium">Username</label>
+                  <label className="text-sm font-medium">{t('discoveryProfileForm.fields.username')}</label>
                   <input
                     type="text"
                     value={formValues.snmp.username}
@@ -529,7 +533,7 @@ export default function DiscoveryProfileForm({
                   />
                 </div>
                 <div>
-                  <label className="text-sm font-medium">Auth protocol</label>
+                  <label className="text-sm font-medium">{t('discoveryProfileForm.fields.authProtocol')}</label>
                   <select
                     value={formValues.snmp.authProtocol}
                     onChange={event =>
@@ -545,7 +549,7 @@ export default function DiscoveryProfileForm({
                   </select>
                 </div>
                 <div>
-                  <label className="text-sm font-medium">Auth passphrase</label>
+                  <label className="text-sm font-medium">{t('discoveryProfileForm.fields.authPassphrase')}</label>
                   <input
                     type="password"
                     value={formValues.snmp.authPassphrase}
@@ -559,7 +563,7 @@ export default function DiscoveryProfileForm({
                   />
                 </div>
                 <div>
-                  <label className="text-sm font-medium">Privacy protocol</label>
+                  <label className="text-sm font-medium">{t('discoveryProfileForm.fields.privacyProtocol')}</label>
                   <select
                     value={formValues.snmp.privacyProtocol}
                     onChange={event =>
@@ -575,7 +579,7 @@ export default function DiscoveryProfileForm({
                   </select>
                 </div>
                 <div>
-                  <label className="text-sm font-medium">Privacy passphrase</label>
+                  <label className="text-sm font-medium">{t('discoveryProfileForm.fields.privacyPassphrase')}</label>
                   <input
                     type="password"
                     value={formValues.snmp.privacyPassphrase}
@@ -595,8 +599,8 @@ export default function DiscoveryProfileForm({
       )}
 
       <div className="rounded-lg border bg-card p-6 shadow-xs">
-        <h2 className="text-lg font-semibold">Network Alerting</h2>
-        <p className="text-sm text-muted-foreground">Alert when new or changed devices are detected on this subnet.</p>
+        <h2 className="text-lg font-semibold">{t('discoveryProfileForm.alerting.title')}</h2>
+        <p className="text-sm text-muted-foreground">{t('discoveryProfileForm.alerting.description')}</p>
 
         <label className="mt-3 flex items-center gap-2 text-sm">
           <input
@@ -608,7 +612,7 @@ export default function DiscoveryProfileForm({
             }))}
             className="h-4 w-4 rounded border"
           />
-          Enable network alerting
+          {t('discoveryProfileForm.alerting.enable')}
         </label>
 
         {formValues.alertSettings.enabled && (
@@ -624,11 +628,11 @@ export default function DiscoveryProfileForm({
                   }))}
                   className="h-4 w-4 rounded border"
                 />
-                {{ alertOnNew: 'New device detected', alertOnDisappeared: 'Device disappeared', alertOnChanged: 'Device MAC changed' }[key]}
+                {t(`discoveryProfileForm.alerting.${key}`)}
               </label>
             ))}
             <div className="pt-1">
-              <label className="block text-xs font-medium text-muted-foreground mb-1">Retain change log (days)</label>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">{t('discoveryProfileForm.fields.retainChangeLog')}</label>
               <input
                 type="number"
                 min={1}
@@ -657,7 +661,7 @@ export default function DiscoveryProfileForm({
             onClick={onCancel}
             className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground hover:text-foreground"
           >
-            Cancel
+            {t('common:actions.cancel')}
           </button>
         )}
         <button
@@ -665,7 +669,7 @@ export default function DiscoveryProfileForm({
           disabled={disabled}
           className="h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {submitLabel}
+          {resolvedSubmitLabel}
         </button>
       </div>
     </form>

@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CheckCircle, Clock, AlertTriangle, PlayCircle, X, ArrowRight, CalendarClock, Filter } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { widthPercentClass } from '@/lib/utils';
 import { extractApiError } from '@/lib/apiError';
@@ -45,13 +47,13 @@ export type DiscoveryJob = {
   finishedAt?: string;
 };
 
-const statusConfig: Record<DiscoveryJobStatus, { label: string; color: string; icon: typeof Clock }> = {
-  pending: { label: 'Next Run', color: 'bg-purple-500/20 text-purple-700 border-purple-500/40', icon: CalendarClock },
-  scheduled: { label: 'Scheduled', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40', icon: Clock },
-  running: { label: 'Running', color: 'bg-warning/15 text-warning border-warning/30', icon: PlayCircle },
-  completed: { label: 'Completed', color: 'bg-success/15 text-success border-success/30', icon: CheckCircle },
-  failed: { label: 'Failed', color: 'bg-destructive/15 text-destructive border-destructive/30', icon: AlertTriangle },
-  cancelled: { label: 'Cancelled', color: 'bg-muted text-muted-foreground border-border', icon: AlertTriangle }
+const statusConfig: Record<DiscoveryJobStatus, { color: string; icon: typeof Clock }> = {
+  pending: { color: 'bg-purple-500/20 text-purple-700 border-purple-500/40', icon: CalendarClock },
+  scheduled: { color: 'bg-blue-500/20 text-blue-700 border-blue-500/40', icon: Clock },
+  running: { color: 'bg-warning/15 text-warning border-warning/30', icon: PlayCircle },
+  completed: { color: 'bg-success/15 text-success border-success/30', icon: CheckCircle },
+  failed: { color: 'bg-destructive/15 text-destructive border-destructive/30', icon: AlertTriangle },
+  cancelled: { color: 'bg-muted text-muted-foreground border-border', icon: AlertTriangle }
 };
 
 const progressBarColor: Record<DiscoveryJobStatus, string> = {
@@ -87,7 +89,7 @@ function formatDuration(startedAt?: string | null, completedAt?: string | null):
   return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
 }
 
-function mapJob(job: ApiDiscoveryJob): DiscoveryJob {
+function mapJob(job: ApiDiscoveryJob, t: TFunction): DiscoveryJob {
   const rawStatus = job.status ?? 'scheduled';
   const status: DiscoveryJobStatus = rawStatus === 'pending' ? 'pending' : rawStatus;
   const discovered = job.hostsDiscovered ?? job.results?.length ?? 0;
@@ -121,7 +123,7 @@ function mapJob(job: ApiDiscoveryJob): DiscoveryJob {
   return {
     id: job.id,
     profileId: job.profileId ?? null,
-    profileName: job.profileName ?? job.profileId ?? 'Unknown profile',
+    profileName: job.profileName ?? job.profileId ?? t('discoveryJobList.unknownProfile'),
     status,
     progress,
     isIndeterminate,
@@ -152,6 +154,7 @@ interface DiscoveryJobListProps {
 const STATUS_FILTERS: DiscoveryJobStatus[] = ['running', 'scheduled', 'completed', 'failed', 'cancelled', 'pending'];
 
 export default function DiscoveryJobList({ timezone, profileFilter, profileSubnets, onClearFilter, onViewProfile, onViewAssets }: DiscoveryJobListProps) {
+  const { t } = useTranslation('discovery');
   const [jobs, setJobs] = useState<DiscoveryJob[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -167,19 +170,19 @@ export default function DiscoveryJobList({ timezone, profileFilter, profileSubne
       setError(undefined);
       const response = await fetchWithAuth('/discovery/jobs');
       if (!response.ok) {
-        throw new Error('Failed to fetch discovery jobs');
+        throw new Error(t('discoveryJobList.errors.fetch'));
       }
       const data = await response.json();
       const items = data.data ?? data.jobs ?? data ?? [];
-      setJobs(items.map(mapJob));
+      setJobs(items.map((job: ApiDiscoveryJob) => mapJob(job, t)));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('discoveryJobList.errors.generic'));
     } finally {
       if (showLoading) {
         setLoading(false);
       }
     }
-  }, []);
+  }, [t]);
 
   const cancelJob = useCallback(async (jobId: string) => {
     setCancellingId(jobId);
@@ -188,15 +191,15 @@ export default function DiscoveryJobList({ timezone, profileFilter, profileSubne
       const response = await fetchWithAuth(`/discovery/jobs/${jobId}/cancel`, { method: 'POST' });
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
-        throw new Error(extractApiError(data, 'Failed to cancel job'));
+        throw new Error(extractApiError(data, t('discoveryJobList.errors.cancel')));
       }
       await fetchJobs(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to cancel job');
+      setError(err instanceof Error ? err.message : t('discoveryJobList.errors.cancel'));
     } finally {
       setCancellingId(null);
     }
-  }, [fetchJobs]);
+  }, [fetchJobs, t]);
 
   useEffect(() => {
     fetchJobs();
@@ -267,7 +270,7 @@ export default function DiscoveryJobList({ timezone, profileFilter, profileSubne
       <div className="flex items-center justify-center rounded-lg border bg-card p-10 shadow-xs">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading discovery jobs...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('discoveryJobList.loading')}</p>
         </div>
       </div>
     );
@@ -282,7 +285,7 @@ export default function DiscoveryJobList({ timezone, profileFilter, profileSubne
           onClick={() => fetchJobs()}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Try again
+          {t('discoveryJobList.tryAgain')}
         </button>
       </div>
     );
@@ -309,7 +312,7 @@ export default function DiscoveryJobList({ timezone, profileFilter, profileSubne
       <>
         <span className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-xs font-medium ${status.color}`}>
           <StatusIcon className="h-3.5 w-3.5" />
-          {status.label}
+          {t(`discoveryJobList.status.${job.status}`)}
         </span>
         {job.errors && (
           <span className="mt-1 block text-xs text-destructive">{job.errors}</span>
@@ -342,7 +345,7 @@ export default function DiscoveryJobList({ timezone, profileFilter, profileSubne
           type="button"
           onClick={() => cancelJob(job.id)}
           disabled={cancellingId === job.id}
-          title="Cancel job"
+          title={t('discoveryJobList.actions.cancelJob')}
           className="inline-flex items-center justify-center rounded-md p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
         >
           <X className="h-4 w-4" />
@@ -352,35 +355,35 @@ export default function DiscoveryJobList({ timezone, profileFilter, profileSubne
         <button
           type="button"
           onClick={onViewAssets}
-          title="View discovered assets"
+          title={t('discoveryJobList.actions.viewDiscoveredAssets')}
           className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-primary hover:bg-primary/10"
         >
-          Assets
+          {t('discoveryJobList.actions.assets')}
           <ArrowRight className="h-3 w-3" />
         </button>
       )}
     </div>
   );
 
-  const emptyMessage = profileFilter ? 'No jobs for this profile yet.' : 'No discovery jobs yet.';
+  const emptyMessage = profileFilter ? t('discoveryJobList.emptyForProfile') : t('discoveryJobList.empty');
 
   return (
     <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div>
-        <h2 className="text-lg font-semibold">Discovery Jobs</h2>
-        <p className="text-sm text-muted-foreground">Track running and scheduled scans.</p>
+        <h2 className="text-lg font-semibold">{t('discoveryJobList.title')}</h2>
+        <p className="text-sm text-muted-foreground">{t('discoveryJobList.description')}</p>
       </div>
 
       {profileFilter && filterProfileName && (
         <div className="mt-4 flex items-center gap-2 rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-sm">
-          <span className="text-muted-foreground">Filtered by profile:</span>
+          <span className="text-muted-foreground">{t('discoveryJobList.filteredByProfile')}</span>
           <span className="font-medium">{filterProfileName}</span>
           <button
             type="button"
             onClick={onClearFilter}
             className="ml-auto rounded-md px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
           >
-            Clear filter
+            {t('discoveryJobList.actions.clearFilter')}
           </button>
         </div>
       )}
@@ -389,7 +392,7 @@ export default function DiscoveryJobList({ timezone, profileFilter, profileSubne
       <div className="mt-4 flex flex-wrap items-center gap-3">
         <div className="flex items-center gap-2">
           <Filter className="h-3.5 w-3.5 text-muted-foreground" />
-          <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Status</span>
+          <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('common:labels.status')}</span>
           <div className="flex flex-wrap gap-1">
             {STATUS_FILTERS.map(s => {
               const count = statusCounts[s] ?? 0;
@@ -405,7 +408,7 @@ export default function DiscoveryJobList({ timezone, profileFilter, profileSubne
                     isActive ? cfg.color : 'border-transparent text-muted-foreground hover:bg-muted'
                   }`}
                 >
-                  {cfg.label}
+                  {t(`discoveryJobList.status.${s}`)}
                   <span className="opacity-60">{count}</span>
                 </button>
               );
@@ -417,7 +420,7 @@ export default function DiscoveryJobList({ timezone, profileFilter, profileSubne
           <>
             <div className="h-4 w-px bg-border" />
             <div className="flex items-center gap-2">
-              <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Subnet</span>
+              <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('discoveryJobList.filters.subnet')}</span>
               <div className="flex flex-wrap gap-1">
                 {availableSubnets.map(subnet => {
                   const isActive = subnetFilter === subnet;
@@ -449,7 +452,7 @@ export default function DiscoveryJobList({ timezone, profileFilter, profileSubne
               onClick={() => { setStatusFilter(null); setSubnetFilter(null); }}
               className="text-xs text-muted-foreground hover:text-foreground"
             >
-              Clear all
+              {t('discoveryJobList.actions.clearAll')}
             </button>
           </>
         )}
@@ -467,16 +470,16 @@ export default function DiscoveryJobList({ timezone, profileFilter, profileSubne
           <table className="min-w-full divide-y">
             <thead className="bg-muted/40">
               <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                <th className="px-4 py-3">Profile</th>
-                <th className="px-4 py-3">Status</th>
-                <th className="px-4 py-3">Progress</th>
-                <th className="px-4 py-3">Hosts discovered</th>
-                <th className="px-4 py-3">New assets</th>
-                <th className="px-4 py-3">Duration</th>
-                <th className="px-4 py-3">Scheduled</th>
-                <th className="px-4 py-3">Started</th>
-                <th className="px-4 py-3">Finished</th>
-                <th className="px-4 py-3">Actions</th>
+                <th className="px-4 py-3">{t('discoveryJobList.columns.profile')}</th>
+                <th className="px-4 py-3">{t('common:labels.status')}</th>
+                <th className="px-4 py-3">{t('discoveryJobList.columns.progress')}</th>
+                <th className="px-4 py-3">{t('discoveryJobList.columns.hostsDiscovered')}</th>
+                <th className="px-4 py-3">{t('discoveryJobList.columns.newAssets')}</th>
+                <th className="px-4 py-3">{t('discoveryJobList.columns.duration')}</th>
+                <th className="px-4 py-3">{t('discoveryJobList.columns.scheduled')}</th>
+                <th className="px-4 py-3">{t('discoveryJobList.columns.started')}</th>
+                <th className="px-4 py-3">{t('discoveryJobList.columns.finished')}</th>
+                <th className="px-4 py-3">{t('common:labels.actions')}</th>
               </tr>
             </thead>
             <tbody className="divide-y">
@@ -540,31 +543,31 @@ export default function DiscoveryJobList({ timezone, profileFilter, profileSubne
                 </div>
                 <div className="mt-3 space-y-2 border-t pt-3">
                   {job.status === 'pending' ? (
-                    <CardField label="Scheduled">
+                    <CardField label={t('discoveryJobList.columns.scheduled')}>
                       <span className="text-xs text-muted-foreground">{formatTimestamp(job.scheduledAt, timezone)}</span>
                     </CardField>
                   ) : (
                     <>
                       <div>
-                        <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Progress</span>
+                        <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('discoveryJobList.columns.progress')}</span>
                         <div className="mt-1">{renderProgress(job)}</div>
                       </div>
-                      <CardField label="Hosts discovered">
+                      <CardField label={t('discoveryJobList.columns.hostsDiscovered')}>
                         {job.hostsDiscovered} / {job.hostsTargeted}
                       </CardField>
-                      <CardField label="New assets">
+                      <CardField label={t('discoveryJobList.columns.newAssets')}>
                         {job.newAssets != null ? job.newAssets : '—'}
                       </CardField>
-                      <CardField label="Duration">
+                      <CardField label={t('discoveryJobList.columns.duration')}>
                         <span className="text-muted-foreground">{job.duration ?? '—'}</span>
                       </CardField>
-                      <CardField label="Scheduled">
+                      <CardField label={t('discoveryJobList.columns.scheduled')}>
                         <span className="text-xs text-muted-foreground">{formatTimestamp(job.scheduledAt, timezone)}</span>
                       </CardField>
-                      <CardField label="Started">
+                      <CardField label={t('discoveryJobList.columns.started')}>
                         <span className="text-xs text-muted-foreground">{formatTimestamp(job.startedAt, timezone)}</span>
                       </CardField>
-                      <CardField label="Finished">
+                      <CardField label={t('discoveryJobList.columns.finished')}>
                         <span className="text-xs text-muted-foreground">{formatTimestamp(job.finishedAt, timezone)}</span>
                       </CardField>
                     </>

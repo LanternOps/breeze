@@ -1,18 +1,24 @@
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
-import { ChevronDown, Loader2, Upload, Link2, HardDriveUpload } from 'lucide-react';
-import type { DetectionRule } from '@breeze/shared';
-import { cn } from '@/lib/utils';
-import { Dialog } from '../shared/Dialog';
-import { showToast } from '../shared/Toast';
-import { fetchWithAuth } from '../../stores/auth';
-import { runAction, ActionError } from '../../lib/runAction';
-import { findUnknownTokens } from '@/lib/installerVariables';
-import DetectionRulesEditor from './DetectionRulesEditor';
-import VariableInput, { type DeviceCustomField } from './VariableInput';
-
-type Architecture = 'x64' | 'arm64' | 'x86';
-type Source = 'url' | 'file';
-
+import { useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  ChevronDown,
+  Loader2,
+  Upload,
+  Link2,
+  HardDriveUpload,
+} from "lucide-react";
+import type { DetectionRule } from "@breeze/shared";
+import { cn } from "@/lib/utils";
+import { Dialog } from "../shared/Dialog";
+import { showToast } from "../shared/Toast";
+import { fetchWithAuth } from "../../stores/auth";
+import { runAction, ActionError } from "../../lib/runAction";
+import { findUnknownTokens } from "@/lib/installerVariables";
+import DetectionRulesEditor from "./DetectionRulesEditor";
+import VariableInput, { type DeviceCustomField } from "./VariableInput";
+import { useTranslation } from "react-i18next";
+import { i18n } from "@/lib/i18n";
+type Architecture = "x64" | "arm64" | "x86";
+type Source = "url" | "file";
 export interface CreatedPackage {
   id: string;
   name: string;
@@ -22,40 +28,46 @@ export interface CreatedPackage {
   createdAt: string;
   versionCount: number;
 }
-
 interface AddPackageModalProps {
   open: boolean;
   onClose: () => void;
   /** Called once the package AND its first version are persisted. */
   onCreated: (pkg: CreatedPackage) => void;
 }
-
 const CATEGORIES = [
-  'browser', 'utility', 'compression', 'productivity',
-  'communication', 'developer', 'media', 'security',
+  "browser",
+  "utility",
+  "compression",
+  "productivity",
+  "communication",
+  "developer",
+  "media",
+  "security",
 ] as const;
-
-const OS_OPTIONS = ['Windows', 'macOS', 'Linux'] as const;
-
+const OS_OPTIONS = ["Windows", "macOS", "Linux"] as const;
 const blankForm = {
-  name: '',
-  vendor: '',
-  category: 'utility',
-  description: '',
-  version: '',
-  architecture: 'x64' as Architecture,
-  source: 'url' as Source,
-  downloadUrl: '',
+  name: "",
+  vendor: "",
+  category: "utility",
+  description: "",
+  version: "",
+  architecture: "x64" as Architecture,
+  source: "url" as Source,
+  downloadUrl: "",
   supportedOs: [] as string[],
-  silentInstallArgs: '',
-  silentUninstallArgs: '',
+  silentInstallArgs: "",
+  silentUninstallArgs: "",
   detectionRules: [] as DetectionRule[],
-  notes: '',
+  notes: "",
   file: null as File | null,
-  fileName: '',
+  fileName: "",
 };
-
-export default function AddPackageModal({ open, onClose, onCreated }: AddPackageModalProps) {
+export default function AddPackageModal({
+  open,
+  onClose,
+  onCreated,
+}: AddPackageModalProps) {
+  useTranslation("policies");
   const [form, setForm] = useState(blankForm);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -65,17 +77,16 @@ export default function AddPackageModal({ open, onClose, onCreated }: AddPackage
   // a retry continues from the version step instead of creating a duplicate.
   const createdCatalogId = useRef<string | null>(null);
   const titleId = useId();
-
   useEffect(() => {
     if (!open) return;
     setForm(blankForm);
     setAdvancedOpen(false);
     createdCatalogId.current = null;
-    if (fileInputRef.current) fileInputRef.current.value = '';
+    if (fileInputRef.current) fileInputRef.current.value = "";
     let cancelled = false;
     void (async () => {
       try {
-        const res = await fetchWithAuth('/custom-fields?limit=100');
+        const res = await fetchWithAuth("/custom-fields?limit=100");
         if (!res.ok || cancelled) return;
         const payload = await res.json();
         const rows = payload.data ?? payload ?? [];
@@ -83,12 +94,14 @@ export default function AddPackageModal({ open, onClose, onCreated }: AddPackage
           setCustomFields(
             rows
               .map((r: Record<string, unknown>) => ({
-                fieldKey: String(r.fieldKey ?? ''),
-                name: String(r.name ?? r.fieldKey ?? ''),
+                fieldKey: String(r.fieldKey ?? ""),
+                name: String(r.name ?? r.fieldKey ?? ""),
               }))
               // Only offer keys that match the token grammar the resolver accepts,
               // so the picker never presents a token it would then flag as unknown.
-              .filter((f: DeviceCustomField) => /^[a-z][a-z0-9_]*$/.test(f.fieldKey)),
+              .filter((f: DeviceCustomField) =>
+                /^[a-z][a-z0-9_]*$/.test(f.fieldKey),
+              ),
           );
         }
       } catch {
@@ -99,46 +112,56 @@ export default function AddPackageModal({ open, onClose, onCreated }: AddPackage
       cancelled = true;
     };
   }, [open]);
-
-  const update = <K extends keyof typeof blankForm>(key: K, value: (typeof blankForm)[K]) =>
-    setForm((prev) => ({ ...prev, [key]: value }));
-
+  const update = <K extends keyof typeof blankForm>(
+    key: K,
+    value: (typeof blankForm)[K],
+  ) => setForm((prev) => ({ ...prev, [key]: value }));
   const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
+    const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
     setForm((prev) => ({
       ...prev,
       file,
       fileName: file.name,
       silentInstallArgs:
-        ext === 'msi' && !prev.silentInstallArgs
+        ext === "msi" && !prev.silentInstallArgs
           ? 'msiexec /i "{file}" /qn /norestart'
           : prev.silentInstallArgs,
       silentUninstallArgs:
-        ext === 'msi' && !prev.silentUninstallArgs
+        ext === "msi" && !prev.silentUninstallArgs
           ? 'msiexec /x "{file}" /qn /norestart'
           : prev.silentUninstallArgs,
     }));
   };
-
-  const knownKeys = useMemo(() => new Set(customFields.map((f) => f.fieldKey)), [customFields]);
+  const knownKeys = useMemo(
+    () => new Set(customFields.map((f) => f.fieldKey)),
+    [customFields],
+  );
   const tokenErrors = useMemo(() => {
     const opts = { requireKnownCustomKeys: knownKeys.size > 0 };
-    return [form.downloadUrl, form.silentInstallArgs, form.silentUninstallArgs].flatMap((s) =>
-      findUnknownTokens(s, knownKeys, opts),
-    );
-  }, [form.downloadUrl, form.silentInstallArgs, form.silentUninstallArgs, knownKeys]);
-
-  const hasSource = form.source === 'url' ? form.downloadUrl.trim() !== '' : form.file != null;
+    return [
+      form.downloadUrl,
+      form.silentInstallArgs,
+      form.silentUninstallArgs,
+    ].flatMap((s) => findUnknownTokens(s, knownKeys, opts));
+  }, [
+    form.downloadUrl,
+    form.silentInstallArgs,
+    form.silentUninstallArgs,
+    knownKeys,
+  ]);
+  const hasSource =
+    form.source === "url" ? form.downloadUrl.trim() !== "" : form.file != null;
   const canSubmit =
-    form.name.trim() !== '' &&
-    form.version.trim() !== '' &&
+    form.name.trim() !== "" &&
+    form.version.trim() !== "" &&
     hasSource &&
     tokenErrors.length === 0 &&
     !saving;
-
-  const buildVersionRequest = (catalogId: string): (() => Promise<Response>) => {
+  const buildVersionRequest = (
+    catalogId: string,
+  ): (() => Promise<Response>) => {
     const shared = {
       version: form.version.trim(),
       architecture: form.architecture,
@@ -146,47 +169,54 @@ export default function AddPackageModal({ open, onClose, onCreated }: AddPackage
       silentInstallArgs: form.silentInstallArgs || undefined,
       silentUninstallArgs: form.silentUninstallArgs || undefined,
       supportedOs: form.supportedOs.length > 0 ? form.supportedOs : undefined,
-      detectionRules: form.detectionRules.length > 0 ? form.detectionRules : undefined,
+      detectionRules:
+        form.detectionRules.length > 0 ? form.detectionRules : undefined,
     };
-
-    if (form.source === 'file' && form.file) {
+    if (form.source === "file" && form.file) {
       const fd = new FormData();
-      fd.append('file', form.file);
-      fd.append('version', shared.version);
-      fd.append('architecture', shared.architecture);
-      if (shared.releaseNotes) fd.append('releaseNotes', shared.releaseNotes);
-      if (shared.silentInstallArgs) fd.append('silentInstallArgs', shared.silentInstallArgs);
-      if (shared.silentUninstallArgs) fd.append('silentUninstallArgs', shared.silentUninstallArgs);
-      if (shared.supportedOs) fd.append('supportedOs', JSON.stringify(shared.supportedOs));
-      if (shared.detectionRules) fd.append('detectionRules', JSON.stringify(shared.detectionRules));
-      if (form.downloadUrl.trim()) fd.append('downloadUrl', form.downloadUrl.trim());
+      fd.append("file", form.file);
+      fd.append("version", shared.version);
+      fd.append("architecture", shared.architecture);
+      if (shared.releaseNotes) fd.append("releaseNotes", shared.releaseNotes);
+      if (shared.silentInstallArgs)
+        fd.append("silentInstallArgs", shared.silentInstallArgs);
+      if (shared.silentUninstallArgs)
+        fd.append("silentUninstallArgs", shared.silentUninstallArgs);
+      if (shared.supportedOs)
+        fd.append("supportedOs", JSON.stringify(shared.supportedOs));
+      if (shared.detectionRules)
+        fd.append("detectionRules", JSON.stringify(shared.detectionRules));
+      if (form.downloadUrl.trim())
+        fd.append("downloadUrl", form.downloadUrl.trim());
       return () =>
         fetchWithAuth(`/software/catalog/${catalogId}/versions/upload`, {
-          method: 'POST',
+          method: "POST",
           body: fd,
           headers: {},
         });
     }
-
     return () =>
       fetchWithAuth(`/software/catalog/${catalogId}/versions`, {
-        method: 'POST',
-        body: JSON.stringify({ ...shared, downloadUrl: form.downloadUrl.trim() || undefined }),
+        method: "POST",
+        body: JSON.stringify({
+          ...shared,
+          downloadUrl: form.downloadUrl.trim() || undefined,
+        }),
       });
   };
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canSubmit) return;
-
     setSaving(true);
     try {
       // Step 1 — create the catalog item (skip if a prior attempt already did).
       if (!createdCatalogId.current) {
-        const item = await runAction<{ id: string }>({
+        const item = await runAction<{
+          id: string;
+        }>({
           request: () =>
-            fetchWithAuth('/software/catalog', {
-              method: 'POST',
+            fetchWithAuth("/software/catalog", {
+              method: "POST",
               body: JSON.stringify({
                 name: form.name.trim(),
                 vendor: form.vendor.trim() || undefined,
@@ -195,25 +225,47 @@ export default function AddPackageModal({ open, onClose, onCreated }: AddPackage
               }),
             }),
           parseSuccess: (d) => {
-            const data = (d as { data?: { id?: unknown } }).data ?? (d as { id?: unknown });
-            return { id: String((data as { id?: unknown }).id ?? '') };
+            const data =
+              (
+                d as {
+                  data?: {
+                    id?: unknown;
+                  };
+                }
+              ).data ??
+              (d as {
+                id?: unknown;
+              });
+            return {
+              id: String(
+                (
+                  data as {
+                    id?: unknown;
+                  }
+                ).id ?? "",
+              ),
+            };
           },
-          errorFallback: 'Failed to create package',
+          errorFallback: i18n.t(
+            "policies:software.addPackageModal.failedToCreatePackage",
+          ),
         });
         createdCatalogId.current = item.id;
       }
-
       const catalogId = createdCatalogId.current;
-      if (!catalogId) throw new Error('Missing package id');
-
+      if (!catalogId)
+        throw new Error(
+          i18n.t("policies:software.addPackageModal.missingPackageId"),
+        );
       // Step 2 — add the first version. Success toast lands here so the user is
       // only told "added" once the package is actually deployable.
       await runAction({
         request: buildVersionRequest(catalogId),
-        errorFallback: 'Package created, but adding the first version failed',
+        errorFallback: i18n.t(
+          "policies:software.addPackageModal.packageCreatedButAddingTheFirstVersion",
+        ),
         successMessage: `Added ${form.name.trim()} — v${form.version.trim()}`,
       });
-
       onCreated({
         id: catalogId,
         name: form.name.trim(),
@@ -227,7 +279,10 @@ export default function AddPackageModal({ open, onClose, onCreated }: AddPackage
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
       if (!(err instanceof ActionError)) {
-        showToast({ type: 'error', message: err instanceof Error ? err.message : 'Failed to add package' });
+        showToast({
+          type: "error",
+          message: err instanceof Error ? err.message : "Failed to add package",
+        });
       }
       // Non-401 ActionError already toasted by runAction. Modal stays open; if the
       // catalog item was created, createdCatalogId retries from the version step.
@@ -235,7 +290,6 @@ export default function AddPackageModal({ open, onClose, onCreated }: AddPackage
       setSaving(false);
     }
   };
-
   const handleClose = () => {
     // If step 1 (catalog) succeeded but the version write never did, surface the
     // created package (0 versions) so it isn't an invisible orphan the user would
@@ -253,16 +307,14 @@ export default function AddPackageModal({ open, onClose, onCreated }: AddPackage
     }
     onClose();
   };
-
-  const labelCls = 'text-xs font-semibold uppercase text-muted-foreground';
+  const labelCls = "text-xs font-semibold uppercase text-muted-foreground";
   const inputCls =
-    'mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring';
-
+    "mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring";
   return (
     <Dialog
       open={open}
       onClose={saving ? () => {} : handleClose}
-      title="Add software package"
+      title={i18n.t("policies:software.addPackageModal.addSoftwarePackage")}
       labelledBy={titleId}
       maxWidth="2xl"
       alignTop
@@ -270,9 +322,13 @@ export default function AddPackageModal({ open, onClose, onCreated }: AddPackage
     >
       <div className="flex items-center justify-between border-b px-6 py-4">
         <div>
-          <h2 id={titleId} className="text-lg font-semibold">Add software package</h2>
+          <h2 id={titleId} className="text-lg font-semibold">
+            {i18n.t("policies:software.addPackageModal.addSoftwarePackage2")}
+          </h2>
           <p className="text-sm text-muted-foreground">
-            Create the package and its first deployable version in one step.
+            {i18n.t(
+              "policies:software.addPackageModal.createThePackageAndItsFirstDeployable",
+            )}
           </p>
         </div>
       </div>
@@ -281,42 +337,56 @@ export default function AddPackageModal({ open, onClose, onCreated }: AddPackage
         <div className="min-h-0 flex-1 space-y-6 overflow-y-auto px-6 py-5">
           {/* Package identity */}
           <section className="space-y-4">
-            <h3 className="text-sm font-semibold text-foreground">Package</h3>
+            <h3 className="text-sm font-semibold text-foreground">
+              {i18n.t("policies:software.addPackageModal.package")}
+            </h3>
             <div className="grid gap-4 sm:grid-cols-2">
               <div>
-                <label className={labelCls} htmlFor="pkg-name">Name</label>
+                <label className={labelCls} htmlFor="pkg-name">
+                  {i18n.t("common:labels.name")}
+                </label>
                 <input
                   id="pkg-name"
                   autoFocus
                   type="text"
                   value={form.name}
-                  onChange={(e) => update('name', e.target.value)}
-                  placeholder="e.g. Google Chrome"
+                  onChange={(e) => update("name", e.target.value)}
+                  placeholder={i18n.t(
+                    "policies:software.addPackageModal.eGGoogleChrome",
+                  )}
                   className={inputCls}
                 />
               </div>
               <div>
-                <label className={labelCls} htmlFor="pkg-vendor">Vendor</label>
+                <label className={labelCls} htmlFor="pkg-vendor">
+                  {i18n.t("policies:software.addPackageModal.vendor")}
+                </label>
                 <input
                   id="pkg-vendor"
                   type="text"
                   value={form.vendor}
-                  onChange={(e) => update('vendor', e.target.value)}
-                  placeholder="e.g. Google"
+                  onChange={(e) => update("vendor", e.target.value)}
+                  placeholder={i18n.t(
+                    "policies:software.addPackageModal.eGGoogle",
+                  )}
                   className={inputCls}
                 />
               </div>
             </div>
             <div>
-              <label className={labelCls} htmlFor="pkg-category">Category</label>
+              <label className={labelCls} htmlFor="pkg-category">
+                {i18n.t("policies:software.addPackageModal.category")}
+              </label>
               <select
                 id="pkg-category"
                 value={form.category}
-                onChange={(e) => update('category', e.target.value)}
+                onChange={(e) => update("category", e.target.value)}
                 className={inputCls}
               >
                 {CATEGORIES.map((c) => (
-                  <option key={c} value={c}>{c.charAt(0).toUpperCase() + c.slice(1)}</option>
+                  <option key={c} value={c}>
+                    {c.charAt(0).toUpperCase() + c.slice(1)}
+                  </option>
                 ))}
               </select>
             </div>
@@ -324,71 +394,116 @@ export default function AddPackageModal({ open, onClose, onCreated }: AddPackage
 
           {/* First version */}
           <section className="space-y-4 border-t pt-5">
-            <h3 className="text-sm font-semibold text-foreground">First version</h3>
+            <h3 className="text-sm font-semibold text-foreground">
+              {i18n.t("policies:software.addPackageModal.firstVersion")}
+            </h3>
             <div className="grid gap-4 sm:grid-cols-2">
               <div>
-                <label className={labelCls} htmlFor="pkg-version">Version</label>
+                <label className={labelCls} htmlFor="pkg-version">
+                  {i18n.t("policies:software.addPackageModal.version")}
+                </label>
                 <input
                   id="pkg-version"
                   type="text"
                   value={form.version}
-                  onChange={(e) => update('version', e.target.value)}
-                  placeholder="e.g. 1.0.0"
+                  onChange={(e) => update("version", e.target.value)}
+                  placeholder={i18n.t(
+                    "policies:software.addPackageModal.eG100",
+                  )}
                   className={inputCls}
                 />
               </div>
               <div>
-                <label className={labelCls} htmlFor="pkg-arch">Architecture</label>
+                <label className={labelCls} htmlFor="pkg-arch">
+                  {i18n.t("policies:software.addPackageModal.architecture")}
+                </label>
                 <select
                   id="pkg-arch"
                   value={form.architecture}
-                  onChange={(e) => update('architecture', e.target.value as Architecture)}
+                  onChange={(e) =>
+                    update("architecture", e.target.value as Architecture)
+                  }
                   className={inputCls}
                 >
-                  <option value="x64">x64</option>
-                  <option value="arm64">arm64</option>
-                  <option value="x86">x86</option>
+                  <option value="x64">
+                    {i18n.t("policies:software.addPackageModal.x64")}
+                  </option>
+                  <option value="arm64">
+                    {i18n.t("policies:software.addPackageModal.arm64")}
+                  </option>
+                  <option value="x86">
+                    {i18n.t("policies:software.addPackageModal.x86")}
+                  </option>
                 </select>
               </div>
             </div>
 
             {/* Source: URL or file, one control */}
             <div>
-              <span className={labelCls}>Source</span>
-              <div className="mt-2 inline-flex rounded-md border bg-muted/40 p-0.5" role="tablist" aria-label="Installer source">
-                {([['url', 'Download URL', Link2], ['file', 'Upload file', HardDriveUpload]] as const).map(
-                  ([val, label, Icon]) => (
-                    <button
-                      key={val}
-                      type="button"
-                      role="tab"
-                      aria-selected={form.source === val}
-                      onClick={() => update('source', val)}
-                      className={cn(
-                        'inline-flex items-center gap-1.5 rounded px-3 py-1.5 text-sm font-medium transition-colors',
-                        form.source === val
-                          ? 'bg-background text-foreground shadow-xs'
-                          : 'text-muted-foreground hover:text-foreground',
-                      )}
-                    >
-                      <Icon className="h-4 w-4" />
-                      {label}
-                    </button>
-                  ),
+              <span className={labelCls}>
+                {i18n.t("policies:software.addPackageModal.source")}
+              </span>
+              <div
+                className="mt-2 inline-flex rounded-md border bg-muted/40 p-0.5"
+                role="tablist"
+                aria-label={i18n.t(
+                  "policies:software.addPackageModal.installerSource",
                 )}
+              >
+                {(
+                  [
+                    [
+                      i18n.t("policies:software.addPackageModal.url"),
+                      i18n.t("policies:software.addPackageModal.downloadURL"),
+                      Link2,
+                    ],
+                    [
+                      i18n.t("policies:software.addPackageModal.file"),
+                      i18n.t("policies:software.addPackageModal.uploadFile"),
+                      HardDriveUpload,
+                    ],
+                  ] as const
+                ).map(([val, label, Icon]) => (
+                  <button
+                    key={val}
+                    type="button"
+                    role="tab"
+                    aria-selected={form.source === val}
+                    onClick={() => update("source", val)}
+                    className={cn(
+                      "inline-flex items-center gap-1.5 rounded px-3 py-1.5 text-sm font-medium transition-colors",
+                      form.source === val
+                        ? "bg-background text-foreground shadow-xs"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    <Icon className="h-4 w-4" />
+                    {label}
+                  </button>
+                ))}
               </div>
 
-              {form.source === 'url' ? (
+              {form.source === "url" ? (
                 <div className="mt-3">
                   <VariableInput
                     id="pkg-url"
                     value={form.downloadUrl}
-                    onChange={(v) => update('downloadUrl', v)}
-                    placeholder="https://example.com/package-v1.0.0.msi"
+                    onChange={(v) => update("downloadUrl", v)}
+                    placeholder={i18n.t(
+                      "policies:software.addPackageModal.httpsExampleComPackageV100",
+                    )}
                     customFields={customFields}
                   />
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Use variables like <code className="font-mono">{'{{org.name}}'}</code> — resolved per organization at deploy time.
+                    {i18n.t(
+                      "policies:software.addPackageModal.useVariablesLike",
+                    )}
+                    <code className="font-mono">
+                      {'{{org.name}}'}
+                    </code>
+                    {i18n.t(
+                      "policies:software.addPackageModal.resolvedPerOrganizationAtDeployTime",
+                    )}
                   </p>
                 </div>
               ) : (
@@ -406,28 +521,36 @@ export default function AddPackageModal({ open, onClose, onCreated }: AddPackage
                     className="inline-flex h-10 items-center gap-2 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted"
                   >
                     <Upload className="h-4 w-4" />
-                    Choose file
+                    {i18n.t("policies:software.addPackageModal.chooseFile")}
                   </button>
                   <span className="truncate text-sm text-muted-foreground">
-                    {form.fileName || 'No file selected (.msi, .exe, .dmg, .deb, .pkg)'}
+                    {form.fileName ||
+                      i18n.t(
+                        "policies:software.addPackageModal.noFileSelectedMsiExeDmgDeb",
+                      )}
                   </span>
                 </div>
               )}
             </div>
 
             <div>
-              <span className={labelCls}>Supported OS</span>
+              <span className={labelCls}>
+                {i18n.t("policies:software.addPackageModal.supportedOS")}
+              </span>
               <div className="mt-2 flex flex-wrap items-center gap-4">
                 {OS_OPTIONS.map((os) => {
                   const val = os.toLowerCase();
                   return (
-                    <label key={os} className="inline-flex items-center gap-2 text-sm">
+                    <label
+                      key={os}
+                      className="inline-flex items-center gap-2 text-sm"
+                    >
                       <input
                         type="checkbox"
                         checked={form.supportedOs.includes(val)}
                         onChange={(e) =>
                           update(
-                            'supportedOs',
+                            "supportedOs",
                             e.target.checked
                               ? [...form.supportedOs, val]
                               : form.supportedOs.filter((o) => o !== val),
@@ -443,13 +566,17 @@ export default function AddPackageModal({ open, onClose, onCreated }: AddPackage
             </div>
 
             <div>
-              <label className={labelCls} htmlFor="pkg-install">Silent install args</label>
+              <label className={labelCls} htmlFor="pkg-install">
+                {i18n.t("policies:software.addPackageModal.silentInstallArgs")}
+              </label>
               <div className="mt-2">
                 <VariableInput
                   id="pkg-install"
                   value={form.silentInstallArgs}
-                  onChange={(v) => update('silentInstallArgs', v)}
-                  placeholder={'e.g. msiexec /i "{file}" /qn /norestart'}
+                  onChange={(v) => update("silentInstallArgs", v)}
+                  placeholder={i18n.t(
+                    "policies:software.addPackageModal.eGMsiexecIFileQnNorestart",
+                  )}
                   customFields={customFields}
                 />
               </div>
@@ -464,20 +591,31 @@ export default function AddPackageModal({ open, onClose, onCreated }: AddPackage
               aria-expanded={advancedOpen}
               className="inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground"
             >
-              <ChevronDown className={cn('h-4 w-4 transition-transform', advancedOpen && 'rotate-180')} />
-              Advanced options
+              <ChevronDown
+                className={cn(
+                  "h-4 w-4 transition-transform",
+                  advancedOpen && "rotate-180",
+                )}
+              />
+              {i18n.t("policies:software.addPackageModal.advancedOptions")}
             </button>
 
             {advancedOpen && (
               <div className="mt-4 space-y-4">
                 <div>
-                  <label className={labelCls} htmlFor="pkg-uninstall">Silent uninstall args</label>
+                  <label className={labelCls} htmlFor="pkg-uninstall">
+                    {i18n.t(
+                      "policies:software.addPackageModal.silentUninstallArgs",
+                    )}
+                  </label>
                   <div className="mt-2">
                     <VariableInput
                       id="pkg-uninstall"
                       value={form.silentUninstallArgs}
-                      onChange={(v) => update('silentUninstallArgs', v)}
-                      placeholder={'e.g. msiexec /x "{file}" /qn /norestart'}
+                      onChange={(v) => update("silentUninstallArgs", v)}
+                      placeholder={i18n.t(
+                        "policies:software.addPackageModal.eGMsiexecXFileQnNorestart",
+                      )}
                       customFields={customFields}
                     />
                   </div>
@@ -485,27 +623,37 @@ export default function AddPackageModal({ open, onClose, onCreated }: AddPackage
 
                 <DetectionRulesEditor
                   rules={form.detectionRules}
-                  onChange={(detectionRules) => update('detectionRules', detectionRules)}
+                  onChange={(detectionRules) =>
+                    update("detectionRules", detectionRules)
+                  }
                 />
 
                 <div>
-                  <label className={labelCls} htmlFor="pkg-notes">Release notes</label>
+                  <label className={labelCls} htmlFor="pkg-notes">
+                    {i18n.t("policies:software.addPackageModal.releaseNotes")}
+                  </label>
                   <textarea
                     id="pkg-notes"
                     value={form.notes}
-                    onChange={(e) => update('notes', e.target.value)}
-                    placeholder="One item per line"
+                    onChange={(e) => update("notes", e.target.value)}
+                    placeholder={i18n.t(
+                      "policies:software.addPackageModal.oneItemPerLine",
+                    )}
                     className="mt-2 min-h-24 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                 </div>
 
                 <div>
-                  <label className={labelCls} htmlFor="pkg-desc">Description</label>
+                  <label className={labelCls} htmlFor="pkg-desc">
+                    {i18n.t("common:labels.description")}
+                  </label>
                   <textarea
                     id="pkg-desc"
                     value={form.description}
-                    onChange={(e) => update('description', e.target.value)}
-                    placeholder="Brief description of the software"
+                    onChange={(e) => update("description", e.target.value)}
+                    placeholder={i18n.t(
+                      "policies:software.addPackageModal.briefDescriptionOfTheSoftware",
+                    )}
                     className="mt-2 min-h-20 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                 </div>
@@ -522,7 +670,7 @@ export default function AddPackageModal({ open, onClose, onCreated }: AddPackage
             disabled={saving}
             className="inline-flex h-9 items-center justify-center rounded-md border bg-background px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
           >
-            Cancel
+            {i18n.t("common:actions.cancel")}
           </button>
           <button
             type="submit"
@@ -531,12 +679,12 @@ export default function AddPackageModal({ open, onClose, onCreated }: AddPackage
           >
             {saving && <Loader2 className="h-4 w-4 animate-spin" />}
             {saving
-              ? form.source === 'file'
-                ? 'Uploading…'
-                : 'Creating…'
+              ? form.source === "file"
+                ? i18n.t("policies:software.addPackageModal.uploading")
+                : i18n.t("policies:software.addPackageModal.creating")
               : createdCatalogId.current
-                ? 'Retry adding version'
-                : 'Create package'}
+                ? i18n.t("policies:software.addPackageModal.retryAddingVersion")
+                : i18n.t("policies:software.addPackageModal.createPackage")}
           </button>
         </div>
       </form>

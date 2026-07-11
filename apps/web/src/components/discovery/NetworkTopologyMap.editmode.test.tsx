@@ -545,3 +545,4 @@ describe('NetworkTopologyMap edit mode (#1728 phase 4)', () => {
     expect(patch).toBeUndefined();
   });
 });
+import '@/lib/i18n';

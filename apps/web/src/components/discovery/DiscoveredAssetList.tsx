@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Filter, Info, Signal, CheckCircle2, XCircle } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import AssetDetailModal, { type AssetDetail } from './AssetDetailModal';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatDateTime } from '@/lib/dateTimeFormat';
@@ -95,25 +96,25 @@ export type ApiDiscoveryAsset = {
 
 type DeviceOption = { id: string; name: string; online?: boolean };
 
-export const typeConfig: Record<DiscoveredAssetType, { label: string; color: string }> = {
-  workstation: { label: 'Workstation', color: 'bg-indigo-500/20 text-indigo-700 border-indigo-500/40' },
-  server: { label: 'Server', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40' },
-  printer: { label: 'Printer', color: 'bg-orange-500/20 text-orange-700 border-orange-500/40' },
-  router: { label: 'Router', color: 'bg-emerald-500/20 text-emerald-700 border-emerald-500/40' },
-  switch: { label: 'Switch', color: 'bg-cyan-500/20 text-cyan-700 border-cyan-500/40' },
-  firewall: { label: 'Firewall', color: 'bg-red-500/20 text-red-700 border-red-500/40' },
-  access_point: { label: 'Access Point', color: 'bg-teal-500/20 text-teal-700 border-teal-500/40' },
-  phone: { label: 'Phone', color: 'bg-violet-500/20 text-violet-700 border-violet-500/40' },
-  iot: { label: 'IoT', color: 'bg-amber-500/20 text-amber-700 border-amber-500/40' },
-  camera: { label: 'Camera', color: 'bg-pink-500/20 text-pink-700 border-pink-500/40' },
-  nas: { label: 'NAS', color: 'bg-sky-500/20 text-sky-700 border-sky-500/40' },
-  unknown: { label: 'Unknown', color: 'bg-muted text-muted-foreground border-muted' }
+export const typeConfig: Record<DiscoveredAssetType, { labelKey: string; color: string }> = {
+  workstation: { labelKey: 'assetTypes.workstation', color: 'bg-indigo-500/20 text-indigo-700 border-indigo-500/40' },
+  server: { labelKey: 'assetTypes.server', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40' },
+  printer: { labelKey: 'assetTypes.printer', color: 'bg-orange-500/20 text-orange-700 border-orange-500/40' },
+  router: { labelKey: 'assetTypes.router', color: 'bg-emerald-500/20 text-emerald-700 border-emerald-500/40' },
+  switch: { labelKey: 'assetTypes.switch', color: 'bg-cyan-500/20 text-cyan-700 border-cyan-500/40' },
+  firewall: { labelKey: 'assetTypes.firewall', color: 'bg-red-500/20 text-red-700 border-red-500/40' },
+  access_point: { labelKey: 'assetTypes.accessPoint', color: 'bg-teal-500/20 text-teal-700 border-teal-500/40' },
+  phone: { labelKey: 'assetTypes.phone', color: 'bg-violet-500/20 text-violet-700 border-violet-500/40' },
+  iot: { labelKey: 'assetTypes.iot', color: 'bg-amber-500/20 text-amber-700 border-amber-500/40' },
+  camera: { labelKey: 'assetTypes.camera', color: 'bg-pink-500/20 text-pink-700 border-pink-500/40' },
+  nas: { labelKey: 'assetTypes.nas', color: 'bg-sky-500/20 text-sky-700 border-sky-500/40' },
+  unknown: { labelKey: 'assetTypes.unknown', color: 'bg-muted text-muted-foreground border-muted' }
 };
 
-export const approvalStatusConfig: Record<DiscoveredAssetApprovalStatus, { label: string; color: string }> = {
-  pending:   { label: 'Pending',   color: 'bg-amber-500/20 text-amber-700 border-amber-500/40' },
-  approved:  { label: 'Approved',  color: 'bg-success/15 text-success border-success/30' },
-  dismissed: { label: 'Dismissed', color: 'bg-muted text-muted-foreground border-muted' }
+export const approvalStatusConfig: Record<DiscoveredAssetApprovalStatus, { labelKey: string; color: string }> = {
+  pending:   { labelKey: 'approvalStatus.pending',   color: 'bg-amber-500/20 text-amber-700 border-amber-500/40' },
+  approved:  { labelKey: 'approvalStatus.approved',  color: 'bg-success/15 text-success border-success/30' },
+  dismissed: { labelKey: 'approvalStatus.dismissed', color: 'bg-muted text-muted-foreground border-muted' }
 };
 
 const assetTypeMap: Record<string, DiscoveredAssetType> = {
@@ -252,6 +253,7 @@ interface DiscoveredAssetListProps {
 }
 
 export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListProps) {
+  const { t } = useTranslation('discovery');
   const [assets, setAssets] = useState<DiscoveredAsset[]>([]);
   const [devices, setDevices] = useState<DeviceOption[]>([]);
   const [loading, setLoading] = useState(true);
@@ -270,7 +272,7 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
       setError(undefined);
       const response = await fetchWithAuth('/discovery/assets');
       if (!response.ok) {
-        throw new Error('Failed to fetch discovered assets');
+        throw new Error(t('discoveredAssetList.errors.fetch'));
       }
       const data = await response.json();
       const items = data.data ?? data.assets ?? data ?? [];
@@ -279,11 +281,11 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
       const validIds = new Set(mappedAssets.map((asset: DiscoveredAsset) => asset.id));
       setSelectedAssetIds(prev => new Set([...prev].filter(id => validIds.has(id))));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('discoveredAssetList.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   const filteredAssets = useMemo(() => {
     let result = assets;
@@ -315,11 +317,11 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
       if (existing) {
         existing.count++;
       } else {
-        map.set(a.profileId, { name: a.profileName ?? 'Unknown', count: 1 });
+        map.set(a.profileId, { name: a.profileName ?? t('common:states.unknown'), count: 1 });
       }
     }
     return map;
-  }, [assets]);
+  }, [assets, t]);
 
   const availableSubnets = useMemo(() => {
     const base = profileFilter ? assets.filter(a => a.profileId === profileFilter) : assets;
@@ -358,11 +360,11 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
         method: 'PATCH'
       });
       if (!response.ok) {
-        throw new Error('Failed to approve asset');
+        throw new Error(t('discoveredAssetList.errors.approve'));
       }
       await fetchAssets();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('discoveredAssetList.errors.generic'));
     }
   };
 
@@ -373,11 +375,11 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
         method: 'PATCH'
       });
       if (!response.ok) {
-        throw new Error('Failed to dismiss asset');
+        throw new Error(t('discoveredAssetList.errors.dismiss'));
       }
       await fetchAssets();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('discoveredAssetList.errors.generic'));
     }
   };
 
@@ -419,12 +421,12 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
         body: JSON.stringify({ assetIds: ids })
       });
       if (!response.ok) {
-        throw new Error('Failed to approve selected assets');
+        throw new Error(t('discoveredAssetList.errors.bulkApprove'));
       }
       setSelectedAssetIds(new Set());
       await fetchAssets();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('discoveredAssetList.errors.generic'));
     } finally {
       setBulkActing(false);
     }
@@ -441,12 +443,12 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
         body: JSON.stringify({ assetIds: ids })
       });
       if (!response.ok) {
-        throw new Error('Failed to dismiss selected assets');
+        throw new Error(t('discoveredAssetList.errors.bulkDismiss'));
       }
       setSelectedAssetIds(new Set());
       await fetchAssets();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('discoveredAssetList.errors.generic'));
     } finally {
       setBulkActing(false);
     }
@@ -457,7 +459,7 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
       <div className="flex items-center justify-center rounded-lg border bg-card p-10 shadow-xs">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading discovered assets...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('discoveredAssetList.loading')}</p>
         </div>
       </div>
     );
@@ -472,7 +474,7 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
           onClick={fetchAssets}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Try again
+          {t('discoveredAssetList.tryAgain')}
         </button>
       </div>
     );
@@ -481,7 +483,7 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
   // Row pieces shared by the desktop table and the mobile cards.
   const renderHostInfo = (asset: DiscoveredAsset) => (
     <div className="flex items-center gap-2">
-      <span className={`inline-block h-2 w-2 shrink-0 rounded-full ${asset.isOnline ? 'bg-green-500' : 'bg-muted-foreground/40'}`} title={asset.isOnline ? 'Online' : 'Offline'} />
+      <span className={`inline-block h-2 w-2 shrink-0 rounded-full ${asset.isOnline ? 'bg-green-500' : 'bg-muted-foreground/40'}`} title={asset.isOnline ? t('common:states.online') : t('common:states.offline')} />
       <div className="min-w-0">
         {asset.label && (
           <div className="text-sm font-semibold truncate">{asset.label}</div>
@@ -499,7 +501,7 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
           {asset.monitoringEnabled && (
             <span className="inline-flex items-center gap-0.5 text-green-600">
               <Signal className="h-3 w-3" />
-              Monitored
+              {t('discoveredAssetList.monitored')}
             </span>
           )}
           {asset.linkedDeviceName && (
@@ -515,13 +517,13 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
 
   const renderTypeBadge = (asset: DiscoveredAsset) => (
     <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${typeConfig[asset.type].color}`}>
-      {typeConfig[asset.type].label}
+      {t(typeConfig[asset.type].labelKey)}
     </span>
   );
 
   const renderApprovalBadge = (asset: DiscoveredAsset) => (
     <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${approvalStatusConfig[asset.approvalStatus].color}`}>
-      {approvalStatusConfig[asset.approvalStatus].label}
+      {t(approvalStatusConfig[asset.approvalStatus].labelKey)}
     </span>
   );
 
@@ -534,7 +536,7 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
           setSelectedAsset(toDetail(asset));
         }}
         className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted"
-        title="View details"
+        title={t('discoveredAssetList.actions.viewDetails')}
       >
         <Info className="h-4 w-4" />
       </button>
@@ -546,7 +548,7 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
             void handleApprove(asset);
           }}
           className="flex h-8 w-8 items-center justify-center rounded-md border border-green-500/40 text-green-700 hover:bg-green-500/10"
-          title="Approve"
+          title={t('discoveredAssetList.actions.approve')}
         >
           <CheckCircle2 className="h-4 w-4" />
         </button>
@@ -559,7 +561,7 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
             void handleDismiss(asset);
           }}
           className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted"
-          title="Dismiss"
+          title={t('discoveredAssetList.actions.dismiss')}
         >
           <XCircle className="h-4 w-4" />
         </button>
@@ -570,8 +572,8 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
   return (
     <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div>
-        <h2 className="text-lg font-semibold">Discovered Assets</h2>
-        <p className="text-sm text-muted-foreground">Review assets detected in your environment.</p>
+        <h2 className="text-lg font-semibold">{t('discoveredAssetList.title')}</h2>
+        <p className="text-sm text-muted-foreground">{t('discoveredAssetList.description')}</p>
       </div>
 
       {error && assets.length > 0 && (
@@ -583,11 +585,11 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
       {/* Quick filters */}
       <div className="mt-4 flex flex-wrap items-center gap-3">
         <FilterChipGroup
-          label="Status"
+          label={t('common:labels.status')}
           showIcon
           chips={(Object.keys(approvalStatusConfig) as DiscoveredAssetApprovalStatus[]).map(s => ({
             key: s,
-            label: approvalStatusConfig[s].label,
+            label: t(approvalStatusConfig[s].labelKey),
             count: approvalCounts[s] ?? 0,
             color: approvalStatusConfig[s].color,
           }))}
@@ -599,10 +601,10 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
           <>
             {filterDivider}
             <FilterChipGroup
-              label="Type"
+              label={t('common:labels.type')}
               chips={(Object.keys(typeConfig) as DiscoveredAssetType[]).map(t => ({
                 key: t,
-                label: typeConfig[t].label,
+                label: t(typeConfig[t].labelKey),
                 count: typeCounts[t] ?? 0,
                 color: typeConfig[t].color,
               }))}
@@ -616,7 +618,7 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
           <>
             {filterDivider}
             <FilterChipGroup
-              label="Profile"
+              label={t('discoveredAssetList.filters.profile')}
               chips={[...profileOptions.entries()].map(([id, { name, count }]) => ({
                 key: id,
                 label: name,
@@ -640,7 +642,7 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
           <>
             {filterDivider}
             <FilterChipGroup
-              label="Subnet"
+              label={t('discoveredAssetList.filters.subnet')}
               chips={[...availableSubnets.entries()].map(([subnet, count]) => ({
                 key: subnet,
                 label: subnet,
@@ -661,7 +663,7 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
               onClick={() => { setApprovalFilter('all'); setTypeFilter('all'); setProfileFilter(null); setSubnetFilter(null); }}
               className="text-xs text-muted-foreground hover:text-foreground"
             >
-              Clear all
+              {t('discoveredAssetList.actions.clearAll')}
             </button>
           </>
         )}
@@ -673,7 +675,7 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
           onClick={toggleSelectAllVisible}
           className="h-8 rounded-md border px-3 text-xs font-medium hover:bg-muted"
         >
-          {allVisibleSelected ? 'Deselect all visible' : 'Select all visible'}
+          {allVisibleSelected ? t('discoveredAssetList.actions.deselectAllVisible') : t('discoveredAssetList.actions.selectAllVisible')}
         </button>
         <button
           type="button"
@@ -681,7 +683,7 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
           disabled={selectedCount === 0}
           className="h-8 rounded-md border px-3 text-xs font-medium text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
         >
-          Clear selection
+          {t('discoveredAssetList.actions.clearSelection')}
         </button>
         <button
           type="button"
@@ -689,7 +691,7 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
           disabled={selectedCount === 0 || bulkActing}
           className="h-8 rounded-md border border-green-500/40 px-3 text-xs font-medium text-green-700 hover:bg-green-500/10 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          {bulkActing ? 'Approving...' : `Approve selected (${selectedCount})`}
+          {bulkActing ? t('discoveredAssetList.actions.approving') : t('discoveredAssetList.actions.approveSelected', { count: selectedCount })}
         </button>
         <button
           type="button"
@@ -697,7 +699,7 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
           disabled={selectedCount === 0 || bulkActing}
           className="h-8 rounded-md border px-3 text-xs font-medium text-muted-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
         >
-          {bulkActing ? 'Dismissing...' : `Dismiss selected (${selectedCount})`}
+          {bulkActing ? t('discoveredAssetList.actions.dismissing') : t('discoveredAssetList.actions.dismissSelected', { count: selectedCount })}
         </button>
       </div>
 
@@ -710,24 +712,24 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
                 <th className="px-4 py-3 w-10">
                   <input
                     type="checkbox"
-                    aria-label="Select all visible assets"
+                    aria-label={t('discoveredAssetList.actions.selectAllVisibleAssets')}
                     checked={allVisibleSelected}
                     onChange={toggleSelectAllVisible}
                     className="h-4 w-4 rounded border-muted-foreground/40"
                   />
                 </th>
-                <th className="px-4 py-3">Host</th>
-                <th className="px-4 py-3">Type</th>
-                <th className="px-4 py-3">Approval</th>
-                <th className="px-4 py-3">Last Seen</th>
-                <th className="px-4 py-3 text-right">Actions</th>
+                <th className="px-4 py-3">{t('discoveredAssetList.columns.host')}</th>
+                <th className="px-4 py-3">{t('common:labels.type')}</th>
+                <th className="px-4 py-3">{t('discoveredAssetList.columns.approval')}</th>
+                <th className="px-4 py-3">{t('discoveredAssetList.columns.lastSeen')}</th>
+                <th className="px-4 py-3 text-right">{t('common:labels.actions')}</th>
               </tr>
             </thead>
             <tbody className="divide-y">
               {filteredAssets.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                    {assets.length === 0 ? 'No assets discovered yet.' : 'No assets match the current filters.'}
+                    {assets.length === 0 ? t('discoveredAssetList.empty') : t('discoveredAssetList.emptyFiltered')}
                   </td>
                 </tr>
               ) : (
@@ -740,7 +742,7 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
                     <td className="px-4 py-3 align-top">
                       <input
                         type="checkbox"
-                        aria-label={`Select asset ${asset.hostname || asset.ip}`}
+                        aria-label={t('discoveredAssetList.actions.selectAsset', { asset: asset.hostname || asset.ip })}
                         checked={selectedAssetIds.has(asset.id)}
                         onClick={event => event.stopPropagation()}
                         onChange={() => toggleAssetSelection(asset.id)}
@@ -762,7 +764,7 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
           filteredAssets.length === 0 ? (
             <DataCard>
               <p className="py-2 text-center text-sm text-muted-foreground">
-                {assets.length === 0 ? 'No assets discovered yet.' : 'No assets match the current filters.'}
+                {assets.length === 0 ? t('discoveredAssetList.empty') : t('discoveredAssetList.emptyFiltered')}
               </p>
             </DataCard>
           ) : (
@@ -775,7 +777,7 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
                 <div className="flex items-start gap-3">
                   <input
                     type="checkbox"
-                    aria-label={`Select asset ${asset.hostname || asset.ip}`}
+                    aria-label={t('discoveredAssetList.actions.selectAsset', { asset: asset.hostname || asset.ip })}
                     checked={selectedAssetIds.has(asset.id)}
                     onClick={event => event.stopPropagation()}
                     onChange={() => toggleAssetSelection(asset.id)}
@@ -784,9 +786,9 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
                   <div className="min-w-0 flex-1">{renderHostInfo(asset)}</div>
                 </div>
                 <div className="mt-3 space-y-2 border-t pt-3">
-                  <CardField label="Type">{renderTypeBadge(asset)}</CardField>
-                  <CardField label="Approval">{renderApprovalBadge(asset)}</CardField>
-                  <CardField label="Last seen">
+                  <CardField label={t('common:labels.type')}>{renderTypeBadge(asset)}</CardField>
+                  <CardField label={t('discoveredAssetList.columns.approval')}>{renderApprovalBadge(asset)}</CardField>
+                  <CardField label={t('discoveredAssetList.columns.lastSeen')}>
                     <span className="text-xs text-muted-foreground">{formatLastSeen(asset.lastSeen, timezone)}</span>
                   </CardField>
                 </div>

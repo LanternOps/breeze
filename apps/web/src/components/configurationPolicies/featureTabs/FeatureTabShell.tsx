@@ -1,6 +1,7 @@
-import type { ReactNode } from 'react';
-import { Loader2, Trash2, RotateCcw, PenLine } from 'lucide-react';
-
+import type { ReactNode } from "react";
+import { Loader2, Trash2, RotateCcw, PenLine } from "lucide-react";
+import { useTranslation } from "react-i18next";
+import { i18n } from "@/lib/i18n";
 type FeatureTabShellProps = {
   title: string;
   description: string;
@@ -25,7 +26,6 @@ type FeatureTabShellProps = {
   onRevert?: () => void;
   children: ReactNode;
 };
-
 export default function FeatureTabShell({
   title,
   description,
@@ -41,24 +41,22 @@ export default function FeatureTabShell({
   onRevert,
   children,
 }: FeatureTabShellProps) {
+  useTranslation("policies");
   const savedInactive = !isInherited && isConfigured && !!configuredButInactive;
-
   const badgeText = isInherited
-    ? 'Configured (inherited)'
+    ? "Configured (inherited)"
     : savedInactive
-      ? 'Saved (not deployed)'
+      ? "Saved (not deployed)"
       : isConfigured
-        ? 'Configured'
-        : 'Not configured';
-
+        ? "Configured"
+        : "Not configured";
   const badgeClass = isInherited
-    ? 'border-blue-500/40 bg-blue-500/20 text-blue-700'
+    ? "border-blue-500/40 bg-blue-500/20 text-blue-700"
     : savedInactive
-      ? 'border-amber-500/40 bg-amber-500/20 text-amber-700'
+      ? "border-amber-500/40 bg-amber-500/20 text-amber-700"
       : isConfigured
-        ? 'border-green-500/40 bg-green-500/20 text-green-700'
-        : 'border-muted bg-muted/50 text-muted-foreground';
-
+        ? "border-green-500/40 bg-green-500/20 text-green-700"
+        : "border-muted bg-muted/50 text-muted-foreground";
   return (
     <div className="space-y-6">
       <div className="rounded-lg border bg-card p-6 shadow-xs">
@@ -88,7 +86,9 @@ export default function FeatureTabShell({
         )}
 
         {/* Inline settings form */}
-        <div className={`mt-6 ${isInherited ? 'opacity-60 pointer-events-none' : ''}`}>
+        <div
+          className={`mt-6 ${isInherited ? "opacity-60 pointer-events-none" : ""}`}
+        >
           {children}
         </div>
 
@@ -102,7 +102,9 @@ export default function FeatureTabShell({
                 className="inline-flex items-center gap-2 rounded-md border border-primary/40 px-3 py-2 text-sm font-medium text-primary transition hover:bg-primary/10"
               >
                 <PenLine className="h-4 w-4" />
-                Override
+                {i18n.t(
+                  "policies:configurationPolicies.featureTabs.featureTabShell.override",
+                )}
               </button>
             )}
             {!isInherited && onRevert && (
@@ -113,7 +115,9 @@ export default function FeatureTabShell({
                 className="inline-flex items-center gap-2 rounded-md border border-blue-500/40 px-3 py-2 text-sm font-medium text-blue-700 transition hover:bg-blue-500/10 disabled:opacity-50"
               >
                 <RotateCcw className="h-4 w-4" />
-                Revert to Parent
+                {i18n.t(
+                  "policies:configurationPolicies.featureTabs.featureTabShell.revertToParent",
+                )}
               </button>
             )}
             {!isInherited && !onRevert && isConfigured && onRemove && (
@@ -124,7 +128,7 @@ export default function FeatureTabShell({
                 className="inline-flex items-center gap-2 rounded-md border border-destructive/40 px-3 py-2 text-sm font-medium text-destructive transition hover:bg-destructive/10 disabled:opacity-50"
               >
                 <Trash2 className="h-4 w-4" />
-                Remove
+                {i18n.t("common:actions.remove")}
               </button>
             )}
           </div>
@@ -136,7 +140,11 @@ export default function FeatureTabShell({
               className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
             >
               {saving && <Loader2 className="h-4 w-4 animate-spin" />}
-              {saving ? 'Saving...' : 'Save'}
+              {saving
+                ? i18n.t(
+                    "policies:configurationPolicies.featureTabs.featureTabShell.saving",
+                  )
+                : i18n.t("common:actions.save")}
             </button>
           )}
         </div>

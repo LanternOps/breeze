@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback } from 'react';
-import { X, Loader2, ChevronLeft, ChevronRight } from 'lucide-react';
-import { fetchWithAuth } from '../../stores/auth';
-
+import { useState, useEffect, useCallback } from "react";
+import { X, Loader2, ChevronLeft, ChevronRight } from "lucide-react";
+import { fetchWithAuth } from "../../stores/auth";
+import { useTranslation } from "react-i18next";
+import { i18n } from "@/lib/i18n";
 type DeviceRow = {
   deviceId: string;
   hostname: string;
@@ -10,20 +11,22 @@ type DeviceRow = {
   version: string | null;
   lastSeen: string | null;
 };
-
 type DeviceDrawerProps = {
   softwareName: string;
   vendor?: string | null;
   onClose: () => void;
 };
-
-export default function DeviceDrawer({ softwareName, vendor, onClose }: DeviceDrawerProps) {
+export default function DeviceDrawer({
+  softwareName,
+  vendor,
+  onClose,
+}: DeviceDrawerProps) {
+  useTranslation("policies");
   const [devices, setDevices] = useState<DeviceRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
   const limit = 25;
-
   const fetchDevices = useCallback(async () => {
     setLoading(true);
     try {
@@ -31,12 +34,14 @@ export default function DeviceDrawer({ softwareName, vendor, onClose }: DeviceDr
         limit: String(limit),
         offset: String(offset),
       });
-      if (vendor) params.set('vendor', vendor);
-
+      if (vendor) params.set("vendor", vendor);
       const res = await fetchWithAuth(
-        `/software-inventory/${encodeURIComponent(softwareName)}/devices?${params}`
+        `/software-inventory/${encodeURIComponent(softwareName)}/devices?${params}`,
       );
-      if (!res.ok) throw new Error('Failed to fetch devices');
+      if (!res.ok)
+        throw new Error(
+          i18n.t("policies:software.deviceDrawer.failedToFetchDevices"),
+        );
       const data = await res.json();
       setDevices(Array.isArray(data.data) ? data.data : []);
       setTotal(data.pagination?.total ?? 0);
@@ -46,14 +51,11 @@ export default function DeviceDrawer({ softwareName, vendor, onClose }: DeviceDr
       setLoading(false);
     }
   }, [softwareName, vendor, offset]);
-
   useEffect(() => {
     fetchDevices();
   }, [fetchDevices]);
-
   const totalPages = Math.ceil(total / limit);
   const currentPage = Math.floor(offset / limit) + 1;
-
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
       {/* Backdrop */}
@@ -64,9 +66,15 @@ export default function DeviceDrawer({ softwareName, vendor, onClose }: DeviceDr
         {/* Header */}
         <div className="flex items-center justify-between border-b px-6 py-4">
           <div className="min-w-0">
-            <h2 className="truncate text-lg font-semibold">Devices with {softwareName}</h2>
+            <h2 className="truncate text-lg font-semibold">
+              {i18n.t("policies:software.deviceDrawer.devicesWith")}
+              {softwareName}
+            </h2>
             {vendor && (
-              <p className="text-sm text-muted-foreground">by {vendor}</p>
+              <p className="text-sm text-muted-foreground">
+                {i18n.t("policies:software.deviceDrawer.by")}
+                {vendor}
+              </p>
             )}
           </div>
           <button
@@ -86,16 +94,26 @@ export default function DeviceDrawer({ softwareName, vendor, onClose }: DeviceDr
             </div>
           ) : devices.length === 0 ? (
             <p className="px-6 py-8 text-center text-sm text-muted-foreground">
-              No devices found with this software.
+              {i18n.t(
+                "policies:software.deviceDrawer.noDevicesFoundWithThisSoftware",
+              )}
             </p>
           ) : (
             <table className="min-w-full text-sm">
               <thead className="sticky top-0 bg-muted/30 text-left text-xs uppercase tracking-wide text-muted-foreground">
                 <tr>
-                  <th className="px-6 py-3">Hostname</th>
-                  <th className="px-4 py-3">OS</th>
-                  <th className="px-4 py-3">Version</th>
-                  <th className="px-4 py-3">Last Seen</th>
+                  <th className="px-6 py-3">
+                    {i18n.t("policies:software.deviceDrawer.hostname")}
+                  </th>
+                  <th className="px-4 py-3">
+                    {i18n.t("policies:software.deviceDrawer.oS")}
+                  </th>
+                  <th className="px-4 py-3">
+                    {i18n.t("policies:software.deviceDrawer.version")}
+                  </th>
+                  <th className="px-4 py-3">
+                    {i18n.t("policies:software.deviceDrawer.lastSeen")}
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y">
@@ -113,12 +131,12 @@ export default function DeviceDrawer({ softwareName, vendor, onClose }: DeviceDr
                       {d.osType}
                     </td>
                     <td className="px-4 py-3 text-muted-foreground">
-                      {d.version ?? '-'}
+                      {d.version ?? "-"}
                     </td>
                     <td className="px-4 py-3 text-muted-foreground">
                       {d.lastSeen
                         ? new Date(d.lastSeen).toLocaleDateString()
-                        : '-'}
+                        : "-"}
                     </td>
                   </tr>
                 ))}
@@ -131,7 +149,10 @@ export default function DeviceDrawer({ softwareName, vendor, onClose }: DeviceDr
         {total > limit && (
           <div className="flex items-center justify-between border-t px-6 py-3 text-sm">
             <span className="text-muted-foreground">
-              {total} device{total !== 1 ? 's' : ''} total
+              {total}
+              {i18n.t("policies:software.deviceDrawer.device")}
+              {total !== 1 ? i18n.t("policies:software.deviceDrawer.s") : ""}
+              {i18n.t("policies:software.deviceDrawer.total")}
             </span>
             <div className="flex items-center gap-2">
               <button

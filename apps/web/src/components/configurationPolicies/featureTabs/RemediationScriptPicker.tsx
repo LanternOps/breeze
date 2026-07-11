@@ -1,111 +1,134 @@
-import { useState, useMemo, useEffect } from 'react';
-import { X, Search, FileCode, Loader2 } from 'lucide-react';
-import { cn } from '@/lib/utils';
-import { fetchWithAuth } from '../../../stores/auth';
-
-export type ScriptLanguage = 'powershell' | 'bash' | 'python' | 'cmd';
-export type OSType = 'windows' | 'macos' | 'linux';
-
+import { useState, useMemo, useEffect } from "react";
+import { X, Search, FileCode, Loader2 } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { fetchWithAuth } from "../../../stores/auth";
+import { useTranslation } from "react-i18next";
+import { i18n } from "@/lib/i18n";
+export type ScriptLanguage = "powershell" | "bash" | "python" | "cmd";
+export type OSType = "windows" | "macos" | "linux";
 export type SelectedScript = {
   id: string;
   name: string;
   language: ScriptLanguage;
   osTypes: OSType[];
 };
-
 type ScriptRow = SelectedScript & {
   description?: string;
   category: string;
 };
-
 type RemediationScriptPickerProps = {
   isOpen: boolean;
   onClose: () => void;
   onSelect: (script: SelectedScript) => void;
   osFilter?: OSType[];
 };
-
-const languageConfig: Record<ScriptLanguage, { label: string; color: string; icon: string }> = {
-  powershell: { label: 'PowerShell', color: 'bg-blue-500/20 text-blue-700', icon: 'PS' },
-  bash: { label: 'Bash', color: 'bg-green-500/20 text-green-700', icon: '$' },
-  python: { label: 'Python', color: 'bg-yellow-500/20 text-yellow-700', icon: 'Py' },
-  cmd: { label: 'CMD', color: 'bg-gray-500/20 text-gray-700', icon: '>' },
+const languageConfig: Record<
+  ScriptLanguage,
+  {
+    label: string;
+    color: string;
+    icon: string;
+  }
+> = {
+  powershell: {
+    label: i18n.t(
+      "policies:configurationPolicies.featureTabs.remediationScriptPicker.powerShell",
+    ),
+    color: "bg-blue-500/20 text-blue-700",
+    icon: "PS",
+  },
+  bash: {
+    label: i18n.t(
+      "policies:configurationPolicies.featureTabs.remediationScriptPicker.bash",
+    ),
+    color: "bg-green-500/20 text-green-700",
+    icon: "$",
+  },
+  python: {
+    label: i18n.t(
+      "policies:configurationPolicies.featureTabs.remediationScriptPicker.python",
+    ),
+    color: "bg-yellow-500/20 text-yellow-700",
+    icon: "Py",
+  },
+  cmd: {
+    label: i18n.t(
+      "policies:configurationPolicies.featureTabs.remediationScriptPicker.cMD",
+    ),
+    color: "bg-gray-500/20 text-gray-700",
+    icon: ">",
+  },
 };
-
 export default function RemediationScriptPicker({
   isOpen,
   onClose,
   onSelect,
   osFilter,
 }: RemediationScriptPickerProps) {
+  useTranslation("policies");
   const [scripts, setScripts] = useState<ScriptRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
-  const [query, setQuery] = useState('');
-  const [categoryFilter, setCategoryFilter] = useState<string>('all');
-
+  const [query, setQuery] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState<string>("all");
   useEffect(() => {
     if (isOpen) {
-      setQuery('');
-      setCategoryFilter('all');
+      setQuery("");
+      setCategoryFilter("all");
       fetchScripts();
     }
   }, [isOpen]);
-
   async function fetchScripts() {
     try {
       setLoading(true);
       setError(undefined);
-
-      const response = await fetchWithAuth('/scripts');
+      const response = await fetchWithAuth("/scripts");
       if (!response.ok) {
-        throw new Error('Failed to fetch scripts');
+        throw new Error(
+          i18n.t(
+            "policies:configurationPolicies.featureTabs.remediationScriptPicker.failedToFetchScripts",
+          ),
+        );
       }
-
       const data = await response.json();
       const scriptList = data.data ?? data.scripts ?? data ?? [];
-
       const transformedScripts: ScriptRow[] = scriptList.map(
         (s: Record<string, unknown>) => ({
           id: s.id as string,
-          name: (s.name ?? 'Unnamed Script') as string,
+          name: (s.name ?? "Unnamed Script") as string,
           description: s.description as string | undefined,
-          language: (s.language ?? 'bash') as ScriptLanguage,
-          category: (s.category ?? 'General') as string,
-          osTypes: (s.osTypes ?? s.os_types ?? ['macos', 'linux']) as OSType[],
+          language: (s.language ?? "bash") as ScriptLanguage,
+          category: (s.category ?? "General") as string,
+          osTypes: (s.osTypes ?? s.os_types ?? ["macos", "linux"]) as OSType[],
         }),
       );
-
       setScripts(transformedScripts);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load scripts');
+      setError(err instanceof Error ? err.message : "Failed to load scripts");
     } finally {
       setLoading(false);
     }
   }
-
   const categories = useMemo(() => {
     const cats = new Set(scripts.map((s) => s.category));
     return Array.from(cats).sort();
   }, [scripts]);
-
   const filteredScripts = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
-
     return scripts.filter((script) => {
       const matchesQuery =
         normalizedQuery.length === 0
           ? true
           : script.name.toLowerCase().includes(normalizedQuery) ||
-            (script.description?.toLowerCase().includes(normalizedQuery) ?? false);
+            (script.description?.toLowerCase().includes(normalizedQuery) ??
+              false);
       const matchesCategory =
-        categoryFilter === 'all' ? true : script.category === categoryFilter;
-      const matchesOs = !osFilter || osFilter.some((os) => script.osTypes.includes(os));
-
+        categoryFilter === "all" ? true : script.category === categoryFilter;
+      const matchesOs =
+        !osFilter || osFilter.some((os) => script.osTypes.includes(os));
       return matchesQuery && matchesCategory && matchesOs;
     });
   }, [scripts, query, categoryFilter, osFilter]);
-
   const handleSelect = (script: ScriptRow) => {
     onSelect({
       id: script.id,
@@ -115,18 +138,22 @@ export default function RemediationScriptPicker({
     });
     onClose();
   };
-
   if (!isOpen) return null;
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
       <div className="w-full max-w-2xl max-h-[80vh] overflow-hidden rounded-lg border bg-card shadow-lg flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between border-b px-6 py-4">
           <div>
-            <h2 className="text-lg font-semibold">Select Remediation Script</h2>
+            <h2 className="text-lg font-semibold">
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.remediationScriptPicker.selectRemediationScript",
+              )}
+            </h2>
             <p className="text-sm text-muted-foreground">
-              Choose a script to run when this rule fails compliance
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.remediationScriptPicker.chooseAScriptToRunWhenThis",
+              )}
             </p>
           </div>
           <button
@@ -145,7 +172,9 @@ export default function RemediationScriptPicker({
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <input
                 type="search"
-                placeholder="Search scripts..."
+                placeholder={i18n.t(
+                  "policies:configurationPolicies.featureTabs.remediationScriptPicker.searchScripts",
+                )}
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 className="h-9 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
@@ -157,7 +186,11 @@ export default function RemediationScriptPicker({
                 onChange={(e) => setCategoryFilter(e.target.value)}
                 className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               >
-                <option value="all">All Categories</option>
+                <option value="all">
+                  {i18n.t(
+                    "policies:configurationPolicies.featureTabs.remediationScriptPicker.allCategories",
+                  )}
+                </option>
                 {categories.map((cat) => (
                   <option key={cat} value={cat}>
                     {cat}
@@ -181,8 +214,12 @@ export default function RemediationScriptPicker({
           ) : filteredScripts.length === 0 ? (
             <div className="py-12 text-center text-sm text-muted-foreground">
               {scripts.length === 0
-                ? 'No scripts available'
-                : 'No scripts match your search'}
+                ? i18n.t(
+                    "policies:configurationPolicies.featureTabs.remediationScriptPicker.noScriptsAvailable",
+                  )
+                : i18n.t(
+                    "policies:configurationPolicies.featureTabs.remediationScriptPicker.noScriptsMatchYourSearch",
+                  )}
             </div>
           ) : (
             <div className="space-y-2">
@@ -195,7 +232,7 @@ export default function RemediationScriptPicker({
                 >
                   <div
                     className={cn(
-                      'flex h-8 w-8 shrink-0 items-center justify-center rounded text-xs font-bold',
+                      "flex h-8 w-8 shrink-0 items-center justify-center rounded text-xs font-bold",
                       languageConfig[script.language].color,
                     )}
                   >
@@ -212,7 +249,7 @@ export default function RemediationScriptPicker({
                       <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5">
                         {script.category}
                       </span>
-                      <span>{script.osTypes.join(', ')}</span>
+                      <span>{script.osTypes.join(", ")}</span>
                     </div>
                   </div>
                   <FileCode className="h-4 w-4 shrink-0 text-muted-foreground" />
@@ -225,14 +262,17 @@ export default function RemediationScriptPicker({
         {/* Footer */}
         <div className="flex items-center justify-between border-t px-6 py-4">
           <p className="text-sm text-muted-foreground">
-            {filteredScripts.length} script(s) available
+            {filteredScripts.length}
+            {i18n.t(
+              "policies:configurationPolicies.featureTabs.remediationScriptPicker.scriptSAvailable",
+            )}
           </p>
           <button
             type="button"
             onClick={onClose}
             className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
           >
-            Cancel
+            {i18n.t("common:actions.cancel")}
           </button>
         </div>
       </div>

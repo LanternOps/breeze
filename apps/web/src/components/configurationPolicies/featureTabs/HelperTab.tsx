@@ -1,10 +1,11 @@
-import { useState, useEffect } from 'react';
-import { LifeBuoy } from 'lucide-react';
-import type { FeatureTabProps } from './types';
-import { FEATURE_META } from './types';
-import { useFeatureLink } from './useFeatureLink';
-import FeatureTabShell from './FeatureTabShell';
-
+import { useState, useEffect } from "react";
+import { LifeBuoy } from "lucide-react";
+import type { FeatureTabProps } from "./types";
+import { FEATURE_META } from "./types";
+import { useFeatureLink } from "./useFeatureLink";
+import FeatureTabShell from "./FeatureTabShell";
+import { useTranslation } from "react-i18next";
+import { i18n } from "@/lib/i18n";
 type HelperSettings = {
   enabled: boolean;
   showOpenPortal: boolean;
@@ -12,16 +13,21 @@ type HelperSettings = {
   showRequestSupport: boolean;
   portalUrl?: string;
 };
-
 const defaults: HelperSettings = {
   enabled: false,
   showOpenPortal: true,
   showDeviceInfo: true,
   showRequestSupport: true,
-  portalUrl: '',
+  portalUrl: "",
 };
-
-export default function HelperTab({ policyId, existingLink, onLinkChanged, linkedPolicyId, parentLink }: FeatureTabProps) {
+export default function HelperTab({
+  policyId,
+  existingLink,
+  onLinkChanged,
+  linkedPolicyId,
+  parentLink,
+}: FeatureTabProps) {
+  useTranslation("policies");
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const isInherited = !!parentLink && !existingLink;
   const effectiveLink = existingLink ?? parentLink;
@@ -29,55 +35,52 @@ export default function HelperTab({ policyId, existingLink, onLinkChanged, linke
     ...defaults,
     ...(effectiveLink?.inlineSettings as Partial<HelperSettings> | undefined),
   }));
-
   useEffect(() => {
     const link = existingLink ?? parentLink;
     if (link?.inlineSettings) {
-      setSettings((prev) => ({ ...prev, ...(link.inlineSettings as Partial<HelperSettings>) }));
+      setSettings((prev) => ({
+        ...prev,
+        ...(link.inlineSettings as Partial<HelperSettings>),
+      }));
     }
   }, [existingLink, parentLink]);
-
-  const update = <K extends keyof HelperSettings>(key: K, value: HelperSettings[K]) =>
-    setSettings((prev) => ({ ...prev, [key]: value }));
-
+  const update = <K extends keyof HelperSettings>(
+    key: K,
+    value: HelperSettings[K],
+  ) => setSettings((prev) => ({ ...prev, [key]: value }));
   const handleSave = async () => {
     clearError();
     const payload: HelperSettings = { ...settings };
     if (!payload.portalUrl) delete payload.portalUrl;
     const result = await save(existingLink?.id ?? null, {
-      featureType: 'helper',
+      featureType: "helper",
       featurePolicyId: linkedPolicyId,
       inlineSettings: payload,
     });
-    if (result) onLinkChanged(result, 'helper');
+    if (result) onLinkChanged(result, "helper");
   };
-
   const handleRemove = async () => {
     if (!existingLink) return;
     const ok = await remove(existingLink.id);
-    if (ok) onLinkChanged(null, 'helper');
+    if (ok) onLinkChanged(null, "helper");
   };
-
   const handleOverride = async () => {
     clearError();
     const payload: HelperSettings = { ...settings };
     if (!payload.portalUrl) delete payload.portalUrl;
     const result = await save(null, {
-      featureType: 'helper',
+      featureType: "helper",
       featurePolicyId: linkedPolicyId,
       inlineSettings: payload,
     });
-    if (result) onLinkChanged(result, 'helper');
+    if (result) onLinkChanged(result, "helper");
   };
-
   const handleRevert = async () => {
     if (!existingLink) return;
     const ok = await remove(existingLink.id);
-    if (ok) onLinkChanged(null, 'helper');
+    if (ok) onLinkChanged(null, "helper");
   };
-
   const meta = FEATURE_META.helper;
-
   return (
     <FeatureTabShell
       title={meta.label}
@@ -91,21 +94,42 @@ export default function HelperTab({ policyId, existingLink, onLinkChanged, linke
       onRemove={existingLink && !linkedPolicyId ? handleRemove : undefined}
       isInherited={isInherited}
       onOverride={isInherited ? handleOverride : undefined}
-      onRevert={!isInherited && !!linkedPolicyId && !!existingLink ? handleRevert : undefined}
+      onRevert={
+        !isInherited && !!linkedPolicyId && !!existingLink
+          ? handleRevert
+          : undefined
+      }
     >
       <div className="space-y-6">
         {/* Deploy toggle */}
         <div className="flex items-center justify-between rounded-md border bg-background px-4 py-3">
           <div>
-            <p className="text-sm font-medium">Deploy Breeze Assist to devices</p>
-            <p className="text-xs text-muted-foreground">Install and run the Breeze Assist tray application on targeted devices.</p>
+            <p className="text-sm font-medium">
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.helperTab.deployBreezeAssistToDevices",
+              )}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.helperTab.installAndRunTheBreezeAssistTray",
+              )}
+            </p>
           </div>
           <button
             type="button"
-            onClick={() => update('enabled', !settings.enabled)}
-            className={`relative inline-flex h-6 w-11 items-center rounded-full border transition ${settings.enabled ? 'bg-emerald-500/80' : 'bg-muted'}`}
+            onClick={() =>
+              update(
+                i18n.t(
+                  "policies:configurationPolicies.featureTabs.helperTab.enabled",
+                ),
+                !settings.enabled,
+              )
+            }
+            className={`relative inline-flex h-6 w-11 items-center rounded-full border transition ${settings.enabled ? "bg-emerald-500/80" : "bg-muted"}`}
           >
-            <span className={`inline-block h-5 w-5 rounded-full bg-white transition ${settings.enabled ? 'translate-x-5' : 'translate-x-1'}`} />
+            <span
+              className={`inline-block h-5 w-5 rounded-full bg-white transition ${settings.enabled ? "translate-x-5" : "translate-x-1"}`}
+            />
           </button>
         </div>
 
@@ -116,15 +140,27 @@ export default function HelperTab({ policyId, existingLink, onLinkChanged, linke
         */}
         <div className="space-y-4">
           <div>
-            <h3 className="text-sm font-semibold">Tray Menu Options</h3>
-            <p className="text-xs text-muted-foreground">Configure which items appear in the Breeze Assist right-click context menu. Exit is always available.</p>
+            <h3 className="text-sm font-semibold">
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.helperTab.trayMenuOptions",
+              )}
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.helperTab.configureWhichItemsAppearInTheBreeze",
+              )}
+            </p>
             {!settings.enabled && (
-              <p className="mt-1 text-xs italic text-muted-foreground">Enable "Deploy Breeze Assist to devices" above to apply these options.</p>
+              <p className="mt-1 text-xs italic text-muted-foreground">
+                {i18n.t(
+                  "policies:configurationPolicies.featureTabs.helperTab.enableDeployBreezeAssistToDevicesAbove",
+                )}
+              </p>
             )}
           </div>
 
           <div
-            className={`space-y-4 ${settings.enabled ? '' : 'pointer-events-none opacity-50'}`}
+            className={`space-y-4 ${settings.enabled ? "" : "pointer-events-none opacity-50"}`}
             aria-disabled={!settings.enabled}
           >
             {/* Open Portal */}
@@ -133,12 +169,27 @@ export default function HelperTab({ policyId, existingLink, onLinkChanged, linke
                 type="checkbox"
                 checked={settings.showOpenPortal}
                 disabled={!settings.enabled}
-                onChange={(e) => update('showOpenPortal', e.target.checked)}
+                onChange={(e) =>
+                  update(
+                    i18n.t(
+                      "policies:configurationPolicies.featureTabs.helperTab.showOpenPortal",
+                    ),
+                    e.target.checked,
+                  )
+                }
                 className="h-4 w-4 rounded border-border"
               />
               <div>
-                <p className="text-sm font-medium">Open Breeze Portal</p>
-                <p className="text-xs text-muted-foreground">Opens the web portal in the user's browser.</p>
+                <p className="text-sm font-medium">
+                  {i18n.t(
+                    "policies:configurationPolicies.featureTabs.helperTab.openBreezePortal",
+                  )}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {i18n.t(
+                    "policies:configurationPolicies.featureTabs.helperTab.opensTheWebPortalInTheUser",
+                  )}
+                </p>
               </div>
             </label>
 
@@ -148,12 +199,27 @@ export default function HelperTab({ policyId, existingLink, onLinkChanged, linke
                 type="checkbox"
                 checked={settings.showDeviceInfo}
                 disabled={!settings.enabled}
-                onChange={(e) => update('showDeviceInfo', e.target.checked)}
+                onChange={(e) =>
+                  update(
+                    i18n.t(
+                      "policies:configurationPolicies.featureTabs.helperTab.showDeviceInfo",
+                    ),
+                    e.target.checked,
+                  )
+                }
                 className="h-4 w-4 rounded border-border"
               />
               <div>
-                <p className="text-sm font-medium">Device Info</p>
-                <p className="text-xs text-muted-foreground">Shows device hostname, OS, status, and last check-in.</p>
+                <p className="text-sm font-medium">
+                  {i18n.t(
+                    "policies:configurationPolicies.featureTabs.helperTab.deviceInfo",
+                  )}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {i18n.t(
+                    "policies:configurationPolicies.featureTabs.helperTab.showsDeviceHostnameOSStatusAndLast",
+                  )}
+                </p>
               </div>
             </label>
 
@@ -163,27 +229,59 @@ export default function HelperTab({ policyId, existingLink, onLinkChanged, linke
                 type="checkbox"
                 checked={settings.showRequestSupport}
                 disabled={!settings.enabled}
-                onChange={(e) => update('showRequestSupport', e.target.checked)}
+                onChange={(e) =>
+                  update(
+                    i18n.t(
+                      "policies:configurationPolicies.featureTabs.helperTab.showRequestSupport",
+                    ),
+                    e.target.checked,
+                  )
+                }
                 className="h-4 w-4 rounded border-border"
               />
               <div>
-                <p className="text-sm font-medium">Request Support</p>
-                <p className="text-xs text-muted-foreground">Opens the Breeze Assist chat window for AI-assisted support.</p>
+                <p className="text-sm font-medium">
+                  {i18n.t(
+                    "policies:configurationPolicies.featureTabs.helperTab.requestSupport",
+                  )}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {i18n.t(
+                    "policies:configurationPolicies.featureTabs.helperTab.opensTheBreezeAssistChatWindowFor",
+                  )}
+                </p>
               </div>
             </label>
 
             {/* Portal URL */}
             <div>
-              <label className="text-sm font-medium">Custom Portal URL</label>
+              <label className="text-sm font-medium">
+                {i18n.t(
+                  "policies:configurationPolicies.featureTabs.helperTab.customPortalURL",
+                )}
+              </label>
               <input
                 type="text"
-                value={settings.portalUrl ?? ''}
+                value={settings.portalUrl ?? ""}
                 disabled={!settings.enabled}
-                onChange={(e) => update('portalUrl', e.target.value)}
-                placeholder="https://portal.example.com (defaults to server URL)"
+                onChange={(e) =>
+                  update(
+                    i18n.t(
+                      "policies:configurationPolicies.featureTabs.helperTab.portalUrl",
+                    ),
+                    e.target.value,
+                  )
+                }
+                placeholder={i18n.t(
+                  "policies:configurationPolicies.featureTabs.helperTab.httpsPortalExampleComDefaultsToServer",
+                )}
                 className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
-              <p className="mt-1 text-xs text-muted-foreground">Leave blank to use the default Breeze server URL.</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {i18n.t(
+                  "policies:configurationPolicies.featureTabs.helperTab.leaveBlankToUseTheDefaultBreeze",
+                )}
+              </p>
             </div>
           </div>
         </div>

@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Globe, ExternalLink } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import type { DiscoveredAsset, OpenPortEntry, DiscoveredAssetType } from './DiscoveredAssetList';
 import { typeConfig, approvalStatusConfig } from './DiscoveredAssetList';
 import AssetMonitoringSection from './AssetMonitoringSection';
@@ -23,14 +24,14 @@ export type AssetDetail = DiscoveredAsset & {
 };
 
 // Friendly labels for the scalar SNMP system OIDs the discovery scan collects.
-const SNMP_FIELD_LABELS: Record<string, string> = {
-  sysName: 'System Name',
-  sysDescr: 'Description',
-  sysObjectId: 'Object ID'
+const SNMP_FIELD_LABEL_KEYS: Record<string, string> = {
+  sysName: 'assetDetailModal.snmpFields.systemName',
+  sysDescr: 'common:labels.description',
+  sysObjectId: 'assetDetailModal.snmpFields.objectId'
 };
 
-function snmpFieldLabel(key: string): string {
-  return SNMP_FIELD_LABELS[key] ?? key;
+function snmpFieldLabel(key: string, t: (key: string) => string): string {
+  return SNMP_FIELD_LABEL_KEYS[key] ? t(SNMP_FIELD_LABEL_KEYS[key]) : key;
 }
 
 type AssetDetailModalProps = {
@@ -57,6 +58,7 @@ export default function AssetDetailModal({
   onDeleted,
   onUpdated
 }: AssetDetailModalProps) {
+  const { t } = useTranslation('discovery');
   const [selectedDevice, setSelectedDevice] = useState(asset?.linkedDeviceId ?? '');
   const [linking, setLinking] = useState(false);
   const [linkError, setLinkError] = useState<string>();
@@ -123,7 +125,7 @@ export default function AssetDetailModal({
     if (!asset) return;
     if (!selectedDevice) {
       setLinkSuccess(undefined);
-      setLinkError('Select a device to link.');
+      setLinkError(t('assetDetailModal.errors.selectDeviceToLink'));
       return;
     }
 
@@ -137,18 +139,18 @@ export default function AssetDetailModal({
       });
 
       if (!response.ok) {
-        throw new Error('Failed to link asset');
+        throw new Error(t('assetDetailModal.errors.link'));
       }
 
       const deviceName = devices.find(d => d.id === selectedDevice)?.name;
       setLinkSuccess(
         deviceName
-          ? `Asset linked to ${deviceName}. It is now marked approved.`
-          : 'Asset linked. It is now marked approved.'
+          ? t('assetDetailModal.messages.linkedToDevice', { device: deviceName })
+          : t('assetDetailModal.messages.linked')
       );
       onLinked?.(asset.id, selectedDevice);
     } catch (err) {
-      setLinkError(err instanceof Error ? err.message : 'An error occurred');
+      setLinkError(err instanceof Error ? err.message : t('assetDetailModal.errors.generic'));
     } finally {
       setLinking(false);
     }
@@ -160,7 +162,7 @@ export default function AssetDetailModal({
   // surfaces the server's actual error text (e.g. a stale modal hitting 403/404).
   const handleUnlink = async () => {
     if (!asset?.linkedDeviceId) return;
-    if (typeof window !== 'undefined' && !window.confirm('Unlink this device?')) {
+    if (typeof window !== 'undefined' && !window.confirm(t('assetDetailModal.confirmUnlink'))) {
       return;
     }
 
@@ -174,14 +176,14 @@ export default function AssetDetailModal({
 
       if (!response.ok) {
         const body = await response.json().catch(() => null);
-        throw new Error(extractApiError(body, 'Failed to unlink asset'));
+        throw new Error(extractApiError(body, t('assetDetailModal.errors.unlink')));
       }
 
       setSelectedDevice('');
-      setLinkSuccess('Device unlinked.');
+      setLinkSuccess(t('assetDetailModal.messages.unlinked'));
       onUnlinked?.(asset.id);
     } catch (err) {
-      setLinkError(err instanceof Error ? err.message : 'An error occurred');
+      setLinkError(err instanceof Error ? err.message : t('assetDetailModal.errors.generic'));
     } finally {
       setLinking(false);
     }
@@ -190,7 +192,7 @@ export default function AssetDetailModal({
   const handleDelete = async () => {
     if (!asset) return;
     const name = asset.hostname || asset.ip;
-    if (!confirm(`Delete discovered asset "${name}"?`)) {
+    if (!confirm(t('assetDetailModal.confirmDelete', { name }))) {
       return;
     }
 
@@ -202,12 +204,12 @@ export default function AssetDetailModal({
       });
 
       if (!response.ok) {
-        throw new Error('Failed to delete asset');
+        throw new Error(t('assetDetailModal.errors.delete'));
       }
 
       onDeleted?.(asset.id);
     } catch (err) {
-      setDeleteError(err instanceof Error ? err.message : 'An error occurred');
+      setDeleteError(err instanceof Error ? err.message : t('assetDetailModal.errors.generic'));
     } finally {
       setDeleting(false);
     }
@@ -234,12 +236,12 @@ export default function AssetDetailModal({
       });
       if (!response.ok) {
         const body = await response.json().catch(() => null);
-        throw new Error(extractApiError(body, 'Failed to save asset info'));
+        throw new Error(extractApiError(body, t('assetDetailModal.errors.saveInfo')));
       }
       setSaveSuccess(true);
       onUpdated?.(asset.id);
     } catch (err) {
-      setSaveError(err instanceof Error ? err.message : 'An error occurred');
+      setSaveError(err instanceof Error ? err.message : t('assetDetailModal.errors.generic'));
     } finally {
       setSaving(false);
     }
@@ -257,12 +259,12 @@ export default function AssetDetailModal({
       });
       if (!response.ok) {
         const body = await response.json().catch(() => null);
-        throw new Error(extractApiError(body, 'Failed to reset type'));
+        throw new Error(extractApiError(body, t('assetDetailModal.errors.resetType')));
       }
       setSaveSuccess(true);
       onUpdated?.(asset.id);
     } catch (err) {
-      setSaveError(err instanceof Error ? err.message : 'An error occurred');
+      setSaveError(err instanceof Error ? err.message : t('assetDetailModal.errors.generic'));
     } finally {
       setSaving(false);
     }
@@ -289,12 +291,12 @@ export default function AssetDetailModal({
       });
       if (!response.ok) {
         const detail = await response.json().catch(() => null);
-        throw new Error(detail?.error || 'Failed to create allowlist entry');
+        throw new Error(detail?.error || t('assetDetailModal.errors.createAllowlist'));
       }
       setProxyEnabled(true);
       onUpdated?.(asset.id);
     } catch (err) {
-      setProxyError(err instanceof Error ? err.message : 'An error occurred');
+      setProxyError(err instanceof Error ? err.message : t('assetDetailModal.errors.generic'));
     } finally {
       setEnablingProxy(false);
     }
@@ -318,15 +320,15 @@ export default function AssetDetailModal({
         }),
       });
       if (!response.ok) {
-        const err = await response.json().catch(() => ({ error: 'Failed to create tunnel' }));
-        throw new Error(err.error || 'Failed to create proxy tunnel');
+        const err = await response.json().catch(() => ({ error: t('assetDetailModal.errors.createTunnel') }));
+        throw new Error(err.error || t('assetDetailModal.errors.createProxyTunnel'));
       }
       const tunnel = await response.json();
 
       // Open proxy info in a new tab
       window.open(buildRemoteProxyPageUrl(tunnel.id, `${asset.ip}:${port}`), '_blank');
     } catch (err) {
-      setProxyError(err instanceof Error ? err.message : 'An error occurred');
+      setProxyError(err instanceof Error ? err.message : t('assetDetailModal.errors.generic'));
     } finally {
       setConnectingProxy(false);
     }
@@ -338,21 +340,20 @@ export default function AssetDetailModal({
   if (!asset) {
     if (!open) return null;
     return (
-      <Dialog open={open} onClose={onClose} title="Device details" maxWidth="md">
+      <Dialog open={open} onClose={onClose} title={t('assetDetailModal.deviceDetailsTitle')} maxWidth="md">
         <div className="flex flex-col items-center justify-center gap-3 px-6 py-12 text-center">
           {loading ? (
             <>
               <div className="h-7 w-7 animate-spin rounded-full border-[3px] border-primary border-t-transparent" />
-              <p className="text-sm text-muted-foreground">Loading device details…</p>
+              <p className="text-sm text-muted-foreground">{t('assetDetailModal.loadingDetails')}</p>
             </>
           ) : (
             <>
               <Globe className="h-7 w-7 text-muted-foreground/60" aria-hidden />
               <div className="space-y-1">
-                <p className="text-sm font-medium text-foreground">Details unavailable</p>
+                <p className="text-sm font-medium text-foreground">{t('assetDetailModal.detailsUnavailableTitle')}</p>
                 <p className="text-sm text-muted-foreground">
-                  We couldn’t load this device’s record. It may have been removed or you may not
-                  have access to it.
+                  {t('assetDetailModal.detailsUnavailableDescription')}
                 </p>
               </div>
               <button
@@ -360,7 +361,7 @@ export default function AssetDetailModal({
                 onClick={onClose}
                 className="mt-1 rounded-md border px-3 py-1.5 text-sm font-medium text-foreground transition hover:bg-muted"
               >
-                Close
+                {t('common:actions.close')}
               </button>
             </>
           )}
@@ -382,16 +383,16 @@ export default function AssetDetailModal({
             <div className="flex items-center gap-2">
               <h2 className="text-lg font-semibold">{asset.label || asset.hostname || asset.ip}</h2>
               <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${typeConfig[asset.type].color}`}>
-                {typeConfig[asset.type].label}
+                {t(typeConfig[asset.type].labelKey)}
               </span>
               <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${approvalStatusConfig[asset.approvalStatus].color}`}>
-                {approvalStatusConfig[asset.approvalStatus].label}
+                {t(approvalStatusConfig[asset.approvalStatus].labelKey)}
               </span>
             </div>
             <p className="mt-1 text-sm text-muted-foreground">
               {asset.ip}{asset.mac !== '—' && <> • {asset.mac}</>}
               {asset.manufacturer !== '—' && <> • {asset.manufacturer}</>}
-              {asset.lastSeen && <> • Last seen {formatDateTime(asset.lastSeen)}</>}
+              {asset.lastSeen && <> • {t('assetDetailModal.lastSeen', { time: formatDateTime(asset.lastSeen) })}</>}
             </p>
           </div>
           <button
@@ -399,7 +400,7 @@ export default function AssetDetailModal({
             onClick={onClose}
             className="rounded-md border px-2 py-1 text-xs font-medium text-muted-foreground hover:text-foreground"
           >
-            Close
+            {t('common:actions.close')}
           </button>
         </div>
 
@@ -408,10 +409,10 @@ export default function AssetDetailModal({
           {/* Left column — Network & Discovery */}
           <div className="space-y-4">
             <div className="rounded-md border bg-muted/30 p-4">
-              <h3 className="text-sm font-semibold">Network Details</h3>
+              <h3 className="text-sm font-semibold">{t('assetDetailModal.networkDetailsTitle')}</h3>
               <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
                 <div>
-                  <dt className="text-xs text-muted-foreground">Ping</dt>
+                  <dt className="text-xs text-muted-foreground">{t('assetDetailModal.fields.ping')}</dt>
                   <dd className="font-mono font-medium">
                     {asset.responseTimeMs != null
                       ? asset.responseTimeMs < 1
@@ -421,13 +422,13 @@ export default function AssetDetailModal({
                   </dd>
                 </div>
                 <div>
-                  <dt className="text-xs text-muted-foreground">OS Fingerprint</dt>
+                  <dt className="text-xs text-muted-foreground">{t('assetDetailModal.fields.osFingerprint')}</dt>
                   <dd className="font-medium truncate">{osFingerprint}</dd>
                 </div>
               </dl>
               {openPorts.length > 0 && (
                 <div className="mt-3 border-t pt-3">
-                  <p className="text-xs font-medium text-muted-foreground">Open Ports</p>
+                  <p className="text-xs font-medium text-muted-foreground">{t('assetDetailModal.openPorts')}</p>
                   <div className="mt-2 flex flex-wrap gap-1.5">
                     {openPorts.map((p) => (
                       <span
@@ -441,23 +442,21 @@ export default function AssetDetailModal({
                 </div>
               )}
               {openPorts.length === 0 && (
-                <p className="mt-3 text-xs text-muted-foreground">No open ports detected.</p>
+                <p className="mt-3 text-xs text-muted-foreground">{t('assetDetailModal.noOpenPorts')}</p>
               )}
             </div>
 
             <div className="rounded-md border bg-muted/30 p-4">
-              <h3 className="text-sm font-semibold">SNMP Data</h3>
+              <h3 className="text-sm font-semibold">{t('assetDetailModal.snmpDataTitle')}</h3>
               <dl className="mt-3 space-y-2 text-sm">
                 {Object.keys(snmpData).length === 0 ? (
                   <div className="text-xs text-muted-foreground">
-                    No SNMP data was collected — the device may not have responded, or
-                    SNMP was not probed. Check that the SNMP method is enabled and the
-                    community string is set on the discovery profile.
+                    {t('assetDetailModal.noSnmpData')}
                   </div>
                 ) : (
                   Object.entries(snmpData).map(([key, value]) => (
                     <div key={key} className="flex items-center justify-between gap-4">
-                      <dt className="text-muted-foreground">{snmpFieldLabel(key)}</dt>
+                      <dt className="text-muted-foreground">{snmpFieldLabel(key, t)}</dt>
                       <dd className="font-medium text-right break-all">{value}</dd>
                     </div>
                   ))
@@ -471,21 +470,21 @@ export default function AssetDetailModal({
           {/* Right column — Asset Management */}
           <div className="space-y-4">
             <div className="rounded-md border bg-muted/30 p-4">
-              <h3 className="text-sm font-semibold">Asset Info</h3>
+              <h3 className="text-sm font-semibold">{t('assetDetailModal.assetInfoTitle')}</h3>
               <div className="mt-3 space-y-3">
                 <div>
-                  <label className="text-xs font-medium text-muted-foreground">Display Name</label>
+                  <label className="text-xs font-medium text-muted-foreground">{t('assetDetailModal.fields.displayName')}</label>
                   <input
                     type="text"
                     value={editLabel}
                     onChange={e => setEditLabel(e.target.value)}
-                    placeholder="e.g. Main Switch"
+                    placeholder={t('assetDetailModal.placeholders.displayName')}
                     maxLength={255}
                     className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                 </div>
                 <div>
-                  <label className="text-xs font-medium text-muted-foreground">Asset Type</label>
+                  <label className="text-xs font-medium text-muted-foreground">{t('assetDetailModal.fields.assetType')}</label>
                   <div className="mt-1 flex items-center gap-2">
                     <select
                       data-testid="asset-modal-type-select"
@@ -493,8 +492,8 @@ export default function AssetDetailModal({
                       value={editType}
                       onChange={(e) => setEditType(e.target.value as DiscoveredAssetType)}
                     >
-                      {(Object.keys(typeConfig) as DiscoveredAssetType[]).map((t) => (
-                        <option key={t} value={t}>{typeConfig[t].label}</option>
+                      {(Object.keys(typeConfig) as DiscoveredAssetType[]).map((assetType) => (
+                        <option key={assetType} value={assetType}>{t(typeConfig[assetType].labelKey)}</option>
                       ))}
                     </select>
                     {asset.typeSource === 'manual' && (
@@ -504,28 +503,28 @@ export default function AssetDetailModal({
                         className="text-xs text-muted-foreground underline hover:text-foreground"
                         onClick={() => void handleResetType()}
                       >
-                        Reset to auto-detected
+                        {t('assetDetailModal.actions.resetType')}
                       </button>
                     )}
                   </div>
                 </div>
                 <div>
-                  <label className="text-xs font-medium text-muted-foreground">Notes / Description</label>
+                  <label className="text-xs font-medium text-muted-foreground">{t('assetDetailModal.fields.notesDescription')}</label>
                   <textarea
                     value={editNotes}
                     onChange={e => setEditNotes(e.target.value)}
-                    placeholder="e.g. Located in Closet A, 2nd floor"
+                    placeholder={t('assetDetailModal.placeholders.notes')}
                     rows={2}
                     className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring resize-none"
                   />
                 </div>
                 <div>
-                  <label className="text-xs font-medium text-muted-foreground">Tags (comma-separated)</label>
+                  <label className="text-xs font-medium text-muted-foreground">{t('assetDetailModal.fields.tags')}</label>
                   <input
                     type="text"
                     value={editTags}
                     onChange={e => setEditTags(e.target.value)}
-                    placeholder="e.g. critical, floor-2, networking"
+                    placeholder={t('assetDetailModal.placeholders.tags')}
                     className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                 </div>
@@ -536,10 +535,10 @@ export default function AssetDetailModal({
                     disabled={saving}
                     className="h-8 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-70"
                   >
-                    {saving ? 'Saving...' : 'Save'}
+                    {saving ? t('common:states.saving') : t('common:actions.save')}
                   </button>
                   {saveSuccess && (
-                    <span className="text-xs text-success">Saved</span>
+                    <span className="text-xs text-success">{t('common:states.saved')}</span>
                   )}
                 </div>
                 {saveError && (
@@ -551,15 +550,13 @@ export default function AssetDetailModal({
             </div>
 
             <div className="rounded-md border bg-muted/30 p-4">
-              <h3 className="text-sm font-semibold">Link to managed device</h3>
+              <h3 className="text-sm font-semibold">{t('assetDetailModal.linkManagedDeviceTitle')}</h3>
               <p className="mt-1 text-xs text-muted-foreground">
-                Associate this discovered asset with an existing agent-managed device so Breeze
-                treats them as the same machine. This does not install an agent or create a new
-                device. The asset will be marked as approved.
+                {t('assetDetailModal.linkManagedDeviceDescription')}
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
-                Identity / asset-tracking only — this does <strong>not</strong> control proxy access
-                or choose the proxy agent (set those under Proxy Access below).
+                {t('assetDetailModal.identityOnlyBefore')} <strong>{t('assetDetailModal.notText')}</strong>{' '}
+                {t('assetDetailModal.identityOnlyAfter')}
               </p>
               <div className="mt-3 flex items-center gap-3">
                 <select
@@ -568,7 +565,7 @@ export default function AssetDetailModal({
                   onChange={event => setSelectedDevice(event.target.value)}
                   className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 >
-                  <option value="">Select a managed device</option>
+                  <option value="">{t('assetDetailModal.options.selectManagedDevice')}</option>
                   {devices.map(device => (
                     <option key={device.id} value={device.id}>
                       {device.name}
@@ -581,7 +578,7 @@ export default function AssetDetailModal({
                   disabled={linking}
                   className="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-70"
                 >
-                  {linking ? 'Linking...' : 'Link asset'}
+                  {linking ? t('assetDetailModal.actions.linking') : t('assetDetailModal.actions.linkAsset')}
                 </button>
                 {asset.linkedDeviceId && isManualLink(asset.linkSource) && (
                   <button
@@ -591,7 +588,7 @@ export default function AssetDetailModal({
                     disabled={linking}
                     className="h-9 rounded-md border border-destructive/40 px-4 text-sm font-medium text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-70"
                   >
-                    {linking ? 'Working...' : 'Unlink'}
+                    {linking ? t('assetDetailModal.actions.working') : t('assetDetailModal.actions.unlink')}
                   </button>
                 )}
               </div>
@@ -610,14 +607,12 @@ export default function AssetDetailModal({
             <div className="rounded-md border bg-muted/30 p-4">
               <h3 className="text-sm font-semibold flex items-center gap-2">
                 <Globe className="h-4 w-4" />
-                Proxy Access
+                {t('assetDetailModal.proxy.title')}
               </h3>
               {!proxyEnabled ? (
                 <div className="mt-3">
                   <p className="text-xs text-muted-foreground">
-                    Reach this device's web interface in your browser, tunnelled through an
-                    online agent on its network. Enabling whitelists this device's IP so an
-                    agent is permitted to proxy to it.
+                    {t('assetDetailModal.proxy.description')}
                   </p>
                   <button
                     type="button"
@@ -625,25 +620,24 @@ export default function AssetDetailModal({
                     disabled={enablingProxy}
                     className="mt-2 h-8 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-70"
                   >
-                    {enablingProxy ? 'Enabling...' : 'Enable Proxy Access'}
+                    {enablingProxy ? t('assetDetailModal.actions.enabling') : t('assetDetailModal.proxy.enable')}
                   </button>
                 </div>
               ) : (
                 <div className="mt-3 space-y-3">
                   <div className="flex items-center gap-1.5">
                     <span className="inline-flex items-center rounded-full bg-green-50 px-2 py-0.5 text-xs font-medium text-green-700 dark:bg-green-950 dark:text-green-400">
-                      Proxy enabled
+                      {t('assetDetailModal.proxy.enabled')}
                     </span>
                   </div>
                   {onlineDevices.length > 0 ? (
                     <>
                       <div>
                         <label className="text-xs font-medium text-muted-foreground">
-                          Proxy through agent
+                          {t('assetDetailModal.proxy.throughAgent')}
                         </label>
                         <p className="mt-0.5 chart-legend-xs text-muted-foreground">
-                          Pick an online agent that can reach {asset.ip} on its network (usually the
-                          one that discovered it). This is separate from the identity link above.
+                          {t('assetDetailModal.proxy.throughAgentHelp', { ip: asset.ip })}
                         </p>
                         <select
                           value={selectedBridgeDeviceId}
@@ -673,13 +667,13 @@ export default function AssetDetailModal({
                           {openPorts.length > 0 ? (
                             openPorts.map(p => (
                               <option key={p.port} value={p.port}>
-                                Port {p.port}{p.service ? ` (${p.service})` : ''}
+                                {t('assetDetailModal.proxy.port', { port: p.port })}{p.service ? ` (${p.service})` : ''}
                               </option>
                             ))
                           ) : (
                             <>
-                              <option value={80}>Port 80 (HTTP)</option>
-                              <option value={443}>Port 443 (HTTPS)</option>
+                              <option value={80}>{t('assetDetailModal.proxy.portWithService', { port: 80, service: 'HTTP' })}</option>
+                              <option value={443}>{t('assetDetailModal.proxy.portWithService', { port: 443, service: 'HTTPS' })}</option>
                             </>
                           )}
                         </select>
@@ -704,7 +698,7 @@ export default function AssetDetailModal({
                           className="inline-flex h-8 items-center gap-1.5 rounded-md bg-blue-600 px-3 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-70"
                         >
                           <ExternalLink className="h-3 w-3" />
-                          {connectingProxy ? 'Connecting...' : 'Connect'}
+                          {connectingProxy ? t('assetDetailModal.actions.connecting') : t('assetDetailModal.actions.connect')}
                         </button>
                       </div>
                       {selectedScheme === 'https' && (
@@ -715,14 +709,13 @@ export default function AssetDetailModal({
                             onChange={e => setAllowSelfSigned(e.target.checked)}
                             data-testid="proxy-allow-self-signed"
                           />
-                          Allow self-signed certificate (common for printers, iLO/IPMI, switches)
+                          {t('assetDetailModal.proxy.allowSelfSigned')}
                         </label>
                       )}
                     </>
                   ) : (
                     <p className="text-xs text-amber-600 dark:text-amber-400">
-                      No online agent available to proxy to this device. An agent must be online and
-                      on the same network as {asset.ip} to bridge the connection.
+                      {t('assetDetailModal.proxy.noOnlineAgent', { ip: asset.ip })}
                     </p>
                   )}
                 </div>
@@ -735,14 +728,14 @@ export default function AssetDetailModal({
             </div>
 
             <div className="flex items-center justify-between rounded-md border bg-muted/30 px-4 py-3">
-              <p className="text-xs text-muted-foreground">Remove this asset from discovery results.</p>
+              <p className="text-xs text-muted-foreground">{t('assetDetailModal.deleteDescription')}</p>
               <button
                 type="button"
                 onClick={handleDelete}
                 disabled={deleting}
                 className="h-8 rounded-md border border-destructive/40 px-3 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {deleting ? 'Deleting...' : 'Delete Asset'}
+                {deleting ? t('assetDetailModal.actions.deleting') : t('assetDetailModal.actions.deleteAsset')}
               </button>
               {deleteError && (
                 <div className="mt-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">

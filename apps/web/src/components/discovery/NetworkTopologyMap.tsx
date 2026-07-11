@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import cytoscape from 'cytoscape';
 import fcose from 'cytoscape-fcose';
 import { LayoutGrid, Pencil, Check, ArrowRight, X, Network, Maximize2, Minimize2, Frame } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { usePermissions } from '../../lib/permissions';
 import { runAction, handleActionError } from '@/lib/runAction';
@@ -132,33 +133,33 @@ const statusDotClass: Record<TopologyNodeStatus, string> = {
   warning: 'bg-yellow-500'
 };
 
-const statusLabel: Record<TopologyNodeStatus, string> = {
-  online: 'Online',
-  offline: 'Offline',
-  warning: 'Warning'
+const statusLabelKey: Record<TopologyNodeStatus, string> = {
+  online: 'common:states.online',
+  offline: 'common:states.offline',
+  warning: 'networkTopologyMap.status.warning'
 };
 
 // Edge provenance presentation: matches the canvas line colors so the inspector
 // and the legend speak the same visual language.
-const EDGE_METHOD_META: Record<TopologyEdgeMethod, { label: string; color: string }> = {
-  lldp: { label: 'LLDP', color: '#2563eb' },
-  cdp: { label: 'CDP', color: '#2563eb' },
-  fdb: { label: 'Bridge FDB', color: '#16a34a' },
+const EDGE_METHOD_META: Record<TopologyEdgeMethod, { labelKey: string; color: string }> = {
+  lldp: { labelKey: 'networkTopologyMap.edgeMethods.lldp', color: '#2563eb' },
+  cdp: { labelKey: 'networkTopologyMap.edgeMethods.cdp', color: '#2563eb' },
+  fdb: { labelKey: 'networkTopologyMap.edgeMethods.fdb', color: '#16a34a' },
   // Manual renders with the theme ink (bg-foreground) in the inspector, not this
   // hex; kept as a sane fallback only.
-  manual: { label: 'Manual', color: '#0f172a' }
+  manual: { labelKey: 'networkTopologyMap.edgeMethods.manual', color: '#0f172a' }
 };
 
-const typeLabels: Record<TopologyNodeType, string> = {
-  router: 'Router',
-  switch: 'Switch',
-  server: 'Server',
-  workstation: 'Workstation',
-  printer: 'Printer',
-  firewall: 'Firewall',
-  access_point: 'Access Point',
-  device: 'Device',
-  unknown: 'Unknown'
+const typeLabelKey: Record<TopologyNodeType, string> = {
+  router: 'assetTypes.router',
+  switch: 'assetTypes.switch',
+  server: 'assetTypes.server',
+  workstation: 'assetTypes.workstation',
+  printer: 'assetTypes.printer',
+  firewall: 'assetTypes.firewall',
+  access_point: 'assetTypes.accessPoint',
+  device: 'common:labels.device',
+  unknown: 'assetTypes.unknown'
 };
 
 const typeMap: Record<string, TopologyNodeType> = {
@@ -258,18 +259,14 @@ const INFRA_TYPES = new Set<TopologyNodeType>(['router', 'switch', 'firewall', '
 const MANUAL_ROLES = ['switch', 'router', 'ap', 'firewall', 'patch_panel', 'other'] as const;
 type ManualRole = (typeof MANUAL_ROLES)[number];
 
-const MANUAL_ROLE_LABELS: Record<ManualRole, string> = {
-  switch: 'Switch',
-  router: 'Router',
-  ap: 'Access Point',
-  firewall: 'Firewall',
-  patch_panel: 'Patch Panel',
-  other: 'Other'
+const MANUAL_ROLE_LABEL_KEYS: Record<ManualRole, string> = {
+  switch: 'assetTypes.switch',
+  router: 'assetTypes.router',
+  ap: 'assetTypes.accessPoint',
+  firewall: 'assetTypes.firewall',
+  patch_panel: 'networkTopologyMap.manualRoles.patchPanel',
+  other: 'networkTopologyMap.manualRoles.other'
 };
-
-function roleLabel(role: ManualRole): string {
-  return MANUAL_ROLE_LABELS[role] ?? role;
-}
 
 function mapNode(node: ApiTopologyNode): TopologyNode {
   const normalizedType = (node.type ?? 'unknown').toLowerCase();
@@ -580,6 +577,7 @@ export default function NetworkTopologyMap({
   onNodeClick,
   onEditApiReady
 }: NetworkTopologyMapProps) {
+  const { t } = useTranslation('discovery');
   const [nodes, setNodes] = useState<TopologyNode[]>([]);
   const [links, setLinks] = useState<TopologyLink[]>([]);
   const [layout, setLayout] = useState<TopologyLayoutRow[]>([]);
@@ -634,7 +632,7 @@ export default function NetworkTopologyMap({
       setError(undefined);
       const response = await fetchWithAuth('/discovery/topology');
       if (!response.ok) {
-        throw new Error('Failed to fetch topology');
+        throw new Error(t('networkTopologyMap.errors.fetch'));
       }
       const data = await response.json();
       const rawNodes = data.nodes ?? data.data?.nodes ?? [];
@@ -661,11 +659,11 @@ export default function NetworkTopologyMap({
       );
       setProfileSubnets(rawSubnets);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('networkTopologyMap.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     fetchTopology();
@@ -733,10 +731,10 @@ export default function NetworkTopologyMap({
           request: () =>
             fetchWithAuth('/discovery/topology/manual-node', {
               method: 'POST',
-              body: JSON.stringify({ siteId: activeSiteId, role, label: roleLabel(role) })
+              body: JSON.stringify({ siteId: activeSiteId, role, label: t(MANUAL_ROLE_LABEL_KEYS[role]) })
             }),
-          errorFallback: 'Failed to add node',
-          successMessage: 'Node added',
+          errorFallback: t('networkTopologyMap.errors.addNode'),
+          successMessage: t('networkTopologyMap.messages.nodeAdded'),
           onUnauthorized: () => {
             /* let the auth redirect handle it */
           }
@@ -747,10 +745,10 @@ export default function NetworkTopologyMap({
           data: { id: node.id, label: node.label, kind: 'manual', role: node.role }
         });
       } catch (err) {
-        handleActionError(err, 'Failed to add node.');
+        handleActionError(err, t('networkTopologyMap.errors.addNodeSentence'));
       }
     },
-    [activeSiteId]
+    [activeSiteId, t]
   );
 
   // Resolve a node id to a manual-edge endpoint descriptor. Manual placeholders
@@ -781,8 +779,8 @@ export default function NetworkTopologyMap({
               method: 'POST',
               body: JSON.stringify({ siteId: activeSiteId, source, target })
             }),
-          errorFallback: 'Failed to connect nodes',
-          successMessage: 'Connection added',
+          errorFallback: t('networkTopologyMap.errors.connectNodes'),
+          successMessage: t('networkTopologyMap.messages.connectionAdded'),
           onUnauthorized: () => {
             /* let the auth redirect handle it */
           }
@@ -797,10 +795,10 @@ export default function NetworkTopologyMap({
           }
         });
       } catch (err) {
-        handleActionError(err, 'Failed to connect nodes.');
+        handleActionError(err, t('networkTopologyMap.errors.connectNodesSentence'));
       }
     },
-    [activeSiteId, endpointFor]
+    [activeSiteId, endpointFor, t]
   );
 
   // Delete a manual edge (#1728 phase 4). The API only removes `method='manual'`
@@ -810,8 +808,8 @@ export default function NetworkTopologyMap({
       await runAction({
         request: () =>
           fetchWithAuth(`/discovery/topology/manual-edge/${id}`, { method: 'DELETE' }),
-        errorFallback: 'Failed to delete connection',
-        successMessage: 'Connection removed',
+        errorFallback: t('networkTopologyMap.errors.deleteConnection'),
+        successMessage: t('networkTopologyMap.messages.connectionRemoved'),
         onUnauthorized: () => {
           /* let the auth redirect handle it */
         }
@@ -819,9 +817,9 @@ export default function NetworkTopologyMap({
       cyRef.current?.getElementById(id)?.remove();
       setSelected((cur) => (cur?.id === id ? null : cur));
     } catch (err) {
-      handleActionError(err, 'Failed to delete connection.');
+      handleActionError(err, t('networkTopologyMap.errors.deleteConnectionSentence'));
     }
-  }, []);
+  }, [t]);
 
   // Delete a manual placeholder node (#1728 phase 4). The API cascade-cleans its
   // manual edges + layout row server-side; locally we drop the node and its now
@@ -831,8 +829,8 @@ export default function NetworkTopologyMap({
       await runAction({
         request: () =>
           fetchWithAuth(`/discovery/topology/manual-node/${id}`, { method: 'DELETE' }),
-        errorFallback: 'Failed to delete node',
-        successMessage: 'Node removed',
+        errorFallback: t('networkTopologyMap.errors.deleteNode'),
+        successMessage: t('networkTopologyMap.messages.nodeRemoved'),
         onUnauthorized: () => {
           /* let the auth redirect handle it */
         }
@@ -842,9 +840,9 @@ export default function NetworkTopologyMap({
       el?.remove();
       setSelected((cur) => (cur?.id === id ? null : cur));
     } catch (err) {
-      handleActionError(err, 'Failed to delete node.');
+      handleActionError(err, t('networkTopologyMap.errors.deleteNodeSentence'));
     }
-  }, []);
+  }, [t]);
 
   // Publish the imperative edit API once it (or its dependencies) change, and
   // keep a ref for the stable cy tap handler's two-tap connect gesture.
@@ -899,8 +897,8 @@ export default function NetworkTopologyMap({
               positions: [{ nodeType, nodeId, x, y }]
             })
           }),
-        errorFallback: 'Failed to save node position',
-        successMessage: 'Layout saved',
+        errorFallback: t('networkTopologyMap.errors.savePosition'),
+        successMessage: t('networkTopologyMap.messages.layoutSaved'),
         onUnauthorized: () => {
           /* let the auth redirect handle it */
         }
@@ -910,7 +908,7 @@ export default function NetworkTopologyMap({
       // runAction already surfaced the error toast; nothing else to do here.
     }
     },
-    []
+    [t]
   );
 
   // (Re)build the Cytoscape graph whenever the data changes.
@@ -1289,7 +1287,7 @@ export default function NetworkTopologyMap({
       <div className="flex items-center justify-center rounded-lg border bg-card p-10 shadow-xs">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading topology...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('networkTopologyMap.loading')}</p>
         </div>
       </div>
     );
@@ -1304,7 +1302,7 @@ export default function NetworkTopologyMap({
           onClick={fetchTopology}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Try again
+          {t('networkTopologyMap.tryAgain')}
         </button>
       </div>
     );
@@ -1320,9 +1318,9 @@ export default function NetworkTopologyMap({
     >
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          <h2 className="text-base font-semibold">Network Topology</h2>
+          <h2 className="text-base font-semibold">{t('networkTopologyMap.title')}</h2>
           {editMode && (
-            <span className="text-xs text-muted-foreground">Drag to arrange · tap two nodes to link</span>
+            <span className="text-xs text-muted-foreground">{t('networkTopologyMap.editHint')}</span>
           )}
         </div>
         <div className="flex items-center gap-2">
@@ -1331,11 +1329,11 @@ export default function NetworkTopologyMap({
               type="button"
               data-testid="topology-fit-view"
               onClick={resetView}
-              title="Fit the whole map to view"
+              title={t('networkTopologyMap.actions.fitTitle')}
               className="inline-flex items-center gap-1.5 rounded-md border bg-card px-2.5 py-1.5 text-sm font-medium text-foreground shadow-xs transition hover:bg-muted active:scale-[0.98]"
             >
               <Frame className="h-4 w-4 text-muted-foreground" aria-hidden />
-              Fit
+              {t('networkTopologyMap.actions.fit')}
             </button>
           )}
           <button
@@ -1343,7 +1341,7 @@ export default function NetworkTopologyMap({
             data-testid="topology-expand-toggle"
             aria-pressed={expanded}
             onClick={() => setExpanded((v) => !v)}
-            title={expanded ? 'Exit full screen (Esc)' : 'Expand map to full screen'}
+            title={expanded ? t('networkTopologyMap.actions.exitFullScreenTitle') : t('networkTopologyMap.actions.expandTitle')}
             className="inline-flex items-center gap-1.5 rounded-md border bg-card px-2.5 py-1.5 text-sm font-medium text-foreground shadow-xs transition hover:bg-muted active:scale-[0.98]"
           >
             {expanded ? (
@@ -1351,7 +1349,7 @@ export default function NetworkTopologyMap({
             ) : (
               <Maximize2 className="h-4 w-4 text-muted-foreground" aria-hidden />
             )}
-            {expanded ? 'Collapse' : 'Expand'}
+            {expanded ? t('networkTopologyMap.actions.collapse') : t('networkTopologyMap.actions.expand')}
           </button>
           {editMode && (
             <button
@@ -1361,7 +1359,7 @@ export default function NetworkTopologyMap({
               className="inline-flex items-center gap-1.5 rounded-md border bg-card px-2.5 py-1.5 text-sm font-medium text-foreground shadow-xs transition hover:bg-muted active:scale-[0.98]"
             >
               <LayoutGrid className="h-4 w-4 text-muted-foreground" aria-hidden />
-              Auto-arrange
+              {t('networkTopologyMap.actions.autoArrange')}
             </button>
           )}
           {canEdit && (
@@ -1378,7 +1376,7 @@ export default function NetworkTopologyMap({
               )}
             >
               {editMode ? <Check className="h-4 w-4" aria-hidden /> : <Pencil className="h-4 w-4" aria-hidden />}
-              {editMode ? 'Done editing' : 'Edit map'}
+              {editMode ? t('networkTopologyMap.actions.doneEditing') : t('networkTopologyMap.actions.editMap')}
             </button>
           )}
         </div>
@@ -1394,8 +1392,8 @@ export default function NetworkTopologyMap({
           className="animate-in pointer-events-none absolute left-1/2 top-3 z-20 flex -translate-x-1/2 items-center gap-2 rounded-full border border-amber-400/60 bg-card px-3.5 py-1.5 text-xs font-medium text-foreground shadow-md"
         >
           <span className="h-2 w-2 shrink-0 rounded-full bg-amber-500 motion-safe:animate-pulse" />
-          Tap another node to connect
-          <span className="text-muted-foreground">· Esc to cancel</span>
+          {t('networkTopologyMap.connectHint')}
+          <span className="text-muted-foreground">{t('networkTopologyMap.escToCancel')}</span>
         </div>
       )}
       {editMode && canEdit && (
@@ -1403,8 +1401,8 @@ export default function NetworkTopologyMap({
           className="animate-in absolute left-3 top-3 z-10 flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-2 rounded-lg border border-primary/40 bg-card px-3 py-2 shadow-md"
           data-testid="topology-edit-palette"
         >
-          <span className="text-xs font-semibold text-muted-foreground">Add node:</span>
-          <div className="flex flex-wrap gap-1" role="group" aria-label="Add node">
+          <span className="text-xs font-semibold text-muted-foreground">{t('networkTopologyMap.addNodeLabel')}</span>
+          <div className="flex flex-wrap gap-1" role="group" aria-label={t('networkTopologyMap.addNodeAria')}>
             {MANUAL_ROLES.map((r) => (
               <button
                 key={r}
@@ -1413,13 +1411,13 @@ export default function NetworkTopologyMap({
                 disabled={!activeSiteId}
                 title={
                   activeSiteId
-                    ? `Add a ${roleLabel(r)} placeholder`
-                    : 'Select a single site to add manual nodes'
+                    ? t('networkTopologyMap.actions.addPlaceholderTitle', { role: t(MANUAL_ROLE_LABEL_KEYS[r]) })
+                    : t('networkTopologyMap.actions.selectSingleSiteTitle')
                 }
                 onClick={() => void addManualNode(r)}
                 className="rounded border px-2 py-1 text-xs font-medium text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {roleLabel(r)}
+                {t(MANUAL_ROLE_LABEL_KEYS[r])}
               </button>
             ))}
           </div>
@@ -1442,22 +1440,22 @@ export default function NetworkTopologyMap({
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                   <span className="truncate text-sm font-semibold text-foreground">
-                    {selected.label || 'Device'}
+                    {selected.label || t('common:labels.device')}
                   </span>
                   {selected.status && (
                     <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
                       <span className={cn('h-1.5 w-1.5 rounded-full', statusDotClass[selected.status])} />
-                      {statusLabel[selected.status]}
+                      {t(statusLabelKey[selected.status])}
                     </span>
                   )}
                   {selected.kind === 'manual' && (
                     <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                      Manual
+                      {t('networkTopologyMap.manualBadge')}
                     </span>
                   )}
                 </div>
                 <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
-                  <span>{typeLabels[selected.nodeType ?? 'unknown']}</span>
+                  <span>{t(typeLabelKey[selected.nodeType ?? 'unknown'])}</span>
                   {selected.ipAddress && (
                     <>
                       <span className="text-muted-foreground/40">·</span>
@@ -1479,7 +1477,7 @@ export default function NetworkTopologyMap({
                   onClick={() => onNodeClick(selected.id)}
                   className="pointer-events-auto inline-flex items-center gap-1 rounded-md border bg-card px-2.5 py-1.5 text-xs font-medium text-foreground transition hover:bg-muted active:scale-[0.98]"
                 >
-                  View details
+                  {t('networkTopologyMap.actions.viewDetails')}
                   <ArrowRight className="h-3.5 w-3.5" aria-hidden />
                 </button>
               )}
@@ -1487,7 +1485,7 @@ export default function NetworkTopologyMap({
                 <button
                   type="button"
                   data-testid="topology-delete-node"
-                  aria-label={confirmDelete ? 'Confirm delete node' : 'Delete node'}
+                  aria-label={confirmDelete ? t('networkTopologyMap.actions.confirmDeleteNode') : t('networkTopologyMap.actions.deleteNode')}
                   onClick={() => (confirmDelete ? void deleteManualNode(selected.id) : armDelete())}
                   className={cn(
                     'pointer-events-auto rounded-md px-2.5 py-1.5 text-xs font-medium transition',
@@ -1496,7 +1494,7 @@ export default function NetworkTopologyMap({
                       : 'border border-destructive/50 text-destructive hover:bg-destructive/10'
                   )}
                 >
-                  {confirmDelete ? 'Confirm delete?' : 'Delete node'}
+                  {confirmDelete ? t('networkTopologyMap.actions.confirmDelete') : t('networkTopologyMap.actions.deleteNode')}
                 </button>
               )}
             </>
@@ -1519,7 +1517,7 @@ export default function NetworkTopologyMap({
               </span>
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-sm font-semibold text-foreground">Connection</span>
+                  <span className="text-sm font-semibold text-foreground">{t('networkTopologyMap.connection')}</span>
                   <span
                     className={cn(
                       'rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
@@ -1531,19 +1529,19 @@ export default function NetworkTopologyMap({
                         : { backgroundColor: EDGE_METHOD_META[selected.method ?? 'manual']?.color ?? '#64748b' }
                     }
                   >
-                    {EDGE_METHOD_META[selected.method ?? 'manual']?.label ?? 'Unknown'}
+                    {t(EDGE_METHOD_META[selected.method ?? 'manual']?.labelKey ?? 'common:states.unknown')}
                   </span>
                   {selected.method === 'manual' ? (
-                    <span className="text-xs text-muted-foreground">Hand-mapped</span>
+                    <span className="text-xs text-muted-foreground">{t('networkTopologyMap.handMapped')}</span>
                   ) : (
-                    <span className="text-xs text-muted-foreground">Measured adjacency</span>
+                    <span className="text-xs text-muted-foreground">{t('networkTopologyMap.measuredAdjacency')}</span>
                   )}
                 </div>
                 <div
                   data-testid="topology-edge-provenance"
                   className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground"
                 >
-                  {selected.confidence && <span className="capitalize">{selected.confidence} confidence</span>}
+                  {selected.confidence && <span className="capitalize">{t('networkTopologyMap.confidence', { confidence: selected.confidence })}</span>}
                   {selected.interfaceName && (
                     <>
                       <span className="text-muted-foreground/40">·</span>
@@ -1553,7 +1551,7 @@ export default function NetworkTopologyMap({
                   {selected.vlan != null && (
                     <>
                       <span className="text-muted-foreground/40">·</span>
-                      <span>VLAN {selected.vlan}</span>
+                      <span>{t('networkTopologyMap.vlan', { vlan: selected.vlan })}</span>
                     </>
                   )}
                 </div>
@@ -1562,7 +1560,7 @@ export default function NetworkTopologyMap({
                 <button
                   type="button"
                   data-testid="topology-delete-edge"
-                  aria-label={confirmDelete ? 'Confirm delete connection' : 'Delete connection'}
+                  aria-label={confirmDelete ? t('networkTopologyMap.actions.confirmDeleteConnection') : t('networkTopologyMap.actions.deleteConnection')}
                   onClick={() => (confirmDelete ? void deleteManualEdge(selected.id) : armDelete())}
                   className={cn(
                     'pointer-events-auto rounded-md px-2.5 py-1.5 text-xs font-medium transition',
@@ -1571,7 +1569,7 @@ export default function NetworkTopologyMap({
                       : 'border border-destructive/50 text-destructive hover:bg-destructive/10'
                   )}
                 >
-                  {confirmDelete ? 'Confirm delete?' : 'Delete connection'}
+                  {confirmDelete ? t('networkTopologyMap.actions.confirmDelete') : t('networkTopologyMap.actions.deleteConnection')}
                 </button>
               )}
               {selected.method !== 'manual' && editMode && (
@@ -1579,7 +1577,7 @@ export default function NetworkTopologyMap({
                   data-testid="topology-edge-locked-note"
                   className="text-xs italic text-muted-foreground"
                 >
-                  Measured by scan — not editable
+                  {t('networkTopologyMap.measuredNotEditable')}
                 </span>
               )}
             </>
@@ -1587,7 +1585,7 @@ export default function NetworkTopologyMap({
 
           <button
             type="button"
-            aria-label="Clear selection"
+            aria-label={t('networkTopologyMap.actions.clearSelection')}
             onClick={() => setSelected(null)}
             className="pointer-events-auto ml-auto flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground sm:ml-0"
           >
@@ -1607,14 +1605,14 @@ export default function NetworkTopologyMap({
         >
           <summary className="flex cursor-pointer select-none items-center gap-1.5 px-2.5 py-1.5 font-semibold text-muted-foreground transition hover:text-foreground">
             <Network className="h-3.5 w-3.5" aria-hidden />
-            Legend
+            {t('networkTopologyMap.legend.title')}
           </summary>
           <div className="space-y-2 border-t px-2.5 py-2">
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground">
               {(['online', 'warning', 'offline'] as TopologyNodeStatus[]).map((s) => (
                 <span key={s} className="flex items-center gap-1.5">
                   <span className={cn('h-2 w-2 rounded-full ring-2 ring-background', statusDotClass[s])} />
-                  {statusLabel[s]}
+                  {t(statusLabelKey[s])}
                 </span>
               ))}
             </div>
@@ -1625,18 +1623,18 @@ export default function NetworkTopologyMap({
               >
                 <span className="flex items-center gap-1.5">
                   <span className="inline-block u-h-px-3 w-5 rounded-full" style={{ backgroundColor: '#2563eb' }} />
-                  LLDP/CDP
+                  {t('networkTopologyMap.legend.lldpCdp')}
                 </span>
                 <span className="flex items-center gap-1.5">
                   <span className="inline-block u-h-px-3 w-5 rounded-full" style={{ backgroundColor: '#16a34a' }} />
-                  Bridge FDB
+                  {t('networkTopologyMap.edgeMethods.fdb')}
                 </span>
                 <span className="flex items-center gap-1.5">
                   <span
                     className="inline-block u-h-px-3 w-5 rounded-full"
                     style={{ backgroundColor: 'hsl(var(--foreground))' }}
                   />
-                  Manual
+                  {t('networkTopologyMap.edgeMethods.manual')}
                 </span>
               </div>
             )}
@@ -1645,7 +1643,7 @@ export default function NetworkTopologyMap({
                 {presentTypes.map((type) => (
                   <span key={type} className="flex items-center gap-1">
                     <NodeBadge type={type} size={14} />
-                    {typeLabels[type] ?? type}
+                    {t(typeLabelKey[type] ?? 'common:states.unknown')}
                   </span>
                 ))}
               </div>
@@ -1668,8 +1666,7 @@ export default function NetworkTopologyMap({
           data-testid="topology-adjacency-note"
           className="mt-4 rounded-md border border-info/30 bg-info/6 px-3 py-2 text-xs text-info"
         >
-          Connection lines appear only where real adjacency is measured (LLDP/CDP/SNMP). None has
-          been collected yet, so assets are grouped by subnet without inferred links.
+          {t('networkTopologyMap.adjacencyNote')}
         </div>
       )}
 
@@ -1679,8 +1676,11 @@ export default function NetworkTopologyMap({
         role="img"
         aria-label={
           nodes.length > 0
-            ? `Network topology map: ${nodes.length} device${nodes.length === 1 ? '' : 's'}. Use the device list below to inspect each device with the keyboard.`
-            : 'Network topology map: no devices discovered yet.'
+            ? t('networkTopologyMap.canvasAriaWithDevices', {
+                count: nodes.length,
+                suffix: nodes.length === 1 ? '' : 's'
+              })
+            : t('networkTopologyMap.canvasAriaEmpty')
         }
         className="relative w-full overflow-hidden rounded-md border bg-muted/30 bg-[radial-gradient(hsl(var(--border))_1px,transparent_0)] bg-size-[22px_22px]"
         // Cytoscape requires a real pixel height on its container. An inline style
@@ -1695,9 +1695,9 @@ export default function NetworkTopologyMap({
             <span className="flex h-12 w-12 items-center justify-center rounded-xl border bg-card text-muted-foreground/70 shadow-xs">
               <Network className="h-6 w-6" aria-hidden />
             </span>
-            <p className="text-sm font-medium text-foreground">No assets discovered yet</p>
+            <p className="text-sm font-medium text-foreground">{t('networkTopologyMap.empty.title')}</p>
             <p className="max-w-xs text-xs text-muted-foreground">
-              Run a network discovery scan to populate the topology map.
+              {t('networkTopologyMap.empty.description')}
             </p>
           </div>
         )}
@@ -1711,7 +1711,7 @@ export default function NetworkTopologyMap({
       {nodes.length > 0 && (
         <details className="mt-4 rounded-md border bg-card" data-testid="topology-device-list">
           <summary className="cursor-pointer select-none rounded-md px-3 py-2 text-xs font-semibold text-muted-foreground transition hover:text-foreground">
-            All devices ({nodes.length})
+            {t('networkTopologyMap.allDevices', { count: nodes.length })}
           </summary>
           <ul className="max-h-64 overflow-auto border-t p-1.5" role="list">
             {nodes.map((n) => (
@@ -1730,9 +1730,9 @@ export default function NetworkTopologyMap({
                   <span className="min-w-0 flex-1 truncate font-medium text-foreground">{n.label}</span>
                   <span className="hidden items-center gap-1 text-muted-foreground sm:inline-flex">
                     <span className={cn('h-1.5 w-1.5 rounded-full', statusDotClass[n.status])} aria-hidden />
-                    {statusLabel[n.status]}
+                    {t(statusLabelKey[n.status])}
                   </span>
-                  <span className="text-muted-foreground">{typeLabels[n.type]}</span>
+                  <span className="text-muted-foreground">{t(typeLabelKey[n.type])}</span>
                   {n.ipAddress && (
                     <span className="hidden font-mono text-muted-foreground md:inline">{n.ipAddress}</span>
                   )}
