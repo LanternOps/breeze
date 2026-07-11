@@ -1,4 +1,8 @@
 {
+  "vulnerabilityLandingPage": {
+    "title": "Vulnerabilities",
+    "subtitle": "Fleet CVE exposure grouped for triage — remediate, accept risk, or ticket."
+  },
   "createVulnTicketModal": {
     "title": "Create ticket",
     "heading": "Create ticket — {{count}} findings",

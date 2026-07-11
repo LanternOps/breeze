@@ -1,4 +1,20 @@
 {
+  "remoteAccessPage": {
+    "title": "Remote Access",
+    "subtitle": "Launch remote tools for online devices.",
+    "terminal": {
+      "title": "Start Terminal",
+      "description": "Select a device to connect"
+    },
+    "files": {
+      "title": "File Transfer",
+      "description": "Transfer files to/from devices"
+    },
+    "sessions": {
+      "title": "Session History",
+      "description": "View past sessions"
+    }
+  },
   "connectDesktopButton": {
     "connectDesktop": "Connect Desktop",
     "connecting": "Connecting...",

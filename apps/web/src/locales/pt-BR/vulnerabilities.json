@@ -1,4 +1,8 @@
 {
+  "vulnerabilityLandingPage": {
+    "title": "Vulnerabilidades",
+    "subtitle": "Exposição a CVEs da frota agrupada para triagem — corrija, aceite o risco ou crie um ticket."
+  },
   "createVulnTicketModal": {
     "title": "Criar chamado",
     "heading": "Criar chamado — {{count}} achados",

@@ -37,6 +37,35 @@ for (const [path, mod] of Object.entries(eagerEnglish)) {
 const loadedLocales = new Set<string>(['en']);
 const localeLoadPromises = new Map<LocalePreference, Promise<void>>();
 
+const localizedDocumentTitleKeys: Record<string, string> = {
+  '/': 'documentTitles.dashboard',
+  '/devices': 'nav.devices',
+  '/alerts': 'nav.alerts',
+  '/tickets': 'nav.tickets',
+  '/remote': 'nav.remoteAccess',
+  '/scripts': 'nav.scripts',
+  '/patches': 'nav.patches',
+  '/vulnerabilities': 'nav.vulnerabilities',
+  '/reports': 'nav.reports',
+  '/profile': 'documentTitles.profileSettings',
+  '/settings/profile': 'documentTitles.profileSettings',
+};
+
+/** Keep browser-owned metadata aligned with the language rendered by React islands. */
+export function syncDocumentLocaleMetadata(
+  pathname: string,
+  targetDocument: Document = document,
+): void {
+  const locale = i18next.resolvedLanguage ?? i18next.language ?? 'en';
+  targetDocument.documentElement.lang = locale;
+
+  const normalizedPath = pathname !== '/' ? pathname.replace(/\/$/, '') : pathname;
+  const titleKey = localizedDocumentTitleKeys[normalizedPath];
+  if (titleKey) {
+    targetDocument.title = `${i18next.t(titleKey, { ns: 'common' })} | Breeze RMM`;
+  }
+}
+
 /** Idempotently load a locale's namespace chunks into i18next. */
 export function loadLocale(locale: LocalePreference): Promise<void> {
   if (loadedLocales.has(locale)) return Promise.resolve();
@@ -148,6 +177,11 @@ if (!i18next.isInitialized) {
   });
 
   if (typeof window !== 'undefined') {
+    const syncMetadata = () => syncDocumentLocaleMetadata(window.location.pathname);
+    i18next.on('languageChanged', syncMetadata);
+    document.addEventListener('astro:page-load', syncMetadata);
+    syncMetadata();
+
     const resolved = readResolvedLocalePreference();
     if (resolved !== 'en') void applyLocale(resolved);
   }

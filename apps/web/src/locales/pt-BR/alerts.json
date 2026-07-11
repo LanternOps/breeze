@@ -1,4 +1,10 @@
 {
+  "relativeTime": {
+    "justNow": "Agora mesmo",
+    "minutesAgo": "há {{count}} min",
+    "hoursAgo": "há {{count}} h",
+    "daysAgo": "há {{count}} d"
+  },
   "alertCorrelationView": {
     "tryAgain": "Tentar novamente",
     "alertCorrelation": "Correlação de alertas",
@@ -559,7 +565,13 @@
   "alertsTabStrip": {
     "alertsSections": "Seções de alertas",
     "alertCorrelationIsDisabledForThisOrganization": "A correlação de alertas está desativada para esta organização",
-    "correlationsDisabled": "Correlações desativadas"
+    "correlationsDisabled": "Correlações desativadas",
+    "tabs": {
+      "alerts": "Alertas",
+      "correlations": "Correlações",
+      "rules": "Regras",
+      "channels": "Canais"
+    }
   },
   "correlatedAlertGroups": {
     "evidence": "Evidências",

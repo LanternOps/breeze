@@ -1,7 +1,8 @@
-import { render, screen } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useHelpStore } from '@/stores/helpStore';
 import HelpPanel from './HelpPanel';
+import { i18n, loadLocale } from '@/lib/i18n';
 
 // Mock the aiStore lazy import inside helpStore
 vi.mock('@/stores/aiStore', () => ({
@@ -15,7 +16,21 @@ beforeEach(() => {
   useHelpStore.setState({ isOpen: false });
 });
 
+afterEach(async () => {
+  cleanup();
+  await i18n.changeLanguage('en');
+});
+
 describe('HelpPanel keyboard shortcut', () => {
+  it('localizes the generic documentation label in pt-BR', async () => {
+    await loadLocale('pt-BR');
+    await i18n.changeLanguage('pt-BR');
+    useHelpStore.setState({ isOpen: true, label: 'Documentation' });
+
+    render(<HelpPanel />);
+
+    expect(screen.getByText('Documentação')).toBeInTheDocument();
+  });
   it('Cmd+Shift+H (uppercase H) toggles the panel open', () => {
     render(<HelpPanel />);
     expect(useHelpStore.getState().isOpen).toBe(false);

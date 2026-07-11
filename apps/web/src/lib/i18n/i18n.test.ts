@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { applyLocale, i18n, loadLocale, setLocale } from './index';
+import { applyLocale, i18n, loadLocale, setLocale, syncDocumentLocaleMetadata } from './index';
 import { LOCALE_STORAGE_KEY } from '../appearance';
 
 describe('i18n runtime (namespaced, lazy locales)', () => {
@@ -38,6 +38,25 @@ describe('i18n runtime (namespaced, lazy locales)', () => {
     await loadLocale('pt-BR');
     await i18n.changeLanguage('pt-BR');
     expect(i18n.t('settings:language.title')).toBe('Idioma');
+  });
+
+  it('synchronizes the document language and localized page title', async () => {
+    await loadLocale('pt-BR');
+    await i18n.changeLanguage('pt-BR');
+
+    // The languageChanged listener updates the currently loaded page.
+    expect(document.documentElement.lang).toBe('pt-BR');
+    expect(document.title).toBe('Painel | Breeze RMM');
+
+    // Astro page-load uses the same synchronizer after client navigation.
+    syncDocumentLocaleMetadata('/settings/profile', document);
+    expect(document.title).toBe('Configurações de perfil | Breeze RMM');
+
+    syncDocumentLocaleMetadata('/remote', document);
+    expect(document.title).toBe('Acesso Remoto | Breeze RMM');
+
+    syncDocumentLocaleMetadata('/vulnerabilities', document);
+    expect(document.title).toBe('Vulnerabilidades | Breeze RMM');
   });
 
   it('keeps the last locale request when an earlier loader resolves later', async () => {

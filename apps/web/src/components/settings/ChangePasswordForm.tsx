@@ -72,7 +72,7 @@ export default function ChangePasswordForm({
   onSubmit,
   errorMessage,
   successMessage,
-  submitLabel = 'Change password',
+  submitLabel,
   loading
 }: ChangePasswordFormProps) {
   const { t } = useTranslation('settings');
@@ -211,7 +211,7 @@ export default function ChangePasswordForm({
         disabled={isLoading}
         className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
       >
-        {isLoading ? t('changePasswordForm.changingPassword') : submitLabel}
+        {isLoading ? t('changePasswordForm.changingPassword') : (submitLabel ?? t('changePasswordForm.changePassword'))}
       </button>
     </form>
   );

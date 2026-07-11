@@ -1,4 +1,20 @@
 {
+  "remoteAccessPage": {
+    "title": "Acesso remoto",
+    "subtitle": "Inicie ferramentas remotas para dispositivos online.",
+    "terminal": {
+      "title": "Iniciar terminal",
+      "description": "Selecione um dispositivo para conectar"
+    },
+    "files": {
+      "title": "Transferência de arquivos",
+      "description": "Transfira arquivos de e para dispositivos"
+    },
+    "sessions": {
+      "title": "Histórico de sessões",
+      "description": "Veja as sessões anteriores"
+    }
+  },
   "connectDesktopButton": {
     "connectDesktop": "Conectar à Área de Trabalho",
     "connecting": "Conectando...",

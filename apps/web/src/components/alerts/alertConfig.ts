@@ -1,5 +1,6 @@
 import { AlertTriangle } from 'lucide-react';
-import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
+import { formatDate as formatUserDate, formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
+import { i18n } from '@/lib/i18n';
 
 export type AlertSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 export type AlertStatus = 'active' | 'acknowledged' | 'resolved' | 'suppressed' | 'dismissed';
@@ -85,11 +86,11 @@ export function formatRelativeTime(dateString: string): string {
   const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
   const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
 
-  if (diffMins < 1) return 'Just now';
-  if (diffMins < 60) return `${diffMins}m ago`;
-  if (diffHours < 24) return `${diffHours}h ago`;
-  if (diffDays < 7) return `${diffDays}d ago`;
-  return date.toLocaleDateString();
+  if (diffMins < 1) return i18n.t('alerts:relativeTime.justNow');
+  if (diffMins < 60) return i18n.t('alerts:relativeTime.minutesAgo', { count: diffMins });
+  if (diffHours < 24) return i18n.t('alerts:relativeTime.hoursAgo', { count: diffHours });
+  if (diffDays < 7) return i18n.t('alerts:relativeTime.daysAgo', { count: diffDays });
+  return formatUserDate(date);
 }
 
 export function formatDateTime(dateString: string): string {

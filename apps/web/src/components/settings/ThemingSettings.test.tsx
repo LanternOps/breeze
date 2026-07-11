@@ -38,5 +38,6 @@ describe('ThemingSettings language fieldset', () => {
       expect.any(String),
     );
     expect(window.localStorage.getItem('breeze.locale')).toBe('pt-BR');
+    expect(await screen.findByText('Preferências de tema salvas.')).toBeInTheDocument();
   });
 });

@@ -969,6 +969,36 @@
     "online": "Online"
   },
   "deviceList": {
+    "tableColumns": {
+      "device": "Device",
+      "organization": "Organization",
+      "site": "Site",
+      "os": "OS",
+      "role": "Role",
+      "status": "Status",
+      "cpu": "CPU %",
+      "ram": "RAM %",
+      "lastSeen": "Last Seen"
+    },
+    "sortBy": {
+      "device": "Sort by device",
+      "organization": "Sort by organization",
+      "site": "Sort by site",
+      "os": "Sort by operating system",
+      "role": "Sort by role",
+      "status": "Sort by status",
+      "cpu": "Sort by CPU usage",
+      "ram": "Sort by RAM usage",
+      "lastSeen": "Sort by last seen time"
+    },
+    "statuses": {
+      "compact": { "online": "Up", "offline": "Down", "maintenance": "Maint", "decommissioned": "Decom", "quarantined": "Quar", "updating": "Updating", "pending": "Pend" },
+      "full": { "online": "Online", "offline": "Offline", "maintenance": "Maintenance", "decommissioned": "Decommissioned", "quarantined": "Quarantined", "updating": "Updating", "pending": "Pending" }
+    },
+    "roles": {
+      "workstation": "Workstation", "server": "Server", "printer": "Printer", "router": "Router", "switch": "Switch", "firewall": "Firewall", "access_point": "Access Point", "phone": "Phone", "iot": "IoT", "camera": "Camera", "nas": "NAS", "unknown": "Unknown"
+    },
+    "selectDevice": "Select {{hostname}}",
     "desc": "desc",
     "asc": "asc",
     "textRight": "text-right",

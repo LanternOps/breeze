@@ -1,4 +1,10 @@
 {
+  "relativeTime": {
+    "justNow": "Just now",
+    "minutesAgo": "{{count}}m ago",
+    "hoursAgo": "{{count}}h ago",
+    "daysAgo": "{{count}}d ago"
+  },
   "alertCorrelationView": {
     "tryAgain": "Try again",
     "alertCorrelation": "Alert Correlation",
@@ -559,7 +565,13 @@
   "alertsTabStrip": {
     "alertsSections": "Alerts sections",
     "alertCorrelationIsDisabledForThisOrganization": "Alert correlation is disabled for this organization",
-    "correlationsDisabled": "Correlations disabled"
+    "correlationsDisabled": "Correlations disabled",
+    "tabs": {
+      "alerts": "Alerts",
+      "correlations": "Correlations",
+      "rules": "Rules",
+      "channels": "Channels"
+    }
   },
   "correlatedAlertGroups": {
     "evidence": "Evidence",

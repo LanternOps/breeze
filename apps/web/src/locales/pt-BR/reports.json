@@ -289,8 +289,8 @@
       "description": "Gere e agende relatórios para sua infraestrutura.",
       "download": "Baixar",
       "emailRecipients": "Destinatarios de e-mail",
-      "emptyReportsDescription": "Crie seu primeiro relatório para comecar.",
-      "emptyReportsTitle": "Ainda não ha relatórios",
+      "emptyReportsDescription": "Crie seu primeiro relatório para começar.",
+      "emptyReportsTitle": "Ainda não há relatórios",
       "emptyRunsDescription": "Gere um relatório para ve-lo aqui.",
       "emptyRunsTitle": "Nenhuma execução recente",
       "errors": {
@@ -346,7 +346,7 @@
         "type": "Tipo"
       },
       "tabs": {
-        "recentRuns": "Execucoes Recentes",
+        "recentRuns": "Execuções Recentes",
         "savedReports": "Relatórios Salvos"
       },
       "templates": "Modelos",

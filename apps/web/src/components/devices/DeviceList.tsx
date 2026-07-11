@@ -261,24 +261,24 @@ const statusColors: Record<DeviceStatus, string> = {
   pending: "bg-muted text-muted-foreground border-border",
 };
 
-// Compact pill label; full name on the title attribute for hover.
-const statusLabels: Record<DeviceStatus, string> = {
-  online: "Up",
-  offline: "Down",
-  maintenance: "Maint",
-  decommissioned: "Decom",
-  quarantined: "Quar",
-  updating: "Updating",
-  pending: "Pend",
+// Canonical status values stay untouched; only their presentation keys vary.
+const statusLabelKeys: Record<DeviceStatus, string> = {
+  online: "deviceList.statuses.compact.online",
+  offline: "deviceList.statuses.compact.offline",
+  maintenance: "deviceList.statuses.compact.maintenance",
+  decommissioned: "deviceList.statuses.compact.decommissioned",
+  quarantined: "deviceList.statuses.compact.quarantined",
+  updating: "deviceList.statuses.compact.updating",
+  pending: "deviceList.statuses.compact.pending",
 };
-const statusFullLabels: Record<DeviceStatus, string> = {
-  online: "Online",
-  offline: "Offline",
-  maintenance: "Maintenance",
-  decommissioned: "Decommissioned",
-  quarantined: "Quarantined",
-  updating: "Updating",
-  pending: "Pending",
+const statusFullLabelKeys: Record<DeviceStatus, string> = {
+  online: "deviceList.statuses.full.online",
+  offline: "deviceList.statuses.full.offline",
+  maintenance: "deviceList.statuses.full.maintenance",
+  decommissioned: "deviceList.statuses.full.decommissioned",
+  quarantined: "deviceList.statuses.full.quarantined",
+  updating: "deviceList.statuses.full.updating",
+  pending: "deviceList.statuses.full.pending",
 };
 
 // Cap visible tag chips per row; the rest collapse into a +N chip, with the
@@ -981,7 +981,7 @@ export default function DeviceList({
     { header: () => React.ReactNode; cell: (device: Device) => React.ReactNode }
   > = {
     hostname: {
-      header: () => sortHeader("hostname", "Device", "Sort by device"),
+      header: () => sortHeader("hostname", t("deviceList.tableColumns.device"), t("deviceList.sortBy.device")),
       cell: (device) => {
         const hasDisplayName =
           !!device.displayName && device.displayName !== device.hostname;
@@ -1073,7 +1073,7 @@ export default function DeviceList({
     },
     organization: {
       header: () =>
-        sortHeader("organization", "Organization", "Sort by organization"),
+        sortHeader("organization", t("deviceList.tableColumns.organization"), t("deviceList.sortBy.organization")),
       cell: (device) => (
         <td
           key="organization"
@@ -1086,7 +1086,7 @@ export default function DeviceList({
       ),
     },
     site: {
-      header: () => sortHeader("site", "Site", "Sort by site"),
+      header: () => sortHeader("site", t("deviceList.tableColumns.site"), t("deviceList.sortBy.site")),
       cell: (device) => (
         <td
           key="site"
@@ -1099,7 +1099,7 @@ export default function DeviceList({
       ),
     },
     os: {
-      header: () => sortHeader("os", "OS", "Sort by operating system"),
+      header: () => sortHeader("os", t("deviceList.tableColumns.os"), t("deviceList.sortBy.os")),
       cell: (device) => (
         <td key="os" className="px-3 py-3 text-sm">
           {agentCell(
@@ -1143,7 +1143,7 @@ export default function DeviceList({
       ),
     },
     role: {
-      header: () => sortHeader("role", "Role", "Sort by role"),
+      header: () => sortHeader("role", t("deviceList.tableColumns.role"), t("deviceList.sortBy.role")),
       cell: (device) => {
         // Role is the function of an *agent-managed* endpoint and drives
         // config-policy targeting; it's meaningless for a network-discovered
@@ -1151,7 +1151,9 @@ export default function DeviceList({
         // the inverse of the Type column above (#1386, #1322 dash convention).
         const role = device.deviceRole ?? "unknown";
         const RoleIcon = getDeviceRoleIcon(role);
-        const roleLabel = getDeviceRoleLabel(role);
+        const roleLabel = t(/* i18n-dynamic */ `deviceList.roles.${role}`, {
+          defaultValue: getDeviceRoleLabel(role),
+        });
         return (
           <td
             key="role"
@@ -1189,15 +1191,15 @@ export default function DeviceList({
       ),
     },
     status: {
-      header: () => sortHeader("status", "Status", "Sort by status"),
+      header: () => sortHeader("status", t("deviceList.tableColumns.status"), t("deviceList.sortBy.status")),
       cell: (device) => (
         <td key="status" className="px-3 py-3 text-sm">
           <div className="flex items-center gap-1">
             <span
               className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusColors[device.status]}`}
-              title={statusFullLabels[device.status]}
+              title={t(/* i18n-dynamic */ statusFullLabelKeys[device.status])}
             >
-              {statusLabels[device.status]}
+              {t(/* i18n-dynamic */ statusLabelKeys[device.status])}
             </span>
             {shouldShowAgentSilentBadge(device) && (
               <span
@@ -1241,7 +1243,7 @@ export default function DeviceList({
       ),
     },
     cpu: {
-      header: () => sortHeader("cpu", "CPU %", "Sort by CPU usage"),
+      header: () => sortHeader("cpu", t("deviceList.tableColumns.cpu"), t("deviceList.sortBy.cpu")),
       cell: (device) => (
         <td key="cpu" className="px-3 py-3 text-sm">
           {agentCell(
@@ -1252,7 +1254,7 @@ export default function DeviceList({
       ),
     },
     ram: {
-      header: () => sortHeader("ram", "RAM %", "Sort by RAM usage"),
+      header: () => sortHeader("ram", t("deviceList.tableColumns.ram"), t("deviceList.sortBy.ram")),
       cell: (device) => (
         <td key="ram" className="px-3 py-3 text-sm">
           {agentCell(
@@ -1379,7 +1381,7 @@ export default function DeviceList({
     },
     lastSeen: {
       header: () =>
-        sortHeader("lastSeen", "Last Seen", "Sort by last seen time"),
+        sortHeader("lastSeen", t("deviceList.tableColumns.lastSeen"), t("deviceList.sortBy.lastSeen")),
       cell: (device) => (
         <td
           key="lastSeen"
@@ -1976,7 +1978,7 @@ export default function DeviceList({
                       <input
                         type="checkbox"
                         checked={selectedIds.has(device.id)}
-                        aria-label={`Select ${device.hostname}`}
+                        aria-label={t("deviceList.selectDevice", { hostname: device.hostname })}
                         onClick={(e) => e.stopPropagation()}
                         onChange={(e) =>
                           handleSelectOne(device.id, e.target.checked)

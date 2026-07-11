@@ -19,6 +19,9 @@ export default function HelpPanel() {
   const [hasOpened, setHasOpened] = useState(isOpen);
   const currentOrigin = typeof window !== 'undefined' ? window.location.origin : '';
   const canEmbedDocs = currentOrigin ? isDocsEmbeddableOrigin(currentOrigin) : true;
+  const localizedLabel = label === 'Documentation'
+    ? t('longTail.help.HelpPanel.documentation')
+    : label;
 
   useEffect(() => {
     if (isOpen) setHasOpened(true);
@@ -74,7 +77,7 @@ export default function HelpPanel() {
         <div className="flex items-center justify-between border-b bg-card px-4 py-3">
           <div className="flex items-center gap-2">
             <BookOpen className="h-4 w-4 text-primary" />
-            <span className="text-sm font-semibold text-foreground">{label}</span>
+            <span className="text-sm font-semibold text-foreground">{localizedLabel}</span>
           </div>
 
           <div className="flex items-center gap-1">
@@ -131,7 +134,7 @@ export default function HelpPanel() {
             <iframe
               key={docsUrl}
               src={docsUrl}
-              title={label}
+              title={localizedLabel}
               onLoad={() => setIframeLoaded(true)}
               onError={(e) => {
                 console.error('[HelpPanel] Iframe failed to load:', docsUrl, e);

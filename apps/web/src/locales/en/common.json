@@ -62,6 +62,10 @@
     "sectionReporting": "Reporting",
     "sectionSettings": "Settings"
   },
+  "documentTitles": {
+    "dashboard": "Dashboard",
+    "profileSettings": "Profile Settings"
+  },
   "actions": {
     "save": "Save",
     "cancel": "Cancel",
@@ -1694,6 +1698,7 @@
     },
     "help": {
       "HelpPanel": {
+        "documentation": "Documentation",
         "openInNewTab": "Open in new tab",
         "closeShortcut": "Close (Cmd+Shift+H)",
         "loadError": "Could not load documentation in the side panel.",

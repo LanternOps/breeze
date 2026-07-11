@@ -62,6 +62,10 @@
     "sectionReporting": "Relatórios",
     "sectionSettings": "Configurações"
   },
+  "documentTitles": {
+    "dashboard": "Painel",
+    "profileSettings": "Configurações de perfil"
+  },
   "actions": {
     "save": "Salvar",
     "cancel": "Cancelar",
@@ -1694,6 +1698,7 @@
     },
     "help": {
       "HelpPanel": {
+        "documentation": "Documentação",
         "openInNewTab": "Abrir em nova aba",
         "closeShortcut": "Fechar (Cmd+Shift+H)",
         "loadError": "Não foi possível carregar a documentação no painel lateral.",

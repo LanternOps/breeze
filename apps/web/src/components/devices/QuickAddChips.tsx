@@ -9,21 +9,22 @@ import { useTranslation } from 'react-i18next';
 export interface QuickAddChip {
   id: string;
   label: string;
+  translationKey: `quickAddChips.chips.${string}`;
   condition: FilterCondition;
 }
 
 // POC LOCAL chip set per Billy's 2026-05-27 feedback. Toggle behavior:
 // click once to add, click again to remove.
 export const QUICK_ADD_CHIPS: QuickAddChip[] = [
-  { id: 'online', label: 'Online', condition: { field: 'status', operator: 'equals', value: 'online' } },
-  { id: 'offline', label: 'Offline', condition: { field: 'status', operator: 'equals', value: 'offline' } },
-  { id: 'servers', label: 'Servers', condition: { field: 'deviceRole', operator: 'equals', value: 'server' } },
-  { id: 'needsPatches', label: 'Needs patches', condition: { field: 'patches.pending', operator: 'equals', value: 'yes' } },
-  { id: 'critical', label: 'Critical', condition: { field: 'alerts.critical', operator: 'equals', value: 'yes' } },
-  { id: 'rebootNeeded', label: 'Reboot needed', condition: { field: 'system.rebootRequired', operator: 'equals', value: 'yes' } },
-  { id: 'notSeen7d', label: 'Not seen 7d', condition: { field: 'daysSinceLastSeen', operator: 'greaterThan', value: 7 } },
-  { id: 'lowDisk', label: 'Low disk', condition: { field: 'metrics.diskPercent', operator: 'greaterThan', value: 90 } },
-  { id: 'untagged', label: 'Untagged', condition: { field: 'tags', operator: 'isEmpty', value: '' } }
+  { id: 'online', label: 'Online', translationKey: 'quickAddChips.chips.online', condition: { field: 'status', operator: 'equals', value: 'online' } },
+  { id: 'offline', label: 'Offline', translationKey: 'quickAddChips.chips.offline', condition: { field: 'status', operator: 'equals', value: 'offline' } },
+  { id: 'servers', label: 'Servers', translationKey: 'quickAddChips.chips.servers', condition: { field: 'deviceRole', operator: 'equals', value: 'server' } },
+  { id: 'needsPatches', label: 'Needs patches', translationKey: 'quickAddChips.chips.needsPatches', condition: { field: 'patches.pending', operator: 'equals', value: 'yes' } },
+  { id: 'critical', label: 'Critical', translationKey: 'quickAddChips.chips.critical', condition: { field: 'alerts.critical', operator: 'equals', value: 'yes' } },
+  { id: 'rebootNeeded', label: 'Reboot needed', translationKey: 'quickAddChips.chips.rebootNeeded', condition: { field: 'system.rebootRequired', operator: 'equals', value: 'yes' } },
+  { id: 'notSeen7d', label: 'Not seen 7d', translationKey: 'quickAddChips.chips.notSeen7d', condition: { field: 'daysSinceLastSeen', operator: 'greaterThan', value: 7 } },
+  { id: 'lowDisk', label: 'Low disk', translationKey: 'quickAddChips.chips.lowDisk', condition: { field: 'metrics.diskPercent', operator: 'greaterThan', value: 90 } },
+  { id: 'untagged', label: 'Untagged', translationKey: 'quickAddChips.chips.untagged', condition: { field: 'tags', operator: 'isEmpty', value: '' } }
 ];
 
 function chipMatches(c: FilterCondition, target: FilterCondition): boolean {
@@ -85,7 +86,7 @@ export function QuickAddChips({ value, onChange }: QuickAddChipsProps) {
             }`}
           >
             {added && <Check className="h-3 w-3" />}
-            {t(/* i18n-dynamic */ `quickAddChips.chips.${chip.id}`, { defaultValue: chip.label })}
+            {t(/* i18n-dynamic */ chip.translationKey)}
           </button>
         );
       })}

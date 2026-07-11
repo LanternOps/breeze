@@ -372,7 +372,7 @@ export function DeviceFilterToolbar({
                   }`}
                 >
                   {active && <Check className="h-3 w-3" />}
-                  {chip.label}
+                  {t(/* i18n-dynamic */ chip.translationKey)}
                 </button>
               );
             })}

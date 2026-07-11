@@ -969,6 +969,36 @@
     "online": "Online"
   },
   "deviceList": {
+    "tableColumns": {
+      "device": "Dispositivo",
+      "organization": "Organização",
+      "site": "Local",
+      "os": "SO",
+      "role": "Função",
+      "status": "Status",
+      "cpu": "CPU %",
+      "ram": "RAM %",
+      "lastSeen": "Visto por último"
+    },
+    "sortBy": {
+      "device": "Ordenar por dispositivo",
+      "organization": "Ordenar por organização",
+      "site": "Ordenar por local",
+      "os": "Ordenar por sistema operacional",
+      "role": "Ordenar por função",
+      "status": "Ordenar por status",
+      "cpu": "Ordenar por uso da CPU",
+      "ram": "Ordenar por uso da RAM",
+      "lastSeen": "Ordenar pela última vez em que foi visto"
+    },
+    "statuses": {
+      "compact": { "online": "Ativo", "offline": "Inativo", "maintenance": "Manut.", "decommissioned": "Descom.", "quarantined": "Quar.", "updating": "Atualizando", "pending": "Pendente" },
+      "full": { "online": "Online", "offline": "Offline", "maintenance": "Manutenção", "decommissioned": "Descomissionado", "quarantined": "Em quarentena", "updating": "Atualizando", "pending": "Pendente" }
+    },
+    "roles": {
+      "workstation": "Estação de trabalho", "server": "Servidor", "printer": "Impressora", "router": "Roteador", "switch": "Switch", "firewall": "Firewall", "access_point": "Ponto de acesso", "phone": "Telefone", "iot": "IoT", "camera": "Câmera", "nas": "NAS", "unknown": "Desconhecido"
+    },
+    "selectDevice": "Selecionar {{hostname}}",
     "desc": "desc",
     "asc": "asc",
     "textRight": "text-right",

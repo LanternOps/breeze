@@ -4,10 +4,10 @@ import '../../lib/i18n';
 import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
 
 const TABS = [
-  { href: '/alerts', label: 'Alerts' },
-  { href: '/alerts/correlations', label: 'Correlations' },
-  { href: '/alerts/rules', label: 'Rules' },
-  { href: '/alerts/channels', label: 'Channels' },
+  { href: '/alerts', labelKey: 'alerts' },
+  { href: '/alerts/correlations', labelKey: 'correlations' },
+  { href: '/alerts/rules', labelKey: 'rules' },
+  { href: '/alerts/channels', labelKey: 'channels' },
 ] as const;
 
 interface AlertsTabStripProps {
@@ -78,7 +78,7 @@ export default function AlertsTabStrip({ currentPath = '/alerts' }: AlertsTabStr
             }
             aria-current={isActive ? 'page' : undefined}
           >
-            {tab.label}
+            {t(/* i18n-dynamic */ `alertsTabStrip.tabs.${tab.labelKey}`)}
           </a>
         );
       })}

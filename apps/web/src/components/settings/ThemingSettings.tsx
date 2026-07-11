@@ -26,7 +26,7 @@ import {
   type ThemePreference,
 } from '@/lib/appearance';
 import { saveUserPreferences } from '@/lib/userPreferences';
-import '@/lib/i18n';
+import { applyLocale, i18n } from '@/lib/i18n';
 
 const themeOptions = [
   { value: 'light' as const, labelKey: 'themingSettings.light', Icon: Sun },
@@ -140,7 +140,11 @@ export default function ThemingSettings({ preferences, onSaved }: ThemingSetting
       setTimeFormatPreference(resolved.timeFormat);
       setLocalePreference(resolved.locale);
       onSaved?.(saved);
-      setAppearanceSuccess(t('themingSettings.themingPreferencesSaved'));
+      // The locale subscriber loads language chunks asynchronously. Await the
+      // selected locale before deriving the success message so a language
+      // switch cannot retain the translator captured by the English render.
+      if (patch.locale) await applyLocale(resolved.locale);
+      setAppearanceSuccess(i18n.t('settings:themingSettings.themingPreferencesSaved'));
     } catch (error) {
       setAppearanceError(error instanceof Error ? error.message : t('themingSettings.failedToSaveThemingPreferences'));
     } finally {
