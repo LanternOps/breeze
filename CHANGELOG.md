@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Microsoft 365 ticket mailbox consent now verifies the Microsoft tenant and consenting administrator identity, binds verified tenant ownership to the Breeze partner, and requires all existing mailbox connections to complete consent again after upgrade.
+
 ## [0.67.1] - 2026-05-26
 
 ### Critical for v0.67.0 self-hosters
