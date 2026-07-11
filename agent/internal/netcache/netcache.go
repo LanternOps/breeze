@@ -117,7 +117,6 @@ func (c *Cache) store(host string, ips []string) {
 	sort.Strings(sorted)
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	prev := append([]string(nil), c.entries[host]...)
 	sort.Strings(prev)
@@ -131,6 +130,7 @@ func (c *Cache) store(host string, ips []string) {
 		}
 	}
 	if !changed {
+		c.mu.Unlock()
 		return
 	}
 
@@ -139,6 +139,9 @@ func (c *Cache) store(host string, ips []string) {
 	for key, value := range c.entries {
 		snapshot[key] = append([]string(nil), value...)
 	}
+	// Release before disk I/O — persist works on the snapshot, so readers
+	// (cachedIPs, other DialContext calls) never block on a file write.
+	c.mu.Unlock()
 	c.persist(snapshot)
 }
 

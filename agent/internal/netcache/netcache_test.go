@@ -196,3 +196,26 @@ func TestUnchangedIPSetDoesNotRewriteCache(t *testing.T) {
 		t.Fatalf("cache modtime = %v, want unchanged %v", info.ModTime(), oldTime)
 	}
 }
+
+// TestConcurrentStoreAndReadDoNotSerializeOnDisk drives store (which
+// persists) concurrently with cachedIPs readers for a different host under
+// -race, pinning that the entries lock is released before disk I/O.
+func TestConcurrentStoreAndReadDoNotSerializeOnDisk(t *testing.T) {
+	c, _ := newTestCache(t)
+	c.entries["other.example.com"] = []string{"198.51.100.1"}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 100; i++ {
+			c.store("api.example.com", []string{"203.0.113.10", "203.0.113.11"})
+			c.store("api.example.com", []string{"203.0.113.12"})
+		}
+	}()
+	for i := 0; i < 1000; i++ {
+		if got := c.cachedIPs("other.example.com"); len(got) != 1 || got[0] != "198.51.100.1" {
+			t.Fatalf("cachedIPs = %v, want stable unrelated entry", got)
+		}
+	}
+	<-done
+}
