@@ -28,7 +28,7 @@
         "unableToLoad": "Não foi possível carregar: {{sources}}"
       },
       "lastUpdated": "Atualizado {{time}}",
-      "subtitle": "Insights sobre sua frota e seus serviços",
+      "subtitle": "Insights sobre seus dispositivos e serviços",
       "title": "Análises",
       "trend": {
         "operationalHealth": "Saúde operacional"
@@ -61,7 +61,7 @@
           "title": "Sessões remotas"
         },
         "uptime": {
-          "label": "Disponibilidade da frota",
+          "label": "Disponibilidade dos dispositivos",
           "title": "Disponibilidade"
         }
       }
@@ -91,7 +91,7 @@
       "critical": "Críticos",
       "criticalAndWarningAlerts": "Alertas críticos e de aviso",
       "deviceOverview": "Visão geral dos dispositivos",
-      "fleetAvailabilitySummary": "Resumo de disponibilidade da frota",
+      "fleetAvailabilitySummary": "Resumo de disponibilidade dos dispositivos",
       "last12Weeks": "Últimas 12 semanas",
       "offline": "Offline",
       "online": "Online",
@@ -183,7 +183,7 @@
   },
   "reports": {
     "dashboardWidgets": {
-      "accessDenied": "Voce não tem permissao para ver estes dados do painel.",
+      "accessDenied": "Você não tem permissão para ver estes dados do painel.",
       "activeAlerts": "Alertas Ativos",
       "averages": "Medias",
       "complianceScore": "Pontuacao de Conformidade",
@@ -243,7 +243,7 @@
         "totalDevices": "Total de Dispositivos"
       },
       "emptyDescription": "Configure as opcoes do relatório e clique em Pre-visualizar para ver os dados.",
-      "emptyTitle": "Nenhuma pre-visualização disponivel",
+      "emptyTitle": "Nenhuma pré-visualização disponível",
       "formats": {
         "csv": "CSV",
         "excel": "Excel",
@@ -332,7 +332,7 @@
         "weekly": "Semanal"
       },
       "status": {
-        "completed": "concluido",
+        "completed": "concluído",
         "failed": "falhou",
         "pending": "pendente",
         "running": "em execução"
@@ -564,10 +564,10 @@
         "generatePreview": "Falha ao gerar pre-visualização",
         "generic": "Ocorreu um erro",
         "loadLivePreview": "Falha ao carregar pre-visualização ao vivo",
-        "reportNameRequired": "O nome do relatório e obrigatorio.",
+        "reportNameRequired": "O nome do relatório é obrigatório.",
         "saveReport": "Falha ao salvar relatório",
         "selectExportFormat": "Selecione pelo menos um formato de exportacao.",
-        "templateNameRequired": "O nome do modelo e obrigatorio.",
+        "templateNameRequired": "O nome do modelo é obrigatório.",
         "validEmail": "Insira um endereço de e-mail válido."
       },
       "exportFormats": {
@@ -621,7 +621,7 @@
           "cpu": "Uso de CPU",
           "disk_usage": "Uso de disco",
           "hostname": "Nome do host",
-          "last_seen": "Visto por ultimo",
+          "last_seen": "Visto por último",
           "memory": "Uso de memória",
           "os": "SO",
           "owner": "Proprietario",
@@ -666,9 +666,9 @@
         "value": "Valor"
       },
       "livePreview": {
-        "description": "Atualiza conforme voce configura o relatório.",
-        "loading": "Carregando pre-visualização ao vivo...",
-        "noData": "Sem dados de pre-visualização para a configuração atual.",
+        "description": "Atualiza conforme você configura o relatório.",
+        "loading": "Carregando pré-visualização ao vivo...",
+        "noData": "Sem dados de pré-visualização para a configuração atual.",
         "previewRows": "Linhas da pre-visualização",
         "title": "Pre-visualização ao vivo",
         "untitledReport": "Relatório sem título"
@@ -692,7 +692,7 @@
       },
       "reportTypes": {
         "activity": {
-          "description": "Trilhas de atividade de usuario, administrador e sistema",
+          "description": "Trilhas de atividade de usuário, administrador e sistema",
           "label": "Atividade"
         },
         "alerts": {
@@ -759,7 +759,7 @@
           "title": "Detalhes do relatório"
         },
         "reportType": {
-          "description": "Escolha o tipo de relatório que voce esta criando.",
+          "description": "Escolha o tipo de relatório que você está criando.",
           "title": "Tipo de relatório"
         }
       },
@@ -856,7 +856,7 @@
           "name": "Relatório de Conformidade de SLA"
         },
         "technician_activity": {
-          "description": "Volume de tickets, interações com dispositivos e velocidade de resolução.",
+          "description": "Volume de chamados, interações com dispositivos e velocidade de resolução.",
           "name": "Relatório de Atividade de Tecnicos"
         }
       },
