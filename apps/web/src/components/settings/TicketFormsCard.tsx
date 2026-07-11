@@ -23,6 +23,9 @@ interface TicketForm {
   titleTemplate: string | null;
   descriptionIntro: string | null;
   defaultPriority: string | null;
+  // Partner-wide allowlist: null (or absent) = visible to all the partner's orgs;
+  // a non-empty array = only those orgs. Never `[]` (server normalizes empty → null).
+  visibleOrgIds?: string[] | null;
   showInPortal: boolean;
   isActive: boolean;
   sortOrder: number;
@@ -57,6 +60,10 @@ interface FormDraft {
   categoryId: string;
   ownerScope: 'partner' | 'organization';
   orgId: string;
+  // Partner-wide allowlist editor state. `limitOrgs` unchecked → save `null` (all
+  // orgs); checked → `visibleOrgIds` (min 1, enforced client-side — never send `[]`).
+  limitOrgs: boolean;
+  visibleOrgIds: string[];
   fields: DraftField[];
   titleTemplate: string;
   descriptionIntro: string;
@@ -138,6 +145,8 @@ function draftFromForm(form: TicketForm): FormDraft {
     // Ownership is immutable on edit; seed something valid but the fieldset is hidden.
     ownerScope: form.orgId === null ? 'partner' : 'organization',
     orgId: form.orgId ?? '',
+    limitOrgs: form.visibleOrgIds != null,
+    visibleOrgIds: form.visibleOrgIds ?? [],
     fields: form.fields.map((f) => ({
       label: f.label,
       type: f.type,
@@ -163,6 +172,8 @@ function emptyDraft(): FormDraft {
     categoryId: '',
     ownerScope: 'partner',
     orgId: '',
+    limitOrgs: false,
+    visibleOrgIds: [],
     fields: [],
     titleTemplate: '',
     descriptionIntro: '',
@@ -273,6 +284,16 @@ export default function TicketFormsCard() {
       [next[i], next[j]] = [next[j], next[i]];
       return { ...e, draft: { ...e.draft, fields: next } };
     });
+  // Toggle an org in the partner-wide allowlist; preserves click order so the
+  // saved array matches selection order.
+  const toggleVisibleOrg = (id: string) =>
+    setEditing((e) => {
+      if (!e) return e;
+      const next = e.draft.visibleOrgIds.includes(id)
+        ? e.draft.visibleOrgIds.filter((x) => x !== id)
+        : [...e.draft.visibleOrgIds, id];
+      return { ...e, draft: { ...e.draft, visibleOrgIds: next } };
+    });
 
   // Derived keys + built fields for the current draft (drives read-only key labels + preview).
   const draft = editing?.draft;
@@ -291,6 +312,11 @@ export default function TicketFormsCard() {
     const orgScopeBlockedByLoad = orgScopeNeedsOrg && orgsLoadFailed;
     if (orgScopeNeedsOrg && !orgsLoadFailed) {
       localIssues.push('Select an organization for an organization-scoped form.');
+    }
+    // Allowlist is only meaningful on partner-wide forms. Checked-but-empty is
+    // unrepresentable: force a choice rather than silently sending null/[].
+    if (d.ownerScope === 'partner' && d.limitOrgs && d.visibleOrgIds.length === 0) {
+      localIssues.push('Select at least one organization or uncheck "Limit to specific organizations".');
     }
     const built = buildFields(d.fields);
     const parsed = ticketFormFieldsSchema.safeParse(built);
@@ -348,6 +374,13 @@ export default function TicketFormsCard() {
     setOptional('titleTemplate', d.titleTemplate);
     setOptional('descriptionIntro', d.descriptionIntro);
     setOptional('defaultPriority', d.defaultPriority);
+
+    // Allowlist only on partner-wide forms (both create and edit; for edit,
+    // ownerScope is derived from orgId === null). Unchecked → null (all orgs);
+    // checked → the selected ids. Org-owned forms never carry the key (API 400s).
+    if (d.ownerScope === 'partner') {
+      base.visibleOrgIds = d.limitOrgs ? d.visibleOrgIds : null;
+    }
 
     // CREATE also sends the immutable ownership axis; UPDATE (schema is
     // .partial()) sends only the mutable base.
@@ -476,6 +509,53 @@ export default function TicketFormsCard() {
                         </button>
                       </p>
                     )}
+                  </fieldset>
+                )}
+
+                {/* Org allowlist — partner-wide forms only (create with partner
+                    scope, or editing a partner-wide row where orgId === null). */}
+                {draft.ownerScope === 'partner' && (
+                  <fieldset className="space-y-2 rounded-md border p-3" data-testid="ticket-form-visibility">
+                    <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">Visibility</legend>
+                    <label className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 rounded border"
+                        checked={draft.limitOrgs}
+                        onChange={(e) => patchDraft({ limitOrgs: e.target.checked })}
+                        data-testid="ticket-form-limit-orgs"
+                      />
+                      Limit to specific organizations
+                    </label>
+                    {draft.limitOrgs &&
+                      (orgsLoadFailed ? (
+                        <p className="text-xs text-destructive" data-testid="ticket-form-orgs-error">
+                          Organizations failed to load, so the allowlist can't be edited yet.{' '}
+                          <button
+                            type="button"
+                            onClick={() => void load()}
+                            className="underline hover:text-foreground"
+                            data-testid="ticket-form-orgs-retry"
+                          >
+                            Retry
+                          </button>
+                        </p>
+                      ) : (
+                        <div className="space-y-1" data-testid="ticket-form-visible-orgs">
+                          {orgs.map((o) => (
+                            <label key={o.id} className="flex items-center gap-2 text-sm">
+                              <input
+                                type="checkbox"
+                                className="h-4 w-4 rounded border"
+                                checked={draft.visibleOrgIds.includes(o.id)}
+                                onChange={() => toggleVisibleOrg(o.id)}
+                                data-testid={`ticket-form-visible-org-${o.id}`}
+                              />
+                              {o.name}
+                            </label>
+                          ))}
+                        </div>
+                      ))}
                   </fieldset>
                 )}
 
@@ -805,16 +885,26 @@ export default function TicketFormsCard() {
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2 text-sm font-medium">
                     <span>{form.name}</span>
-                    {form.orgId === null && (
-                      <span
-                        className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
-                        title="Partner-wide form — available to every organization"
-                        data-testid={`ticket-form-all-orgs-${form.id}`}
-                      >
-                        <Globe className="h-3 w-3" />
-                        All orgs
-                      </span>
-                    )}
+                    {form.orgId === null &&
+                      (form.visibleOrgIds == null ? (
+                        <span
+                          className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
+                          title="Partner-wide form — available to every organization"
+                          data-testid={`ticket-form-all-orgs-${form.id}`}
+                        >
+                          <Globe className="h-3 w-3" />
+                          All orgs
+                        </span>
+                      ) : (
+                        <span
+                          className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
+                          title="Partner-wide form limited to specific organizations"
+                          data-testid={`ticket-form-org-count-${form.id}`}
+                        >
+                          <Globe className="h-3 w-3" />
+                          {form.visibleOrgIds.length} org{form.visibleOrgIds.length === 1 ? '' : 's'}
+                        </span>
+                      ))}
                     {form.showInPortal && (
                       <span className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground">Portal</span>
                     )}
