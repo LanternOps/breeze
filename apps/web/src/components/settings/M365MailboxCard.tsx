@@ -3,6 +3,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
+import { usePermissions } from '../../lib/permissions';
 import { showToast } from '../shared/Toast';
 
 interface MailboxConnectionDTO {
@@ -10,9 +11,49 @@ interface MailboxConnectionDTO {
   mailboxAddress: string;
   displayName: string | null;
   status: 'pending_consent' | 'connected' | 'error' | 'reauth_required' | 'disabled';
-  tenantId: string | null;
   lastPolledAt: string | null;
-  lastError: string | null;
+  lastMessageAt: string | null;
+}
+
+const MAILBOX_STATUSES = new Set<MailboxConnectionDTO['status']>([
+  'pending_consent',
+  'connected',
+  'error',
+  'reauth_required',
+  'disabled',
+]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === 'string';
+}
+
+function isMailboxStatus(value: unknown): value is MailboxConnectionDTO['status'] {
+  return (
+    typeof value === 'string' &&
+    MAILBOX_STATUSES.has(value as MailboxConnectionDTO['status'])
+  );
+}
+
+function parseMailboxConnection(value: unknown): MailboxConnectionDTO | null {
+  if (!isRecord(value)) return null;
+  if (typeof value.id !== 'string' || value.id.length === 0) return null;
+  if (typeof value.mailboxAddress !== 'string' || value.mailboxAddress.length === 0) return null;
+  if (!isNullableString(value.displayName)) return null;
+  if (!isMailboxStatus(value.status)) return null;
+  if (!isNullableString(value.lastPolledAt) || !isNullableString(value.lastMessageAt)) return null;
+
+  return {
+    id: value.id,
+    mailboxAddress: value.mailboxAddress,
+    displayName: value.displayName,
+    status: value.status,
+    lastPolledAt: value.lastPolledAt,
+    lastMessageAt: value.lastMessageAt,
+  };
 }
 
 const STATUS_LABEL: Record<MailboxConnectionDTO['status'], string> = {
@@ -37,7 +78,7 @@ function powershellSnippet(mailbox: string): string {
   ].join('\n');
 }
 
-export default function M365MailboxCard() {
+function M365MailboxCardContent({ canAdminMailbox }: { canAdminMailbox: boolean }) {
   const [connections, setConnections] = useState<MailboxConnectionDTO[]>([]);
   const [loading, setLoading] = useState(true);
   const [address, setAddress] = useState('');
@@ -54,7 +95,12 @@ export default function M365MailboxCard() {
       const res = await fetchWithAuth('/tickets/mailbox/connections');
       if (res.ok) {
         const body = await res.json().catch(() => null);
-        setConnections((body?.connections ?? []) as MailboxConnectionDTO[]);
+        const rawConnections = isRecord(body) && Array.isArray(body.connections) ? body.connections : [];
+        setConnections(
+          rawConnections
+            .map(parseMailboxConnection)
+            .filter((connection): connection is MailboxConnectionDTO => connection !== null),
+        );
       }
     } finally {
       setLoading(false);
@@ -74,37 +120,45 @@ export default function M365MailboxCard() {
     if (!status) return;
     if (status === 'connected') showToast({ type: 'success', message: 'Mailbox connected' });
     else if (status === 'needs_policy')
-      showToast({ type: 'warning', message: 'Consent granted — scope the mailbox with the Application Access Policy below, then Re-test' });
+      showToast({ type: 'warning', message: 'Mailbox consent requires administrator attention.' });
     else if (status === 'error') showToast({ type: 'error', message: 'M365 connection failed' });
     params.delete('ticketMailbox');
     const qs = params.toString();
     window.history.replaceState({}, '', window.location.pathname + (qs ? `?${qs}` : '') + window.location.hash);
   }, []);
 
-  const handleConnect = useCallback(async () => {
-    if (!address.trim()) return;
-    setBusy(true);
-    try {
-      const data = await runAction<{ authUrl?: string; connectionId?: string }>({
-        request: () =>
-          fetchWithAuth('/tickets/mailbox/connect', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              mailboxAddress: address.trim(),
-              displayName: displayName.trim() || undefined,
+  const startConsent = useCallback(
+    async (mailboxAddress: string, mailboxDisplayName: string | null) => {
+      if (!mailboxAddress.trim()) return;
+      setBusy(true);
+      try {
+        const data = await runAction<{ authUrl?: string; connectionId?: string }>({
+          request: () =>
+            fetchWithAuth('/tickets/mailbox/connect', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                mailboxAddress: mailboxAddress.trim(),
+                displayName: mailboxDisplayName?.trim() || undefined,
+              }),
             }),
-          }),
-        errorFallback: 'Could not start M365 consent.',
-        onUnauthorized,
-      });
-      if (data?.authUrl) window.location.assign(data.authUrl);
-    } catch (err) {
-      if (!(err instanceof ActionError)) handleActionError(err, 'Could not start M365 consent.');
-    } finally {
-      setBusy(false);
-    }
-  }, [address, displayName, onUnauthorized]);
+          errorFallback: 'Could not start M365 consent.',
+          onUnauthorized,
+        });
+        if (data?.authUrl) window.location.assign(data.authUrl);
+      } catch (err) {
+        if (!(err instanceof ActionError)) handleActionError(err, 'Could not start M365 consent.');
+      } finally {
+        setBusy(false);
+      }
+    },
+    [onUnauthorized],
+  );
+
+  const handleConnect = useCallback(
+    () => startConsent(address, displayName),
+    [address, displayName, startConsent],
+  );
 
   const handleRetest = useCallback(
     async (id: string) => {
@@ -170,8 +224,12 @@ export default function M365MailboxCard() {
                   {STATUS_LABEL[c.status]}
                 </span>
               </div>
-              {c.lastError ? <p className="text-xs text-destructive">{c.lastError}</p> : null}
-              {c.status === 'error' || c.status === 'reauth_required' || c.status === 'pending_consent' ? (
+              {c.status === 'reauth_required' ? (
+                <p className="text-xs text-destructive">
+                  Administrator re-consent is required before Microsoft 365 polling and replies resume.
+                </p>
+              ) : null}
+              {c.status === 'error' || c.status === 'pending_consent' ? (
                 <details className="text-xs">
                   <summary className="cursor-pointer">Scope this mailbox (Application Access Policy)</summary>
                   <pre className="mt-2 overflow-x-auto whitespace-pre-wrap rounded bg-muted p-2">
@@ -179,22 +237,37 @@ export default function M365MailboxCard() {
                   </pre>
                 </details>
               ) : null}
-              <div className="flex gap-3">
-                <button
-                  type="button"
-                  className="text-sm text-primary hover:underline"
-                  onClick={() => handleRetest(c.id)}
-                >
-                  Re-test
-                </button>
-                <button
-                  type="button"
-                  className="text-sm text-destructive hover:underline"
-                  onClick={() => handleDisconnect(c.id)}
-                >
-                  Disconnect
-                </button>
-              </div>
+              {canAdminMailbox ? (
+                <div className="flex gap-3">
+                  {c.status === 'error' ? (
+                    <button
+                      type="button"
+                      className="text-sm text-primary hover:underline"
+                      onClick={() => handleRetest(c.id)}
+                    >
+                      Re-test
+                    </button>
+                  ) : null}
+                  {c.status === 'reauth_required' ? (
+                    <button
+                      type="button"
+                      data-testid="m365-reconnect"
+                      disabled={busy}
+                      className="text-sm text-primary hover:underline disabled:opacity-50"
+                      onClick={() => startConsent(c.mailboxAddress, c.displayName)}
+                    >
+                      Reconnect
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="text-sm text-destructive hover:underline"
+                    onClick={() => handleDisconnect(c.id)}
+                  >
+                    Disconnect
+                  </button>
+                </div>
+              ) : null}
             </li>
           ))}
         </ul>
@@ -202,36 +275,48 @@ export default function M365MailboxCard() {
         <p className="mt-4 text-sm text-muted-foreground">No mailbox connected yet.</p>
       )}
 
-      <div className="mt-4 flex flex-col gap-2 border-t pt-4">
-        <label className="text-sm" htmlFor="m365-address">
-          Mailbox address
-        </label>
-        <input
-          id="m365-address"
-          className="rounded border p-2 text-sm"
-          placeholder="support@yourmsp.com"
-          value={address}
-          onChange={(e) => setAddress(e.target.value)}
-        />
-        <label className="text-sm" htmlFor="m365-name">
-          Display name (optional)
-        </label>
-        <input
-          id="m365-name"
-          className="rounded border p-2 text-sm"
-          placeholder="Support"
-          value={displayName}
-          onChange={(e) => setDisplayName(e.target.value)}
-        />
-        <button
-          type="button"
-          disabled={busy || !address.trim()}
-          onClick={handleConnect}
-          className="mt-1 self-start rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground disabled:opacity-50"
-        >
-          Connect
-        </button>
-      </div>
+      {canAdminMailbox ? (
+        <div className="mt-4 flex flex-col gap-2 border-t pt-4">
+          <label className="text-sm" htmlFor="m365-address">
+            Mailbox address
+          </label>
+          <input
+            id="m365-address"
+            className="rounded border p-2 text-sm"
+            placeholder="support@yourmsp.com"
+            value={address}
+            onChange={(e) => setAddress(e.target.value)}
+          />
+          <label className="text-sm" htmlFor="m365-name">
+            Display name (optional)
+          </label>
+          <input
+            id="m365-name"
+            className="rounded border p-2 text-sm"
+            placeholder="Support"
+            value={displayName}
+            onChange={(e) => setDisplayName(e.target.value)}
+          />
+          <button
+            type="button"
+            data-testid="m365-connect"
+            disabled={busy || !address.trim()}
+            onClick={handleConnect}
+            className="mt-1 self-start rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground disabled:opacity-50"
+          >
+            Connect
+          </button>
+        </div>
+      ) : null}
     </section>
   );
+}
+
+export default function M365MailboxCard() {
+  const { can } = usePermissions();
+  const canReadMailbox = can('ticket_mailbox', 'read');
+  const canAdminMailbox = can('ticket_mailbox', 'admin');
+
+  if (!canReadMailbox) return null;
+  return <M365MailboxCardContent canAdminMailbox={canAdminMailbox} />;
 }

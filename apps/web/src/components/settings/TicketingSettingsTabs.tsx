@@ -8,15 +8,14 @@ import InboundEmailCard from './InboundEmailCard';
 import M365MailboxCard from './M365MailboxCard';
 import CannedResponsesCard from './CannedResponsesCard';
 import { getJwtClaims } from '../../lib/authScope';
+import { usePermissions } from '../../lib/permissions';
 
 const VALID_TABS = ['statuses', 'priorities', 'categories', 'export', 'inbound', 'canned'] as const;
 type Tab = (typeof VALID_TABS)[number];
 
-// Inbound email settings + queue are a partner-scoped surface (the queue routes
-// are additionally admin-gated server-side). We have no synchronous fine-grained
-// capability on the client, so gate the tab on partner scope — any partner user
-// can use the settings; the card's own 403 handler is the defense-in-depth
-// backstop that hides the queue for non-admins reached directly via hash.
+// Inbound email settings + queue are a partner-scoped surface. The mailbox card
+// adds its own fine-grained ticket_mailbox permission gate below; every route
+// remains authoritative server-side.
 const BASE_TABS: Array<{ id: Tab; label: string }> = [
   { id: 'statuses', label: 'Statuses' },
   { id: 'priorities', label: 'Priorities & SLAs' },
@@ -69,6 +68,8 @@ export default function TicketingSettingsTabs({
   // card strips it on mount, and this group can remount when the parent's loading state
   // toggles — re-reading would lose the signal (the tab would snap back to Statuses).
   const [activeTab, setActiveTab] = useState<Tab>(initialTab ?? 'statuses');
+  const { can } = usePermissions();
+  const canReadMailbox = can('ticket_mailbox', 'read');
 
   // Render the Inbound Email tab only for partner-scoped users (matches how the
   // Sidebar gates other partner-only settings surfaces). Decoded client-side as
@@ -143,7 +144,7 @@ export default function TicketingSettingsTabs({
       {activeTab === 'inbound' && canManageInbound && (
         <div data-testid="ticketing-tab-panel-inbound" className="space-y-6">
           <InboundEmailCard />
-          <M365MailboxCard />
+          {canReadMailbox ? <M365MailboxCard /> : null}
         </div>
       )}
 
