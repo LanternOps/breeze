@@ -391,10 +391,7 @@ function PathList({
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) =>
-            e.key ===
-              i18n.t(
-                "policies:configurationPolicies.featureTabs.backupTab.enter",
-              ) && (e.preventDefault(), handleAdd())
+            e.key === "Enter" && (e.preventDefault(), handleAdd())
           }
           placeholder={placeholder}
           className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
@@ -923,33 +920,25 @@ export default function BackupTab({
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
           {[
             {
-              value: i18n.t(
-                "policies:configurationPolicies.featureTabs.backupTab.file",
-              ),
+              value: "file",
               label: i18n.t(
                 "policies:configurationPolicies.featureTabs.backupTab.fileBackup",
               ),
             },
             {
-              value: i18n.t(
-                "policies:configurationPolicies.featureTabs.backupTab.hyperv",
-              ),
+              value: "hyperv",
               label: i18n.t(
                 "policies:configurationPolicies.featureTabs.backupTab.hyperVVMs",
               ),
             },
             {
-              value: i18n.t(
-                "policies:configurationPolicies.featureTabs.backupTab.mssql",
-              ),
+              value: "mssql",
               label: i18n.t(
                 "policies:configurationPolicies.featureTabs.backupTab.sQLServer",
               ),
             },
             {
-              value: i18n.t(
-                "policies:configurationPolicies.featureTabs.backupTab.systemImage",
-              ),
+              value: "system_image",
               label: i18n.t(
                 "policies:configurationPolicies.featureTabs.backupTab.systemState",
               ),
@@ -1171,15 +1160,7 @@ export default function BackupTab({
             <button
               type="button"
               onClick={() =>
-                setMode(
-                  mode === "create"
-                    ? i18n.t(
-                        "policies:configurationPolicies.featureTabs.backupTab.select",
-                      )
-                    : i18n.t(
-                        "policies:configurationPolicies.featureTabs.backupTab.create",
-                      ),
-                )
+                setMode(mode === "create" ? "select" : "create")
               }
               className="inline-flex items-center gap-1.5 text-xs text-primary hover:underline"
             >
@@ -1215,13 +1196,7 @@ export default function BackupTab({
                 )}{" "}
                 <button
                   type="button"
-                  onClick={() =>
-                    setMode(
-                      i18n.t(
-                        "policies:configurationPolicies.featureTabs.backupTab.create",
-                      ),
-                    )
-                  }
+                  onClick={() => setMode("create")}
                   className="text-primary underline underline-offset-2"
                 >
                   {i18n.t(

@@ -116,14 +116,7 @@ export default function WarrantyTab({
           </div>
           <button
             type="button"
-            onClick={() =>
-              update(
-                i18n.t(
-                  "policies:configurationPolicies.featureTabs.warrantyTab.enabled",
-                ),
-                !settings.enabled,
-              )
-            }
+            onClick={() => update("enabled", !settings.enabled)}
             className={`relative inline-flex h-6 w-11 items-center rounded-full border transition ${settings.enabled ? "bg-emerald-500/80" : "bg-muted"}`}
           >
             <span
@@ -146,12 +139,7 @@ export default function WarrantyTab({
                 max={365}
                 value={settings.warnDays}
                 onChange={(e) =>
-                  update(
-                    i18n.t(
-                      "policies:configurationPolicies.featureTabs.warrantyTab.warnDays",
-                    ),
-                    Number(e.target.value) || 90,
-                  )
+                  update("warnDays", Number(e.target.value) || 90)
                 }
                 className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
@@ -174,12 +162,7 @@ export default function WarrantyTab({
                 max={365}
                 value={settings.criticalDays}
                 onChange={(e) =>
-                  update(
-                    i18n.t(
-                      "policies:configurationPolicies.featureTabs.warrantyTab.criticalDays",
-                    ),
-                    Number(e.target.value) || 30,
-                  )
+                  update("criticalDays", Number(e.target.value) || 30)
                 }
                 className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />

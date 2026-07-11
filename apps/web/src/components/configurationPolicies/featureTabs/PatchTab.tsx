@@ -54,15 +54,11 @@ function normalizeSources(raw: unknown): PatchSourceOption[] {
   if (!Array.isArray(raw)) return ["os"];
   const result: PatchSourceOption[] = [];
   if (raw.some((s) => typeof s === "string" && OS_VALUE_ALIASES.has(s)))
-    result.push(
-      i18n.t("policies:configurationPolicies.featureTabs.patchTab.os"),
-    );
+    result.push("os");
   if (
     raw.some((s) => typeof s === "string" && THIRD_PARTY_VALUE_ALIASES.has(s))
   )
-    result.push(
-      i18n.t("policies:configurationPolicies.featureTabs.patchTab.thirdParty"),
-    );
+    result.push("third_party");
   return result.length > 0 ? result : ["os"];
 }
 const scheduleOptions: {

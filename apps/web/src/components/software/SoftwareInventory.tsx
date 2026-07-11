@@ -271,33 +271,21 @@ export default function SoftwareInventory({
               <tr>
                 <th
                   className="cursor-pointer px-4 py-3 hover:text-foreground"
-                  onClick={() =>
-                    handleSort(
-                      i18n.t("policies:software.softwareInventory.name"),
-                    )
-                  }
+                  onClick={() => handleSort("name")}
                 >
                   {i18n.t("common:labels.name")}
                   <SortIcon col="name" />
                 </th>
                 <th
                   className="cursor-pointer px-4 py-3 hover:text-foreground"
-                  onClick={() =>
-                    handleSort(
-                      i18n.t("policies:software.softwareInventory.vendor2"),
-                    )
-                  }
+                  onClick={() => handleSort("vendor")}
                 >
                   {i18n.t("policies:software.softwareInventory.vendor")}
                   <SortIcon col="vendor" />
                 </th>
                 <th
                   className="cursor-pointer px-4 py-3 hover:text-foreground"
-                  onClick={() =>
-                    handleSort(
-                      i18n.t("policies:software.softwareInventory.deviceCount"),
-                    )
-                  }
+                  onClick={() => handleSort("deviceCount")}
                 >
                   {i18n.t("policies:software.softwareInventory.devices")}
                   <SortIcon col="deviceCount" />
@@ -473,14 +461,8 @@ export default function SoftwareInventory({
                                   "policies:software.softwareInventory.deny",
                                 )}
                               </button>
-                              {(row.policyStatus ===
-                                i18n.t(
-                                  "policies:software.softwareInventory.allowed2",
-                                ) ||
-                                row.policyStatus ===
-                                  i18n.t(
-                                    "policies:software.softwareInventory.blocked2",
-                                  )) && (
+                              {(row.policyStatus === "allowed" ||
+                                row.policyStatus === "blocked") && (
                                 <button
                                   type="button"
                                   onClick={() => {

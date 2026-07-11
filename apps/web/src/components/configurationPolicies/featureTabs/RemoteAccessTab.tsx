@@ -165,14 +165,7 @@ export default function RemoteAccessTab({
               "policies:configurationPolicies.featureTabs.remoteAccessTab.allowTheBreezeViewerToConnectTo",
             )}
             checked={settings.webrtcDesktop}
-            onChange={(v) =>
-              update(
-                i18n.t(
-                  "policies:configurationPolicies.featureTabs.remoteAccessTab.webrtcDesktop",
-                ),
-                v,
-              )
-            }
+            onChange={(v) => update("webrtcDesktop", v)}
           />
           <ToggleRow
             label={i18n.t(
@@ -182,14 +175,7 @@ export default function RemoteAccessTab({
               "policies:configurationPolicies.featureTabs.remoteAccessTab.allowBrowserBasedVNCConnectionsToReach",
             )}
             checked={settings.vncRelay}
-            onChange={(v) =>
-              update(
-                i18n.t(
-                  "policies:configurationPolicies.featureTabs.remoteAccessTab.vncRelay",
-                ),
-                v,
-              )
-            }
+            onChange={(v) => update("vncRelay", v)}
           />
           <ToggleRow
             label={i18n.t(
@@ -199,14 +185,7 @@ export default function RemoteAccessTab({
               "policies:configurationPolicies.featureTabs.remoteAccessTab.allowRemoteProcessManagerServicesRegistryTerminal",
             )}
             checked={settings.remoteTools}
-            onChange={(v) =>
-              update(
-                i18n.t(
-                  "policies:configurationPolicies.featureTabs.remoteAccessTab.remoteTools",
-                ),
-                v,
-              )
-            }
+            onChange={(v) => update("remoteTools", v)}
           />
           <ToggleRow
             label={i18n.t(
@@ -216,14 +195,7 @@ export default function RemoteAccessTab({
               "policies:configurationPolicies.featureTabs.remoteAccessTab.streamTheRemoteMachineSClipboardTo",
             )}
             checked={settings.clipboardHostToViewer}
-            onChange={(v) =>
-              update(
-                i18n.t(
-                  "policies:configurationPolicies.featureTabs.remoteAccessTab.clipboardHostToViewer",
-                ),
-                v,
-              )
-            }
+            onChange={(v) => update("clipboardHostToViewer", v)}
           />
           <ToggleRow
             label={i18n.t(
@@ -233,14 +205,7 @@ export default function RemoteAccessTab({
               "policies:configurationPolicies.featureTabs.remoteAccessTab.allowTheOperatorToPasteTheirLocal",
             )}
             checked={settings.clipboardViewerToHost}
-            onChange={(v) =>
-              update(
-                i18n.t(
-                  "policies:configurationPolicies.featureTabs.remoteAccessTab.clipboardViewerToHost",
-                ),
-                v,
-              )
-            }
+            onChange={(v) => update("clipboardViewerToHost", v)}
           />
         </div>
 
@@ -273,12 +238,7 @@ export default function RemoteAccessTab({
               onChange={(e) => {
                 const v = parseInt(e.target.value, 10);
                 if (!isNaN(v) && v >= 1 && v <= 20)
-                  update(
-                    i18n.t(
-                      "policies:configurationPolicies.featureTabs.remoteAccessTab.maxConcurrentTunnels",
-                    ),
-                    v,
-                  );
+                  update("maxConcurrentTunnels", v);
               }}
               className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
@@ -297,12 +257,7 @@ export default function RemoteAccessTab({
             <select
               value={settings.idleTimeoutMinutes}
               onChange={(e) =>
-                update(
-                  i18n.t(
-                    "policies:configurationPolicies.featureTabs.remoteAccessTab.idleTimeoutMinutes2",
-                  ),
-                  parseInt(e.target.value, 10),
-                )
+                update("idleTimeoutMinutes", parseInt(e.target.value, 10))
               }
               className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm"
             >
@@ -334,12 +289,7 @@ export default function RemoteAccessTab({
             <select
               value={settings.maxSessionDurationHours}
               onChange={(e) =>
-                update(
-                  i18n.t(
-                    "policies:configurationPolicies.featureTabs.remoteAccessTab.maxSessionDurationHours2",
-                  ),
-                  parseInt(e.target.value, 10),
-                )
+                update("maxSessionDurationHours", parseInt(e.target.value, 10))
               }
               className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm"
             >
@@ -379,14 +329,7 @@ export default function RemoteAccessTab({
               "policies:configurationPolicies.featureTabs.remoteAccessTab.allowTunnelingNetworkTrafficThroughEnrolledAgents",
             )}
             checked={settings.enableProxy}
-            onChange={(v) =>
-              update(
-                i18n.t(
-                  "policies:configurationPolicies.featureTabs.remoteAccessTab.enableProxy",
-                ),
-                v,
-              )
-            }
+            onChange={(v) => update("enableProxy", v)}
           />
           <ToggleRow
             label={i18n.t(
@@ -396,14 +339,7 @@ export default function RemoteAccessTab({
               "policies:configurationPolicies.featureTabs.remoteAccessTab.automaticallyEnableProxyCapabilityWhenNewDevices",
             )}
             checked={settings.autoEnableProxy}
-            onChange={(v) =>
-              update(
-                i18n.t(
-                  "policies:configurationPolicies.featureTabs.remoteAccessTab.autoEnableProxy",
-                ),
-                v,
-              )
-            }
+            onChange={(v) => update("autoEnableProxy", v)}
           />
         </div>
 
@@ -424,10 +360,7 @@ export default function RemoteAccessTab({
               value={newPort}
               onChange={(e) => setNewPort(e.target.value)}
               onKeyDown={(e) =>
-                e.key ===
-                  i18n.t(
-                    "policies:configurationPolicies.featureTabs.remoteAccessTab.enter",
-                  ) && (e.preventDefault(), handleAddPort())
+                e.key === "Enter" && (e.preventDefault(), handleAddPort())
               }
               placeholder={i18n.t(
                 "policies:configurationPolicies.featureTabs.remoteAccessTab.addPort",

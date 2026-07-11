@@ -809,9 +809,7 @@ export default function DeploymentWizard({
           <div className="flex rounded-md border">
             <button
               type="button"
-              onClick={() =>
-                setTargetMode(i18n.t("policies:software.deploymentWizard.tree"))
-              }
+              onClick={() => setTargetMode("tree")}
               className={cn(
                 "rounded-l-md px-3 py-1.5 text-xs font-medium transition",
                 targetMode === "tree"
@@ -823,11 +821,7 @@ export default function DeploymentWizard({
             </button>
             <button
               type="button"
-              onClick={() =>
-                setTargetMode(
-                  i18n.t("policies:software.deploymentWizard.advanced2"),
-                )
-              }
+              onClick={() => setTargetMode("advanced")}
               className={cn(
                 "rounded-r-md px-3 py-1.5 text-xs font-medium transition",
                 targetMode === "advanced"
@@ -847,12 +841,7 @@ export default function DeploymentWizard({
             <DeviceTargetSelector
               value={targetConfig}
               onChange={handleTargetConfigChange}
-              modes={[
-                i18n.t("policies:software.deploymentWizard.all"),
-                i18n.t("policies:software.deploymentWizard.manual"),
-                i18n.t("policies:software.deploymentWizard.groups"),
-                i18n.t("policies:software.deploymentWizard.filter"),
-              ]}
+              modes={["all", "manual", "groups", "filter"]}
               showPreview={true}
               showSavedFilters={true}
             />
@@ -884,16 +873,12 @@ export default function DeploymentWizard({
                 ref={checkboxRef}
                 type="checkbox"
                 checked={
-                  node.type ===
-                  i18n.t("policies:software.deploymentWizard.device")
+                  node.type === "device"
                     ? selectedDevices.has(node.id)
                     : allSelected
                 }
                 onChange={() => {
-                  if (
-                    node.type ===
-                    i18n.t("policies:software.deploymentWizard.device")
-                  ) {
+                  if (node.type === "device") {
                     toggleDevices([node.id], !selectedDevices.has(node.id));
                   } else {
                     toggleDevices(deviceIds, !allSelected);
@@ -995,8 +980,7 @@ export default function DeploymentWizard({
               </label>
             ))}
           </div>
-          {scheduleType ===
-            i18n.t("policies:software.deploymentWizard.scheduled") && (
+          {scheduleType === "scheduled" && (
             <div className="mt-4">
               <label className="text-xs font-semibold uppercase text-muted-foreground">
                 {i18n.t("policies:software.deploymentWizard.scheduledDateTime")}
@@ -1009,8 +993,7 @@ export default function DeploymentWizard({
               />
             </div>
           )}
-          {scheduleType ===
-            i18n.t("policies:software.deploymentWizard.maintenance") && (
+          {scheduleType === "maintenance" && (
             <div className="mt-4 rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
               {i18n.t(
                 "policies:software.deploymentWizard.devicesWillBeQueuedForTheNext",
@@ -1079,32 +1062,23 @@ export default function DeploymentWizard({
                 {i18n.t("policies:software.deploymentWizard.schedule")}
               </p>
               <p className="mt-2 text-sm font-semibold">
-                {scheduleType ===
-                  i18n.t("policies:software.deploymentWizard.immediate") &&
+                {scheduleType === "immediate" &&
                   i18n.t("policies:software.deploymentWizard.immediate2")}
-                {scheduleType ===
-                  i18n.t("policies:software.deploymentWizard.scheduled") &&
+                {scheduleType === "scheduled" &&
                   i18n.t("policies:software.deploymentWizard.scheduled2")}
-                {scheduleType ===
-                  i18n.t("policies:software.deploymentWizard.maintenance") &&
+                {scheduleType === "maintenance" &&
                   i18n.t(
                     "policies:software.deploymentWizard.maintenanceWindow",
                   )}
               </p>
               <p className="text-xs text-muted-foreground">
-                {scheduleType ===
-                  i18n.t("policies:software.deploymentWizard.scheduled") &&
-                scheduledAt
-                  ? scheduledAt
-                  : ""}
-                {scheduleType ===
-                i18n.t("policies:software.deploymentWizard.maintenance")
+                {scheduleType === "scheduled" && scheduledAt ? scheduledAt : ""}
+                {scheduleType === "maintenance"
                   ? i18n.t(
                       "policies:software.deploymentWizard.nextAvailableMaintenanceWindow",
                     )
                   : ""}
-                {scheduleType ===
-                i18n.t("policies:software.deploymentWizard.immediate")
+                {scheduleType === "immediate"
                   ? i18n.t(
                       "policies:software.deploymentWizard.startsAfterApproval",
                     )

@@ -188,14 +188,7 @@ export default function SecurityTab({
               "policies:configurationPolicies.featureTabs.securityTab.scanNewAndModifiedFilesContinuously",
             )}
             checked={settings.realTimeProtection}
-            onChange={(v) =>
-              update(
-                i18n.t(
-                  "policies:configurationPolicies.featureTabs.securityTab.realTimeProtection2",
-                ),
-                v,
-              )
-            }
+            onChange={(v) => update("realTimeProtection", v)}
           />
           <ToggleRow
             label={i18n.t(
@@ -205,14 +198,7 @@ export default function SecurityTab({
               "policies:configurationPolicies.featureTabs.securityTab.detectSuspiciousProcessBehaviorAndScripts",
             )}
             checked={settings.behavioralMonitoring}
-            onChange={(v) =>
-              update(
-                i18n.t(
-                  "policies:configurationPolicies.featureTabs.securityTab.behavioralMonitoring2",
-                ),
-                v,
-              )
-            }
+            onChange={(v) => update("behavioralMonitoring", v)}
           />
           <ToggleRow
             label={i18n.t(
@@ -222,14 +208,7 @@ export default function SecurityTab({
               "policies:configurationPolicies.featureTabs.securityTab.useCloudReputationForNewIndicators",
             )}
             checked={settings.cloudLookup}
-            onChange={(v) =>
-              update(
-                i18n.t(
-                  "policies:configurationPolicies.featureTabs.securityTab.cloudLookup",
-                ),
-                v,
-              )
-            }
+            onChange={(v) => update("cloudLookup", v)}
           />
         </div>
 
@@ -246,14 +225,7 @@ export default function SecurityTab({
               "policies:configurationPolicies.featureTabs.securityTab.moveThreatsToQuarantineImmediately",
             )}
             checked={settings.autoQuarantine}
-            onChange={(v) =>
-              update(
-                i18n.t(
-                  "policies:configurationPolicies.featureTabs.securityTab.autoQuarantine2",
-                ),
-                v,
-              )
-            }
+            onChange={(v) => update("autoQuarantine", v)}
           />
           <ToggleRow
             label={i18n.t(
@@ -263,14 +235,7 @@ export default function SecurityTab({
               "policies:configurationPolicies.featureTabs.securityTab.sendDeviceNotificationsWhenThreatsAreFound",
             )}
             checked={settings.notifyUser}
-            onChange={(v) =>
-              update(
-                i18n.t(
-                  "policies:configurationPolicies.featureTabs.securityTab.notifyUser",
-                ),
-                v,
-              )
-            }
+            onChange={(v) => update("notifyUser", v)}
           />
           <ToggleRow
             label={i18n.t(
@@ -280,14 +245,7 @@ export default function SecurityTab({
               "policies:configurationPolicies.featureTabs.securityTab.preventUnknownRemovableMedia",
             )}
             checked={settings.blockUntrustedUsb}
-            onChange={(v) =>
-              update(
-                i18n.t(
-                  "policies:configurationPolicies.featureTabs.securityTab.blockUntrustedUsb",
-                ),
-                v,
-              )
-            }
+            onChange={(v) => update("blockUntrustedUsb", v)}
           />
         </div>
       </div>
@@ -302,14 +260,7 @@ export default function SecurityTab({
           </h3>
           <button
             type="button"
-            onClick={() =>
-              update(
-                i18n.t(
-                  "policies:configurationPolicies.featureTabs.securityTab.scheduledScans2",
-                ),
-                !settings.scheduledScans,
-              )
-            }
+            onClick={() => update("scheduledScans", !settings.scheduledScans)}
             className={`rounded-full border px-3 py-1 text-xs font-semibold ${settings.scheduledScans ? "bg-emerald-500/15 text-emerald-700" : "bg-muted text-muted-foreground"}`}
           >
             {settings.scheduledScans
@@ -328,14 +279,7 @@ export default function SecurityTab({
             </label>
             <select
               value={settings.scanMinute}
-              onChange={(e) =>
-                update(
-                  i18n.t(
-                    "policies:configurationPolicies.featureTabs.securityTab.scanMinute",
-                  ),
-                  e.target.value,
-                )
-              }
+              onChange={(e) => update("scanMinute", e.target.value)}
               className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
             >
               {minuteOptions.map((o) => (
@@ -353,14 +297,7 @@ export default function SecurityTab({
             </label>
             <select
               value={settings.scanHour}
-              onChange={(e) =>
-                update(
-                  i18n.t(
-                    "policies:configurationPolicies.featureTabs.securityTab.scanHour",
-                  ),
-                  e.target.value,
-                )
-              }
+              onChange={(e) => update("scanHour", e.target.value)}
               className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
             >
               {hourOptions.map((o) => (
@@ -378,14 +315,7 @@ export default function SecurityTab({
             </label>
             <select
               value={settings.scanDayOfMonth}
-              onChange={(e) =>
-                update(
-                  i18n.t(
-                    "policies:configurationPolicies.featureTabs.securityTab.scanDayOfMonth",
-                  ),
-                  e.target.value,
-                )
-              }
+              onChange={(e) => update("scanDayOfMonth", e.target.value)}
               className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
             >
               {dayOfMonthOptions.map((o) => (
@@ -403,14 +333,7 @@ export default function SecurityTab({
             </label>
             <select
               value={settings.scanDayOfWeek}
-              onChange={(e) =>
-                update(
-                  i18n.t(
-                    "policies:configurationPolicies.featureTabs.securityTab.scanDayOfWeek",
-                  ),
-                  e.target.value,
-                )
-              }
+              onChange={(e) => update("scanDayOfWeek", e.target.value)}
               className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
             >
               {dayOfWeekOptions.map((o) => (
@@ -440,10 +363,7 @@ export default function SecurityTab({
             value={newExclusion}
             onChange={(e) => setNewExclusion(e.target.value)}
             onKeyDown={(e) =>
-              e.key ===
-                i18n.t(
-                  "policies:configurationPolicies.featureTabs.securityTab.enter",
-                ) && (e.preventDefault(), handleAddExclusion())
+              e.key === "Enter" && (e.preventDefault(), handleAddExclusion())
             }
             placeholder={i18n.t(
               "policies:configurationPolicies.featureTabs.securityTab.addPathOrProcess",

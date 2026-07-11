@@ -655,21 +655,11 @@ export default function ComplianceTab({
                                       };
                                       const cur = rule.remediation;
                                       const hasConcreteSelection =
-                                        (cur?.type ===
-                                          i18n.t(
-                                            "policies:configurationPolicies.featureTabs.complianceTab.script",
-                                          ) &&
-                                          i18n.t(
-                                            "policies:configurationPolicies.featureTabs.complianceTab.scriptId",
-                                          ) in cur &&
+                                        (cur?.type === "script" &&
+                                          "scriptId" in cur &&
                                           cur.scriptId) ||
-                                        (cur?.type ===
-                                          i18n.t(
-                                            "policies:configurationPolicies.featureTabs.complianceTab.softwareDeploy",
-                                          ) &&
-                                          i18n.t(
-                                            "policies:configurationPolicies.featureTabs.complianceTab.catalogId",
-                                          ) in cur &&
+                                        (cur?.type === "software_deploy" &&
+                                          "catalogId" in cur &&
                                           cur.catalogId);
                                       if (!hasConcreteSelection) {
                                         patch.remediation =
@@ -708,10 +698,7 @@ export default function ComplianceTab({
                                   />
                                 </div>
 
-                                {rule.type ===
-                                  i18n.t(
-                                    "policies:configurationPolicies.featureTabs.complianceTab.requiredSoftware2",
-                                  ) && (
+                                {rule.type === "required_software" && (
                                   <div className="grid gap-2 sm:grid-cols-3">
                                     <div>
                                       <label className="text-xs font-medium text-muted-foreground">
@@ -774,10 +761,7 @@ export default function ComplianceTab({
                                   </div>
                                 )}
 
-                                {rule.type ===
-                                  i18n.t(
-                                    "policies:configurationPolicies.featureTabs.complianceTab.prohibitedSoftware2",
-                                  ) && (
+                                {rule.type === "prohibited_software" && (
                                   <div>
                                     <label className="text-xs font-medium text-muted-foreground">
                                       {i18n.t(
@@ -799,10 +783,7 @@ export default function ComplianceTab({
                                   </div>
                                 )}
 
-                                {rule.type ===
-                                  i18n.t(
-                                    "policies:configurationPolicies.featureTabs.complianceTab.diskSpaceMinimum2",
-                                  ) && (
+                                {rule.type === "disk_space_minimum" && (
                                   <div className="grid gap-2 sm:grid-cols-2">
                                     <div>
                                       <label className="text-xs font-medium text-muted-foreground">
@@ -844,10 +825,7 @@ export default function ComplianceTab({
                                   </div>
                                 )}
 
-                                {rule.type ===
-                                  i18n.t(
-                                    "policies:configurationPolicies.featureTabs.complianceTab.osVersion",
-                                  ) && (
+                                {rule.type === "os_version" && (
                                   <div className="grid gap-2 sm:grid-cols-2">
                                     <div>
                                       <label className="text-xs font-medium text-muted-foreground">
@@ -891,10 +869,7 @@ export default function ComplianceTab({
                                   </div>
                                 )}
 
-                                {rule.type ===
-                                  i18n.t(
-                                    "policies:configurationPolicies.featureTabs.complianceTab.registryCheck2",
-                                  ) && (
+                                {rule.type === "registry_check" && (
                                   <div className="grid gap-2 sm:grid-cols-3">
                                     <div>
                                       <label className="text-xs font-medium text-muted-foreground">
@@ -951,10 +926,7 @@ export default function ComplianceTab({
                                   </div>
                                 )}
 
-                                {rule.type ===
-                                  i18n.t(
-                                    "policies:configurationPolicies.featureTabs.complianceTab.configCheck",
-                                  ) && (
+                                {rule.type === "config_check" && (
                                   <div className="grid gap-2 sm:grid-cols-3">
                                     <div>
                                       <label className="text-xs font-medium text-muted-foreground">
@@ -1037,16 +1009,11 @@ export default function ComplianceTab({
                                         name={`remediation-${index}-${ri}`}
                                         checked={
                                           !rule.remediation ||
-                                          rule.remediation.type ===
-                                            i18n.t(
-                                              "policies:configurationPolicies.featureTabs.complianceTab.none",
-                                            )
+                                          rule.remediation.type === "none"
                                         }
                                         onChange={() =>
                                           updateRemediation(index, ri, {
-                                            type: i18n.t(
-                                              "policies:configurationPolicies.featureTabs.complianceTab.none",
-                                            ),
+                                            type: "none",
                                           })
                                         }
                                         className="hidden"
@@ -1064,16 +1031,11 @@ export default function ComplianceTab({
                                         type="radio"
                                         name={`remediation-${index}-${ri}`}
                                         checked={
-                                          rule.remediation?.type ===
-                                          i18n.t(
-                                            "policies:configurationPolicies.featureTabs.complianceTab.script",
-                                          )
+                                          rule.remediation?.type === "script"
                                         }
                                         onChange={() =>
                                           updateRemediation(index, ri, {
-                                            type: i18n.t(
-                                              "policies:configurationPolicies.featureTabs.complianceTab.script",
-                                            ),
+                                            type: "script",
                                             scriptId: "",
                                           })
                                         }
@@ -1097,15 +1059,11 @@ export default function ComplianceTab({
                                         name={`remediation-${index}-${ri}`}
                                         checked={
                                           rule.remediation?.type ===
-                                          i18n.t(
-                                            "policies:configurationPolicies.featureTabs.complianceTab.softwareDeploy",
-                                          )
+                                          "software_deploy"
                                         }
                                         onChange={() =>
                                           updateRemediation(index, ri, {
-                                            type: i18n.t(
-                                              "policies:configurationPolicies.featureTabs.complianceTab.softwareDeploy",
-                                            ),
+                                            type: "software_deploy",
                                             catalogId: "",
                                           })
                                         }
@@ -1119,10 +1077,7 @@ export default function ComplianceTab({
                                   </div>
 
                                   {/* Script picker display */}
-                                  {rule.remediation?.type ===
-                                    i18n.t(
-                                      "policies:configurationPolicies.featureTabs.complianceTab.script",
-                                    ) && (
+                                  {rule.remediation?.type === "script" && (
                                     <div>
                                       {rule.remediation.scriptName ? (
                                         <div className="flex items-center gap-2">
@@ -1148,9 +1103,7 @@ export default function ComplianceTab({
                                             type="button"
                                             onClick={() =>
                                               updateRemediation(index, ri, {
-                                                type: i18n.t(
-                                                  "policies:configurationPolicies.featureTabs.complianceTab.script",
-                                                ),
+                                                type: "script",
                                                 scriptId: "",
                                               })
                                             }
@@ -1180,9 +1133,7 @@ export default function ComplianceTab({
 
                                   {/* Software picker display */}
                                   {rule.remediation?.type ===
-                                    i18n.t(
-                                      "policies:configurationPolicies.featureTabs.complianceTab.softwareDeploy",
-                                    ) && (
+                                    "software_deploy" && (
                                     <div>
                                       {rule.remediation.catalogName ? (
                                         <div className="flex items-center gap-2">
@@ -1208,9 +1159,7 @@ export default function ComplianceTab({
                                             type="button"
                                             onClick={() =>
                                               updateRemediation(index, ri, {
-                                                type: i18n.t(
-                                                  "policies:configurationPolicies.featureTabs.complianceTab.softwareDeploy",
-                                                ),
+                                                type: "software_deploy",
                                                 catalogId: "",
                                               })
                                             }

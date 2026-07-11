@@ -453,12 +453,12 @@ export default function AddPackageModal({
                 {(
                   [
                     [
-                      i18n.t("policies:software.addPackageModal.url"),
+                      "url",
                       i18n.t("policies:software.addPackageModal.downloadURL"),
                       Link2,
                     ],
                     [
-                      i18n.t("policies:software.addPackageModal.file"),
+                      "file",
                       i18n.t("policies:software.addPackageModal.uploadFile"),
                       HardDriveUpload,
                     ],
@@ -498,9 +498,7 @@ export default function AddPackageModal({
                     {i18n.t(
                       "policies:software.addPackageModal.useVariablesLike",
                     )}
-                    <code className="font-mono">
-                      {'{{org.name}}'}
-                    </code>
+                    <code className="font-mono">{"{{org.name}}"}</code>
                     {i18n.t(
                       "policies:software.addPackageModal.resolvedPerOrganizationAtDeployTime",
                     )}

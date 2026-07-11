@@ -331,20 +331,12 @@ export default function SoftwareCatalog() {
               role="button"
               tabIndex={0}
               onClick={() => {
-                setDetailTab(
-                  i18n.t("policies:software.softwareCatalog.details2"),
-                );
+                setDetailTab("details");
                 setSelectedSoftware(item);
               }}
               onKeyDown={(event) => {
-                if (
-                  event.key ===
-                    i18n.t("policies:software.softwareCatalog.enter") ||
-                  event.key === " "
-                ) {
-                  setDetailTab(
-                    i18n.t("policies:software.softwareCatalog.details2"),
-                  );
+                if (event.key === "Enter" || event.key === " ") {
+                  setDetailTab("details");
                   setSelectedSoftware(item);
                 }
               }}
@@ -514,11 +506,7 @@ export default function SoftwareCatalog() {
             <div className="mt-4 flex items-center gap-1">
               <button
                 type="button"
-                onClick={() =>
-                  setDetailTab(
-                    i18n.t("policies:software.softwareCatalog.details2"),
-                  )
-                }
+                onClick={() => setDetailTab("details")}
                 className={cn(
                   "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors",
                   detailTab === "details"
@@ -530,11 +518,7 @@ export default function SoftwareCatalog() {
               </button>
               <button
                 type="button"
-                onClick={() =>
-                  setDetailTab(
-                    i18n.t("policies:software.softwareCatalog.versions2"),
-                  )
-                }
+                onClick={() => setDetailTab("versions")}
                 className={cn(
                   "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors",
                   detailTab === "versions"

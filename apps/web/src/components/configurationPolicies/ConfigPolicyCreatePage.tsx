@@ -113,9 +113,7 @@ export default function ConfigPolicyCreatePage() {
           label: i18n.t(
             "policies:configurationPolicies.configPolicyCreatePage.configurationPolicies",
           ),
-          href: i18n.t(
-            "policies:configurationPolicies.configPolicyCreatePage.configurationPolicies2",
-          ),
+          href: "/configuration-policies",
         },
         {
           label: i18n.t(
@@ -146,13 +144,7 @@ export default function ConfigPolicyCreatePage() {
         <div className="grid gap-4 sm:grid-cols-2">
           <button
             type="button"
-            onClick={() =>
-              setMode(
-                i18n.t(
-                  "policies:configurationPolicies.configPolicyCreatePage.new",
-                ),
-              )
-            }
+            onClick={() => setMode("new")}
             className="group flex flex-col items-center gap-3 rounded-lg border-2 border-dashed border-muted p-8 text-center transition hover:border-primary/40 hover:bg-primary/5"
           >
             <div className="flex h-14 w-14 items-center justify-center rounded-full border bg-muted/50 transition group-hover:border-primary/40 group-hover:bg-primary/10">
@@ -173,13 +165,7 @@ export default function ConfigPolicyCreatePage() {
           </button>
           <button
             type="button"
-            onClick={() =>
-              setMode(
-                i18n.t(
-                  "policies:configurationPolicies.configPolicyCreatePage.linked",
-                ),
-              )
-            }
+            onClick={() => setMode("linked")}
             className="group flex flex-col items-center gap-3 rounded-lg border-2 border-dashed border-muted p-8 text-center transition hover:border-primary/40 hover:bg-primary/5"
           >
             <div className="flex h-14 w-14 items-center justify-center rounded-full border bg-muted/50 transition group-hover:border-primary/40 group-hover:bg-primary/10">
@@ -257,9 +243,7 @@ export default function ConfigPolicyCreatePage() {
             </p>
             <div className="mt-4">
               <PolicyLinkSelector
-                fetchUrl={i18n.t(
-                  "policies:configurationPolicies.configPolicyCreatePage.configurationPolicies2",
-                )}
+                fetchUrl="/configuration-policies"
                 selectedId={linkedPolicyId}
                 onSelect={setLinkedPolicyId}
               />
@@ -337,13 +321,7 @@ export default function ConfigPolicyCreatePage() {
                     name="ownerScope"
                     value="partner"
                     checked={ownerScope === "partner"}
-                    onChange={() =>
-                      setOwnerScope(
-                        i18n.t(
-                          "policies:configurationPolicies.configPolicyCreatePage.partner",
-                        ),
-                      )
-                    }
+                    onChange={() => setOwnerScope("partner")}
                     data-testid="policy-owner-partner"
                   />
                   {i18n.t(
@@ -361,13 +339,7 @@ export default function ConfigPolicyCreatePage() {
                     name="ownerScope"
                     value="organization"
                     checked={ownerScope === "organization"}
-                    onChange={() =>
-                      setOwnerScope(
-                        i18n.t(
-                          "policies:configurationPolicies.configPolicyCreatePage.organization",
-                        ),
-                      )
-                    }
+                    onChange={() => setOwnerScope("organization")}
                     data-testid="policy-owner-org"
                   />
                   {i18n.t(

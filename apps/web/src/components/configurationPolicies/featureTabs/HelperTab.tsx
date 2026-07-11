@@ -117,14 +117,7 @@ export default function HelperTab({
           </div>
           <button
             type="button"
-            onClick={() =>
-              update(
-                i18n.t(
-                  "policies:configurationPolicies.featureTabs.helperTab.enabled",
-                ),
-                !settings.enabled,
-              )
-            }
+            onClick={() => update("enabled", !settings.enabled)}
             className={`relative inline-flex h-6 w-11 items-center rounded-full border transition ${settings.enabled ? "bg-emerald-500/80" : "bg-muted"}`}
           >
             <span
@@ -169,14 +162,7 @@ export default function HelperTab({
                 type="checkbox"
                 checked={settings.showOpenPortal}
                 disabled={!settings.enabled}
-                onChange={(e) =>
-                  update(
-                    i18n.t(
-                      "policies:configurationPolicies.featureTabs.helperTab.showOpenPortal",
-                    ),
-                    e.target.checked,
-                  )
-                }
+                onChange={(e) => update("showOpenPortal", e.target.checked)}
                 className="h-4 w-4 rounded border-border"
               />
               <div>
@@ -199,14 +185,7 @@ export default function HelperTab({
                 type="checkbox"
                 checked={settings.showDeviceInfo}
                 disabled={!settings.enabled}
-                onChange={(e) =>
-                  update(
-                    i18n.t(
-                      "policies:configurationPolicies.featureTabs.helperTab.showDeviceInfo",
-                    ),
-                    e.target.checked,
-                  )
-                }
+                onChange={(e) => update("showDeviceInfo", e.target.checked)}
                 className="h-4 w-4 rounded border-border"
               />
               <div>
@@ -230,12 +209,7 @@ export default function HelperTab({
                 checked={settings.showRequestSupport}
                 disabled={!settings.enabled}
                 onChange={(e) =>
-                  update(
-                    i18n.t(
-                      "policies:configurationPolicies.featureTabs.helperTab.showRequestSupport",
-                    ),
-                    e.target.checked,
-                  )
+                  update("showRequestSupport", e.target.checked)
                 }
                 className="h-4 w-4 rounded border-border"
               />
@@ -264,14 +238,7 @@ export default function HelperTab({
                 type="text"
                 value={settings.portalUrl ?? ""}
                 disabled={!settings.enabled}
-                onChange={(e) =>
-                  update(
-                    i18n.t(
-                      "policies:configurationPolicies.featureTabs.helperTab.portalUrl",
-                    ),
-                    e.target.value,
-                  )
-                }
+                onChange={(e) => update("portalUrl", e.target.value)}
                 placeholder={i18n.t(
                   "policies:configurationPolicies.featureTabs.helperTab.httpsPortalExampleComDefaultsToServer",
                 )}
