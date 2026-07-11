@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import type { TicketFormField } from '@breeze/shared';
 
 interface Props {
@@ -13,6 +14,7 @@ interface Props {
 const inputCls = 'w-full rounded-md border bg-background px-2.5 py-1.5 text-sm';
 
 export default function TicketFormFields({ fields, values, errors, onChange }: Props) {
+  const { t } = useTranslation('tickets');
   return (
     <div className="space-y-3">
       {fields.map((f) => {
@@ -70,7 +72,7 @@ export default function TicketFormFields({ fields, values, errors, onChange }: P
                     value={(values[f.key] as string) ?? ''}
                     onChange={(e) => onChange(f.key, e.target.value)}
                   >
-                    <option value="">Select…</option>
+                    <option value="">{t('ticketFormFields.selectPlaceholder')}</option>
                     {(f.options ?? []).map((o) => (
                       <option key={o} value={o}>
                         {o}

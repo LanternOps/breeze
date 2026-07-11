@@ -263,7 +263,7 @@ export default function ThemingSettings({ preferences, onSaved }: ThemingSetting
         </fieldset>
 
         <fieldset className="space-y-2">
-          <legend className="text-sm font-medium">
+          <legend className="text-sm font-medium" data-testid="theming-language-legend">
             {t('language.title', { defaultValue: 'Language' })}
           </legend>
           <p className="text-xs text-muted-foreground">
@@ -276,6 +276,7 @@ export default function ThemingSettings({ preferences, onSaved }: ThemingSetting
               <button
                 key={value}
                 type="button"
+                data-testid={`locale-option-${value}`}
                 onClick={() => void handleAppearanceChange({ locale: value })}
                 aria-pressed={localePreference === value}
                 disabled={isSavingAppearance}
@@ -297,12 +298,18 @@ export default function ThemingSettings({ preferences, onSaved }: ThemingSetting
       </div>
 
       {appearanceSuccess && (
-        <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-600">
+        <div
+          className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-600"
+          data-testid="theming-appearance-success"
+        >
           {appearanceSuccess}
         </div>
       )}
       {appearanceError && (
-        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+        <div
+          className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+          data-testid="theming-appearance-error"
+        >
           {appearanceError}
         </div>
       )}

@@ -260,7 +260,7 @@ export default function CreateTicketPage() {
       )}
       {forms.length > 0 && (
         <div>
-          <label className="mb-1 block text-sm font-medium" htmlFor="ct-form">Start from a form <span className="text-muted-foreground">(optional)</span></label>
+          <label className="mb-1 block text-sm font-medium" htmlFor="ct-form">{t('createTicketPage.startFromForm')}</label>
           <select
             id="ct-form"
             data-testid="create-ticket-form-picker"
@@ -284,7 +284,7 @@ export default function CreateTicketPage() {
               }
             }}
           >
-            <option value="">Blank ticket</option>
+            <option value="">{t('createTicketPage.blankTicketOption')}</option>
             {forms.map((f) => (<option key={f.id} value={f.id}>{f.name}</option>))}
           </select>
           {selectedForm?.description && <p className="mt-1 text-xs text-muted-foreground">{selectedForm.description}</p>}
