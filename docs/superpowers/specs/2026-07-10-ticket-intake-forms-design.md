@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-10
 **Source:** Discord feature request (CillianTheIrishWolf, 6/13/26) — "custom forms so users can click a button, get brought to that form, fill it out, so uniform tickets can be created … ability to assign one form or form category to multiple tenants would also be wonderful."
-**Status:** Proposed
+**Status:** Implemented (Phase 1) — portal + AI phases pending
 
 ## 1. Problem & positioning
 
@@ -28,7 +28,7 @@ org_id            uuid null → organizations(id)
                   CHECK ticket_forms_one_owner_chk ((org_id IS NULL) <> (partner_id IS NULL))
 name              varchar(200) not null
 description       text null                 -- shown under the name in pickers
-category_id       uuid null                 -- composite FK (category_id, effective partner) → ticket_categories; groups picker + stamps ticket
+category_id       uuid null                 -- plain FK → ticket_categories; category/partner match enforced app-side via assertCategoryInPartner; groups picker + stamps ticket
 fields            jsonb not null default '[]'   -- ordered array of field defs (see 2.3)
 title_template    varchar(300) null         -- "{{summary}} — new user request"; fallback = form name
 description_intro text null                 -- optional preamble above rendered responses
@@ -58,7 +58,7 @@ Category FK note: `ticket_categories.partner_id` is NOT NULL, so an org-owned fo
 
 ### 2.2 Response storage — no new table
 
-On submission, `tickets.custom_fields` (exists, currently written by nothing) gets:
+On submission, `tickets.custom_fields` (now written by `createTicket` when a form is applied) gets:
 
 ```json
 { "intakeForm": { "formId": "…", "formName": "…", "formVersion": 3,
@@ -85,7 +85,7 @@ type TicketFormField = {
 Limits: ≤ 30 fields per form. Deliberately **no** `device` field type in v1 — the existing standalone device selector on `CreateTicketPage` stays as-is, and portal users have no device visibility; don't entangle the two.
 
 Shared exports (used by API, web, portal — one source of truth):
-- `ticketFormFieldSchema`, `createTicketFormSchema` (includes `ownerScope: z.enum(['organization','partner'])`), `updateTicketFormSchema = create.partial().omit({ ownerScope: true })`
+- `ticketFormFieldSchema`; a default-free base object schema; `createTicketFormSchema = base.extend({ …create defaults, ownerScope, orgId })` (includes `ownerScope: z.enum(['organization','partner'])`); `updateTicketFormSchema = base.partial()`. The base carries NO `.default()` and NO `ownerScope`/`orgId`, so ownership is immutable by construction and a partial update never materializes create-time defaults (a `.partial()` of a schema with `.default()` keys re-applies those defaults in this zod version).
 - `buildResponseValidator(fields)` → a Zod object schema enforcing required/type/options for a submission — the SAME validator runs client-side (inline errors) and server-side (authoritative).
 - `renderFormResponses(form, responses)` → deterministic markdown block appended to the ticket description:
 
@@ -103,7 +103,7 @@ Shared exports (used by API, web, portal — one source of truth):
 | Route | Notes |
 |---|---|
 | `GET /ticket-forms` | List for management UI. Dual-axis read: `orgCondition OR (org_id IS NULL AND partner_id = auth.partnerId)` — partner branch gated on `auth.scope === 'partner'` (org tokens never pass `breeze_has_partner_access`; app layer must not claim parity with RLS). |
-| `GET /ticket-forms/available?orgId=` | Resolved picker list for ticket creation: active forms visible to that org (org-owned ∪ partner-owned of the org's partner), grouped by category. Used by web create page. |
+| `GET /ticket-forms/available?orgId=` | Resolved picker list for ticket creation: active forms visible to that org (org-owned ∪ partner-owned of the org's partner), returned as a flat list ordered by `sort_order` then `name`. Grouping is a client concern; the category-grouped picker is deferred to the Phase 2 portal. Used by web create page. |
 | `POST /ticket-forms` | Create. `ownerScope: 'partner'` requires `canManagePartnerWidePolicies(auth)` → 403 `PARTNER_WIDE_WRITE_DENIED_MESSAGE` otherwise. |
 | `PUT /ticket-forms/:id` | Update; ownerScope immutable; bumps `version` when `fields`/`title_template` change. Partner-owned rows gated on `canManagePartnerWidePolicies`. |
 | `DELETE /ticket-forms/:id` | Hard delete (forms are config; the rendered description + jsonb snapshot on existing tickets survives deletion by design). Same partner-wide gate. |

@@ -1,9 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-const { authRef, dbRowsMock, insertReturningMock, updateReturningMock, updateSetMock, deleteWhereMock, listForOrgMock, writeRouteAuditMock, selectWhereArgs } = vi.hoisted(() => ({
+const { authRef, dbRowsMock, insertReturningMock, insertValuesMock, updateReturningMock, updateSetMock, deleteWhereMock, listForOrgMock, writeRouteAuditMock, selectWhereArgs } = vi.hoisted(() => ({
   /** Every db.select()...where(...) arg, so tests can assert fetch conditions. */
   selectWhereArgs: [] as unknown[],
+  /** Captures db.insert().values(arg) so tests can assert the persisted owner axis. */
+  insertValuesMock: vi.fn(),
   authRef: {
     current: {
       scope: 'partner' as string,
@@ -63,7 +65,7 @@ vi.mock('../../db', () => ({
         })
       }))
     })),
-    insert: vi.fn(() => ({ values: vi.fn(() => ({ returning: vi.fn(() => insertReturningMock()) })) })),
+    insert: vi.fn(() => ({ values: vi.fn((v: unknown) => { insertValuesMock(v); return { returning: vi.fn(() => insertReturningMock()) }; }) })),
     update: vi.fn(() => ({ set: vi.fn((setArg: unknown) => { updateSetMock(setArg); return { where: vi.fn(() => ({ returning: vi.fn(() => updateReturningMock()) })) }; }) })),
     delete: vi.fn(() => ({ where: vi.fn((...a) => { deleteWhereMock(...a); return Promise.resolve(); } ) }))
   }
@@ -72,6 +74,7 @@ vi.mock('../../db', () => ({
 import { sql, type SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { ticketFormRoutes } from './forms';
+import { assertCategoryInPartner, TicketServiceError } from '../../services/ticketService';
 
 /** Render a captured Drizzle condition to a SQL string for shape assertions. */
 function renderSql(condition: unknown): string {
@@ -106,6 +109,8 @@ describe('POST /ticket-forms', () => {
     });
     expect(res.status).toBe(201);
     expect(writeRouteAuditMock).toHaveBeenCalled();
+    // Persisted owner axis: org-owned row carries the org id and a NULL partner.
+    expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG_ID, partnerId: null }));
   });
 
   it('creates a partner-wide form with org_id NULL and token-derived partner', async () => {
@@ -116,6 +121,8 @@ describe('POST /ticket-forms', () => {
       body: JSON.stringify({ ...validBody, ownerScope: 'partner' })
     });
     expect(res.status).toBe(201);
+    // Partner-wide row: NULL org, partner derived from the caller's OWN token.
+    expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({ orgId: null, partnerId: 'p-1' }));
   });
 
   it('403s partner-wide create without full partner org access', async () => {
@@ -126,6 +133,78 @@ describe('POST /ticket-forms', () => {
       body: JSON.stringify({ ...validBody, ownerScope: 'partner' })
     });
     expect(res.status).toBe(403);
+    expect(insertValuesMock).not.toHaveBeenCalled();
+  });
+
+  it('403s ownerScope=partner when the token carries no partnerId', async () => {
+    authRef.current = { ...authRef.current, partnerId: null };
+    const res = await makeApp().request('/ticket-forms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...validBody, ownerScope: 'partner' })
+    });
+    expect(res.status).toBe(403);
+    expect(insertValuesMock).not.toHaveBeenCalled();
+  });
+
+  it('400s a partner token that supplies no orgId for an org-owned form', async () => {
+    // Partner scope, org ownership, but no orgId to attach the form to.
+    const res = await makeApp().request('/ticket-forms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...validBody, ownerScope: 'organization' })
+    });
+    expect(res.status).toBe(400);
+    expect(insertValuesMock).not.toHaveBeenCalled();
+  });
+
+  it('400s a partner token whose requested orgId is inaccessible', async () => {
+    authRef.current = { ...authRef.current, canAccessOrg: () => false };
+    const res = await makeApp().request('/ticket-forms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...validBody, ownerScope: 'organization', orgId: ORG_ID })
+    });
+    expect(res.status).toBe(400);
+    expect(insertValuesMock).not.toHaveBeenCalled();
+  });
+
+  it('403s an org-scoped token whose requested orgId does not match its own org', async () => {
+    const OTHER_ORG = '11112222-3333-4444-8555-666677778888';
+    authRef.current = { ...authRef.current, scope: 'organization', partnerId: null, orgId: ORG_ID, canAccessOrg: () => true };
+    const res = await makeApp().request('/ticket-forms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...validBody, ownerScope: 'organization', orgId: OTHER_ORG })
+    });
+    expect(res.status).toBe(403);
+    expect(insertValuesMock).not.toHaveBeenCalled();
+  });
+
+  it('org-scoped token with no orgId defaults the form to its own org', async () => {
+    authRef.current = { ...authRef.current, scope: 'organization', partnerId: null, orgId: ORG_ID, canAccessOrg: () => true };
+    insertReturningMock.mockResolvedValue([{ id: 'f-9', orgId: ORG_ID, partnerId: null, ...validBody }]);
+    const res = await makeApp().request('/ticket-forms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...validBody, ownerScope: 'organization' })
+    });
+    expect(res.status).toBe(201);
+    expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG_ID, partnerId: null }));
+  });
+
+  it('400s and inserts nothing when the category guard rejects the category', async () => {
+    const CAT_ID = '22223333-4444-4555-8666-777788889999';
+    // resolveEffectivePartnerId does an org→partner lookup for an org-owned form.
+    dbRowsMock.mockResolvedValue([{ partnerId: 'p-1' }]);
+    vi.mocked(assertCategoryInPartner).mockRejectedValueOnce(new TicketServiceError('Category must belong to the same partner as the form', 400));
+    const res = await makeApp().request('/ticket-forms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...validBody, ownerScope: 'organization', orgId: ORG_ID, categoryId: CAT_ID })
+    });
+    expect(res.status).toBe(400);
+    expect(insertValuesMock).not.toHaveBeenCalled();
   });
 
   it('400s invalid field definitions', async () => {
@@ -139,10 +218,13 @@ describe('POST /ticket-forms', () => {
 });
 
 describe('GET /ticket-forms/available', () => {
-  it('403s when the caller cannot access the org', async () => {
+  it('403s when the caller cannot access the org, before any db read', async () => {
     authRef.current = { ...authRef.current, canAccessOrg: () => false };
     const res = await makeApp().request(`/ticket-forms/available?orgId=${ORG_ID}`);
     expect(res.status).toBe(403);
+    // Access check runs BEFORE any fetch — no org lookup / form read may leak.
+    expect(selectWhereArgs.length).toBe(0);
+    expect(listForOrgMock).not.toHaveBeenCalled();
   });
 
   it('returns resolved forms from the system-context service', async () => {

@@ -25,9 +25,12 @@ const scopes = requireScope('organization', 'partner', 'system');
 const availableQuerySchema = z.object({ orgId: z.string().guid() });
 const idParamSchema = z.object({ id: z.string().guid() });
 
-// Same local mapping used by ticketPartsRoutes/ticketsRoutes: TicketServiceError
-// carries its own HTTP status (assertCategoryInPartner throws 400/404/500
-// depending on the failure), so this must not hardcode a single status code.
+// TicketServiceError carries its own HTTP status (assertCategoryInPartner throws
+// 400/404/500 depending on the failure), so this must not hardcode a single
+// status code. ticketsRoutes exports an identical helper, but importing it here
+// would pull in the whole ticketsRoutes module for one tiny function — so we
+// duplicate the mapping locally instead. (ticketPartsRoutes has its own copy too,
+// mapping a different error type, TimeEntryServiceError.)
 function handleServiceError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
   if (err instanceof TicketServiceError) {
     return c.json({ error: err.message }, err.status);
@@ -220,9 +223,10 @@ ticketFormRoutes.put(
       }
     }
 
-    // Version only bumps for changes a consumer of an already-rendered ticket
-    // must re-check against (field shape, title template) — cosmetic edits
-    // like isActive/sortOrder don't invalidate prior submissions.
+    // version identifies which field schema stored responses were validated
+    // against and which template composed the subject, so it only bumps when
+    // fields/titleTemplate change; presentation-only fields (isActive/sortOrder)
+    // don't bump.
     const bumpVersion = payload.fields !== undefined || payload.titleTemplate !== undefined;
     const [updated] = await db
       .update(ticketForms)

@@ -8,8 +8,8 @@ interface Props {
 }
 
 // Shared, controlled, stateless renderer for a ticket form's fields. Used by BOTH
-// the settings builder's live preview AND (Task 8) the create-ticket page, so end
-// users and admins always see the exact same field UI — the preview cannot drift.
+// the settings builder's live preview AND the create-ticket page, so end users
+// and admins always see the exact same field UI — the preview cannot drift.
 const inputCls = 'w-full rounded-md border bg-background px-2.5 py-1.5 text-sm';
 
 export default function TicketFormFields({ fields, values, errors, onChange }: Props) {

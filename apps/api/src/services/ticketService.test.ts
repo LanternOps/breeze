@@ -565,6 +565,29 @@ describe('createTicket — intake form (formId)', () => {
     expect(insertPayload).toMatchObject({ subject: 'Explicit subject', priority: 'low', categoryId: 'cat-explicit' });
   });
 
+  it('joins an explicit description and the form block with a blank line, dropping neither', async () => {
+    dbMocks.selectResult.mockResolvedValue([{ id: 'o-1', partnerId: 'p-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-form-3', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
+    formMocks.getTicketFormForOrg.mockResolvedValue({ id: 'form-1', name: 'Intake', version: 1 });
+    formMocks.applyIntakeForm.mockReturnValue({
+      responses: {},
+      subjectFromForm: 'Form subject',
+      descriptionBlock: 'form block',
+      categoryId: null,
+      defaultPriority: null,
+      defaultTags: [],
+      intakeSnapshot: { intakeForm: { formId: 'form-1', formName: 'Intake', formVersion: 1, responses: {} } }
+    });
+
+    await createTicket(
+      { orgId: 'o-1', source: 'manual', formId: 'form-1', formResponses: {}, description: 'User note' },
+      actor
+    );
+
+    const insertPayload = valuesMock.mock.calls[0]![0];
+    expect(insertPayload.description).toBe('User note\n\nform block');
+  });
+
   it('maps a TicketFormError (e.g. inactive/wrong-org form) to a TicketServiceError and writes nothing', async () => {
     dbMocks.selectResult.mockResolvedValue([{ id: 'o-1', partnerId: 'p-1' }]);
     const { TicketFormError } = await vi.importActual<typeof import('./ticketFormService')>('./ticketFormService');

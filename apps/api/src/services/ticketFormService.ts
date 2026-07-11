@@ -36,7 +36,7 @@ interface OrgRef {
  * partner-wide rows. Partner-owned rows are INVISIBLE to org-scoped RLS
  * contexts (heartbeat/#1105 pattern), so this reads under a system context
  * and filters explicitly. Callers MUST have already authorized the org
- * (route: auth.canAccessOrg; service: the ticket's resolved org).
+ * (route: auth.canAccessOrg).
  */
 export async function listTicketFormsForOrg(org: OrgRef, opts?: { portalOnly?: boolean }): Promise<TicketFormRow[]> {
   return runOutsideDbContext(() =>
@@ -56,7 +56,12 @@ export async function listTicketFormsForOrg(org: OrgRef, opts?: { portalOnly?: b
   );
 }
 
-/** Load a form and verify it is usable for the given org (tenant + active). */
+/**
+ * Load a form and verify it is usable for the given org (tenant + active).
+ * The caller MUST have already authorized the org (createTicket resolves it
+ * from the ticket's target org before calling here) — this reads under a system
+ * context so it does not re-check tenancy at the RLS layer.
+ */
 export async function getTicketFormForOrg(formId: string, org: OrgRef): Promise<TicketFormRow> {
   const rows = await runOutsideDbContext(() =>
     withSystemDbAccessContext(() => db.select().from(ticketForms).where(eq(ticketForms.id, formId)).limit(1))

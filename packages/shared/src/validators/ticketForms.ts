@@ -102,7 +102,7 @@ export interface TicketFormLike {
 
 /**
  * Strict runtime validator for a submission against a form's field list.
- * Shared by web (inline errors), API (authoritative), and later the portal.
+ * Shared by web (inline errors), API (authoritative), and the portal (Phase 2).
  * Required checkbox = consent-style: must be exactly true.
  */
 export function buildResponseValidator(fields: TicketFormField[]) {
