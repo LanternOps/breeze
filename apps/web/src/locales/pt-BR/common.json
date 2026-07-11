@@ -870,7 +870,7 @@
           "username": "Usuário ou e-mail"
         },
         "help": {
-          "defaultQueue": "Opcional. Usado ao criar tickets a partir de alertas do Breeze."
+          "defaultQueue": "Opcional. Usado ao criar chamados a partir de alertas do Breeze."
         },
         "keepExisting": "(deixe em branco para manter o existente)",
         "placeholders": {
@@ -898,12 +898,12 @@
           "syncSettings": "Configurações de sincronização"
         },
         "sync": {
-          "autoClose": "Fechar tickets PSA automaticamente",
-          "autoCloseHelp": "Fechar tickets vinculados quando alertas do Breeze forem resolvidos.",
+          "autoClose": "Fechar chamados PSA automaticamente",
+          "autoCloseHelp": "Fechar chamados vinculados quando alertas do Breeze forem resolvidos.",
           "enable": "Ativar sincronização",
-          "enableHelp": "Manter tickets e vínculos de alertas atualizados em uma programação.",
+          "enableHelp": "Manter chamados e vínculos de alertas atualizados em uma programação.",
           "notes": "Sincronizar notas de alerta",
-          "notesHelp": "Enviar comentários e atualizações do Breeze para a linha do tempo do ticket PSA."
+          "notesHelp": "Enviar comentários e atualizações do Breeze para a linha do tempo do chamado PSA."
         },
         "syncDirections": {
           "bidirectional": "Bidirecional",
@@ -930,7 +930,7 @@
         },
         "connectionCount": "{{filtered}} de {{total}} conexões",
         "empty": {
-          "noConnections": "Conecte um provedor PSA para começar a sincronizar tickets.",
+          "noConnections": "Conecte um provedor PSA para começar a sincronizar chamados.",
           "noMatches": "Nenhuma conexão corresponde à sua pesquisa ou filtros.",
           "title": "Nenhuma conexão PSA configurada"
         },
@@ -960,7 +960,7 @@
           "tryAgain": "Tentar novamente"
         },
         "delete": {
-          "activeWarning": "Esta conexão está ativa. A sincronização de tickets será interrompida imediatamente.",
+          "activeWarning": "Esta conexão está ativa. A sincronização de chamados será interrompida imediatamente.",
           "confirm": "Tem certeza de que deseja excluir {{name}}?",
           "irreversible": "Esta ação não pode ser desfeita.",
           "title": "Excluir conexão PSA",
@@ -982,7 +982,7 @@
           "editDescription": "Atualize os detalhes da conexão PSA e as preferências de sincronização.",
           "editTitle": "Editar conexão PSA"
         },
-        "subtitle": "Conecte seu PSA para sincronizar tickets e vincular alertas.",
+        "subtitle": "Conecte seu PSA para sincronizar chamados e vincular alertas.",
         "test": {
           "failedMessage": "Não foi possível conectar ao provedor PSA.",
           "failedTitle": "Conexão falhou",
@@ -996,19 +996,19 @@
       },
       "PsaTicketList": {
         "empty": {
-          "noMatches": "Nenhum ticket corresponde à sua pesquisa ou filtros.",
-          "noTickets": "Sincronize sua primeira conexão PSA para ver tickets aqui.",
-          "title": "Nenhum ticket PSA sincronizado"
+          "noMatches": "Nenhum chamado corresponde à sua pesquisa ou filtros.",
+          "noTickets": "Sincronize sua primeira conexão PSA para ver chamados aqui.",
+          "title": "Nenhum chamado PSA sincronizado"
         },
         "filters": {
           "allStatuses": "Todos os status"
         },
         "headers": {
           "linkedAlert": "Alerta vinculado",
-          "ticket": "Ticket",
+          "ticket": "Chamado",
           "updated": "Atualizado"
         },
-        "searchPlaceholder": "Pesquisar tickets",
+        "searchPlaceholder": "Pesquisar chamados",
         "status": {
           "closed": "Fechado",
           "inProgress": "Em andamento",
@@ -1016,8 +1016,8 @@
           "resolved": "Resolvido",
           "waiting": "Aguardando"
         },
-        "ticketCount": "{{filtered}} de {{total}} tickets",
-        "title": "Tickets sincronizados",
+        "ticketCount": "{{filtered}} de {{total}} chamados",
+        "title": "Chamados sincronizados",
         "unlinked": "Não vinculado"
       }
     },
@@ -1079,7 +1079,7 @@
             "label": "Script concluído"
           },
           "ticketCreated": {
-            "description": "Acionado quando um ticket é criado.",
+            "description": "Acionado quando um chamado é criado.",
             "label": "Ticket criado"
           }
         },
@@ -1398,7 +1398,7 @@
         "errors": {
           "stopFailed": "Falha ao parar o cronômetro."
         },
-        "ticketFallback": "ticket",
+        "ticketFallback": "chamado",
         "stopTimer": "Parar cronômetro",
         "descriptionPlaceholder": "Em que você trabalhou?",
         "billable": "Faturável",
