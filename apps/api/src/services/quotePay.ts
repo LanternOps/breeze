@@ -2,6 +2,7 @@ import { eq } from 'drizzle-orm';
 import { db } from '../db';
 import { quotes } from '../db/schema/quotes';
 import { QuoteServiceError } from './quoteTypes';
+import { assertQuoteAccess } from './quoteService';
 import { createInvoicePayLink } from './invoiceCheckout';
 import type { InvoiceActor } from './invoiceTypes';
 
@@ -23,9 +24,15 @@ import type { InvoiceActor } from './invoiceTypes';
  */
 export async function createQuotePayLink(quoteId: string, actor: InvoiceActor): Promise<{ url: string }> {
   const [q] = await db
-    .select({ status: quotes.status, convertedInvoiceId: quotes.convertedInvoiceId })
+    .select({ status: quotes.status, convertedInvoiceId: quotes.convertedInvoiceId, orgId: quotes.orgId, siteId: quotes.siteId })
     .from(quotes).where(eq(quotes.id, quoteId)).limit(1);
   if (!q) throw new QuoteServiceError('Quote not found', 404, 'QUOTE_NOT_FOUND');
+  // Enforce org + site on the QUOTE itself. createInvoicePayLink enforces org on the
+  // converted invoice downstream, but the site axis was previously bypassable here —
+  // a site-restricted caller could mint a pay link for an out-of-site quote. The
+  // InvoiceActor is structurally a QuoteActor (same fields), so this reuses the one
+  // canonical quote guard.
+  assertQuoteAccess(actor, q);
   if (q.status !== 'converted' || !q.convertedInvoiceId) {
     throw new QuoteServiceError('Quote must be accepted before it can be paid', 409, 'NOT_CONVERTED');
   }

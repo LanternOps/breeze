@@ -31,7 +31,10 @@ const blockParam = z.object({ id: z.string().guid(), blockId: z.string().guid() 
 
 export function quoteActorFrom(c: { get: (k: string) => unknown }): QuoteActor {
   const auth = c.get('auth') as AuthContext;
-  return { userId: auth.user.id, partnerId: auth.partnerId ?? null, accessibleOrgIds: auth.accessibleOrgIds };
+  // These routes require partner/system scope, where allowedSiteIds is undefined
+  // (unrestricted) — threading it is a no-op today but keeps the actor honest if an
+  // org/site-scoped token is ever admitted here.
+  return { userId: auth.user.id, partnerId: auth.partnerId ?? null, accessibleOrgIds: auth.accessibleOrgIds, allowedSiteIds: auth.allowedSiteIds };
 }
 export function handleServiceError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
   if (err instanceof QuoteServiceError) return c.json({ error: err.message, code: err.code }, err.status);

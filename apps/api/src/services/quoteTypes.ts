@@ -10,11 +10,22 @@ export interface QuoteActor {
   userId: string | null;
   partnerId: string | null;
   accessibleOrgIds: string[] | null;
+  /**
+   * Site-axis allowlist (sub-org restriction), mirroring `AuthContext.allowedSiteIds`
+   * and enforced with the same `siteAccessCheck` semantics (middleware/auth.ts).
+   * `undefined` = unrestricted (partner/system scope, or an org user with no site
+   * restriction) — behaves exactly as before this field existed. When set to an
+   * array the actor is site-restricted: it may only touch quotes whose `siteId`
+   * is in the list, and a null-site quote is DENIED (matching the auth closure,
+   * which denies a restricted caller for a null/undefined siteId).
+   */
+  allowedSiteIds?: string[];
 }
 
 export type QuoteServiceErrorCode =
   | 'PARTNER_UNRESOLVABLE'
   | 'ORG_DENIED'
+  | 'SITE_DENIED'
   | 'QUOTE_NOT_FOUND'
   | 'NOT_A_DRAFT'
   | 'LINE_NOT_FOUND'
