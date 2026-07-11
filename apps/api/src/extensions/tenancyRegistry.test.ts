@@ -3,16 +3,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('./discovery', () => ({
   discoverExtensions: vi.fn(() => [
     {
-      name: 'workspace',
-      dir: '/x/workspace',
+      name: 'sample',
+      dir: '/x/sample',
       migrationsDir: null,
       manifest: {
-        name: 'workspace', routeNamespace: 'workspace', entry: 'src/index.ts',
+        name: 'sample', routeNamespace: 'sample', entry: 'src/index.ts',
         migrationsDir: 'migrations',
         tenancy: {
-          orgCascadeDeleteTables: ['workspace_sources', 'memory_blocks'],
-          deviceCascadeDeleteTables: ['workspace_child', 'workspace_parent'],
-          deviceOrgDenormalizedTables: ['workspace_file_activity'],
+          orgCascadeDeleteTables: ['sample_items', 'memory_blocks'],
+          deviceCascadeDeleteTables: ['sample_child', 'sample_parent'],
+          deviceOrgDenormalizedTables: ['sample_events'],
         },
       },
     },
@@ -35,47 +35,47 @@ beforeEach(() => {
 describe('tenancyRegistry', () => {
   it('unions org-cascade tables alphabetised with organizations last', () => {
     const merged = withExtensionOrgCascade(['alerts', 'devices', 'organizations']);
-    expect(merged).toEqual(['alerts', 'devices', 'memory_blocks', 'workspace_sources', 'organizations']);
+    expect(merged).toEqual(['alerts', 'devices', 'memory_blocks', 'sample_items', 'organizations']);
   });
 
   it('does not add organizations when neither core nor extensions declare it', () => {
     expect(withExtensionOrgCascade(['devices', 'alerts'])).toEqual([
-      'alerts', 'devices', 'memory_blocks', 'workspace_sources',
+      'alerts', 'devices', 'memory_blocks', 'sample_items',
     ]);
   });
 
   it('includes extension-declared organizations exactly once and last', () => {
     vi.mocked(discoverExtensions).mockReturnValueOnce([
       {
-        name: 'workspace',
-        dir: '/x/workspace',
+        name: 'sample',
+        dir: '/x/sample',
         migrationsDir: null,
         manifest: {
-          name: 'workspace', routeNamespace: 'workspace', entry: 'src/index.ts',
+          name: 'sample', routeNamespace: 'sample', entry: 'src/index.ts',
           migrationsDir: 'migrations',
           tenancy: {
-            orgCascadeDeleteTables: ['organizations', 'workspace_sources', 'organizations'],
-            deviceCascadeDeleteTables: ['workspace_child', 'workspace_parent'],
-            deviceOrgDenormalizedTables: ['workspace_file_activity'],
+            orgCascadeDeleteTables: ['organizations', 'sample_items', 'organizations'],
+            deviceCascadeDeleteTables: ['sample_child', 'sample_parent'],
+            deviceOrgDenormalizedTables: ['sample_events'],
           },
         },
       },
     ]);
 
     expect(withExtensionOrgCascade(['devices'])).toEqual([
-      'devices', 'workspace_sources', 'organizations',
+      'devices', 'sample_items', 'organizations',
     ]);
   });
 
   it('prepends extension device-cascade tables, preserving core order', () => {
     expect(withExtensionDeviceCascade(['backup_chains', 'backup_jobs'])).toEqual([
-      'workspace_child', 'workspace_parent', 'backup_chains', 'backup_jobs',
+      'sample_child', 'sample_parent', 'backup_chains', 'backup_jobs',
     ]);
   });
 
   it('appends device-org-denormalized tables', () => {
     expect(withExtensionDeviceOrgDenormalized(['agent_logs'])).toEqual([
-      'agent_logs', 'workspace_file_activity',
+      'agent_logs', 'sample_events',
     ]);
   });
 

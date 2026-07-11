@@ -1,9 +1,8 @@
 //
-// Loads extension code at startup and mounts routes on the OUTER app at
-// /api/v1/<routeNamespace>. NOTE: extension sub-apps do NOT pass through the
-// inner `api` instance's partner-status guard or fallback-audit middleware
-// (that instance is snapshotted into `app` at module scope, before async
-// startup) — every extension must apply ctx.authMiddleware itself.
+// Extension sub-apps mount on the outer app. Middleware added to the `api`
+// instance via api.use('*') does not apply to them, and org-scoped fallback
+// audit cannot attribute extension routes. Extensions MUST apply
+// ctx.authMiddleware and write their own audit entries for mutations.
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -14,8 +13,11 @@ import { aiTools } from '../services/aiTools';
 import { authMiddleware } from '../middleware/auth';
 
 async function loadEntry(dir: string, entry: string): Promise<BreezeExtension> {
+  const manifestEntry = path.join(dir, entry);
   const prodEntry = path.join(dir, 'dist', 'index.cjs');
-  const target = existsSync(prodEntry) ? prodEntry : path.join(dir, entry);
+  const target = process.env.NODE_ENV === 'production'
+    ? (existsSync(prodEntry) ? prodEntry : manifestEntry)
+    : (existsSync(manifestEntry) ? manifestEntry : prodEntry);
   const mod = await import(pathToFileURL(target).href);
   const ext = [mod.default?.default, mod.default?.extension, mod.default, mod.extension]
     .find((candidate): candidate is BreezeExtension => typeof candidate?.register === 'function');

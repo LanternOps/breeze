@@ -33,6 +33,15 @@ function scaffoldRuntimeExtension(root: string) {
   return root;
 }
 
+function addStaleCjsBuild(root: string) {
+  const dir = join(root, 'demo');
+  mkdirSync(join(dir, 'dist'), { recursive: true });
+  writeFileSync(
+    join(dir, 'dist', 'index.cjs'),
+    "module.exports = { default: { register(ctx){ const {Hono} = require('hono'); const app = new Hono(); app.get('/health', c => c.json({ok:true, ext:'stale-dist'})); ctx.mountRoute(app); } } };"
+  );
+}
+
 function scaffoldCjsRuntimeExtension(root: string) {
   const dir = join(root, 'cjs-demo');
   mkdirSync(join(dir, 'dist'), { recursive: true });
@@ -81,6 +90,18 @@ describe('mountExtensions', () => {
     const res = await app.request('/api/v1/cjs-demo/health');
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
+  });
+
+  it('prefers the manifest TS entry over a coexisting dist build outside production', async () => {
+    scaffoldRuntimeExtension(root);
+    addStaleCjsBuild(root);
+    vi.stubEnv('NODE_ENV', 'development');
+    const app = new Hono();
+    await mountExtensions(app, root);
+    const res = await app.request('/api/v1/demo/health');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, ext: 'demo', initialAiToolCount: 0 });
+    vi.unstubAllEnvs();
   });
 
   it('respects BREEZE_EXTENSIONS_ENABLED=false', async () => {

@@ -6,6 +6,7 @@ WORKDIR /app
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml* ./
 COPY apps/api/package.json ./apps/api/
 COPY packages/shared/package.json ./packages/shared/
+COPY packages/extension-api/package.json ./packages/extension-api/
 RUN pnpm install --frozen-lockfile
 
 FROM base AS builder

@@ -48,7 +48,7 @@ const manifestSchema = z
       ...m.tenancy.deviceCascadeDeleteTables,
       ...m.tenancy.deviceOrgDenormalizedTables,
     ];
-    // memory_blocks is the shared Wick-shaped table, deliberately unprefixed.
+    // memory_blocks is a deliberately shared cross-extension table.
     const SHARED_TABLE_ALLOWLIST = new Set(['memory_blocks']);
     for (const t of allTables) {
       if (!SHARED_TABLE_ALLOWLIST.has(t) && !t.startsWith(`${m.name}_`)) {

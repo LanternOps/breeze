@@ -5,11 +5,11 @@ import { join } from 'node:path';
 import { discoverExtensions } from './discovery';
 
 const MANIFEST = {
-  name: 'workspace',
-  routeNamespace: 'workspace',
+  name: 'sample',
+  routeNamespace: 'sample',
   entry: 'src/index.ts',
   migrationsDir: 'migrations',
-  tenancy: { orgCascadeDeleteTables: ['workspace_sources'] },
+  tenancy: { orgCascadeDeleteTables: ['sample_items'] },
 };
 
 let root: string;
@@ -31,30 +31,30 @@ describe('discoverExtensions', () => {
   });
 
   it('discovers a valid extension with absolute migrationsDir', () => {
-    const dir = scaffold('workspace', MANIFEST);
+    const dir = scaffold('sample', MANIFEST);
     const found = discoverExtensions(root);
     expect(found).toHaveLength(1);
-    expect(found[0]!.name).toBe('workspace');
+    expect(found[0]!.name).toBe('sample');
     expect(found[0]!.dir).toBe(dir);
     expect(found[0]!.migrationsDir).toBe(join(dir, 'migrations'));
   });
 
   it('sets migrationsDir null when the directory is absent', () => {
-    scaffold('workspace', MANIFEST, false);
+    scaffold('sample', MANIFEST, false);
     expect(discoverExtensions(root)[0]!.migrationsDir).toBeNull();
   });
 
   it('ignores directories without a manifest (e.g. README.md, node_modules)', () => {
     mkdirSync(join(root, 'node_modules'));
     writeFileSync(join(root, 'README.md'), 'seam docs');
-    scaffold('workspace', MANIFEST);
-    expect(discoverExtensions(root).map((e) => e.name)).toEqual(['workspace']);
+    scaffold('sample', MANIFEST);
+    expect(discoverExtensions(root).map((e) => e.name)).toEqual(['sample']);
   });
 
   it('ignores dangling symlinks alongside valid extensions', () => {
     symlinkSync(join(root, 'missing-target'), join(root, 'dangling'));
-    scaffold('workspace', MANIFEST);
-    expect(discoverExtensions(root).map((e) => e.name)).toEqual(['workspace']);
+    scaffold('sample', MANIFEST);
+    expect(discoverExtensions(root).map((e) => e.name)).toEqual(['sample']);
   });
 
   it('throws with the extension dir named when a manifest is invalid', () => {
@@ -63,7 +63,7 @@ describe('discoverExtensions', () => {
   });
 
   it('throws when manifest.name does not match its directory name', () => {
-    scaffold('wrongdir', MANIFEST); // manifest says "workspace"
+    scaffold('wrongdir', MANIFEST); // manifest says "sample"
     expect(() => discoverExtensions(root)).toThrow(/directory/i);
   });
 

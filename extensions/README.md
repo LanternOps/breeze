@@ -34,3 +34,15 @@ out of commits (`git checkout pnpm-lock.yaml` before staging). Docker builds
 account for this: the builder stage runs a scoped
 `pnpm install --filter './extensions/*' --no-frozen-lockfile` before building
 extensions, so the committed lockfile stays extension-free.
+
+## Trust boundary & lifecycle
+
+- Anything that can write to `extensions/` or set `BREEZE_EXTENSIONS_DIR`
+  can execute arbitrary code in the API process. Protect the extension
+  directory like the API binary itself.
+- Removing a previously migrated extension leaves its tables and data in
+  place. Organization cascade-delete then fails loudly: the transaction rolls
+  back with no partial erasure until the extension is restored, or its tables
+  are dropped and its `<name>/` migration-ledger rows are deleted.
+- `RESERVED_ROUTE_NAMESPACES` in `@breeze/extension-api` is maintained by hand.
+  When core mounts a new `/api/v1` namespace, add it to that list.
