@@ -338,7 +338,7 @@ describe('M365 mailbox lifecycle routes', () => {
   });
 
   it.each(['admin_consent', 'identity_verification'] as const)(
-    'consumes a %s provider error once and writes one sanitized failure audit',
+    'consumes a %s provider error once, requires re-consent, and writes one sanitized failure audit',
     async (phase) => {
       const state = phase === 'admin_consent' ? 'admin-state' : 'identity-state';
       const response = await app.request(`/callback?state=${state}&error=access_denied&error_description=raw-provider-detail`, {
@@ -354,6 +354,9 @@ describe('M365 mailbox lifecycle routes', () => {
       expect(JSON.stringify(mocks.writeAuditEvent.mock.calls)).not.toContain('raw-provider-detail');
       expect(mocks.probeMailbox).not.toHaveBeenCalled();
       expect(mocks.bindVerifiedTenant).not.toHaveBeenCalled();
+      expect(mocks.setConnectionStatus).toHaveBeenCalledWith(
+        CONNECTION_ID, PARTNER_ID, 'reauth_required', 'Mailbox verification failed',
+      );
     },
   );
 
@@ -479,7 +482,9 @@ describe('M365 mailbox lifecycle routes', () => {
     expect(response.headers.get('location')).toContain('ticketMailbox=needs_policy');
     expect(mocks.probeMailbox).toHaveBeenCalledWith(TENANT_ID, 'support@example.com');
     expect(mocks.bindVerifiedTenant).not.toHaveBeenCalled();
-    expect(mocks.setConnectionStatus).toHaveBeenCalledWith(CONNECTION_ID, PARTNER_ID, 'error', 'Mailbox verification failed');
+    expect(mocks.setConnectionStatus).toHaveBeenCalledWith(
+      CONNECTION_ID, PARTNER_ID, 'reauth_required', 'Mailbox verification failed',
+    );
     expect(mocks.writeAuditEvent).toHaveBeenCalledTimes(1);
     expect(mocks.writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       details: expect.objectContaining({ verifiedTenantId: TENANT_ID, outcome: 'probe_failed' }),

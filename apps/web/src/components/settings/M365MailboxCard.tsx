@@ -229,7 +229,7 @@ function M365MailboxCardContent({ canAdminMailbox }: { canAdminMailbox: boolean 
                   Administrator re-consent is required before Microsoft 365 polling and replies resume.
                 </p>
               ) : null}
-              {c.status === 'error' || c.status === 'pending_consent' ? (
+              {canAdminMailbox && (c.status === 'error' || c.status === 'pending_consent') ? (
                 <details className="text-xs">
                   <summary className="cursor-pointer">Scope this mailbox (Application Access Policy)</summary>
                   <pre className="mt-2 overflow-x-auto whitespace-pre-wrap rounded bg-muted p-2">

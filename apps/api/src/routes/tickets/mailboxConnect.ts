@@ -231,7 +231,7 @@ async function markCallbackFailed(session: ConsentSession): Promise<void> {
   await callbackDb(() => setConnectionStatus(
     session.connectionId,
     session.partnerId,
-    'error',
+    'reauth_required',
     'Mailbox verification failed',
   ));
 }

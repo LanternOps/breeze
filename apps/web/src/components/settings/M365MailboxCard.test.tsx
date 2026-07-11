@@ -104,6 +104,7 @@ describe('M365MailboxCard', () => {
     expect(screen.queryByRole('button', { name: /disconnect/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /re-test/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /reconnect/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Application Access Policy/i)).not.toBeInTheDocument();
   });
 
   it('lists existing connections on mount', async () => {
@@ -184,7 +185,8 @@ describe('M365MailboxCard', () => {
     expect(screen.queryByText('raw Graph failure')).not.toBeInTheDocument();
     expect(screen.queryByText('raw-tenant-id')).not.toBeInTheDocument();
     expect(screen.queryByText(/Application Access Policy/i)).not.toBeInTheDocument();
-    expect(screen.queryByText('Re-test')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /re-test/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /reconnect/i })).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId('m365-reconnect'));
     await waitFor(() =>

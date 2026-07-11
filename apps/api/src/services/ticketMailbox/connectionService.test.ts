@@ -250,6 +250,27 @@ describe('ticket mailbox connection service', () => {
     expect(dbMocks.updatedValues).toHaveLength(0);
   });
 
+  it('persists callback failures as requiring re-consent without tenant binding', async () => {
+    await setConnectionStatus(
+      CONNECTION_ID,
+      PARTNER_ID,
+      'reauth_required',
+      'Mailbox verification failed',
+    );
+
+    expect(dbMocks.updatedValues[0]).toMatchObject({
+      status: 'reauth_required',
+      lastError: 'Mailbox verification failed',
+    });
+    expect(dbMocks.updateWheres[0]).toEqual({
+      op: 'and',
+      conditions: [
+        { op: 'eq', column: ticketMailboxConnections.id, value: CONNECTION_ID },
+        { op: 'eq', column: ticketMailboxConnections.partnerId, value: PARTNER_ID },
+      ],
+    });
+  });
+
   it('restores only the matching previously verified error connection', async () => {
     dbMocks.updateResults.push([{ id: CONNECTION_ID }]);
 
