@@ -3,11 +3,17 @@ import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { getJwtClaims, loginPathWithNext } from '../../lib/authScope';
+import { buildResponseValidator, coerceFormResponses, type TicketFormField } from '@breeze/shared';
+import TicketFormFields from './TicketFormFields';
 import type { TicketPriority } from './ticketConfig';
 
 interface Option { id: string; name: string }
 interface CategoryOption { id: string; name: string; parentId: string | null }
 interface RequesterOption { id: string; name: string | null; email: string }
+interface AvailableTicketForm {
+  id: string; name: string; description: string | null; categoryId: string | null;
+  fields: TicketFormField[]; defaultPriority: TicketPriority | null; titleTemplate: string | null;
+}
 
 // Sentinel for the "type a requester manually" choice in the select.
 const MANUAL_REQUESTER = '__manual__';
@@ -27,8 +33,13 @@ export default function CreateTicketPage() {
   const [requesterId, setRequesterId] = useState('');
   const [requesterName, setRequesterName] = useState('');
   const [requesterEmail, setRequesterEmail] = useState('');
+  const [forms, setForms] = useState<AvailableTicketForm[]>([]);
+  const [formId, setFormId] = useState('');
+  const [formValues, setFormValues] = useState<Record<string, unknown>>({});
+  const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [loadError, setLoadError] = useState(false);
+  const selectedForm = forms.find((f) => f.id === formId) ?? null;
 
   const loadOptions = useCallback(async () => {
     setLoadError(false);
@@ -127,9 +138,64 @@ export default function CreateTicketPage() {
     return () => { cancelled = true; };
   }, [orgId]);
 
+  // Intake forms follow the org. They're purely additive — a fetch failure must
+  // silently degrade to the blank-ticket path (no picker, no toast). Reset the
+  // selection + entered values on every org change so nothing leaks across orgs.
+  useEffect(() => {
+    setForms([]); setFormId(''); setFormValues({}); setFormErrors({});
+    if (!orgId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetchWithAuth(`/ticket-forms/available?orgId=${encodeURIComponent(orgId)}`);
+        if (cancelled) return;
+        if (res.ok) {
+          const body = await res.json();
+          setForms((body.data ?? []) as AvailableTicketForm[]);
+        } else {
+          // Forms are additive — degrade to a blank ticket (no toast), but leave
+          // a breadcrumb so a broken picker isn't invisible in the console.
+          console.warn('[create-ticket] forms fetch failed', res.status);
+        }
+      } catch (err) {
+        if (!cancelled) console.warn('[create-ticket] forms fetch failed', err);
+        /* forms are additive — degrade to a blank ticket */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [orgId]);
+
   const submit = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!orgId || !subject.trim()) return;
+    // With a form selected the server composes the subject from titleTemplate, so
+    // a blank subject is fine; without a form the subject stays required.
+    if (!orgId || (!subject.trim() && !selectedForm)) return;
+
+    // Validate the form responses client-side for inline errors before POSTing.
+    // The API re-validates authoritatively — this is a UX fast-path, not the gate.
+    let responses: Record<string, unknown> | undefined;
+    if (selectedForm) {
+      const coerced = coerceFormResponses(selectedForm.fields, formValues);
+      const parsed = buildResponseValidator(selectedForm.fields).safeParse(coerced);
+      if (!parsed.success) {
+        const errs: Record<string, string> = {};
+        for (const issue of parsed.error.issues) {
+          const key = String(issue.path[0] ?? '');
+          // 'invalid_type: received undefined' on a missing required field reads badly — normalize.
+          if (key && !errs[key]) errs[key] = issue.code === 'invalid_type' && coerced[key] === undefined ? 'This field is required' : issue.message;
+        }
+        // Guard against a silent no-op: if no issue mapped to a field key, surface
+        // a generic form-level error so validation failure is never invisible.
+        if (Object.keys(errs).length === 0) {
+          errs.__form = 'Some responses are invalid. Please review the form and try again.';
+        }
+        setFormErrors(errs);
+        return;
+      }
+      setFormErrors({});
+      responses = parsed.data as Record<string, unknown>;
+    }
+
     setSaving(true);
     try {
       const created = await runAction<{ data: { id: string; internalNumber: string | null } }>({
@@ -137,7 +203,7 @@ export default function CreateTicketPage() {
           method: 'POST',
           body: JSON.stringify({
             orgId,
-            subject: subject.trim(),
+            subject: subject.trim() || undefined,
             description: description.trim() || undefined,
             deviceId: deviceId || undefined,
             categoryId: categoryId || undefined,
@@ -147,7 +213,8 @@ export default function CreateTicketPage() {
             // the creating staff member (legacy behaviour).
             ...(requesterId && requesterId !== MANUAL_REQUESTER ? { submittedBy: requesterId } : {}),
             ...(requesterId === MANUAL_REQUESTER && requesterName.trim() ? { submitterName: requesterName.trim() } : {}),
-            ...(requesterId === MANUAL_REQUESTER && requesterEmail.trim() ? { submitterEmail: requesterEmail.trim() } : {})
+            ...(requesterId === MANUAL_REQUESTER && requesterEmail.trim() ? { submitterEmail: requesterEmail.trim() } : {}),
+            ...(selectedForm ? { formId: selectedForm.id, formResponses: responses } : {})
           })
         }),
         errorFallback: 'Ticket creation failed. Retry.',
@@ -160,7 +227,7 @@ export default function CreateTicketPage() {
     } finally {
       setSaving(false);
     }
-  }, [orgId, subject, description, deviceId, categoryId, priority, requesterId, requesterName, requesterEmail]);
+  }, [orgId, subject, description, deviceId, categoryId, priority, requesterId, requesterName, requesterEmail, selectedForm, formValues]);
 
   const selectCls = 'w-full rounded-md border bg-background px-2.5 py-1.5 text-sm';
 
@@ -188,9 +255,54 @@ export default function CreateTicketPage() {
           </select>
         </div>
       )}
+      {forms.length > 0 && (
+        <div>
+          <label className="mb-1 block text-sm font-medium" htmlFor="ct-form">Start from a form <span className="text-muted-foreground">(optional)</span></label>
+          <select
+            id="ct-form"
+            data-testid="create-ticket-form-picker"
+            className={selectCls}
+            value={formId}
+            onChange={(e) => {
+              const next = forms.find((f) => f.id === e.target.value) ?? null;
+              setFormId(e.target.value);
+              setFormErrors({});
+              if (next) {
+                const defaults: Record<string, unknown> = {};
+                for (const f of next.fields) if (f.defaultValue !== undefined) defaults[f.key] = f.defaultValue;
+                setFormValues(defaults);
+                // Only adopt the form's category when it's actually in the loaded
+                // options — otherwise we'd invisibly attach an inactive/unloaded
+                // category the user can neither see nor change.
+                if (next.categoryId && categories.some((c) => c.id === next.categoryId)) setCategoryId(next.categoryId);
+                if (next.defaultPriority) setPriority(next.defaultPriority);
+              } else {
+                setFormValues({});
+              }
+            }}
+          >
+            <option value="">Blank ticket</option>
+            {forms.map((f) => (<option key={f.id} value={f.id}>{f.name}</option>))}
+          </select>
+          {selectedForm?.description && <p className="mt-1 text-xs text-muted-foreground">{selectedForm.description}</p>}
+        </div>
+      )}
+      {selectedForm && (
+        <>
+          {formErrors.__form && (
+            <p className="text-sm text-destructive" data-testid="create-ticket-form-error">{formErrors.__form}</p>
+          )}
+          <TicketFormFields
+            fields={selectedForm.fields}
+            values={formValues}
+            errors={formErrors}
+            onChange={(key, value) => setFormValues((v) => ({ ...v, [key]: value }))}
+          />
+        </>
+      )}
       <div>
         <label className="text-sm font-medium" htmlFor="ct-subject">Subject</label>
-        <input id="ct-subject" value={subject} onChange={(e) => setSubject(e.target.value)} required maxLength={255} className={selectCls} data-testid="create-ticket-subject-input" />
+        <input id="ct-subject" value={subject} onChange={(e) => setSubject(e.target.value)} required={!selectedForm} maxLength={255} className={selectCls} data-testid="create-ticket-subject-input" />
       </div>
       <div>
         <label className="text-sm font-medium" htmlFor="ct-desc">Description</label>
@@ -260,7 +372,7 @@ export default function CreateTicketPage() {
       </div>
       <div className="flex justify-end gap-2">
         <a href="/tickets" className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted" data-testid="create-ticket-cancel">Cancel</a>
-        <button type="submit" disabled={saving || !orgId || !subject.trim()} className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50" data-testid="create-ticket-submit">
+        <button type="submit" disabled={saving || !orgId || (!subject.trim() && !selectedForm)} className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50" data-testid="create-ticket-submit">
           {saving ? 'Creating' : 'Create ticket'}
         </button>
       </div>

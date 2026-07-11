@@ -6,23 +6,42 @@ export const ticketSourceSchema = z.enum(['portal', 'email', 'alert', 'manual', 
 export type TicketStatus = z.infer<typeof ticketStatusSchema>;
 export type TicketPriority = z.infer<typeof ticketPrioritySchema>;
 
-export const createTicketSchema = z.object({
-  orgId: z.string().guid(),
-  subject: z.string().min(1).max(255),
-  description: z.string().max(50_000).optional(),
-  deviceId: z.string().guid().optional(),
-  categoryId: z.string().guid().optional(),
-  priority: ticketPrioritySchema.default('normal'),
-  dueDate: z.coerce.date().optional(),
-  assigneeId: z.string().guid().optional(),
-  // Requester: pick an existing portal user (submittedBy) and/or supply a
-  // free-text name/email. When all three are absent the service falls back to
-  // the acting staff member's name (legacy behaviour). Picking a portal user
-  // backfills name/email from that row when they aren't supplied here.
-  submittedBy: z.string().guid().optional(),
-  submitterName: z.string().min(1).max(255).optional(),
-  submitterEmail: z.string().email().max(255).optional()
-});
+export const createTicketSchema = z
+  .object({
+    orgId: z.string().guid(),
+    // Optional when an intake form composes it server-side (formId present).
+    subject: z.string().min(1).max(255).optional(),
+    description: z.string().max(50_000).optional(),
+    deviceId: z.string().guid().optional(),
+    categoryId: z.string().guid().optional(),
+    // No .default('normal') — the service already falls back to 'normal', and
+    // a schema default would make explicit-vs-absent indistinguishable, which
+    // breaks intake-form defaultPriority precedence.
+    priority: ticketPrioritySchema.optional(),
+    dueDate: z.coerce.date().optional(),
+    assigneeId: z.string().guid().optional(),
+    // Intake form (spec 2026-07-10): responses are validated server-side
+    // against the form's field schema in ticketService.
+    formId: z.string().guid().optional(),
+    formResponses: z.record(z.string(), z.unknown()).optional(),
+    // Requester: pick an existing portal user (submittedBy) and/or supply a
+    // free-text name/email. When all three are absent the service falls back to
+    // the acting staff member's name (legacy behaviour). Picking a portal user
+    // backfills name/email from that row when they aren't supplied here.
+    submittedBy: z.string().guid().optional(),
+    submitterName: z.string().min(1).max(255).optional(),
+    submitterEmail: z.string().email().max(255).optional()
+  })
+  .superRefine((v, ctx) => {
+    if (!v.formId && (!v.subject || v.subject.trim().length === 0)) {
+      ctx.addIssue({ code: 'custom', path: ['subject'], message: 'subject is required unless a formId is provided' });
+    }
+    // formResponses only makes sense against a form's field schema; without a
+    // formId there is nothing to validate them against, so reject the combo.
+    if (v.formResponses && !v.formId) {
+      ctx.addIssue({ code: 'custom', path: ['formResponses'], message: 'formResponses requires formId' });
+    }
+  });
 
 export const createTicketFromChatSchema = z
   .object({

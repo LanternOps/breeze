@@ -7,9 +7,10 @@ import TicketPrioritiesTab from './TicketPrioritiesTab';
 import InboundEmailCard from './InboundEmailCard';
 import M365MailboxCard from './M365MailboxCard';
 import CannedResponsesCard from './CannedResponsesCard';
+import TicketFormsCard from './TicketFormsCard';
 import { getJwtClaims } from '../../lib/authScope';
 
-const VALID_TABS = ['statuses', 'priorities', 'categories', 'export', 'inbound', 'canned'] as const;
+const VALID_TABS = ['statuses', 'priorities', 'categories', 'forms', 'export', 'inbound', 'canned'] as const;
 type Tab = (typeof VALID_TABS)[number];
 
 // Inbound email settings + queue are a partner-scoped surface (the queue routes
@@ -74,13 +75,18 @@ export default function TicketingSettingsTabs({
   // Sidebar gates other partner-only settings surfaces). Decoded client-side as
   // a UX hint only — the server re-checks every request.
   const canManageInbound = useMemo(() => getJwtClaims().scope === 'partner', []);
-  // Canned responses (like inbound) are a partner-scoped surface — the CRUD routes
-  // require partner scope server-side — so they share the same client gate.
+  // Canned responses + intake forms (like inbound) are partner-scoped surfaces —
+  // the CRUD routes require partner scope server-side, and intake forms can be
+  // authored partner-wide ("All orgs"). The standalone TicketingSettingsTabs
+  // renders BASE_TABS for any scope, so gate these on partner scope rather than
+  // leaving them in BASE_TABS. Org-owned forms are still creatable here via the
+  // form editor's org selector.
   const TABS = useMemo(
     () =>
       canManageInbound
         ? [
             ...BASE_TABS,
+            { id: 'forms' as Tab, label: 'Intake Forms' },
             { id: 'inbound' as Tab, label: 'Inbound Email' },
             { id: 'canned' as Tab, label: 'Canned responses' }
           ]
@@ -137,6 +143,12 @@ export default function TicketingSettingsTabs({
       )}
 
       {activeTab === 'categories' && <TicketCategoriesPage />}
+
+      {activeTab === 'forms' && canManageInbound && (
+        <div data-testid="ticketing-tab-panel-forms">
+          <TicketFormsCard />
+        </div>
+      )}
 
       {activeTab === 'export' && <BillablesExportCard />}
 
