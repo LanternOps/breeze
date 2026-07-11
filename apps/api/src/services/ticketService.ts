@@ -204,7 +204,7 @@ async function assertRequesterInOrg(portalUserId: string, orgId: string) {
  * to org-scoped request contexts — the explicit partner comparison below is
  * the security boundary, not the read.
  */
-async function assertCategoryInPartner(categoryId: string, partnerId: string | null) {
+export async function assertCategoryInPartner(categoryId: string, partnerId: string | null) {
   const rows = await runOutsideDbContext(() =>
     withSystemDbAccessContext(() =>
       db
