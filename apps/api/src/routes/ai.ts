@@ -122,6 +122,14 @@ function generateSessionTitle(content: string): string {
 export const aiRoutes = new Hono();
 const requireAiRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
 const requireAiWrite = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
+// SR5-09: reading OTHER users' AI sessions (the admin audit dashboard) is a
+// dedicated, higher-trust capability — NOT organizations:read, which every
+// technician/viewer holds and which for ordinary AI routes only ever returns the
+// caller's OWN sessions. Gated on ai_sessions:read_all (Org Admin + Partner Admin).
+const requireAiSessionsReadAll = requirePermission(
+  PERMISSIONS.AI_SESSIONS_READ_ALL.resource,
+  PERMISSIONS.AI_SESSIONS_READ_ALL.action,
+);
 const requireTicketsWrite = requirePermission(PERMISSIONS.TICKETS_WRITE.resource, PERMISSIONS.TICKETS_WRITE.action);
 
 aiRoutes.use('*', authMiddleware);
@@ -301,7 +309,9 @@ aiRoutes.post(
     const auth = c.get('auth');
     const sessionId = c.req.param('id')!;
 
-    const session = await getSession(sessionId, auth);
+    // Flagging is a moderation action (paired with the admin-only unflag below),
+    // not an owner-only read — keep its existing org-scoped behavior.
+    const session = await getSession(sessionId, auth, { allowAnyOwnerInOrg: true });
     if (!session) {
       return c.json({ error: 'Session not found' }, 404);
     }
@@ -338,7 +348,9 @@ aiRoutes.delete(
     const auth = c.get('auth');
     const sessionId = c.req.param('id')!;
 
-    const session = await getSession(sessionId, auth);
+    // Admin-only unflag (requireScope partner/system): moderators clear another
+    // user's flag, so this is deliberately org-scoped, not owner-bound.
+    const session = await getSession(sessionId, auth, { allowAnyOwnerInOrg: true });
     if (!session) {
       return c.json({ error: 'Session not found' }, 404);
     }
@@ -1017,11 +1029,15 @@ aiRoutes.put(
   }
 );
 
-// GET /admin/sessions - Get session history for admin dashboard
+// GET /admin/sessions - Get session history for admin dashboard.
+// SR5-09: enumerates other users' sessions (id, userId, title, cost, flags), so
+// it requires ai_sessions:read_all — a stricter gate than the ordinary AI reads.
+// The returned rows are already a projected metadata DTO (getSessionHistory):
+// no systemPrompt, contextSnapshot, sdkSessionId, or raw tool input/output.
 aiRoutes.get(
   '/admin/sessions',
   requireScope('organization', 'partner', 'system'),
-  requireAiRead,
+  requireAiSessionsReadAll,
   async (c) => {
     const auth = c.get('auth');
     const orgId = c.req.query('orgId') || auth.orgId;

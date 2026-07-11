@@ -153,7 +153,12 @@ describe('AI flagging routes', () => {
     const body = await res.json();
     expect(body.success).toBe(true);
 
-    expect(getSession).toHaveBeenCalledWith(SESSION_ID, expect.any(Object));
+    // Flagging is a moderation action → org-scoped lookup (SR5-09 opt-out).
+    expect(getSession).toHaveBeenCalledWith(
+      SESSION_ID,
+      expect.any(Object),
+      expect.objectContaining({ allowAnyOwnerInOrg: true }),
+    );
     expect(mockSet).toHaveBeenCalledWith(
       expect.objectContaining({
         flaggedBy: 'user-1',

@@ -1,6 +1,6 @@
 const REDACTED = '[REDACTED]';
 
-const SECRET_KEY_PATTERN = /password|passwd|pwd|token|secret|api.*key|access.*key|private.*key|client.*secret|authorization|cookie|session|credential|community|authpassphrase|privacypassphrase/i;
+const SECRET_KEY_PATTERN = /password|passwd|pwd|token|secret|api.*key|access.*key|private.*key|client.*secret|authorization|cookie|session|credential|community|authpassphrase|privacypassphrase|connection.?string|conn.?string|sas.?token|shared.?key/i;
 
 const SECRET_ASSIGNMENT_PATTERNS: RegExp[] = [
   /\b(authorization\s*:\s*bearer\s+)[^\s,;]+/gi,
