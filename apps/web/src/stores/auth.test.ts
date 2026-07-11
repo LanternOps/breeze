@@ -261,6 +261,53 @@ describe('auth store fetchWithAuth', () => {
     expect(useAuthStore.getState().user).toBeNull();
   });
 
+  // QA 2026-07-08: a single transient 502 on /auth/refresh must NOT boot the
+  // user — a gateway blip reaches no verdict on the refresh cookie, so we retry
+  // with backoff and recover the session instead of hard-logging-out.
+  it('retries a transient 5xx on refresh and keeps the session', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const refreshedTokens: Tokens = { accessToken: 'access-after-502', expiresInSeconds: 3600 };
+    const apiSuccess = makeResponse({ data: { ok: true } }, true, 200);
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse({ error: 'unauthorized' }, false, 401)) // original request
+      .mockResolvedValueOnce(makeResponse({ error: 'bad gateway' }, false, 502))  // refresh blips
+      .mockResolvedValueOnce(makeResponse({ tokens: refreshedTokens }, true, 200)) // refresh recovers
+      .mockResolvedValueOnce(apiSuccess);                                          // original replayed
+    vi.stubGlobal('fetch', fetchMock);
+
+    const response = await fetchWithAuth('/devices');
+
+    expect(response).toBe(apiSuccess);
+    // Session survived the blip and adopted the recovered token.
+    expect(useAuthStore.getState().isAuthenticated).toBe(true);
+    expect(useAuthStore.getState().tokens?.accessToken).toBe(refreshedTokens.accessToken);
+    // Two refresh attempts fired (502 then success).
+    const refreshCalls = fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/api/v1/auth/refresh'));
+    expect(refreshCalls).toHaveLength(2);
+  });
+
+  // The retry is bounded: a sustained gateway outage still evicts once the
+  // backoff attempts are exhausted (no infinite hang).
+  it('logs out when refresh 5xx persists past the retry budget', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse({ error: 'unauthorized' }, false, 401)) // original request
+      .mockResolvedValue(makeResponse({ error: 'bad gateway' }, false, 502));      // every refresh 502s
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchWithAuth('/devices');
+
+    // Initial attempt + MAX_TRANSIENT_REFRESH_RETRIES (2) = 3 refresh calls, then evict.
+    const refreshCalls = fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/api/v1/auth/refresh'));
+    expect(refreshCalls).toHaveLength(3);
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+    expect(useAuthStore.getState().tokens).toBeNull();
+  });
+
   // Regression (0.83.1 forced-MFA enrollment hotfix): when the store is
   // authenticated but holds no in-memory access token (always true on the
   // forced-MFA page after a full-page nav) and the cookie-backed refresh

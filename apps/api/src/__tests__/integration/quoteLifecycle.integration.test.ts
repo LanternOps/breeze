@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { quotes } from '../../db/schema/quotes';
+import { organizations } from '../../db/schema/orgs';
 import { createPartner, createOrganization } from './db-utils';
 import { createQuote, addManualLine } from '../../services/quoteService';
 import { sendQuote, markQuoteViewed, declineQuoteByActor } from '../../services/quoteLifecycle';
@@ -37,6 +38,32 @@ describe('quote lifecycle', () => {
     expect(result.quote.quoteNumber).toMatch(/^Q-\d{4}-\d{4}$/);
     expect(result.quote.sentAt).toBeTruthy();
     expect(result.acceptUrl).toContain('/quote/');
+  });
+
+  runDb('sendQuote freezes the org billing address into the quote bill-to snapshot', async () => {
+    const { partner, org } = await seed();
+    // Save a Billing address on the org (what the customer/org "Billing address" tab writes).
+    await withSystemDbAccessContext(() => db.update(organizations).set({
+      taxId: 'TAX-777',
+      billingAddressLine1: '500 Congress Ave', billingAddressLine2: 'Floor 9',
+      billingAddressCity: 'Austin', billingAddressRegion: 'TX',
+      billingAddressPostalCode: '78701', billingAddressCountry: 'US',
+    }).where(eq(organizations.id, org.id)));
+
+    const ctx = ctxFor(org.id, partner.id);
+    const actor = actorFor(org.id, partner.id);
+    const created = await withDbAccessContext(ctx, () => createQuote({ orgId: org.id, currencyCode: 'USD' }, actor));
+    await withDbAccessContext(ctx, () => addManualLine(created.id, { sourceType: 'manual', description: 'Setup', quantity: 1, unitPrice: 100, taxable: false, customerVisible: true, recurrence: 'one_time' } as any, actor));
+
+    await withDbAccessContext(ctx, () => sendQuote(created.id, actor));
+
+    const [row] = await withSystemDbAccessContext(() => db.select().from(quotes).where(eq(quotes.id, created.id)).limit(1));
+    expect(row!.billToAddress).toEqual({
+      line1: '500 Congress Ave', line2: 'Floor 9', city: 'Austin',
+      region: 'TX', postalCode: '78701', country: 'US',
+    });
+    expect(row!.billToName).toBe(org.name); // no draft override → org name
+    expect(row!.billToTaxId).toBe('TAX-777');
   });
 
   runDb('markQuoteViewed flips sent→viewed and stamps first_viewed_at once', async () => {

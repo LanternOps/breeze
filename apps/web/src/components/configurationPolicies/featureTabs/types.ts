@@ -2,15 +2,19 @@ import type { ConfigFeatureType } from '@breeze/shared';
 
 // Derived from the canonical CONFIG_FEATURE_TYPES (single source of truth in
 // @breeze/shared) so the config-policy editor's feature tabs can't silently
-// drift from the registry. `onedrive_helper` is deliberately excluded: it has
-// no editor tab (the OneDrive Helper is configured elsewhere). Deriving via
-// Exclude means a new canonical feature type makes FEATURE_META below fail to
-// compile until a tab entry is added, and featureTypeParity.test.ts asserts the
-// exclusion stays honest. (#2004)
+// drift from the registry. Deriving via Exclude means a new canonical feature
+// type makes FEATURE_META below fail to compile until a tab entry is added, and
+// featureTypeParity.test.ts asserts the exclusion stays honest. (#2004)
+//
+// The exclusion list is currently EMPTY — every canonical feature type has an
+// editor tab (onedrive_helper gained one in the OneDrive Helper phase-3 work).
+// The mechanism (const tuple + Exclude) is intentionally retained so a future
+// feature type that legitimately has no tab can be excluded here in one place
+// without re-plumbing the type derivation.
 //
 // FeatureType is sourced FROM this tuple (not a parallel literal) so the runtime
 // exclusion list and the compile-time Exclude can't drift from each other.
-export const EDITOR_EXCLUDED_FEATURE_TYPES = ['onedrive_helper'] as const;
+export const EDITOR_EXCLUDED_FEATURE_TYPES = [] as const;
 export type FeatureType = Exclude<ConfigFeatureType, typeof EDITOR_EXCLUDED_FEATURE_TYPES[number]>;
 
 export type FeatureLink = {
@@ -30,6 +34,13 @@ export type FeatureTabProps = {
   linkedPolicyId: string | null;
   /** Parent policy's feature link for this tab (for inheritance display) */
   parentLink?: FeatureLink | undefined;
+  /**
+   * Org this policy is scoped to (null for partner-wide policies — #1724).
+   * Optional: only tabs that need to make an org-scoped fetch on behalf of
+   * the policy (e.g. OneDriveHelperTab -> OneDriveLibraryPicker's M365/Graph
+   * calls) destructure it; every other tab ignores it.
+   */
+  orgId?: string | null;
 };
 
 export const FEATURE_META: Record<FeatureType, {
@@ -54,4 +65,5 @@ export const FEATURE_META: Record<FeatureType, {
   remote_access: { label: 'Remote Access',  fetchUrl: null,                   description: 'Remote desktop, proxy tunnels, and session limits' },
   pam:         { label: 'Privileged Access', fetchUrl: null,              description: 'Windows UAC elevation prompt capture (PAM)' },
   vulnerability: { label: 'Vulnerability Scanning', fetchUrl: null,       description: 'Enable per-device CVE correlation (vulnerability detection)' },
+  onedrive_helper: { label: 'OneDrive Helper', fetchUrl: null, description: 'Silently sign in OneDrive, enforce Files On-Demand and Known Folder Move, and auto-mount SharePoint libraries per user.' },
 };

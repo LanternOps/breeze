@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { updatePortalSettingsSchema } from './portal';
+import {
+  updatePortalSettingsSchema,
+  invitePortalUserSchema,
+  bulkInvitePortalUsersSchema,
+  updatePortalUserSchema
+} from './portal';
 
 describe('updatePortalSettingsSchema', () => {
   it('accepts a full valid payload', () => {
@@ -60,5 +65,36 @@ describe('updatePortalSettingsSchema', () => {
     expect(updatePortalSettingsSchema.safeParse({ supportEmail: `${'a'.repeat(250)}@b.example` }).success).toBe(false);
     expect(updatePortalSettingsSchema.safeParse({ welcomeMessage: 'x'.repeat(2001) }).success).toBe(false);
     expect(updatePortalSettingsSchema.safeParse({ footerText: 'x'.repeat(2001) }).success).toBe(false);
+  });
+});
+
+describe('invitePortalUserSchema', () => {
+  it('accepts a valid invite', () => {
+    expect(invitePortalUserSchema.safeParse({ email: 'a@b.example', name: 'A', message: 'hi' }).success).toBe(true);
+  });
+  it('rejects a bad email', () => {
+    expect(invitePortalUserSchema.safeParse({ email: 'nope' }).success).toBe(false);
+  });
+  it('rejects an over-long message', () => {
+    expect(invitePortalUserSchema.safeParse({ email: 'a@b.example', message: 'x'.repeat(1001) }).success).toBe(false);
+  });
+});
+
+describe('updatePortalUserSchema', () => {
+  it('accepts active/disabled status', () => {
+    expect(updatePortalUserSchema.safeParse({ status: 'disabled' }).success).toBe(true);
+  });
+  it('rejects an invited status (not settable here)', () => {
+    expect(updatePortalUserSchema.safeParse({ status: 'invited' }).success).toBe(false);
+  });
+});
+
+describe('bulkInvitePortalUsersSchema', () => {
+  it('accepts an optional userIds array of GUIDs', () => {
+    expect(bulkInvitePortalUsersSchema.safeParse({ userIds: ['7c0a1f7e-1111-4222-8333-444455556666'] }).success).toBe(true);
+    expect(bulkInvitePortalUsersSchema.safeParse({}).success).toBe(true);
+  });
+  it('rejects non-GUID ids', () => {
+    expect(bulkInvitePortalUsersSchema.safeParse({ userIds: ['not-a-guid'] }).success).toBe(false);
   });
 });

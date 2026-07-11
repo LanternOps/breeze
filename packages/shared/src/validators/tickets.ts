@@ -24,6 +24,23 @@ export const createTicketSchema = z.object({
   submitterEmail: z.string().email().max(255).optional()
 });
 
+export const createTicketFromChatSchema = z
+  .object({
+    subject: z.string().min(1).max(255),
+    description: z.string().max(50_000).optional(),
+    status: z.enum(['open', 'resolved']),
+    resolutionNote: z.string().max(50_000).optional(),
+    timeMinutes: z.number().int().min(0).max(24 * 60),
+    billable: z.boolean(),
+    priority: ticketPrioritySchema.optional(),
+  })
+  .refine((v) => v.status !== 'resolved' || (v.resolutionNote?.trim().length ?? 0) > 0, {
+    message: 'A resolution note is required to resolve a ticket',
+    path: ['resolutionNote'],
+  });
+
+export type CreateTicketFromChatInput = z.infer<typeof createTicketFromChatSchema>;
+
 export const updateTicketSchema = z.object({
   subject: z.string().min(1).max(255).optional(),
   description: z.string().max(50_000).optional(),

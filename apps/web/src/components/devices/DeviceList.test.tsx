@@ -750,3 +750,111 @@ describe('DeviceList — pending reboot badge', () => {
     expect(screen.queryByTestId(`device-${device.id}-pending-reboot-badge`)).toBeNull();
   });
 });
+
+describe('DeviceList — linked multi-boot profiles (#2138)', () => {
+  beforeEach(() => {
+    window.localStorage?.clear();
+  });
+
+  const winId = '61111111-1111-1111-1111-111111111111';
+  const linId = '62222222-2222-2222-2222-222222222222';
+  const plainId = '63333333-3333-3333-3333-333333333333';
+
+  const mkLinked = (over: Partial<Device>): Device => ({
+    ...baseDevice,
+    linkGroupId: 'group-1',
+    ...over,
+  });
+
+  const winOnline = () =>
+    mkLinked({ id: winId, hostname: 'bootbox', status: 'online', os: 'windows' });
+  const linOffline = () =>
+    mkLinked({
+      id: linId,
+      hostname: 'bootbox',
+      status: 'offline',
+      os: 'linux',
+      osVersion: 'ubuntu 24.04',
+      agentVersion: '0.66.0',
+    });
+
+  it('renders the offline sibling as an expected-offline strip beneath the online member', () => {
+    render(<DeviceList devices={[winOnline(), linOffline()]} />);
+
+    const strip = screen.getByTestId(`device-${linId}-inactive-strip`);
+    expect(strip).toBeInTheDocument();
+    expect(strip.textContent).toContain('Expected offline');
+    expect(strip.textContent).toContain('inactive');
+    expect(strip.textContent).toContain('Agent v0.66.0');
+    // The sibling no longer renders as a full row: its checkbox is gone.
+    expect(screen.queryByLabelText('Select bootbox')).not.toBeNull();
+    // Only the anchor row's checkbox exists (strip rows carry no checkbox).
+    expect(screen.getAllByLabelText('Select bootbox')).toHaveLength(1);
+  });
+
+  it('navigates to the strip device on click (strips stay clickable)', () => {
+    const onSelect = vi.fn();
+    render(<DeviceList devices={[winOnline(), linOffline()]} onSelect={onSelect} />);
+
+    fireEvent.click(screen.getByTestId(`device-${linId}-inactive-strip`));
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect.mock.calls[0]![0].id).toBe(linId);
+  });
+
+  it('excludes strip devices from select-all (strips are not selectable rows)', () => {
+    const onBulkAction = vi.fn();
+    render(
+      <DeviceList
+        devices={[winOnline(), linOffline(), { ...baseDevice, id: plainId, hostname: 'plain' }]}
+        onBulkAction={onBulkAction}
+      />
+    );
+
+    fireEvent.click(screen.getByLabelText('Select all devices on this page'));
+    fireEvent.click(screen.getByRole('button', { name: /bulk actions/i }));
+    fireEvent.click(screen.getByText('Reboot Selected'));
+
+    expect(onBulkAction).toHaveBeenCalledTimes(1);
+    const selected = onBulkAction.mock.calls[0]![1] as Device[];
+    expect(selected.map((d) => d.id).sort()).toEqual([winId, plainId].sort());
+  });
+
+  it('marks all-offline group members with the left-edge group bar and no strips', () => {
+    const winOff = mkLinked({ id: winId, hostname: 'bootbox', status: 'offline' });
+    const linOff = linOffline();
+    render(<DeviceList devices={[winOff, linOff]} />);
+
+    expect(screen.getByTestId(`device-${winId}-group-bar`)).toBeInTheDocument();
+    expect(screen.getByTestId(`device-${linId}-group-bar`)).toBeInTheDocument();
+    expect(screen.queryByTestId(`device-${linId}-inactive-strip`)).toBeNull();
+  });
+
+  it('renders full rows with no markers when two members are online (no conflict state)', () => {
+    const winOn = winOnline();
+    const linOn = mkLinked({ id: linId, hostname: 'bootbox', status: 'online', os: 'linux' });
+    render(<DeviceList devices={[winOn, linOn]} />);
+
+    expect(screen.queryByTestId(`device-${linId}-inactive-strip`)).toBeNull();
+    expect(screen.queryByTestId(`device-${winId}-group-bar`)).toBeNull();
+    expect(screen.getAllByLabelText('Select bootbox')).toHaveLength(2);
+  });
+
+  it('flattens the list when the "Collapse linked inactive profiles" toggle is turned off', () => {
+    render(<DeviceList devices={[winOnline(), linOffline()]} />);
+
+    expect(screen.getByTestId(`device-${linId}-inactive-strip`)).toBeInTheDocument();
+
+    const toggle = screen.getByTestId('collapse-linked-toggle');
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(toggle);
+
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.queryByTestId(`device-${linId}-inactive-strip`)).toBeNull();
+    expect(screen.getAllByLabelText('Select bootbox')).toHaveLength(2);
+  });
+
+  it('hides the toggle entirely when no device is linked', () => {
+    render(<DeviceList devices={[baseDevice]} />);
+    expect(screen.queryByTestId('collapse-linked-toggle')).toBeNull();
+  });
+});

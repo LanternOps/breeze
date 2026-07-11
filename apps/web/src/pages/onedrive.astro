@@ -1,0 +1,16 @@
+---
+import DashboardLayout from '../layouts/DashboardLayout.astro';
+import OneDriveFleetPage from '../components/onedrive/OneDriveFleetPage';
+---
+
+<DashboardLayout title="OneDrive">
+  <div class="space-y-6">
+    <div>
+      <h1 class="text-2xl font-semibold">OneDrive</h1>
+      <p class="max-w-prose text-sm text-muted-foreground">
+        Fleet OneDrive posture — sign-in, Known Folder Move protection, and library mount drift.
+      </p>
+    </div>
+    <OneDriveFleetPage client:load />
+  </div>
+</DashboardLayout>

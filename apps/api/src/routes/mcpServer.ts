@@ -20,7 +20,7 @@
 import { randomBytes } from 'node:crypto';
 import { Hono, type Context, type Next } from 'hono';
 import { streamSSE } from 'hono/streaming';
-import type { z } from 'zod';
+import { z } from 'zod';
 import { MCP_OAUTH_ENABLED, OAUTH_ISSUER } from '../config/env';
 import { apiKeyAuthMiddleware, requireApiKeyScope } from '../middleware/apiKeyAuth';
 import { bearerTokenAuthMiddleware, resolvePartnerAccessibleOrgIds } from '../middleware/bearerTokenAuth';
@@ -174,69 +174,23 @@ export async function __loadMcpBootstrapForTests(): Promise<BootstrapModule | nu
 }
 
 /**
- * Minimal zod → JSON Schema converter covering the shapes used by bootstrap
- * tool input schemas (objects with string/enum/email fields). We don't pull
- * in `zod-to-json-schema` for one use-site; if future bootstrap tools need
- * richer shapes, swap this for the package.
+ * Convert a bootstrap tool's zod input schema to JSON Schema for `tools/list`,
+ * using zod 4's native `z.toJSONSchema` with input semantics (a field carrying
+ * a `.default()` is optional for the caller, so it stays out of `required`).
+ *
+ * The previous hand-rolled converter switched on `schema._def.typeName`, which
+ * zod 4 removed — so every schema fell through to `{}`, an inputSchema with no
+ * `type`. MCP clients reject that, and one bad tool schema fails the WHOLE
+ * `tools/list` (Claude Code showed "fetching tools failed", 0 tools loaded).
+ *
+ * `$schema` is stripped: an MCP inputSchema is an embedded schema object, not a
+ * standalone JSON Schema document.
  */
 function zodToJsonSchema(schema: z.ZodSchema<any>): Record<string, unknown> {
-  const def: any = (schema as any)._def;
-  if (!def) return { type: 'object' };
-  switch (def.typeName) {
-    case 'ZodObject': {
-      const shape = typeof def.shape === 'function' ? def.shape() : def.shape;
-      const properties: Record<string, unknown> = {};
-      const required: string[] = [];
-      for (const [key, value] of Object.entries(shape)) {
-        const child = value as z.ZodSchema<any>;
-        properties[key] = zodToJsonSchema(child);
-        const childDef: any = (child as any)._def;
-        if (childDef?.typeName !== 'ZodOptional' && childDef?.typeName !== 'ZodDefault') {
-          required.push(key);
-        }
-      }
-      const out: Record<string, unknown> = { type: 'object', properties };
-      if (required.length > 0) out.required = required;
-      return out;
-    }
-    case 'ZodString': {
-      const out: Record<string, unknown> = { type: 'string' };
-      for (const check of def.checks ?? []) {
-        if (check.kind === 'email') out.format = 'email';
-        if (check.kind === 'uuid') out.format = 'uuid';
-        if (check.kind === 'min') out.minLength = check.value;
-        if (check.kind === 'max') out.maxLength = check.value;
-      }
-      return out;
-    }
-    case 'ZodEnum':
-      return { type: 'string', enum: [...def.values] };
-    case 'ZodNumber':
-      return { type: 'number' };
-    case 'ZodBoolean':
-      return { type: 'boolean' };
-    case 'ZodArray': {
-      // Without this case, MCP clients (Claude.ai, ChatGPT) see `emails: {}` —
-      // an unconstrained schema interpreted as `any`, and the client coerces
-      // arrays to strings before validation. Surfaced via send_deployment_invites
-      // when its `emails: z.array(z.string().email())` declared the array shape
-      // but the converter dropped it.
-      const out: Record<string, unknown> = {
-        type: 'array',
-        items: zodToJsonSchema(def.type),
-      };
-      for (const check of def.checks ?? []) {
-        if (check.kind === 'min') out.minItems = check.value;
-        if (check.kind === 'max') out.maxItems = check.value;
-      }
-      return out;
-    }
-    case 'ZodOptional':
-    case 'ZodDefault':
-      return zodToJsonSchema(def.innerType);
-    default:
-      return {};
-  }
+  const { $schema: _dropped, ...jsonSchema } = z.toJSONSchema(schema, {
+    io: 'input',
+  }) as Record<string, unknown>;
+  return jsonSchema;
 }
 
 /**

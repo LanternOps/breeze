@@ -12,7 +12,7 @@ import { buildQuoteTemplate } from './quoteEmail';
 import { getEmailService } from './email';
 import { resolveBillingEmail } from './invoicePdf';
 import { isQuoteExpired } from './quoteExpiry';
-import { buildSellerSnapshot } from './sellerSnapshot';
+import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
 
 type QuoteRow = typeof quotes.$inferSelect;
 
@@ -118,10 +118,47 @@ export async function sendQuote(id: string, actor: QuoteActor): Promise<{ quote:
   // quote (the second matches 0 rows and 409s). Counter gaps from the losing
   // send are acceptable, per allocateQuoteCounter's contract (C3).
   const [partnerRow] = await db.select().from(partners).where(eq(partners.id, quote.partnerId)).limit(1);
+  // Freeze the customer bill-to snapshot at send time from the org's Billing
+  // settings — the same fields, from the same columns, that the invoice issue
+  // path snapshots (invoiceService.ts). Without this, quotes.bill_to_address
+  // stays NULL and the org's saved billing address never renders on the PDF. A
+  // tech's explicit draft billToName override wins over the org name; taxId/
+  // address come straight from the org. This single fetch also supplies the
+  // email recipient below (billingContact), replacing the old post-update read.
+  const [org] = await db
+    .select({
+      name: organizations.name,
+      taxId: organizations.taxId,
+      billingContact: organizations.billingContact,
+      billingAddressLine1: organizations.billingAddressLine1,
+      billingAddressLine2: organizations.billingAddressLine2,
+      billingAddressCity: organizations.billingAddressCity,
+      billingAddressRegion: organizations.billingAddressRegion,
+      billingAddressPostalCode: organizations.billingAddressPostalCode,
+      billingAddressCountry: organizations.billingAddressCountry,
+    })
+    .from(organizations)
+    .where(eq(organizations.id, quote.orgId))
+    .limit(1);
+  if (!org) {
+    // getQuote just read this quote in the SAME context, so its org should be
+    // visible too — an unreadable org here (orphaned/deleted row) is anomalous.
+    // The snapshot freezes ONCE at send, so a blank bill-to is permanent; log it
+    // rather than let the loss be indistinguishable from "org saved no address".
+    console.error(`[quoteLifecycle] org ${quote.orgId} not readable while freezing bill-to for quote ${id} — sending with an empty bill-to snapshot`);
+  }
+  const billToAddress = buildBillToAddress(org);
+  // Preserve a real tech-entered "Prepared for" override, but fall back to the org
+  // name when it's absent OR blank — updateQuote persists billToName verbatim,
+  // including '', which a bare `?? org.name` would freeze as an empty name.
+  const billToName = quote.billToName?.trim() ? quote.billToName : (org?.name ?? null);
   const claimed = await db
     .update(quotes)
     .set({
       status: 'sent', quoteNumber, issueDate, sentAt: now, updatedAt: now,
+      billToName,
+      billToAddress,
+      billToTaxId: quote.billToTaxId ?? org?.taxId ?? null,
       sellerSnapshot: buildSellerSnapshot(partnerRow),
       termsAndConditions: quote.termsAndConditions ?? partnerRow?.billingTermsAndConditions ?? null,
       terms: quote.terms ?? partnerRow?.invoiceFooter ?? null,
@@ -147,8 +184,9 @@ export async function sendQuote(id: string, actor: QuoteActor): Promise<{ quote:
   // follow-up (atom-3); the email-failure swallow keeps the send safe meanwhile.
   let emailed = false;
   try {
-    const [org] = await db.select({ billingContact: organizations.billingContact }).from(organizations).where(eq(organizations.id, quote.orgId)).limit(1);
-    const [partner] = await db.select({ name: partners.name }).from(partners).where(eq(partners.id, quote.partnerId)).limit(1);
+    // Reuse partnerRow (already fetched above for the seller snapshot) rather than
+    // re-querying the partner just for its name — one fewer round-trip per send.
+    const partnerName = partnerRow?.name;
     const recipient = resolveBillingEmail(org?.billingContact);
     const emailService = getEmailService();
     if (emailService && recipient) {
@@ -175,11 +213,11 @@ export async function sendQuote(id: string, actor: QuoteActor): Promise<{ quote:
       const pdf = await renderQuotePdf(
         { ...quote, status: 'sent', quoteNumber, sellerSnapshot: quote.sellerSnapshot ?? buildSellerSnapshot(partnerRow) },
         blocks, customerLines, loadImage, {
-          partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null,
+          partnerName: partnerName ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null,
           footer: quote.terms ?? brand?.footerText ?? null, currencyCode: quote.currencyCode ?? 'USD',
         });
       const template = buildQuoteTemplate({
-        quoteNumber, partnerName: partner?.name ?? 'your provider',
+        quoteNumber, partnerName: partnerName ?? 'your provider',
         total: formatMoneyish(quote.total, quote.currencyCode), acceptUrl,
         expiryDate: quote.expiryDate ?? undefined,
       });

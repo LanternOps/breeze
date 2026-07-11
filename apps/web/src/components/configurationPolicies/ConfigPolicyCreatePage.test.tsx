@@ -163,6 +163,22 @@ describe('ConfigPolicyCreatePage — owner scope (#1724)', () => {
     ).toBe(false);
   });
 
+  it('labels the partner option as a reusable library, not "all organizations"', () => {
+    startNewPolicy();
+    expect(screen.getByText(/Partner library/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/applies to no organizations until you assign it/i)
+    ).toBeInTheDocument();
+  });
+
+  it('notes that backup settings are unavailable on partner-owned policies', () => {
+    startNewPolicy();
+    expect(screen.getByTestId('policy-owner-partner')).toBeChecked();
+    expect(
+      screen.getByText(/Backup settings aren.t available on partner-owned policies/i)
+    ).toBeInTheDocument();
+  });
+
   it('hides the owner picker for an org-scope creator and POSTs orgId only', async () => {
     getJwtClaimsMock.mockReturnValue({ scope: 'organization', partnerId: null, orgId: 'org-9' });
     orgState.current = { currentOrgId: 'org-9', allOrgs: false, organizations: [] };

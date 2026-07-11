@@ -28,6 +28,7 @@ export default defineConfig({
       'src/services/vulnerability*.integration.test.ts',
       'src/services/aiToolsVulnerability.integration.test.ts',
       'src/services/cpeMap.integration.test.ts',
+      'src/services/cpeResolution.integration.test.ts',
       'src/services/exploitFeeds.integration.test.ts',
       'src/jobs/vulnerability*.integration.test.ts',
       // Warranty alert evaluator real-DB test: imports `__tests__/integration/setup`

@@ -18,15 +18,18 @@ import {
   getSessionMessages,
   handleApproval,
   searchSessions,
-  listM365Connections
+  listM365Connections,
+  resolveDefaultModel
 } from '../services/aiAgent';
 import { runPreFlightChecks, abortActivePlan } from '../services/aiAgentSdk';
 import { streamingSessionManager } from '../services/streamingSessionManager';
-import { getUsageSummary, updateBudget, getSessionHistory } from '../services/aiCostTracker';
+import { getUsageSummary, updateBudget, getSessionHistory, recordUsage } from '../services/aiCostTracker';
+import { createTicket, changeTicketStatus, TicketServiceError } from '../services/ticketService';
+import { createTimeEntry } from '../services/timeEntryService';
 import { writeRouteAudit } from '../services/auditEvents';
 import { assertNotLocked } from '../services/effectiveSettings';
 import { db } from '../db';
-import { aiSessions, aiMessages, aiToolExecutions, auditLogs } from '../db/schema';
+import { aiSessions, aiMessages, aiToolExecutions, auditLogs, organizations, devices } from '../db/schema';
 import { eq, and, desc, gte, lte, count, avg, sql as drizzleSql } from 'drizzle-orm';
 import { PERMISSIONS } from '../services/permissions';
 import {
@@ -42,6 +45,10 @@ import { captureException } from '../services/sentry';
 import { getConfig } from '../config/validate';
 import { OpenAICompatibleProvider } from '../services/llm/openaiCompatibleProvider';
 import { OpenAISessionManager } from '../services/llm/openaiSessionManager';
+import { draftTicketFromTranscript, ThinTranscriptError } from '../services/aiTicketDraft';
+import { createTicketFromChatSchema, type AiTicketDraft } from '@breeze/shared';
+import { deviceInSiteScope } from './tickets/siteScope';
+import { timeActorFrom } from './timeEntries/timeEntries';
 
 // Provider check that tolerates an unvalidated config: route unit tests never
 // call validateConfig(), and getConfig() throws in that state. Without a
@@ -115,6 +122,7 @@ function generateSessionTitle(content: string): string {
 export const aiRoutes = new Hono();
 const requireAiRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
 const requireAiWrite = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
+const requireTicketsWrite = requirePermission(PERMISSIONS.TICKETS_WRITE.resource, PERMISSIONS.TICKETS_WRITE.action);
 
 aiRoutes.use('*', authMiddleware);
 
@@ -352,6 +360,136 @@ aiRoutes.delete(
     });
 
     return c.json({ success: true });
+  }
+);
+
+// POST /sessions/:id/ticket-draft - Draft a support ticket from an AI conversation
+aiRoutes.post(
+  '/sessions/:id/ticket-draft',
+  requireScope('organization', 'partner', 'system'),
+  requireTicketsWrite,
+  async (c) => {
+    const auth = c.get('auth');
+    const sessionId = c.req.param('id')!;
+
+    const loaded = await getSessionMessages(sessionId, auth);
+    if (!loaded) return c.json({ error: 'Session not found' }, 404);
+    const { session, messages } = loaded;
+
+    const elapsedMinutes = Math.max(0, Math.round((Date.now() - new Date(session.createdAt).getTime()) / 60000));
+    const model = session.model ?? resolveDefaultModel();
+
+    let draft;
+    try {
+      draft = await draftTicketFromTranscript({
+        messages: messages.map((m) => ({ role: m.role, content: m.content })),
+        contextSnapshot: session.contextSnapshot,
+        elapsedMinutes,
+        model,
+      });
+    } catch (err) {
+      if (err instanceof ThinTranscriptError) return c.json({ error: err.message }, 422);
+      console.error('[AI] Ticket draft failed:', err);
+      captureException(err);
+      return c.json({ error: 'Could not draft a ticket from this conversation' }, 502);
+    }
+
+    // Best-effort cost accounting; never fails the request.
+    try {
+      await recordUsage(sessionId, session.orgId, model, draft.inputTokens, draft.outputTokens, false);
+    } catch {
+      // non-fatal
+    }
+
+    const [org] = await db
+      .select({ name: organizations.name })
+      .from(organizations)
+      .where(eq(organizations.id, session.orgId))
+      .limit(1);
+    let deviceHostname: string | null = null;
+    if (session.deviceId) {
+      const [dev] = await db
+        .select({ hostname: devices.hostname })
+        .from(devices)
+        .where(eq(devices.id, session.deviceId))
+        .limit(1);
+      deviceHostname = dev?.hostname ?? null;
+    }
+
+    const payload: AiTicketDraft = {
+      subject: draft.subject,
+      problemSummary: draft.problemSummary,
+      resolutionSummary: draft.resolutionSummary,
+      suggestedStatus: draft.wasFixed ? 'resolved' : 'open',
+      suggestedTimeMinutes: draft.suggestedTimeMinutes,
+      elapsedMinutes,
+      orgId: session.orgId,
+      orgName: org?.name ?? null,
+      deviceId: session.deviceId ?? null,
+      deviceHostname,
+    };
+    return c.json({ data: payload });
+  }
+);
+
+aiRoutes.post(
+  '/sessions/:id/ticket',
+  requireScope('organization', 'partner', 'system'),
+  requireTicketsWrite,
+  zValidator('json', createTicketFromChatSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const sessionId = c.req.param('id')!;
+    const body = c.req.valid('json');
+
+    const session = await getSession(sessionId, auth);
+    if (!session) return c.json({ error: 'Session not found' }, 404);
+
+    // deviceId comes from the session; drop it if a site-restricted caller can't reach the device.
+    let deviceId: string | undefined = session.deviceId ?? undefined;
+    if (deviceId && !(await deviceInSiteScope(auth, deviceId))) deviceId = undefined;
+
+    const actor = { userId: auth.user.id, name: auth.user.name, email: auth.user.email };
+
+    let ticket;
+    try {
+      ticket = await createTicket(
+        { source: 'ai', orgId: session.orgId, subject: body.subject, description: body.description, deviceId, priority: body.priority },
+        actor,
+      );
+    } catch (err) {
+      if (err instanceof TicketServiceError) return c.json({ error: err.message }, err.status ?? 400);
+      throw err;
+    }
+
+    let resolved = false;
+    if (body.status === 'resolved') {
+      try {
+        await changeTicketStatus(ticket.id, { status: 'resolved' }, { resolutionNote: body.resolutionNote }, actor);
+        resolved = true;
+      } catch (err) {
+        console.error(`[AI] Ticket ${ticket.id} created but resolve failed:`, err);
+        captureException(err);
+      }
+    }
+
+    let timeLogged = false;
+    if (body.timeMinutes > 0 && (auth.scope === 'partner' || auth.scope === 'system')) {
+      try {
+        const endedAt = new Date();
+        const startedAt = new Date(endedAt.getTime() - body.timeMinutes * 60_000);
+        await createTimeEntry(
+          { ticketId: ticket.id, startedAt, endedAt, description: 'Logged from AI conversation', isBillable: body.billable },
+          timeActorFrom(c),
+        );
+        timeLogged = true;
+      } catch (err) {
+        console.error(`[AI] Ticket ${ticket.id} created but time entry failed:`, err);
+      }
+    }
+
+    writeRouteAudit(c, { orgId: session.orgId, action: 'ai.session.create_ticket', resourceType: 'ticket', resourceId: ticket.id });
+    return c.json({ data: ticket, resolved, timeLogged }, 201);
   }
 );
 

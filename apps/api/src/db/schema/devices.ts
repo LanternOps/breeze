@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, real, bigint, date, primaryKey, index, unique } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, real, bigint, date, primaryKey, index, unique, uniqueIndex } from 'drizzle-orm/pg-core';
 import { organizations, sites } from './orgs';
 import { users } from './users';
 import type { BatteryStatus, DesktopAccessState, InterfaceBandwidth, TCCPermissions, VpnPresence } from '@breeze/shared';
@@ -66,6 +66,13 @@ export const devices = pgTable('devices', {
   lastSeenAt: timestamp('last_seen_at'),
   enrolledAt: timestamp('enrolled_at').defaultNow().notNull(),
   enrolledBy: uuid('enrolled_by').references(() => users.id),
+  // Linked device profiles for multi-boot systems (#2138). NULL => unlinked.
+  // When set, the device is one boot profile of a physical machine grouped in
+  // `device_link_groups`. A composite FK (link_group_id, org_id) ->
+  // device_link_groups(id, org_id) — declared in the migration, not here,
+  // matching the users(org_id, partner_id) composite-FK convention — pins every
+  // member of a group to the group's org (same-org invariant).
+  linkGroupId: uuid('link_group_id'),
   tags: text('tags').array().default([]),
   customFields: jsonb('custom_fields').default({}),
   managementPosture: jsonb('management_posture'),
@@ -106,6 +113,33 @@ export const devices = pgTable('devices', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
+
+// Linked device profiles for multi-boot systems (#2138). One row per physical
+// machine whose OS boot profiles are surfaced as separate device records. This
+// is a NON-destructive UI/monitoring overlay — the linked device rows keep all
+// of their own inventory/software/scripts/history/audit. Shape 1 (direct
+// org_id): auto-discovered by the rls-coverage contract test. Membership lives
+// on `devices.link_group_id` (one group per device), not a child table.
+export const deviceLinkGroups = pgTable('device_link_groups', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  // What the link MEANS. 'multiboot' (v1): members are peer boot profiles of
+  // one physical machine. Reserved future value: 'vm_host' (VM guests nested
+  // under their host server) — schema accommodation only; a future asymmetric
+  // kind adds a member-role column on devices (multiboot members are peers).
+  kind: varchar('kind', { length: 32 }).notNull().default('multiboot'),
+  name: varchar('name', { length: 255 }),
+  createdBy: uuid('created_by').references(() => users.id),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull()
+}, (table) => ({
+  orgIdIdx: index('device_link_groups_org_id_idx').on(table.orgId),
+  // UNIQUE INDEX (not a constraint) to match the migration's
+  // `CREATE UNIQUE INDEX` and satisfy db:check-drift — same convention as the
+  // pax8/ticketMailbox composite-(id, axis) FK targets. Backs the composite FK
+  // devices(link_group_id, org_id) -> device_link_groups(id, org_id).
+  idOrgUnique: uniqueIndex('device_link_groups_id_org_id_uniq').on(table.id, table.orgId),
+}));
 
 export const deviceHardware = pgTable('device_hardware', {
   deviceId: uuid('device_id').primaryKey().references(() => devices.id),

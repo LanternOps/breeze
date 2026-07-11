@@ -39,6 +39,8 @@ export default defineConfig({
       // Co-located real-DB integration test for BE-16 Phase 2 correlation:
       // CPE range matching and macOS OS vulnerability facts.
       'src/services/vulnerabilityCorrelationPhase2.integration.test.ts',
+      // Co-located real-DB integration test for the DisplayName→CPE resolution cache (#2290).
+      'src/services/cpeResolution.integration.test.ts',
       // Co-located real-DB integration test for the curated CPE map seed loader.
       'src/services/cpeMap.integration.test.ts',
       // Co-located real-DB integration test for KEV + EPSS vulnerability enrichment.

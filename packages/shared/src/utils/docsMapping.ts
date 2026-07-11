@@ -59,6 +59,7 @@ const docsMapping: DocsEntry[] = [
   { pattern: '/tickets', docsPath: '/features/ticketing/', label: 'Ticketing' },
   { pattern: '/timesheet', docsPath: '/features/ticketing/', label: 'Timesheet' },
   { pattern: '/billing/invoices', docsPath: '/features/invoices/', label: 'Invoices' },
+  { pattern: '/billing/quotes', docsPath: '/features/quotes/', label: 'Quotes' },
   { pattern: '/billing', docsPath: '/features/invoices/', label: 'Billing' },
   { pattern: '/contracts', docsPath: '/features/contracts/', label: 'Recurring Contracts' },
   { pattern: '/scripts', docsPath: '/features/scripts/', label: 'Scripts' },

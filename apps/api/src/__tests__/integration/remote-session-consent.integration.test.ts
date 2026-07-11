@@ -15,7 +15,7 @@
  *     pnpm --filter @breeze/api exec vitest run -c vitest.integration.config.ts \
  *     src/__tests__/integration/remote-session-consent.integration.test.ts
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Hono } from 'hono';
 import { eq, and } from 'drizzle-orm';
 
@@ -25,6 +25,34 @@ import {
   setupTestEnvironment,
 } from './db-utils';
 import { createAccessToken } from '../../services/jwt';
+
+// The offer route (exercised below to assert the technicianDisplay partner-name
+// fix) sends the start_desktop command over a real agent WebSocket connection,
+// which no test agent is connected to accept. Mock only `sendCommandToAgent` so
+// we can capture the payload the route builds — everything else in this file
+// (the deny-path tests above) hits the real DB/services untouched, since the
+// deny route never imports agentWs.
+const { sendCommandToAgentMock } = vi.hoisted(() => ({
+  sendCommandToAgentMock: vi.fn((_agentId: string, _command: unknown) => true),
+}));
+vi.mock('../../routes/agentWs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../routes/agentWs')>();
+  return { ...actual, sendCommandToAgent: sendCommandToAgentMock };
+});
+
+// The offer route also gates on the remote-access capability policy before
+// building the prompt. Mock it to an unconditional allow so this test stays
+// focused on the technicianDisplay partner-name fix, not policy resolution.
+vi.mock('../../services/remoteAccessPolicy', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/remoteAccessPolicy')>();
+  return {
+    ...actual,
+    checkRemoteAccess: vi.fn(() => Promise.resolve({ allowed: true })),
+    resolveDesktopSessionPolicy: vi.fn(() =>
+      Promise.resolve({ clipboard: 'both', idleTimeoutMinutes: 0, maxSessionDurationHours: 0 })
+    ),
+  };
+});
 
 import { remoteRoutes } from '../../routes/remote';
 import { devices, remoteSessions, auditLogs } from '../../db/schema';
@@ -273,5 +301,49 @@ describe('POST /remote/sessions/:id/deny — consent teardown + audit', () => {
     const body = await res.json() as { error: string; status: string };
     expect(body.error).toMatch(/current state/i);
     expect(body.status).toBe('active');
+  });
+});
+
+describe('POST /remote/sessions/:id/offer — technicianDisplay uses the PARTNER (MSP) name', () => {
+  let app: Hono;
+
+  beforeEach(() => {
+    app = buildApp();
+    sendCommandToAgentMock.mockClear();
+  });
+
+  it('ships prompt.technicianDisplay.orgName as the seeded partner name, not the client org name', async () => {
+    const env = await setupTestEnvironment({
+      scope: 'organization',
+      partnerOptions: { name: 'Olive Technology' },
+    });
+    const token = await mintMfaToken(env);
+
+    const deviceId = await insertDevice(env.organization.id, env.site.id);
+    const sessionId = await insertSession({
+      deviceId,
+      orgId: env.organization.id,
+      userId: env.user.id,
+      status: 'pending',
+    });
+
+    const res = await app.request(`/remote/sessions/${sessionId}/offer`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ offer: 'v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\n' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(sendCommandToAgentMock).toHaveBeenCalledTimes(1);
+
+    const [, command] = sendCommandToAgentMock.mock.calls[0]!;
+    const prompt = (command as { payload: { prompt?: { technicianDisplay?: { orgName: string | null } } } })
+      .payload.prompt;
+    expect(prompt).toBeDefined();
+    expect(prompt?.technicianDisplay?.orgName).toBe('Olive Technology');
+    expect(prompt?.technicianDisplay?.orgName).not.toBe(env.organization.name);
   });
 });

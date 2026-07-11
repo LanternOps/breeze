@@ -26,7 +26,7 @@ import {
 import { fetchWithAuth } from '../../stores/auth';
 import { fetchAllDevices, fetchAllNetworkDevices } from '../../lib/devicesFetch';
 import { useOrgStore } from '../../stores/orgStore';
-import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice, sendWakeCommand, sendBulkWakeCommand, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage } from '../../services/deviceActions';
+import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice, sendWakeCommand, sendBulkWakeCommand, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage, linkDevicesMultiboot } from '../../services/deviceActions';
 import { navigateTo } from '@/lib/navigation';
 import { getErrorMessage, getErrorTitle, isAccessDenied } from '@/lib/errorMessages';
 import AccessDenied from '../shared/AccessDenied';
@@ -321,6 +321,9 @@ export default function DevicesPage() {
           pendingReboot: d.pendingReboot === true,
           batteryStatus: (d.batteryStatus as Device['batteryStatus']) ?? null,
           activeVpns: (d.activeVpns as Device['activeVpns']) ?? null,
+          // Linked multi-boot profiles (#2138): grouping is computed
+          // client-side per page in DeviceList from this id alone.
+          linkGroupId: typeof d.linkGroupId === 'string' ? d.linkGroupId : null,
           enrolledAt: d.enrolledAt as string | undefined,
           desktopAccess: (d.desktopAccess as Device['desktopAccess']) ?? null,
           hardware: hardware ? {
@@ -754,6 +757,20 @@ export default function DevicesPage() {
       setActionInProgress(true);
 
       switch (action) {
+        case 'link-multiboot': {
+          if (deviceIds.length < 2) {
+            showToast({ type: 'error', message: 'Select at least two devices to link as multi-boot profiles.' });
+            break;
+          }
+          await linkDevicesMultiboot(deviceIds);
+          showToast({
+            type: 'success',
+            message: `Linked ${deviceCount} devices as multi-boot profiles.`,
+          });
+          await fetchDevices();
+          break;
+        }
+
         case 'reboot':
         case 'reboot_safe_mode':
         case 'shutdown':

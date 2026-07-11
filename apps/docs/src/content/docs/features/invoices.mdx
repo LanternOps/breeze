@@ -70,6 +70,19 @@ When a customer pays offline, record it against the invoice so the balance and s
 
 You can void a manually recorded payment if it was entered in error. Payments collected online through Stripe are reconciled from Stripe and can't be voided by hand.
 
+## Deposit Invoices
+
+When an invoice is created from an accepted [quote](/features/quotes/) that requires a deposit, it carries a **deposit due** amount -- and that deposit is what the customer pays **first**. The invoice shows the deposit as the amount due up front; once it's covered, the remaining balance becomes due per the invoice's terms. A single invoice therefore carries the whole engagement while still collecting the deposit before the balance, and the customer can pay both the deposit and the balance through [Online Payments](/features/online-payments/). See [Quotes → Deposits](/features/quotes/#deposits) for how the deposit is configured before the quote is sent.
+
+## Per-Organization Tax & Billing Address
+
+Each customer organization has a **Billing** tab (**Settings → Organizations → [organization] → Billing**) that holds the details Breeze prints on and calculates for that customer's invoices:
+
+- **Tax ID**, a **tax-exempt** flag, and a per-organization **tax rate**. When a rate is set here it applies to that customer's invoices; otherwise Breeze falls back to your partner default tax rate (**Settings → Billing**).
+- A **billing contact** and full **billing address** (address lines, city, region, postal code, and country), which appear on the invoice PDF.
+
+Setting these once per customer means invoices carry the right tax and address without re-entering them each time.
+
 ## Voiding and Reissuing
 
 If an issued invoice needs to be cancelled, **void** it with a reason. You can optionally **reissue** at the same time, which creates a fresh draft you can correct and issue anew -- keeping the original on record for audit purposes.

@@ -115,6 +115,13 @@ export const orgBillingSettingsSchema = z.object({
   taxId: z.string().max(100).nullable().optional(),
   taxExempt: z.boolean().optional(),
   taxRate: taxRate.nullable().optional(),
+  // Billing contact — the recipient quotes/invoices are actually emailed to
+  // (org.billingContact jsonb). Kept here, alongside the address, so the whole
+  // "who + where we bill" lives on one form. Clearing the field must send null,
+  // not '': `.email()` rejects an empty string (a 400), while `.nullable()`
+  // accepts null. Null flows through to resolveBillingEmail as "no recipient".
+  billingContactEmail: z.string().email().max(255).nullable().optional(),
+  billingContactName: z.string().max(255).nullable().optional(),
   billingAddressLine1: z.string().max(255).nullable().optional(),
   billingAddressLine2: z.string().max(255).nullable().optional(),
   billingAddressCity: z.string().max(120).nullable().optional(),

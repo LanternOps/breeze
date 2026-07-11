@@ -3,7 +3,7 @@ import { HTTPException } from 'hono/http-exception';
 import type { Context, Next } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm';
+import { and, eq, ilike, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { partners, organizations, sites, devices, agentVersions } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, requirePartner, type AuthContext } from '../middleware/auth';
@@ -20,6 +20,7 @@ import {
 import { applyOrganizationOrder, sanitizeOrganizationOrder } from '../services/orgOrdering';
 import { captureException } from '../services/sentry';
 import { encryptColumnValueForWrite } from '../services/encryptedColumnRegistry';
+import { escapeLike } from '../utils/sql';
 import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema } from '@breeze/shared';
 import type { IpAllowlistStatus } from '@breeze/shared';
 import { isValidIpOrCidr } from '../services/ipMatch';
@@ -27,6 +28,7 @@ import { seedSystemTicketStatuses } from '../services/ticketConfigService';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { clearPartnerAllowlistCache, ipAllowlistMode, readPartnerAllowlist } from '../services/ipAllowlist';
 import { registerOrgPortalSettingsRoutes } from './orgPortalSettings';
+import { registerOrgPortalUsersRoutes } from './orgPortalUsers';
 import { registerOrgTicketSettingsRoutes } from './orgTicketSettings';
 
 export const orgRoutes = new Hono();
@@ -914,7 +916,8 @@ orgRoutes.delete('/partners/:id', requireScope('system'), requireOrgWrite, requi
 const listOrganizationsSchema = z.object({
   partnerId: z.string().guid().optional(),
   page: z.string().optional(),
-  limit: z.string().optional()
+  limit: z.string().optional(),
+  search: z.string().optional()
 });
 
 // Org-scope callers may read their OWN org's name-level row without the
@@ -932,8 +935,12 @@ const requireOrgReadUnlessOwnOrg = async (c: Context, next: Next) => {
 
 orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'), requireOrgReadUnlessOwnOrg, zValidator('query', listOrganizationsSchema), async (c) => {
   const auth = c.get('auth') as AuthContext;
-  const { partnerId: queryPartnerId, ...pagination } = c.req.valid('query');
+  const { partnerId: queryPartnerId, search, ...pagination } = c.req.valid('query');
   const { page, limit, offset } = getPagination(pagination);
+  const trimmedSearch = search?.trim();
+  const searchCondition = trimmedSearch
+    ? ilike(organizations.name, `%${escapeLike(trimmedSearch)}%`)
+    : undefined;
 
   if (auth.scope === 'organization') {
     // Organization-scoped users can only see their own organization, and —
@@ -976,11 +983,11 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
         pagination: { page, limit, total: 0 }
       });
     }
-    conditions = and(inArray(organizations.id, orgIds), isNull(organizations.deletedAt));
+    conditions = and(inArray(organizations.id, orgIds), isNull(organizations.deletedAt), searchCondition);
   } else {
     conditions = queryPartnerId
-      ? and(eq(organizations.partnerId, queryPartnerId), isNull(organizations.deletedAt))
-      : isNull(organizations.deletedAt);
+      ? and(eq(organizations.partnerId, queryPartnerId), isNull(organizations.deletedAt), searchCondition)
+      : and(isNull(organizations.deletedAt), searchCondition);
   }
 
   const countResult = await db
@@ -1330,6 +1337,8 @@ orgRoutes.put('/organizations/:id', ...updateOrgHandler);
 
 // Customer-portal settings (portal_branding) — see routes/orgPortalSettings.ts
 registerOrgPortalSettingsRoutes(orgRoutes);
+// Customer-portal users (portal_users invite/manage) — see routes/orgPortalUsers.ts
+registerOrgPortalUsersRoutes(orgRoutes);
 // Org ticketing overrides (org_ticket_settings) — see routes/orgTicketSettings.ts
 registerOrgTicketSettingsRoutes(orgRoutes);
 

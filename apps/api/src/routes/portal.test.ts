@@ -304,7 +304,7 @@ describe('portal routes', () => {
       expect(sendPasswordResetMock).toHaveBeenCalledTimes(1);
       expect(sendPasswordResetMock).toHaveBeenCalledWith({
         to: 'portal@example.com',
-        resetUrl: 'http://localhost:4321/reset-password?token=nanoid-token&orgId=f1b0c8a6-45d1-4f84-8b8b-0ad0ce620001'
+        resetUrl: 'http://localhost:4321/portal/reset-password?token=nanoid-token&orgId=f1b0c8a6-45d1-4f84-8b8b-0ad0ce620001'
       });
     });
   });

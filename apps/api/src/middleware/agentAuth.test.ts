@@ -55,7 +55,7 @@ vi.mock('drizzle-orm', () => ({
 import type { Context } from 'hono';
 import { createHash } from 'crypto';
 
-import { db } from '../db';
+import { db, withDbAccessContext } from '../db';
 import { getRedis, rateLimiter } from '../services';
 import { createAuditLogAsync } from '../services/auditService';
 import { getTrustedClientIp } from '../services/clientIp';
@@ -204,7 +204,7 @@ function makeDevice(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function createContext(opts: { agentId?: string; token?: string } = {}): TestContext {
+function createContext(opts: { agentId?: string; token?: string; path?: string } = {}): TestContext {
   const headers: Record<string, string> = {};
   const store = new Map<string, unknown>();
   const reqHeaders: Record<string, string> = {};
@@ -218,6 +218,7 @@ function createContext(opts: { agentId?: string; token?: string } = {}): TestCon
     req: {
       header: (name: string) => reqHeaders[name.toLowerCase()],
       param: (_name: string) => opts.agentId ?? 'agent-1',
+      path: opts.path ?? '',
     },
     header: (name: string, value: string) => {
       headers[name] = value;
@@ -274,6 +275,23 @@ describe('agentAuthMiddleware - tenant-status gate', () => {
 
     expect(next).toHaveBeenCalledTimes(1);
     expect(isAgentTenantActive).toHaveBeenCalledWith('org-1');
+  });
+
+  // #1105 — the reliability ingest route self-manages a short org-scoped
+  // withDbAccessContext around only its lookup+insert (see reliability.ts),
+  // so the middleware must NOT also wrap the whole request in its own
+  // request-long org transaction for this route.
+  it('skips the request-long org wrap for the self-managed reliability route', async () => {
+    buildSelectMock([makeDevice()]);
+    vi.mocked(isAgentTenantActive).mockResolvedValue(true);
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/reliability' });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
   });
 });
 

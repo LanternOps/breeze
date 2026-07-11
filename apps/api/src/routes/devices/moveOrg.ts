@@ -18,6 +18,7 @@ import {
 import { moveOrgSchema } from './schemas';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { getDeviceOrgDenormalizedTables, DEVICE_SITE_DENORMALIZED_TABLES } from './core';
+import { dissolveLinkGroupIfBelowMinimum } from '../../services/deviceLinkGroups';
 import { disconnectAgent } from '../agentWs';
 import { captureException } from '../../services/sentry';
 
@@ -138,11 +139,23 @@ moveOrgRoutes.post(
           .set({
             orgId: targetOrgId,
             siteId: targetSiteId,
+            // #2138 — a device leaving its org can no longer be a boot profile
+            // of a machine in the OLD org. Unlink it here; the composite FK
+            // (link_group_id, org_id) -> device_link_groups(id, org_id) would
+            // otherwise fail the org flip. The source group is dissolved below
+            // if it drops below the two-profile minimum.
+            linkGroupId: null,
             updatedAt: new Date(),
           })
           .where(eq(devices.id, deviceId))
           .returning();
         updated = row;
+
+        // #2138 — if the moved device left a link group with a single lone
+        // profile behind, that group is no longer meaningful: dissolve it.
+        if (device.linkGroupId) {
+          await dissolveLinkGroupIfBelowMinimum(tx, device.linkGroupId);
+        }
 
         // Rewrite the denormalized org_id on every device-scoped table.
         // Skipping any of these strands pre-existing rows under RLS.

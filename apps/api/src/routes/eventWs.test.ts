@@ -506,6 +506,109 @@ describe('createEventWsTicketRoute', () => {
     expect(identity).toEqual({ userId: 'user-abc', orgIds: ['org-a', 'org-b'] });
   });
 
+  // Regression guard (#2256): the All-Organizations Devices view opens the
+  // event stream WITHOUT `orgId` or `allOrgs=1`. A partner user with multiple
+  // accessible orgs must get a ticket scoped to ALL of them — the old
+  // behaviour silently narrowed to `orgIds[0]`, so live device.online/offline
+  // events for every other org were never delivered until a manual refresh.
+  it('issues a multi-org ticket for partner users by default (no orgId, no allOrgs) — #2256', async () => {
+    const { Hono } = await import('hono');
+    const app = new Hono();
+
+    app.use('*', async (c, next) => {
+      c.set('auth', {
+        user: { id: 'user-abc', email: 'a@b.com', name: 'A' },
+        orgId: null,
+        scope: 'partner',
+        partnerId: 'partner-1',
+        canAccessOrg: () => true,
+        accessibleOrgIds: ['org-a', 'org-b', 'org-c'],
+      } as any);
+      await next();
+    });
+
+    const { resolveOrgAccess } = await import('../middleware/auth');
+    vi.mocked(resolveOrgAccess).mockResolvedValueOnce({
+      type: 'multiple',
+      orgIds: ['org-a', 'org-b', 'org-c'],
+    });
+
+    const ticketApp = createEventWsTicketRoute();
+    app.route('/events', ticketApp);
+
+    // No orgId, no allOrgs — exactly what useEventStream sends.
+    const res = await app.request('/events/ws-ticket', { method: 'POST' });
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    const identity = await consumeTicket(body.ticket);
+    expect(identity).toEqual({ userId: 'user-abc', orgIds: ['org-a', 'org-b', 'org-c'] });
+  });
+
+  // Branch-order guard: the `auth.orgId` short-circuit is the route-level
+  // defense ensuring an ORG-scoped token can never mint a multi-org ticket
+  // (org tokens carry a partnerId, and the 'multiple' branch is now strictly
+  // broader with no opt-in flag). Even if resolveOrgAccess were to return
+  // 'multiple', the ticket must stay scoped to the token's own org.
+  it('org-token users get a single-org ticket even when orgAccess resolves to multiple', async () => {
+    const { Hono } = await import('hono');
+    const app = new Hono();
+
+    app.use('*', async (c, next) => {
+      c.set('auth', {
+        user: { id: 'user-abc', email: 'a@b.com', name: 'A' },
+        orgId: 'org-x',
+        scope: 'organization',
+        partnerId: 'partner-1',
+      } as any);
+      await next();
+    });
+
+    const { resolveOrgAccess } = await import('../middleware/auth');
+    vi.mocked(resolveOrgAccess).mockResolvedValueOnce({
+      type: 'multiple',
+      orgIds: ['org-x', 'org-y'],
+    });
+
+    const ticketApp = createEventWsTicketRoute();
+    app.route('/events', ticketApp);
+
+    const res = await app.request('/events/ws-ticket', { method: 'POST' });
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    const identity = await consumeTicket(body.ticket);
+    expect(identity).toEqual({ userId: 'user-abc', orgIds: ['org-x'] });
+  });
+
+  // A partner user with zero accessible orgs (just-onboarded partner) must get
+  // the intended 400, not a 500 from createEventWsTicket's empty-array throw.
+  it('returns 400 (not 500) for a partner user with zero accessible orgs', async () => {
+    const { Hono } = await import('hono');
+    const app = new Hono();
+
+    app.use('*', async (c, next) => {
+      c.set('auth', {
+        user: { id: 'user-abc', email: 'a@b.com', name: 'A' },
+        orgId: null,
+        scope: 'partner',
+        partnerId: 'partner-1',
+        canAccessOrg: () => false,
+        accessibleOrgIds: [],
+      } as any);
+      await next();
+    });
+
+    const { resolveOrgAccess } = await import('../middleware/auth');
+    vi.mocked(resolveOrgAccess).mockResolvedValueOnce({ type: 'multiple', orgIds: [] });
+
+    const ticketApp = createEventWsTicketRoute();
+    app.route('/events', ticketApp);
+
+    const res = await app.request('/events/ws-ticket', { method: 'POST' });
+    expect(res.status).toBe(400);
+  });
+
   it('issued ticket is consumable with correct identity', async () => {
     const { Hono } = await import('hono');
     const app = new Hono();

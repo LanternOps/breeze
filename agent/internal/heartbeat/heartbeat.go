@@ -38,6 +38,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/monitoring"
 	"github.com/breeze-rmm/agent/internal/mtls"
 	"github.com/breeze-rmm/agent/internal/observability"
+	"github.com/breeze-rmm/agent/internal/onedrivehelper"
 	"github.com/breeze-rmm/agent/internal/patching"
 	"github.com/breeze-rmm/agent/internal/peripheral"
 	"github.com/breeze-rmm/agent/internal/privilege"
@@ -73,22 +74,25 @@ type HeartbeatPayload struct {
 	// pointer so an old-agent omission (nil) is distinguishable from a
 	// genuine "physical" report (false) — the server only overwrites the
 	// stored value when the agent actually sends one.
-	IsVirtual              *bool          `json:"isVirtual,omitempty"`
-	VirtualizationPlatform string         `json:"virtualizationPlatform,omitempty"`
-	HealthStatus           map[string]any `json:"healthStatus,omitempty"`
-	DroppedLogs      int64                     `json:"droppedLogs,omitempty"`
-	HelperVersion    string                    `json:"helperVersion,omitempty"`
-	WatchdogVersion  string                    `json:"watchdogVersion,omitempty"`
-	TCCPermissions   *ipc.TCCStatus            `json:"tccPermissions,omitempty"`
-	DesktopAccess    *DesktopAccessState       `json:"desktopAccess,omitempty"`
-	Hostname         string                    `json:"hostname,omitempty"`
-	OSVersion        string                    `json:"osVersion,omitempty"`
-	OSBuild          string                    `json:"osBuild,omitempty"`
-	IsHeadless       bool                      `json:"isHeadless"`
+	IsVirtual              *bool               `json:"isVirtual,omitempty"`
+	VirtualizationPlatform string              `json:"virtualizationPlatform,omitempty"`
+	HealthStatus           map[string]any      `json:"healthStatus,omitempty"`
+	DroppedLogs            int64               `json:"droppedLogs,omitempty"`
+	HelperVersion          string              `json:"helperVersion,omitempty"`
+	WatchdogVersion        string              `json:"watchdogVersion,omitempty"`
+	TCCPermissions         *ipc.TCCStatus      `json:"tccPermissions,omitempty"`
+	DesktopAccess          *DesktopAccessState `json:"desktopAccess,omitempty"`
+	Hostname               string              `json:"hostname,omitempty"`
+	OSVersion              string              `json:"osVersion,omitempty"`
+	OSBuild                string              `json:"osBuild,omitempty"`
+	IsHeadless             bool                `json:"isHeadless"`
 	// Current-state power/battery telemetry (#2142). Pointer + omitempty so an
 	// old agent (or a platform that can't report power state) omits the field
 	// and the server keeps whatever it last knew rather than clobbering it.
-	Battery          *collectors.BatteryInfo   `json:"battery,omitempty"`
+	Battery *collectors.BatteryInfo `json:"battery,omitempty"`
+	// OneDrive helper state (Phase 2). Nil until a config has been applied on a
+	// Windows box — omitempty then drops the field entirely.
+	OneDriveDeviceState *onedrivehelper.DeviceState `json:"onedriveDeviceState,omitempty"`
 }
 
 type DesktopAccessState struct {
@@ -164,6 +168,8 @@ type Heartbeat struct {
 	lastInventoryUpdate   time.Time
 	lastEventLogUpdate    time.Time
 	lastSecurityUpdate    time.Time
+	lastRecoveryKeysFP    string
+	pendingRecoveryKeys   []security.RecoveryKey
 	lastSessionUpdate     time.Time
 	lastPostureUpdate     time.Time
 	lastReliabilityUpdate time.Time
@@ -236,6 +242,10 @@ type Heartbeat struct {
 
 	// Service & process monitoring
 	monitor *monitoring.Monitor
+
+	// OneDrive helper state captured on config apply, reported next heartbeat.
+	onedriveMu    sync.Mutex
+	onedriveState *onedrivehelper.DeviceState
 
 	// Cached device role classification (computed once at startup)
 	cachedDeviceRole string
@@ -996,6 +1006,7 @@ func (h *Heartbeat) Start() {
 			// Send security status every 5 minutes
 			if shouldSendSecurity {
 				go h.sendSecurityStatus()
+				go h.sendRecoveryKeys()
 			}
 			if shouldSendSessions {
 				go h.sendSessionInventory()
@@ -1683,6 +1694,15 @@ func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 		h.applyPatchSourceConfig(psRaw)
 	}
 
+	// Apply onedrive_helper_settings if present (Phase 2). No-op on non-Windows.
+	odRaw, hasOD := update["onedrive_helper_settings"]
+	if !hasOD {
+		odRaw, hasOD = update["onedriveHelperSettings"]
+	}
+	if hasOD {
+		h.applyOneDriveHelperConfig(odRaw)
+	}
+
 	registryRaw, hasRegistry := update["policy_registry_state_probes"]
 	if !hasRegistry {
 		registryRaw, hasRegistry = update["policyRegistryStateProbes"]
@@ -2295,6 +2315,58 @@ func (h *Heartbeat) sendSecurityStatus() {
 	h.sendInventoryData("security/status", status, "security status")
 }
 
+// sendRecoveryKeys escrows the device's BitLocker recovery keys. Runs on the
+// security tick but only transmits when the key set changed (fingerprint
+// gate) — recovery keys should not transit the wire every 5 minutes. Also
+// drains rotation results whose upload previously failed.
+func (h *Heartbeat) sendRecoveryKeys() {
+	h.mu.Lock()
+	pending := h.pendingRecoveryKeys
+	h.pendingRecoveryKeys = nil
+	h.mu.Unlock()
+	if len(pending) > 0 {
+		if err := h.pushRecoveryKeys("rotation", pending); err != nil {
+			h.mu.Lock()
+			h.pendingRecoveryKeys = append(pending, h.pendingRecoveryKeys...)
+			h.mu.Unlock()
+			// Re-park failed: these rotated keys are still unescrowed and remain
+			// in memory only (lost on restart). Escalate above the generic
+			// inventory WARN so the risk is greppable; no key material logged.
+			log.Error("parked recovery key escrow retry failed — keys remain in memory only and will be LOST on agent restart",
+				"count", len(pending), "error", err.Error())
+		}
+	}
+
+	keys, err := security.CollectRecoveryKeys()
+	if err != nil {
+		log.Warn("recovery key collection failed", "error", err.Error())
+		return
+	}
+	fp := security.FingerprintRecoveryKeys(keys)
+	h.mu.Lock()
+	last := h.lastRecoveryKeysFP
+	h.mu.Unlock()
+	if fp == last {
+		return
+	}
+	if err := h.pushRecoveryKeys("snapshot", keys); err != nil {
+		return
+	}
+	h.mu.Lock()
+	h.lastRecoveryKeysFP = fp
+	h.mu.Unlock()
+}
+
+// pushRecoveryKeys uploads keys for escrow. Key material is never logged —
+// sendInventoryData logs only the label.
+func (h *Heartbeat) pushRecoveryKeys(source string, keys []security.RecoveryKey) error {
+	if keys == nil {
+		keys = []security.RecoveryKey{} // marshal as [], not null (zod rejects null)
+	}
+	payload := map[string]any{"source": source, "keys": keys}
+	return h.sendInventoryData("security/recovery-keys", payload, fmt.Sprintf("recovery keys (%s, %d)", source, len(keys)))
+}
+
 func (h *Heartbeat) sendManagementPosture() {
 	posture := mgmtdetect.CollectPosture()
 	total := 0
@@ -2565,6 +2637,12 @@ func (h *Heartbeat) sendHeartbeat() {
 	// Current power/battery state (#2142). Nil on platforms that can't report
 	// it or when the query failed — omitempty then drops the field.
 	payload.Battery = h.hardwareCol.CollectBattery()
+
+	// OneDrive helper state (Phase 2). Nil until a config has been applied on a
+	// Windows box — omitempty then drops the field entirely.
+	h.onedriveMu.Lock()
+	payload.OneDriveDeviceState = h.onedriveState
+	h.onedriveMu.Unlock()
 
 	// Check for pending reboot
 	pendingReboot, _ := patching.DetectPendingReboot()

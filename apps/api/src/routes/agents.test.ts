@@ -114,6 +114,18 @@ vi.mock('../db/schema', () => ({
   deviceSessions: {},
   agentVersions: {},
   organizations: {},
+  // reliabilityScoring.ts builds SCORING_HISTORY_COLUMNS from these at module
+  // load; it's reachable from this suite via reliabilityWorker, so the partial
+  // schema mock must expose the projected columns or the whole file fails to load.
+  deviceReliabilityHistory: {
+    collectedAt: 'collectedAt',
+    uptimeSeconds: 'uptimeSeconds',
+    bootTime: 'bootTime',
+    crashEvents: 'crashEvents',
+    appHangs: 'appHangs',
+    serviceFailures: 'serviceFailures',
+    hardwareErrors: 'hardwareErrors',
+  },
   peripheralEventTypeEnum: { enumValues: ['connected', 'disconnected', 'blocked', 'allowed'] },
   backupJobs: {},
   patchPolicies: {},

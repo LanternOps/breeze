@@ -115,13 +115,13 @@ describe('POST /catalog/polish', () => {
     expect(polishCatalogText).not.toHaveBeenCalled();
   });
 
-  it('maps a fact-drift EnrichmentError to 502 / AI_FACT_DRIFT', async () => {
-    polishCatalogText.mockRejectedValueOnce(new EnrichmentError('changed details', 'AI_FACT_DRIFT', 502));
+  it('maps a polish EnrichmentError to its status / code (AI_PARSE 502)', async () => {
+    polishCatalogText.mockRejectedValueOnce(new EnrichmentError('unparseable reply', 'AI_PARSE', 502));
     const res = await app().request('/polish', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: 'apc 600va' }),
     });
     expect(res.status).toBe(502);
-    expect((await res.json()).code).toBe('AI_FACT_DRIFT');
+    expect((await res.json()).code).toBe('AI_PARSE');
   });
 });

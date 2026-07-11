@@ -1,8 +1,19 @@
 # Spike — `TenantAutoMount` library-ID format vs Microsoft Graph IDs
 
-**Date:** 2026-06-19 (research) — **2026-06-22 (desk research complete)**
-**Status:** 🟡 **RESEARCH COMPLETE — verdict provisionally CLEAN, pending live Windows round-trip validation**
+**Date:** 2026-06-19 (research) — 2026-06-22 (desk research complete) — **2026-07-09 (live mount validated)**
+**Status:** 🟢 **CLEAN CONFIRMED — live Windows round-trip mounted a never-synced library from a purely Graph-constructible composite**
 **Gates:** Sub-project A §4 (agent applier) and §5 (Graph library picker UX). See `docs/superpowers/specs/2026-06-19-onedrive-helper-library-sync-design.md` §6 and `docs/superpowers/plans/2026-06-19-onedrive-helper-server-foundation.md` Task 1.
+
+## Live validation results (2026-07-09, Windows test VM)
+
+Rig: Windows VM, OneDrive client **26.106.0603.0003** (machine-wide install at `C:\Program Files\Microsoft OneDrive\OneDrive.exe`), signed in to a business tenant over RDP, target = a team site's default Documents library the user had **never synced**. `FilesOnDemandEnabled=1` HKLM policy set first.
+
+- ✅ **The exact `buildTenantAutoMountValue` output mounted the library ~15 seconds** after `TimerAutoMount=1` + OneDrive restart: bare-GUID `tenantId`, braced `{siteId}`/`{webId}`/`{listId}`, `webUrl` percent-encoded with `encodeURIComponent` + the `[!'()*_]` extras (dots/hyphens literal), `version=1`. Verified by both the `Accounts\Business1\Tenants` cache AND the folder appearing in the profile.
+- **Encoding verdict: minimal (encodeURIComponent-level) encoding is accepted.** Notably, today's SharePoint "Copy library ID" emits a far more aggressively encoded variant (`%2D` inside GUIDs, `%7B`/`%7D` braces, `%2E` dots, and **no braces around listId** once decoded) — different from both our builder's output and the older captured sample in this doc. Our builder's form is proven; the copied form is field-proven via GPO deployments (operators paste it verbatim into `AutoMountTeamSites`). Manual-paste mode therefore stores/writes the copied string verbatim — both variants are treated as opaque by our pipeline. (Residual, low-risk: we did not independently re-prove the copied form on this rig.)
+- **Braced `listId` is accepted** even though the current copy-string ships it unbraced.
+- **Tenant cache shape confirmed:** `HKCU\...\Accounts\Business1\Tenants\<TenantDisplayName>` with one value per mounted scope; the value **name** is the local folder path, e.g. `C:\Users\<user>\<TenantDisplayName>\<SiteName> - <LibraryName>` (`...\Contoso LLC\Company - Documents`). The user's own OneDrive folder ALSO appears under `Tenants` — mounted-library detection must exclude the `UserFolder` path. Note for drift matching: paths embed `<SiteName> - <LibraryName>`, so matching on library display name alone ("Documents") is prone to false-mounted matches across sites — prefer matching site+library.
+- **Timer poke works on 26.x:** `TimerAutoMount` (QWORD 1) + restart → processing within ~15s.
+- ⚠️ **Session gotcha (cost us two false negatives):** OneDrive.exe will not run usefully outside the user's interactive session. Killing it and relaunching from an SSH (session 0) context leaves it dead and AutoMount unprocessed — the agent applier must always spawn via the user's session token (`CreateProcessAsUser`), which is exactly its design.
 
 ## Question
 

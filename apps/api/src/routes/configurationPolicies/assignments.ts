@@ -59,6 +59,15 @@ assignmentRoutes.post(
     const policy = await getConfigPolicy(id, auth);
     if (!policy) return c.json({ error: 'Configuration policy not found' }, 404);
 
+    // Partner-owned policies (org_id NULL) are the partner library (#2280).
+    // ANY assignment on one — at any level — pushes config into orgs the caller
+    // may not fully control, so all writes require full partner org access, the
+    // same capability that gates partner-wide create/update/delete. This
+    // supersedes the per-level check that used to live only in the partner block.
+    if (policy.orgId === null && !canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
+
     // Partner-level assignments are only valid for partner-OWNED policies, and
     // the target is the partner itself, derived server-side (#1724) — never
     // trust a client-supplied partner id. It's the policy's own partner_id (or
@@ -75,16 +84,6 @@ assignmentRoutes.post(
       } else {
         return c.json({ error: 'Partner-wide assignments require partner scope' }, 403);
       }
-      // Guard: partner-level assignments push config to ALL orgs under the partner.
-      // A user with orgAccess='selected' or 'none' only has visibility into a subset
-      // of orgs — permitting a partner-level assignment would silently propagate
-      // config (remote_access, PAM, monitoring, patch) to orgs they cannot access.
-      // Only orgAccess='all' partner users (and system scope) may assign at
-      // partner level — the same capability that gates partner-wide policy
-      // create/update/delete and feature-link writes.
-      if (!canManagePartnerWidePolicies(auth)) {
-        return c.json({ error: 'Partner-level assignments require full partner org access (orgAccess must be "all")' }, 403);
-      }
     }
     if (!targetId) {
       return c.json({ error: 'targetId is required for this assignment level' }, 400);
@@ -96,7 +95,7 @@ assignmentRoutes.post(
       targetId
     );
     if (!targetValidation.valid) {
-      return c.json({ error: targetValidation.error ?? 'Assignment target is not valid for this policy organization' }, 403);
+      return c.json({ error: targetValidation.error }, 403);
     }
 
     // assignPolicy returns null (instead of throwing) on a duplicate — see the
@@ -146,9 +145,10 @@ assignmentRoutes.delete(
     const policy = await getConfigPolicy(id, auth);
     if (!policy) return c.json({ error: 'Configuration policy not found' }, 404);
 
-    // Unassigning a partner-wide policy strips config from ALL orgs under the
-    // partner (its only assignment is the partner-level one) — the same blast
-    // radius as assigning, so the same capability gate applies.
+    // Any assignment on a partner-owned library policy (#2280) — partner-level
+    // (all orgs) or a narrower org/site/group/device row — is a partner-wide-
+    // access capability: the delete may strip config from one org or every org
+    // under the partner. Same blast radius as assigning, so the same gate applies.
     if (policy.orgId === null && !canManagePartnerWidePolicies(auth)) {
       return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }

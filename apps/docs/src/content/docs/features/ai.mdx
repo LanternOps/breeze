@@ -35,6 +35,10 @@ The AI Risk Engine categorises every AI tool into one of four tiers that control
   Tier classification is action-level, not tool-level. For example, `disk_cleanup` is Tier 1 when previewing and Tier 3 when executing; `manage_alerts` is Tier 1 for list/get and Tier 2 for acknowledge/resolve. The AI resolves the tier for each specific action at runtime.
 </Aside>
 
+<Aside type="note">
+  When a partner-scoped agent lists configuration policies (`list_configuration_policies`), the results now include **partner-wide ("All orgs") policies** — those that belong to the partner rather than a single organization — alongside org-owned ones. Previously partner-wide policies were invisible to the AI, so a policy defined once for every customer wouldn't show up in a fleet-wide question; it now appears as expected.
+</Aside>
+
 ### Approval workflow
 
 When the AI proposes a Tier 3 action, it enters a **pending** state and waits for human approval.

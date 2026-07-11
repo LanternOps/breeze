@@ -13,7 +13,6 @@ import {
   listConfigPolicies,
   updateConfigPolicy,
   deleteConfigPolicy,
-  assignPolicy,
   canManagePartnerWidePolicies,
   PartnerWideWriteDeniedError,
 } from '../../services/configurationPolicy';
@@ -80,26 +79,15 @@ crudRoutes.post(
         return c.json({ error: 'Partner-wide policies require full partner org access (orgAccess must be "all")' }, 403);
       }
       const policy = await createConfigPolicy({ partnerId: auth.partnerId }, data, auth.user.id);
-      // Seed the matching partner-level assignment so the policy actually
-      // applies the moment it's created. Ownership ("Scope: All organizations")
-      // and the assignment that drives resolution are kept in lockstep —
-      // otherwise a partner-wide policy resolves to NO devices until the user
-      // separately discovers the Assignments tab (#1724 follow-up).
-      //
-      // Both writes run inside the request-level transaction: authMiddleware
-      // wraps the handler in withDbAccessContext, which is a single
-      // baseDb.transaction. If this seed throws, the policy insert above rolls
-      // back with it — a committed-but-unassigned partner-wide policy (the exact
-      // "resolves to no devices" state this feature prevents) can't be left
-      // behind, and no compensating delete is needed.
-      await assignPolicy(policy.id, 'partner', auth.partnerId, 0, auth.user.id);
       writeRouteAudit(c, {
         orgId: null,
         action: 'config_policy.create',
         resourceType: 'configuration_policy',
         resourceId: policy.id,
         resourceName: policy.name,
-        details: { ownerScope: 'partner', partnerId: auth.partnerId, autoAssignedPartnerWide: true },
+        // Library model (#2280): partner-owned policies are created empty and
+        // applied via explicit assignments on the Organizations panel.
+        details: { ownerScope: 'partner', partnerId: auth.partnerId },
       });
       return c.json(policy, 201);
     }
@@ -144,10 +132,11 @@ crudRoutes.post(
       if (!org) return c.json({ error: 'Organization not found' }, 404);
     }
 
-    // Org-owned policies are intentionally NOT auto-assigned (unlike partner-wide
-    // above): an org policy is commonly meant for a specific site/group/device,
-    // so auto-assigning it at the org level would silently over-apply to every
-    // device in the org. The user picks the assignment target explicitly.
+    // Org-owned policies are intentionally NOT auto-assigned: an org policy is
+    // commonly meant for a specific site/group/device, so auto-assigning it at
+    // the org level would silently over-apply to every device in the org.
+    // Library policies (#2280) — org-owned or partner-owned — are always
+    // created empty; the user assigns them to a target explicitly afterward.
     const policy = await createConfigPolicy({ orgId: orgId as string }, data, auth.user.id);
 
     writeRouteAudit(c, {

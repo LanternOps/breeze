@@ -968,7 +968,28 @@
       "pattern": "apps/api/src/db/schema/invoices.ts",
       "docs": [
         "features/invoices.mdx",
+        "features/quotes.mdx",
         "reference/schema.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/schema/orgs.ts",
+      "docs": [
+        "features/invoices.mdx",
+        "features/product-catalog.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/aiToolsConfigPolicy.ts",
+      "docs": [
+        "features/ai.mdx",
+        "features/mcp-server.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/mcpGuidance.ts",
+      "docs": [
+        "features/mcp-server.mdx"
       ]
     },
     {
@@ -1365,7 +1386,22 @@
     {
       "pattern": "apps/api/src/routes/quotes/**",
       "docs": [
+        "features/quotes.mdx",
         "features/contracts.mdx",
+        "features/product-catalog.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/schema/quotes.ts",
+      "docs": [
+        "features/quotes.mdx",
+        "features/invoices.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/catalog/enrich.ts",
+      "docs": [
+        "features/quotes.mdx",
         "features/product-catalog.mdx"
       ]
     },

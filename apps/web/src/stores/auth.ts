@@ -264,12 +264,19 @@ export function resolveApiOrigin(): string {
 const REFRESH_LOCK_NAME = 'breeze-token-refresh';
 
 // One low-level /auth/refresh attempt. Returns the new tokens on success, or a
-// discriminated result so the caller can tell a benign concurrent race (server
-// reason 'refresh_raced', #1107) — which is retryable — apart from a hard
-// failure. A raced 401 means the winning sibling already rotated the SHARED
-// refresh cookie and the server deliberately did NOT clear it or kill the
-// session family, so a retry picks up the fresh cookie.
-async function refreshFetchOnce(): Promise<{ tokens: Tokens | null; raced: boolean }> {
+// discriminated result so the caller can tell three cases apart:
+//   - raced:     a benign concurrent race (server reason 'refresh_raced',
+//                #1107) — the winning sibling already rotated the SHARED refresh
+//                cookie and the server deliberately did NOT clear it or kill the
+//                session family, so an immediate retry picks up the fresh cookie.
+//   - transient: a gateway/network blip (5xx, offline, timeout) — no verdict was
+//                reached on the refresh cookie, so the session is very likely
+//                still valid and this should be retried with backoff rather than
+//                evicting the user (QA 2026-07-08: a single 502 on /auth/refresh
+//                hard-logged-out the SPA mid-session).
+//   - neither:   a hard failure (expired/reused refresh cookie, real 401/403) —
+//                the session is unrecoverable and the caller must evict.
+async function refreshFetchOnce(): Promise<{ tokens: Tokens | null; raced: boolean; transient: boolean }> {
   const headers = new Headers({ 'Content-Type': 'application/json' });
   const csrfToken = readCookie(CSRF_COOKIE_NAME);
   if (csrfToken) {
@@ -289,24 +296,32 @@ async function refreshFetchOnce(): Promise<{ tokens: Tokens | null; raced: boole
       signal: controller.signal,
     });
   } catch {
-    return { tokens: null, raced: false };
+    // Network error, offline, or the 8s abort fired — no HTTP status reached
+    // the client, so the refresh cookie is untouched. Retryable.
+    return { tokens: null, raced: false, transient: true };
   } finally {
     clearTimeout(timeout);
   }
 
   if (refreshResponse.ok) {
     const { tokens } = await refreshResponse.json().catch(() => ({ tokens: undefined })) as { tokens?: Tokens };
-    return { tokens: tokens?.accessToken ? tokens : null, raced: false };
+    return { tokens: tokens?.accessToken ? tokens : null, raced: false, transient: false };
   }
 
   if (refreshResponse.status === 401) {
     const body = await refreshResponse.json().catch(() => null) as { reason?: string } | null;
     if (body?.reason === 'refresh_raced') {
-      return { tokens: null, raced: true };
+      return { tokens: null, raced: true, transient: false };
     }
   }
 
-  return { tokens: null, raced: false };
+  // 5xx (typically a 502/503/504 from the gateway) means the request never
+  // reached a verdict on the refresh cookie — retryable, not an auth failure.
+  if (refreshResponse.status >= 500) {
+    return { tokens: null, raced: false, transient: true };
+  }
+
+  return { tokens: null, raced: false, transient: false };
 }
 
 // Serialize refresh across tabs AND across reloads via the Web Locks API.
@@ -324,18 +339,43 @@ async function withRefreshLock<T>(fn: () => Promise<T>): Promise<T> {
   return locks.request(REFRESH_LOCK_NAME, fn) as Promise<T>;
 }
 
+// A single transient gateway/network blip must not boot the user mid-session
+// (QA 2026-07-08), so transient refresh failures get a bounded exponential
+// backoff. Kept small: enough to ride out a one-off 502, not so many that a
+// genuinely dead session hangs the UI before eviction. Worst added wait ~0.9s.
+const MAX_TRANSIENT_REFRESH_RETRIES = 2;
+const TRANSIENT_REFRESH_BASE_DELAY_MS = 300;
+
 async function requestTokenRefresh(): Promise<Tokens | null> {
   return withRefreshLock(async () => {
-    const first = await refreshFetchOnce();
-    if (first.tokens) return first.tokens;
-    if (!first.raced) return null;
+    let transientRetries = 0;
+    for (;;) {
+      const result = await refreshFetchOnce();
+      if (result.tokens) return result.tokens;
 
-    // Benign race (#1107): a sibling context won the rotation. Give the
-    // winner's rotated cookie a beat to settle in the shared jar, then retry
-    // exactly once. The retry sends the now-current cookie and succeeds.
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    const second = await refreshFetchOnce();
-    return second.tokens;
+      if (result.raced) {
+        // Benign race (#1107): a sibling context won the rotation. Give the
+        // winner's rotated cookie a beat to settle in the shared jar, then
+        // retry exactly once. The retry sends the now-current cookie.
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        const retry = await refreshFetchOnce();
+        if (retry.tokens) return retry.tokens;
+        // If the race-retry itself hit a transient blip, fall through to the
+        // backoff path below; otherwise the session is genuinely gone.
+        if (!retry.transient) return null;
+      } else if (!result.transient) {
+        // Hard failure (expired/reused refresh cookie, real 401/403): the
+        // session is unrecoverable — evict.
+        return null;
+      }
+
+      // Transient gateway/network failure. Retry with bounded exponential
+      // backoff before giving up and letting the caller evict the session.
+      if (transientRetries >= MAX_TRANSIENT_REFRESH_RETRIES) return null;
+      const delay = TRANSIENT_REFRESH_BASE_DELAY_MS * 2 ** transientRetries;
+      transientRetries += 1;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
   });
 }
 

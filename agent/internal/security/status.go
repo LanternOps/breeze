@@ -1049,6 +1049,30 @@ func CollectStatus(cfg *config.Config) (SecurityStatus, error) {
 		}
 	}
 
+	// Elastic Defend on Linux (#2018): Linux has no security-center registry,
+	// so probe the Elastic Endpoint sensor directly. Without this, Linux hosts
+	// protected by Elastic Defend report provider="other" and show as
+	// unprotected in AV coverage.
+	if runtime.GOOS == "linux" {
+		elasticProduct, elasticVersion, elasticErr := getLinuxElasticDefendProduct()
+		if elasticErr != nil {
+			if !errors.Is(elasticErr, ErrNotSupported) {
+				errs = append(errs, elasticErr)
+			}
+		} else if elasticProduct != nil {
+			status.AVProducts = append(status.AVProducts, *elasticProduct)
+			if status.Provider == "other" {
+				status.Provider = elasticProduct.Provider
+			}
+			if status.ProviderVersion == "" {
+				status.ProviderVersion = elasticVersion
+			}
+			if elasticProduct.RealTimeProtection {
+				status.RealTimeProtection = true
+			}
+		}
+	}
+
 	// Defender fallback (Windows Server and environments where WSC data is unavailable).
 	defenderStatus, defErr := GetDefenderStatus()
 	if defErr != nil {

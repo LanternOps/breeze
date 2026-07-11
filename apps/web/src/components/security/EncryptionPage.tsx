@@ -4,12 +4,14 @@ import { cn, formatNumber, friendlyFetchError } from '@/lib/utils';
 import { fetchWithAuth } from '@/stores/auth';
 import SecurityPageHeader from './SecurityPageHeader';
 import SecurityStatCard from './SecurityStatCard';
+import RecoveryKeysPanel from './RecoveryKeysPanel';
 
 type Volume = {
   drive: string;
   encrypted: boolean;
   method: string;
-  size: string;
+  status: string | null;
+  percentEncrypted: number | null;
 };
 
 type EncryptionDevice = {
@@ -29,6 +31,7 @@ type Summary = {
   partial: number;
   unencrypted: number;
   methodCounts: { bitlocker: number; filevault: number; luks: number; none: number };
+  recoveryKeysEscrowed: number;
 };
 
 type Pagination = { page: number; limit: number; total: number; totalPages: number };
@@ -41,7 +44,7 @@ const encStatusBadge: Record<string, string> = {
 
 export default function EncryptionPage() {
   const [devices, setDevices] = useState<EncryptionDevice[]>([]);
-  const [summary, setSummary] = useState<Summary>({ total: 0, fullyEncrypted: 0, partial: 0, unencrypted: 0, methodCounts: { bitlocker: 0, filevault: 0, luks: 0, none: 0 } });
+  const [summary, setSummary] = useState<Summary>({ total: 0, fullyEncrypted: 0, partial: 0, unencrypted: 0, methodCounts: { bitlocker: 0, filevault: 0, luks: 0, none: 0 }, recoveryKeysEscrowed: 0 });
   const [pagination, setPagination] = useState<Pagination>({ page: 1, limit: 50, total: 0, totalPages: 1 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -49,6 +52,7 @@ export default function EncryptionPage() {
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [osFilter, setOsFilter] = useState('');
+  const [escrowFilter, setEscrowFilter] = useState('');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const abortRef = useRef<AbortController | null>(null);
 
@@ -68,6 +72,7 @@ export default function EncryptionPage() {
       if (debouncedSearch) params.set('search', debouncedSearch);
       if (statusFilter) params.set('status', statusFilter);
       if (osFilter) params.set('os', osFilter);
+      if (escrowFilter) params.set('escrow', escrowFilter);
 
       const res = await fetchWithAuth(`/security/encryption?${params}`, { signal: controller.signal });
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
@@ -83,7 +88,7 @@ export default function EncryptionPage() {
     } finally {
       setLoading(false);
     }
-  }, [debouncedSearch, statusFilter, osFilter]);
+  }, [debouncedSearch, statusFilter, osFilter, escrowFilter]);
 
   useEffect(() => {
     fetchData();
@@ -170,6 +175,11 @@ export default function EncryptionPage() {
           <option value="macos">macOS</option>
           <option value="linux">Linux</option>
         </select>
+        <select value={escrowFilter} onChange={(e) => setEscrowFilter(e.target.value)} className="h-10 rounded-md border bg-background px-3 text-sm">
+          <option value="">All escrow states</option>
+          <option value="escrowed">Key escrowed</option>
+          <option value="missing">Key missing</option>
+        </select>
       </div>
 
       <div className="overflow-x-auto rounded-lg border bg-card shadow-xs">
@@ -207,7 +217,15 @@ export default function EncryptionPage() {
                           </span>
                         </div>
                         <div className="px-4 py-3 text-sm">{d.tpmPresent ? 'Yes' : 'No'}</div>
-                        <div className="px-4 py-3 text-sm">{d.recoveryKeyEscrowed ? 'Escrowed' : '-'}</div>
+                        <div className="px-4 py-3 text-sm">
+                          {d.recoveryKeyEscrowed ? (
+                            <span className="inline-flex rounded-full border border-emerald-500/30 bg-emerald-500/15 px-2 py-0.5 text-xs font-semibold text-emerald-700">Escrowed</span>
+                          ) : d.encryptionStatus !== 'unencrypted' && d.os !== 'linux' ? (
+                            <span className="inline-flex rounded-full border border-red-500/30 bg-red-500/15 px-2 py-0.5 text-xs font-semibold text-red-700">Missing</span>
+                          ) : (
+                            <span className="text-muted-foreground">-</span>
+                          )}
+                        </div>
                       </div>
                       {isExpanded && (
                         <div className="border-t bg-muted/20 px-12 py-3">
@@ -217,7 +235,7 @@ export default function EncryptionPage() {
                                 <th className="pb-2">Volume</th>
                                 <th className="pb-2">Encrypted</th>
                                 <th className="pb-2">Method</th>
-                                <th className="pb-2">Size</th>
+                                <th className="pb-2">Status</th>
                               </tr>
                             </thead>
                             <tbody>
@@ -226,11 +244,16 @@ export default function EncryptionPage() {
                                   <td className="py-1 font-medium">{v.drive}</td>
                                   <td className="py-1">{v.encrypted ? <span className="text-emerald-600">Yes</span> : <span className="text-red-600">No</span>}</td>
                                   <td className="py-1 text-muted-foreground">{v.method}</td>
-                                  <td className="py-1 text-muted-foreground">{v.size}</td>
+                                  <td className="py-1 text-muted-foreground">
+                                    {v.status ?? '-'}{typeof v.percentEncrypted === 'number' ? ` (${Math.round(v.percentEncrypted)}%)` : ''}
+                                  </td>
                                 </tr>
                               ))}
                             </tbody>
                           </table>
+                          <div className="mt-4 border-t pt-3">
+                            <RecoveryKeysPanel deviceId={d.deviceId} />
+                          </div>
                         </div>
                       )}
                     </td>

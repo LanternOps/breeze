@@ -39,6 +39,7 @@ import {
   type DevicesSortKey,
 } from './cursor';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { dissolveLinkGroupIfBelowMinimum } from '../../services/deviceLinkGroups';
 import { resolveRemoteAccessForDevice } from '../../services/remoteAccessPolicy';
 import {
   resolveRemoteAccessLaunch,
@@ -108,7 +109,7 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'device_filesystem_snapshots',
   'device_group_memberships', 'device_hardware', 'device_ip_history',
   'device_metrics', 'device_network', 'device_patches',
-  'device_process_samples', 'device_registry_state',
+  'device_process_samples', 'device_recovery_keys', 'device_registry_state',
   'device_reliability', 'device_reliability_history', 'device_sessions',
   'device_vulnerabilities', 'device_warranty',
   'dns_event_aggregations', 'dns_security_events',
@@ -118,6 +119,7 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'metric_anomaly_candidates', 'metric_anomalies', 'metric_rollups',
   'onedrive_device_state',
   'peripheral_events', 'playbook_executions', 'provision_credential_handles',
+  'recovery_key_access_events',
   'recovery_readiness', 'recovery_tokens', 'remediation_suggestions', 'remote_sessions', 'restore_jobs',
   's1_actions', 's1_agents', 's1_threats',
   'script_executions',
@@ -211,6 +213,10 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   'cis_baseline_results', 'cis_remediation_actions',
   'browser_extensions', 'browser_policy_violations',
   'audit_baseline_results', 'audit_policy_states',
+  // Recovery-key escrow (#2021). Both FK device_id → devices.id ON DELETE
+  // CASCADE; recovery_key_access_events.key_id → device_recovery_keys.id
+  // ON DELETE CASCADE, so delete the access-event ledger before its parent keys.
+  'recovery_key_access_events', 'device_recovery_keys',
   'peripheral_events',
   's1_agents', 's1_threats', 's1_actions',
   'huntress_agents', 'huntress_incidents',
@@ -558,6 +564,9 @@ coreRoutes.get(
         pendingReboot: devices.pendingReboot,
         batteryStatus: devices.batteryStatus,
         activeVpns: devices.activeVpns,
+        // Linked multi-boot profiles (#2138): null => unlinked. The web list
+        // groups rows client-side by this id (inactive strips / group bar).
+        linkGroupId: devices.linkGroupId,
         createdAt: devices.createdAt,
         updatedAt: devices.updatedAt,
         // Hardware summary
@@ -676,6 +685,7 @@ coreRoutes.get(
         isHeadless: d.isHeadless,
         batteryStatus: d.batteryStatus ?? null,
         activeVpns: d.activeVpns ?? null,
+        linkGroupId: d.linkGroupId ?? null,
         createdAt: d.createdAt,
         updatedAt: d.updatedAt,
         cpuPercent: latestMetrics?.cpuPercent ?? 0,
@@ -1374,6 +1384,13 @@ coreRoutes.delete(
           await tx.execute(sql`DELETE FROM ${sql.identifier(table)} WHERE device_id = ${deviceId}`);
         }
         await tx.delete(devices).where(eq(devices.id, deviceId));
+
+        // #2138 — the deleted device's link_group_id went with its row. If it
+        // was a boot profile and the group now has a single lone survivor,
+        // dissolve the (meaningless) group.
+        if (device.linkGroupId) {
+          await dissolveLinkGroupIfBelowMinimum(tx, device.linkGroupId);
+        }
       });
     } catch (err: unknown) {
       const pgCode = (err as { code?: string })?.code;

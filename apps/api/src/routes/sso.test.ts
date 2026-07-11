@@ -456,7 +456,10 @@ describe('sso routes', () => {
     });
 
     expect(res.status).toBe(201);
-    expect(discoverOIDCConfig).toHaveBeenCalledWith('https://issuer.example.com');
+    // IS_HOSTED is unset in the test env → strict (no private-network opt-in).
+    expect(discoverOIDCConfig).toHaveBeenCalledWith('https://issuer.example.com', {
+      allowPrivateNetwork: false
+    });
     expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
       orgId: ORG_UUID,
       name: 'Okta',
@@ -597,6 +600,47 @@ describe('sso routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(true);
+    // IS_HOSTED unset → strict. Guards against a revert that drops the options
+    // object from the Test-button call site (the whole point of #2293).
+    expect(discoverOIDCConfig).toHaveBeenCalledWith('https://issuer.example.com', {
+      allowPrivateNetwork: false
+    });
+  });
+
+  it('passes allowPrivateNetwork: true to discovery on the Test route when self-hosted', async () => {
+    process.env.IS_HOSTED = 'false';
+    try {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: PROVIDER_UUID,
+              orgId: ORG_UUID,
+              type: 'oidc',
+              issuer: 'https://issuer.example.com'
+            }])
+          })
+        })
+      } as any);
+      vi.mocked(discoverOIDCConfig).mockResolvedValue({
+        issuer: 'https://issuer.example.com',
+        authorization_endpoint: 'https://issuer.example.com/auth',
+        token_endpoint: 'https://issuer.example.com/token',
+        userinfo_endpoint: 'https://issuer.example.com/userinfo'
+      } as any);
+
+      const res = await app.request(`/sso/providers/${PROVIDER_UUID}/test`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      expect(discoverOIDCConfig).toHaveBeenCalledWith('https://issuer.example.com', {
+        allowPrivateNetwork: true
+      });
+    } finally {
+      delete process.env.IS_HOSTED;
+    }
   });
 
   it('rejects provider mutation when permission check fails', async () => {

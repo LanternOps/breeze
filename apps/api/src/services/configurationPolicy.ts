@@ -14,6 +14,8 @@ import {
   configPolicyMonitoringWatches,
   configPolicyRemoteAccessSettings,
   configPolicyBackupSettings,
+  configPolicyOnedriveSettings,
+  configPolicyOnedriveLibraries,
   devices,
   deviceGroups,
   organizations,
@@ -32,7 +34,7 @@ import {
 import { and, eq, desc, or, sql, inArray, asc, getTableColumns, SQL } from 'drizzle-orm';
 import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from './partnerWideAccess';
 import { z } from 'zod';
-import { eventLogInlineSettingsSchema, monitoringInlineSettingsSchema } from '@breeze/shared/validators';
+import { eventLogInlineSettingsSchema, monitoringInlineSettingsSchema, onedriveHelperInlineSettingsSchema } from '@breeze/shared/validators';
 import type { AuthContext } from '../middleware/auth';
 import { normalizePatchInlineSettings, tryNormalizePatchInlineSettings } from './configPolicyPatching';
 import { resolvePartnerIdForOrg } from '../routes/patches/helpers';
@@ -88,6 +90,11 @@ import { CONFIG_FEATURE_TYPES, type ConfigFeatureType } from './configFeatureTyp
 export { CONFIG_FEATURE_TYPES };
 export type { ConfigFeatureType };
 export type ConfigAssignmentLevel = 'partner' | 'organization' | 'site' | 'device_group' | 'device';
+
+// Discriminated union so a valid result can't carry a stray error string and
+// an invalid result can't omit one — every `return` in validateAssignmentTarget
+// below conforms.
+export type AssignmentTargetValidation = { valid: true } | { valid: false; error: string };
 
 const LEVEL_PRIORITY: Record<ConfigAssignmentLevel, number> = {
   device: 5,
@@ -609,6 +616,56 @@ async function decomposeInlineSettings(
       break;
     }
 
+    case 'onedrive_helper': {
+      const parsed = onedriveHelperInlineSettingsSchema.parse(s);
+      // Look up orgId via feature link → policy join (same pattern as 'backup').
+      const [policyRow] = await tx
+        .select({ orgId: configurationPolicies.orgId })
+        .from(configPolicyFeatureLinks)
+        .innerJoin(configurationPolicies, eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id))
+        .where(eq(configPolicyFeatureLinks.id, linkId))
+        .limit(1);
+      if (!policyRow) throw new Error(`Cannot resolve orgId for feature link ${linkId}`);
+      // Library mappings are per-tenant (each org has its own M365 tenant), so
+      // onedrive_helper is org-scoped-only (ORG_SCOPED_ONLY_FEATURE_TYPES). The
+      // route already 400s partner-wide links; this is the service-level backstop.
+      if (!policyRow.orgId) {
+        throw new Error('OneDrive Helper settings are not supported on partner-wide configuration policies');
+      }
+      const [settingsRow] = await tx.insert(configPolicyOnedriveSettings).values({
+        featureLinkId: linkId,
+        orgId: policyRow.orgId,
+        silentAccountConfig: parsed.silentAccountConfig,
+        filesOnDemand: parsed.filesOnDemand,
+        kfmSilentOptIn: parsed.kfmSilentOptIn,
+        kfmFolders: parsed.kfmFolders,
+        kfmBlockOptOut: parsed.kfmBlockOptOut,
+        tenantAssociationId: parsed.tenantAssociationId ?? null,
+        restartOnChange: parsed.restartOnChange,
+      }).returning();
+      if (settingsRow && parsed.libraries.length > 0) {
+        await tx.insert(configPolicyOnedriveLibraries).values(
+          parsed.libraries.map((l, idx) => ({
+            settingsId: settingsRow.id,
+            orgId: policyRow.orgId!,
+            libraryId: l.libraryId,
+            displayName: l.displayName,
+            siteUrl: l.siteUrl ?? null,
+            siteId: l.siteId ?? null,
+            webId: l.webId ?? null,
+            listId: l.listId ?? null,
+            targetingMode: l.targetingMode,
+            groupId: l.groupId ?? null,
+            groupName: l.groupName ?? null,
+            hiveScope: l.hiveScope,
+            sortOrder: idx,
+            enabled: l.enabled,
+          }))
+        );
+      }
+      break;
+    }
+
     case 'warranty':
     case 'helper':
     case 'pam':
@@ -666,6 +723,11 @@ async function deleteNormalizedRows(
     case 'remote_access':
       await tx.delete(configPolicyRemoteAccessSettings).where(eq(configPolicyRemoteAccessSettings.featureLinkId, linkId));
       break;
+    case 'onedrive_helper': {
+      // Libraries cascade-delete from settings, so just delete settings
+      await tx.delete(configPolicyOnedriveSettings).where(eq(configPolicyOnedriveSettings.featureLinkId, linkId));
+      break;
+    }
     case 'warranty':
     case 'helper':
     case 'pam':
@@ -1168,20 +1230,72 @@ export async function validateAssignmentTarget(
   policyOwner: { orgId: string | null; partnerId: string | null },
   level: ConfigAssignmentLevel,
   targetId: string
-): Promise<{ valid: boolean; error?: string }> {
+): Promise<AssignmentTargetValidation> {
   const policyOrgId = policyOwner.orgId;
 
-  // Partner-owned policies (#1724) span all of the partner's orgs and may only
-  // carry a partner-level assignment targeting their own partner. Org/site/
-  // group/device assignments are nonsensical for a policy with no owning org.
+  // Partner-owned policies (#1724, #2280) are reusable libraries: a partner-level
+  // assignment applies them to ALL orgs, and org/site/group/device assignments
+  // apply them to a chosen subset. Every non-partner target must resolve to an org
+  // owned by THIS partner (organizations.partner_id) — cross-partner targets are
+  // rejected here (defense-in-depth; RLS is the real backstop).
   if (policyOwner.partnerId) {
-    if (level !== 'partner') {
-      return { valid: false, error: 'Partner-wide policies can only be assigned at the Partner level' };
+    const partnerId = policyOwner.partnerId;
+    switch (level) {
+      case 'partner':
+        return targetId === partnerId
+          ? { valid: true }
+          : { valid: false, error: 'A partner-wide policy can only target its own partner' };
+
+      case 'organization': {
+        const [org] = await db
+          .select({ id: organizations.id })
+          .from(organizations)
+          .where(and(eq(organizations.id, targetId), eq(organizations.partnerId, partnerId)))
+          .limit(1);
+        return org
+          ? { valid: true }
+          : { valid: false, error: 'Target organization is not in this partner' };
+      }
+
+      case 'site': {
+        const [site] = await db
+          .select({ id: sites.id })
+          .from(sites)
+          .innerJoin(organizations, eq(sites.orgId, organizations.id))
+          .where(and(eq(sites.id, targetId), eq(organizations.partnerId, partnerId)))
+          .limit(1);
+        return site
+          ? { valid: true }
+          : { valid: false, error: 'Target site is not in this partner' };
+      }
+
+      case 'device_group': {
+        const [group] = await db
+          .select({ id: deviceGroups.id })
+          .from(deviceGroups)
+          .innerJoin(organizations, eq(deviceGroups.orgId, organizations.id))
+          .where(and(eq(deviceGroups.id, targetId), eq(organizations.partnerId, partnerId)))
+          .limit(1);
+        return group
+          ? { valid: true }
+          : { valid: false, error: 'Target device group is not in this partner' };
+      }
+
+      case 'device': {
+        const [device] = await db
+          .select({ id: devices.id })
+          .from(devices)
+          .innerJoin(organizations, eq(devices.orgId, organizations.id))
+          .where(and(eq(devices.id, targetId), eq(organizations.partnerId, partnerId)))
+          .limit(1);
+        return device
+          ? { valid: true }
+          : { valid: false, error: 'Target device is not in this partner' };
+      }
+
+      default:
+        return { valid: false, error: 'Unsupported assignment target level' };
     }
-    if (targetId !== policyOwner.partnerId) {
-      return { valid: false, error: 'A partner-wide policy can only target its own partner' };
-    }
-    return { valid: true };
   }
 
   // Org-owned policies: org_id is guaranteed non-null by the ownership CHECK.
@@ -1243,7 +1357,7 @@ export async function validateAssignmentTarget(
       // *looks* partner-wide but resolution still clamps it to its single
       // owning org (org_id = device.orgId), so it silently reaches only that
       // one org. True cross-org propagation requires a partner-OWNED policy
-      // (created via the "All organizations" scope). Reject it outright rather
+      // (created via the "Partner library" scope). Reject it outright rather
       // than let it masquerade as fleet-wide (#1724 follow-up).
       return {
         valid: false,

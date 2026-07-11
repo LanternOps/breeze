@@ -1,0 +1,110 @@
+---
+title: Quotes & Proposals
+description: Build priced quotes from your catalog, present them with images and titles, take a deposit on acceptance, and turn accepted quotes straight into invoices and recurring contracts -- all inside Breeze.
+sidebar:
+  label: "Quotes"
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+Quotes turn the products and services in your [Product Catalog](/features/product-catalog/) into a priced proposal you can send to a customer, collect a deposit on, and -- once accepted -- convert into an invoice and recurring contract without re-keying anything. Open **Quotes** from the sidebar to get started.
+
+Quotes are **partner-scoped**: you can quote any of your customer organizations from one place.
+
+## The Quote Editor
+
+The editor is where you assemble and price a quote. Add lines from the shared **catalog picker** -- start typing to search your catalog by name or SKU -- or add a **manual line** for anything not in the catalog. The running subtotal, tax, and total update live as you edit.
+
+### Quote Title
+
+Give a quote a **title** (for example, "Server refresh -- Q1" or "New-hire onboarding bundle"). The title appears at the top of the quote and on the PDF the customer sees, so a proposal reads as a named piece of work rather than just a number.
+
+### Line Titles and Descriptions
+
+Each line has a short **title** and an optional longer **description** shown beneath it. When you add a catalog item, both are prefilled from the catalog entry; edit either to tailor the wording for this customer.
+
+### Two-Way Markup
+
+Every line shows **cost**, **markup %**, and **price** together, and the three stay in sync whichever way you work:
+
+- Enter your **cost** and a **markup %**, and Breeze sets the sell **price**.
+- Enter your **cost** and a **price**, and Breeze shows you the resulting **markup %**.
+
+This means you can price to a target margin or to a target price interchangeably, and always see the margin you're giving on each line.
+
+### Auto-fill from Web
+
+Don't have an item in your catalog yet? Type a product name or SKU into a line's **Auto-fill from web** field and Breeze AI drafts the line for you -- name, description, unit of measure, and taxability -- and **prices the line**: it estimates a market cost and applies your **default markup** (set in **Settings → Billing**) to fill in the sell price. The estimate is a starting point; review and adjust the cost and price before you send.
+
+<Aside type="note">
+  The tone Breeze AI uses when drafting names and descriptions follows the **AI product copy style** you set in **Settings → Billing** (see [Product Catalog → AI Auto-fill](/features/product-catalog/#ai-auto-fill)). Leave it blank for the default voice.
+</Aside>
+
+### Line Images
+
+Any line can carry an **image**, so a hardware quote can show the product the customer is buying. A catalog item's [product image](/features/product-catalog/#product-images) flows onto the line automatically; you can also upload an image directly on the line, which takes precedence over the catalog picture for that quote. Images appear on the quote preview and the PDF.
+
+### One-Time and Recurring Pricing
+
+A quote separates **one-time** charges (hardware, project work) from **recurring** charges (monthly or annual services) into distinct pricing tables, each with its own subtotal, so the customer sees "pay once" and "pay every month" as separate figures. Set a line's cadence with its **One-time / Monthly / Annual** control. If you add a line to the wrong table, use the line's **Move to…** action to shift it between the one-time and recurring tables without deleting and re-adding it.
+
+### Inline Editing of Line Items
+
+Quote line items can be edited in place directly in the editor -- you don't need to delete a line and re-add it to correct a detail. Click a field on an existing line to edit it inline:
+
+| Field | Editable inline |
+|-------|----------------|
+| Description | Yes |
+| Quantity | Yes |
+| Unit price | Yes |
+| Taxable | Yes |
+| Recurrence | Yes |
+
+Changes take effect immediately on the quote and are reflected in the live totals without saving and re-opening.
+
+### Searching Distributor Products from a Quote
+
+While editing a quote, the line-item picker includes a **Search distributor** tab (visible only when TD SYNNEX EC Express credentials are configured -- see [Distributor Integrations](/features/integrations/#distributor-integrations)). Enter a TD SYNNEX SKU or manufacturer part number, see live cost, MSRP, and availability, enter your sell price, and click **Import & add**. The product is imported to your catalog and added to the quote as a line item in one step -- without navigating away from the editor.
+
+This is distinct from the [catalog-level import workflow](/features/product-catalog/#importing-from-distributor-catalogs): that builds your standing price list, while the quote-level search pulls a product directly into an open quote.
+
+## Deposits
+
+You can require a customer to pay a **deposit** when they accept a quote, with the rest invoiced afterward. Choose one of two ways to set the deposit amount:
+
+- **Percentage** -- a percent of the quote's total due on acceptance (for example, 30%). The percentage must be greater than 0 and less than 100.
+- **Selected lines** -- flag specific one-time lines as **deposit-eligible**, and the deposit is the total of those lines (including their tax). Catalog **hardware** lines are marked deposit-eligible by default, so "deposit covers the hardware, we bill the labor on completion" is a one-click setup. At least one visible one-time line must be eligible.
+
+When the deposit spans more than one kind of item, the quote shows a **category breakdown** -- how much of the deposit is hardware, software, service, and other -- so the customer can see what they're paying for up front.
+
+### Deposit-First Invoicing
+
+When a customer accepts a quote that has a deposit, Breeze issues the invoice with the **deposit shown as the amount due first**. The customer pays the deposit, and the remaining balance becomes due per the invoice's terms -- so a single invoice carries the whole engagement while collecting the deposit before the balance. See [Invoices → Deposit invoices](/features/invoices/#deposit-invoices) for how this appears on the invoice.
+
+## What Happens on Acceptance
+
+When a customer accepts a quote, Breeze turns it into the documents that bill it:
+
+- **One-time lines** become an **invoice** (with the deposit due first, if one was set).
+- **Recurring lines** become one or more **draft contracts** -- monthly and annual lines split into separate drafts, one billing cadence each -- that you review and activate. See [Recurring Contracts → From an Accepted Quote](/features/contracts/#from-an-accepted-quote).
+
+## Sending and Tracking
+
+<Steps>
+1. Assemble and price the quote in the editor, set a title, and configure a deposit if you want one.
+2. Review the one-time and recurring totals and the deposit summary.
+3. **Send** the quote to the customer for review and acceptance.
+</Steps>
+
+You can send or delete quotes in bulk from the quote list -- select quotes with the checkboxes to reveal the bulk action bar. Actions run per-item in isolation, so partial success is possible and the bar reports what succeeded and what failed.
+
+## Permissions
+
+Quote access is governed by role permissions: viewing requires quote read access, creating and editing drafts requires quote write access, and sending requires quote send access. Financially binding actions are gated accordingly. Assign these through **Settings → Users & Roles**.
+
+## Related
+
+- [Product Catalog](/features/product-catalog/) -- the price list quotes pull from
+- [Invoices](/features/invoices/) -- where an accepted quote's one-time charges land, deposit first
+- [Recurring Contracts](/features/contracts/) -- where an accepted quote's recurring lines become agreements
+- [Online Payments](/features/online-payments/) -- let customers pay the deposit and balance by card

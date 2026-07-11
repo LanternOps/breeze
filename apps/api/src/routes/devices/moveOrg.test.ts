@@ -46,10 +46,15 @@ vi.mock('../agentWs', () => ({
   disconnectAgent: vi.fn(() => true),
 }));
 
+vi.mock('../../services/deviceLinkGroups', () => ({
+  dissolveLinkGroupIfBelowMinimum: vi.fn(async () => false),
+}));
+
 import { db } from '../../db';
 import { getDeviceWithOrgAndSiteCheck } from './helpers';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { disconnectAgent } from '../agentWs';
+import { dissolveLinkGroupIfBelowMinimum } from '../../services/deviceLinkGroups';
 import { moveOrgRoutes } from './moveOrg';
 import {
   CUSTOM_ORG_REWRITE_TABLES,
@@ -233,10 +238,14 @@ describe('POST /devices/:id/move-org', () => {
       expect(body.device.orgId).toBe(TARGET_ORG);
       expect(body.device.siteId).toBe(TARGET_SITE);
 
-      // devices.set() must include both orgId and siteId flips.
+      // devices.set() must include both orgId and siteId flips, and MUST
+      // unlink the device from any multi-boot group (#2138) — the composite
+      // FK (link_group_id, org_id) -> device_link_groups(id, org_id) would
+      // otherwise reject the org flip.
       expect(deviceUpdateSets[0]).toMatchObject({
         orgId: TARGET_ORG,
         siteId: TARGET_SITE,
+        linkGroupId: null,
       });
 
       // Two audit events, one per org
@@ -272,6 +281,35 @@ describe('POST /devices/:id/move-org', () => {
         expect.any(Number),
         expect.stringContaining('different organization'),
       );
+    });
+
+    it('dissolves the source link group when moving a linked boot profile (#2138)', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({
+        ...SAMPLE_DEVICE,
+        linkGroupId: 'grp-multiboot-1',
+      } as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-1' },
+          { id: TARGET_ORG, partnerId: 'partner-1' },
+        ],
+        siteRow: { id: TARGET_SITE },
+      });
+      rigTransactionSuccess();
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+      });
+
+      expect(res.status).toBe(200);
+      // The group the device left behind may now have a single lone profile —
+      // moveOrg must run the dissolve check inside the transaction. Dropping
+      // this call silently strands a 1-member group (re-linking the survivor
+      // later 409s with no visible reason).
+      expect(dissolveLinkGroupIfBelowMinimum).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(dissolveLinkGroupIfBelowMinimum).mock.calls[0]![1]).toBe('grp-multiboot-1');
     });
 
     it('rewrites ticket_alert_links org_id via the alert join inside the transaction', async () => {
