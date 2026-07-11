@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { PERMISSION_GRANTS } from '@breeze/shared';
 import { resolveBootstrapAdminConfig, DEFAULT_PERMISSIONS, SYSTEM_ROLES } from './seed';
 
 describe('resolveBootstrapAdminConfig', () => {
@@ -116,6 +117,25 @@ describe('SYSTEM_ROLES ⊆ DEFAULT_PERMISSIONS', () => {
   it('every DEFAULT_PERMISSIONS entry is a unique resource:action', () => {
     const keys = DEFAULT_PERMISSIONS.map((p) => `${p.resource}:${p.action}`);
     expect(new Set(keys).size).toBe(keys.length);
+  });
+});
+
+describe('ticket mailbox permissions', () => {
+  it('registers and seeds the ticket mailbox permissions', () => {
+    expect(PERMISSION_GRANTS.TICKET_MAILBOX_READ).toEqual({ resource: 'ticket_mailbox', action: 'read' });
+    expect(PERMISSION_GRANTS.TICKET_MAILBOX_ADMIN).toEqual({ resource: 'ticket_mailbox', action: 'admin' });
+    expect(DEFAULT_PERMISSIONS).toEqual(expect.arrayContaining([
+      expect.objectContaining({ resource: 'ticket_mailbox', action: 'read' }),
+      expect.objectContaining({ resource: 'ticket_mailbox', action: 'admin' }),
+    ]));
+  });
+
+  it('grants mailbox read to partner technicians/viewers but not mailbox admin', () => {
+    for (const roleName of ['Partner Technician', 'Partner Viewer']) {
+      const role = SYSTEM_ROLES.find((candidate) => candidate.name === roleName)!;
+      expect(role.permissions).toContain('ticket_mailbox:read');
+      expect(role.permissions).not.toContain('ticket_mailbox:admin');
+    }
   });
 });
 
