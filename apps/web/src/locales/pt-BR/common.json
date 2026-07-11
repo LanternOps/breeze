@@ -197,14 +197,14 @@
     },
     "emptyDevices": {
       "title": "Nenhum dispositivo registrado ainda",
-      "description": "Registre seu primeiro dispositivo para começar a monitorar sua frota.",
+      "description": "Registre seu primeiro dispositivo para começar a monitorar seus dispositivos.",
       "add": "Adicionar dispositivo"
     },
     "fleetStatus": {
-      "title": "Status da frota",
+      "title": "Status dos dispositivos",
       "onlineCount": "{{online}}/{{total}} online",
       "allOnline": "Todos os dispositivos estão online",
-      "healthy": "Sua frota está saudável",
+      "healthy": "Seus dispositivos estão saudáveis",
       "viewOffline": "Ver todos os {{count}} offline"
     },
     "activity": {
@@ -220,7 +220,7 @@
       "title": "Alertas recentes",
       "viewAll": "Ver todos",
       "allClear": "Tudo certo",
-      "empty": "Nenhum alerta ativo em sua frota",
+      "empty": "Nenhum alerta ativo em seus dispositivos",
       "fallbackTitle": "Alerta"
     },
     "customizer": {
@@ -1643,10 +1643,10 @@
     "fleet": {
       "FleetOrchestrationPage": {
         "errors": {
-          "loadFailed": "Falha ao carregar estatísticas da frota"
+          "loadFailed": "Falha ao carregar estatísticas dos dispositivos"
         },
         "title": "Orquestração da Frota",
-        "description": "Gerencie políticas, implantações, correções e automações em toda a sua frota",
+        "description": "Gerencie políticas, implantações, correções e automações em todos os seus dispositivos",
         "partialWarning": "Alguns dados podem estar incompletos. Falha ao carregar: {{endpoints}}",
         "cards": {
           "policies": "Políticas",
@@ -1792,7 +1792,7 @@
         },
         "savePrompt": "Nome desta consulta salva:",
         "title": "Logs de Eventos",
-        "description": "Pesquise e analise logs da sua frota.",
+        "description": "Pesquise e analise logs dos seus dispositivos.",
         "searchPlaceholder": "código de erro, origem, stack trace...",
         "source": "Origem",
         "sourcePlaceholder": "ex.: kernel",
@@ -1848,8 +1848,8 @@
         "revokeHint": "Você pode revogar este acesso a qualquer momento em Configurações → Aplicativos conectados.",
         "scopeIntro": "Isso permitirá que o aplicativo:",
         "scopes": {
-          "mcpRead": "Leia os dados da sua frota (dispositivos, alertas, scripts, automações)",
-          "mcpWrite": "Faça alterações não destrutivas na sua frota (tags, alertas, configuração)",
+          "mcpRead": "Leia os dados dos seus dispositivos (alertas, scripts, automações)",
+          "mcpWrite": "Faça alterações não destrutivas nos seus dispositivos (tags, alertas, configuração)",
           "mcpExecute": "Execute ações de alto risco em dispositivos (comandos, scripts, operações remotas)",
           "openid": "Confirme sua identidade",
           "offlineAccess": "Permaneça conectado sem entrar novamente (tokens de atualização)"
@@ -1874,7 +1874,7 @@
           },
           "aiHelp": {
             "title": "Ajuda com IA",
-            "description": "Faça perguntas sobre sua frota, solucione problemas ou gere relatórios. Pressione Cmd+Shift+A a qualquer momento."
+            "description": "Faça perguntas sobre seus dispositivos, solucione problemas ou gere relatórios. Pressione Cmd+Shift+A a qualquer momento."
           }
         },
         "skipTour": "Pular tour",
