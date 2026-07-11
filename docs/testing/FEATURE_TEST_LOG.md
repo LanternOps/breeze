@@ -3572,7 +3572,7 @@ tests never exercised the real browser payloads** — worth a validator/UI-contr
 - [x] Partner-default locale API coverage and precedence behavior.
 - [x] Astro type/static analysis and production web build.
 - [x] Post-wave visible-string residue audit, including multiline UI, CSV, and printable-report copy.
-- [ ] Manual pt-BR click-through of the top 10 pages: unavailable because this worktree has no configured `E2E_*` credentials and no running compose services.
+- [ ] Manual pt-BR click-through of the top 10 pages: an isolated seeded Compose stack started successfully, but this Codex session had no connected browser backend; the stack was removed after the attempt.
 
 ### Evidence
 
@@ -3587,4 +3587,4 @@ tests never exercised the real browser payloads** — worth a validator/UI-contr
 - Automated verification found and fixed structural enum/state values that had been translated by mechanical extraction, two callback variables shadowing `t()`, cross-namespace device metadata labels, and several post-wave literal-string misses.
 - Final read-only code review found no unresolved Critical or Important issues after runtime, enforcement, formatter, and copy-quality remediation.
 - Brazilian Portuguese copy remains machine-drafted and should receive native-speaker review before production rollout.
-- Live locale persistence/navigation smoke remains pending until an E2E stack is configured.
+- Live locale persistence/navigation smoke remains pending until a browser-capable test session is available.
