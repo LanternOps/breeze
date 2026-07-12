@@ -11,6 +11,7 @@ const { dbMocks, contextMocks } = vi.hoisted(() => ({
     updatedValues: [] as Record<string, unknown>[],
     updateWheres: [] as unknown[],
     selectWheres: [] as unknown[],
+    selectLocks: [] as string[],
     innerJoins: [] as Array<{ table: unknown; condition: unknown }>,
     transactionCalls: [] as string[],
     transaction: vi.fn(),
@@ -36,10 +37,15 @@ vi.mock('../../db', () => {
         return {
           where: vi.fn((condition: unknown) => {
             dbMocks.selectWheres.push(condition);
-            return {
+            const whereChain = {
               limit: vi.fn(async () => finish()),
               then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve(finish()).then(resolve),
+              for: vi.fn((mode: string) => {
+                dbMocks.selectLocks.push(mode);
+                return whereChain;
+              }),
             };
+            return whereChain;
           }),
           innerJoin: vi.fn((table: unknown, condition: unknown) => {
             dbMocks.innerJoins.push({ table, condition });
@@ -119,6 +125,7 @@ import {
   createPendingConnection,
   disableConnection,
   isConnectedMailboxSnapshotCurrent,
+  isMailboxConnectionSnapshotCurrent,
   listConnectedMailboxes,
   listMailboxConnections,
   markPendingConsentFailed,
@@ -168,6 +175,7 @@ describe('ticket mailbox connection service', () => {
     dbMocks.updatedValues.length = 0;
     dbMocks.updateWheres.length = 0;
     dbMocks.selectWheres.length = 0;
+    dbMocks.selectLocks.length = 0;
     dbMocks.innerJoins.length = 0;
     dbMocks.transactionCalls.length = 0;
     fetchMock.mockReset();
@@ -348,6 +356,42 @@ describe('ticket mailbox connection service', () => {
         ]),
       }));
     }
+  });
+
+  it('rechecks no-transition retests against the original status and exact generation', async () => {
+    const snapshot = {
+      id: CONNECTION_ID, partnerId: PARTNER_ID, tenantId: TENANT_ID,
+      consentAttemptId: ATTEMPT_ID,
+    };
+    dbMocks.selectResults.push([{ id: CONNECTION_ID }], []);
+
+    await expect(isMailboxConnectionSnapshotCurrent(snapshot, 'connected')).resolves.toBe(true);
+    await expect(isMailboxConnectionSnapshotCurrent(snapshot, 'error')).resolves.toBe(false);
+
+    expect(dbMocks.selectLocks).toEqual(['update', 'update']);
+
+    expect(dbMocks.selectWheres).toEqual([
+      {
+        op: 'and',
+        conditions: [
+          { op: 'eq', column: ticketMailboxConnections.id, value: CONNECTION_ID },
+          { op: 'eq', column: ticketMailboxConnections.partnerId, value: PARTNER_ID },
+          { op: 'eq', column: ticketMailboxConnections.tenantId, value: TENANT_ID },
+          { op: 'eq', column: ticketMailboxConnections.consentAttemptId, value: ATTEMPT_ID },
+          { op: 'eq', column: ticketMailboxConnections.status, value: 'connected' },
+        ],
+      },
+      {
+        op: 'and',
+        conditions: [
+          { op: 'eq', column: ticketMailboxConnections.id, value: CONNECTION_ID },
+          { op: 'eq', column: ticketMailboxConnections.partnerId, value: PARTNER_ID },
+          { op: 'eq', column: ticketMailboxConnections.tenantId, value: TENANT_ID },
+          { op: 'eq', column: ticketMailboxConnections.consentAttemptId, value: ATTEMPT_ID },
+          { op: 'eq', column: ticketMailboxConnections.status, value: 'error' },
+        ],
+      },
+    ]);
   });
 
   it('disable rotates the generation so in-flight snapshots cannot write afterward', async () => {

@@ -30,6 +30,7 @@ const { authRef, mocks } = vi.hoisted(() => ({
     markPendingConsentFailed: vi.fn(async () => true),
     setConnectedMailboxStatus: vi.fn(async () => true),
     restoreVerifiedConnection: vi.fn(async () => true),
+    isMailboxConnectionSnapshotCurrent: vi.fn(async () => true),
     probeMailbox: vi.fn(),
     bindVerifiedTenant: vi.fn(async () => {}),
     listMailboxConnections: vi.fn(async (): Promise<unknown[]> => []),
@@ -95,6 +96,7 @@ vi.mock('../../services/ticketMailbox/connectionService', () => ({
   markPendingConsentFailed: mocks.markPendingConsentFailed,
   setConnectedMailboxStatus: mocks.setConnectedMailboxStatus,
   restoreVerifiedConnection: mocks.restoreVerifiedConnection,
+  isMailboxConnectionSnapshotCurrent: mocks.isMailboxConnectionSnapshotCurrent,
   probeMailbox: mocks.probeMailbox,
   bindVerifiedTenant: mocks.bindVerifiedTenant,
   listMailboxConnections: mocks.listMailboxConnections,
@@ -202,6 +204,7 @@ describe('M365 mailbox lifecycle routes', () => {
     mocks.markPendingConsentFailed.mockResolvedValue(true);
     mocks.setConnectedMailboxStatus.mockResolvedValue(true);
     mocks.restoreVerifiedConnection.mockResolvedValue(true);
+    mocks.isMailboxConnectionSnapshotCurrent.mockResolvedValue(true);
     mocks.bindVerifiedTenant.mockResolvedValue(undefined);
     mocks.disableConnection.mockResolvedValue(true);
     mocks.createAdminConsentSession.mockResolvedValue(session('admin_consent'));
@@ -735,6 +738,47 @@ describe('M365 mailbox lifecycle routes', () => {
     expect(mocks.writeRouteAudit).toHaveBeenCalledTimes(1);
     expect(mocks.writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: 'ticket_mailbox.retested',
+      details: expect.objectContaining({ outcome: 'stale' }),
+    }));
+  });
+
+  it('returns stale when disable wins during a successful connected retest with no transition', async () => {
+    let finishProbe!: (value: { ok: true }) => void;
+    mocks.probeMailbox.mockReturnValue(new Promise((resolve) => { finishProbe = resolve; }));
+    mocks.isMailboxConnectionSnapshotCurrent.mockResolvedValue(false);
+
+    const retest = app.request(`/connections/${CONNECTION_ID}/retest`, { method: 'POST' });
+    await vi.waitFor(() => expect(mocks.probeMailbox).toHaveBeenCalledOnce());
+    finishProbe({ ok: true });
+    const response = await retest;
+
+    expect(response.status).toBe(409);
+    expect(mocks.isMailboxConnectionSnapshotCurrent).toHaveBeenCalledWith(
+      expect.objectContaining({ id: CONNECTION_ID, consentAttemptId: ATTEMPT_ID }),
+      'connected',
+    );
+    expect(mocks.writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      details: expect.objectContaining({ outcome: 'stale' }),
+    }));
+  });
+
+  it('returns stale when generation rotates during a failed error retest with no transition', async () => {
+    mocks.getMailboxConnection.mockResolvedValue(connection({ status: 'error' }));
+    let finishProbe!: (value: { ok: false; error: string }) => void;
+    mocks.probeMailbox.mockReturnValue(new Promise((resolve) => { finishProbe = resolve; }));
+    mocks.isMailboxConnectionSnapshotCurrent.mockResolvedValue(false);
+
+    const retest = app.request(`/connections/${CONNECTION_ID}/retest`, { method: 'POST' });
+    await vi.waitFor(() => expect(mocks.probeMailbox).toHaveBeenCalledOnce());
+    finishProbe({ ok: false, error: 'Graph denied' });
+    const response = await retest;
+
+    expect(response.status).toBe(409);
+    expect(mocks.isMailboxConnectionSnapshotCurrent).toHaveBeenCalledWith(
+      expect.objectContaining({ id: CONNECTION_ID, consentAttemptId: ATTEMPT_ID }),
+      'error',
+    );
+    expect(mocks.writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       details: expect.objectContaining({ outcome: 'stale' }),
     }));
   });

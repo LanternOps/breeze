@@ -104,7 +104,10 @@ vi.mock('../../db', () => {
           rows = rows.filter((r) => (r as { deletedAt?: unknown }).deletedAt == null);
         }
         return Promise.resolve(rows);
-      }
+      },
+      for(_mode: string) {
+        return chain;
+      },
     };
     return chain;
   }
@@ -164,7 +167,11 @@ vi.mock('../../db/schema', () => ({
   ticketComments: { __t: 'ticket_comments', ticketId: 'ticketId' },
   portalUsers: { __t: 'portal_users', id: 'id', orgId: 'orgId', email: 'email' },
   organizations: { __t: 'organizations', id: 'id', partnerId: 'partnerId' },
-  partners: { __t: 'partners', id: 'id', status: 'status' }
+  partners: { __t: 'partners', id: 'id', status: 'status' },
+  ticketMailboxConnections: {
+    __t: 'ticket_mailbox_connections', id: 'id', partnerId: 'partnerId', tenantId: 'tenantId',
+    consentAttemptId: 'consentAttemptId', status: 'status'
+  }
 }));
 
 const { captureExceptionMock, captureMessageMock } = vi.hoisted(() => ({
@@ -263,6 +270,65 @@ beforeEach(() => {
 });
 
 describe('processInboundEmail', () => {
+  const mailboxGeneration = {
+    connectionId: '44444444-4444-4444-8444-444444444444',
+    partnerId: '22222222-2222-4222-8222-222222222222',
+    tenantId: '11111111-1111-4111-8111-111111111111',
+    consentAttemptId: '66666666-6666-4666-8666-666666666666',
+  };
+
+  it('discards a stale M365 generation before ticket, comment, or inbound-log writes', async () => {
+    state.selectRows['ticket_mailbox_connections'] = [];
+
+    await processInboundEmail(
+      email({ provider: 'm365', resolvedPartnerId: mailboxGeneration.partnerId }),
+      mailboxGeneration,
+    );
+
+    expect(createTicketMock).not.toHaveBeenCalled();
+    expect(state.inserts).toHaveLength(0);
+    expect(state.updates).toHaveLength(0);
+  });
+
+  it('fails closed for an M365 job with no mailbox generation', async () => {
+    await processInboundEmail(email({
+      provider: 'm365',
+      resolvedPartnerId: mailboxGeneration.partnerId,
+    }));
+
+    expect(createTicketMock).not.toHaveBeenCalled();
+    expect(state.inserts).toHaveLength(0);
+    expect(state.updates).toHaveLength(0);
+  });
+
+  it('ingests an M365 job only after locking its exact active generation', async () => {
+    state.selectRows['ticket_mailbox_connections'] = [{ id: mailboxGeneration.connectionId }];
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [];
+    state.selectRows['portal_users'] = [];
+
+    await processInboundEmail(
+      email({ provider: 'm365', resolvedPartnerId: 'untrusted-payload-partner' }),
+      mailboxGeneration,
+    );
+
+    expect(inboundOf()).toEqual([expect.objectContaining({
+      partnerId: mailboxGeneration.partnerId,
+      parseStatus: 'quarantined',
+    })]);
+  });
+
+  it('preserves generic inbound processing when no mailbox generation is supplied', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [];
+    state.selectRows['portal_users'] = [];
+
+    await processInboundEmail(email());
+
+    expect(inboundOf()).toEqual([expect.objectContaining({ partnerId: 'p-1' })]);
+  });
+
   it('logs ignored (partnerId null) when the recipient resolves to no partner', async () => {
     resolveMock.mockResolvedValue(null);
 

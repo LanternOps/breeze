@@ -1,6 +1,14 @@
 import { and, eq, inArray, isNull, ne, or } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { ticketEmailInbound, tickets, ticketComments, portalUsers, organizations, partners } from '../../db/schema';
+import {
+  ticketEmailInbound,
+  tickets,
+  ticketComments,
+  portalUsers,
+  organizations,
+  partners,
+  ticketMailboxConnections,
+} from '../../db/schema';
 import { createTicket } from '../ticketService';
 import { resolvePartnerByRecipient } from './resolvePartner';
 import { resolveOrgBySenderDomain, findOrCreateEmailContact, loadPartnerInboundPolicy } from './resolveOrg';
@@ -9,6 +17,7 @@ import { emitTicketEvent } from '../ticketEvents';
 import { captureException, captureMessage } from '../sentry';
 import { getConfig } from '../../config/validate';
 import type { NormalizedInboundEmail, InboundParseStatus } from './types';
+import type { M365MailboxGenerationContext } from '../inboundEmailQueue';
 
 // Synthetic actor for the inbound pipeline. Only ever written to audit_logs.actor_id
 // (NOT NULL, but no FK to users — same pattern as auditEvents.ANONYMOUS_ACTOR_ID /
@@ -98,15 +107,50 @@ async function logInboundFailedDurable(
   }
 }
 
-export async function processInboundEmail(n: NormalizedInboundEmail): Promise<void> {
+async function lockActiveMailboxGeneration(
+  generation: M365MailboxGenerationContext,
+): Promise<boolean> {
+  const rows = await db
+    .select({ id: ticketMailboxConnections.id })
+    .from(ticketMailboxConnections)
+    .where(and(
+      eq(ticketMailboxConnections.id, generation.connectionId),
+      eq(ticketMailboxConnections.partnerId, generation.partnerId),
+      eq(ticketMailboxConnections.tenantId, generation.tenantId),
+      eq(ticketMailboxConnections.consentAttemptId, generation.consentAttemptId),
+      eq(ticketMailboxConnections.status, 'connected'),
+    ))
+    .for('update')
+    .limit(1);
+  return rows.length === 1;
+}
+
+export async function processInboundEmail(
+  n: NormalizedInboundEmail,
+  mailboxGeneration?: M365MailboxGenerationContext,
+): Promise<void> {
   // partnerId is tracked outside the try so the durable-failed log records whatever
   // tenant was resolved before the failure (may be null if resolution itself failed).
   let partnerId: string | null = null;
   try {
+    // A legacy raw BullMQ job cannot prove which mailbox lifecycle generation
+    // produced it. Keep generic providers backward-compatible, but fail closed
+    // for M365 rather than letting a pre-deploy job bypass the connection lock.
+    if (n.provider === 'm365' && !mailboxGeneration) return;
+
     // (1) Tenant identity is established ONLY from the recipient. Sender data is untrusted.
     // Resolution runs INSIDE the try so a failure here still routes to the durable
     // failed-log instead of escaping (and being silently retried / lost).
-    partnerId = n.resolvedPartnerId ?? await resolvePartnerByRecipient(n.to);
+    if (mailboxGeneration) {
+      // The queue payload's resolvedPartnerId is not authority. Lock and compare
+      // every server-issued mailbox-generation field against the live row in the
+      // same transaction that performs ticket/comment writes. A disable that won
+      // first rotates the generation; a lock acquired here first makes disable wait.
+      if (n.provider !== 'm365' || !await lockActiveMailboxGeneration(mailboxGeneration)) return;
+      partnerId = mailboxGeneration.partnerId;
+    } else {
+      partnerId = n.resolvedPartnerId ?? await resolvePartnerByRecipient(n.to);
+    }
     if (!partnerId) {
       // Distinguish a malformed/empty recipient (no `@`, can never resolve) from a
       // well-formed address for a domain we simply don't host. Both log `ignored`,

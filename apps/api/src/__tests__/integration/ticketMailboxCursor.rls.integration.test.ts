@@ -4,19 +4,20 @@
  * Cursor/status CAS helpers therefore self-wrap in system context — otherwise the FORCE-RLS UPDATE
  * matches zero rows SILENTLY and the cursor never advances / status never updates.
  *
- * These tests call those writes with NO surrounding context (exactly as the worker
- * does) and assert the row actually changed. Before the fix they pass-but-persist-
- * nothing (0-row update, no error); the read-backs would still show the old values.
+ * These tests call worker writes with NO surrounding context and assert the row
+ * actually changed. They also prove a request-scoped no-transition retest lock
+ * serializes a concurrent disable until the retest transaction releases the row.
  */
 import './setup';
-import { describe, it, expect } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { describe, it, expect, vi } from 'vitest';
+import { eq, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
   ticketMailboxConnections,
   ticketMailboxTenantOwnerships,
 } from '../../db/schema/ticketMailbox';
 import { createPartner } from './db-utils';
+import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -83,5 +84,47 @@ describe('ticket_mailbox_connections worker writes persist under FORCE RLS (no r
     expect((await readBack(snapshot.id)).status).toBe('connected');
     await expect(setConnectedMailboxStatus(snapshot, 'reauth_required', 'token expired')).resolves.toBe(true);
     expect((await readBack(snapshot.id)).status).toBe('reauth_required');
+  });
+
+  runDb('no-transition retest lock serializes a concurrent disable', async () => {
+    const snapshot = await seedConnectedMailbox();
+    const {
+      disableConnection,
+      isMailboxConnectionSnapshotCurrent,
+    } = await import('../../services/ticketMailbox/connectionService');
+    let releaseLock!: () => void;
+    const holdLock = new Promise<void>((resolve) => { releaseLock = resolve; });
+    let lockAcquired!: () => void;
+    const acquired = new Promise<void>((resolve) => { lockAcquired = resolve; });
+
+    const recheck = withSystemDbAccessContext(async () => {
+      const current = await isMailboxConnectionSnapshotCurrent(snapshot, 'connected');
+      lockAcquired();
+      await holdLock;
+      return current;
+    });
+    await acquired;
+
+    const disable = withSystemDbAccessContext(() =>
+      disableConnection(snapshot.id, snapshot.partnerId),
+    );
+    try {
+      await vi.waitFor(async () => {
+        const blocked = await getTestDb().execute(sql`
+          SELECT pid
+          FROM pg_stat_activity
+          WHERE datname = current_database()
+            AND wait_event_type = 'Lock'
+            AND query ILIKE '%ticket_mailbox_connections%'
+        `);
+        expect(blocked.length).toBeGreaterThan(0);
+      }, { timeout: 5_000, interval: 25 });
+    } finally {
+      releaseLock();
+    }
+
+    await expect(recheck).resolves.toBe(true);
+    await expect(disable).resolves.toBe(true);
+    expect((await readBack(snapshot.id)).status).toBe('disabled');
   });
 });

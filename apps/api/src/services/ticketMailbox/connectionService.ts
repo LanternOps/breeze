@@ -240,6 +240,27 @@ export async function isConnectedMailboxSnapshotCurrent(
   }));
 }
 
+/** Request-context lifecycle recheck for retest paths that intentionally make
+ * no status transition. It still compares the original generation and tenant,
+ * so a concurrent disable/re-consent cannot be reported as the probe result. */
+export async function isMailboxConnectionSnapshotCurrent(
+  snapshot: MailboxConnectionSnapshot,
+  status: Extract<MailboxConnectionStatus, 'connected' | 'error'>,
+): Promise<boolean> {
+  const rows = await db.select({ id: ticketMailboxConnections.id })
+    .from(ticketMailboxConnections)
+    .where(and(
+      eq(ticketMailboxConnections.id, snapshot.id),
+      eq(ticketMailboxConnections.partnerId, snapshot.partnerId),
+      eq(ticketMailboxConnections.tenantId, snapshot.tenantId),
+      eq(ticketMailboxConnections.consentAttemptId, snapshot.consentAttemptId),
+      eq(ticketMailboxConnections.status, status),
+    ))
+    .for('update')
+    .limit(1);
+  return rows.length === 1;
+}
+
 export async function setConnectedMailboxStatus(
   snapshot: MailboxConnectionSnapshot,
   status: Exclude<MailboxConnectionStatus, 'connected' | 'pending_consent' | 'disabled'>,

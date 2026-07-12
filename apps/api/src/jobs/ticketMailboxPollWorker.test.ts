@@ -68,6 +68,16 @@ describe('runMailboxSweep', () => {
     await runMailboxSweep();
 
     expect(enqueueInboundEmail).toHaveBeenCalledTimes(2);
+    expect(enqueueInboundEmail).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ providerMessageId: 'm1' }),
+      {
+        connectionId: 'c1',
+        partnerId: 'p1',
+        tenantId: conn().tenantId,
+        consentAttemptId: conn().consentAttemptId,
+      },
+    );
     expect(markRead).toHaveBeenCalledTimes(2);
     expect(updateDeltaCursor).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'c1', consentAttemptId: conn().consentAttemptId }),

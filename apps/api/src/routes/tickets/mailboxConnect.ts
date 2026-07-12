@@ -31,6 +31,7 @@ import {
   createPendingConnection,
   disableConnection,
   getMailboxConnection,
+  isMailboxConnectionSnapshotCurrent,
   listMailboxConnections,
   markPendingConsentFailed,
   probeMailbox,
@@ -526,9 +527,13 @@ mailboxRoutes.post(
           'error',
           'Mailbox verification failed',
         );
+      } else {
+        changed = await isMailboxConnectionSnapshotCurrent(snapshot, 'error');
       }
     } else if (connection.status === 'error') {
       changed = await restoreVerifiedConnection(snapshot);
+    } else {
+      changed = await isMailboxConnectionSnapshotCurrent(snapshot, 'connected');
     }
     const outcome = changed ? (probe.ok ? 'verified' : 'probe_failed') : 'stale';
     writeRouteAudit(c, {

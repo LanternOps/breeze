@@ -20,27 +20,35 @@ import { Worker, type Job } from 'bullmq';
 import * as dbModule from '../db';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
-import { INBOUND_EMAIL_QUEUE } from '../services/inboundEmailQueue';
+import {
+  INBOUND_EMAIL_QUEUE,
+  type InboundEmailJobData,
+  type InboundEmailQueueJob,
+} from '../services/inboundEmailQueue';
 import { processInboundEmail } from '../services/inboundEmail/inboundEmailService';
-import type { NormalizedInboundEmail } from '../services/inboundEmail/types';
 
-let worker: Worker<NormalizedInboundEmail> | null = null;
+let worker: Worker<InboundEmailQueueJob> | null = null;
 
-export async function handleInboundEmail(job: Job<NormalizedInboundEmail>): Promise<void> {
+function unwrapJob(data: InboundEmailQueueJob): InboundEmailJobData {
+  return 'email' in data ? data : { email: data };
+}
+
+export async function handleInboundEmail(job: Job<InboundEmailQueueJob>): Promise<void> {
+  const { email, mailboxGeneration } = unwrapJob(job.data);
   // runOutsideDbContext is a synchronous wrapper that asserts no open DB context
   // exists on the current async-context stack and then runs fn() in a clean scope.
   // We need to bridge it to our async work by returning the Promise it produces.
   return dbModule.runOutsideDbContext(() =>
-    dbModule.withSystemDbAccessContext(() => processInboundEmail(job.data))
+    dbModule.withSystemDbAccessContext(() => processInboundEmail(email, mailboxGeneration))
   );
 }
 
 export function initializeInboundEmailWorker(): Promise<void> {
   if (worker) return Promise.resolve();
 
-  worker = new Worker<NormalizedInboundEmail>(
+  worker = new Worker<InboundEmailQueueJob>(
     INBOUND_EMAIL_QUEUE,
-    (job: Job<NormalizedInboundEmail>) => handleInboundEmail(job),
+    (job: Job<InboundEmailQueueJob>) => handleInboundEmail(job),
     { connection: getBullMQConnection(), concurrency: 5 }
   );
 
@@ -49,7 +57,7 @@ export function initializeInboundEmailWorker(): Promise<void> {
   });
 
   worker.on('failed', (job, error) => {
-    const msgId = job?.data?.providerMessageId;
+    const msgId = job ? unwrapJob(job.data).email.providerMessageId : undefined;
     const attempts = job?.attemptsMade;
     console.error(`[InboundEmail] Job ${job?.id} failed (providerMessageId=${msgId}, attempts=${attempts}):`, error);
     if (job && job.attemptsMade >= (job.opts.attempts ?? 1)) {

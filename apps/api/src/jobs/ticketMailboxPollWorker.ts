@@ -52,7 +52,12 @@ async function sweepOne(c: Awaited<ReturnType<typeof listConnectedMailboxes>>[nu
     if (!await isConnectedMailboxSnapshotCurrent(c)) return;
     for (const msg of page.messages) {
       const normalized = normalizeGraphMessage(msg, c.partnerId, c.mailboxAddress);
-      await enqueueInboundEmail(normalized);
+      await enqueueInboundEmail(normalized, {
+        connectionId: c.id,
+        partnerId: c.partnerId,
+        tenantId: c.tenantId,
+        consentAttemptId: c.consentAttemptId,
+      });
       await markRead(token, c.mailboxAddress, msg.id).catch((e) => {
         console.warn('[mailboxPoll] mark-read failed', { id: msg.id, err: e instanceof Error ? e.message : e });
       });
