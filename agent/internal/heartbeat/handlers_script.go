@@ -290,12 +290,18 @@ func (h *Heartbeat) sendCommandToUserHelper(session *sessionbroker.Session, cmd 
 // (executor.DefaultTimeout / executor.MaxTimeout). Without the clamp a huge
 // timeoutSeconds in the command payload parks a worker-pool goroutine (and the
 // command's payload) near-indefinitely on the IPC wait (issue #2387). The +5s
-// grace lets the helper's own timeout fire first so its result wins.
+// grace lets the helper's own timeout fire first so its result wins — this
+// assumes the helper clamps identically (it routes run_script through
+// executor.Execute, which applies the same bounds; its execute_command path
+// does not clamp, so a new payload-timeout command routed here would need its
+// own cap).
 func helperCommandTimeout(timeoutSeconds int) time.Duration {
 	if timeoutSeconds <= 0 {
 		timeoutSeconds = executor.DefaultTimeout
 	}
 	if timeoutSeconds > executor.MaxTimeout {
+		log.Warn("clamping user-helper command timeout to executor maximum",
+			"requestedSeconds", timeoutSeconds, "effectiveSeconds", executor.MaxTimeout)
 		timeoutSeconds = executor.MaxTimeout
 	}
 	return time.Duration(timeoutSeconds)*time.Second + 5*time.Second

@@ -87,6 +87,13 @@ func TestSessionWriteTimesOutOnStalledTarget(t *testing.T) {
 	default:
 		t.Fatal("session not closed after write timeout")
 	}
+
+	// The recorded close reason must carry the write-timeout cause so
+	// readLoop's onClose reports it (not the read-side symptom).
+	reason, ok := s.closeReason.Load().(error)
+	if !ok || !strings.Contains(reason.Error(), "timed out") {
+		t.Fatalf("expected closeReason to record the write timeout, got %v", reason)
+	}
 	if err := s.Write([]byte("after")); err == nil || !strings.Contains(err.Error(), "closed") {
 		t.Fatalf("expected closed-session error on subsequent write, got %v", err)
 	}

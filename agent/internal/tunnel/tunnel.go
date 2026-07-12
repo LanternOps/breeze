@@ -39,10 +39,14 @@ type Session struct {
 	TunnelType string // "vnc" or "proxy"
 
 	conn net.Conn
-	// writeTimeout bounds each Write; zero means defaultWriteTimeout.
+	// writeTimeout bounds each Write; non-positive means defaultWriteTimeout.
 	// Set before the session is used (tests only) — never mutated afterwards.
 	writeTimeout time.Duration
-	done         chan struct{}
+	// closeReason records why the session was torn down (e.g. a write
+	// timeout) so readLoop's onClose reports the true cause instead of the
+	// read-side symptom ("use of closed network connection").
+	closeReason atomic.Value // stores error
+	done        chan struct{}
 	closeOnce  sync.Once
 	onData     DataCallback
 	onClose    CloseCallback
@@ -103,22 +107,26 @@ func (s *Session) Write(data []byte) error {
 	}
 
 	// Bound the write so a stalled target cannot wedge the caller forever.
-	// Deadline errors are permanent on net.Conn (all subsequent writes fail),
-	// so the session is torn down rather than left in a poisoned state.
+	// On timeout the session is torn down rather than left running: the
+	// write may have partially flushed, corrupting the VNC/proxy stream
+	// framing, and a target that stalled for the full deadline is presumed
+	// dead.
 	if err := s.conn.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
 		return fmt.Errorf("set write deadline for %s:%d: %w", s.TargetHost, s.TargetPort, err)
 	}
 	n, err := s.conn.Write(data)
 	if err != nil {
+		wrapped := fmt.Errorf("write to %s:%d: %w", s.TargetHost, s.TargetPort, err)
 		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 			log.Warn("tunnel write timed out, closing session",
 				"tunnelId", s.ID,
 				"target", fmt.Sprintf("%s:%d", s.TargetHost, s.TargetPort),
 				"timeout", timeout.String(),
 			)
+			s.closeReason.Store(fmt.Errorf("tunnel write timed out after %s: %w", timeout, wrapped))
 			s.Close()
 		}
-		return fmt.Errorf("write to %s:%d: %w", s.TargetHost, s.TargetPort, err)
+		return wrapped
 	}
 	s.bytesSent.Add(int64(n))
 	s.touch()
@@ -161,6 +169,11 @@ func (s *Session) readLoop() {
 
 	defer func() {
 		s.Close()
+		// A recorded close reason (e.g. write timeout) is the true cause;
+		// the read error here is usually just its symptom.
+		if reason, ok := s.closeReason.Load().(error); ok {
+			closeErr = reason
+		}
 		if s.onClose != nil {
 			s.onClose(s.ID, closeErr)
 		}

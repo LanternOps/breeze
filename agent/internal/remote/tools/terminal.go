@@ -4,8 +4,11 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/terminal"
 )
+
+var terminalLog = logging.L("remote-terminal")
 
 // OutputCallback is a function that receives terminal output
 type OutputCallback func(sessionId string, data []byte)
@@ -46,7 +49,8 @@ func StartTerminal(mgr *terminal.Manager, payload map[string]any, outputCallback
 	// Create close handler
 	onClose := func(err error) {
 		if err != nil {
-			fmt.Printf("Terminal session %s closed with error: %v\n", sessionId, err)
+			terminalLog.Warn("terminal session closed with error",
+				"sessionId", sessionId, "error", err.Error())
 		}
 	}
 

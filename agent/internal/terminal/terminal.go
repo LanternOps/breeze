@@ -37,7 +37,7 @@ type Session struct {
 	cmd      *exec.Cmd      // process command (Unix/macOS; nil on Windows ConPTY)
 	mu       sync.Mutex
 	writeMu  sync.Mutex // serializes PTY/stdin writes; never held with s.mu
-	// writeTimeout bounds each write; zero means defaultWriteTimeout.
+	// writeTimeout bounds each write; non-positive means defaultWriteTimeout.
 	// Set before the session is used (tests only) — never mutated afterwards.
 	writeTimeout time.Duration
 	closed       bool
@@ -248,8 +248,17 @@ func (s *Session) write(data []byte) error {
 			"sessionId", s.ID, "timeout", timeout.String())
 		// Close in a goroutine: close() takes s.mu and waits for the shell
 		// process, and killing the shell is what unblocks the stuck write.
-		go s.close()
-		return fmt.Errorf("terminal write timed out after %s; session %s closed", timeout, s.ID)
+		// A close failure here must never be silent — closing the fd is the
+		// mechanism that releases the wedged writer goroutine, so if it fails
+		// that goroutine (and writeMu) stays pinned.
+		go func() {
+			defer observability.Recoverer("terminal.writeTimeoutClose")
+			if err := s.close(); err != nil {
+				log.Error("failed to close session after write timeout — wedged writer may remain pinned",
+					"sessionId", s.ID, "error", err.Error())
+			}
+		}()
+		return fmt.Errorf("terminal write timed out after %s; session %s close initiated", timeout, s.ID)
 	}
 }
 

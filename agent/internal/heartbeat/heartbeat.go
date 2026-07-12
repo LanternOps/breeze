@@ -223,8 +223,9 @@ type Heartbeat struct {
 	seenCommandsMu sync.Mutex
 
 	// commandInFlightWarnAfter overrides the wedged-worker watchdog interval
-	// in executeCommandViaPool; zero means defaultCommandInFlightWarnAfter.
-	// Set before the heartbeat runs (tests only) — never mutated afterwards.
+	// in executeCommandViaPool; non-positive means
+	// defaultCommandInFlightWarnAfter. Set before the heartbeat runs (tests
+	// only) — never mutated afterwards.
 	commandInFlightWarnAfter time.Duration
 
 	// Guard against concurrent cert renewals from successive heartbeats
@@ -3537,8 +3538,9 @@ func (h *Heartbeat) executeCommandViaPool(cmd Command) tools.CommandResult {
 	// long-running by design (run_script up to 1h, software installs, patch
 	// loops), so failing the command here would race legitimate work. The log
 	// flags workers wedged on an unbounded blocking call — each one pins its
-	// decoded command payload (up to maxMessageSize) for the process lifetime
-	// and permanently shrinks the pool (issue #2387).
+	// decoded command payload (up to the 64MB websocket read limit,
+	// maxMessageSize in internal/websocket) for the process lifetime and
+	// permanently shrinks the pool (issue #2387).
 	warnAfter := h.commandInFlightWarnAfter
 	if warnAfter <= 0 {
 		warnAfter = defaultCommandInFlightWarnAfter
