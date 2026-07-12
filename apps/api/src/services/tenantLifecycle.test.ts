@@ -161,7 +161,10 @@ describe('tenantLifecycle — agent fleet severance', () => {
     cleanupMocks.revokeAllUserTokens.mockRejectedValueOnce(new Error('redis unavailable'));
 
     await expect(revokeOrganizationTenantAccess('org-1', { userIds: ['u1'] }))
-      .rejects.toThrow('user-tokens:u1');
+      .resolves.toMatchObject({
+        cleanupStatus: 'partial',
+        cleanupFailures: ['user-tokens:u1'],
+      });
     expect(cleanupMocks.clearPermissionCache).toHaveBeenCalledWith('u1');
     expect(cleanupMocks.revokeAllOrgOauthArtifacts).toHaveBeenCalledWith('org-1');
   });

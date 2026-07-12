@@ -13,5 +13,19 @@ describe('runPostCommitCleanup', () => {
     expect(result.failures).toEqual([
       expect.objectContaining({ name: 'permission-cache', error: expect.any(Error) }),
     ]);
+    expect(result.cleanupStatus).toBe('partial');
+    expect(result.cleanupFailures).toEqual(['permission-cache']);
+  });
+
+  it('reports complete when every operation succeeds', async () => {
+    const result = await runPostCommitCleanup([
+      { name: 'sessions', run: async () => undefined },
+    ]);
+
+    expect(result).toMatchObject({
+      cleanupStatus: 'complete',
+      cleanupFailures: [],
+      failures: [],
+    });
   });
 });

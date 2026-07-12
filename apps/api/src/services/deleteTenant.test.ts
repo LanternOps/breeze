@@ -34,6 +34,10 @@ vi.mock('./tenantLifecycle', () => ({
     userSessionsRevoked: 0,
     oauthGrantsRevoked: 0,
     oauthRefreshTokensRevoked: 0,
+    agentTokensSuspended: 0,
+    enrollmentKeysInvalidated: 0,
+    cleanupStatus: 'complete',
+    cleanupFailures: [],
   }),
   invalidatePartnerUsersInTransaction: lifecycleMocks.invalidatePartner,
 }));
@@ -183,6 +187,8 @@ describe('delete_tenant', () => {
       tenant_id: PARTNER_ID,
       tenant_name: 'Acme Corp',
       restore_window_days: 30,
+      cleanupStatus: 'complete',
+      cleanupFailures: [],
     });
     expect(parsed.deleted_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
 

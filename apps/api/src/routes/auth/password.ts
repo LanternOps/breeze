@@ -11,6 +11,7 @@ import {
   forgotPasswordLimiter,
   getRedis,
   invalidateAllUserSessions,
+  invalidateAllUserSessionsAsSystem,
   revokeAllUserTokens
 } from '../../services';
 import { getEmailService } from '../../services/email';
@@ -247,7 +248,7 @@ passwordRoutes.post('/reset-password', zValidator('json', resetPasswordSchema), 
 
   // Invalidate all sessions — best-effort; password is already changed above.
   const resetCleanup = await runPostCommitCleanup([
-    { name: 'sessions', run: () => invalidateAllUserSessions(userId) },
+    { name: 'sessions', run: () => invalidateAllUserSessionsAsSystem(userId) },
     { name: 'user-tokens', run: () => revokeAllUserTokens(userId) },
     { name: 'oauth', run: () => revokeAllUserOauthArtifacts(userId) },
   ]);
@@ -262,9 +263,18 @@ passwordRoutes.post('/reset-password', zValidator('json', resetPasswordSchema), 
     action: 'user.password.reset',
     result: 'success',
     userId,
+    details: {
+      cleanupStatus: resetCleanup.cleanupStatus,
+      cleanupFailures: resetCleanup.cleanupFailures,
+    },
   });
 
-  return c.json({ success: true, message: 'Password reset successfully' });
+  return c.json({
+    success: true,
+    message: 'Password reset successfully',
+    cleanupStatus: resetCleanup.cleanupStatus,
+    cleanupFailures: resetCleanup.cleanupFailures,
+  });
 });
 
 // Change password (requires auth)
@@ -348,9 +358,18 @@ passwordRoutes.post('/change-password', authMiddleware, zValidator('json', chang
     result: 'success',
     userId: auth.user.id,
     email: auth.user.email,
+    details: {
+      cleanupStatus: changeCleanup.cleanupStatus,
+      cleanupFailures: changeCleanup.cleanupFailures,
+    },
   });
 
-  return c.json({ success: true, message: 'Password changed successfully' });
+  return c.json({
+    success: true,
+    message: 'Password changed successfully',
+    cleanupStatus: changeCleanup.cleanupStatus,
+    cleanupFailures: changeCleanup.cleanupFailures,
+  });
 });
 
 // Get current user (requires auth)

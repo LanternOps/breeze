@@ -551,7 +551,7 @@ describe('admin/abuse — suspend mutation behavior', () => {
     expect(terminateUserRemoteSessions).not.toHaveBeenCalled();
   });
 
-  it('returns 500 with tokenRevocationFailed when Redis revocation throws (does NOT silently 200)', async () => {
+  it('returns a truthful partial outcome when Redis revocation throws', async () => {
     vi.mocked(revokeAllUserTokens).mockRejectedValueOnce(new Error('Redis unavailable'));
 
     const app = buildApp(platformAdminAuth);
@@ -560,13 +560,14 @@ describe('admin/abuse — suspend mutation behavior', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ confirmEmail: 'admin@breeze.test', reason: 'redis-down silent failure regression' }),
     });
-    expect(res.status).toBe(500);
+    expect(res.status).toBe(200);
     const body = (await res.json()) as {
       error: string;
       tokenRevocationFailed: boolean;
       tokenRevocationFailures: Array<{ userId: string; error: string }>;
     };
     expect(body.error).toBe('partial_suspend');
+    expect(body).toMatchObject({ cleanupStatus: 'partial', cleanupFailures: ['user-tokens'] });
     expect(body.tokenRevocationFailed).toBe(true);
     expect(body.tokenRevocationFailures).toHaveLength(1);
     expect(body.tokenRevocationFailures[0]!.error).toContain('Redis unavailable');
@@ -590,7 +591,7 @@ describe('admin/abuse — suspend mutation behavior', () => {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ confirmEmail: 'admin@breeze.test', reason: 'prod-mode-redaction-regression' }),
       });
-      expect(res.status).toBe(500);
+      expect(res.status).toBe(200);
       const body = (await res.json()) as Record<string, unknown>;
       // Flags + counts still surface for triage.
       expect(body.tokenRevocationFailed).toBe(true);
@@ -652,7 +653,7 @@ describe('admin/abuse — suspend mutation behavior', () => {
     });
   });
 
-  it('returns 500 with partial_suspend when OAuth revocation cache fails', async () => {
+  it('returns a partial outcome when OAuth revocation cache fails', async () => {
     // If Redis is down, the OAuth revocation cache write throws. Treat the
     // same way as a JWT revocation failure: DB suspend committed but a
     // grant/refresh-token window remains open — operator MUST know.
@@ -666,13 +667,14 @@ describe('admin/abuse — suspend mutation behavior', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ confirmEmail: 'admin@breeze.test', reason: 'redis-down oauth revocation regression' }),
     });
-    expect(res.status).toBe(500);
+    expect(res.status).toBe(200);
     const body = (await res.json()) as {
       error: string;
       oauthRevocationFailed?: boolean;
       oauthRevocationError?: string;
     };
     expect(body.error).toBe('partial_suspend');
+    expect(body).toMatchObject({ cleanupStatus: 'partial', cleanupFailures: ['oauth'] });
     expect(body.oauthRevocationFailed).toBe(true);
     expect(body.oauthRevocationError).toContain('redis revocation cache write failed');
 
@@ -747,8 +749,10 @@ describe('admin/abuse — remote session teardown on suspend', () => {
       body: JSON.stringify({ confirmEmail: 'admin@breeze.test', reason: 'teardown failure count coverage' }),
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { remoteSessionTeardownFailures?: number };
+    const body = (await res.json()) as { remoteSessionTeardownFailures?: number; cleanupStatus?: string; cleanupFailures?: string[] };
     expect(body.remoteSessionTeardownFailures).toBe(1);
+    expect(body.cleanupStatus).toBe('partial');
+    expect(body.cleanupFailures).toEqual(['remote-sessions']);
 
     const auditCall = vi.mocked(createAuditLog).mock.calls[0]![0]!;
     expect((auditCall.details as Record<string, unknown>).remoteSessionTeardownFailures).toBe(1);
@@ -830,7 +834,7 @@ describe('admin/abuse — unsuspend agent-fleet restore', () => {
     expect(restorePartnerTenantAccess).not.toHaveBeenCalled();
   });
 
-  it('returns 500 (does NOT silently 200) when the agent-fleet restore throws', async () => {
+  it('returns a truthful partial outcome when the agent-fleet restore throws', async () => {
     vi.mocked(restorePartnerTenantAccess).mockRejectedValueOnce(new Error('db unavailable'));
     const app = buildApp(platformAdminAuth);
     const res = await app.request('/admin/partners/partner-1/unsuspend', {
@@ -839,9 +843,11 @@ describe('admin/abuse — unsuspend agent-fleet restore', () => {
       body: JSON.stringify({ reason: 'reinstating a legitimate customer' }),
     });
 
-    expect(res.status).toBe(500);
-    const body = (await res.json()) as { agentRestoreFailed?: boolean };
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { agentRestoreFailed?: boolean; cleanupStatus?: string; cleanupFailures?: string[] };
     expect(body.agentRestoreFailed).toBe(true);
+    expect(body.cleanupStatus).toBe('partial');
+    expect(body.cleanupFailures).toEqual(['agent-restore']);
     const auditCall = vi.mocked(createAuditLog).mock.calls[0]![0]!;
     expect(auditCall.result).toBe('failure');
   });

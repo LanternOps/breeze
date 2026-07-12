@@ -59,6 +59,7 @@ vi.mock('../../services', () => ({
     getdel: getdelMock,
   })),
   invalidateAllUserSessions: vi.fn(async () => undefined),
+  invalidateAllUserSessionsAsSystem: vi.fn(async () => 0),
   revokeAllRefreshTokenFamiliesForUser: revokeRefreshFamiliesMock,
   revokeAllUserTokens: revokeAllUserTokensMock,
 }));
@@ -331,8 +332,10 @@ describe('password reset eligibility (#719)', () => {
       });
 
       expect(res.status).toBe(200);
-      const body = await res.json() as { success: boolean };
+      const body = await res.json() as { success: boolean; cleanupStatus: string; cleanupFailures: string[] };
       expect(body.success).toBe(true);
+      expect(body.cleanupStatus).toBe('complete');
+      expect(body.cleanupFailures).toEqual([]);
       expect(updateWhereMock).toHaveBeenCalled();
       expect(advanceUserSecurityStateMock).toHaveBeenCalledWith(
         expect.anything(),
@@ -376,8 +379,19 @@ describe('password reset eligibility (#719)', () => {
       });
 
       expect(res.status).toBe(200);
-      const body = await res.json() as { success: boolean };
+      const body = await res.json() as { success: boolean; cleanupStatus: string; cleanupFailures: string[] };
       expect(body.success).toBe(true);
+      expect(body.cleanupStatus).toBe('partial');
+      expect(body.cleanupFailures).toContain('user-tokens');
+      expect(writeAuthAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          details: expect.objectContaining({
+            cleanupStatus: 'partial',
+            cleanupFailures: expect.arrayContaining(['user-tokens']),
+          }),
+        }),
+      );
       expect(revokeAllUserTokensMock).toHaveBeenCalledWith('u-pending');
       expect(revokeAllUserSessionFamiliesMock).toHaveBeenCalledWith(
         expect.anything(),
@@ -402,8 +416,10 @@ describe('password reset eligibility (#719)', () => {
       });
 
       expect(res.status).toBe(200);
-      const body = await res.json() as { success: boolean };
+      const body = await res.json() as { success: boolean; cleanupStatus: string; cleanupFailures: string[] };
       expect(body.success).toBe(true);
+      expect(body.cleanupStatus).toBe('partial');
+      expect(body.cleanupFailures).toContain('oauth');
       expect(revokeOauthArtifactsMock).toHaveBeenCalledWith('u-pending');
     });
 
@@ -537,8 +553,10 @@ describe('password reset eligibility (#719)', () => {
       });
 
       expect(res.status).toBe(200);
-      const body = await res.json() as { success: boolean };
+      const body = await res.json() as { success: boolean; cleanupStatus: string; cleanupFailures: string[] };
       expect(body.success).toBe(true);
+      expect(body.cleanupStatus).toBe('complete');
+      expect(body.cleanupFailures).toEqual([]);
       expect(advanceUserSecurityStateMock).toHaveBeenCalledWith(expect.anything(), 'u-1');
       expect(revokeAllUserSessionFamiliesMock).toHaveBeenCalledWith(
         expect.anything(),
@@ -562,8 +580,10 @@ describe('password reset eligibility (#719)', () => {
       });
 
       expect(res.status).toBe(200);
-      const body = await res.json() as { success: boolean };
+      const body = await res.json() as { success: boolean; cleanupStatus: string; cleanupFailures: string[] };
       expect(body.success).toBe(true);
+      expect(body.cleanupStatus).toBe('partial');
+      expect(body.cleanupFailures).toContain('user-tokens');
       expect(revokeAllUserTokensMock).toHaveBeenCalledWith('u-1');
       expect(revokeAllUserSessionFamiliesMock).toHaveBeenCalledWith(
         expect.anything(),
@@ -582,8 +602,10 @@ describe('password reset eligibility (#719)', () => {
       });
 
       expect(res.status).toBe(200);
-      const body = await res.json() as { success: boolean };
+      const body = await res.json() as { success: boolean; cleanupStatus: string; cleanupFailures: string[] };
       expect(body.success).toBe(true);
+      expect(body.cleanupStatus).toBe('partial');
+      expect(body.cleanupFailures).toContain('oauth');
       expect(revokeOauthArtifactsMock).toHaveBeenCalledWith('u-1');
     });
 

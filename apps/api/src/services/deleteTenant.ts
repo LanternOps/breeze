@@ -103,7 +103,7 @@ export async function runDeleteTenant(
     return invalidatePartnerUsersInTransaction(tx as any, input.tenant_id, 'partner-deleted');
   });
 
-  await revokePartnerTenantAccess(input.tenant_id, lifecycleSnapshot);
+  const cleanup = await revokePartnerTenantAccess(input.tenant_id, lifecycleSnapshot);
 
   try {
     writeAuditEvent(requestLikeFromSnapshot({}), {
@@ -118,6 +118,8 @@ export async function runDeleteTenant(
       details: {
         tool_name: 'delete_tenant',
         restore_window_days: 30,
+        cleanupStatus: cleanup.cleanupStatus,
+        cleanupFailures: cleanup.cleanupFailures,
       },
     });
   } catch (err) {
@@ -131,6 +133,8 @@ export async function runDeleteTenant(
     tenant_name: partner.name,
     deleted_at: now.toISOString(),
     restore_window_days: 30,
+    cleanupStatus: cleanup.cleanupStatus,
+    cleanupFailures: cleanup.cleanupFailures,
     message:
       'Tenant soft-deleted. Contact support within 30 days to restore. After 30 days, data is permanently removed.',
   });

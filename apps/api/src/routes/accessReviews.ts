@@ -421,52 +421,38 @@ accessReviewRoutes.post(
       );
     }
 
-    const [review] = await db
-      .select({ id: accessReviews.id, status: accessReviews.status })
-      .from(accessReviews)
-      .where(whereClause)
-      .limit(1);
-
-    if (!review) {
-      return c.json({ error: 'Access review not found' }, 404);
-    }
-
-    if (review.status === 'completed') {
-      return c.json({ error: 'Review is already completed' }, 400);
-    }
-
-    // Check if there are any pending items
-    const pendingItems = await db
-      .select({ id: accessReviewItems.id })
-      .from(accessReviewItems)
-      .where(
-        and(
-          eq(accessReviewItems.reviewId, reviewId),
-          eq(accessReviewItems.decision, 'pending')
-        )
-      )
-      .limit(1);
-
-    if (pendingItems.length > 0) {
-      return c.json({ error: 'Cannot complete review with pending items' }, 400);
-    }
-
-    // Get all revoked items
-    const revokedItems = await db
-      .select({
-        userId: accessReviewItems.userId
-      })
-      .from(accessReviewItems)
-      .where(
-        and(
-          eq(accessReviewItems.reviewId, reviewId),
-          eq(accessReviewItems.decision, 'revoked')
-        )
-      );
-
-    const revokedUserIds = revokedItems.map((item) => item.userId);
-
     const result = await withAuthLifecycleSystemTransaction(async (tx) => {
+      // Reassert the caller's scope after entering system context. All reads
+      // that drive the completion are repeated here so a review cannot move
+      // scopes or gain pending/revoked items between an app-layer check and the
+      // privileged write.
+      const [review] = await tx
+        .select({ id: accessReviews.id, status: accessReviews.status })
+        .from(accessReviews)
+        .where(whereClause)
+        .limit(1);
+      if (!review) return { error: 'not_found' as const };
+      if (review.status === 'completed') return { error: 'completed' as const };
+
+      const pendingItems = await tx
+        .select({ id: accessReviewItems.id })
+        .from(accessReviewItems)
+        .where(and(
+          eq(accessReviewItems.reviewId, reviewId),
+          eq(accessReviewItems.decision, 'pending'),
+        ))
+        .limit(1);
+      if (pendingItems.length > 0) return { error: 'pending' as const };
+
+      const revokedItems = await tx
+        .select({ userId: accessReviewItems.userId })
+        .from(accessReviewItems)
+        .where(and(
+          eq(accessReviewItems.reviewId, reviewId),
+          eq(accessReviewItems.decision, 'revoked'),
+        ));
+      const revokedUserIds = revokedItems.map((item) => item.userId);
+
       let deletedMemberships: Array<{ userId: string }> = [];
       // Apply revocations - remove users from the scope
       if (revokedUserIds.length > 0) {
@@ -508,7 +494,7 @@ accessReviewRoutes.post(
           completedAt: new Date(),
           updatedAt: new Date()
         })
-        .where(eq(accessReviews.id, reviewId))
+        .where(whereClause)
         .returning({
           id: accessReviews.id,
           status: accessReviews.status,
@@ -526,6 +512,16 @@ accessReviewRoutes.post(
       };
     });
 
+    if ('error' in result) {
+      if (result.error === 'not_found') {
+        return c.json({ error: 'Access review not found' }, 404);
+      }
+      if (result.error === 'completed') {
+        return c.json({ error: 'Review is already completed' }, 400);
+      }
+      return c.json({ error: 'Cannot complete review with pending items' }, 400);
+    }
+
     const uniqueRevokedUserIds = result.revokedUserIds;
     const cleanup = await runPostCommitCleanup(uniqueRevokedUserIds.flatMap((userId) => [
       { name: `permission-cache:${userId}`, run: () => clearPermissionCache(userId) },
@@ -541,14 +537,21 @@ accessReviewRoutes.post(
       action: 'access_review.complete',
       resourceType: 'access_review',
       resourceId: result.review.id,
-      details: { revokedCount: result.revokedCount, revokedUserIds: uniqueRevokedUserIds }
+      details: {
+        revokedCount: result.revokedCount,
+        revokedUserIds: uniqueRevokedUserIds,
+        cleanupStatus: cleanup.cleanupStatus,
+        cleanupFailures: cleanup.cleanupFailures,
+      }
     });
 
     return c.json({
       id: result.review.id,
       status: result.review.status,
       completedAt: result.review.completedAt,
-      revokedCount: result.revokedCount
+      revokedCount: result.revokedCount,
+      cleanupStatus: cleanup.cleanupStatus,
+      cleanupFailures: cleanup.cleanupFailures,
     });
   }
 );

@@ -569,6 +569,10 @@ describe('access review routes', () => {
       });
 
       expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({
+        cleanupStatus: 'partial',
+        cleanupFailures: ['user-tokens:user-1'],
+      });
       expect(revokeAllUserTokens).toHaveBeenCalledWith('user-1');
     });
 
@@ -705,6 +709,47 @@ describe('access review routes', () => {
       });
 
       expect(res.status).toBe(400);
+    });
+
+    it('rechecks review ownership inside the system transaction before applying revocations', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => [{ id: 'review-1', status: 'in_progress' }]) })) })),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => []) })) })),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({ where: vi.fn(async () => [{ userId: 'user-1' }]) })),
+        } as any);
+
+      const txDelete = vi.fn(() => ({
+        where: vi.fn(() => ({ returning: vi.fn(async () => [{ userId: 'user-1' }]) })),
+      }));
+      const txUpdate = vi.fn(() => ({
+        set: vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn(async () => [{
+          id: 'review-1', status: 'completed', completedAt: new Date(),
+        }]) })) })),
+      }));
+      const txSelect = vi.fn(() => ({
+        from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => []) })) })),
+      }));
+      lifecycleMocks.withSystemTransaction.mockImplementationOnce(async (fn) => fn({
+        select: txSelect,
+        delete: txDelete,
+        update: txUpdate,
+      } as any));
+
+      const res = await app.request('/access-reviews/review-1/complete', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(404);
+      expect(txSelect).toHaveBeenCalled();
+      expect(txDelete).not.toHaveBeenCalled();
+      expect(txUpdate).not.toHaveBeenCalled();
+      expect(lifecycleMocks.advance).not.toHaveBeenCalled();
     });
   });
 });

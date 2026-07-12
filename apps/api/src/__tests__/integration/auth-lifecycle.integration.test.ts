@@ -5,18 +5,25 @@ import { and, eq, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbAccessContext } from '../../db';
 import {
   organizationUsers,
+  organizations,
+  partnerUsers,
   partners,
   refreshTokenFamilies,
+  sessions,
   users,
 } from '../../db/schema';
 import {
   advanceUserSecurityState,
   revokeAllUserSessionFamilies,
+  revokeUserSessionFamily,
   withAuthLifecycleSystemTransaction,
   type AuthLifecycleTransaction,
 } from '../../services/authLifecycle';
 import { neutralizeUserIfOrphaned } from '../../services/userMembershipLifecycle';
 import { invalidatePartnerUsersInTransaction } from '../../services/tenantLifecycle';
+import { findExistingInviteUser } from '../../services/inviteUserReuse';
+import { organizationLifecycleWriteCondition } from '../../services/lifecycleAuthorization';
+import { invalidateAllUserSessionsAsSystem } from '../../services/session';
 import {
   assignUserToOrganization,
   createOrganization,
@@ -41,8 +48,11 @@ describe('transactional authentication lifecycle', () => {
     const actor = await createUser({ partnerId: partner.id, orgId: org.id, withMembership: true });
     const target = await createUser({ partnerId: partner.id, orgId: org.id, withMembership: true });
     const familyId = '10000000-0000-4000-8000-000000000001';
+    const actorDeniedFamilyId = '10000000-0000-4000-8000-000000000006';
     await insertFamily(target.id, familyId);
+    await insertFamily(target.id, actorDeniedFamilyId);
 
+    let systemCount = 0;
     const actorCount = await runOutsideDbContext(() => withDbAccessContext({
       scope: 'organization',
       orgId: org.id,
@@ -50,22 +60,31 @@ describe('transactional authentication lifecycle', () => {
       accessiblePartnerIds: [],
       userId: actor.id,
       currentPartnerId: partner.id,
-    }, () => revokeAllUserSessionFamilies(
-      db as unknown as AuthLifecycleTransaction,
-      target.id,
-      'actor-attempt',
-    )));
+    }, async () => {
+      // Deliberately nest the system helper while the actor transaction is
+      // active: this proves runOutsideDbContext escapes AsyncLocalStorage.
+      systemCount = await withAuthLifecycleSystemTransaction((tx) =>
+        revokeUserSessionFamily(tx, target.id, familyId, 'system-revoke')
+      );
+      return revokeUserSessionFamily(
+        db as unknown as AuthLifecycleTransaction,
+        target.id,
+        actorDeniedFamilyId,
+        'actor-attempt',
+      );
+    }));
     expect(actorCount).toBe(0);
-
-    const systemCount = await withAuthLifecycleSystemTransaction((tx) =>
-      revokeAllUserSessionFamilies(tx, target.id, 'system-revoke')
-    );
     expect(systemCount).toBe(1);
     const [family] = await getTestDb()
       .select()
       .from(refreshTokenFamilies)
       .where(eq(refreshTokenFamilies.familyId, familyId));
     expect(family?.revokedReason).toBe('system-revoke');
+    const [actorDeniedFamily] = await getTestDb()
+      .select()
+      .from(refreshTokenFamilies)
+      .where(eq(refreshTokenFamilies.familyId, actorDeniedFamilyId));
+    expect(actorDeniedFamily?.revokedAt).toBeNull();
   });
 
   it('rolls back business mutation, epoch advance, and family revocation on a database error', async () => {
@@ -153,5 +172,78 @@ describe('transactional authentication lifecycle', () => {
     expect(row?.authEpoch).toBe(3);
     expect(families).toHaveLength(2);
     expect(families.every((family) => family.revokedAt !== null)).toBe(true);
+  });
+
+  it('blocks cross-partner active-user invite reuse without lifecycle or membership side effects', async () => {
+    const invitingPartner = await createPartner();
+    const victimPartner = await createPartner();
+    const victim = await createUser({ partnerId: victimPartner.id, withMembership: true });
+    const familyId = '10000000-0000-4000-8000-000000000005';
+    await insertFamily(victim.id, familyId);
+
+    const decision = await withAuthLifecycleSystemTransaction((tx) =>
+      findExistingInviteUser(tx, victim.email.toLowerCase(), invitingPartner.id)
+    );
+
+    expect(decision).toEqual({ kind: 'blocked', user: null });
+    const [after] = await getTestDb().select().from(users).where(eq(users.id, victim.id));
+    const links = await getTestDb().select().from(partnerUsers).where(and(
+      eq(partnerUsers.partnerId, invitingPartner.id),
+      eq(partnerUsers.userId, victim.id),
+    ));
+    const [family] = await getTestDb().select().from(refreshTokenFamilies).where(eq(refreshTokenFamilies.familyId, familyId));
+    expect(after?.authEpoch).toBe(1);
+    expect(links).toEqual([]);
+    expect(family?.revokedAt).toBeNull();
+  });
+
+  it('system transaction organization predicate cannot widen a partner or org-bound caller', async () => {
+    const partnerA = await createPartner();
+    const partnerB = await createPartner();
+    const orgA = await createOrganization({ partnerId: partnerA.id });
+    const orgB = await createOrganization({ partnerId: partnerB.id });
+
+    const partnerRows = await withAuthLifecycleSystemTransaction((tx) => tx
+      .update(organizations)
+      .set({ status: 'suspended' })
+      .where(organizationLifecycleWriteCondition({ scope: 'partner', partnerId: partnerA.id, orgId: null }, orgB.id))
+      .returning({ id: organizations.id }));
+    const orgRows = await withAuthLifecycleSystemTransaction((tx) => tx
+      .update(organizations)
+      .set({ status: 'suspended' })
+      .where(organizationLifecycleWriteCondition({ scope: 'system', partnerId: null, orgId: orgA.id }, orgB.id))
+      .returning({ id: organizations.id }));
+
+    expect(partnerRows).toEqual([]);
+    expect(orgRows).toEqual([]);
+    const [unchanged] = await getTestDb().select().from(organizations).where(eq(organizations.id, orgB.id));
+    expect(unchanged?.status).toBe('active');
+  });
+
+  it('password-reset system cleanup deletes target sessions while actor scope cannot', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const actor = await createUser({ partnerId: partner.id, orgId: org.id, withMembership: true });
+    const target = await createUser({ partnerId: partner.id, orgId: org.id, withMembership: true });
+    await getTestDb().insert(sessions).values({
+      userId: target.id,
+      tokenHash: 'target-reset-session',
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+
+    const actorDeleted = await runOutsideDbContext(() => withDbAccessContext({
+      scope: 'organization', orgId: org.id, accessibleOrgIds: [org.id],
+      accessiblePartnerIds: [], userId: actor.id, currentPartnerId: partner.id,
+    }, () => db.delete(sessions).where(eq(sessions.userId, target.id)).returning({ id: sessions.id })));
+    expect(actorDeleted).toEqual([]);
+
+    const contextlessDeleted = await runOutsideDbContext(() =>
+      db.delete(sessions).where(eq(sessions.userId, target.id)).returning({ id: sessions.id })
+    );
+    expect(contextlessDeleted).toEqual([]);
+
+    await expect(invalidateAllUserSessionsAsSystem(target.id)).resolves.toBe(1);
+    const remaining = await getTestDb().select().from(sessions).where(eq(sessions.userId, target.id));
+    expect(remaining).toEqual([]);
   });
 });

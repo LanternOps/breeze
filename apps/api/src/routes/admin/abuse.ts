@@ -285,8 +285,14 @@ abuseRoutes.post(
       }
     }
 
+    const cleanupFailures = [
+      ...(tokenRevocationFailures.length > 0 ? ['user-tokens'] : []),
+      ...(oauthRevocationError !== null ? ['oauth'] : []),
+      ...(remoteSessionTeardownFailures > 0 ? ['remote-sessions'] : []),
+    ];
+    const cleanupStatus = cleanupFailures.length === 0 ? 'complete' as const : 'partial' as const;
     const auditResult: 'success' | 'failure' =
-      tokenRevocationFailures.length === 0 && oauthRevocationError === null
+      cleanupStatus === 'complete'
         ? 'success'
         : 'failure';
 
@@ -308,6 +314,8 @@ abuseRoutes.post(
           remoteSessionTeardownFailures,
           oauthGrantsRevoked: oauthRevocationResult?.grantsRevoked ?? 0,
           oauthRefreshTokensRevoked: oauthRevocationResult?.refreshTokensRevoked ?? 0,
+          cleanupStatus,
+          cleanupFailures,
           ...(tokenRevocationFailures.length > 0
             ? { tokenRevocationFailures }
             : {}),
@@ -331,7 +339,7 @@ abuseRoutes.post(
       captureException(auditErr, c);
     }
 
-    if (tokenRevocationFailures.length > 0 || oauthRevocationError !== null) {
+    if (cleanupStatus === 'partial') {
       // Raw err.message strings suppressed in production. Counts + a
       // generic flag still surface so operators can triage; full detail
       // is in Sentry + the audit trail. Anywhere other than prod (dev,
@@ -340,6 +348,8 @@ abuseRoutes.post(
       return c.json(
         {
           error: 'partial_suspend',
+          cleanupStatus,
+          cleanupFailures,
           partnerId,
           status: 'suspended' as const,
           ...(tokenRevocationFailures.length > 0
@@ -359,8 +369,8 @@ abuseRoutes.post(
           userCount: result.userCount,
           apiKeyCount: result.apiKeyCount,
           queuedUninstalls: result.deviceCount,
+          remoteSessionTeardownFailures,
         },
-        500,
       );
     }
 
@@ -374,6 +384,8 @@ abuseRoutes.post(
       remoteSessionTeardownFailures,
       oauthGrantsRevoked: oauthRevocationResult?.grantsRevoked ?? 0,
       oauthRefreshTokensRevoked: oauthRevocationResult?.refreshTokensRevoked ?? 0,
+      cleanupStatus,
+      cleanupFailures,
     });
   }
 );
@@ -462,32 +474,26 @@ abuseRoutes.post(
         userCount: result.userCount,
         agentTokensRestored,
         ...(agentRestoreError !== null ? { agentRestoreError } : {}),
+        cleanupStatus: agentRestoreError === null ? 'complete' : 'partial',
+        cleanupFailures: agentRestoreError === null ? [] : ['agent-restore'],
       },
       ipAddress: getTrustedClientIpOrUndefined(c),
       userAgent: c.req.header('user-agent'),
       result: agentRestoreError === null ? 'success' : 'failure',
     });
 
-    if (agentRestoreError !== null) {
-      return c.json(
-        {
-          partnerId,
-          status: result.status,
-          userCount: result.userCount,
-          agentRestoreFailed: true,
-          note: 'Partner reactivated but agent-token restore failed — re-run /unsuspend to retry.',
-        },
-        500,
-      );
-    }
-
     return c.json({
       partnerId,
       status: result.status,
       userCount: result.userCount,
       agentTokensRestored,
+      cleanupStatus: agentRestoreError === null ? 'complete' : 'partial',
+      cleanupFailures: agentRestoreError === null ? [] : ['agent-restore'],
+      ...(agentRestoreError !== null ? { agentRestoreFailed: true } : {}),
       note:
-        'Devices that received uninstall commands cannot be auto-restored. Re-enrollment required.',
+        agentRestoreError !== null
+          ? 'Partner reactivated but agent-token restore failed — re-run /unsuspend to retry.'
+          : 'Devices that received uninstall commands cannot be auto-restored. Re-enrollment required.',
     });
   }
 );

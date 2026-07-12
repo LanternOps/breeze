@@ -20,6 +20,8 @@ export interface TenantRevocationResult {
   oauthRefreshTokensRevoked: number;
   agentTokensSuspended: number;
   enrollmentKeysInvalidated: number;
+  cleanupStatus: 'complete' | 'partial';
+  cleanupFailures: string[];
 }
 
 export interface TenantRestorationResult {
@@ -128,19 +130,21 @@ async function revokeApiKeysForOrgIds(orgIds: string[]): Promise<number> {
   return rows.length;
 }
 
-async function revokeUsers(userIds: string[]): Promise<number> {
+async function revokeUsers(userIds: string[]): Promise<{
+  count: number;
+  cleanupStatus: 'complete' | 'partial';
+  cleanupFailures: string[];
+}> {
   const uniqueUserIds = [...new Set(userIds)];
   const cleanup = await runPostCommitCleanup(uniqueUserIds.flatMap((userId) => [
     { name: `user-tokens:${userId}`, run: () => revokeAllUserTokens(userId) },
     { name: `permission-cache:${userId}`, run: () => clearPermissionCache(userId) },
   ]));
-  if (cleanup.failures.length > 0) {
-    throw new AggregateError(
-      cleanup.failures.map((failure) => failure.error),
-      `Tenant user cleanup failed: ${cleanup.failures.map((failure) => failure.name).join(', ')}`,
-    );
-  }
-  return uniqueUserIds.length;
+  return {
+    count: uniqueUserIds.length,
+    cleanupStatus: cleanup.cleanupStatus,
+    cleanupFailures: cleanup.cleanupFailures,
+  };
 }
 
 export type TenantLifecycleTransaction = Parameters<Parameters<Database['transaction']>[0]>[0];
@@ -211,23 +215,41 @@ export async function revokeOrganizationTenantAccess(
       return [...new Set(orgUsers.map((row) => row.userId))];
     })
   );
-  const [apiKeysRevoked, agentSeverance] = await runOutsideDbContext(() =>
-    withSystemDbAccessContext(() => Promise.all([
-        revokeApiKeysForOrgIds([orgId]),
-        severAgentCredentialsForOrgIds([orgId]),
-      ]))
-  );
-  const [userSessionsRevoked, oauth] = await Promise.all([
+  let apiKeysRevoked = 0;
+  let agentSeverance = { agentTokensSuspended: 0, enrollmentKeysInvalidated: 0 };
+  let oauth = { grantsRevoked: 0, refreshTokensRevoked: 0 };
+  const credentialCleanup = await runPostCommitCleanup([{
+    name: 'tenant-credentials',
+    run: async () => {
+      [apiKeysRevoked, agentSeverance] = await runOutsideDbContext(() =>
+        withSystemDbAccessContext(() => Promise.all([
+          revokeApiKeysForOrgIds([orgId]),
+          severAgentCredentialsForOrgIds([orgId]),
+        ])),
+      );
+    },
+  }]);
+  const [userCleanup, oauthCleanup] = await Promise.all([
     revokeUsers(userIds),
-    revokeAllOrgOauthArtifacts(orgId),
+    runPostCommitCleanup([{
+      name: 'oauth',
+      run: async () => { oauth = await revokeAllOrgOauthArtifacts(orgId); },
+    }]),
   ]);
+  const cleanupFailures = [
+    ...credentialCleanup.cleanupFailures,
+    ...userCleanup.cleanupFailures,
+    ...oauthCleanup.cleanupFailures,
+  ];
   return {
     apiKeysRevoked,
-    userSessionsRevoked,
+    userSessionsRevoked: userCleanup.count,
     oauthGrantsRevoked: oauth.grantsRevoked,
     oauthRefreshTokensRevoked: oauth.refreshTokensRevoked,
     agentTokensSuspended: agentSeverance.agentTokensSuspended,
     enrollmentKeysInvalidated: agentSeverance.enrollmentKeysInvalidated,
+    cleanupStatus: cleanupFailures.length === 0 ? 'complete' : 'partial',
+    cleanupFailures,
   };
 }
 
@@ -262,23 +284,41 @@ export async function revokePartnerTenantAccess(
       return { orgIds, userIds };
     })
   );
-  const [apiKeysRevoked, agentSeverance] = await runOutsideDbContext(() =>
-    withSystemDbAccessContext(() => Promise.all([
-      revokeApiKeysForOrgIds(orgIds),
-      severAgentCredentialsForOrgIds(orgIds),
-    ]))
-  );
-  const [userSessionsRevoked, oauth] = await Promise.all([
+  let apiKeysRevoked = 0;
+  let agentSeverance = { agentTokensSuspended: 0, enrollmentKeysInvalidated: 0 };
+  let oauth = { grantsRevoked: 0, refreshTokensRevoked: 0 };
+  const credentialCleanup = await runPostCommitCleanup([{
+    name: 'tenant-credentials',
+    run: async () => {
+      [apiKeysRevoked, agentSeverance] = await runOutsideDbContext(() =>
+        withSystemDbAccessContext(() => Promise.all([
+          revokeApiKeysForOrgIds(orgIds),
+          severAgentCredentialsForOrgIds(orgIds),
+        ])),
+      );
+    },
+  }]);
+  const [userCleanup, oauthCleanup] = await Promise.all([
     revokeUsers(userIds),
-    revokeAllPartnerOauthArtifacts(partnerId),
+    runPostCommitCleanup([{
+      name: 'oauth',
+      run: async () => { oauth = await revokeAllPartnerOauthArtifacts(partnerId); },
+    }]),
   ]);
+  const cleanupFailures = [
+    ...credentialCleanup.cleanupFailures,
+    ...userCleanup.cleanupFailures,
+    ...oauthCleanup.cleanupFailures,
+  ];
   return {
     apiKeysRevoked,
-    userSessionsRevoked,
+    userSessionsRevoked: userCleanup.count,
     oauthGrantsRevoked: oauth.grantsRevoked,
     oauthRefreshTokensRevoked: oauth.refreshTokensRevoked,
     agentTokensSuspended: agentSeverance.agentTokensSuspended,
     enrollmentKeysInvalidated: agentSeverance.enrollmentKeysInvalidated,
+    cleanupStatus: cleanupFailures.length === 0 ? 'complete' : 'partial',
+    cleanupFailures,
   };
 }
 

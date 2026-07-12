@@ -1,4 +1,4 @@
-import { db, withSystemDbAccessContext } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { sessions, users } from '../db/schema';
 import { eq, and, gt } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
@@ -87,6 +87,16 @@ export async function invalidateSession(sessionId: string): Promise<void> {
 
 export async function invalidateAllUserSessions(userId: string): Promise<void> {
   await db.delete(sessions).where(eq(sessions.userId, userId));
+}
+
+export async function invalidateAllUserSessionsAsSystem(userId: string): Promise<number> {
+  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const deleted = await db
+      .delete(sessions)
+      .where(eq(sessions.userId, userId))
+      .returning({ id: sessions.id });
+    return deleted.length;
+  }));
 }
 
 export async function extendSession(sessionId: string): Promise<Date> {

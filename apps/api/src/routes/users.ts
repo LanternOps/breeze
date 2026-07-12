@@ -39,6 +39,7 @@ import { terminateUserRemoteSessions, TEARDOWN_FAILED } from '../services/remote
 import { revokeAllUserTokens } from '../services/tokenRevocation';
 import { neutralizeUserIfOrphaned } from '../services/userMembershipLifecycle';
 import { runPostCommitCleanup } from '../services/postCommitCleanup';
+import { findExistingInviteUser } from '../services/inviteUserReuse';
 import {
   advanceUserSecurityState,
   revokeAllUserSessionFamilies,
@@ -753,6 +754,8 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
 
   // Dedicated email-change audit + security notification to the OLD address.
   // Only fires on a genuine, step-up-cleared email change (previousEmail set).
+  let emailCleanupStatus: 'complete' | 'partial' = 'complete';
+  let emailCleanupFailures: string[] = [];
   if (previousEmail !== undefined) {
     const cleanup = await runPostCommitCleanup([
       { name: 'permission-cache', run: () => clearPermissionCache(updated.id) },
@@ -762,6 +765,8 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
     for (const failure of cleanup.failures) {
       console.error(`[users] ${failure.name} cleanup failed after email change:`, failure.error);
     }
+    emailCleanupStatus = cleanup.cleanupStatus;
+    emailCleanupFailures = cleanup.cleanupFailures;
 
     createAuditLogAsync({
       orgId: auditOrgId,
@@ -774,7 +779,9 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
       details: {
         previousEmail,
         newEmail: updated.email,
-        stepUp: stepUpMethod
+        stepUp: stepUpMethod,
+        cleanupStatus: cleanup.cleanupStatus,
+        cleanupFailures: cleanup.cleanupFailures,
       },
       ipAddress: getTrustedClientIpOrUndefined(c),
       userAgent: c.req.header('user-agent'),
@@ -797,7 +804,11 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
     }
   }
 
-  return c.json(updated);
+  return c.json({
+    ...updated,
+    cleanupStatus: emailCleanupStatus,
+    cleanupFailures: emailCleanupFailures,
+  });
 });
 
 // --- Avatars ---
@@ -1164,14 +1175,6 @@ userRoutes.post(
     const normalizedEmail = data.email.toLowerCase();
 
     const result = await withAuthLifecycleSystemTransaction(async (tx) => {
-      const [existingUser] = await tx
-        .select()
-        .from(users)
-        .where(eq(users.email, normalizedEmail))
-        .limit(1);
-
-      let user = existingUser;
-
       // Resolve the invited user's primary tenancy from the caller's scope.
       // Partner admins inviting → partner-level staff (partner_id set, org_id
       // NULL). Org admins inviting → member of that org (partner_id inherited
@@ -1191,8 +1194,21 @@ userRoutes.post(
         return { partnerId: scopeOrg.partnerId, orgId: scopeContext.orgId };
       };
 
+      // The email lookup is intentionally system-scoped so same-partner users
+      // can be linked across that partner's organizations. System visibility
+      // must not turn into cross-partner authority, however: an active user is
+      // reusable only by their owning partner. Tombstones are the sole
+      // exception because they are credential-less and explicitly re-homed by
+      // the branch below.
+      const tenancy = await resolveInviteTenancy();
+      const existing = await findExistingInviteUser(tx, normalizedEmail, tenancy.partnerId);
+      if (existing.kind === 'blocked') {
+        return { blocked: true as const };
+      }
+      const existingUser = existing.user;
+      let user = existingUser ?? undefined;
+
       if (!user) {
-        const tenancy = await resolveInviteTenancy();
         const [created] = await tx
           .insert(users)
           .values({
@@ -1213,7 +1229,6 @@ userRoutes.post(
         // status='invited'), and re-home it under the inviting scope. We touch
         // ONLY tombstones (disabled + no password) — an active multi-membership
         // user being added to another scope keeps their credentials untouched.
-        const tenancy = await resolveInviteTenancy();
         const [reset] = await tx
           .update(users)
           .set({
@@ -1301,17 +1316,37 @@ userRoutes.post(
       return { user, linkCreated: true, link };
     });
 
+    if ('blocked' in result) {
+      return c.json({ error: 'Unable to invite user' }, 409);
+    }
+
     if (!result.linkCreated) {
       return c.json({ error: 'User already exists in this scope' }, 409);
     }
-    await clearPermissionCache(result.user.id);
-
-    const invite = await generateAndDeliverInvite(
-      result.user.id,
-      scopeContext,
-      { email: result.user.email, name: result.user.name },
-      auth.user
-    );
+    let invite: Awaited<ReturnType<typeof generateAndDeliverInvite>> = {
+      inviteEmailSent: false,
+      warning: 'Invite delivery did not complete. Please resend the invite.',
+    };
+    const cleanup = await runPostCommitCleanup([
+      { name: 'permission-cache', run: () => clearPermissionCache(result.user.id) },
+      {
+        name: 'invite-delivery',
+        run: async () => {
+          invite = await generateAndDeliverInvite(
+            result.user.id,
+            scopeContext,
+            { email: result.user.email, name: result.user.name },
+            auth.user,
+          );
+          if (!invite.inviteEmailSent) {
+            throw new Error(invite.warning ?? 'Invite email was not delivered');
+          }
+        },
+      },
+    ]);
+    for (const failure of cleanup.failures) {
+      console.error('[users] invite post-commit operation failed', failure.name, failure.error);
+    }
 
     writeUserAudit(c, auth, scopeContext, {
       action: 'user.invite',
@@ -1325,7 +1360,9 @@ userRoutes.post(
         orgIds: scopeContext.scope === 'partner' ? data.orgIds ?? [] : undefined,
         siteIds: scopeContext.scope === 'organization' ? data.siteIds ?? [] : undefined,
         deviceGroupIds: scopeContext.scope === 'organization' ? data.deviceGroupIds ?? [] : undefined,
-        inviteEmailSent: invite.inviteEmailSent
+        inviteEmailSent: invite.inviteEmailSent,
+        cleanupStatus: cleanup.cleanupStatus,
+        cleanupFailures: cleanup.cleanupFailures,
       }
     });
 
@@ -1339,6 +1376,8 @@ userRoutes.post(
         inviteEmailSent: invite.inviteEmailSent,
         inviteUrl: invite.inviteUrl,
         warning: invite.warning,
+        cleanupStatus: cleanup.cleanupStatus,
+        cleanupFailures: cleanup.cleanupFailures,
       },
       201
     );
@@ -1436,26 +1475,55 @@ userRoutes.patch(
     }
 
     const securityStateChanged = data.status !== undefined && data.status !== record.status;
-    const updated = await withAuthLifecycleSystemTransaction(async (tx) => {
+    const updateUser = async (tx: AuthLifecycleTransaction, statusLifecycle: boolean) => {
+        if (statusLifecycle) {
+          const [membership] = scopeContext.scope === 'partner'
+            ? await tx
+              .select({ id: partnerUsers.id })
+              .from(partnerUsers)
+              .where(and(
+                eq(partnerUsers.partnerId, scopeContext.partnerId),
+                eq(partnerUsers.userId, userId),
+              ))
+              .limit(1)
+            : await tx
+              .select({ id: organizationUsers.id })
+              .from(organizationUsers)
+              .where(and(
+                eq(organizationUsers.orgId, scopeContext.orgId),
+                eq(organizationUsers.userId, userId),
+              ))
+              .limit(1);
+          if (!membership) return null;
+        }
+
         const [result] = await tx
           .update(users)
           .set(updates)
-          .where(eq(users.id, userId))
+          .where(and(
+            eq(users.id, userId),
+            statusLifecycle ? eq(users.status, record.status) : undefined,
+          ))
           .returning({
             id: users.id,
             email: users.email,
             name: users.name,
             status: users.status
           });
-        if (!result) {
-          throw new Error(`Failed to update user ${userId}`);
-        }
-        if (securityStateChanged) {
+        if (!result) return null;
+        if (statusLifecycle && securityStateChanged) {
           await advanceUserSecurityState(tx, userId);
           await revokeAllUserSessionFamilies(tx, userId, 'status-changed');
         }
         return result;
-    });
+    };
+    const updated = data.status === undefined
+      ? await updateUser(db as unknown as AuthLifecycleTransaction, false)
+      : await withAuthLifecycleSystemTransaction((tx) => updateUser(tx, true));
+
+    if (!updated) {
+      return c.json({ error: 'User not found' }, 404);
+    }
 
     // Suspension hook: when status transitions from active → disabled we must
     // revoke every outstanding OAuth artifact (refresh tokens, grant cache
@@ -1494,13 +1562,6 @@ userRoutes.patch(
     for (const failure of cleanup.failures) {
       console.error(`[users] ${failure.name} cleanup failed after status change:`, failure.error);
     }
-    if (cleanup.failures.some((failure) => failure.name === 'remote-sessions' || failure.name === 'oauth')) {
-      return c.json(
-        { error: 'Failed to revoke all active sessions; status change is durable but cleanup is partial. Retry.' },
-        503,
-      );
-    }
-
     writeUserAudit(c, auth, scopeContext, {
       action: becameInactive ? 'user.suspended' : 'user.update',
       resourceId: updated.id,
@@ -1510,6 +1571,8 @@ userRoutes.patch(
         previousStatus: record.status,
         newStatus: updated.status,
         scope: scopeContext.scope,
+        cleanupStatus: cleanup.cleanupStatus,
+        cleanupFailures: cleanup.cleanupFailures,
         ...(oauthRevocation
           ? {
               grantsRevoked: oauthRevocation.grantsRevoked,
@@ -1520,7 +1583,11 @@ userRoutes.patch(
       }
     });
 
-    return c.json(updated);
+    return c.json({
+      ...updated,
+      cleanupStatus: cleanup.cleanupStatus,
+      cleanupFailures: cleanup.cleanupFailures,
+    });
   }
 );
 
@@ -1604,11 +1671,6 @@ userRoutes.delete(
         return c.json({ error: 'User not found' }, 404);
       }
 
-      writeUserAudit(c, auth, scopeContext, {
-        action: 'user.remove',
-        resourceId: userId,
-        details: { scope: 'partner' }
-      });
       const cleanup = await runPostCommitCleanup([
         { name: 'permission-cache', run: () => clearPermissionCache(userId) },
         { name: 'user-tokens', run: () => revokeAllUserTokens(userId) },
@@ -1617,8 +1679,21 @@ userRoutes.delete(
       for (const failure of cleanup.failures) {
         console.error(`[users] ${failure.name} cleanup failed after partner-user removal:`, failure.error);
       }
+      writeUserAudit(c, auth, scopeContext, {
+        action: 'user.remove',
+        resourceId: userId,
+        details: {
+          scope: 'partner',
+          cleanupStatus: cleanup.cleanupStatus,
+          cleanupFailures: cleanup.cleanupFailures,
+        }
+      });
 
-      return c.json({ success: true });
+      return c.json({
+        success: true,
+        cleanupStatus: cleanup.cleanupStatus,
+        cleanupFailures: cleanup.cleanupFailures,
+      });
     }
 
     const { deleted } = await removeMembershipForScope(scopeContext, userId);
@@ -1627,11 +1702,6 @@ userRoutes.delete(
       return c.json({ error: 'User not found' }, 404);
     }
 
-    writeUserAudit(c, auth, scopeContext, {
-      action: 'user.remove',
-      resourceId: userId,
-      details: { scope: 'organization' }
-    });
     const cleanup = await runPostCommitCleanup([
       { name: 'permission-cache', run: () => clearPermissionCache(userId) },
       { name: 'user-tokens', run: () => revokeAllUserTokens(userId) },
@@ -1640,8 +1710,21 @@ userRoutes.delete(
     for (const failure of cleanup.failures) {
       console.error(`[users] ${failure.name} cleanup failed after org-user removal:`, failure.error);
     }
+    writeUserAudit(c, auth, scopeContext, {
+      action: 'user.remove',
+      resourceId: userId,
+      details: {
+        scope: 'organization',
+        cleanupStatus: cleanup.cleanupStatus,
+        cleanupFailures: cleanup.cleanupFailures,
+      }
+    });
 
-    return c.json({ success: true });
+    return c.json({
+      success: true,
+      cleanupStatus: cleanup.cleanupStatus,
+      cleanupFailures: cleanup.cleanupFailures,
+    });
   }
 );
 
@@ -1686,15 +1769,6 @@ userRoutes.post(
         return c.json({ error: 'User not found' }, 404);
       }
 
-      writeUserAudit(c, auth, scopeContext, {
-        action: 'user.role.assign',
-        resourceId: userId,
-        details: {
-          roleId,
-          roleName: role.name,
-          scope: 'partner'
-        }
-      });
       const cleanup = await runPostCommitCleanup([
         { name: 'permission-cache', run: () => clearPermissionCache(userId) },
         { name: 'user-tokens', run: () => revokeAllUserTokens(userId) },
@@ -1703,8 +1777,19 @@ userRoutes.post(
       for (const failure of cleanup.failures) {
         console.error(`[users] ${failure.name} cleanup failed after role change:`, failure.error);
       }
+      writeUserAudit(c, auth, scopeContext, {
+        action: 'user.role.assign',
+        resourceId: userId,
+        details: {
+          roleId,
+          roleName: role.name,
+          scope: 'partner',
+          cleanupStatus: cleanup.cleanupStatus,
+          cleanupFailures: cleanup.cleanupFailures,
+        }
+      });
 
-      return c.json({ success: true });
+      return c.json({ success: true, cleanupStatus: cleanup.cleanupStatus, cleanupFailures: cleanup.cleanupFailures });
     }
 
     const updated = await withAuthLifecycleSystemTransaction(async (tx) => {
@@ -1723,15 +1808,6 @@ userRoutes.post(
       return c.json({ error: 'User not found' }, 404);
     }
 
-    writeUserAudit(c, auth, scopeContext, {
-      action: 'user.role.assign',
-      resourceId: userId,
-      details: {
-        roleId,
-        roleName: role.name,
-        scope: 'organization'
-      }
-    });
     const cleanup = await runPostCommitCleanup([
       { name: 'permission-cache', run: () => clearPermissionCache(userId) },
       { name: 'user-tokens', run: () => revokeAllUserTokens(userId) },
@@ -1740,7 +1816,18 @@ userRoutes.post(
     for (const failure of cleanup.failures) {
       console.error(`[users] ${failure.name} cleanup failed after role change:`, failure.error);
     }
+    writeUserAudit(c, auth, scopeContext, {
+      action: 'user.role.assign',
+      resourceId: userId,
+      details: {
+        roleId,
+        roleName: role.name,
+        scope: 'organization',
+        cleanupStatus: cleanup.cleanupStatus,
+        cleanupFailures: cleanup.cleanupFailures,
+      }
+    });
 
-    return c.json({ success: true });
+    return c.json({ success: true, cleanupStatus: cleanup.cleanupStatus, cleanupFailures: cleanup.cleanupFailures });
   }
 );

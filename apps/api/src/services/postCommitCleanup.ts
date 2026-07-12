@@ -8,9 +8,17 @@ export interface PostCommitFailure {
   error: unknown;
 }
 
+export type CleanupStatus = 'complete' | 'partial';
+
+export interface PostCommitCleanupResult {
+  cleanupStatus: CleanupStatus;
+  cleanupFailures: string[];
+  failures: PostCommitFailure[];
+}
+
 export async function runPostCommitCleanup(
   operations: readonly PostCommitOperation[],
-): Promise<{ failures: PostCommitFailure[] }> {
+): Promise<PostCommitCleanupResult> {
   const settled = await Promise.allSettled(
     operations.map((operation) => Promise.resolve().then(operation.run)),
   );
@@ -20,5 +28,9 @@ export async function runPostCommitCleanup(
       failures.push({ name: operations[index]!.name, error: result.reason });
     }
   });
-  return { failures };
+  return {
+    cleanupStatus: failures.length === 0 ? 'complete' : 'partial',
+    cleanupFailures: failures.map((failure) => failure.name),
+    failures,
+  };
 }

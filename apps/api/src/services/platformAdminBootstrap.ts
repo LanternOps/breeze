@@ -9,6 +9,7 @@ import {
 import { clearPermissionCache } from './permissions';
 import { revokeAllUserTokens } from './tokenRevocation';
 import { revokeAllUserOauthArtifacts } from '../oauth/grantRevocation';
+import { runPostCommitCleanup } from './postCommitCleanup';
 
 /**
  * Idempotent bootstrap that promotes users listed in BREEZE_PLATFORM_ADMINS
@@ -43,21 +44,17 @@ export async function bootstrapPlatformAdmins(): Promise<void> {
     return result;
   });
 
-  await Promise.all(promoted.map(async (user) => {
-    const cleanup = await Promise.allSettled([
-      revokeAllUserTokens(user.id),
-      clearPermissionCache(user.id),
-      revokeAllUserOauthArtifacts(user.id),
-    ]);
-    for (const result of cleanup) {
-      if (result.status === 'rejected') {
-        console.error('[platform-admin-bootstrap] post-commit credential cleanup failed', result.reason);
-      }
-    }
-  }));
+  const cleanup = await runPostCommitCleanup(promoted.flatMap((user) => [
+    { name: `user-tokens:${user.id}`, run: () => revokeAllUserTokens(user.id) },
+    { name: `permission-cache:${user.id}`, run: () => clearPermissionCache(user.id) },
+    { name: `oauth:${user.id}`, run: () => revokeAllUserOauthArtifacts(user.id) },
+  ]));
+  for (const failure of cleanup.failures) {
+    console.error('[platform-admin-bootstrap] post-commit credential cleanup failed', failure.name, failure.error);
+  }
 
   console.log(
-    `[platform-admin-bootstrap] Configured ${emails.length} email(s); promoted ${promoted.length} user(s)`
+    `[platform-admin-bootstrap] Configured ${emails.length} email(s); promoted ${promoted.length} user(s); cleanup=${cleanup.cleanupStatus}`
   );
 }
 

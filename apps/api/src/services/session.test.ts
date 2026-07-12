@@ -32,7 +32,7 @@ vi.mock('drizzle-orm', () => ({
 }));
 
 import { createSession, validateSession, invalidateSession } from './session';
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { nanoid } from 'nanoid';
 import { eq, gt } from 'drizzle-orm';
 
@@ -124,6 +124,36 @@ describe('session service', () => {
 
       expect(mockedDb.delete).toHaveBeenCalled();
       expect(mockedEq).toHaveBeenCalledWith('id', 'session-1');
+    });
+  });
+
+  describe('invalidateAllUserSessionsAsSystem', () => {
+    it('escapes ambient context, enters system scope, and returns deleted rows', async () => {
+      const sessionModule = await import('./session');
+      expect(sessionModule).toMatchObject({
+        invalidateAllUserSessionsAsSystem: expect.any(Function),
+      });
+      const returningMock = vi.fn(async () => [{ id: 'session-1' }, { id: 'session-2' }]);
+      mockedDb.delete.mockReturnValue({
+        where: vi.fn(() => ({ returning: returningMock })),
+      } as any);
+
+      const count = await (sessionModule as any).invalidateAllUserSessionsAsSystem('user-1');
+
+      expect(count).toBe(2);
+      expect(runOutsideDbContext).toHaveBeenCalledTimes(1);
+      expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+      expect(returningMock).toHaveBeenCalledWith({ id: 'id' });
+    });
+
+    it('accepts a legitimate zero-session deletion', async () => {
+      const sessionModule = await import('./session');
+      mockedDb.delete.mockReturnValue({
+        where: vi.fn(() => ({ returning: vi.fn(async () => []) })),
+      } as any);
+
+      await expect((sessionModule as any).invalidateAllUserSessionsAsSystem('user-1'))
+        .resolves.toBe(0);
     });
   });
 });

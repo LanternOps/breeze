@@ -22,6 +22,7 @@ import {
   type PartnerLifecycleSnapshot,
 } from '../services/tenantLifecycle';
 import { withAuthLifecycleSystemTransaction } from '../services/authLifecycle';
+import { organizationLifecycleWriteCondition } from '../services/lifecycleAuthorization';
 import { applyOrganizationOrder, sanitizeOrganizationOrder } from '../services/orgOrdering';
 import { captureException } from '../services/sentry';
 import { encryptColumnValueForWrite } from '../services/encryptedColumnRegistry';
@@ -867,7 +868,7 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
   };
   const partner = data.status === undefined
     ? await updatePartner(db)
-    : await withAuthLifecycleSystemTransaction((tx) => updatePartner(tx as typeof db));
+    : await withAuthLifecycleSystemTransaction((tx) => updatePartner(tx as unknown as typeof db));
 
   if (!partner) {
     return c.json({ error: 'Partner not found' }, 404);
@@ -884,11 +885,21 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
   // (signup/billing limbo) and is already blocked for agents by the live
   // tenant cascade (getActivePartner is strict) — severing here would expire
   // enrollment keys irreversibly on a transient state.
+  let cleanupStatus: 'complete' | 'partial' = 'complete';
+  let cleanupFailures: string[] = [];
   if ('status' in data && (data.status === 'suspended' || data.status === 'churned')) {
-    await revokePartnerTenantAccess(partner.id, lifecycleSnapshot);
+    const cleanup = await revokePartnerTenantAccess(partner.id, lifecycleSnapshot);
+    cleanupStatus = cleanup.cleanupStatus;
+    cleanupFailures = cleanup.cleanupFailures;
   } else if ('status' in data && data.status === 'active') {
     // Reactivation: restore agent tokens this partner's revoke suspended.
-    await restorePartnerTenantAccess(partner.id);
+    try {
+      await restorePartnerTenantAccess(partner.id);
+    } catch (error) {
+      cleanupStatus = 'partial';
+      cleanupFailures = ['agent-restore'];
+      console.error('[orgs] partner agent restore failed after durable status change', error);
+    }
   }
 
   const auditOrgId = auth.orgId ?? await resolveAuditOrgIdForPartner(id);
@@ -901,11 +912,13 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
     resourceId: partner.id,
     resourceName: partner.name,
     details: {
-      changedFields: Object.keys(data)
+      changedFields: Object.keys(data),
+      cleanupStatus,
+      cleanupFailures,
     }
   });
 
-  return c.json(partner);
+  return c.json({ ...partner, cleanupStatus, cleanupFailures });
 });
 
 orgRoutes.delete('/partners/:id', requireScope('system'), requireOrgWrite, requireMfa(), async (c) => {
@@ -933,7 +946,7 @@ orgRoutes.delete('/partners/:id', requireScope('system'), requireOrgWrite, requi
     return c.json({ error: 'Partner not found' }, 404);
   }
 
-  await revokePartnerTenantAccess(partner.id, lifecycleSnapshot);
+  const cleanup = await revokePartnerTenantAccess(partner.id, lifecycleSnapshot);
 
   const auditOrgId = auth.orgId ?? await resolveAuditOrgIdForPartner(id);
   writeAuditEvent(c, {
@@ -943,10 +956,11 @@ orgRoutes.delete('/partners/:id', requireScope('system'), requireOrgWrite, requi
     action: 'partner.delete',
     resourceType: 'partner',
     resourceId: partner.id,
-    resourceName: partner.name
+    resourceName: partner.name,
+    details: { cleanupStatus: cleanup.cleanupStatus, cleanupFailures: cleanup.cleanupFailures },
   });
 
-  return c.json({ success: true });
+  return c.json({ success: true, cleanupStatus: cleanup.cleanupStatus, cleanupFailures: cleanup.cleanupFailures });
 });
 
 // --- Organizations (partner-scoped) ---
@@ -1229,7 +1243,7 @@ orgRoutes.get('/organizations/:id', requireScope('partner', 'system'), requireOr
     return c.json({ error: 'Organization not found' }, 404);
   }
 
-  const conditions = and(eq(organizations.id, id), isNull(organizations.deletedAt));
+  const conditions = organizationLifecycleWriteCondition(auth, id);
 
   const [organization] = await db
     .select()
@@ -1339,7 +1353,7 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWrite, re
     updates.contractEnd = data.contractEnd ? new Date(data.contractEnd) : null;
   }
 
-  const conditions = and(eq(organizations.id, id), isNull(organizations.deletedAt));
+  const conditions = organizationLifecycleWriteCondition(auth, id);
 
   let lifecycleSnapshot: OrganizationLifecycleSnapshot | undefined;
   const updateOrganization = async (tx: typeof db) => {
@@ -1367,17 +1381,27 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWrite, re
   };
   const organization = data.status === undefined
     ? await updateOrganization(db)
-    : await withAuthLifecycleSystemTransaction((tx) => updateOrganization(tx as typeof db));
+    : await withAuthLifecycleSystemTransaction((tx) => updateOrganization(tx as unknown as typeof db));
 
   if (!organization) {
     return c.json({ error: 'Organization not found' }, 404);
   }
 
+  let cleanupStatus: 'complete' | 'partial' = 'complete';
+  let cleanupFailures: string[] = [];
   if (data.status !== undefined && data.status !== 'active' && data.status !== 'trial') {
-    await revokeOrganizationTenantAccess(organization.id, lifecycleSnapshot);
+    const cleanup = await revokeOrganizationTenantAccess(organization.id, lifecycleSnapshot);
+    cleanupStatus = cleanup.cleanupStatus;
+    cleanupFailures = cleanup.cleanupFailures;
   } else if (data.status === 'active' || data.status === 'trial') {
     // Reactivation: restore agent tokens this org's revoke suspended.
-    await restoreOrganizationTenantAccess(organization.id);
+    try {
+      await restoreOrganizationTenantAccess(organization.id);
+    } catch (error) {
+      cleanupStatus = 'partial';
+      cleanupFailures = ['agent-restore'];
+      console.error('[orgs] organization agent restore failed after durable status change', error);
+    }
   }
 
   writeRouteAudit(c, {
@@ -1386,10 +1410,10 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWrite, re
     resourceType: 'organization',
     resourceId: organization.id,
     resourceName: organization.name,
-    details: { changedFields: Object.keys(data) }
+    details: { changedFields: Object.keys(data), cleanupStatus, cleanupFailures }
   });
 
-  return c.json(organization);
+  return c.json({ ...organization, cleanupStatus, cleanupFailures });
 }] as const;
 
 orgRoutes.patch('/organizations/:id', ...updateOrgHandler);
@@ -1410,7 +1434,7 @@ orgRoutes.delete('/organizations/:id', requireScope('partner', 'system'), requir
     return c.json({ error: 'Organization not found' }, 404);
   }
 
-  const conditions = and(eq(organizations.id, id), isNull(organizations.deletedAt));
+  const conditions = organizationLifecycleWriteCondition(auth, id);
 
   let lifecycleSnapshot: OrganizationLifecycleSnapshot | undefined;
   const organization = await withAuthLifecycleSystemTransaction(async (tx) => {
@@ -1434,17 +1458,18 @@ orgRoutes.delete('/organizations/:id', requireScope('partner', 'system'), requir
     return c.json({ error: 'Organization not found' }, 404);
   }
 
-  await revokeOrganizationTenantAccess(organization.id, lifecycleSnapshot);
+  const cleanup = await revokeOrganizationTenantAccess(organization.id, lifecycleSnapshot);
 
   writeRouteAudit(c, {
     orgId: organization.id,
     action: 'organization.delete',
     resourceType: 'organization',
     resourceId: organization.id,
-    resourceName: organization.name
+    resourceName: organization.name,
+    details: { cleanupStatus: cleanup.cleanupStatus, cleanupFailures: cleanup.cleanupFailures },
   });
 
-  return c.json({ success: true });
+  return c.json({ success: true, cleanupStatus: cleanup.cleanupStatus, cleanupFailures: cleanup.cleanupFailures });
 });
 
 // --- Sites (organization-scoped) ---

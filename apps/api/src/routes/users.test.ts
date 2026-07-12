@@ -459,6 +459,55 @@ describe('user routes', () => {
       expect(clearPermissionCache).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
     });
 
+    it('still delivers the invite and reports partial cleanup when cache invalidation fails', async () => {
+      vi.mocked(clearPermissionCache).mockRejectedValueOnce(new Error('cache down'));
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => [{
+            id: '22222222-2222-2222-2222-222222222222', scope: 'partner', name: 'Admin',
+            isSystem: true, partnerId: null, orgId: null,
+          }]) })) })),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => [{ parentRoleId: null }]) })) })),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({ innerJoin: vi.fn(() => ({ where: vi.fn(async () => []) })) })),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => []) })) })),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => []) })) })),
+        } as any);
+      vi.mocked(db.insert)
+        .mockReturnValueOnce({
+          values: vi.fn(() => ({ returning: vi.fn(async () => [{
+            id: '11111111-1111-1111-1111-111111111111', partnerId: 'partner-123',
+            email: 'invitee@example.com', name: 'Invitee', status: 'invited',
+          }]) })),
+        } as any)
+        .mockReturnValueOnce({
+          values: vi.fn(() => ({ returning: vi.fn(async () => [{ id: 'link-1' }]) })),
+        } as any);
+
+      const res = await app.request('/users/invite', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'invitee@example.com', name: 'Invitee',
+          roleId: '22222222-2222-2222-2222-222222222222', orgAccess: 'all',
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(sendInviteMock).toHaveBeenCalledTimes(1);
+      expect(await res.json()).toMatchObject({
+        cleanupStatus: 'partial',
+        cleanupFailures: ['permission-cache'],
+      });
+    });
+
     it('should require orgIds when orgAccess is selected', async () => {
       const res = await app.request('/users/invite', {
         method: 'POST',
@@ -539,6 +588,56 @@ describe('user routes', () => {
         '11111111-1111-1111-1111-111111111111',
         'user-reinvited',
       );
+    });
+
+    it('rejects reuse of an active user owned by another partner without side effects or metadata leakage', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => [{
+            id: '22222222-2222-2222-2222-222222222222',
+            scope: 'partner',
+            name: 'Admin',
+            isSystem: true,
+            partnerId: null,
+            orgId: null,
+          }]) })) })),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => [{ parentRoleId: null }]) })) })),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({ innerJoin: vi.fn(() => ({ where: vi.fn(async () => []) })) })),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => [{
+            id: '99999999-9999-4999-8999-999999999999',
+            partnerId: 'other-partner',
+            orgId: null,
+            email: 'victim@example.com',
+            name: 'Victim Name',
+            status: 'active',
+            passwordHash: 'existing-secret-hash',
+          }]) })) })),
+        } as any);
+
+      const res = await app.request('/users/invite', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'victim@example.com',
+          name: 'Attacker Controlled Name',
+          roleId: '22222222-2222-2222-2222-222222222222',
+          orgAccess: 'all',
+        }),
+      });
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: 'Unable to invite user' });
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+      expect(advanceUserSecurityStateMock).not.toHaveBeenCalled();
+      expect(revokeAllUserSessionFamiliesMock).not.toHaveBeenCalled();
+      expect(sendInviteMock).not.toHaveBeenCalled();
     });
   });
 
@@ -1604,6 +1703,75 @@ describe('user routes', () => {
       });
       expect(res.status).toBe(400);
     });
+
+    it('rechecks tenant membership inside the lifecycle transaction before updating status', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({
+            innerJoin: vi.fn(() => ({
+              innerJoin: vi.fn(() => ({
+                where: vi.fn(() => ({ limit: vi.fn(async () => [{
+                  id: '11111111-1111-1111-1111-111111111111',
+                  email: 'user@example.com',
+                  name: 'User',
+                  status: 'active',
+                }]) })),
+              })),
+            })),
+          })),
+        } as any)
+        // Simulate membership removal/change after the caller-scoped pre-read.
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => []) })) })),
+        } as any);
+
+      const res = await app.request('/users/11111111-1111-1111-1111-111111111111', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ status: 'disabled' }),
+      });
+
+      expect(res.status).toBe(404);
+      expect(db.update).not.toHaveBeenCalled();
+      expect(advanceUserSecurityStateMock).not.toHaveBeenCalled();
+      expect(revokeAllUserSessionFamiliesMock).not.toHaveBeenCalled();
+    });
+
+    it('rechecks organization membership inside the lifecycle transaction when partnerId is null', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'organization', partnerId: null, orgId: 'org-456',
+          user: { id: 'user-123', email: 'admin@example.com' },
+        });
+        return next();
+      });
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({
+            innerJoin: vi.fn(() => ({
+              innerJoin: vi.fn(() => ({
+                where: vi.fn(() => ({ limit: vi.fn(async () => [{
+                  id: '11111111-1111-1111-1111-111111111111',
+                  email: 'user@example.com', name: 'User', status: 'active',
+                }]) })),
+              })),
+            })),
+          })),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => []) })) })),
+        } as any);
+
+      const res = await app.request('/users/11111111-1111-1111-1111-111111111111', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'disabled' }),
+      });
+
+      expect(res.status).toBe(404);
+      expect(db.update).not.toHaveBeenCalled();
+      expect(advanceUserSecurityStateMock).not.toHaveBeenCalled();
+    });
   });
 
   describe('POST /users/:id/role', () => {
@@ -1925,6 +2093,10 @@ describe('user routes', () => {
             }),
           }),
         }),
+      } as any).mockReturnValueOnce({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({ limit: vi.fn(async () => [{ id: 'membership-1' }]) })),
+        })),
       } as any);
 
       vi.mocked(db.update).mockReturnValueOnce({
@@ -1970,13 +2142,23 @@ describe('user routes', () => {
       );
     });
 
-    it('returns 503 when teardown reports the failure sentinel', async () => {
+    it('returns a truthful partial outcome when teardown reports the failure sentinel', async () => {
       teardownMock.mockResolvedValueOnce(-1);
       seedPatch('active', 'disabled');
 
       const res = await patchStatus('disabled');
 
-      expect(res.status).toBe(503);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({
+        cleanupStatus: 'partial',
+        cleanupFailures: ['remote-sessions'],
+      });
+      expect(createAuditLogAsyncMock).toHaveBeenCalledWith(expect.objectContaining({
+        details: expect.objectContaining({
+          cleanupStatus: 'partial',
+          cleanupFailures: ['remote-sessions'],
+        }),
+      }));
       expect(teardownMock).toHaveBeenCalledTimes(1);
     });
 
