@@ -369,6 +369,51 @@ describe('apiKeyAuth middleware', () => {
     expect(next).not.toHaveBeenCalled();
   });
 
+  it('fails closed (rejects, does not call next) when the creator-status lookup throws', async () => {
+    // Fail-closed constraint: a DB/RLS error during the creator lookup must
+    // NOT be swallowed into a pass. The lookup is intentionally NOT wrapped in
+    // try/catch, so the error propagates and the request is rejected. This test
+    // locks that intent against a future edit copying the fire-and-forget
+    // `.catch(err => console.error(...))` pattern used a few lines below for
+    // the usage-stats update.
+    const lookupError = new Error('creator lookup failed (RLS/DB)');
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              {
+                id: 'key-throw',
+                orgId: 'org-1',
+                name: 'Key',
+                keyPrefix: 'brz_',
+                keyHash: 'hash',
+                scopes: ['read'],
+                expiresAt: null,
+                rateLimit: 10,
+                usageCount: 0,
+                status: 'active',
+                createdBy: 'user-boom'
+              }
+            ])
+          })
+        })
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockRejectedValue(lookupError)
+          })
+        })
+      } as any);
+
+    const c = createContext({ 'X-API-Key': 'brz_creator_throw' });
+    const next = vi.fn();
+
+    await expect(apiKeyAuthMiddleware(c, next)).rejects.toThrow('creator lookup failed (RLS/DB)');
+    expect(next).not.toHaveBeenCalled();
+  });
+
   it('allows access when the API key creator is active', async () => {
     buildSequentialSelectMock([
       [
@@ -401,20 +446,24 @@ describe('apiKeyAuth middleware', () => {
 
   it('sets context, headers, and calls next when API key is valid', async () => {
     const resetAt = new Date(Date.now() + 60_000);
-    buildSelectMock([
-      {
-        id: 'key-4',
-        orgId: 'org-2',
-        name: 'Key',
-        keyPrefix: 'brz_',
-        keyHash: 'hash',
-        scopes: ['read'],
-        expiresAt: null,
-        rateLimit: 5,
-        usageCount: 2,
-        status: 'active',
-        createdBy: 'user-2'
-      }
+    buildSequentialSelectMock([
+      [
+        {
+          id: 'key-4',
+          orgId: 'org-2',
+          name: 'Key',
+          keyPrefix: 'brz_',
+          keyHash: 'hash',
+          scopes: ['read'],
+          expiresAt: null,
+          rateLimit: 5,
+          usageCount: 2,
+          status: 'active',
+          createdBy: 'user-2'
+        }
+      ],
+      // Distinct users row for the creator-status lookup.
+      [{ status: 'active' }]
     ]);
 
     vi.mocked(getRedis).mockReturnValue({} as any);
