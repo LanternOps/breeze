@@ -10,6 +10,18 @@ import (
 	"github.com/breeze-rmm/agent/internal/secmem"
 )
 
+// assertNoTransfers verifies the transfers map is empty — HandleTransfer must
+// remove its entry on every terminal path (#2388).
+func assertNoTransfers(t *testing.T, m *Manager) {
+	t.Helper()
+	m.mu.RLock()
+	n := len(m.transfers)
+	m.mu.RUnlock()
+	if n != 0 {
+		t.Fatalf("expected transfers map to be empty after HandleTransfer, got %d entries", n)
+	}
+}
+
 // ---------- NewManager ----------
 
 func TestNewManagerInitializesFields(t *testing.T) {
@@ -122,6 +134,7 @@ func TestHandleTransferUploadSuccess(t *testing.T) {
 	if progressReports == 0 {
 		t.Fatal("expected at least one progress report")
 	}
+	assertNoTransfers(t, m)
 }
 
 func TestHandleTransferUploadDirectoryTraversal(t *testing.T) {
@@ -213,6 +226,7 @@ func TestHandleTransferUploadChunkServerError(t *testing.T) {
 	if result["status"] != "failed" {
 		t.Fatalf("expected failed, got %v", result["status"])
 	}
+	assertNoTransfers(t, m)
 }
 
 // ---------- Multi-chunk upload ----------

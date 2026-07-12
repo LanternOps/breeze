@@ -99,6 +99,17 @@ func (m *Manager) HandleTransfer(payload map[string]any) map[string]any {
 	m.transfers[transferID] = transfer
 	m.mu.Unlock()
 
+	// The entry only needs to live while the transfer is in flight (it is how
+	// CancelTransfer reaches the shared Transfer). Nothing reads a transfer
+	// back after it reaches a terminal state, so always remove it on return —
+	// otherwise the map grows for the life of the agent process (#2388). A
+	// late cancel after removal hits CancelTransfer's not-found no-op branch.
+	defer func() {
+		m.mu.Lock()
+		delete(m.transfers, transferID)
+		m.mu.Unlock()
+	}()
+
 	// Process transfer
 	var err error
 	if direction == "upload" {
@@ -108,8 +119,10 @@ func (m *Manager) HandleTransfer(payload map[string]any) map[string]any {
 	}
 
 	if err != nil {
+		m.mu.Lock()
 		transfer.Status = "failed"
 		transfer.Error = err.Error()
+		m.mu.Unlock()
 		m.reportProgress(transfer)
 		return map[string]any{
 			"status": "failed",
@@ -117,8 +130,10 @@ func (m *Manager) HandleTransfer(payload map[string]any) map[string]any {
 		}
 	}
 
+	m.mu.Lock()
 	transfer.Status = "completed"
 	transfer.Progress = 100
+	m.mu.Unlock()
 	m.reportProgress(transfer)
 
 	return map[string]any{
@@ -184,7 +199,9 @@ func (m *Manager) upload(transfer *Transfer) error {
 		}
 
 		uploaded += int64(n)
+		m.mu.Lock()
 		transfer.Progress = int((uploaded * 100) / totalSize)
+		m.mu.Unlock()
 		m.reportProgress(transfer)
 		chunkNum++
 	}
@@ -288,7 +305,9 @@ func (m *Manager) download(transfer *Transfer) error {
 			}
 			downloaded += int64(n)
 			if totalSize > 0 {
+				m.mu.Lock()
 				transfer.Progress = int((downloaded * 100) / totalSize)
+				m.mu.Unlock()
 				m.reportProgress(transfer)
 			}
 		}
@@ -304,12 +323,16 @@ func (m *Manager) download(transfer *Transfer) error {
 }
 
 func (m *Manager) reportProgress(transfer *Transfer) {
+	// Snapshot mutable fields under the lock — CancelTransfer may flip Status
+	// on the shared pointer concurrently.
+	m.mu.RLock()
 	data := map[string]any{
 		"transferId": transfer.ID,
 		"status":     transfer.Status,
 		"progress":   transfer.Progress,
 		"error":      transfer.Error,
 	}
+	m.mu.RUnlock()
 
 	body, err := json.Marshal(data)
 	if err != nil {

@@ -62,6 +62,7 @@ func TestHandleTransferDownloadSuccess(t *testing.T) {
 	if string(data) != body {
 		t.Fatalf("expected %q, got %q", body, string(data))
 	}
+	assertNoTransfers(t, m)
 }
 
 func TestHandleTransferDownloadDirectoryTraversal(t *testing.T) {
@@ -117,6 +118,7 @@ func TestHandleTransferDownloadServerError(t *testing.T) {
 	if result["status"] != "failed" {
 		t.Fatalf("expected failed, got %v", result["status"])
 	}
+	assertNoTransfers(t, m)
 }
 
 // ---------- CancelTransfer ----------
@@ -189,6 +191,7 @@ func TestConcurrentHandleTransfer(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+	assertNoTransfers(t, m)
 }
 
 // ---------- reportProgress ----------
