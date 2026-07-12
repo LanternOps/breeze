@@ -30,7 +30,8 @@ import { matchRoleScopedAgentTokenHash, suspendAgentToken, type AgentCredentialR
 import { AGENT_TOKEN_SUSPEND_REASON } from '../services/agentTokenSuspension';
 import { isAgentTenantActive } from '../services/tenantStatus';
 import { createAuditLogAsync } from '../services/auditService';
-import { ANONYMOUS_ACTOR_ID } from '../services/auditEvents';
+import { ANONYMOUS_ACTOR_ID, writeAuditEvent } from '../services/auditEvents';
+import { redactSecretsFromOutput } from '../services/secretRedaction';
 import { detectResultValidationFamily, validateCriticalCommandResult, DR_COMMAND_TYPES } from '../services/agentCommandResultValidation';
 import { updateRestoreJobByCommandId, updateRestoreJobFromResult } from '../services/restoreResultPersistence';
 import { captureException } from '../services/sentry';
@@ -493,6 +494,11 @@ const activeConnections = new Map<string, WSContext>();
 interface AgentPingState {
   pingInterval: ReturnType<typeof setInterval>;
   lastPongAt: number;
+  // Finding #4: the socket this ping state belongs to. onClose/onError use it to
+  // delete ONLY their own ping state — a superseded orphan closing must never
+  // clobber the live (newer) socket's ping state, mirroring the
+  // `activeConnections.get(agentId) === ws` guard on the connection map.
+  ws: WSContext;
 }
 const agentPingStates = new Map<string, AgentPingState>();
 const AGENT_PING_INTERVAL_MS = 30_000;
@@ -600,11 +606,18 @@ function commandResultToStdout(result: AgentCommandResult): string | undefined {
 }
 
 function buildStoredCommandResult(result: AgentCommandResult, stdout: string | undefined) {
+  // Finding #5 (WS leg): strip full PEM private-key blocks from agent output
+  // BEFORE it is persisted into device_commands.result and later shown to
+  // scripts:read users. Mirrors the REST ingest path
+  // (routes/agents/commands.ts). Pre-update agents don't redact
+  // server-side-visible output, so we redact here as defense-in-depth.
+  // Preserve null/undefined (don't coerce to '') to keep the stored shape
+  // stable; exitCode/status/durationMs are untouched.
   return {
     status: result.status,
     exitCode: result.exitCode,
-    stdout,
-    stderr: result.stderr,
+    stdout: stdout != null ? redactSecretsFromOutput(stdout) : stdout,
+    stderr: result.stderr != null ? redactSecretsFromOutput(result.stderr) : result.stderr,
     durationMs: result.durationMs,
     error: result.error,
   };
@@ -750,6 +763,48 @@ type AgentDbContext = {
 type AgentTokenValidation =
   | { ok: true; ctx: AgentDbContext }
   | { ok: false; reason: 'unauthorized' | 're_enrollment_required' };
+
+// Finding #8: WS command-result ingest has no Hono request context, but
+// writeAuditEvent only reads `x-forwarded-for` / `user-agent` off it for
+// ip/userAgent enrichment. A minimal header-less RequestLike lets the WS path
+// emit the same append-only audit as the REST path (client IP is simply absent
+// on the persistent socket, which is expected).
+const WS_AUDIT_REQUEST = { req: { header: () => undefined } };
+
+/**
+ * Finding #3 (defense-in-depth): re-verify a live agent's device lifecycle
+ * state with ONE lightweight indexed SELECT, so a socket that outlived a
+ * containment change (decommission, quarantine, or org/partner/token
+ * suspension) stops acting on the next sensitive operation.
+ *
+ * Fail-OPEN on a transient DB error or a missing row: the pre-upgrade auth gate
+ * already proved the device existed, and the authoritative containment paths
+ * (credential suspension + disconnectAgent) still fail closed on the next
+ * (re)connect. Failing closed here would let a DB blip mass-drop the fleet. We
+ * only sever on a POSITIVE containment signal (terminal status / suspend
+ * timestamp). System DB context because `devices` is RLS-guarded and this can
+ * run outside a tenant context.
+ */
+async function isAgentDeviceStillAuthorized(agentId: string): Promise<boolean> {
+  try {
+    const [row] = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() =>
+        db
+          .select({ status: devices.status, agentTokenSuspendedAt: devices.agentTokenSuspendedAt })
+          .from(devices)
+          .where(eq(devices.agentId, agentId))
+          .limit(1)
+      )
+    );
+    if (!row) return true; // fail-open: existence already validated pre-upgrade
+    if (row.status === 'decommissioned' || row.status === 'quarantined') return false;
+    if (row.agentTokenSuspendedAt) return false;
+    return true;
+  } catch (err) {
+    console.error(`[AgentWs] lifecycle recheck query failed for ${agentId}; failing open:`, err);
+    return true;
+  }
+}
 
 /**
  * Validate agent token by hashing it and comparing against the stored hash.
@@ -1356,7 +1411,8 @@ export async function processOrphanedCommandResult(
 async function processCommandResult(
   agentId: string,
   result: z.infer<typeof commandResultSchema>,
-  deviceId?: string
+  deviceId?: string,
+  orgId?: string
 ): Promise<void> {
   try {
     // Resolve any in-process promise awaiting this command id (e.g. http_request
@@ -1439,6 +1495,22 @@ async function processCommandResult(
       return;
     }
 
+    // Finding #3 (defense-in-depth): before terminally updating a device-bound
+    // command row + firing downstream handlers, re-verify the device wasn't
+    // decommissioned/quarantined or its token suspended (org/partner tenant
+    // suspension denormalizes onto devices.agentTokenSuspendedAt) after this
+    // long-lived socket was established. Cost: one extra indexed row read per
+    // device-bound (UUID) command result — acceptable, and NOT run on the
+    // high-frequency pong/heartbeat/terminal-output frames. If contained, sever
+    // the authoritative socket and abort without persisting the result.
+    if (!(await isAgentDeviceStillAuthorized(agentId))) {
+      console.warn(
+        `[AgentWs] Aborting command result ${result.commandId} for ${agentId}: device contained (decommissioned/quarantined/suspended). Severing socket.`
+      );
+      disconnectAgent(agentId, 4001, 'Device no longer authorized');
+      return;
+    }
+
     const {
       normalizedResult,
       stdout,
@@ -1469,6 +1541,28 @@ async function processCommandResult(
       console.warn(`[AgentWs] Ignoring stale or already-processed command result ${result.commandId} for agent ${agentId}`);
       return;
     }
+
+    // Finding #8: emit the append-only audit event for a WS-ingested command
+    // result, matching the REST path (routes/agents/commands.ts). Placed
+    // immediately after the compare-and-set above so it fires EXACTLY ONCE and
+    // ONLY when the row actually transitioned to a terminal state — a
+    // duplicate/late result no-ops the UPDATE and returns above, never audited.
+    // Emitted before the validationError early-return because a
+    // validation-rejected result still transitioned the row to 'failed'.
+    writeAuditEvent(WS_AUDIT_REQUEST, {
+      orgId: orgId ?? null,
+      actorType: 'agent',
+      actorId: agentId,
+      action: 'agent.command.result.submit',
+      resourceType: 'device_command',
+      resourceId: result.commandId,
+      details: {
+        commandType: command.type,
+        status: normalizedResult.status,
+        exitCode: normalizedResult.exitCode ?? null,
+      },
+      result: normalizedResult.status === 'completed' ? 'success' : 'failure',
+    });
 
     if (validationError) {
       console.warn(`[AgentWs] ${validationError} — command ${result.commandId} rejected for agent ${agentId}`);
@@ -1523,12 +1617,30 @@ async function processCommandResult(
 async function getPendingCommands(agentId: string): Promise<AgentCommand[]> {
   try {
     const [device] = await db
-      .select({ id: devices.id })
+      .select({ id: devices.id, status: devices.status, agentTokenSuspendedAt: devices.agentTokenSuspendedAt })
       .from(devices)
       .where(eq(devices.agentId, agentId))
       .limit(1);
 
     if (!device) {
+      return [];
+    }
+
+    // Finding #3 (defense-in-depth): the claim path is a sensitive operation on
+    // a long-lived socket. Re-verify containment on the SAME row we already
+    // fetched (zero extra queries) before claiming/decrypting pending commands.
+    // If the device was decommissioned/quarantined or its token suspended
+    // (org/partner tenant suspension denormalizes onto agentTokenSuspendedAt)
+    // after this socket was established, sever it and claim nothing.
+    if (
+      device.status === 'decommissioned' ||
+      device.status === 'quarantined' ||
+      device.agentTokenSuspendedAt
+    ) {
+      console.warn(
+        `[AgentWs] Refusing command claim for ${agentId}: device contained (decommissioned/quarantined/suspended). Severing socket.`
+      );
+      disconnectAgent(agentId, 4001, 'Device no longer authorized');
       return [];
     }
 
@@ -1583,6 +1695,22 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
 
   return {
     onOpen: async (_event: unknown, ws: WSContext) => {
+      // Finding #4: enforce the one-socket-per-agent invariant. A second socket
+      // for the same agentId would otherwise overwrite the map entry WITHOUT
+      // closing the previous socket, leaving an orphaned-but-authorized socket
+      // whose onMessage handler + captured authorization keep working while
+      // revocation/disconnect (which only act on the mapped socket) miss it.
+      // Close the previous socket before replacing it so `activeConnections`
+      // stays authoritative and disconnectAgent can never miss a live socket.
+      const previousWs = activeConnections.get(agentId);
+      if (previousWs && previousWs !== ws) {
+        try {
+          previousWs.close(4002, 'Superseded by newer connection');
+        } catch {
+          // Best-effort: the orphan may already be torn down.
+        }
+      }
+
       // Clean up any existing ping state from a previous connection
       const existingPingState = agentPingStates.get(agentId);
       if (existingPingState) {
@@ -1659,7 +1787,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
           agentPingStates.delete(agentId);
         }
       }, AGENT_PING_INTERVAL_MS);
-      agentPingStates.set(agentId, { pingInterval, lastPongAt: now });
+      agentPingStates.set(agentId, { pingInterval, lastPongAt: now, ws });
     },
 
     onMessage: async (event: MessageEvent, ws: WSContext) => {
@@ -2055,7 +2183,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
         switch (parsed.data.type) {
           case 'command_result':
             await runWithAgentDbAccess(async () =>
-              processCommandResult(agentId, parsed.data as z.infer<typeof commandResultSchema>, authenticatedAgent.deviceId)
+              processCommandResult(agentId, parsed.data as z.infer<typeof commandResultSchema>, authenticatedAgent.deviceId, authenticatedAgent.orgId)
             );
             ws.send(JSON.stringify({
               type: 'ack',
@@ -2142,9 +2270,12 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
     },
 
 onClose: async (_event: unknown, ws: WSContext) => {
-      // Clean up ping interval
+      // Clean up ping interval — but ONLY this ws's own ping state (Finding #4).
+      // A superseded orphan closing must not clear the live (newer) socket's
+      // ping state, so gate the delete on connection identity, mirroring the
+      // `activeConnections.get(agentId) === ws` guard below.
       const pingState = agentPingStates.get(agentId);
-      if (pingState) {
+      if (pingState && pingState.ws === ws) {
         clearInterval(pingState.pingInterval);
         agentPingStates.delete(agentId);
       }
@@ -2206,9 +2337,10 @@ onClose: async (_event: unknown, ws: WSContext) => {
 
     onError: (event: unknown, ws: WSContext) => {
       console.error(`WebSocket error for agent ${agentId}:`, event);
-      // Clean up ping interval
+      // Clean up ping interval — ONLY this ws's own ping state (Finding #4), so a
+      // superseded orphan erroring out can't clobber the live socket's state.
       const pingState = agentPingStates.get(agentId);
-      if (pingState) {
+      if (pingState && pingState.ws === ws) {
         clearInterval(pingState.pingInterval);
         agentPingStates.delete(agentId);
       }
@@ -2582,6 +2714,11 @@ export type AgentWsDisconnectResult = 'closed' | 'close-failed' | 'not-connected
  * Callers that record the outcome (audit trails) must not collapse
  * 'close-failed' into success: a throwing close() plausibly leaves the
  * channel live, which is exactly what e.g. a decommission needs to know.
+ *
+ * Finding #4: `activeConnections` holds at most ONE socket per agent (onOpen
+ * closes any prior socket before replacing it), so closing
+ * `activeConnections.get(agentId)` is authoritative — revocation can never miss
+ * a live-but-orphaned socket.
  */
 export function disconnectAgent(agentId: string, code: number = 4040, reason: string = 'orgId changed, reconnect required'): AgentWsDisconnectResult {
   const ws = activeConnections.get(agentId);

@@ -17,6 +17,19 @@ tokenRoutes.post('/:id/rotate-token', async (c) => {
     return c.json({ error: 'Agent credential role mismatch' }, 403);
   }
 
+  // PART A — superseded (previous-token) credentials must not renew themselves.
+  // agentAuthMiddleware still lets a previous-token match through during the
+  // ~5-min grace window (flagged for the agent to re-provision), but a stolen
+  // superseded token must never be able to mint durable new agent/watchdog/
+  // helper credentials and demote the legitimate current token. Rotation must
+  // be driven by the CURRENT token only.
+  if (c.get('agentTokenRotationRequired')) {
+    return c.json(
+      { error: 'Rotate using the current token; superseded tokens cannot rotate' },
+      401
+    );
+  }
+
   const [device] = await db
     .select({
       id: devices.id,
@@ -53,11 +66,18 @@ tokenRoutes.post('/:id/rotate-token', async (c) => {
   // lgtm[js/insufficient-password-hash]
   const helperTokenHash = createHash('sha256').update(helperAuthToken).digest('hex');
 
+  // PART B — bind the rotation atomically to the hash that actually
+  // authenticated this request. The UPDATE is a compare-and-swap on the
+  // CURRENT agent-token hash (the value the middleware matched), so a race
+  // (someone else rotated first) or any hash mismatch touches zero rows and
+  // mints nothing. previousTokenHash becomes the authenticating hash — the
+  // token that was current at rotation time.
+  let rotatedRows: { id: string }[];
   try {
-    await db
+    rotatedRows = await db
       .update(devices)
       .set({
-        previousTokenHash: device.agentTokenHash,
+        previousTokenHash: agent.authTokenHash,
         previousTokenExpiresAt,
         agentTokenHash,
         tokenIssuedAt: rotatedAt,
@@ -71,7 +91,13 @@ tokenRoutes.post('/:id/rotate-token', async (c) => {
         helperTokenIssuedAt: rotatedAt,
         updatedAt: rotatedAt,
       })
-      .where(eq(devices.id, device.id));
+      .where(
+        and(
+          eq(devices.id, device.id),
+          eq(devices.agentTokenHash, agent.authTokenHash)
+        )
+      )
+      .returning({ id: devices.id });
   } catch (error) {
     console.error('[agents] token rotation DB update failed:', {
       agentId,
@@ -79,6 +105,17 @@ tokenRoutes.post('/:id/rotate-token', async (c) => {
       error,
     });
     return c.json({ error: 'Failed to rotate agent token' }, 500);
+  }
+
+  // Zero rows => the current-token hash moved out from under us (concurrent
+  // rotation / stale token). Do NOT return any freshly-minted plaintext tokens;
+  // they were never persisted because the CAS matched nothing.
+  if (rotatedRows.length !== 1) {
+    console.warn('[agents] token rotation compare-and-swap matched no rows:', {
+      agentId,
+      deviceId: device.id,
+    });
+    return c.json({ error: 'Token rotation conflict; re-authenticate with the current token' }, 409);
   }
 
   try {

@@ -42,12 +42,23 @@ vi.mock('./helpers', () => ({
   generateApiKey: vi.fn(() => 'brz_rotated_token'),
 }));
 
+// Capture the drizzle condition builders so we can assert the rotate-token
+// UPDATE is compare-and-swapped against the authenticating token hash.
+vi.mock('drizzle-orm', () => ({
+  and: vi.fn((...args: unknown[]) => ({ __and: args })),
+  eq: vi.fn((col: unknown, val: unknown) => ({ __eq: [col, val] })),
+}));
+
+import { eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { generateApiKey } from './helpers';
 import { tokenRoutes } from './token';
 
-function buildApp(): Hono {
+// Default hash the mocked middleware reports as the current-token hash.
+const CURRENT_AGENT_TOKEN_HASH = 'current-agent-token-hash';
+
+function buildApp(opts?: { rotationRequired?: boolean; authTokenHash?: string }): Hono {
   const app = new Hono();
   app.use('/agents/*', async (c, next) => {
     c.set('agent', {
@@ -56,7 +67,9 @@ function buildApp(): Hono {
       agentId: 'agent-123',
       siteId: 'site-1',
       role: 'agent',
+      authTokenHash: opts?.authTokenHash ?? CURRENT_AGENT_TOKEN_HASH,
     });
+    c.set('agentTokenRotationRequired', opts?.rotationRequired ?? false);
     await next();
   });
   app.route('/agents', tokenRoutes);
@@ -88,7 +101,9 @@ describe('agent token rotation route', () => {
 
     vi.mocked(db.update).mockReturnValue({
       set: vi.fn(() => ({
-        where: vi.fn().mockResolvedValue(undefined),
+        where: vi.fn(() => ({
+          returning: vi.fn().mockResolvedValue([{ id: 'device-1' }]),
+        })),
       })),
     } as any);
   });
@@ -103,9 +118,10 @@ describe('agent token rotation route', () => {
       .mockReturnValueOnce('brz_rotated_watchdog_token')
       .mockReturnValueOnce('brz_rotated_helper_token');
 
-    const set = vi.fn(() => ({
-      where: vi.fn().mockResolvedValue(undefined),
+    const where = vi.fn(() => ({
+      returning: vi.fn().mockResolvedValue([{ id: 'device-1' }]),
     }));
+    const set = vi.fn(() => ({ where }));
     vi.mocked(db.update).mockReturnValue({ set } as any);
 
     const response = await buildApp().request('/agents/agent-123/rotate-token', {
@@ -120,9 +136,15 @@ describe('agent token rotation route', () => {
       rotatedAt: '2026-03-31T18:45:00.000Z',
     });
 
+    // The UPDATE is compare-and-swapped against the hash that authenticated
+    // this request — devices.agentTokenHash = <authenticating current hash>.
+    expect(eq).toHaveBeenCalledWith('agentTokenHash', CURRENT_AGENT_TOKEN_HASH);
+    expect(where).toHaveBeenCalledTimes(1);
+
     expect(generateApiKey).toHaveBeenCalledTimes(3);
     expect(set).toHaveBeenCalledWith({
-      previousTokenHash: 'old-token-hash',
+      // previousTokenHash snapshots the authenticating (current-at-rotation) hash.
+      previousTokenHash: CURRENT_AGENT_TOKEN_HASH,
       previousTokenExpiresAt: new Date('2026-03-31T18:50:00.000Z'),
       agentTokenHash: createHash('sha256').update('brz_rotated_agent_token').digest('hex'),
       tokenIssuedAt: new Date('2026-03-31T18:45:00.000Z'),
@@ -178,7 +200,9 @@ describe('agent token rotation route', () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.mocked(db.update).mockReturnValue({
       set: vi.fn(() => ({
-        where: vi.fn().mockRejectedValue(new Error('db unavailable')),
+        where: vi.fn(() => ({
+          returning: vi.fn().mockRejectedValue(new Error('db unavailable')),
+        })),
       })),
     } as any);
 
@@ -191,5 +215,58 @@ describe('agent token rotation route', () => {
     expect(writeAuditEvent).not.toHaveBeenCalled();
 
     consoleError.mockRestore();
+  });
+
+  it('rejects a superseded (previous-token) caller and mints no tokens', async () => {
+    // agentAuthMiddleware matched the PREVIOUS token during the grace window
+    // and set agentTokenRotationRequired=true. A stolen superseded token must
+    // not be able to renew itself into durable credentials.
+    const response = await buildApp({ rotationRequired: true }).request(
+      '/agents/agent-123/rotate-token',
+      { method: 'POST' }
+    );
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toEqual({
+      error: 'Rotate using the current token; superseded tokens cannot rotate',
+    });
+
+    // No credential mint, no DB read/write, no audit — rejected before any work.
+    expect(generateApiKey).not.toHaveBeenCalled();
+    expect(db.select).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+    expect(writeAuditEvent).not.toHaveBeenCalled();
+  });
+
+  it('rejects with 409 and mints no tokens when the compare-and-swap matches zero rows', async () => {
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // Someone else rotated first (or the authenticating hash no longer matches
+    // the stored current hash): the CAS UPDATE touches zero rows.
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn(() => ({
+        where: vi.fn(() => ({
+          returning: vi.fn().mockResolvedValue([]),
+        })),
+      })),
+    } as any);
+
+    const response = await buildApp().request('/agents/agent-123/rotate-token', {
+      method: 'POST',
+    });
+
+    expect(response.status).toBe(409);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body).toEqual({
+      error: 'Token rotation conflict; re-authenticate with the current token',
+    });
+
+    // The freshly-minted plaintext tokens were never persisted, so they must
+    // not be returned to the caller.
+    expect(body.authToken).toBeUndefined();
+    expect(body.watchdogAuthToken).toBeUndefined();
+    expect(body.helperAuthToken).toBeUndefined();
+    expect(writeAuditEvent).not.toHaveBeenCalled();
+
+    consoleWarn.mockRestore();
   });
 });
