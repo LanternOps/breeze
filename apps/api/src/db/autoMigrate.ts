@@ -245,30 +245,6 @@ export function splitSqlStatements(content: string): string[] {
 }
 
 /**
- * Build a connection string for the unprivileged `breeze_app` role by taking
- * an admin DATABASE_URL and swapping in the app user+password. Returns null
- * if no password is available or the admin URL can't be parsed — callers
- * should treat null as "cannot auto-configure, require DATABASE_URL_APP".
- *
- * Exported for unit testing.
- */
-export function deriveAppConnectionString(
-  adminUrl: string,
-  appUser: string,
-  appPassword: string | undefined,
-): string | null {
-  if (!appPassword) return null;
-  try {
-    const url = new URL(adminUrl);
-    url.username = appUser;
-    url.password = appPassword;
-    return url.toString();
-  } catch {
-    return null;
-  }
-}
-
-/**
  * Determine the database state based on whether key tables exist.
  *
  * - `fresh`  — no `users` table → run every migration from scratch
@@ -566,54 +542,6 @@ export async function autoMigrate(): Promise<void> {
     // ── 7b. Re-run ensureAppRole so any tables created in step 7 receive
     //        the standard privilege grants. Idempotent.
     await ensureAppRole();
-
-    // Resolve the app connection string. Preference order:
-    //   1. DATABASE_URL_APP (explicit, operator-provided)
-    //   2. Derived from DATABASE_URL by swapping user → breeze_app and
-    //      password → BREEZE_APP_DB_PASSWORD / POSTGRES_PASSWORD
-    //   3. DATABASE_URL itself — but the probe below will then hard-fail
-    //      because that's the superuser connection
-    const explicitAppUrl = process.env.DATABASE_URL_APP;
-    const derivedAppUrl = explicitAppUrl
-      ? null
-      : deriveAppConnectionString(
-          connectionString,
-          'breeze_app',
-          process.env.BREEZE_APP_DB_PASSWORD || process.env.POSTGRES_PASSWORD,
-        );
-    if (!explicitAppUrl && derivedAppUrl) {
-      console.log(
-        '[auto-migrate] DATABASE_URL_APP not set — derived unprivileged app connection from DATABASE_URL',
-      );
-    }
-    const appConnString = explicitAppUrl || derivedAppUrl || connectionString;
-
-    const appClient = postgres(appConnString, { max: 1 });
-    try {
-      const rows = await appClient`
-        SELECT current_user AS "user", rolsuper, rolbypassrls
-        FROM pg_roles
-        WHERE rolname = current_user
-      `;
-      const me = rows[0];
-      if (!me) {
-        throw new Error(
-          'App DB role verification returned no row for current_user — cannot confirm RLS enforcement. Refusing to start.',
-        );
-      }
-      console.log(
-        `[auto-migrate] App DB user: ${me.user} (super=${me.rolsuper}, bypassrls=${me.rolbypassrls})`,
-      );
-      if (me.rolbypassrls || me.rolsuper) {
-        throw new Error(
-          `App DB user "${me.user}" has BYPASSRLS or SUPERUSER — RLS policies would not be enforced. `
-            + 'Refusing to start. Either set DATABASE_URL_APP to a non-superuser connection string, '
-            + 'or set BREEZE_APP_DB_PASSWORD / POSTGRES_PASSWORD so the app URL can be derived automatically.',
-        );
-      }
-    } finally {
-      await appClient.end();
-    }
 
     // ── 8. Auto-seed if no users exist ───────────────────────────────────
     const userCheck = await client`SELECT id FROM users LIMIT 1`;
