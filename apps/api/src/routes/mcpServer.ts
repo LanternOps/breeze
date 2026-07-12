@@ -45,7 +45,7 @@ import {
   completeMcpToolExecutionLedger,
   type McpToolExecutionLedgerHandle,
 } from '../services/mcpToolExecutionLedger';
-import { resolveMcpExecutionOrgId } from './mcpExecutionOrg';
+import { McpExecutionOrgError, resolveMcpExecutionContext } from './mcpExecutionOrg';
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
 import { getTrustedClientIp } from '../services/clientIp';
@@ -967,7 +967,22 @@ async function handleToolsCall(
   // MCP server auto-executes Tier 3 tools without approval — the API key holder
   // is trusted at the scope level. Approval flow is for interactive UI only.
 
-  const executionOrgId = resolveMcpExecutionOrgId(apiKey, auth, toolInput);
+  // Authoritative execution org (MCP-OAUTH-05): for device-targeted tools this
+  // is resolved from the TARGETED DEVICES via the org+site access gate — NOT
+  // accessibleOrgIds[0] — so ledger, audit, and the handler all attribute to the
+  // device's true org. Mixed-org device arrays / conflicting orgId / inaccessible
+  // devices / org-pinned callers reaching outside their org are rejected here,
+  // BEFORE any ledger or audit mutation. Non-device tools keep prior behavior.
+  let executionOrgId: string | null;
+  try {
+    ({ orgId: executionOrgId } = await resolveMcpExecutionContext({ auth, apiKey: apiKey ?? null, toolName, toolInput }));
+  } catch (err) {
+    if (err instanceof McpExecutionOrgError) {
+      return jsonRpcError(id, -32602, 'Invalid params');
+    }
+    console.error('[MCP] Failed to resolve execution org for tool:', toolName, err);
+    return jsonRpcError(id, -32000, 'Unable to resolve execution organization');
+  }
   let ledgerHandle: McpToolExecutionLedgerHandle | null = null;
   if (tier >= 3) {
     if (!apiKey || !executionOrgId) {
@@ -1096,7 +1111,7 @@ function writeMcpToolAuditEvent(
   if (!c || !event.apiKey) return;
 
   const error = event.error instanceof Error ? event.error : undefined;
-  // event.orgId is the access-checked execution org (resolveMcpExecutionOrgId).
+  // event.orgId is the authoritative execution org (resolveMcpExecutionContext).
   // NEVER fall back to a raw client-supplied toolInput.orgId here — doing so
   // would let a partner-scoped caller forge cross-tenant audit_logs attribution
   // (audit rows are written under the RLS-bypassed system context).

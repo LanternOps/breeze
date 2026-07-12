@@ -566,6 +566,8 @@ describe('MCP bootstrap carve-out', () => {
       getToolDefinitions: () => [{ name: 'execute_command', description: '', input_schema: {} }],
       executeTool,
       getToolTier: (name: string) => (name === 'execute_command' ? 3 : undefined),
+      aiTools: new Map([['execute_command', { deviceArgs: ['deviceId'] }]]),
+      verifyDeviceAccess: vi.fn(async () => ({ device: { orgId: 'org-1', siteId: null } })),
     }));
     vi.doMock('../services/redis', () => ({
       getRedis: () => ({}),
@@ -645,6 +647,8 @@ describe('MCP bootstrap carve-out', () => {
       getToolDefinitions: () => [{ name: 'execute_command', description: '', input_schema: {} }],
       executeTool,
       getToolTier: (name: string) => (name === 'execute_command' ? 3 : undefined),
+      aiTools: new Map([['execute_command', { deviceArgs: ['deviceId'] }]]),
+      verifyDeviceAccess: vi.fn(async () => ({ device: { orgId: 'org-1', siteId: null } })),
     }));
     vi.doMock('../services/redis', () => ({
       getRedis: () => ({}),
@@ -726,6 +730,8 @@ describe('MCP bootstrap carve-out', () => {
       getToolDefinitions: () => [{ name: 'execute_command', description: '', input_schema: {} }],
       executeTool: vi.fn(async () => JSON.stringify({ status: 'completed', stdout: 'token=raw-secret' })),
       getToolTier: (name: string) => (name === 'execute_command' ? 3 : undefined),
+      aiTools: new Map([['execute_command', { deviceArgs: ['deviceId'] }]]),
+      verifyDeviceAccess: vi.fn(async () => ({ device: { orgId: 'org-1', siteId: null } })),
     }));
     vi.doMock('../services/redis', () => ({
       getRedis: () => ({}),
@@ -877,6 +883,8 @@ describe('MCP bootstrap carve-out', () => {
         throw new TypeError('boom with token=raw-secret');
       }),
       getToolTier: (name: string) => (name === 'execute_command' ? 3 : undefined),
+      aiTools: new Map([['execute_command', { deviceArgs: ['deviceId'] }]]),
+      verifyDeviceAccess: vi.fn(async () => ({ device: { orgId: 'org-1', siteId: null } })),
     }));
     vi.doMock('../services/redis', () => ({ getRedis: () => ({}) }));
     const ledgerInsertValues: any[] = [];
