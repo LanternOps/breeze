@@ -109,7 +109,9 @@ vi.mock('../oauth/log', () => ({
 }));
 
 vi.mock('../oauth/provider', () => ({
-  ACCESS_TOKEN_TTL_SECONDS: 600,
+  // Mock value only — the real constant lives in oauth/provider.ts (raised
+  // to 1800 for #2363); nothing in this suite asserts on the number.
+  ACCESS_TOKEN_TTL_SECONDS: 1800,
 }));
 
 vi.mock('./auth/helpers', () => ({

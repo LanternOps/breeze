@@ -17,7 +17,9 @@ import { assertActiveTenantContext, TenantInactiveError } from '../services/tena
 // minted under the grant. Kept in sync with `ACCESS_TOKEN_TTL_SECONDS` in
 // provider.ts (we'd import it but provider.ts already imports from this
 // file, and pulling in the whole provider module here would cycle).
-const GRANT_REVOCATION_TTL_SECONDS = 600;
+// Exported so provider.test.ts can assert the two constants never drift
+// (GRANT_REVOCATION_TTL_SECONDS >= ACCESS_TOKEN_TTL_SECONDS).
+export const GRANT_REVOCATION_TTL_SECONDS = 1800;
 
 const asSystem = <T>(fn: () => Promise<T>): Promise<T> =>
   runOutsideDbContext(() => withSystemDbAccessContext(fn));
@@ -360,6 +362,20 @@ export class BreezeOidcAdapter {
         if (row.revokedAt) {
           const payload = row.payload as { grantId?: string; clientId?: string; accountId?: string } | null;
           const grantId = typeof payload?.grantId === 'string' ? payload.grantId : undefined;
+          // Tradeoff (#2363): this branch fires on ANY presentation of a
+          // consumed/revoked RT — including an INNOCENT retry after a failed
+          // token exchange. oidc-provider rotates the refresh token (consume()
+          // marks revokedAt) BEFORE it finishes validating the exchange, so a
+          // request that later fails (e.g. invalid_target) burns the RT and
+          // the client's spec-correct retry with the old RT lands here and
+          // nukes the whole grant family. We deliberately KEEP the
+          // grant-family revocation — genuine rotation replay is the
+          // canonical token-theft signal and must stay fatal — and instead
+          // fix the known innocent trigger upstream (resource-alias
+          // normalization in routes/oauth.ts). The revoked_at / revoked_ms_ago
+          // context below lets on-call distinguish the two: an innocent
+          // post-failure retry presents within seconds of revocation, while
+          // theft replay typically surfaces much later.
           logOauthError({
             errorId: ERROR_IDS.OAUTH_REFRESH_TOKEN_REUSE,
             message: 'Revoked refresh token lookup detected',
@@ -369,6 +385,8 @@ export class BreezeOidcAdapter {
               partner_id: row.partnerId,
               user_id: row.userId,
               grant_id: grantId,
+              revoked_at: row.revokedAt.toISOString(),
+              revoked_ms_ago: Date.now() - row.revokedAt.getTime(),
             },
           });
           // Refresh-token reuse is the canonical signal that a token

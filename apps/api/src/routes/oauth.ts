@@ -6,7 +6,8 @@ import { getProvider } from '../oauth/provider';
 import { MCP_OAUTH_ENABLED, OAUTH_DCR_ENABLED, OAUTH_ISSUER, OAUTH_RESOURCE_URL } from '../config/env';
 import { loadPublicJwks } from '../oauth/keys';
 import { revokeGrant, revokeJti } from '../oauth/revocationCache';
-import { ERROR_IDS, logOauthError } from '../oauth/log';
+import { normalizeFormEncodedResource, normalizeResourceParams } from '../oauth/resourceIndicators';
+import { ERROR_IDS, logOauthDebug, logOauthError } from '../oauth/log';
 // Import getRedis/rateLimiter from their specific modules (NOT the services
 // barrel) to avoid pulling in the rest of services/index.ts at module load —
 // barrel re-exports include modules with side effects (eventBus,
@@ -224,6 +225,31 @@ if (MCP_OAUTH_ENABLED) {
       }
     }
 
+    if (sub === '/auth') {
+      // #2363: normalize known resource-indicator aliases (`<resource>/sse`,
+      // trailing slash, `<resource>/message`) in the authorization request's
+      // query string BEFORE the oidc-provider bridge reads `incoming.url`.
+      // MCP clients are configured with the SSE transport URL and some send
+      // it as the RFC 8707 `resource` param; normalizing here keeps the
+      // Grant's stored resource canonical so the later refresh-token
+      // exchange (normalized the same way below) can never mismatch it.
+      // Exact-string allowlist only — see oauth/resourceIndicators.ts.
+      const incoming = c.env?.incoming as { url?: string } | undefined;
+      if (incoming?.url) {
+        const queryIndex = incoming.url.indexOf('?');
+        if (queryIndex !== -1) {
+          const params = new URLSearchParams(incoming.url.slice(queryIndex + 1));
+          if (normalizeResourceParams(params)) {
+            incoming.url = `${incoming.url.slice(0, queryIndex)}?${params.toString()}`;
+            logOauthDebug({
+              errorId: ERROR_IDS.OAUTH_RESOURCE_ALIAS_NORMALIZED,
+              message: 'Normalized resource indicator alias on authorization request',
+            });
+          }
+        }
+      }
+    }
+
     if (c.req.method === 'POST' && sub === '/token') {
       // Pre-buffer the body into `incoming.rawBody` so the oidc-provider
       // bridge (which reads from the underlying Node IncomingMessage, not
@@ -272,6 +298,37 @@ if (MCP_OAUTH_ENABLED) {
         return c.json({ error: 'invalid_request', error_description: 'token request body unreadable' }, 400);
       }
       const contentType = c.req.header('content-type') ?? '';
+      // #2363: normalize known resource-indicator aliases in the token
+      // request body before the oidc-provider bridge replays it. Claude
+      // Code's silent refresh sends the configured server URL (the `/sse`
+      // transport endpoint) as the RFC 8707 `resource` param while the
+      // grant stored the canonical OAUTH_RESOURCE_URL — oidc-provider's
+      // resolve_resource then throws `invalid_target`, and because the
+      // library rotates the refresh token BEFORE resolving the resource,
+      // the failed exchange also burned the RT and killed the session.
+      // Rewriting the buffered bytes is safe: the pre-buffering above
+      // drained the socket, so oidc-provider's selective_body uses the
+      // `req.body` Buffer fallback (which ignores content-length; we still
+      // patch the header for consistency). Exact-alias allowlist only —
+      // an unrelated resource value passes through unchanged and still
+      // fails invalid_target, preserving RFC 8707 audience binding.
+      if (/application\/x-www-form-urlencoded/i.test(contentType) || !contentType) {
+        const rewritten = normalizeFormEncodedResource(buf.toString('utf8'));
+        if (rewritten !== null) {
+          buf = Buffer.from(rewritten, 'utf8');
+          if (hasNodeStream) {
+            (incoming as unknown as { rawBody?: Buffer }).rawBody = buf;
+            (incoming as unknown as { body?: Buffer }).body = buf;
+            if (incoming!.headers) {
+              incoming!.headers['content-length'] = String(buf.byteLength);
+            }
+          }
+          logOauthDebug({
+            errorId: ERROR_IDS.OAUTH_RESOURCE_ALIAS_NORMALIZED,
+            message: 'Normalized resource indicator alias on token request',
+          });
+        }
+      }
       let clientId: string | null = null;
       const raw = buf.toString('utf8');
       if (/application\/x-www-form-urlencoded/i.test(contentType) || !contentType) {

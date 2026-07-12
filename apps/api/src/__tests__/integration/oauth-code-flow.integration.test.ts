@@ -330,6 +330,130 @@ describe.skipIf(!SHOULD_RUN)('OAuth 2.1 code flow end-to-end', () => {
     expect(mcpAfterRevoke.status).toBe(401);
   }, 60_000);
 
+  it('accepts the /sse-alias resource end-to-end and rejects unrelated resources on refresh (#2363)', async () => {
+    // Regression for the production failure: Claude Code authorizes with the
+    // canonical resource but refreshes with its configured server URL — the
+    // /sse transport endpoint. Before the alias normalization in
+    // routes/oauth.ts, oidc-provider's refresh_token grant threw
+    // invalid_target AND burned the rotated refresh token, killing the
+    // session at every access-token expiry (~10 min). Here we push the alias
+    // through EVERY leg (authorize, code exchange, refresh) to prove
+    // normalization keeps the whole flow on the canonical resource, then
+    // verify an unrelated resource still fails invalid_target so RFC 8707
+    // audience binding is not loosened.
+    const baseUrl = live.url;
+    const canonical = process.env.OAUTH_RESOURCE_URL!;
+    const alias = `${canonical}/sse`;
+
+    const partner = await createPartner({ name: `OAuth Alias Test ${Date.now()}` });
+    const role = await createRole({ scope: 'partner', partnerId: partner.id });
+    const user = await createUser({ partnerId: partner.id, email: `oauth-alias-${Date.now()}@example.com` });
+    await assignUserToPartner(user.id, partner.id, role.id, 'all');
+    const dashboardJwt = await createAccessToken({
+      sub: user.id,
+      email: user.email,
+      roleId: role.id,
+      orgId: null,
+      partnerId: partner.id,
+      scope: 'partner',
+      mfa: false,
+    });
+
+    const redirectUri = 'https://example.com/cb-alias';
+    const client = await dcr(baseUrl, redirectUri);
+    const verifier = b64url(randomBytes(32));
+    const challenge = b64url(createHash('sha256').update(verifier).digest());
+
+    // ---- Authorize with the ALIAS resource. ----
+    const authParams = new URLSearchParams({
+      response_type: 'code',
+      client_id: client.client_id,
+      redirect_uri: redirectUri,
+      scope: 'openid offline_access mcp:read mcp:write',
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+      resource: alias,
+      state: 'alias-test',
+    });
+    const authRes = await fetch(`${baseUrl}/oauth/auth?${authParams}`, { redirect: 'manual' });
+    expect([302, 303]).toContain(authRes.status);
+    const uid = new URL(authRes.headers.get('location') ?? '', baseUrl).searchParams.get('uid');
+    expect(uid).toBeTruthy();
+    const cookieJar = (authRes.headers.getSetCookie?.() ?? []).map((c) => c.split(';')[0]).join('; ');
+
+    // The consent backend must accept the flow (the /auth pre-handler
+    // normalized the alias before oidc-provider stored the interaction, and
+    // the interaction route additionally accepts the alias set directly).
+    const consentRes = await fetch(`${baseUrl}/api/v1/oauth/interaction/${uid}/consent`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${dashboardJwt}` },
+      body: JSON.stringify({ partner_id: partner.id, approve: true }),
+    });
+    expect(consentRes.status).toBe(200);
+    const consentBody = await consentRes.json() as { redirectTo: string };
+    const resumeRes = await fetch(consentBody.redirectTo, { redirect: 'manual', headers: { cookie: cookieJar } });
+    const code = new URL(resumeRes.headers.get('location') ?? '').searchParams.get('code');
+    expect(code).toBeTruthy();
+
+    // ---- Code exchange with the ALIAS resource. ----
+    const tokenRes = await fetch(`${baseUrl}/oauth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code: code!,
+        client_id: client.client_id,
+        code_verifier: verifier,
+        redirect_uri: redirectUri,
+        resource: alias,
+      }),
+    });
+    expect(tokenRes.status).toBe(200);
+    const tokenBody = await tokenRes.json() as {
+      access_token: string;
+      refresh_token: string;
+      expires_in: number;
+    };
+    // Audience is the CANONICAL resource — proof the alias was normalized
+    // rather than issued verbatim.
+    const claims = decodeJwt(tokenBody.access_token);
+    expect(claims.aud).toBe(canonical);
+    // #2363 also raised the access-token TTL from 600s to 1800s.
+    expect(tokenBody.expires_in).toBeGreaterThan(600);
+
+    // ---- Refresh with the ALIAS resource (the exact production failure). ----
+    const refreshRes = await fetch(`${baseUrl}/oauth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: tokenBody.refresh_token,
+        client_id: client.client_id,
+        resource: alias,
+      }),
+    });
+    expect(refreshRes.status).toBe(200);
+    const refreshBody = await refreshRes.json() as { access_token: string; refresh_token?: string };
+    expect(refreshBody.access_token).toBeTruthy();
+    expect(decodeJwt(refreshBody.access_token).aud).toBe(canonical);
+
+    // ---- Refresh with an UNRELATED resource must still fail invalid_target. ----
+    const rtForBadRefresh = refreshBody.refresh_token ?? tokenBody.refresh_token;
+    const badRefreshRes = await fetch(`${baseUrl}/oauth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: rtForBadRefresh,
+        client_id: client.client_id,
+        resource: 'https://unrelated.example/api/v1/mcp',
+      }),
+    });
+    expect(badRefreshRes.status).toBe(400);
+    const badRefreshBody = await badRefreshRes.json() as { error: string };
+    expect(badRefreshBody.error).toBe('invalid_target');
+  }, 60_000);
+
   it('revoking one access token kills every sibling access JWT under the same Grant', async () => {
     // Defect 1 (2026-04-24): previously, POST /oauth/token/revocation with
     // a token only revoked that one jti. A client holding multiple access

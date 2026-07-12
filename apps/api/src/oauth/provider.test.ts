@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  ACCESS_TOKEN_TTL_SECONDS,
   ALL_MCP_SCOPES,
   buildExtraTokenClaims,
   handleRevocationSuccess,
@@ -7,6 +8,7 @@ import {
   resolveAllowedMcpScopes,
   resolvePartnerIdForResourceServerInfo,
 } from './provider';
+import { GRANT_REVOCATION_TTL_SECONDS } from './adapter';
 import { clearPartnerScopePolicyCache } from './partnerScopePolicy';
 
 // Mock the tenant-status assertion so provider tests stay hermetic — the
@@ -58,6 +60,19 @@ afterEach(() => {
 describe('OAuth token TTL policy', () => {
   it('keeps refresh tokens aligned with the 14-day Grant/Session lifetime', () => {
     expect(REFRESH_TOKEN_TTL_SECONDS).toBe(14 * 24 * 60 * 60);
+  });
+
+  it('uses a 30-minute access token TTL (#2363 — 600s forced a refresh every 10 min)', () => {
+    expect(ACCESS_TOKEN_TTL_SECONDS).toBe(1800);
+  });
+
+  it('keeps the grant-revocation marker TTL >= the access token TTL (drift guard, #2363)', () => {
+    // adapter.ts hand-syncs GRANT_REVOCATION_TTL_SECONDS because importing
+    // provider.ts there would create an import cycle. The marker must
+    // outlive the longest-lived access JWT minted under a grant — if it
+    // expired first, revoked grants' sibling access tokens would validate
+    // again for the remainder of their lifetime.
+    expect(GRANT_REVOCATION_TTL_SECONDS).toBeGreaterThanOrEqual(ACCESS_TOKEN_TTL_SECONDS);
   });
 });
 

@@ -4,10 +4,11 @@ import type { HttpBindings } from '@hono/node-server';
 import { and, eq } from 'drizzle-orm';
 import { getProvider } from '../oauth/provider';
 import { setGrantBreezeMeta } from '../oauth/adapter';
+import { isAcceptedResourceIndicator } from '../oauth/resourceIndicators';
 import { authMiddleware } from '../middleware/auth';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { oauthClients, oauthClientPartnerGrants, partners, partnerUsers, users } from '../db/schema';
-import { BILLING_URL, MCP_OAUTH_ENABLED, OAUTH_ISSUER, OAUTH_RESOURCE_URL } from '../config/env';
+import { BILLING_URL, MCP_OAUTH_ENABLED, OAUTH_ISSUER } from '../config/env';
 import { ERROR_IDS, logOauthError } from '../oauth/log';
 import { writeRouteAudit } from '../services/auditEvents';
 
@@ -110,7 +111,12 @@ if (MCP_OAUTH_ENABLED) {
     const provider = await getProvider();
     const details = await interactionDetails(provider, c, c.req.param('uid'));
     const resource = details.params.resource as string | undefined;
-    if (resource && resource !== OAUTH_RESOURCE_URL) {
+    // #2363: accept the tight alias set (…/sse, trailing slash, …/message)
+    // alongside the canonical OAUTH_RESOURCE_URL. The /oauth/auth
+    // pre-handler normalizes aliases before oidc-provider stores the
+    // interaction, so this is defense-in-depth for flows started before
+    // that normalization existed (or paths that bypass it).
+    if (resource && !isAcceptedResourceIndicator(resource)) {
       throw new HTTPException(400, { message: 'unsupported resource indicator' });
     }
 
@@ -174,7 +180,8 @@ if (MCP_OAUTH_ENABLED) {
     const provider = await getProvider();
     const details = await interactionDetails(provider, c, c.req.param('uid'));
     const resource = details.params.resource as string | undefined;
-    if (resource && resource !== OAUTH_RESOURCE_URL) {
+    // #2363: same alias acceptance as the GET handler above.
+    if (resource && !isAcceptedResourceIndicator(resource)) {
       throw new HTTPException(400, { message: 'unsupported resource indicator' });
     }
 

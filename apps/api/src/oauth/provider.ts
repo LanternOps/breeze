@@ -33,7 +33,16 @@ let providerInstance: Provider | null = null;
 // Shared AccessToken TTL. Used for the JWT exp AND as the TTL for the
 // grant-revocation cache marker (see revocationCache.revokeGrant) so the
 // marker outlives every JWT derived from the grant.
-export const ACCESS_TOKEN_TTL_SECONDS = 600;
+//
+// 30 minutes (#2363): the original 600s meant every MCP client had to run
+// a silent refresh 6×/hour, which turned any refresh-path bug into a
+// 10-minute session cap and multiplied refresh traffic. Revocation
+// latency is bounded by the revocation cache (per-jti + per-grant
+// markers checked by bearer middleware on every request), not by this
+// TTL, so raising it does not extend the residual-access window after an
+// explicit revoke. Keep GRANT_REVOCATION_TTL_SECONDS in adapter.ts >= this
+// value (enforced by a test in provider.test.ts).
+export const ACCESS_TOKEN_TTL_SECONDS = 1800;
 export const REFRESH_TOKEN_TTL_SECONDS = 14 * 24 * 60 * 60;
 
 // DCR cleanup TTL: a registered OAuth client that has never been used and

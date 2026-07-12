@@ -6,6 +6,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { oauthClients, oauthClientPartnerGrants, oauthRefreshTokens } from '../db/schema';
 import { revokeGrant, revokeJti } from '../oauth/revocationCache';
 import { ERROR_IDS, logOauthError } from '../oauth/log';
+import { ACCESS_TOKEN_TTL_SECONDS } from '../oauth/provider';
 import { MCP_OAUTH_ENABLED } from '../config/env';
 
 export const connectedAppsRoutes = new Hono();
@@ -88,8 +89,9 @@ if (MCP_OAUTH_ENABLED) {
     // pointing at the same Grant after rotation).
     const seenGrants = new Set<string>();
     // Grant-revocation marker TTL must outlive every access JWT minted under
-    // the grant. Mirrors ACCESS_TOKEN_TTL_SECONDS in oauth/provider.ts.
-    const ACCESS_TOKEN_TTL_SECONDS = 600;
+    // the grant — ACCESS_TOKEN_TTL_SECONDS is imported from oauth/provider.ts
+    // (was a hand-synced local copy of 600 that would have silently drifted
+    // when the TTL was raised for #2363).
 
     // Do cache revocation before DB mutation. If Redis is unavailable, the
     // app remains visible and refresh-token rows are untouched, so the user

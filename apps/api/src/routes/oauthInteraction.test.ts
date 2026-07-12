@@ -286,6 +286,48 @@ describe('oauthInteractionRoutes', () => {
     expect(await res.json()).toEqual({ message: 'unsupported resource indicator' });
   });
 
+  it('accepts the /sse transport alias as a resource indicator on GET (#2363)', async () => {
+    // MCP clients are configured with the SSE endpoint URL and may carry it
+    // as the RFC 8707 resource param. The tight alias set (…/sse, trailing
+    // slash, …/message) must pass the gate; anything else still 400s (see
+    // the rejection test above).
+    mocks.interactionDetails.mockResolvedValue(details({
+      params: {
+        client_id: 'client-1',
+        client_name: 'Claude Desktop',
+        resource: 'https://api.example/mcp/server/sse',
+        scope: 'openid offline_access mcp:read',
+      },
+    }));
+    queueSelect([{ partnerId: PARTNER_ID, partnerName: 'Acme MSP' }]);
+    queueSelect([{ metadata: { client_name: 'Claude Desktop' } }], 'limit');
+    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1');
+    expect(res.status).toBe(200);
+    const body = await res.json() as { resource: string };
+    expect(body.resource).toBe('https://api.example/mcp/server/sse');
+  });
+
+  it('accepts the /sse transport alias on the consent POST resource gate (#2363)', async () => {
+    // approve:false takes the deny shortcut AFTER the resource-indicator
+    // gate, so a 200 here proves the alias passed the gate without needing
+    // the full grant-save fixture chain.
+    const d = details({
+      params: {
+        client_id: 'client-1',
+        client_name: 'Claude Desktop',
+        resource: 'https://api.example/mcp/server/sse',
+        scope: 'openid offline_access mcp:read',
+      },
+    });
+    mocks.interactionDetails.mockResolvedValue(d);
+    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+      method: 'POST',
+      body: JSON.stringify({ partner_id: PARTNER_ID, approve: false }),
+    });
+    expect(res.status).toBe(200);
+    expect(d.result).toEqual({ error: 'access_denied', error_description: 'user denied access' });
+  });
+
   it('rejects malformed consent JSON before membership checks', async () => {
     mocks.interactionDetails.mockResolvedValue(details());
     const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
