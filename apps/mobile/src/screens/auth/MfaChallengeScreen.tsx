@@ -15,7 +15,7 @@ import { useAppDispatch, useAppSelector } from '../../store';
 import { clearMfaChallenge, verifyMfaAsync } from '../../store/authSlice';
 import { sendMfaSms } from '../../services/api';
 import type { MfaCodeMethod } from '../../services/api';
-import { normalizeMfaChallengeCode } from './mfaChallengeContract';
+import { normalizeMfaChallengeCode, resolveMfaCodeMethods } from './mfaChallengeContract';
 import { useApprovalTheme, palette, radii, spacing, type } from '../../theme';
 import { Spinner } from '../../components/Spinner';
 import { haptic } from '../../lib/motion';
@@ -28,23 +28,22 @@ export function MfaChallengeScreen() {
   const { isLoading, error, mfaChallenge } = useAppSelector((state) => state.auth);
 
   const [code, setCode] = useState('');
-  const [selectedMethod, setSelectedMethod] = useState<MfaCodeMethod>('totp');
+  const [selectedMethod, setSelectedMethod] = useState<MfaCodeMethod | null>(null);
   const [smsSent, setSmsSent] = useState(false);
   const [smsError, setSmsError] = useState<string | null>(null);
   const [cooldown, setCooldown] = useState(0);
   const inputRef = useRef<TextInput>(null);
 
-  const availableCodeMethods = (mfaChallenge?.allowedMethods ?? [])
-    .filter((method): method is MfaCodeMethod => method !== 'passkey');
+  const resolvedMethods = mfaChallenge
+    ? resolveMfaCodeMethods(mfaChallenge.mfaMethod, mfaChallenge.allowedMethods)
+    : { methods: [], selected: null };
+  const availableCodeMethods = resolvedMethods.methods;
   const isSms = selectedMethod === 'sms';
   const isRecovery = selectedMethod === 'recovery_code';
 
   useEffect(() => {
     if (!mfaChallenge) return;
-    const primary = mfaChallenge.mfaMethod === 'passkey'
-      ? availableCodeMethods[0] ?? 'recovery_code'
-      : mfaChallenge.mfaMethod;
-    setSelectedMethod(primary);
+    setSelectedMethod(resolvedMethods.selected);
     setCode('');
   }, [mfaChallenge?.tempToken]);
 
@@ -75,11 +74,13 @@ export function MfaChallengeScreen() {
   }
 
   function handleChangeCode(value: string) {
+    if (!selectedMethod) return;
     setCode(normalizeMfaChallengeCode(value, selectedMethod));
   }
 
   async function handleVerify() {
-    if (!mfaChallenge || code.length !== (isRecovery ? 9 : 6)) return;
+    if (!mfaChallenge || !selectedMethod || !availableCodeMethods.includes(selectedMethod)
+      || code.length !== (isRecovery ? 9 : 6)) return;
     haptic.tap();
     dispatch(verifyMfaAsync({ code, tempToken: mfaChallenge.tempToken, method: selectedMethod }));
   }
@@ -101,6 +102,22 @@ export function MfaChallengeScreen() {
   function handleCancel() {
     setCode('');
     dispatch(clearMfaChallenge());
+  }
+
+  if (!selectedMethod || availableCodeMethods.length === 0) {
+    return (
+      <SafeAreaView style={[styles.container, { backgroundColor: theme.bg0 }]}>
+        <View style={styles.scrollContent}>
+          <Text style={[type.title, { color: theme.textHi, textAlign: 'center' }]}>Verification unavailable</Text>
+          <Text style={[type.body, { color: theme.textMd, textAlign: 'center', marginTop: spacing[2] }]}>
+            No supported verification method is available. Sign in from the web app or contact your administrator.
+          </Text>
+          <Pressable onPress={handleCancel} style={styles.primaryButton}>
+            <Text style={[type.bodyMd, { color: palette.dark.textHi }]}>Back to sign in</Text>
+          </Pressable>
+        </View>
+      </SafeAreaView>
+    );
   }
 
   const canSubmit = code.length === (isRecovery ? 9 : 6) && !isLoading;

@@ -25,6 +25,7 @@ import { useApprovalTheme, palette, radii, spacing, type } from '../../theme';
 import { Spinner } from '../../components/Spinner';
 import { haptic } from '../../lib/motion';
 import type { AuthStackParamList } from '../../navigation/AuthNavigator';
+import { readCurrentBiometricSession } from './biometricSession';
 
 type Props = NativeStackScreenProps<AuthStackParamList, 'Login'>;
 
@@ -110,11 +111,8 @@ export function LoginScreen({ navigation }: Props) {
     haptic.tap();
     const success = await authenticateWithBiometrics();
     if (success) {
-      const token = await getStoredToken();
-      const user = await getStoredUser();
-      if (token && user) {
-        dispatch({ type: 'auth/setCredentials', payload: { token, user } });
-      }
+      const session = await readCurrentBiometricSession(getStoredToken, getStoredUser);
+      if (session) dispatch({ type: 'auth/setCredentials', payload: session });
     }
   }
 

@@ -42,7 +42,7 @@ export default function MFAVerifyForm({
   const { t } = useTranslation('auth');
   const [digits, setDigits] = useState<string[]>(Array(DIGIT_COUNT).fill(''));
   const [recoveryCode, setRecoveryCode] = useState('');
-  const [selectedMethod, setSelectedMethod] = useState<MfaMethod>(mfaMethod);
+  const [selectedMethod, setSelectedMethod] = useState<MfaMethod | null>(mfaMethod);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [resendCooldown, setResendCooldown] = useState(0);
   const inputRefs = useRef<Array<HTMLInputElement | null>>([]);
@@ -50,7 +50,9 @@ export default function MFAVerifyForm({
   const isLoading = useMemo(() => loading ?? isSubmitting, [loading, isSubmitting]);
   const methods = useMemo(() => {
     const fallback: MfaMethod[] = [mfaMethod, ...(passkeyAvailable ? ['passkey' as const] : []), 'recovery_code'];
-    return [...new Set(allowedMethods?.length ? allowedMethods : fallback)];
+    const supplied = allowedMethods === undefined ? fallback : Array.isArray(allowedMethods) ? allowedMethods : [];
+    return [...new Set(supplied.filter((method): method is MfaMethod =>
+      method === 'totp' || method === 'sms' || method === 'passkey' || method === 'recovery_code'))];
   }, [allowedMethods, mfaMethod, passkeyAvailable]);
   const code = selectedMethod === 'recovery_code' ? recoveryCode : digits.join('');
   const isRecovery = selectedMethod === 'recovery_code';
@@ -61,10 +63,10 @@ export default function MFAVerifyForm({
   const showPasskeyAlternate = !isPasskey && methods.includes('passkey') && Boolean(onPasskeyVerify);
 
   useEffect(() => {
-    setSelectedMethod(mfaMethod);
+    setSelectedMethod(methods.includes(mfaMethod) ? mfaMethod : methods[0] ?? null);
     setRecoveryCode('');
     setDigits(Array(DIGIT_COUNT).fill(''));
-  }, [mfaMethod]);
+  }, [methods, mfaMethod]);
 
   const selectMethod = (method: MfaMethod) => {
     setSelectedMethod(method);
@@ -122,7 +124,7 @@ export default function MFAVerifyForm({
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const validLength = isRecovery ? code.length === 9 : code.length === DIGIT_COUNT;
-    if (isLoading || isPasskey || !validLength) {
+    if (isLoading || isPasskey || !selectedMethod || !methods.includes(selectedMethod) || !validLength) {
       return;
     }
     try {
@@ -140,7 +142,7 @@ export default function MFAVerifyForm({
   };
 
   const handlePasskeyVerify = async () => {
-    if (isLoading) return;
+    if (isLoading || !methods.includes('passkey')) return;
     try {
       setIsSubmitting(true);
       await onPasskeyVerify?.();
@@ -167,6 +169,14 @@ export default function MFAVerifyForm({
       ))}
     </div>
   ) : null;
+
+  if (!selectedMethod || methods.length === 0) {
+    return (
+      <div data-testid="mfa-no-supported-methods" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+        {t('mfaVerify.methods.noneSupported', { defaultValue: 'No supported verification method is available.' })}
+      </div>
+    );
+  }
 
   if (isPasskey) {
     return (

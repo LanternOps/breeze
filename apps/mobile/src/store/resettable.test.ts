@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { combineReducers } from '@reduxjs/toolkit';
 
 import { withLogoutReset, LOGOUT_ACTION_TYPES } from './resettable';
+import { captureSessionGeneration, isCurrentSessionGeneration } from '../services/sessionGeneration';
 import aiChatReducer, { addUserMessage } from './aiChatSlice';
 
 /**
@@ -15,6 +16,12 @@ import aiChatReducer, { addUserMessage } from './aiChatSlice';
  */
 describe('withLogoutReset', () => {
   const reducer = withLogoutReset(combineReducers({ aiChat: aiChatReducer }));
+
+  it('advances the shared session boundary on a normal synchronous logout', () => {
+    const generation = captureSessionGeneration();
+    reducer(undefined, { type: 'auth/logout' });
+    expect(isCurrentSessionGeneration(generation)).toBe(false);
+  });
 
   const seed = () =>
     reducer(

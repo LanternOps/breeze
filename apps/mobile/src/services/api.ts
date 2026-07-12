@@ -2,6 +2,12 @@ import * as SecureStore from 'expo-secure-store';
 
 import { getServerUrl } from './serverConfig';
 import { getOrCreateInstallationId } from './installationId';
+import {
+  advanceSessionGeneration,
+  captureSessionGeneration,
+  isCurrentSessionGeneration,
+} from './sessionGeneration';
+export { captureSessionGeneration, isCurrentSessionGeneration } from './sessionGeneration';
 
 const FALLBACK_API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
 const API_PREFIX = '/api/v1/mobile';
@@ -15,20 +21,6 @@ type DeviceBlockedListener = (reason: string | null) => void;
 const deviceBlockedListeners = new Set<DeviceBlockedListener>();
 type ReauthenticationListener = (reason: 'security-settings-changed') => void;
 const reauthenticationListeners = new Set<ReauthenticationListener>();
-let sessionGeneration = 0;
-
-/**
- * Capture the current local session boundary before starting non-API async
- * work (for example SecureStore hydration during app startup). Callers must
- * re-check the value before committing the result to authenticated state.
- */
-export function captureSessionGeneration(): number {
-  return sessionGeneration;
-}
-
-export function isCurrentSessionGeneration(generation: number): boolean {
-  return generation === sessionGeneration;
-}
 
 /**
  * Subscribe to the global "this device just got blocked" signal. The first
@@ -127,11 +119,10 @@ export type MfaMethod = 'totp' | 'sms' | 'passkey' | 'recovery_code';
 export type MfaCodeMethod = Exclude<MfaMethod, 'passkey'>;
 
 function normalizeAllowedMfaMethods(value: unknown, primary: MfaMethod): MfaMethod[] {
-  const valid = Array.isArray(value)
-    ? value.filter((method): method is MfaMethod =>
-        method === 'totp' || method === 'sms' || method === 'passkey' || method === 'recovery_code')
-    : [];
-  if (valid.length > 0) return [...new Set(valid)];
+  if (Array.isArray(value)) {
+    return [...new Set(value.filter((method): method is MfaMethod =>
+      method === 'totp' || method === 'sms' || method === 'passkey' || method === 'recovery_code'))];
+  }
   return [...new Set<MfaMethod>([primary, 'recovery_code'])];
 }
 
@@ -235,7 +226,7 @@ async function requestWithPrefix<T>(
   prefix: string,
   options: RequestInit = {}
 ): Promise<T> {
-  const requestGeneration = sessionGeneration;
+  const requestGeneration = captureSessionGeneration();
   const token = await getToken();
   const method = (options.method ?? 'GET').toUpperCase();
 
@@ -272,7 +263,7 @@ async function requestWithPrefix<T>(
     credentials: 'include',
   });
 
-  if (requestGeneration !== sessionGeneration) {
+  if (!isCurrentSessionGeneration(requestGeneration)) {
     throw {
       message: 'This request belongs to an expired session.',
       code: 'session_generation_stale',
@@ -306,7 +297,7 @@ async function requestWithPrefix<T>(
 
   const parsed = JSON.parse(text) as T & { reauthenticate?: unknown };
   if (parsed && typeof parsed === 'object' && parsed.reauthenticate === true) {
-    sessionGeneration += 1;
+    advanceSessionGeneration();
     notifyReauthenticationRequired();
     throw {
       message: 'Your security settings changed. Sign in again to continue.',
@@ -399,7 +390,6 @@ export async function login(email: string, password: string): Promise<LoginResul
     throw { message: response.error || 'Invalid login response' } as ApiError;
   }
 
-  sessionGeneration += 1;
   return { kind: 'success', token, user: response.user };
 }
 
@@ -420,7 +410,6 @@ export async function verifyMfa(code: string, tempToken: string, method: MfaCode
     throw { message: response.error || 'Invalid MFA response' } as ApiError;
   }
 
-  sessionGeneration += 1;
   return { token, user: response.user };
 }
 

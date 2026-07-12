@@ -42,8 +42,8 @@ describe('mobile MFA contracts', () => {
   });
 
   it.each([
-    [[], ['totp', 'recovery_code']],
-    [[null, 'bogus'], ['totp', 'recovery_code']],
+    [[], []],
+    [[null, 'bogus'], []],
     [['sms', 'sms', 'bogus'], ['sms']],
   ])('normalizes malformed or empty allowedMethods %#', async (allowedMethods, expected) => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({

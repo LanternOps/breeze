@@ -31,7 +31,8 @@ vi.mock('@sentry/react-native', () => ({
   captureException: (...a: unknown[]) => sentry.captureException(...a),
 }));
 
-import authReducer, { logoutAsync } from './authSlice';
+import authReducer, { loginAsync, logoutAsync } from './authSlice';
+import { advanceSessionGeneration } from '../services/sessionGeneration';
 
 function makeStore() {
   return configureStore({ reducer: { auth: authReducer } });
@@ -40,7 +41,72 @@ function makeStore() {
 beforeEach(() => {
   api.logout.mockReset().mockResolvedValue(undefined);
   auth.clearAuthData.mockReset().mockResolvedValue(undefined);
+  auth.storeToken.mockReset().mockResolvedValue(undefined);
+  auth.storeUser.mockReset().mockResolvedValue(undefined);
+  api.login.mockReset();
+  api.verifyMfa.mockReset();
   sentry.captureException.mockReset();
+});
+
+describe('authenticated-session persistence boundary', () => {
+  const userA = { id: 'a', email: 'a@example.com', name: 'A', role: 'admin' };
+  const userB = { id: 'b', email: 'b@example.com', name: 'B', role: 'admin' };
+
+  it('compensates and rejects when logout lands between token and user writes', async () => {
+    let releaseToken!: () => void;
+    auth.storeToken.mockImplementationOnce(() => new Promise<void>((resolve) => { releaseToken = resolve; }));
+    api.login.mockResolvedValueOnce({ kind: 'success', token: 'token-a', user: userA });
+    const store = makeStore();
+
+    const login = store.dispatch(loginAsync({ email: userA.email, password: 'password' }));
+    while (auth.storeToken.mock.calls.length === 0) await Promise.resolve();
+    releaseToken();
+    // The secure token write has completed, but its awaiting continuation has
+    // not yet reached the user write. Land logout in that exact gap.
+    const logout = store.dispatch(logoutAsync());
+
+    expect((await login).type).toBe('auth/login/rejected');
+    await logout;
+    expect(auth.storeUser).not.toHaveBeenCalledWith(userA);
+    expect(auth.clearAuthData).toHaveBeenCalled();
+    expect(store.getState().auth.user).toBeNull();
+  });
+
+  it('lets login B replace login A while A persistence is pending without A wiping B', async () => {
+    let releaseTokenA!: () => void;
+    auth.storeToken.mockImplementationOnce(() => new Promise<void>((resolve) => { releaseTokenA = resolve; }));
+    api.login
+      .mockResolvedValueOnce({ kind: 'success', token: 'token-a', user: userA })
+      .mockResolvedValueOnce({ kind: 'success', token: 'token-b', user: userB });
+    const store = makeStore();
+
+    const loginA = store.dispatch(loginAsync({ email: userA.email, password: 'password' }));
+    while (auth.storeToken.mock.calls.length === 0) await Promise.resolve();
+    const loginB = store.dispatch(loginAsync({ email: userB.email, password: 'password' }));
+    releaseTokenA();
+
+    expect((await loginA).type).toBe('auth/login/rejected');
+    expect((await loginB).type).toBe('auth/login/fulfilled');
+    expect(auth.storeToken).toHaveBeenLastCalledWith('token-b');
+    expect(auth.storeUser).toHaveBeenLastCalledWith(userB);
+    expect(store.getState().auth.user).toEqual(userB);
+  });
+
+  it('compensates when terminal reauthentication lands between token and user writes', async () => {
+    let releaseToken!: () => void;
+    auth.storeToken.mockImplementationOnce(() => new Promise<void>((resolve) => { releaseToken = resolve; }));
+    api.login.mockResolvedValueOnce({ kind: 'success', token: 'token-a', user: userA });
+    const store = makeStore();
+
+    const login = store.dispatch(loginAsync({ email: userA.email, password: 'password' }));
+    while (auth.storeToken.mock.calls.length === 0) await Promise.resolve();
+    releaseToken();
+    advanceSessionGeneration();
+
+    expect((await login).type).toBe('auth/login/rejected');
+    expect(auth.storeUser).not.toHaveBeenCalledWith(userA);
+    expect(auth.clearAuthData).toHaveBeenCalled();
+  });
 });
 afterEach(() => vi.restoreAllMocks());
 

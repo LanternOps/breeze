@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { AiPageContext, AiStreamEvent, AiApprovalMode } from '@breeze/shared';
 import { fetchWithAuth } from './auth';
+import { registerSessionTeardown } from './sessionTeardown';
 import { extractApiError } from '@/lib/apiError';
 import {
   processStreamEvent,
@@ -24,6 +25,8 @@ interface M365Connection {
   customerLabel: string;
   customerDisplayName: string;
 }
+
+const activeAiReaders = new Set<ReadableStreamDefaultReader<Uint8Array>>();
 
 interface AiState {
   isOpen: boolean;
@@ -248,6 +251,7 @@ export const useAiStore = create<AiState>()(
       pendingApproval: null
     }));
 
+    let activeReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     try {
       const { pageContext } = get();
       const res = await fetchWithAuth(`/ai/sessions/${currentSessionId}/messages`, {
@@ -271,6 +275,8 @@ export const useAiStore = create<AiState>()(
 
       const reader = res.body?.getReader();
       if (!reader) throw new Error('No response body');
+      activeReader = reader;
+      activeAiReaders.add(reader);
 
       const decoder = new TextDecoder();
       let buffer = '';
@@ -304,6 +310,7 @@ export const useAiStore = create<AiState>()(
         isStreaming: false
       });
     } finally {
+      if (activeReader) activeAiReaders.delete(activeReader);
       const state = get();
       if (state.isStreaming) {
         set({ isStreaming: false });
@@ -555,3 +562,34 @@ export const useAiStore = create<AiState>()(
     }
   )
 );
+
+registerSessionTeardown(() => {
+  for (const reader of activeAiReaders) {
+    try { void reader.cancel(); } catch { /* continue terminal teardown */ }
+  }
+  activeAiReaders.clear();
+  useAiStore.setState({
+    isOpen: false,
+    sessionId: null,
+    messages: [],
+    isStreaming: false,
+    isLoading: false,
+    error: null,
+    pageContext: null,
+    pendingApproval: null,
+    pendingPlan: null,
+    activePlan: null,
+    approvalMode: 'per_step',
+    isPaused: false,
+    sessions: [],
+    showHistory: false,
+    searchResults: [],
+    isSearching: false,
+    isInterrupting: false,
+    isFlagged: false,
+    flagReason: null,
+    m365Connections: [],
+    selectedM365ConnectionId: null,
+    boundM365ConnectionId: null,
+  });
+});

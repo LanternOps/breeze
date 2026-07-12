@@ -10,6 +10,29 @@ import {
   type User,
 } from '../services/api';
 import { storeToken, storeUser, clearAuthData } from '../services/auth';
+import {
+  advanceSessionGeneration,
+  isCurrentSessionGeneration,
+  runAuthStorageExclusive,
+  SessionGenerationStaleError,
+} from '../services/sessionGeneration';
+
+async function persistAuthenticatedSession(token: string, user: User): Promise<void> {
+  const generation = advanceSessionGeneration();
+  await runAuthStorageExclusive(async () => {
+    if (!isCurrentSessionGeneration(generation)) throw new SessionGenerationStaleError();
+    await storeToken(token);
+    if (!isCurrentSessionGeneration(generation)) {
+      await clearAuthData();
+      throw new SessionGenerationStaleError();
+    }
+    await storeUser(user);
+    if (!isCurrentSessionGeneration(generation)) {
+      await clearAuthData();
+      throw new SessionGenerationStaleError();
+    }
+  });
+}
 
 export type PushRegistrationStatus = 'idle' | 'ok' | 'failed' | 'unsupported';
 
@@ -45,8 +68,7 @@ export const loginAsync = createAsyncThunk(
         return { mfa: result.challenge };
       }
 
-      await storeToken(result.token);
-      await storeUser(result.user);
+      await persistAuthenticatedSession(result.token, result.user);
 
       return { token: result.token, user: result.user };
     } catch (error: unknown) {
@@ -61,8 +83,7 @@ export const verifyMfaAsync = createAsyncThunk(
   async ({ code, tempToken, method }: { code: string; tempToken: string; method: MfaCodeMethod }, { rejectWithValue }) => {
     try {
       const response = await apiVerifyMfa(code, tempToken, method);
-      await storeToken(response.token);
-      await storeUser(response.user);
+      await persistAuthenticatedSession(response.token, response.user);
       return response;
     } catch (error: unknown) {
       const apiError = error as { message?: string };
@@ -74,6 +95,7 @@ export const verifyMfaAsync = createAsyncThunk(
 export const logoutAsync = createAsyncThunk(
   'auth/logout',
   async (_, { rejectWithValue }) => {
+    advanceSessionGeneration();
     // Best-effort server logout; we tear down local state regardless of its
     // outcome so the user always leaves the authenticated surface.
     let apiErrorMessage: string | undefined;
@@ -93,7 +115,7 @@ export const logoutAsync = createAsyncThunk(
     // thunk unhandled — the Redux session reset still happens via the
     // logout/rejected reducers, so the user is signed out either way.
     try {
-      await clearAuthData();
+      await runAuthStorageExclusive(clearAuthData);
     } catch (error: unknown) {
       const wipeMessage = (error as { message?: string }).message || 'Secure wipe failed';
       return rejectWithValue(apiErrorMessage ? `${apiErrorMessage}; ${wipeMessage}` : wipeMessage);

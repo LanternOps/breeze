@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { fetchWithAuth, registerOrgIdProvider } from './auth';
+import { registerSessionTeardown } from './sessionTeardown';
 import { isGlobalScopeRoute } from '../lib/routeScope';
 
 export interface Partner {
@@ -256,6 +257,21 @@ export const useOrgStore = create<OrgState>()(
     }
   )
 );
+
+registerSessionTeardown(() => {
+  useOrgStore.setState({
+    currentPartnerId: null,
+    currentOrgId: null,
+    currentSiteId: null,
+    allOrgs: false,
+    lastOrgId: null,
+    partners: [],
+    organizations: [],
+    sites: [],
+    isLoading: false,
+    error: null,
+  });
+});
 
 // Page-aware org scoping: on a global (catalog) route the selector does not
 // apply, so inject no orgId; on a scoped route inject the selected org. The

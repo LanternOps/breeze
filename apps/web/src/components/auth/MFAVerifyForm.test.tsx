@@ -3,6 +3,30 @@ import { describe, expect, it, vi } from 'vitest';
 import MFAVerifyForm from './MFAVerifyForm';
 
 describe('MFAVerifyForm recovery codes', () => {
+  it('uses the first explicit allowed method when the primary method is not allowed', async () => {
+    const onSubmit = vi.fn();
+    render(<MFAVerifyForm mfaMethod="totp" allowedMethods={['sms']} onSubmit={onSubmit} smsSent />);
+
+    expect(screen.queryByTestId('mfa-method-totp')).toBeNull();
+    const inputs = screen.getAllByRole('textbox');
+    inputs.forEach((input, index) => fireEvent.change(input, { target: { value: String(index + 1) } }));
+    fireEvent.click(screen.getByTestId('mfa-submit'));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('123456', 'sms'));
+  });
+
+  it.each([
+    { allowedMethods: [] },
+    { allowedMethods: ['unsupported' as never] },
+  ])('fails closed for an explicit unsupported method list %#', ({ allowedMethods }) => {
+    const onSubmit = vi.fn();
+    render(<MFAVerifyForm mfaMethod="totp" allowedMethods={allowedMethods} onSubmit={onSubmit} />);
+
+    expect(screen.getByTestId('mfa-no-supported-methods')).toBeTruthy();
+    expect(screen.queryByTestId('mfa-submit')).toBeNull();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it('renders only allowed alternatives and normalizes an eight-character recovery code', async () => {
     const onSubmit = vi.fn();
     render(

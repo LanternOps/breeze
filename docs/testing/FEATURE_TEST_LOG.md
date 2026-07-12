@@ -3629,8 +3629,8 @@ tests never exercised the real browser payloads** — worth a validator/UI-contr
 
 ### Evidence
 
-- Review-fix web: 9 files / 83 tests passed; full web: 437 files / 3,390 tests passed after correcting two test/translation-contract expectations found by the first full run.
-- Mobile: 26 files / 206 passed, 3 skipped; mobile and web typechecks passed.
+- Re-review web: 11 files / 89 tests passed; full web: 438 files / 3,395 tests passed with bounded workers. The default-worker run passed 3,394 and hit one unrelated timing-sensitive AutomationTab test, which passed immediately in isolation (2/2).
+- Mobile: 27 files / 216 passed, 3 skipped; mobile and web typechecks passed.
 - Focused Wave 2 API: 10 files / 540 tests passed.
 - Fresh branch database: all 389 migration files matched the ledger; RLS contract: 50 passed.
 - Real recovery concurrency: 1 passed, 4 skipped; exactly one concurrent token response.
@@ -3638,6 +3638,7 @@ tests never exercised the real browser payloads** — worth a validator/UI-contr
 
 ### Issues Found
 
+- The independent re-review found and closed terminal in-memory org/AI teardown, generation-fenced mobile persistence/biometric races, and strict explicit-method selection on web/mobile. The integrated teardown test injects both callback and storage-removal failures while asserting all remaining memory, persistence, stream-cancellation, and rehydration cleanup.
 - The shared `breeze_test` database belongs to a newer checkout and contains five ledger entries absent from this exact branch, so migration/RLS/recovery gates were rerun against isolated local test databases migrated from this branch.
 - A full five-case recovery integration run under Node 26 and the shared Redis service was unstable (three failures, including a cleanup deadlock). The required one-winner race was rerun and passed under supported Node 22 with isolated PostgreSQL and Redis.
 - Browser/API E2E remains blocked by the exact environment gap above; no production or external state was mutated.
