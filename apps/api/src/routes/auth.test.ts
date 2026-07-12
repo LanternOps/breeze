@@ -190,7 +190,12 @@ vi.mock('../services/passwordResetEligibility', () => ({
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
-      user: { id: 'user-123', email: 'test@example.com' }
+      user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+      // Match the real middleware's `token: payload` shape (auth.ts:580). The
+      // logout handler reads `auth.token.sid` to resolve the refresh family —
+      // without a `token` object that dereference throws (500).
+      token: { sid: 'family-123', sub: 'user-123', type: 'access' },
+      orgId: null,
     });
     return next();
   }),
