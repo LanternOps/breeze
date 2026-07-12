@@ -40,6 +40,7 @@ import {
   googleShareCalendarHandler,
   googleOffboardUserHandler,
   googleWipeMobileDeviceHandler,
+  canonicalizeUserEmail,
   googleSecurityDriftHandler,
   googleEmailReportHandler,
   computeSecurityDrift,
@@ -407,7 +408,11 @@ describe('calendar sharing', () => {
 describe('offboard workflow', () => {
   function mockDir(overrides: Record<string, any> = {}) {
     return {
-      users: { signOut: vi.fn().mockResolvedValue({}), update: vi.fn().mockResolvedValue({}) },
+      users: {
+        get: vi.fn().mockResolvedValue({ data: { primaryEmail: 'leaver@x.com' } }),
+        signOut: vi.fn().mockResolvedValue({}),
+        update: vi.fn().mockResolvedValue({}),
+      },
       tokens: {
         list: vi.fn().mockResolvedValue({ data: { items: [{ clientId: 'app-1' }, { clientId: 'app-2' }] } }),
         delete: vi.fn().mockResolvedValue({}),
@@ -415,7 +420,7 @@ describe('offboard workflow', () => {
       groups: { list: vi.fn().mockResolvedValue({ data: { groups: [{ id: 'grp-1' }] } }) },
       members: { delete: vi.fn().mockResolvedValue({}) },
       mobiledevices: {
-        list: vi.fn().mockResolvedValue({ data: { mobiledevices: [{ resourceId: 'dev-1' }] } }),
+        list: vi.fn().mockResolvedValue({ data: { mobiledevices: [{ resourceId: 'dev-1', email: ['leaver@x.com'] }] } }),
         action: vi.fn().mockResolvedValue({}),
       },
       ...overrides,
@@ -508,7 +513,11 @@ describe('stolen-device full wipe', () => {
   it('issues a FULL remote wipe and says it erases the whole device', async () => {
     const action = vi.fn().mockResolvedValue({});
     (client.getDirectoryClient as any).mockReturnValue({
-      mobiledevices: { list: vi.fn().mockResolvedValue({ data: { mobiledevices: [{ resourceId: 'dev-1' }] } }), action },
+      users: { get: vi.fn().mockResolvedValue({ data: { primaryEmail: 'u@x.com' } }) },
+      mobiledevices: {
+        list: vi.fn().mockResolvedValue({ data: { mobiledevices: [{ resourceId: 'dev-1', email: ['u@x.com'] }] } }),
+        action,
+      },
     });
     const out = await googleWipeMobileDeviceHandler({ userEmail: 'u@x.com', reason: 'phone stolen' }, auth, SESSION);
     expect(action).toHaveBeenCalledWith(
@@ -516,14 +525,103 @@ describe('stolen-device full wipe', () => {
     );
     expect(out).toContain('FULL factory reset');
     expect(out).toContain('entire device');
+    // Execution record is bound to the resolved user + concrete device IDs.
+    expect(out).toContain('dev-1');
+    expect(out).toContain('u@x.com');
   });
 
   it('reports when no devices are enrolled', async () => {
     (client.getDirectoryClient as any).mockReturnValue({
+      users: { get: vi.fn().mockResolvedValue({ data: { primaryEmail: 'u@x.com' } }) },
       mobiledevices: { list: vi.fn().mockResolvedValue({ data: { mobiledevices: [] } }), action: vi.fn() },
     });
     const out = await googleWipeMobileDeviceHandler({ userEmail: 'u@x.com', reason: 'stolen' }, auth, SESSION);
     expect(out).toContain('nothing to wipe');
+  });
+
+  // ── SR5-02 hardening: target-expansion guard ────────────────────────────────
+  it('rejects a wildcard userEmail before touching Google', async () => {
+    const usersGet = vi.fn();
+    const list = vi.fn();
+    const action = vi.fn();
+    (client.getDirectoryClient as any).mockReturnValue({
+      users: { get: usersGet },
+      mobiledevices: { list, action },
+    });
+    const out = await googleWipeMobileDeviceHandler({ userEmail: 'a*', reason: 'stolen' }, auth, SESSION);
+    expect(out).toContain('invalid_user_email');
+    // No identity resolution and no wipe are attempted for a non-canonical value.
+    expect(usersGet).not.toHaveBeenCalled();
+    expect(action).not.toHaveBeenCalled();
+  });
+
+  it('rejects a query-operator userEmail (email: OR expansion)', async () => {
+    const action = vi.fn();
+    (client.getDirectoryClient as any).mockReturnValue({
+      users: { get: vi.fn() },
+      mobiledevices: { list: vi.fn(), action },
+    });
+    const out = await googleWipeMobileDeviceHandler(
+      { userEmail: 'a@x.com OR email:b@x.com', reason: 'stolen' },
+      auth,
+      SESSION,
+    );
+    expect(out).toContain('invalid_user_email');
+    expect(action).not.toHaveBeenCalled();
+  });
+
+  it('only wipes devices whose account EXACTLY matches the resolved user', async () => {
+    const action = vi.fn().mockResolvedValue({});
+    // The server query is only a prefilter; it returns an extra device that
+    // belongs to a different user (prefix collision). It must be dropped.
+    (client.getDirectoryClient as any).mockReturnValue({
+      users: { get: vi.fn().mockResolvedValue({ data: { primaryEmail: 'ann@x.com' } }) },
+      mobiledevices: {
+        list: vi.fn().mockResolvedValue({
+          data: {
+            mobiledevices: [
+              { resourceId: 'ann-phone', email: ['ann@x.com'] },
+              { resourceId: 'annette-phone', email: ['annette@x.com'] },
+              { resourceId: 'no-email' },
+            ],
+          },
+        }),
+        action,
+      },
+    });
+    const out = await googleWipeMobileDeviceHandler({ userEmail: 'Ann@x.com', reason: 'stolen' }, auth, SESSION);
+    expect(action).toHaveBeenCalledTimes(1);
+    expect(action).toHaveBeenCalledWith(
+      expect.objectContaining({ resourceId: 'ann-phone', requestBody: { action: 'admin_remote_wipe' } }),
+    );
+    expect(action).not.toHaveBeenCalledWith(expect.objectContaining({ resourceId: 'annette-phone' }));
+    expect(out).toContain('ann-phone');
+  });
+
+  it('refuses when the user cannot be resolved (zero identities → 404)', async () => {
+    const action = vi.fn();
+    (client.getDirectoryClient as any).mockReturnValue({
+      users: { get: vi.fn().mockRejectedValue({ code: 404, message: 'Resource Not Found' }) },
+      mobiledevices: { list: vi.fn(), action },
+    });
+    const out = await googleWipeMobileDeviceHandler({ userEmail: 'ghost@x.com', reason: 'stolen' }, auth, SESSION);
+    // Surfaces an error and never issues a wipe.
+    expect(out).toContain('error');
+    expect(action).not.toHaveBeenCalled();
+  });
+});
+
+describe('canonicalizeUserEmail', () => {
+  it('accepts a plain address and lowercases it', () => {
+    expect(canonicalizeUserEmail('User@Example.com')).toBe('user@example.com');
+  });
+  it('rejects wildcards, operators, and embedded whitespace', () => {
+    for (const bad of ['a*', 'a b@x.com', 'a@x.com OR b@y.com', 'email:a@x.com', '', 'nope', 'a@x', '<a@x.com>', 'a@x.com,b@y.com']) {
+      expect(canonicalizeUserEmail(bad)).toBeNull();
+    }
+  });
+  it('trims surrounding whitespace but keeps a single bare address', () => {
+    expect(canonicalizeUserEmail('  a@x.com  ')).toBe('a@x.com');
   });
 });
 
