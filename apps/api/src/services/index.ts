@@ -1,5 +1,18 @@
 export * from './password';
-export * from './jwt';
+export {
+  VIEWER_ACCESS_TOKEN_EXPIRY_SECONDS,
+  buildHeader,
+  createViewerAccessToken,
+  getSignKey,
+  getVerifyKey,
+  verifyToken,
+  verifyViewerAccessToken,
+} from './jwt';
+export type {
+  TokenPayload,
+  TokenSigningPayload,
+  ViewerTokenPayload,
+} from './jwt';
 export * from './mfa';
 export * from './passkeys';
 export * from './session';
@@ -15,7 +28,7 @@ export * from './commandQueue';
 export * from './email';
 export * from './auditService';
 export * from './tokenRevocation';
-export * from './refreshTokenFamily';
+export { getActiveRefreshTokenFamily } from './refreshTokenFamily';
 export * from './userSession';
 export * from './authLifecycle';
 export * from './clientIp';

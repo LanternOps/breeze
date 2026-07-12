@@ -5,6 +5,9 @@ import { describe, expect, it } from 'vitest';
 
 const SRC_DIR = join(__dirname, '..');
 const LOW_LEVEL_ISSUERS = [
+  'createAccessToken',
+  'createRefreshToken',
+  'createRefreshTokenWithJti',
   'createTokenPair',
   'mintRefreshTokenFamily',
   'bindRefreshJtiToFamily',
@@ -39,6 +42,23 @@ function findLowLevelIssuerIdentifiers(source: string): string[] {
     ts.ScriptKind.TS,
   );
   const visit = (node: ts.Node): void => {
+    if (
+      ts.isExportDeclaration(node)
+      && !node.exportClause
+      && node.moduleSpecifier
+      && ts.isStringLiteral(node.moduleSpecifier)
+    ) {
+      if (node.moduleSpecifier.text === './jwt') {
+        found.add('createAccessToken');
+        found.add('createRefreshToken');
+        found.add('createRefreshTokenWithJti');
+        found.add('createTokenPair');
+      }
+      if (node.moduleSpecifier.text === './refreshTokenFamily') {
+        found.add('mintRefreshTokenFamily');
+        found.add('bindRefreshJtiToFamily');
+      }
+    }
     if (ts.isIdentifier(node) && LOW_LEVEL_ISSUERS.includes(node.text)) {
       found.add(node.text);
     }
@@ -65,6 +85,19 @@ describe('first-party user session issuer coverage', () => {
       're-export',
       "export { bindRefreshJtiToFamily } from './refreshTokenFamily';",
       'bindRefreshJtiToFamily',
+    ],
+    ['access-token creator', "createAccessToken({} as never);", 'createAccessToken'],
+    ['refresh-token creator', "createRefreshToken({} as never);", 'createRefreshToken'],
+    [
+      'refresh-token creator with jti',
+      "createRefreshTokenWithJti({} as never);",
+      'createRefreshTokenWithJti',
+    ],
+    ['wildcard jwt re-export', "export * from './jwt';", 'createAccessToken'],
+    [
+      'wildcard refresh-family re-export',
+      "export * from './refreshTokenFamily';",
+      'mintRefreshTokenFamily',
     ],
   ])('detects %s', (_name, source, issuer) => {
     expect(findLowLevelIssuerIdentifiers(source)).toContain(issuer);
