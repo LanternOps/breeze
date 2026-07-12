@@ -49,7 +49,15 @@ ticketRoutes.get('/tickets/forms', async (c) => {
         .limit(1)
     )
   );
-  if (!org) return c.json({ data: [] });
+  if (!org) {
+    // Should never happen: portalAuth already resolved this org for the
+    // session, so a miss here means the org row vanished mid-request (or a
+    // deeper data-integrity bug). Degrade to an empty form list rather than
+    // 500ing the New Ticket page, but leave a breadcrumb — this is not a
+    // normal "no forms configured" case.
+    console.error('[portal] ticket-forms: session org not found', { orgId: auth.user.orgId });
+    return c.json({ data: [] });
+  }
 
   const forms = await listTicketFormsForOrg({ id: auth.user.orgId, partnerId: org.partnerId }, { portalOnly: true });
   const data = forms.map((f) => ({

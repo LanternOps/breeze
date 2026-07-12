@@ -496,6 +496,11 @@ export default function TicketFormsCard() {
                         ))}
                       </select>
                     )}
+                    {/* This testid is reused below in the partner-wide Visibility
+                        fieldset (same string, both instances). That's unambiguous
+                        for tests to target: ownerScope is XOR, so only one of the
+                        two owner-scope sections ever renders at a time — never
+                        both `ticket-form-orgs-error` nodes simultaneously. */}
                     {draft.ownerScope === 'organization' && orgsLoadFailed && (
                       <p className="text-xs text-destructive" data-testid="ticket-form-orgs-error">
                         Organizations failed to load, so an org-scoped form can't be created yet.{' '}

@@ -217,7 +217,16 @@ ticketFormRoutes.post(
       } catch (err) {
         // A failed sync (e.g. cross-partner org id) must not leave an
         // orphaned half-created form behind — delete it and surface the 400.
-        await db.delete(ticketForms).where(eq(ticketForms.id, row.id));
+        // The rollback itself must not be allowed to throw and mask the
+        // original TicketFormError with an unrelated 500.
+        try {
+          await db.delete(ticketForms).where(eq(ticketForms.id, row.id));
+        } catch (rollbackErr) {
+          console.warn('[ticket-forms] rollback delete failed after syncTicketFormOrgLinks error', {
+            formId: row.id,
+            rollbackErr
+          });
+        }
         return handleServiceError(c, err);
       }
     }
@@ -288,8 +297,10 @@ ticketFormRoutes.put(
 
     // version identifies which field schema stored responses were validated
     // against and which template composed the subject, so it only bumps when
-    // fields/titleTemplate change; presentation-only fields (isActive/sortOrder/
-    // visibleOrgIds) don't bump.
+    // fields/titleTemplate change; presentation-only fields (isActive/sortOrder)
+    // don't bump. visibleOrgIds is NOT presentation-only — it drives the
+    // allowlist sync above — it's simply not a ticket_forms column, so it
+    // can't participate in the version bump either way.
     const bumpVersion = payload.fields !== undefined || payload.titleTemplate !== undefined;
     const [updated] = await db
       .update(ticketForms)
