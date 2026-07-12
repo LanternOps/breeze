@@ -1,8 +1,9 @@
 import { Hono } from 'hono';
+import type { MiddlewareHandler } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { tickets, ticketComments, ticketStatuses, organizations } from '../../db/schema';
+import { tickets, ticketComments, ticketStatuses, organizations, portalBranding } from '../../db/schema';
 import {
   listSchema,
   createTicketSchema,
@@ -23,6 +24,44 @@ import { listTicketFormsForOrg } from '../../services/ticketFormService';
 import { editCommentSchema } from '@breeze/shared';
 
 export const ticketRoutes = new Hono();
+
+// #2345 — per-org portal ticketing kill switch. `portal_branding.enable_tickets`
+// (toggled in the web UI's org portal settings) was stored and surfaced but never
+// enforced. Registered in routes/portal/index.ts on the `/tickets/*` prefix AFTER
+// portalAuthMiddleware, so it covers EVERY portal ticket surface in one place
+// (list/detail/create/comments AND the Phase 2 `/tickets/forms` intake endpoint)
+// and runs inside the session org's RLS context — portal_branding is org-forced,
+// so the session org's row is visible here without a system context.
+//
+// Fail-OPEN on a missing row: the column defaults to true and most orgs have no
+// portal_branding row at all — ticketing must stay enabled for them. Only an
+// explicit `enable_tickets = false` blocks, with a consistent 403 (the resource
+// class exists but is administratively disabled; 404 would misread as a bug).
+export const portalTicketsEnabledMiddleware: MiddlewareHandler = async (c, next) => {
+  const auth = c.get('portalAuth');
+  // Defensive: only meaningful when mounted AFTER portalAuthMiddleware (index.ts
+  // registers it that way). If a refactor ever reorders the use() calls or mounts
+  // this on an unauthenticated prefix, fail closed with an explicit 401 instead
+  // of an opaque TypeError 500.
+  if (!auth) {
+    return c.json({ error: 'Authentication required' }, 401);
+  }
+
+  const [row] = await db
+    .select({ enableTickets: portalBranding.enableTickets })
+    .from(portalBranding)
+    .where(eq(portalBranding.orgId, auth.user.orgId))
+    .limit(1);
+
+  if (row?.enableTickets === false) {
+    // `code` lets the portal pages distinguish this 403 from other 403s on the
+    // same routes (e.g. portalAuthMiddleware's "Account is not active") and only
+    // redirect for THIS one. Keep in sync with apps/portal/src/pages/tickets/*.
+    return c.json({ error: 'Ticketing is not enabled for this portal', code: 'PORTAL_TICKETS_DISABLED' }, 403);
+  }
+
+  return next();
+};
 
 // GET /tickets/forms — MUST live under the `/tickets/` prefix: portal auth is
 // applied per-prefix in routes/portal/index.ts (`use('/tickets/*', ...)`), so

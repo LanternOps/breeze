@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { brandingRoutes } from './branding';
 import { authRoutes, portalAuthMiddleware } from './auth';
 import { deviceRoutes } from './devices';
-import { ticketRoutes } from './tickets';
+import { ticketRoutes, portalTicketsEnabledMiddleware } from './tickets';
 import { assetRoutes } from './assets';
 import { profileRoutes } from './profile';
 import { invoiceRoutes as portalInvoiceRoutes } from './invoices';
@@ -17,6 +17,10 @@ portalRoutes.route('/', authRoutes);
 // Protected routes
 portalRoutes.use('/devices/*', portalAuthMiddleware);
 portalRoutes.use('/tickets/*', portalAuthMiddleware);
+// #2345 — org-level enable_tickets gate. MUST come after portalAuthMiddleware
+// (needs portalAuth + the org-scoped DB context) and on the same `/tickets/*`
+// prefix so all ticket surfaces — including GET /tickets/forms — are covered.
+portalRoutes.use('/tickets/*', portalTicketsEnabledMiddleware);
 portalRoutes.use('/assets/*', portalAuthMiddleware);
 portalRoutes.use('/profile/*', portalAuthMiddleware);
 portalRoutes.use('/invoices/*', portalAuthMiddleware);

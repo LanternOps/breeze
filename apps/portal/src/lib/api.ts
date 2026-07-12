@@ -138,6 +138,8 @@ export interface ApiRequestConfig {
 export interface ApiResponse<T> {
   data?: T;
   error?: string;
+  /** Machine-readable error code from the API body (e.g. PORTAL_TICKETS_DISABLED). */
+  code?: string;
   statusCode?: number;
   headers?: Headers;
 }
@@ -192,6 +194,7 @@ export async function apiRequest<T>(
     if (!response.ok) {
       return {
         error: body?.error || 'Request failed',
+        code: typeof body?.code === 'string' ? body.code : undefined,
         statusCode: response.status,
         headers: response.headers
       };
@@ -509,6 +512,7 @@ function mapPaginatedData<T>(
   if (!response.data) {
     return {
       error: response.error,
+      code: response.code,
       statusCode: response.statusCode,
       headers: response.headers
     };
@@ -555,6 +559,7 @@ export const portalApi = {
     if (!response.data) {
       return {
         error: response.error,
+        code: response.code,
         statusCode: response.statusCode,
         headers: response.headers
       };
@@ -577,6 +582,7 @@ export const portalApi = {
     if (!response.data) {
       return {
         error: response.error,
+        code: response.code,
         statusCode: response.statusCode,
         headers: response.headers
       };
