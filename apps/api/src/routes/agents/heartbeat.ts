@@ -612,7 +612,10 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         bandwidthInBps: data.metrics.bandwidthInBps != null ? BigInt(data.metrics.bandwidthInBps) : null,
         bandwidthOutBps: data.metrics.bandwidthOutBps != null ? BigInt(data.metrics.bandwidthOutBps) : null,
         interfaceStats: data.metrics.interfaceStats ?? null,
-        processCount: data.metrics.processCount
+        processCount: data.metrics.processCount,
+        // Agent's own Go runtime memory gauges (#2389) — jsonb sidecar, so no
+        // migration; null (not {}) when an old agent doesn't send them.
+        customMetrics: data.agentRuntime ? { agentRuntime: data.agentRuntime } : null
       });
   }
 

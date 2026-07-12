@@ -100,6 +100,10 @@ type HeartbeatPayload struct {
 	// OneDrive helper state (Phase 2). Nil until a config has been applied on a
 	// Windows box — omitempty then drops the field entirely.
 	OneDriveDeviceState *onedrivehelper.DeviceState `json:"onedriveDeviceState,omitempty"`
+	// Agent's own Go runtime memory gauges (#2389). Collected every heartbeat
+	// (runtime.ReadMemStats is microseconds) so fleet-wide agent memory leaks
+	// are visible from the server without shell access to the device.
+	AgentRuntime *collectors.RuntimeStats `json:"agentRuntime,omitempty"`
 }
 
 type DesktopAccessState struct {
@@ -2803,6 +2807,9 @@ func (h *Heartbeat) sendHeartbeat() {
 	// Current power/battery state (#2142). Nil on platforms that can't report
 	// it or when the query failed — omitempty then drops the field.
 	payload.Battery = h.hardwareCol.CollectBattery()
+
+	// Agent's own runtime memory gauges (#2389).
+	payload.AgentRuntime = collectors.CollectRuntimeStats()
 
 	// OneDrive helper state (Phase 2). Nil until a config has been applied on a
 	// Windows box — omitempty then drops the field entirely.

@@ -2270,3 +2270,93 @@ describe('POST /agents/:id/heartbeat — state-change audit (finding #10)', () =
     expect(fields).toEqual(expect.arrayContaining(['status', 'hostname', 'agentServerUrl']));
   });
 });
+
+describe('POST /agents/:id/heartbeat — agentRuntime gauges (#2389)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+
+    // Device lookup → returns a row
+    selectMock.mockReturnValueOnce(
+      selectChainResolving([
+        {
+          id: 'device-1',
+          orgId: 'org-1',
+          siteId: 'site-1',
+          hostname: 'host-1',
+          osType: 'linux',
+          osVersion: 'Ubuntu 22.04',
+          osBuild: null,
+          architecture: 'amd64',
+          agentVersion: '0.65.10',
+          deviceRole: 'server',
+          deviceRoleSource: 'auto',
+          agentTokenHash: 'hash',
+          tokenIssuedAt: new Date(),
+        },
+      ]),
+    );
+
+    updateMock.mockReturnValue({
+      set: vi.fn(() => ({
+        where: vi.fn(() => whereResultWithReturning()),
+      })),
+    });
+
+    selectMock.mockReturnValue(selectChainResolving([]));
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+  });
+
+  // Finds the deviceMetrics insert among all insert calls by its cpuPercent
+  // marker column, so an unrelated insert (audit, agent logs) can't be
+  // mistaken for it.
+  function findMetricsInsert(valuesSpy: ReturnType<typeof vi.fn>): Record<string, unknown> | undefined {
+    return valuesSpy.mock.calls
+      .map((call) => call[0] as Record<string, unknown>)
+      .find((v) => v && typeof v === 'object' && 'cpuPercent' in v);
+  }
+
+  it('persists agentRuntime into device_metrics.custom_metrics', async () => {
+    const valuesSpy = vi.fn().mockResolvedValue(undefined);
+    insertMock.mockReturnValue({ values: valuesSpy });
+
+    const agentRuntime = {
+      heapAllocBytes: 12_345_678,
+      heapInuseBytes: 23_456_789,
+      heapReleasedBytes: 1_048_576,
+      sysBytes: 99_999_999,
+      numGc: 42,
+      goroutines: 87,
+    };
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...minimalHeartbeatBody, agentRuntime }),
+    });
+
+    expect(resp.status).toBe(200);
+    const metricsInsert = findMetricsInsert(valuesSpy);
+    expect(metricsInsert).toBeDefined();
+    expect(metricsInsert?.customMetrics).toEqual({ agentRuntime });
+  });
+
+  it('writes customMetrics: null when an old agent omits agentRuntime', async () => {
+    const valuesSpy = vi.fn().mockResolvedValue(undefined);
+    insertMock.mockReturnValue({ values: valuesSpy });
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const metricsInsert = findMetricsInsert(valuesSpy);
+    expect(metricsInsert).toBeDefined();
+    expect(metricsInsert?.customMetrics).toBeNull();
+  });
+
+  // NOTE: schema-level tolerance (malformed agentRuntime dropped via .catch)
+  // is covered in schemas.heartbeatTolerance.test.ts — this route test mocks
+  // zValidator out, so the handler never sees schema-dropped fields.
+});

@@ -96,6 +96,9 @@ var handlerRegistry = map[string]CommandHandler{
 	// Log shipping
 	tools.CmdSetLogLevel: handleSetLogLevel,
 
+	// Runtime diagnostics — on-demand pprof capture (#2389)
+	tools.CmdCapturePprof: handleCapturePprof,
+
 	// Auto-update management
 	tools.CmdSetAutoUpdate: handleSetAutoUpdate,
 }

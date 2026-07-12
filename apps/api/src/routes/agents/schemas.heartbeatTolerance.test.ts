@@ -396,3 +396,61 @@ describe('heartbeatSchema — watchdogState .catch collapse (#1121)', () => {
     }
   });
 });
+
+describe('heartbeatSchema — agentRuntime gauges (#2389)', () => {
+  const minimal = {
+    status: 'ok' as const,
+    agentVersion: '0.95.0',
+  };
+
+  const validRuntime = {
+    heapAllocBytes: 12_345_678,
+    heapInuseBytes: 23_456_789,
+    heapReleasedBytes: 1_048_576,
+    sysBytes: 99_999_999,
+    numGc: 42,
+    goroutines: 87,
+  };
+
+  it('parses a full agentRuntime snapshot', () => {
+    const result = heartbeatSchema.safeParse({ ...minimal, agentRuntime: validRuntime });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.agentRuntime).toEqual(validRuntime);
+  });
+
+  it('accepts gauge values above 2^53 (uint64 counters from a big process)', () => {
+    const result = heartbeatSchema.safeParse({
+      ...minimal,
+      agentRuntime: { ...validRuntime, sysBytes: 2 ** 60 },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.agentRuntime?.sysBytes).toBe(2 ** 60);
+  });
+
+  it('drops the whole agentRuntime object on a negative gauge rather than rejecting', () => {
+    const result = heartbeatSchema.safeParse({
+      ...minimal,
+      agentRuntime: { ...validRuntime, heapAllocBytes: -5 },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.agentRuntime).toBeUndefined();
+  });
+
+  it('drops the whole agentRuntime object when a required gauge is missing', () => {
+    const { goroutines: _omitted, ...partial } = validRuntime;
+    const result = heartbeatSchema.safeParse({ ...minimal, agentRuntime: partial });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.agentRuntime).toBeUndefined();
+  });
+
+  it('heartbeat without agentRuntime (old agent) still parses', () => {
+    const result = heartbeatSchema.safeParse(minimal);
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.agentRuntime).toBeUndefined();
+  });
+});

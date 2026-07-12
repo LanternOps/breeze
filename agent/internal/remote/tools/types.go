@@ -176,6 +176,11 @@ const (
 	// Log shipping
 	CmdSetLogLevel = "set_log_level"
 
+	// Runtime diagnostics — on-demand pprof capture (#2389). No listening
+	// socket: profiles are captured in-process and returned in the command
+	// result, so nothing is reachable off-box.
+	CmdCapturePprof = "capture_pprof"
+
 	// Dev push (fast dev binary update)
 	// Auto-update management
 	CmdSetAutoUpdate = "set_auto_update"

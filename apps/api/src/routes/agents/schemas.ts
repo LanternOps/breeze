@@ -198,6 +198,18 @@ export const heartbeatSchema = z.object({
     timeRemainingMinutes: z.number().int().min(0).optional().catch(undefined),
     timeToFullMinutes: z.number().int().min(0).optional().catch(undefined),
   }).optional().catch(undefined),
+  // Agent's own Go runtime memory gauges (#2389). Informational — a bad value
+  // drops the whole object (.catch) rather than 400-ing the heartbeat.
+  // Persisted into device_metrics.custom_metrics so fleet-wide agent memory
+  // leaks are visible without shell access to the device.
+  agentRuntime: z.object({
+    heapAllocBytes: uint64Counter,
+    heapInuseBytes: uint64Counter,
+    heapReleasedBytes: uint64Counter,
+    sysBytes: uint64Counter,
+    numGc: z.number().int().min(0),
+    goroutines: z.number().int().min(0),
+  }).optional().catch(undefined),
   role: z.enum(['agent', 'watchdog']).optional(),
   watchdogState: z.string().optional().catch(undefined),
   // Watchdog-only: 24h restart accounting for the main agent (#799 Layer B).
