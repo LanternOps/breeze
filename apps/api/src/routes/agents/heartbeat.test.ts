@@ -2359,4 +2359,42 @@ describe('POST /agents/:id/heartbeat — agentRuntime gauges (#2389)', () => {
   // NOTE: schema-level tolerance (malformed agentRuntime dropped via .catch)
   // is covered in schemas.heartbeatTolerance.test.ts — this route test mocks
   // zValidator out, so the handler never sees schema-dropped fields.
+
+  it('warns loudly (no metrics insert) when agentRuntime arrives without metrics', async () => {
+    // The gauges ride the device_metrics insert; when OS metrics collection
+    // failed there is no row to attach them to, and that drop must be
+    // observable (see #2389 review) — not silent.
+    const valuesSpy = vi.fn().mockResolvedValue(undefined);
+    insertMock.mockReturnValue({ values: valuesSpy });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      const { metrics: _omitted, ...noMetricsBody } = minimalHeartbeatBody;
+      const resp = await buildApp().request('/agents/device-1/heartbeat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          ...noMetricsBody,
+          metricsAvailable: false,
+          agentRuntime: {
+            heapAllocBytes: 1,
+            heapInuseBytes: 2,
+            heapReleasedBytes: 3,
+            sysBytes: 4,
+            numGc: 5,
+            goroutines: 6,
+          },
+        }),
+      });
+
+      expect(resp.status).toBe(200);
+      expect(findMetricsInsert(valuesSpy)).toBeUndefined();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('agentRuntime received without metrics'),
+        expect.objectContaining({ deviceId: 'device-1', goroutines: 6 }),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
 });

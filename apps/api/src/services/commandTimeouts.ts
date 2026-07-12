@@ -57,6 +57,7 @@ const SHORT_TIMEOUT_TYPES = new Set<string>([
   CommandTypes.TAKE_SCREENSHOT,
   CommandTypes.COMPUTER_ACTION,
   CommandTypes.SET_LOG_LEVEL,
+  CommandTypes.CAPTURE_PPROF,
   CommandTypes.PERIPHERAL_POLICY_SYNC,
   CommandTypes.COLLECT_BOOT_PERFORMANCE,
   CommandTypes.MANAGE_STARTUP_ITEM,

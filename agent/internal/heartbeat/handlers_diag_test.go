@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"testing"
+
+	"github.com/breeze-rmm/agent/internal/collectors"
 )
 
 // decodeDiagResult parses the JSON payload NewSuccessResult marshals into
@@ -110,5 +112,53 @@ func TestHandleCapturePprofSizeCap(t *testing.T) {
 	}
 	if res.Error == "" {
 		t.Error("expected size-cap error message")
+	}
+}
+
+func TestHandleCapturePprofRejectsNonStringProfile(t *testing.T) {
+	res := handleCapturePprof(nil, Command{
+		ID: "c6", Type: "capture_pprof",
+		Payload: map[string]any{"profile": 123},
+	})
+	if res.Status != "failed" {
+		t.Fatalf("status = %q, want failed for non-string profile", res.Status)
+	}
+	if res.Error == "" {
+		t.Error("expected a descriptive error for a non-string profile")
+	}
+}
+
+// TestHeartbeatPayloadAgentRuntimeWireKey pins the OUTER wire key of the
+// runtime gauges. The API heartbeatSchema matches on the literal
+// "agentRuntime" (apps/api/src/routes/agents/schemas.ts) with .optional(), so
+// renaming the struct tag — or dropping the assignment in sendHeartbeat —
+// would silently darken the gauges fleet-wide while every other test on both
+// sides stayed green.
+func TestHeartbeatPayloadAgentRuntimeWireKey(t *testing.T) {
+	withStats, err := json.Marshal(HeartbeatPayload{
+		Status:       "ok",
+		AgentRuntime: collectors.CollectRuntimeStats(),
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(withStats, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := m["agentRuntime"]; !ok {
+		t.Error(`payload with AgentRuntime set must serialize an "agentRuntime" key`)
+	}
+
+	withoutStats, err := json.Marshal(HeartbeatPayload{Status: "ok"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	m = map[string]any{}
+	if err := json.Unmarshal(withoutStats, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := m["agentRuntime"]; ok {
+		t.Error("nil AgentRuntime must be omitted (omitempty) so old-server compat is preserved")
 	}
 }

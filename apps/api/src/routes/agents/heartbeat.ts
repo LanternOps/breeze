@@ -617,6 +617,17 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         // migration; null (not {}) when an old agent doesn't send them.
         customMetrics: data.agentRuntime ? { agentRuntime: data.agentRuntime } : null
       });
+  } else if (data.agentRuntime) {
+    // #2389 — the gauges ride the device_metrics insert, and that table's OS
+    // columns are NOT NULL, so a heartbeat whose OS metrics collection failed
+    // (metricsAvailable=false) has no row to attach them to. That is exactly
+    // the state a memory-sick agent is likely to be in, so the drop must be
+    // loud rather than indistinguishable from "old agent never sent gauges".
+    console.warn('[heartbeat] agentRuntime received without metrics — runtime gauges dropped', {
+      deviceId: device.id,
+      goroutines: data.agentRuntime.goroutines,
+      heapInuseBytes: data.agentRuntime.heapInuseBytes,
+    });
   }
 
   if (data.ipHistoryUpdate) {

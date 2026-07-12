@@ -27,7 +27,20 @@ import (
 var maxProfileBytes = 1 << 20
 
 func handleCapturePprof(_ *Heartbeat, cmd Command) tools.CommandResult {
-	profile := tools.GetPayloadString(cmd.Payload, "profile", "all")
+	// Strict payload validation: key absent → default "all"; key present but
+	// not a string → error (don't let a malformed payload silently force a
+	// GC + double capture the caller never asked for).
+	profile := "all"
+	if raw, ok := cmd.Payload["profile"]; ok {
+		s, isString := raw.(string)
+		if !isString {
+			return tools.CommandResult{
+				Status: "failed",
+				Error:  fmt.Sprintf("profile must be a string, got %T", raw),
+			}
+		}
+		profile = s
+	}
 
 	var wantHeap, wantGoroutine bool
 	switch profile {
