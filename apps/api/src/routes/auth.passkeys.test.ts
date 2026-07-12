@@ -176,6 +176,7 @@ vi.mock('../db', () => ({
     })),
   },
   withSystemDbAccessContext: vi.fn(async <T>(fn: () => Promise<T>) => fn()),
+  withDbAccessContext: vi.fn(async <T>(_context: unknown, fn: () => Promise<T>) => fn()),
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
 }));
 
