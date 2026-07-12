@@ -324,10 +324,19 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
           scope: 'organization',
           orgId: payload.org_id,
           accessibleOrgIds: [payload.org_id],
-          accessiblePartnerIds: [payload.partner_id],
+          // MCP-OAUTH-06: an org-scoped bearer gets NO partner-axis allowlist.
+          // A non-empty accessiblePartnerIds makes breeze_has_partner_access()
+          // pass, which on dual-axis tables (e.g. deployment_invites, whose RLS
+          // is `partner_access OR org_access`) would expose the ENTIRE partner's
+          // rows — leaking sibling-org data to a single-org caller. [] confines
+          // the token to its own org axis.
+          accessiblePartnerIds: [],
           userId: payload.sub,
           // Own partner — enables read-only visibility of the partner's
-          // partner-wide catalog rows for org-scope users.
+          // partner-wide CATALOG rows (scripts/alert_templates/script_categories/
+          // script_tags, which have an RLS `breeze_current_partner_id()` read
+          // branch). This is deliberately narrower than the partner-axis
+          // capability above: currentPartnerId feeds only that catalog branch.
           currentPartnerId: payload.partner_id,
         }
       : {

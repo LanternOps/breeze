@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { AuthContext } from '../middleware/auth';
-import { resolveMcpExecutionOrgId } from './mcpExecutionOrg';
+import {
+  McpExecutionOrgError,
+  resolveMcpExecutionContext,
+  resolveMcpExecutionOrgId,
+} from './mcpExecutionOrg';
 
 // ============================================================================
 // resolveMcpExecutionOrgId — tenant-isolation regression (security)
@@ -161,5 +165,202 @@ describe('resolveMcpExecutionOrgId — tenant isolation', () => {
       {},
     );
     expect(result).toBeNull();
+  });
+});
+
+// ============================================================================
+// resolveMcpExecutionContext — authoritative device-org resolution (MCP-OAUTH-05)
+//
+// For device-targeted tools, the execution org is resolved from the TARGETED
+// DEVICES (via the same org+site access gate downstream execution uses), NOT
+// from accessibleOrgIds[0]. This closes the intra-partner audit-integrity flaw
+// where the action executed in device Org B while the ledger + audit rows were
+// attributed to accessibleOrgIds[0] (Org A). Mixed-org device arrays, explicit
+// orgId conflicts, inaccessible devices, and org-pinned callers reaching outside
+// their org are all REJECTED (McpExecutionOrgError) BEFORE ledger/audit/handler.
+// ============================================================================
+
+const DEV_A = 'aaaaaaaa-0000-4000-8000-00000000000a';
+const DEV_B = 'bbbbbbbb-0000-4000-8000-00000000000b';
+
+// deviceArgsForTool + resolveDeviceOrg seams keep this a pure unit test (no DB).
+function deviceArgsFor(map: Record<string, readonly string[] | undefined>) {
+  return (toolName: string) => map[toolName];
+}
+function deviceOrgMap(map: Record<string, string>) {
+  return async (deviceId: string): Promise<{ orgId: string } | { error: string }> => {
+    const orgId = map[deviceId];
+    return orgId ? { orgId } : { error: 'Device not found or access denied' };
+  };
+}
+
+describe('resolveMcpExecutionContext — authoritative device-org resolution', () => {
+  it('resolves the execution org from the TARGETED DEVICE, not accessibleOrgIds[0]', async () => {
+    // Partner can access both OWN_ORG (first-accessible) and SECOND_ORG.
+    // The tool targets a device that lives in SECOND_ORG.
+    const result = await resolveMcpExecutionContext({
+      auth: partnerAuth([OWN_ORG, SECOND_ORG]),
+      apiKey: { orgId: null },
+      toolName: 'restart_device',
+      toolInput: { deviceId: DEV_B },
+      deviceArgsForTool: deviceArgsFor({ restart_device: ['deviceId'] }),
+      resolveDeviceOrg: deviceOrgMap({ [DEV_B]: SECOND_ORG }),
+    });
+    expect(result.orgId).toBe(SECOND_ORG);
+    // Regression: must NOT be the naive first-accessible fallback.
+    expect(result.orgId).not.toBe(OWN_ORG);
+  });
+
+  it('REJECTS a mixed-org device array before returning any org', async () => {
+    await expect(
+      resolveMcpExecutionContext({
+        auth: partnerAuth([OWN_ORG, SECOND_ORG]),
+        apiKey: { orgId: null },
+        toolName: 'run_script_bulk',
+        toolInput: { deviceIds: [DEV_A, DEV_B] },
+        deviceArgsForTool: deviceArgsFor({ run_script_bulk: ['deviceIds'] }),
+        resolveDeviceOrg: deviceOrgMap({ [DEV_A]: OWN_ORG, [DEV_B]: SECOND_ORG }),
+      }),
+    ).rejects.toBeInstanceOf(McpExecutionOrgError);
+  });
+
+  it('REJECTS an explicit orgId that differs from the device org', async () => {
+    await expect(
+      resolveMcpExecutionContext({
+        auth: partnerAuth([OWN_ORG, SECOND_ORG]),
+        apiKey: { orgId: null },
+        toolName: 'restart_device',
+        toolInput: { deviceId: DEV_B, orgId: OWN_ORG },
+        deviceArgsForTool: deviceArgsFor({ restart_device: ['deviceId'] }),
+        resolveDeviceOrg: deviceOrgMap({ [DEV_B]: SECOND_ORG }),
+      }),
+    ).rejects.toBeInstanceOf(McpExecutionOrgError);
+  });
+
+  it('accepts an explicit orgId that MATCHES the device org', async () => {
+    const result = await resolveMcpExecutionContext({
+      auth: partnerAuth([OWN_ORG, SECOND_ORG]),
+      apiKey: { orgId: null },
+      toolName: 'restart_device',
+      toolInput: { deviceId: DEV_B, orgId: SECOND_ORG },
+      deviceArgsForTool: deviceArgsFor({ restart_device: ['deviceId'] }),
+      resolveDeviceOrg: deviceOrgMap({ [DEV_B]: SECOND_ORG }),
+    });
+    expect(result.orgId).toBe(SECOND_ORG);
+  });
+
+  it('REJECTS an inaccessible / unknown device', async () => {
+    await expect(
+      resolveMcpExecutionContext({
+        auth: partnerAuth([OWN_ORG]),
+        apiKey: { orgId: null },
+        toolName: 'restart_device',
+        toolInput: { deviceId: DEV_B },
+        deviceArgsForTool: deviceArgsFor({ restart_device: ['deviceId'] }),
+        resolveDeviceOrg: deviceOrgMap({}), // DEV_B not resolvable → access denied
+      }),
+    ).rejects.toBeInstanceOf(McpExecutionOrgError);
+  });
+
+  it('REJECTS an org-scoped bearer targeting a device outside its org', async () => {
+    await expect(
+      resolveMcpExecutionContext({
+        auth: orgAuth(OWN_ORG),
+        apiKey: { orgId: null },
+        toolName: 'restart_device',
+        toolInput: { deviceId: DEV_B },
+        deviceArgsForTool: deviceArgsFor({ restart_device: ['deviceId'] }),
+        resolveDeviceOrg: deviceOrgMap({ [DEV_B]: SECOND_ORG }),
+      }),
+    ).rejects.toBeInstanceOf(McpExecutionOrgError);
+  });
+
+  it('REJECTS an org-scoped API key targeting a device outside its org', async () => {
+    await expect(
+      resolveMcpExecutionContext({
+        auth: partnerAuth([OWN_ORG, SECOND_ORG]),
+        apiKey: { orgId: KEY_ORG },
+        toolName: 'restart_device',
+        toolInput: { deviceId: DEV_B },
+        deviceArgsForTool: deviceArgsFor({ restart_device: ['deviceId'] }),
+        resolveDeviceOrg: deviceOrgMap({ [DEV_B]: SECOND_ORG }),
+      }),
+    ).rejects.toBeInstanceOf(McpExecutionOrgError);
+  });
+
+  it('single-device happy path: pinned key + device in the key org', async () => {
+    const result = await resolveMcpExecutionContext({
+      auth: orgAuth(SECOND_ORG),
+      apiKey: { orgId: SECOND_ORG },
+      toolName: 'restart_device',
+      toolInput: { deviceId: DEV_B },
+      deviceArgsForTool: deviceArgsFor({ restart_device: ['deviceId'] }),
+      resolveDeviceOrg: deviceOrgMap({ [DEV_B]: SECOND_ORG }),
+    });
+    expect(result.orgId).toBe(SECOND_ORG);
+  });
+
+  it('accepts a same-org multi-device array', async () => {
+    const result = await resolveMcpExecutionContext({
+      auth: partnerAuth([OWN_ORG, SECOND_ORG]),
+      apiKey: { orgId: null },
+      toolName: 'run_script_bulk',
+      toolInput: { deviceIds: [DEV_A, DEV_B] },
+      deviceArgsForTool: deviceArgsFor({ run_script_bulk: ['deviceIds'] }),
+      resolveDeviceOrg: deviceOrgMap({ [DEV_A]: SECOND_ORG, [DEV_B]: SECOND_ORG }),
+    });
+    expect(result.orgId).toBe(SECOND_ORG);
+  });
+
+  it('fails closed on a malformed (empty-string) device arg', async () => {
+    await expect(
+      resolveMcpExecutionContext({
+        auth: partnerAuth([OWN_ORG]),
+        apiKey: { orgId: null },
+        toolName: 'restart_device',
+        toolInput: { deviceId: '' },
+        deviceArgsForTool: deviceArgsFor({ restart_device: ['deviceId'] }),
+        resolveDeviceOrg: deviceOrgMap({}),
+      }),
+    ).rejects.toBeInstanceOf(McpExecutionOrgError);
+  });
+
+  it('non-device tool: behavior UNCHANGED (out-of-scope orgId discarded, first-accessible fallback)', async () => {
+    // No deviceArgs → delegates to the attribution-only sync resolver.
+    const result = await resolveMcpExecutionContext({
+      auth: partnerAuth([OWN_ORG]),
+      apiKey: { orgId: null },
+      toolName: 'list_organizations',
+      toolInput: { orgId: VICTIM_ORG },
+      deviceArgsForTool: deviceArgsFor({}), // undefined → non-device
+      resolveDeviceOrg: deviceOrgMap({}),
+    });
+    expect(result.orgId).toBe(OWN_ORG);
+    expect(result.orgId).not.toBe(VICTIM_ORG);
+  });
+
+  it('non-device tool: honors an in-scope explicit orgId (attribution-only)', async () => {
+    const result = await resolveMcpExecutionContext({
+      auth: partnerAuth([OWN_ORG, SECOND_ORG]),
+      apiKey: { orgId: null },
+      toolName: 'list_organizations',
+      toolInput: { orgId: SECOND_ORG },
+      deviceArgsForTool: deviceArgsFor({}),
+      resolveDeviceOrg: deviceOrgMap({}),
+    });
+    expect(result.orgId).toBe(SECOND_ORG);
+  });
+
+  it('device tool with an OMITTED optional device arg falls back to attribution behavior', async () => {
+    // Declared deviceArgs but none supplied → nothing to gate → attribution path.
+    const result = await resolveMcpExecutionContext({
+      auth: partnerAuth([OWN_ORG, SECOND_ORG]),
+      apiKey: { orgId: null },
+      toolName: 'restart_device',
+      toolInput: {},
+      deviceArgsForTool: deviceArgsFor({ restart_device: ['deviceId'] }),
+      resolveDeviceOrg: deviceOrgMap({}),
+    });
+    expect(result.orgId).toBe(OWN_ORG);
   });
 });

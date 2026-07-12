@@ -12,6 +12,7 @@
  */
 import './setup';
 import { describe, it, expect, beforeEach } from 'vitest';
+import { createHash } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import {
   oauthAuthorizationCodes,
@@ -25,6 +26,8 @@ import { withSystemDbAccessContext } from '../../db';
 import { cleanupStaleOauthClients, cleanupExpiredOauthLifecycleRows, DCR_STALE_CLIENT_TTL_MS } from '../../oauth/provider';
 import { createOrganization, createPartner, createUser } from './db-utils';
 import { getTestDb } from './setup';
+
+const digestId = (raw: string) => createHash('sha256').update(raw).digest('hex');
 
 describe('OAuth cleanup raw-sql Date binding', () => {
   beforeEach(async () => {
@@ -121,16 +124,20 @@ describe('OAuth cleanup raw-sql Date binding', () => {
       { id: 'expired-grant', accountId: user.id, clientId: 'lifecycle-client', partnerId: partner.id, orgId: org.id, payload: { accountId: user.id }, expiresAt: longAgo },
       { id: 'live-grant',    accountId: user.id, clientId: 'lifecycle-client', partnerId: partner.id, orgId: org.id, payload: { accountId: user.id }, expiresAt: future },
     ]);
+    // Refresh-token ids must be sha256 digests and payloads must omit `jti`
+    // (oauth_refresh_tokens_id_digest_chk / oauth_refresh_tokens_no_jti_chk).
+    const expiredRefreshId = digestId('expired-refresh');
+    const liveRefreshId = digestId('live-refresh');
     await getTestDb().insert(oauthRefreshTokens).values([
-      { id: 'expired-refresh', userId: user.id, clientId: 'lifecycle-client', partnerId: partner.id, orgId: org.id, payload: { sub: user.id, jti: 'jti-expired', grantId: 'expired-grant' }, expiresAt: longAgo },
-      { id: 'live-refresh',    userId: user.id, clientId: 'lifecycle-client', partnerId: partner.id, orgId: org.id, payload: { sub: user.id, jti: 'jti-live',    grantId: 'live-grant'    }, expiresAt: future },
+      { id: expiredRefreshId, userId: user.id, clientId: 'lifecycle-client', partnerId: partner.id, orgId: org.id, payload: { sub: user.id, grantId: 'expired-grant' }, expiresAt: longAgo },
+      { id: liveRefreshId,    userId: user.id, clientId: 'lifecycle-client', partnerId: partner.id, orgId: org.id, payload: { sub: user.id, grantId: 'live-grant'    }, expiresAt: future },
     ]);
 
     const counts = await withSystemDbAccessContext(() => cleanupExpiredOauthLifecycleRows());
 
     expect(counts.refreshTokens).toBeGreaterThanOrEqual(1);
     const remainingRefresh = await getTestDb().select({ id: oauthRefreshTokens.id }).from(oauthRefreshTokens);
-    expect(remainingRefresh.map((r) => r.id).sort()).toEqual(['live-refresh']);
+    expect(remainingRefresh.map((r) => r.id).sort()).toEqual([liveRefreshId]);
     const remainingGrants = await getTestDb().select({ id: oauthGrants.id }).from(oauthGrants);
     expect(remainingGrants.map((g) => g.id).sort()).toEqual(['live-grant']);
   });

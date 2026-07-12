@@ -30,7 +30,6 @@ async function revokeOauthArtifactsByColumn(
   const tokens = await db
     .select({
       id: oauthRefreshTokens.id,
-      payload: oauthRefreshTokens.payload,
       expiresAt: oauthRefreshTokens.expiresAt,
     })
     .from(oauthRefreshTokens)
@@ -48,42 +47,27 @@ async function revokeOauthArtifactsByColumn(
       .where(eq(oauthRefreshTokens.id, token.id));
     refreshTokensRevoked += 1;
 
-    const payload = token.payload as { jti?: string; grantId?: string } | null;
-    const jti = payload?.jti;
-    const grantId = payload?.grantId;
-
-    if (jti) {
-      const ttl = Math.ceil((new Date(token.expiresAt).getTime() - Date.now()) / 1000);
-      try {
-        await revokeJti(jti, Math.max(ttl, 1));
-        jtisRevoked += 1;
-      } catch (err) {
-        logOauthError({
-          errorId: ERROR_IDS.OAUTH_REVOCATION_CACHE_WRITE_FAILED,
-          message: 'tenant-lifecycle jti revocation cache write failed',
-          err,
-          context: { jti, [logContextKey]: value },
-        });
-        throw err;
-      }
-    }
-
-    if (grantId && !seenGrants.has(grantId)) {
-      seenGrants.add(grantId);
-      try {
-        await revokeGrant(grantId, ACCESS_TOKEN_TTL_SECONDS);
-      } catch (err) {
-        logOauthError({
-          errorId: ERROR_IDS.OAUTH_REVOCATION_CACHE_WRITE_FAILED,
-          message: 'tenant-lifecycle grant revocation cache write failed',
-          err,
-          context: { grantId, [logContextKey]: value },
-        });
-        throw err;
-      }
+    // Key the jti marker on the token ROW id, never on payload.jti — Task 3
+    // removes jti from the refresh payload, so payload is no longer a reliable
+    // discovery source. The row id (its digest) is the authoritative token id.
+    const ttl = Math.ceil((new Date(token.expiresAt).getTime() - Date.now()) / 1000);
+    try {
+      await revokeJti(token.id, Math.max(ttl, 1));
+      jtisRevoked += 1;
+    } catch (err) {
+      logOauthError({
+        errorId: ERROR_IDS.OAUTH_REVOCATION_CACHE_WRITE_FAILED,
+        message: 'tenant-lifecycle jti revocation cache write failed',
+        err,
+        context: { tokenId: token.id, [logContextKey]: value },
+      });
+      throw err;
     }
   }
 
+  // Grant discovery is authoritative from oauth_grants — never from refresh
+  // payload grantIds. This is what makes code-only grants (no refresh row)
+  // still get a revocation marker.
   const grants = await db
     .select({ id: oauthGrants.id })
     .from(oauthGrants)
@@ -97,7 +81,7 @@ async function revokeOauthArtifactsByColumn(
     } catch (err) {
       logOauthError({
         errorId: ERROR_IDS.OAUTH_REVOCATION_CACHE_WRITE_FAILED,
-        message: 'tenant-lifecycle grant-only revocation cache write failed',
+        message: 'tenant-lifecycle grant revocation cache write failed',
         err,
         context: { grantId: grant.id, [logContextKey]: value },
       });
@@ -121,12 +105,14 @@ function inExplicitSystemContext<T>(fn: () => Promise<T>): Promise<T> {
  * suspended/disabled so every active access JWT, refresh token, and Grant is
  * killed immediately rather than surviving until natural expiry.
  *
- * Mechanics (mirrors the per-client path in `connectedApps.ts`):
+ * Mechanics (grants-driven discovery):
  *   1. Stamp `revokedAt` on every non-revoked refresh token row for the user.
- *   2. For each refresh token, write the jti + grantId into the revocation
- *      cache so bearer middleware rejects any in-flight access JWT.
- *   3. Write a grant-level marker for every Grant row so sibling JWTs minted
- *      without a refresh token (direct authorize flows) are also rejected.
+ *   2. For each refresh token, write a jti marker keyed on the token ROW id
+ *      (not payload.jti — Task 3 removes it) so bearer middleware rejects any
+ *      in-flight access JWT.
+ *   3. Write a grant-level marker for every Grant row discovered from the
+ *      authoritative oauth_grants table, so code-only grants (auth-code access
+ *      tokens with no refresh row) are also rejected.
  *
  * We intentionally do NOT delete the oauth_grants / oauth_refresh_tokens rows:
  * keeping them simplifies audit trail and matches what `connectedApps.ts`

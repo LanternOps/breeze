@@ -5,11 +5,28 @@ import { fetchWithAuth } from '../../stores/auth';
 interface PartnerOption {
   partnerId: string;
   partnerName: string;
+  // MCP-OAUTH-01: the partner-policy-narrowed scope set for THIS partner
+  // (provider-supported ∩ requested ∩ displayed ∩ that partner's
+  // mcp_allowed_scopes), computed authoritatively by the API. Optional so
+  // older/partial responses degrade to the top-level `scopes` fallback
+  // rather than crashing.
+  effectiveScopes?: string[];
 }
 
 interface InteractionDetails {
   uid: string;
-  client: { client_id: string; client_name: string };
+  client: {
+    client_id: string;
+    // MCP-OAUTH-08: UNVERIFIED, client-supplied DCR metadata. Rendered as
+    // ordinary escaped React text and always labelled unverified — never
+    // treated as a trusted identity.
+    display_name: string;
+    verification: 'unverified';
+    // The exact callback the authorization code will be delivered to, and its
+    // origin. Empty strings signal missing metadata → fail-closed render.
+    redirect_uri: string;
+    redirect_origin: string;
+  };
   scopes: string[];
   resource: string | null;
   partners: PartnerOption[];
@@ -220,15 +237,43 @@ export default function ConsentForm({ uid }: ConsentFormProps) {
   const details = state.details;
   const submitting = state.kind === 'submitting';
 
-  const displayName = details.client.client_name?.trim() || details.client.client_id;
+  // MCP-OAUTH-01 (design §1): render the SELECTED partner's authoritative
+  // effective scope set, not the raw client-requested/displayed set — a
+  // read-only or execute-disabled partner's policy may narrow it. Fall back
+  // to `details.scopes` if no partner is selected yet or the field is
+  // absent, so this never crashes on a partial/older response.
+  const selectedPartner = details.partners.find((p) => p.partnerId === partnerId);
+  const selectedPartnerScopes = selectedPartner?.effectiveScopes ?? details.scopes;
+
+  const displayName = details.client.display_name?.trim() || details.client.client_id;
   const showClientIdSubtitle = displayName !== details.client.client_id;
+
+  // MCP-OAUTH-08: fail closed if we can't show the user where the
+  // authorization code will actually be routed. Approving without a verified
+  // callback destination is exactly the phishing case this screen guards
+  // against, so render a hard stop instead of an Approve button.
+  const redirectUri = details.client.redirect_uri?.trim() ?? '';
+  const redirectOrigin = details.client.redirect_origin?.trim() ?? '';
+  if (!redirectUri || !redirectOrigin) {
+    return (
+      <ConsentShell title={t('longTail.oauth.ConsentForm.missingRedirectTitle')}>
+        <p className="text-sm text-red-600">
+          {t('longTail.oauth.ConsentForm.missingRedirectDescription')}
+        </p>
+      </ConsentShell>
+    );
+  }
 
   return (
     <ConsentShell
       title={t('longTail.oauth.ConsentForm.consentTitle', { displayName })}
       subtitle={showClientIdSubtitle ? t('longTail.oauth.ConsentForm.clientId', { clientId: details.client.client_id }) : undefined}
     >
-      <ScopeList scopes={details.scopes} />
+      <UnverifiedNotice />
+
+      <CallbackDestination origin={redirectOrigin} />
+
+      <ScopeList scopes={selectedPartnerScopes} />
 
       {details.partners.length > 1 && (
         <TenantPicker
@@ -281,6 +326,43 @@ function ConsentShell({
         <p className="mt-1 font-mono text-xs text-muted-foreground break-all">{subtitle}</p>
       )}
       <div className={`mt-4 space-y-4 ${title ? '' : 'mt-0'}`}>{children}</div>
+    </div>
+  );
+}
+
+// MCP-OAUTH-08: an always-on "unverified" banner. The display name is
+// self-reported DCR metadata (an attacker can register a client literally
+// named "Microsoft 365"), so we tell the user Breeze has NOT vouched for this
+// integration's identity and to rely on the callback destination below.
+function UnverifiedNotice() {
+  const { t } = useTranslation('common');
+  return (
+    <div className="rounded-md border border-amber-300 bg-amber-50 p-3 dark:border-amber-700/60 dark:bg-amber-950/40">
+      <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">
+        {t('longTail.oauth.ConsentForm.unverifiedLabel')}
+      </p>
+      <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+        {t('longTail.oauth.ConsentForm.unverifiedDescription')}
+      </p>
+    </div>
+  );
+}
+
+// MCP-OAUTH-08: show the EXACT callback origin the authorization code will be
+// delivered to. `origin` is client-controlled but rendered as ordinary
+// escaped React text (never dangerouslySetInnerHTML), so a hostile value can
+// only ever appear as inert text.
+function CallbackDestination({ origin }: { origin: string }) {
+  const { t } = useTranslation('common');
+  return (
+    <div>
+      <p className="text-sm font-medium">{t('longTail.oauth.ConsentForm.callbackLabel')}</p>
+      <p
+        data-testid="oauth-callback-origin"
+        className="mt-1 font-mono text-sm break-all text-foreground"
+      >
+        {origin}
+      </p>
     </div>
   );
 }

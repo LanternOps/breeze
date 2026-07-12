@@ -12,11 +12,11 @@ const mocks = vi.hoisted(() => ({
   ),
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
-  revokeJti: vi.fn(async () => undefined),
-  // revokeGrant is called in addition to revokeJti so that revoking a
-  // connected app immediately kills every in-flight access JWT minted from
-  // the same Grant (without waiting for natural 10-minute expiry).
-  revokeGrant: vi.fn(async () => undefined),
+  // Grant-family revocation is delegated to the central service; the route's
+  // job is just authorization (join-row check), scope selection, and 503 on
+  // marker-write failure. The service's own behavior is covered in
+  // oauth/revocationService.test.ts + the integration suite.
+  revokeClientFamilies: vi.fn(async () => ({ grants: 0, refreshTokens: 0 })),
   eq: vi.fn((left: unknown, right: unknown) => ({ op: 'eq', left, right })),
   and: vi.fn((...conditions: unknown[]) => ({ op: 'and', conditions })),
 }));
@@ -44,9 +44,8 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: mocks.withSystemDbAccessContext,
 }));
 
-vi.mock('../oauth/revocationCache', () => ({
-  revokeJti: mocks.revokeJti,
-  revokeGrant: mocks.revokeGrant,
+vi.mock('../oauth/revocationService', () => ({
+  revokeClientFamilies: mocks.revokeClientFamilies,
 }));
 
 function resetAuth(partnerId: string | null = 'current-partner') {
@@ -239,132 +238,49 @@ describe('connectedAppsRoutes', () => {
     expect(mocks.eq).toHaveBeenCalledWith(expect.objectContaining({ name: 'partner_id' }), 'current-partner');
   });
 
-  it('removes the join row, revokes refresh tokens, and cache-revokes token jtis', async () => {
-    // Fix for H2 follow-up: deleting a connected app must NOT disable the
-    // shared `oauth_clients` row (other partners may still rely on it).
-    // Instead, drop this partner's join row and revoke this partner's
-    // refresh tokens.
+  it('delegates to the central service with partner scope after the join-row check', async () => {
+    // The route no longer discovers/revokes families inline. It authorizes via
+    // the join-row lookup, then hands off to revokeClientFamilies with PARTNER
+    // scope so code-only grants are revoked and other partners on the shared
+    // client are left untouched (MCP-OAUTH-07).
     queueSelect([{ clientId: 'client-1', partnerId: 'current-partner' }], 'limit');
-    queueSelect([
-      { id: 'rt-1', payload: { jti: 'jti-1' }, expiresAt: new Date(Date.now() + 60_000) },
-      { id: 'rt-2', payload: {}, expiresAt: new Date(Date.now() + 60_000) },
-      { id: 'rt-3', payload: { jti: 'jti-3' }, expiresAt: new Date(Date.now() - 60_000) },
-    ]);
-    const revokeUpdate1 = queueUpdate();
-    const revokeUpdate2 = queueUpdate();
-    const revokeUpdate3 = queueUpdate();
-    const joinDelete = queueDelete();
 
     const res = await (await loadApp()).request('/api/v1/settings/connected-apps/client-1', {
       method: 'DELETE',
     });
 
-    expect(res.status).toBe(204);
-    // No update on oauth_clients — the row stays for other partners.
-    expect(mocks.update).toHaveBeenCalledTimes(3); // 3 refresh-token revokes only
-    expect(joinDelete.where).toHaveBeenCalled();
-    expect(revokeUpdate1.set).toHaveBeenCalledWith({ revokedAt: expect.any(Date) });
-    expect(revokeUpdate2.set).toHaveBeenCalledWith({ revokedAt: expect.any(Date) });
-    expect(revokeUpdate3.set).toHaveBeenCalledWith({ revokedAt: expect.any(Date) });
-    expect(mocks.revokeJti).toHaveBeenCalledTimes(2);
-    expect(mocks.revokeJti).toHaveBeenCalledWith('jti-1', expect.any(Number));
-    expect(mocks.revokeJti).toHaveBeenCalledWith('jti-3', 1);
-  });
-
-  it('does not touch oauth_clients on revoke (other partners may still need the shared row)', async () => {
-    // Two-partner scenario: Partner A revokes; Partner B's join row should
-    // be untouched. We can't fully observe Partner B's row in this unit
-    // test (mocks are scoped by call), but we CAN assert the route never
-    // calls db.update against oauth_clients. The test below queues only
-    // the join select + the join delete + an empty token list — if the
-    // route tried to flip oauth_clients.disabled_at, mocks.update would
-    // be invoked once with no queueUpdate ready (and the test would error
-    // on the unmocked chain).
-    queueSelect([{ clientId: 'client-1', partnerId: 'current-partner' }], 'limit');
-    queueSelect([]);
-    queueDelete();
-    const res = await (await loadApp()).request('/api/v1/settings/connected-apps/client-1', {
-      method: 'DELETE',
-    });
-    expect(res.status).toBe(204);
-    expect(mocks.update).not.toHaveBeenCalled();
-  });
-
-  it('returns 204 No Content for a successful delete', async () => {
-    queueSelect([{ clientId: 'client-1', partnerId: 'current-partner' }], 'limit');
-    queueSelect([]);
-    queueDelete();
-    const res = await (await loadApp()).request('/api/v1/settings/connected-apps/client-1', {
-      method: 'DELETE',
-    });
     expect(res.status).toBe(204);
     expect(await res.text()).toBe('');
+    expect(mocks.revokeClientFamilies).toHaveBeenCalledTimes(1);
+    expect(mocks.revokeClientFamilies).toHaveBeenCalledWith('client-1', {
+      kind: 'partner',
+      partnerId: 'current-partner',
+    });
   });
 
-  it('fails DELETE with 503 when the jti revocation cache write fails', async () => {
-    // After the security-review fix, cache write failures must propagate as
-    // 5xx. Silently returning 204 told the client "disconnected" while the
-    // access JWT would keep validating until natural expiry (~10 min) —
-    // partial revoke is a critical security gap.
+  it('does not call the revocation service when the join row is missing (404)', async () => {
+    queueSelect([], 'limit');
+    const res = await (await loadApp()).request('/api/v1/settings/connected-apps/client-1', {
+      method: 'DELETE',
+    });
+    expect(res.status).toBe(404);
+    expect(mocks.revokeClientFamilies).not.toHaveBeenCalled();
+  });
+
+  it('fails DELETE with 503 when the revocation service throws (fail closed)', async () => {
+    // A marker-write failure inside the service must surface as 5xx. Silently
+    // returning 204 would tell the client "disconnected" while access JWTs
+    // keep validating until natural expiry — a partial-revoke security gap.
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    mocks.revokeJti.mockRejectedValueOnce(new Error('redis down'));
+    mocks.revokeClientFamilies.mockRejectedValueOnce(new Error('redis down'));
     queueSelect([{ clientId: 'client-1', partnerId: 'current-partner' }], 'limit');
-    queueSelect([{ id: 'rt-1', payload: { jti: 'jti-1' }, expiresAt: new Date(Date.now() + 60_000) }]);
-    queueUpdate();
 
     const res = await (await loadApp()).request('/api/v1/settings/connected-apps/client-1', {
       method: 'DELETE',
     });
 
     expect(res.status).toBe(503);
-    expect(mocks.update).not.toHaveBeenCalled();
-    expect(mocks.delete).not.toHaveBeenCalled();
     errorSpy.mockRestore();
-  });
-
-  it('keeps DB revoke and join-row removal in one system transaction', async () => {
-    queueSelect([{ clientId: 'client-1', partnerId: 'current-partner' }], 'limit');
-    queueSelect([{ id: 'rt-1', payload: { jti: 'jti-1' }, expiresAt: new Date(Date.now() + 60_000) }]);
-    queueUpdate();
-    queueDelete();
-
-    const res = await (await loadApp()).request('/api/v1/settings/connected-apps/client-1', {
-      method: 'DELETE',
-    });
-
-    expect(res.status).toBe(204);
-    expect(mocks.runOutsideDbContext).toHaveBeenCalled();
-    expect(mocks.withSystemDbAccessContext).toHaveBeenCalled();
-    expect(mocks.transaction).toHaveBeenCalledTimes(1);
-  });
-
-  it('cache-revokes the entire Grant (deduped) for every refresh token with grantId', async () => {
-    // Two refresh tokens share grant-A (rotated), one is grant-B, one has
-    // no grantId. We expect revokeGrant to be called exactly twice (one per
-    // unique grant) — the dedup matters because rotation can produce many
-    // refresh-token rows for the same grant and we don't want to thrash
-    // Redis with redundant SETs.
-    queueSelect([{ clientId: 'client-1', partnerId: 'current-partner' }], 'limit');
-    queueSelect([
-      { id: 'rt-1', payload: { jti: 'jti-1', grantId: 'grant-A' }, expiresAt: new Date(Date.now() + 60_000) },
-      { id: 'rt-2', payload: { jti: 'jti-2', grantId: 'grant-A' }, expiresAt: new Date(Date.now() + 60_000) },
-      { id: 'rt-3', payload: { jti: 'jti-3', grantId: 'grant-B' }, expiresAt: new Date(Date.now() + 60_000) },
-      { id: 'rt-4', payload: { jti: 'jti-4' }, expiresAt: new Date(Date.now() + 60_000) },
-    ]);
-    queueUpdate();
-    queueUpdate();
-    queueUpdate();
-    queueUpdate();
-    queueDelete();
-
-    const res = await (await loadApp()).request('/api/v1/settings/connected-apps/client-1', {
-      method: 'DELETE',
-    });
-
-    expect(res.status).toBe(204);
-    expect(mocks.revokeGrant).toHaveBeenCalledTimes(2);
-    expect(mocks.revokeGrant).toHaveBeenCalledWith('grant-A', expect.any(Number));
-    expect(mocks.revokeGrant).toHaveBeenCalledWith('grant-B', expect.any(Number));
   });
 
   it('does not mount routes when MCP_OAUTH_ENABLED is false', async () => {

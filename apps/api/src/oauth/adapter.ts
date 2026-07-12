@@ -10,6 +10,7 @@ import {
   oauthSessions,
 } from '../db/schema';
 import { revokeGrant, revokeJti } from './revocationCache';
+import { revokeClientFamilies } from './revocationService';
 import { ERROR_IDS, logOauthDebug, logOauthError } from './log';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 
@@ -130,6 +131,34 @@ function sha256(s: string): string {
   return createHash('sha256').update(s).digest('hex');
 }
 
+// MCP-OAUTH-04: the raw oidc-provider RefreshToken model id equals the opaque
+// token value the client holds, so persisting it verbatim in
+// `oauth_refresh_tokens.id` meant a DB/backup/diagnostic read granted account
+// access for the token's remaining lifetime. We store an UNKEYED sha256 digest
+// instead: refresh tokens are high-entropy opaque values, so the digest is a
+// non-reversible lookup key with no key-rotation dependency (deliberately NOT
+// an HMAC — no secret to manage). Every RefreshToken adapter op transforms the
+// raw id through this before touching the row.
+export function refreshTokenStorageId(rawId: string): string {
+  return createHash('sha256').update(rawId).digest('hex');
+}
+
+// Persisted refresh-token payloads must OMIT `jti` — it equals the raw model
+// id (== the opaque token), so storing it defeats the digested-id protection.
+// Deep-copy so nested payload state isn't shared with the caller's object.
+export function sanitizeRefreshTokenPayload(payload: OidcPayload): OidcPayload {
+  const copy = structuredClone(payload);
+  delete copy.jti;
+  return copy;
+}
+
+// `find` restores `jti` in memory before returning to oidc-provider — the
+// library expects the model's `jti` to equal its id (the raw token). We never
+// persist it; we rehydrate it from the raw id oidc-provider hands us.
+export function restoreRefreshTokenPayload(rawId: string, stored: OidcPayload): OidcPayload {
+  return { ...stored, jti: rawId };
+}
+
 function expiresAtFrom(expiresIn?: number): Date | null {
   return expiresIn === undefined ? null : new Date(Date.now() + expiresIn * 1000);
 }
@@ -218,17 +247,19 @@ export class BreezeOidcAdapter {
           requiredPartnerId(payload),
           resolvedOrgId(payload),
         ]);
+        const storageId = refreshTokenStorageId(id);
+        const storedPayload = sanitizeRefreshTokenPayload(payload);
         await db.insert(oauthRefreshTokens).values({
-          id,
+          id: storageId,
           userId: stringField(payload, 'accountId'),
           clientId: stringField(payload, 'clientId'),
           partnerId,
           orgId,
-          payload,
+          payload: storedPayload,
           expiresAt: expiresAt!,
         }).onConflictDoUpdate({
           target: oauthRefreshTokens.id,
-          set: { payload, expiresAt: expiresAt!, lastUsedAt: new Date() },
+          set: { payload: storedPayload, expiresAt: expiresAt!, lastUsedAt: new Date() },
         });
       } else if (this.model === 'Session') {
         // Session.id === Session.jti; uid is a separate, longer-lived alias
@@ -335,7 +366,8 @@ export class BreezeOidcAdapter {
         return row.expiresAt >= new Date() ? row.payload as OidcPayload : undefined;
       }
       if (this.model === 'RefreshToken') {
-        const [row] = await db.select().from(oauthRefreshTokens).where(eq(oauthRefreshTokens.id, id));
+        const storageId = refreshTokenStorageId(id);
+        const [row] = await db.select().from(oauthRefreshTokens).where(eq(oauthRefreshTokens.id, storageId));
         if (!row) return undefined;
         try {
           await assertActiveTenantContext({
@@ -412,7 +444,11 @@ export class BreezeOidcAdapter {
           }
           return undefined;
         }
-        return row.expiresAt >= new Date() ? row.payload as OidcPayload : undefined;
+        // Restore `jti` (== the raw model id) in memory before handing the
+        // payload back to oidc-provider; it is never persisted.
+        return row.expiresAt >= new Date()
+          ? restoreRefreshTokenPayload(id, row.payload as OidcPayload)
+          : undefined;
       }
       if (this.model === 'Session') {
         const [row] = await db.select().from(oauthSessions).where(eq(oauthSessions.id, id));
@@ -455,7 +491,7 @@ export class BreezeOidcAdapter {
         // calling consume() on the previous. Mark it revoked so
         // `find()` (which filters on revokedAt IS NULL) returns undefined,
         // preventing replay of the old token after rotation.
-        await db.update(oauthRefreshTokens).set({ revokedAt: new Date() }).where(eq(oauthRefreshTokens.id, id));
+        await db.update(oauthRefreshTokens).set({ revokedAt: new Date() }).where(eq(oauthRefreshTokens.id, refreshTokenStorageId(id)));
       }
     });
   }
@@ -470,11 +506,19 @@ export class BreezeOidcAdapter {
     if (this.model === 'AccessToken' || this.model === 'RefreshToken') {
       await this.cacheRevocation(id);
     }
+    if (this.model === 'Client') {
+      // Registration-management DELETE of a shared DCR client. Enumerate and
+      // revoke EVERY grant family (writing grant + jti Redis markers so
+      // already-minted access JWTs die immediately) and set disabledAt LAST,
+      // only after all families are revoked. The old behavior — set disabledAt
+      // and nothing else — left minted access tokens valid until expiry
+      // (MCP-OAUTH-10). The service establishes its own system DB context.
+      await revokeClientFamilies(id, { kind: 'global' });
+      return;
+    }
     return asSystem(async () => {
       if (this.model === 'RefreshToken') {
-        await db.update(oauthRefreshTokens).set({ revokedAt: new Date() }).where(eq(oauthRefreshTokens.id, id));
-      } else if (this.model === 'Client') {
-        await db.update(oauthClients).set({ disabledAt: new Date() }).where(eq(oauthClients.id, id));
+        await db.update(oauthRefreshTokens).set({ revokedAt: new Date() }).where(eq(oauthRefreshTokens.id, refreshTokenStorageId(id)));
       } else if (this.model === 'Session') {
         await db.delete(oauthSessions).where(eq(oauthSessions.id, id));
       } else if (this.model === 'Grant') {
@@ -505,9 +549,14 @@ export class BreezeOidcAdapter {
     try {
       let exp: number | undefined;
       let grantId: string | undefined;
+      // RefreshToken rows are addressed by the digest; the jti revocation
+      // marker for a refresh token is likewise keyed on the digest (AccessToken
+      // markers stay keyed on the raw JWT jti). Compute once and reuse for both
+      // the row lookup and the marker write.
+      const markerId = this.model === 'RefreshToken' ? refreshTokenStorageId(id) : id;
       if (this.model === 'RefreshToken') {
         const row = await asSystem(async () => {
-          const [r] = await db.select().from(oauthRefreshTokens).where(eq(oauthRefreshTokens.id, id));
+          const [r] = await db.select().from(oauthRefreshTokens).where(eq(oauthRefreshTokens.id, markerId));
           return r;
         });
         if (row) {
@@ -539,7 +588,7 @@ export class BreezeOidcAdapter {
       }
       if (exp === undefined) return; // nothing to cache
       const ttl = Math.max(exp - Math.floor(Date.now() / 1000), 1);
-      await revokeJti(id, ttl);
+      await revokeJti(markerId, ttl);
       if (grantId) {
         await revokeGrant(grantId, GRANT_REVOCATION_TTL_SECONDS);
       }
@@ -548,7 +597,9 @@ export class BreezeOidcAdapter {
         errorId: ERROR_IDS.OAUTH_REVOCATION_CACHE_WRITE_FAILED,
         message: 'Revocation cache write failed during destroy()',
         err,
-        context: { model: this.model, id },
+        // Never log the raw id: for a RefreshToken it IS the opaque token value.
+        // The digest is a safe, non-reversible correlator (equals id for other models).
+        context: { model: this.model, id: this.model === 'RefreshToken' ? refreshTokenStorageId(id) : id },
       });
       throw err;
     }

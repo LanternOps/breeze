@@ -25,7 +25,7 @@ import { MCP_OAUTH_ENABLED, OAUTH_ISSUER } from '../config/env';
 import { apiKeyAuthMiddleware, requireApiKeyScope } from '../middleware/apiKeyAuth';
 import { bearerTokenAuthMiddleware, resolvePartnerAccessibleOrgIds } from '../middleware/bearerTokenAuth';
 import { getToolDefinitions, executeTool, getToolTier } from '../services/aiTools';
-import { checkGuardrails, checkToolPermission, checkToolRateLimit } from '../services/aiGuardrails';
+import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirement } from '../services/aiGuardrails';
 import { db } from '../db';
 import { devices, alerts, scripts, automations, partners, organizations } from '../db/schema';
 import { eq, and, asc, desc, inArray, isNull, or, getTableColumns, type SQL } from 'drizzle-orm';
@@ -45,7 +45,7 @@ import {
   completeMcpToolExecutionLedger,
   type McpToolExecutionLedgerHandle,
 } from '../services/mcpToolExecutionLedger';
-import { resolveMcpExecutionOrgId } from './mcpExecutionOrg';
+import { McpExecutionOrgError, resolveMcpExecutionContext } from './mcpExecutionOrg';
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
 import { getTrustedClientIp } from '../services/clientIp';
@@ -879,6 +879,7 @@ async function handleToolsCall(
       scopes,
       apiKey,
       c,
+      sessionId,
     );
   }
 
@@ -967,114 +968,72 @@ async function handleToolsCall(
   // MCP server auto-executes Tier 3 tools without approval — the API key holder
   // is trusted at the scope level. Approval flow is for interactive UI only.
 
-  const executionOrgId = resolveMcpExecutionOrgId(apiKey, auth, toolInput);
-  let ledgerHandle: McpToolExecutionLedgerHandle | null = null;
-  if (tier >= 3) {
-    if (!apiKey || !executionOrgId) {
-      return jsonRpcError(id, -32000, 'Unable to create MCP tool execution ledger');
-    }
-    try {
-      ledgerHandle = await beginMcpToolExecutionLedger({
-        orgId: executionOrgId,
-        accessibleOrgIds: auth.accessibleOrgIds,
-        toolName,
-        tier,
-        toolInput,
-        transportSessionId: sessionId ?? null,
-        principal: {
-          apiKeyId: apiKey.id,
-          oauthGrantId: apiKey.oauthGrantId ?? null,
-          partnerId: auth.partnerId ?? apiKey.partnerId ?? null,
-          actorUserId: auth.user.id,
-        },
-      });
-    } catch (err) {
-      console.error('[MCP] Failed to create tool execution ledger:', toolName, err);
-      return jsonRpcError(id, -32000, 'Unable to create MCP tool execution ledger');
-    }
-  }
-
-  const startedAt = Date.now();
+  // Authoritative execution org (MCP-OAUTH-05): for device-targeted tools this
+  // is resolved from the TARGETED DEVICES via the org+site access gate — NOT
+  // accessibleOrgIds[0] — so ledger, audit, and the handler all attribute to the
+  // device's true org. Mixed-org device arrays / conflicting orgId / inaccessible
+  // devices / org-pinned callers reaching outside their org are rejected here,
+  // BEFORE any ledger or audit mutation. Non-device tools keep prior behavior.
+  let executionOrgId: string | null;
   try {
-    const result = await executeTool(toolName, toolInput, auth);
-    const safeResult = compactToolResultForChat(toolName, result);
-    if (ledgerHandle) {
-      await completeMcpToolExecutionLedger({
-        handle: ledgerHandle,
-        status: 'success',
-        durationMs: Date.now() - startedAt,
-        result: safeResult,
-      }).catch((err) => {
-        console.error('[MCP] Failed to complete tool execution ledger:', toolName, err);
-      });
-    }
-    writeMcpToolAuditEvent(c, {
-      apiKey,
-      auth,
-      sessionId,
-      orgId: executionOrgId,
-      toolName,
-      tier,
-      toolInput,
-      durationMs: Date.now() - startedAt,
-      status: 'success',
-      result: safeResult,
-    });
-
-    // If result contains imageBase64, return it as an MCP image content block
-    // so Claude can actually see the screenshot (instead of raw base64 in JSON text)
-    try {
-      const parsed = JSON.parse(result);
-      if (parsed.imageBase64 && typeof parsed.imageBase64 === 'string') {
-        const { imageBase64, ...metadata } = parsed;
-        const content: Array<Record<string, unknown>> = [
-          { type: 'image', data: imageBase64, mimeType: `image/${parsed.format || 'jpeg'}` },
-        ];
-        if (Object.keys(metadata).length > 0) {
-          content.push({ type: 'text', text: JSON.stringify(metadata) });
-        }
-        return jsonRpcResult(id, { content });
-      }
-    } catch (err) {
-      if (!(err instanceof SyntaxError)) {
-        console.error('[MCP] Unexpected error parsing vision response:', err);
-      }
-      // Not JSON or no imageBase64 — fall through to text
-    }
-
-    return jsonRpcResult(id, {
-      content: [{ type: 'text', text: safeResult }]
-    });
+    ({ orgId: executionOrgId } = await resolveMcpExecutionContext({ auth, apiKey: apiKey ?? null, toolName, toolInput }));
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Tool execution failed';
-    const safeError = compactToolResultForChat(toolName, JSON.stringify({ error: message }));
-    if (ledgerHandle) {
-      await completeMcpToolExecutionLedger({
-        handle: ledgerHandle,
-        status: 'failure',
-        durationMs: Date.now() - startedAt,
-        error: err,
-      }).catch((ledgerErr) => {
-        console.error('[MCP] Failed to fail tool execution ledger:', toolName, ledgerErr);
-      });
+    if (err instanceof McpExecutionOrgError) {
+      return jsonRpcError(id, -32602, 'Invalid params');
     }
-    writeMcpToolAuditEvent(c, {
-      apiKey,
-      auth,
-      sessionId,
-      orgId: executionOrgId,
-      toolName,
-      tier,
-      toolInput,
-      durationMs: Date.now() - startedAt,
-      status: 'failure',
-      error: err,
-    });
-    return jsonRpcResult(id, {
-      content: [{ type: 'text', text: safeError }],
-      isError: true
-    });
+    console.error('[MCP] Failed to resolve execution org for tool:', toolName, err);
+    return jsonRpcError(id, -32000, 'Unable to resolve execution organization');
   }
+  // Shared Tier 3 lifecycle (MCP-OAUTH-12): ledger (fail closed) → handler →
+  // complete + uniform audit. The callback owns executeTool + the MCP response
+  // shape (including the image content-block special case) and classifies its
+  // own success/failure; the wrapper owns the ledger + audit for both outcomes.
+  const execute = async (): Promise<Tier3ExecutionOutcome> => {
+    try {
+      const result = await executeTool(toolName, toolInput, auth);
+      const safeResult = compactToolResultForChat(toolName, result);
+
+      // If result contains imageBase64, return it as an MCP image content block
+      // so Claude can actually see the screenshot (instead of raw base64 in JSON text)
+      let response: JsonRpcResponse;
+      try {
+        const parsed = JSON.parse(result);
+        if (parsed.imageBase64 && typeof parsed.imageBase64 === 'string') {
+          const { imageBase64, ...metadata } = parsed;
+          const content: Array<Record<string, unknown>> = [
+            { type: 'image', data: imageBase64, mimeType: `image/${parsed.format || 'jpeg'}` },
+          ];
+          if (Object.keys(metadata).length > 0) {
+            content.push({ type: 'text', text: JSON.stringify(metadata) });
+          }
+          response = jsonRpcResult(id, { content });
+        } else {
+          response = jsonRpcResult(id, { content: [{ type: 'text', text: safeResult }] });
+        }
+      } catch (err) {
+        if (!(err instanceof SyntaxError)) {
+          console.error('[MCP] Unexpected error parsing vision response:', err);
+        }
+        // Not JSON or no imageBase64 — fall through to text
+        response = jsonRpcResult(id, { content: [{ type: 'text', text: safeResult }] });
+      }
+
+      return { status: 'success', ledgerResult: safeResult, response };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Tool execution failed';
+      const safeError = compactToolResultForChat(toolName, JSON.stringify({ error: message }));
+      return {
+        status: 'failure',
+        error: err,
+        response: jsonRpcResult(id, { content: [{ type: 'text', text: safeError }], isError: true }),
+      };
+    }
+  };
+
+  return runTier3ToolLifecycle(
+    { id, c, auth, apiKey, sessionId, orgId: executionOrgId, toolName, tier, toolInput },
+    execute,
+  );
 }
 
 function writeMcpToolAuditEvent(
@@ -1096,7 +1055,7 @@ function writeMcpToolAuditEvent(
   if (!c || !event.apiKey) return;
 
   const error = event.error instanceof Error ? event.error : undefined;
-  // event.orgId is the access-checked execution org (resolveMcpExecutionOrgId).
+  // event.orgId is the authoritative execution org (resolveMcpExecutionContext).
   // NEVER fall back to a raw client-supplied toolInput.orgId here — doing so
   // would let a partner-scoped caller forge cross-tenant audit_logs attribution
   // (audit rows are written under the RLS-bypassed system context).
@@ -1128,6 +1087,170 @@ function writeMcpToolAuditEvent(
 }
 
 // ============================================
+// Shared Tier 3 execution lifecycle (MCP-OAUTH-12)
+// ============================================
+
+// Bootstrap tools are destructive tenant mutations (send invites / configure
+// defaults) and always run through the Tier 3 ledger + uniform audit.
+const BOOTSTRAP_TOOL_TIER = 3;
+
+interface Tier3LifecycleContext {
+  id: string | number;
+  c: Context | undefined;
+  auth: AuthContext;
+  apiKey: McpApiKeyContext | undefined;
+  sessionId: string | undefined;
+  /** Authoritative execution org (resolveMcpExecutionContext / bootstrap default). */
+  orgId: string | null;
+  toolName: string;
+  tier: number;
+  toolInput: Record<string, unknown>;
+}
+
+interface Tier3ExecutionOutcome {
+  status: 'success' | 'failure';
+  /**
+   * Summarized result string recorded on the ledger + uniform audit on SUCCESS.
+   * Mirrors the ordinary path, which records `result` on success and `error`
+   * (not result) on failure.
+   */
+  ledgerResult?: string;
+  /** On failure: an Error (thrown or a partial-failure marker) for errorClass/message. */
+  error?: unknown;
+  response: JsonRpcResponse;
+}
+
+/**
+ * Shared Tier 3 begin/execute/complete/audit lifecycle (MCP-OAUTH-12). Used by
+ * BOTH the ordinary tools/call path and the bootstrap authTool dispatch so the
+ * fail-closed ledger and uniform `mcp.tool.<name>` audit are identical for every
+ * Tier 3 mutation.
+ *
+ * Ordering (preserves Task 6's resolution → ledger → handler → complete+audit):
+ *   1. create the execution ledger BEFORE the mutation; fail CLOSED if creation
+ *      fails (the handler never runs without a durable ledger row);
+ *   2. run the `execute` callback (which owns path-specific response construction
+ *      AND classifies its own success/partial-failure/thrown-failure outcome);
+ *   3. complete the ledger with the outcome status + duration; and
+ *   4. write the uniform `mcp.tool.<name>` audit for BOTH outcomes.
+ *
+ * Tiers below 3 skip the ledger (as the ordinary path always has) but still emit
+ * the uniform audit. The wrapper NEVER skips the ledger for a Tier 3 tool because
+ * the principal is inconvenient — OAuth bearers already carry a synthetic
+ * `apiKey` context (`oauth:<jti>`), exactly like ordinary Tier 3 bearer calls.
+ */
+async function runTier3ToolLifecycle(
+  ctx: Tier3LifecycleContext,
+  execute: () => Promise<Tier3ExecutionOutcome>,
+): Promise<JsonRpcResponse> {
+  let ledgerHandle: McpToolExecutionLedgerHandle | null = null;
+  if (ctx.tier >= 3) {
+    if (!ctx.apiKey || !ctx.orgId) {
+      return jsonRpcError(ctx.id, -32000, 'Unable to create MCP tool execution ledger');
+    }
+    try {
+      ledgerHandle = await beginMcpToolExecutionLedger({
+        orgId: ctx.orgId,
+        accessibleOrgIds: ctx.auth.accessibleOrgIds,
+        toolName: ctx.toolName,
+        tier: ctx.tier,
+        toolInput: ctx.toolInput,
+        transportSessionId: ctx.sessionId ?? null,
+        principal: {
+          apiKeyId: ctx.apiKey.id,
+          oauthGrantId: ctx.apiKey.oauthGrantId ?? null,
+          partnerId: ctx.auth.partnerId ?? ctx.apiKey.partnerId ?? null,
+          actorUserId: ctx.auth.user.id,
+        },
+      });
+    } catch (err) {
+      console.error('[MCP] Failed to create tool execution ledger:', ctx.toolName, err);
+      return jsonRpcError(ctx.id, -32000, 'Unable to create MCP tool execution ledger');
+    }
+  }
+
+  const startedAt = Date.now();
+  let outcome: Tier3ExecutionOutcome;
+  try {
+    outcome = await execute();
+  } catch (err) {
+    // The execute callback is expected to classify its own outcome and never
+    // throw. This defensive net STILL completes the ledger + audit (never skip
+    // them) before surfacing a generic error.
+    console.error('[MCP] Unexpected throw from Tier 3 execute callback:', ctx.toolName, err);
+    const failureResponse = jsonRpcError(ctx.id, -32000, 'Tool execution failed');
+    await finalizeTier3ToolLifecycle(
+      ctx,
+      ledgerHandle,
+      { status: 'failure', error: err, response: failureResponse },
+      Date.now() - startedAt,
+    );
+    return failureResponse;
+  }
+
+  await finalizeTier3ToolLifecycle(ctx, ledgerHandle, outcome, Date.now() - startedAt);
+  return outcome.response;
+}
+
+async function finalizeTier3ToolLifecycle(
+  ctx: Tier3LifecycleContext,
+  ledgerHandle: McpToolExecutionLedgerHandle | null,
+  outcome: Tier3ExecutionOutcome,
+  durationMs: number,
+): Promise<void> {
+  if (ledgerHandle) {
+    await completeMcpToolExecutionLedger({
+      handle: ledgerHandle,
+      status: outcome.status,
+      durationMs,
+      result: outcome.status === 'success' ? outcome.ledgerResult : undefined,
+      error: outcome.status === 'failure' ? outcome.error : undefined,
+    }).catch((err) => {
+      console.error('[MCP] Failed to complete tool execution ledger:', ctx.toolName, err);
+    });
+  }
+  writeMcpToolAuditEvent(ctx.c, {
+    apiKey: ctx.apiKey,
+    auth: ctx.auth,
+    sessionId: ctx.sessionId,
+    orgId: ctx.orgId,
+    toolName: ctx.toolName,
+    tier: ctx.tier,
+    toolInput: ctx.toolInput,
+    durationMs,
+    status: outcome.status,
+    result: outcome.status === 'success' ? outcome.ledgerResult : undefined,
+    error: outcome.status === 'failure' ? outcome.error : undefined,
+  });
+}
+
+/**
+ * Bootstrap handlers return best-effort results: `send_deployment_invites`
+ * reports per-invite `failures`, `configure_defaults` reports per-step `errors`.
+ * A non-throwing result carrying any such entries is a PARTIAL FAILURE, not a
+ * success — classify it explicitly so the shared ledger/audit records the true
+ * outcome rather than treating every non-throw as success.
+ */
+export function classifyBootstrapToolResult(result: unknown): 'success' | 'failure' {
+  if (result && typeof result === 'object') {
+    const r = result as Record<string, unknown>;
+    if (Array.isArray(r.failures) && r.failures.length > 0) return 'failure';
+    if (Array.isArray(r.errors) && r.errors.length > 0) return 'failure';
+  }
+  return 'success';
+}
+
+function bootstrapPartialFailureError(result: unknown): Error {
+  const r = (result && typeof result === 'object' ? result : {}) as Record<string, unknown>;
+  const failures = Array.isArray(r.failures) ? r.failures.length : 0;
+  const errors = Array.isArray(r.errors) ? r.errors.length : 0;
+  const parts: string[] = [];
+  if (failures > 0) parts.push(`${failures} recipient failure(s)`);
+  if (errors > 0) parts.push(`${errors} step error(s)`);
+  return new Error(`bootstrap partial failure: ${parts.join(', ') || 'unknown'}`);
+}
+
+// ============================================
 // Bootstrap authTool dispatch (authed path)
 // ============================================
 
@@ -1146,8 +1269,9 @@ async function dispatchBootstrapAuthTool(
   toolInput: Record<string, unknown>,
   auth: AuthContext,
   scopes: string[],
-  apiKey: { id: string; orgId: string | null } | undefined,
+  apiKey: McpApiKeyContext | undefined,
   c: Context | undefined,
+  sessionId: string | undefined,
 ): Promise<JsonRpcResponse> {
   const hasExecute = scopes.includes('ai:execute');
   const requireExecuteAdmin = shouldRequireExecuteAdminInProd();
@@ -1176,6 +1300,22 @@ async function dispatchBootstrapAuthTool(
       -32603,
       `Tool "${tool.definition.name}" is not in MCP_EXECUTE_TOOL_ALLOWLIST for production`,
     );
+  }
+
+  // Product RBAC (MCP-OAUTH-11): bootstrap authTools carry a TOOL_PERMISSIONS
+  // mapping and are gated exactly like ordinary tools/call tools. This applies
+  // REGARDLESS of MCP_REQUIRE_EXECUTE_ADMIN — that lever is an ADDITIONAL
+  // production gate above, not a replacement for product permissions. Checked
+  // BEFORE the Zod parse, the ledger, and the handler, so a denial never records
+  // a ledger row or mutates anything (reject precedes ledger).
+  try {
+    const permError = await checkToolPermission(tool.definition.name, toolInput, auth);
+    if (permError) {
+      return jsonRpcError(id, -32603, permError);
+    }
+  } catch (err) {
+    console.error('[MCP] Permission check failed for bootstrap tool:', tool.definition.name, err);
+    return jsonRpcError(id, -32000, 'Unable to verify permissions');
   }
 
   // Validate via the tool's own Zod schema (mirrors handleBootstrapToolsCall).
@@ -1235,24 +1375,58 @@ async function dispatchBootstrapAuthTool(
     },
   };
 
-  try {
-    const result = await tool.handler(parsed.data, bootstrapCtx);
-    return jsonRpcResult(id, {
-      content: [{ type: 'text', text: JSON.stringify(result) }],
-    });
-  } catch (err) {
-    if (err instanceof BootstrapError) {
-      return jsonRpcError(id, -32000, err.message, {
-        code: err.code,
-        remediation: err.remediation,
-      });
+  // Shared Tier 3 lifecycle (MCP-OAUTH-12): ledger (fail closed) → handler →
+  // complete + uniform `mcp.tool.<name>` audit. The handler's own business
+  // audits + dedup (per-invite events, configure_defaults audit, 24h dedupe)
+  // remain intact; this wraps them with the fail-closed ledger + uniform audit.
+  const execute = async (): Promise<Tier3ExecutionOutcome> => {
+    try {
+      const result = await tool.handler(parsed.data, bootstrapCtx);
+      const status = classifyBootstrapToolResult(result);
+      const resultText = JSON.stringify(result);
+      return {
+        status,
+        ledgerResult: resultText,
+        error: status === 'failure' ? bootstrapPartialFailureError(result) : undefined,
+        response: jsonRpcResult(id, { content: [{ type: 'text', text: resultText }] }),
+      };
+    } catch (err) {
+      if (err instanceof BootstrapError) {
+        return {
+          status: 'failure',
+          error: err,
+          response: jsonRpcError(id, -32000, err.message, {
+            code: err.code,
+            remediation: err.remediation,
+          }),
+        };
+      }
+      const message = err instanceof Error ? err.message : 'Tool execution failed';
+      return {
+        status: 'failure',
+        error: err,
+        response: jsonRpcResult(id, {
+          content: [{ type: 'text', text: JSON.stringify({ error: message }) }],
+          isError: true,
+        }),
+      };
     }
-    const message = err instanceof Error ? err.message : 'Tool execution failed';
-    return jsonRpcResult(id, {
-      content: [{ type: 'text', text: JSON.stringify({ error: message }) }],
-      isError: true,
-    });
-  }
+  };
+
+  return runTier3ToolLifecycle(
+    {
+      id,
+      c,
+      auth,
+      apiKey,
+      sessionId,
+      orgId: resolvedOrgId,
+      toolName: tool.definition.name,
+      tier: BOOTSTRAP_TOOL_TIER,
+      toolInput,
+    },
+    execute,
+  );
 }
 
 // ============================================
@@ -1316,6 +1490,28 @@ export function handlePromptsGet(id: string | number, params: Record<string, unk
 // ============================================
 
 /**
+ * MCP-OAUTH-03: fail-closed resource RBAC. `resources/read` previously
+ * enforced MCP auth + general scope + tenant RLS filtering, but never mapped
+ * the requested resource URI to a product permission the way `tools/call`
+ * does via checkToolPermission — so a role missing e.g. `devices.read` could
+ * still read device/alert/script/automation data through resources/read.
+ * This ordered pattern list is the fail-closed authorization boundary:
+ * handleResourcesRead consults it BEFORE any site resolution or DB query.
+ * Unknown URI families (no pattern match) are denied.
+ */
+const MCP_RESOURCE_PERMISSIONS: Array<{ pattern: RegExp; permission: { resource: string; action: 'read' } }> = [
+  { pattern: /^breeze:\/\/devices$/, permission: { resource: 'devices', action: 'read' } },
+  { pattern: /^breeze:\/\/devices\/[0-9a-f-]+$/, permission: { resource: 'devices', action: 'read' } },
+  { pattern: /^breeze:\/\/alerts$/, permission: { resource: 'alerts', action: 'read' } },
+  { pattern: /^breeze:\/\/scripts$/, permission: { resource: 'scripts', action: 'read' } },
+  { pattern: /^breeze:\/\/automations$/, permission: { resource: 'automations', action: 'read' } },
+];
+
+function findMcpResourcePermission(uri: string): { resource: string; action: 'read' } | null {
+  return MCP_RESOURCE_PERMISSIONS.find((entry) => entry.pattern.test(uri))?.permission ?? null;
+}
+
+/**
  * SR-008: explicit ALLOW-LIST of `devices` columns safe to serialize into the
  * `breeze://devices/{id}` MCP resource. An allow-list (not a deny-list) is
  * deliberate — any column added to the schema in future is excluded by
@@ -1369,24 +1565,44 @@ async function readOrgScopedResource(
 
 /**
  * Dual-axis read condition for a dual-ownership table (org XOR partner —
- * scripts, automations #2133). Partner-scope callers also see partner-wide
- * rows (org_id NULL) owned by their OWN partner; org tokens carry a partnerId
- * but never pass breeze_has_partner_access, so they get the org branch only
- * (the app layer must never be looser than RLS).
+ * scripts, automations #2133). The app-layer filter must MIRROR RLS, never be
+ * looser (leak) nor stricter (hide readable rows).
+ *
+ * Who may see partner-wide rows (org_id NULL) owned by their OWN partner:
+ *  - PARTNER-scope callers always: they carry a partner-axis allowlist and pass
+ *    RLS `breeze_has_partner_access(partner_id)`.
+ *  - ORG-scope callers: since MCP-OAUTH-06 they carry NO partner-axis allowlist
+ *    (accessiblePartnerIds: []), so `breeze_has_partner_access` FAILS for them.
+ *    Their only partner-wide visibility comes from the RLS catalog read branch
+ *    `org_id IS NULL AND partner_id = breeze_current_partner_id()`, which exists
+ *    on scripts/alert_templates/script_categories/script_tags (2026-06-13
+ *    migration) but NOT on automations. Hence the asymmetry:
+ *      • SCRIPTS (orgScopeCatalogRead: true) — org callers DO see partner-wide
+ *        rows; omitting the branch here would wrongly hide rows RLS permits
+ *        (mirrors REST routes/scripts.ts which OR-s the partner branch for org
+ *        scope).
+ *      • AUTOMATIONS (orgScopeCatalogRead: false) — automations has no catalog
+ *        read branch, so partner-wide rows are invisible to org callers at the
+ *        RLS layer; the app layer matches by withholding the branch (mirrors
+ *        REST routes/automations.ts which gates it to `scope === 'partner'`).
  */
-function dualAxisResourceCondition(
+export function dualAxisResourceCondition(
   auth: AuthContext,
   orgCondition: SQL | undefined,
   table: { orgId: PgColumn; partnerId: PgColumn },
+  options: { orgScopeCatalogRead: boolean },
 ): SQL | undefined {
   if (!orgCondition) return undefined; // system scope — no tenant filter
-  if (auth.scope === 'partner' && auth.partnerId) {
-    return or(
-      orgCondition,
-      and(isNull(table.orgId), eq(table.partnerId, auth.partnerId)),
-    ) as SQL;
-  }
-  return orgCondition;
+  if (!auth.partnerId) return orgCondition;
+
+  const partnerWideVisible =
+    auth.scope === 'partner' || options.orgScopeCatalogRead;
+  if (!partnerWideVisible) return orgCondition;
+
+  return or(
+    orgCondition,
+    and(isNull(table.orgId), eq(table.partnerId, auth.partnerId)),
+  ) as SQL;
 }
 
 async function handleResourcesRead(
@@ -1397,6 +1613,24 @@ async function handleResourcesRead(
   const uri = params.uri as string;
   if (!uri) {
     return jsonRpcError(id, -32602, 'Missing required parameter: uri');
+  }
+
+  // MCP-OAUTH-03: authorize the URI before any site resolution or DB query.
+  // OAuth consent and tenant RLS only prove membership, not that the
+  // caller's role includes the resource's read permission — that's this
+  // check's job, and it must fail closed (unknown URI families denied).
+  const requiredPermission = findMcpResourcePermission(uri);
+  if (!requiredPermission) {
+    return jsonRpcError(id, -32602, `Unknown resource URI: ${uri}`);
+  }
+  try {
+    const permError = await checkPermissionRequirement(auth, requiredPermission);
+    if (permError) {
+      return jsonRpcError(id, -32603, permError);
+    }
+  } catch (err) {
+    console.error('[MCP] Permission check failed for resource:', uri, err);
+    return jsonRpcError(id, -32000, 'Unable to verify permissions');
   }
 
   const orgCond = auth.orgCondition;
@@ -1471,7 +1705,11 @@ async function handleResourcesRead(
         description: scripts.description,
         language: scripts.language,
         category: scripts.category
-      }, dualAxisResourceCondition(auth, orgCond(scripts.orgId), scripts), {
+      }, dualAxisResourceCondition(auth, orgCond(scripts.orgId), scripts, {
+        // scripts have the RLS catalog read branch — org-scope callers see
+        // their own partner-wide scripts.
+        orgScopeCatalogRead: true,
+      }), {
         extraConditions: [isNull(scripts.deletedAt)],
         limit: 200
       });
@@ -1485,7 +1723,11 @@ async function handleResourcesRead(
         description: automations.description,
         enabled: automations.enabled,
         trigger: automations.trigger
-      }, dualAxisResourceCondition(auth, orgCond(automations.orgId), automations), { limit: 200 });
+      }, dualAxisResourceCondition(auth, orgCond(automations.orgId), automations, {
+        // automations have NO catalog read branch — org-scope callers do NOT
+        // see partner-wide automations (aligns with routes/automations.ts).
+        orgScopeCatalogRead: false,
+      }), { limit: 200 });
     }
 
     // Handle dynamic resource URIs: breeze://devices/{id}

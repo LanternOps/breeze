@@ -16,6 +16,7 @@ import { ERROR_IDS, logOauthDebug, logOauthError } from '../oauth/log';
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
 import { getTrustedClientIp } from '../services/clientIp';
+import { validateRedirectUris } from '../oauth/redirectUriPolicy';
 
 export const oauthRoutes = new Hono<{ Bindings: HttpBindings }>();
 
@@ -156,6 +157,26 @@ if (MCP_OAUTH_ENABLED) {
             error: 'invalid_client_metadata',
             error_description: 'too many redirect_uris; maximum is 10',
           }, 400);
+        }
+
+        // MCP-OAUTH-09: enforce the redirect-URI transport policy on BOTH
+        // registration creation (POST /oauth/reg) and registration-management
+        // updates (PUT /oauth/reg/:id — this pre-handler runs on `*`, and
+        // `hasRegistrationBody` is true for PUT/PATCH on /reg paths). oidc-
+        // provider validated redirect_uris by shape only; without this an
+        // `http://` remote callback would be accepted, letting an attacker
+        // exfiltrate the authorization code over cleartext to a host they
+        // control. One invalid URI rejects the whole registration (fail
+        // closed). Only validate when the client actually supplied the field —
+        // absence is left to oidc-provider's own mandatory-field handling.
+        if (redirectUris !== undefined) {
+          const redirectCheck = validateRedirectUris(redirectUris);
+          if (!redirectCheck.ok) {
+            return c.json({
+              error: 'invalid_redirect_uri',
+              error_description: redirectCheck.reason,
+            }, 400);
+          }
         }
 
         if (typeof metadata.client_name === 'string' && metadata.client_name.length > 128) {
