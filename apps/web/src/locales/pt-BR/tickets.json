@@ -250,12 +250,17 @@
     "createTicket": "Criar chamado",
     "creationFailed": "Falha ao criar chamado. Tente novamente.",
     "createdToast": "Chamado {{number}} criado",
+    "startFromForm": "Começar a partir de um formulário (opcional)",
+    "blankTicketOption": "Chamado em branco",
     "priorityOptions": {
       "low": "Baixa",
       "normal": "Normal",
       "high": "Alta",
       "urgent": "Urgente"
     }
+  },
+  "ticketFormFields": {
+    "selectPlaceholder": "Selecionar…"
   },
   "ticketsPage": {
     "title": "Chamados",

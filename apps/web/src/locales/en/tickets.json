@@ -250,12 +250,17 @@
     "createTicket": "Create ticket",
     "creationFailed": "Ticket creation failed. Retry.",
     "createdToast": "Ticket {{number}} created",
+    "startFromForm": "Start from a form (optional)",
+    "blankTicketOption": "Blank ticket",
     "priorityOptions": {
       "low": "Low",
       "normal": "Normal",
       "high": "High",
       "urgent": "Urgent"
     }
+  },
+  "ticketFormFields": {
+    "selectPlaceholder": "Select…"
   },
   "ticketsPage": {
     "title": "Tickets",
