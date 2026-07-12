@@ -2,6 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./quoteService', () => ({
   createQuote: vi.fn().mockResolvedValue({ id: 'quote-1', status: 'draft' }),
+  listQuotes: vi.fn().mockResolvedValue([
+    { id: 'quote-1', quoteNumber: 'Q-2026-0001', status: 'draft' },
+    { id: 'quote-2', quoteNumber: 'Q-2026-0002', status: 'sent' },
+  ]),
   updateQuote: vi.fn().mockResolvedValue({ id: 'quote-1', introNotes: 'Updated' }),
   getQuote: vi.fn().mockResolvedValue({
     quote: {
@@ -76,11 +80,11 @@ const SITE_UUID = '22222222-2222-4222-8222-222222222222';
 const CATALOG_UUID = '33333333-3333-4333-8333-333333333333';
 const BLOCK_UUID = '44444444-4444-4444-8444-444444444444';
 
-function getTool(): AiTool {
+function getTool(name = 'manage_quotes'): AiTool {
   const map = new Map<string, AiTool>();
   registerQuoteTools(map);
-  const t = map.get('manage_quotes');
-  if (!t) throw new Error('manage_quotes not registered');
+  const t = map.get(name);
+  if (!t) throw new Error(`${name} not registered`);
   return t;
 }
 
@@ -342,5 +346,80 @@ describe('manage_quotes input validation (#2362)', () => {
     expect(parsed.code).toBe('VALIDATION_ERROR');
     expect(parsed.error).toContain('lineId');
     expect(quoteService.removeLine).not.toHaveBeenCalled();
+  });
+});
+
+describe('list_quotes / get_quote read tools (#2361)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('list_quotes with no filters lists quotes with the default limit', async () => {
+    const out = await getTool('list_quotes').handler({}, auth);
+
+    expect(quoteService.listQuotes).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: 25 }),
+      actor,
+    );
+    const parsed = JSON.parse(out);
+    expect(parsed.showing).toBe(2);
+    expect(parsed.quotes).toHaveLength(2);
+    expect(parsed.quotes[0].id).toBe('quote-1');
+  });
+
+  it('list_quotes forwards org/status filters and clamps limit via the shared schema', async () => {
+    await getTool('list_quotes').handler({ orgId: ORG_UUID, status: 'sent', limit: 10 }, auth);
+
+    expect(quoteService.listQuotes).toHaveBeenCalledWith(
+      expect.objectContaining({ orgId: ORG_UUID, status: 'sent', limit: 10 }),
+      actor,
+    );
+  });
+
+  it('list_quotes with an invalid status returns a structured VALIDATION_ERROR', async () => {
+    const out = await getTool('list_quotes').handler({ status: 'bogus' }, auth);
+
+    const parsed = JSON.parse(out);
+    expect(parsed.code).toBe('VALIDATION_ERROR');
+    expect(parsed.error).toContain('status');
+    expect(quoteService.listQuotes).not.toHaveBeenCalled();
+  });
+
+  it('get_quote returns the full view (header + blocks + lines) from getQuote', async () => {
+    const out = await getTool('get_quote').handler({ quoteId: 'quote-1' }, auth);
+
+    expect(quoteService.getQuote).toHaveBeenCalledWith('quote-1', actor);
+    const parsed = JSON.parse(out);
+    expect(parsed.quote.id).toBe('quote-1');
+    expect(parsed).toHaveProperty('blocks');
+    expect(parsed).toHaveProperty('lines');
+  });
+
+  it('get_quote without quoteId returns a structured VALIDATION_ERROR', async () => {
+    const out = await getTool('get_quote').handler({}, auth);
+
+    const parsed = JSON.parse(out);
+    expect(parsed.code).toBe('VALIDATION_ERROR');
+    expect(parsed.error).toContain('quoteId');
+    expect(quoteService.getQuote).not.toHaveBeenCalled();
+  });
+
+  it('get_quote maps QuoteServiceError (e.g. QUOTE_NOT_FOUND) to a structured error', async () => {
+    vi.mocked(quoteService.getQuote).mockRejectedValueOnce(
+      new QuoteServiceError('Quote not found', 404, 'QUOTE_NOT_FOUND'),
+    );
+
+    const out = await getTool('get_quote').handler({ quoteId: 'missing' }, auth);
+
+    expect(JSON.parse(out)).toEqual({ error: 'Quote not found', code: 'QUOTE_NOT_FOUND' });
+  });
+
+  it('update with an empty patch is rejected with VALIDATION_ERROR and does not touch the quote (#2361)', async () => {
+    const out = await getTool().handler({ action: 'update', quoteId: 'quote-1', patch: {} }, auth);
+
+    const parsed = JSON.parse(out);
+    expect(parsed.code).toBe('VALIDATION_ERROR');
+    expect(parsed.error).toContain('get_quote');
+    // No UPDATE runs, so updatedAt cannot be bumped by an empty patch.
+    expect(quoteService.updateQuote).not.toHaveBeenCalled();
+    expect(quoteService.getQuote).not.toHaveBeenCalled();
   });
 });

@@ -285,6 +285,16 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     payment: z.record(z.string(), z.unknown()).optional(),
   }),
 
+  list_quotes: z.object({
+    orgId: uuid.optional(),
+    status: z.enum(['draft', 'sent', 'viewed', 'accepted', 'declined', 'expired', 'converted']).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
+
+  get_quote: z.object({
+    quoteId: uuid,
+  }),
+
   manage_quotes: z.object({
     action: z.enum([
       'create_draft',

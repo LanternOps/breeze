@@ -183,6 +183,8 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     resume: { resource: 'contracts', action: 'manage' },
     cancel: { resource: 'contracts', action: 'manage' },
   },
+  list_quotes: { resource: 'quotes', action: 'read' },
+  get_quote: { resource: 'quotes', action: 'read' },
   manage_quotes: {
     create_draft: { resource: 'quotes', action: 'write' },
     update: { resource: 'quotes', action: 'write' },
