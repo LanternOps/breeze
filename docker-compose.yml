@@ -69,11 +69,8 @@ services:
       NODE_ENV: production
       API_PORT: 3001
       DATABASE_URL: postgresql://${POSTGRES_USER:-breeze}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-breeze}
-      # Unprivileged app role connection — RLS policies are enforced against this user.
-      # Falls back to DATABASE_URL (superuser) if unset — but RLS will be bypassed in that case.
-      DATABASE_URL_APP: postgresql://breeze_app:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-breeze}
-      # ensureAppRole reads one of these from the api container env to CREATE/ALTER the
-      # breeze_app role on first boot. Without one of these, DATABASE_URL_APP fails auth.
+      # The request pool derives its breeze_app URL from DATABASE_URL and the same
+      # effective password ensureAppRole uses to CREATE/ALTER that unprivileged role.
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       BREEZE_APP_DB_PASSWORD: ${BREEZE_APP_DB_PASSWORD:-}
       REDIS_HOST: redis

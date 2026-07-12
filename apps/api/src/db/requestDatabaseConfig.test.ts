@@ -103,7 +103,7 @@ describe('requestDatabaseConfig', () => {
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        expect(message).toMatch(/DATABASE_URL_APP.*valid.*single database\/HA endpoint/i);
+        expect(message).toMatch(/DATABASE_URL_APP.*valid.*database\/HA endpoint/i);
         expect(message).not.toContain(username);
         expect(message).not.toContain(password);
         expect(message).not.toContain('request-db:not-a-port');
@@ -112,26 +112,32 @@ describe('requestDatabaseConfig', () => {
 
     it.each([
       'postgresql://request-user:request-password@db-one,db-two/breeze',
-      'postgresql://request-user:request-password@db-one:5432,db-two:5432/breeze',
-    ])('rejects an explicit multi-host request URL without leaking credentials: %s', (url) => {
-      expect(() =>
-        resolveRequestDatabaseConfig({
-          NODE_ENV: 'production',
-          DATABASE_URL_APP: url,
-        }),
-      ).toThrow(/DATABASE_URL_APP.*single database\/HA endpoint/i);
+      'postgresql://request-user:request-password@db-one:5432,db-two:6432/breeze?target_session_attrs=primary',
+      'postgresql://request-user:request-password@db-one%2Cdb-two/breeze',
+      'postgresql://request-user:request-password@db-one%2Cdb-two%3A6432/breeze',
+    ])('accepts an explicit postgres.js multi-host request URL unchanged: %s', (url) => {
+      expect(resolveRequestDatabaseConfig({
+        NODE_ENV: 'production',
+        DATABASE_URL_APP: url,
+      })).toEqual({ url, source: 'explicit' });
+    });
 
+    it.each([
+      'postgresql://request-user:request-password@db-one:nope,db-two:6432/breeze',
+      'postgresql://request-user:request-password@db-one:5432,,db-two:6432/breeze',
+      'postgresql://request-user:request-password@db-one%2C%2Cdb-two/breeze',
+    ])('rejects a malformed multi-host request URL without leaking details: %s', (url) => {
       try {
-        resolveRequestDatabaseConfig({
-          NODE_ENV: 'production',
-          DATABASE_URL_APP: url,
-        });
+        resolveRequestDatabaseConfig({ NODE_ENV: 'production', DATABASE_URL_APP: url });
+        throw new Error('expected resolver to reject malformed URL');
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        expect(message).toMatch(/DATABASE_URL_APP.*valid.*database\/HA endpoint/i);
         expect(message).not.toContain('request-user');
         expect(message).not.toContain('request-password');
         expect(message).not.toContain('db-one');
         expect(message).not.toContain('db-two');
+        expect(message).not.toContain(url);
       }
     });
 
@@ -162,6 +168,28 @@ describe('requestDatabaseConfig', () => {
       });
     });
 
+    it('preserves the selected app-role password verbatim', () => {
+      const password = '  request secret  ';
+      const result = resolveRequestDatabaseConfig({
+        NODE_ENV: 'production',
+        DATABASE_URL: 'postgresql://admin:admin-secret@db:5432/breeze',
+        BREEZE_APP_DB_PASSWORD: password,
+      });
+
+      expect(decodeURIComponent(new URL(result.url).password)).toBe(password);
+    });
+
+    it('treats a whitespace-only app password as empty and falls back to POSTGRES_PASSWORD', () => {
+      const result = resolveRequestDatabaseConfig({
+        NODE_ENV: 'production',
+        DATABASE_URL: 'postgresql://admin:admin-secret@db:5432/breeze',
+        BREEZE_APP_DB_PASSWORD: '   ',
+        POSTGRES_PASSWORD: 'postgres-secret',
+      });
+
+      expect(decodeURIComponent(new URL(result.url).password)).toBe('postgres-secret');
+    });
+
     it.each([
       'postgresql://admin:admin-secret@db-one,db-two/breeze',
       'postgresql://admin:admin-secret@db-one:5432,db-two:5432/breeze',
@@ -172,7 +200,7 @@ describe('requestDatabaseConfig', () => {
           DATABASE_URL: url,
           BREEZE_APP_DB_PASSWORD: 'request-secret',
         }),
-      ).toThrow(/single database\/HA endpoint/i);
+      ).toThrow(/DATABASE_URL_APP.*multi-host\/HA/i);
 
       try {
         resolveRequestDatabaseConfig({

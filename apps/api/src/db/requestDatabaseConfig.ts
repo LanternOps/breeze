@@ -8,10 +8,20 @@ export interface RequestDatabaseConfig {
   source: RequestDatabaseConfigSource;
 }
 
+export function selectAppRolePassword(
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  if (env.BREEZE_APP_DB_PASSWORD?.trim()) return env.BREEZE_APP_DB_PASSWORD;
+  if (env.POSTGRES_PASSWORD?.trim()) return env.POSTGRES_PASSWORD;
+  return undefined;
+}
+
 type RequestDatabaseConfigLogger = Pick<Console, 'log' | 'warn'>;
 
-const SINGLE_ENDPOINT_GUIDANCE =
-  'Configure a valid PostgreSQL URL for a single database/HA endpoint.';
+const CONNECTION_URL_GUIDANCE =
+  'Configure a valid PostgreSQL URL for a database/HA endpoint.';
+const MULTI_HOST_DERIVATION_GUIDANCE =
+  'Set an explicit DATABASE_URL_APP for postgres.js multi-host/HA URLs.';
 
 function connectionHostSegment(connectionUrl: string): string | null {
   const authority = connectionUrl.match(/^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)/iu)?.[1];
@@ -20,24 +30,44 @@ function connectionHostSegment(connectionUrl: string): string | null {
 }
 
 function usesMultipleHosts(connectionUrl: string): boolean {
-  return connectionHostSegment(connectionUrl)?.includes(',') ?? false;
+  const hostSegment = connectionHostSegment(connectionUrl);
+  if (hostSegment === null) return false;
+  try {
+    return decodeURIComponent(hostSegment).includes(',');
+  } catch {
+    return /,|%2c/iu.test(hostSegment);
+  }
 }
 
-function parseSingleEndpointUrl(connectionUrl: string, source: string): URL {
-  const error = new Error(`[database] ${source} is invalid. ${SINGLE_ENDPOINT_GUIDANCE}`);
-
-  if (usesMultipleHosts(connectionUrl)) throw error;
+function parseConnectionUrl(connectionUrl: string, source: string): URL {
+  const error = new Error(`[database] ${source} is invalid. ${CONNECTION_URL_GUIDANCE}`);
 
   try {
-    const parsed = new URL(connectionUrl);
-    if (
-      (parsed.protocol !== 'postgres:' && parsed.protocol !== 'postgresql:')
-      || !parsed.hostname
-      || parsed.hostname.includes(',')
-    ) {
+    const match = connectionUrl.match(
+      /^((?:postgres|postgresql):\/\/)([^/?#]*)(.*)$/iu,
+    );
+    if (!match) throw error;
+
+    const scheme = match[1];
+    const authority = match[2];
+    const suffix = match[3];
+    if (!scheme || authority === undefined || suffix === undefined) throw error;
+    const userInfoEnd = authority.lastIndexOf('@');
+    const userInfo = userInfoEnd >= 0 ? authority.slice(0, userInfoEnd + 1) : '';
+    const encodedHosts = authority.slice(userInfoEnd + 1);
+    const endpoints = decodeURIComponent(encodedHosts).split(',');
+    if (endpoints.length === 0 || endpoints.some((endpoint) => !endpoint)) {
       throw error;
     }
-    return parsed;
+
+    let firstParsed: URL | undefined;
+    for (const endpoint of endpoints) {
+      if (/[/?#@\s]/u.test(endpoint)) throw error;
+      const parsed = new URL(`${scheme}${userInfo}${endpoint}${suffix}`);
+      if (!parsed.hostname || parsed.hostname.includes(',')) throw error;
+      firstParsed ??= parsed;
+    }
+    return firstParsed!;
   } catch {
     // URL parser errors can expose the parser's credential-bearing `.input`.
     // Always replace them with the fixed, actionable message above.
@@ -64,7 +94,7 @@ export function deriveAppConnectionString(
   if (!appPassword) return null;
 
   try {
-    const url = parseSingleEndpointUrl(adminUrl, 'DATABASE_URL');
+    const url = parseConnectionUrl(adminUrl, 'DATABASE_URL');
     url.username = 'breeze_app';
     url.password = appPassword;
     return url.toString();
@@ -78,17 +108,16 @@ export function resolveRequestDatabaseConfig(
 ): RequestDatabaseConfig {
   const explicit = env.DATABASE_URL_APP?.trim();
   if (explicit) {
-    parseSingleEndpointUrl(explicit, 'DATABASE_URL_APP');
+    parseConnectionUrl(explicit, 'DATABASE_URL_APP');
     return { url: explicit, source: 'explicit' };
   }
 
   const adminUrl =
     env.DATABASE_URL?.trim() || 'postgresql://breeze:breeze@localhost:5432/breeze';
-  const password =
-    env.BREEZE_APP_DB_PASSWORD?.trim() || env.POSTGRES_PASSWORD?.trim();
+  const password = selectAppRolePassword(env);
   if (password && usesMultipleHosts(adminUrl)) {
     throw new Error(
-      `[database] Cannot derive the request database URL from DATABASE_URL. ${SINGLE_ENDPOINT_GUIDANCE}`,
+      `[database] Cannot derive the request database URL from DATABASE_URL. ${MULTI_HOST_DERIVATION_GUIDANCE}`,
     );
   }
   const derived = deriveAppConnectionString(adminUrl, password);

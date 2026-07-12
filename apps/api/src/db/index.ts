@@ -51,13 +51,21 @@ const REQUEST_DATABASE_ROLE_REMEDIATION =
  * the identity and RLS capabilities of the pool that will serve requests.
  */
 export async function getRequestDatabaseRole(): Promise<RequestDatabaseRole> {
-  const rows = await client`
-    SELECT current_user AS "currentUser",
-           rolsuper AS "isSuperuser",
-           rolbypassrls AS "bypassesRls"
-    FROM pg_roles
-    WHERE rolname = current_user
-  `;
+  let rows: readonly unknown[];
+  try {
+    rows = await client`
+      SELECT current_user AS "currentUser",
+             rolsuper AS "isSuperuser",
+             rolbypassrls AS "bypassesRls"
+      FROM pg_roles
+      WHERE rolname = current_user
+    `;
+  } catch {
+    throw new Error(
+      '[database] Could not query the effective request database role. ' +
+        REQUEST_DATABASE_ROLE_REMEDIATION,
+    );
+  }
   const role = rows[0] as RequestDatabaseRole | undefined;
 
   if (!role) {

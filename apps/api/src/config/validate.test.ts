@@ -22,6 +22,7 @@ function withEnv(overrides: Record<string, string>, fn: () => void) {
 
 const validEnv = {
   DATABASE_URL: 'postgresql://user:pass@localhost:5432/breeze',
+  DATABASE_URL_APP: 'postgresql://breeze_app:request-secret@localhost:5432/breeze',
   JWT_SECRET: 'a7f3b9c2d1e4f6a8b0c3d5e7f9a1b3c5e7d9f1a3b5c7d9e1f3a5b7c9d1e3f5',
   APP_ENCRYPTION_KEY: '440e7e4bafb77c92cc38f818c90ad2e4c155089a438e6a790572a328e532b60a',
   MFA_ENCRYPTION_KEY: 'a725b6546832661a86e27bf46ea556099f163efc5a5f1daa58697f13f6204510',
@@ -67,6 +68,41 @@ describe('validateConfig', () => {
     }, () => {
       const config = validateConfig();
       expect(config.NODE_ENV).toBe('production');
+    });
+  });
+
+  it('rejects production with only the administrator DATABASE_URL', () => {
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      DATABASE_URL_APP: '',
+      BREEZE_APP_DB_PASSWORD: '',
+      POSTGRES_PASSWORD: '',
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+    }, () => {
+      expect(() => validateConfig()).toThrow(
+        /DATABASE_URL_APP.*BREEZE_APP_DB_PASSWORD.*POSTGRES_PASSWORD/i,
+      );
+    });
+  });
+
+  it.each([
+    ['DATABASE_URL_APP', 'postgresql://breeze_app:request-secret@localhost:5432/breeze'],
+    ['BREEZE_APP_DB_PASSWORD', 'request-secret'],
+    ['POSTGRES_PASSWORD', 'request-secret'],
+  ] as const)('accepts the %s request-role credential path in production', (key, value) => {
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      DATABASE_URL_APP: '',
+      BREEZE_APP_DB_PASSWORD: '',
+      POSTGRES_PASSWORD: '',
+      [key]: value,
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+    }, () => {
+      expect(validateConfig()[key]).toBe(value);
     });
   });
 
