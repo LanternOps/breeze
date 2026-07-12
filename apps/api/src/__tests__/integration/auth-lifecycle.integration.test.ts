@@ -10,6 +10,8 @@ import {
   partners,
   refreshTokenFamilies,
   sessions,
+  ssoProviders,
+  userSsoIdentities,
   users,
 } from '../../db/schema';
 import {
@@ -22,7 +24,11 @@ import {
 import { neutralizeUserIfOrphaned } from '../../services/userMembershipLifecycle';
 import { invalidatePartnerUsersInTransaction } from '../../services/tenantLifecycle';
 import { findExistingInviteUser } from '../../services/inviteUserReuse';
-import { organizationLifecycleWriteCondition } from '../../services/lifecycleAuthorization';
+import {
+  authorizeOrganizationLifecycleWrite,
+  organizationLifecycleWriteCondition,
+  type OrganizationLifecycleActor,
+} from '../../services/lifecycleAuthorization';
 import { invalidateAllUserSessionsAsSystem } from '../../services/session';
 import {
   assignUserToOrganization,
@@ -197,25 +203,155 @@ describe('transactional authentication lifecycle', () => {
     expect(family?.revokedAt).toBeNull();
   });
 
-  it('system transaction organization predicate cannot widen a partner or org-bound caller', async () => {
+  it('reuses only a genuine removed orphan and blocks ambiguous disabled identities', async () => {
+    const invitingPartner = await createPartner();
+    const priorPartner = await createPartner();
+    const manualSsoUser = await createUser({ partnerId: priorPartner.id });
+    const lingeringMember = await createUser({ partnerId: priorPartner.id, withMembership: true });
+    const retainedSsoUser = await createUser({ partnerId: priorPartner.id });
+    const genuineOrphan = await createUser({ partnerId: priorPartner.id });
+    const [provider] = await getTestDb().insert(ssoProviders).values({
+      partnerId: priorPartner.id,
+      name: 'Lifecycle integration IdP',
+      type: 'oidc',
+      status: 'active',
+    }).returning();
+
+    await getTestDb().update(users).set({
+      status: 'disabled',
+      passwordHash: null,
+      disabledReason: null,
+    }).where(eq(users.id, manualSsoUser.id));
+    await getTestDb().insert(userSsoIdentities).values({
+      userId: manualSsoUser.id,
+      providerId: provider.id,
+      externalId: 'manual-sso-subject',
+      email: manualSsoUser.email,
+    });
+
+    await getTestDb().update(users).set({
+      status: 'disabled',
+      passwordHash: null,
+      disabledReason: 'removed',
+    }).where(eq(users.id, lingeringMember.id));
+
+    await getTestDb().update(users).set({
+      status: 'disabled',
+      passwordHash: null,
+      disabledReason: 'removed',
+    }).where(eq(users.id, retainedSsoUser.id));
+    await getTestDb().insert(userSsoIdentities).values({
+      userId: retainedSsoUser.id,
+      providerId: provider.id,
+      externalId: 'retained-sso-subject',
+      email: retainedSsoUser.email,
+    });
+
+    await getTestDb().update(users).set({
+      status: 'disabled',
+      passwordHash: null,
+      disabledReason: 'removed',
+    }).where(eq(users.id, genuineOrphan.id));
+
+    const [manualDecision, membershipDecision, identityDecision] = await Promise.all([
+      withAuthLifecycleSystemTransaction((tx) =>
+        findExistingInviteUser(tx, manualSsoUser.email, invitingPartner.id)),
+      withAuthLifecycleSystemTransaction((tx) =>
+        findExistingInviteUser(tx, lingeringMember.email, invitingPartner.id)),
+      withAuthLifecycleSystemTransaction((tx) =>
+        findExistingInviteUser(tx, retainedSsoUser.email, invitingPartner.id)),
+    ]);
+    expect(manualDecision).toEqual({ kind: 'blocked', user: null });
+    expect(membershipDecision).toEqual({ kind: 'blocked', user: null });
+    expect(identityDecision).toEqual({ kind: 'blocked', user: null });
+
+    const rehomed = await withAuthLifecycleSystemTransaction(async (tx) => {
+      const decision = await findExistingInviteUser(tx, genuineOrphan.email, invitingPartner.id);
+      if (decision.kind !== 'reusable' || !decision.user) return [];
+      return tx.update(users).set({ partnerId: invitingPartner.id }).where(eq(users.id, decision.user.id)).returning({
+        id: users.id,
+        partnerId: users.partnerId,
+      });
+    });
+    expect(rehomed).toEqual([{ id: genuineOrphan.id, partnerId: invitingPartner.id }]);
+
+    const unchangedAmbiguousUsers = await getTestDb().select({ id: users.id, partnerId: users.partnerId })
+      .from(users)
+      .where(sql`${users.id} in (${manualSsoUser.id}, ${lingeringMember.id}, ${retainedSsoUser.id})`);
+    expect(unchangedAmbiguousUsers).toHaveLength(3);
+    expect(unchangedAmbiguousUsers.every((row) => row.partnerId === priorPartner.id)).toBe(true);
+  });
+
+  it('rechecks live organization, partner, and system actor authority inside the system transaction', async () => {
     const partnerA = await createPartner();
     const partnerB = await createPartner();
     const orgA = await createOrganization({ partnerId: partnerA.id });
     const orgB = await createOrganization({ partnerId: partnerB.id });
+    const orgActor = await createUser({ partnerId: partnerB.id, orgId: orgB.id });
+    const orgRole = await createRole({ scope: 'organization', partnerId: partnerB.id, orgId: orgB.id });
+    await assignUserToOrganization(orgActor.id, orgB.id, orgRole.id);
+    const partnerActor = await createUser({ partnerId: partnerB.id, withMembership: true });
+    const systemActor = await createUser({ partnerId: partnerA.id });
+    await getTestDb().update(users).set({ isPlatformAdmin: true }).where(eq(users.id, systemActor.id));
 
-    const partnerRows = await withAuthLifecycleSystemTransaction((tx) => tx
-      .update(organizations)
-      .set({ status: 'suspended' })
-      .where(organizationLifecycleWriteCondition({ scope: 'partner', partnerId: partnerA.id, orgId: null }, orgB.id))
-      .returning({ id: organizations.id }));
-    const orgRows = await withAuthLifecycleSystemTransaction((tx) => tx
-      .update(organizations)
-      .set({ status: 'suspended' })
-      .where(organizationLifecycleWriteCondition({ scope: 'system', partnerId: null, orgId: orgA.id }, orgB.id))
-      .returning({ id: organizations.id }));
+    const attemptWrite = (actor: OrganizationLifecycleActor, status: 'active' | 'suspended' | 'trial') =>
+      withAuthLifecycleSystemTransaction(async (tx) => {
+        const authorization = await authorizeOrganizationLifecycleWrite(tx, actor, orgB.id);
+        if (!authorization.authorized) return [];
+        return tx.update(organizations)
+          .set({ status })
+          .where(organizationLifecycleWriteCondition(orgB.id, authorization.targetPartnerId))
+          .returning({ id: organizations.id, status: organizations.status });
+      });
 
-    expect(partnerRows).toEqual([]);
-    expect(orgRows).toEqual([]);
+    const organizationActor: OrganizationLifecycleActor = {
+      scope: 'organization',
+      userId: orgActor.id,
+      partnerId: partnerB.id,
+      orgId: orgB.id,
+    };
+    const partnerActorContext: OrganizationLifecycleActor = {
+      scope: 'partner',
+      userId: partnerActor.id,
+      partnerId: partnerB.id,
+      orgId: null,
+    };
+    const systemActorContext: OrganizationLifecycleActor = {
+      scope: 'system',
+      userId: systemActor.id,
+      partnerId: null,
+      orgId: null,
+    };
+
+    await getTestDb().delete(organizationUsers).where(and(
+      eq(organizationUsers.userId, orgActor.id),
+      eq(organizationUsers.orgId, orgB.id),
+    ));
+    expect(await attemptWrite(organizationActor, 'suspended')).toEqual([]);
+    await assignUserToOrganization(orgActor.id, orgB.id, orgRole.id);
+    expect(await attemptWrite(organizationActor, 'suspended')).toEqual([{ id: orgB.id, status: 'suspended' }]);
+
+    await getTestDb().update(partnerUsers).set({ orgAccess: 'none', orgIds: null }).where(and(
+      eq(partnerUsers.userId, partnerActor.id),
+      eq(partnerUsers.partnerId, partnerB.id),
+    ));
+    expect(await attemptWrite(partnerActorContext, 'active')).toEqual([]);
+    await getTestDb().update(partnerUsers).set({ orgAccess: 'selected', orgIds: [orgB.id] }).where(and(
+      eq(partnerUsers.userId, partnerActor.id),
+      eq(partnerUsers.partnerId, partnerB.id),
+    ));
+    expect(await attemptWrite(partnerActorContext, 'active')).toEqual([{ id: orgB.id, status: 'active' }]);
+    await getTestDb().update(partnerUsers).set({ orgAccess: 'all', orgIds: null }).where(and(
+      eq(partnerUsers.userId, partnerActor.id),
+      eq(partnerUsers.partnerId, partnerB.id),
+    ));
+    expect(await attemptWrite(partnerActorContext, 'trial')).toEqual([{ id: orgB.id, status: 'trial' }]);
+
+    expect(await attemptWrite(systemActorContext, 'active')).toEqual([{ id: orgB.id, status: 'active' }]);
+    expect(await attemptWrite({ ...systemActorContext, orgId: orgA.id }, 'suspended')).toEqual([]);
+    await getTestDb().update(users).set({ isPlatformAdmin: false }).where(eq(users.id, systemActor.id));
+    expect(await attemptWrite(systemActorContext, 'suspended')).toEqual([]);
+
     const [unchanged] = await getTestDb().select().from(organizations).where(eq(organizations.id, orgB.id));
     expect(unchanged?.status).toBe('active');
   });

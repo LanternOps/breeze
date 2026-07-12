@@ -22,7 +22,10 @@ import {
   type PartnerLifecycleSnapshot,
 } from '../services/tenantLifecycle';
 import { withAuthLifecycleSystemTransaction } from '../services/authLifecycle';
-import { organizationLifecycleWriteCondition } from '../services/lifecycleAuthorization';
+import {
+  authorizeOrganizationLifecycleWrite,
+  organizationLifecycleWriteCondition,
+} from '../services/lifecycleAuthorization';
 import { applyOrganizationOrder, sanitizeOrganizationOrder } from '../services/orgOrdering';
 import { captureException } from '../services/sentry';
 import { encryptColumnValueForWrite } from '../services/encryptedColumnRegistry';
@@ -1243,7 +1246,11 @@ orgRoutes.get('/organizations/:id', requireScope('partner', 'system'), requireOr
     return c.json({ error: 'Organization not found' }, 404);
   }
 
-  const conditions = organizationLifecycleWriteCondition(auth, id);
+  const conditions = and(
+    eq(organizations.id, id),
+    isNull(organizations.deletedAt),
+    auth.scope === 'partner' ? eq(organizations.partnerId, auth.partnerId!) : undefined,
+  );
 
   const [organization] = await db
     .select()
@@ -1277,12 +1284,15 @@ orgRoutes.get('/organizations/:id/effective-settings',
   }
 );
 
-const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWrite, requireMfa(), zValidator('json', updateOrganizationSchema), async (c: any) => {
+const updateOrgHandler = [requireScope('organization', 'partner', 'system'), requireOrgWrite, requireMfa(), zValidator('json', updateOrganizationSchema), async (c: any) => {
   const auth = c.get('auth') as AuthContext;
   const id = c.req.param('id')!;
   const data = c.req.valid('json');
 
   if (auth.scope === 'partner' && !auth.canAccessOrg(id)) {
+    return c.json({ error: 'Organization not found' }, 404);
+  }
+  if (auth.scope === 'organization' && auth.orgId !== id) {
     return c.json({ error: 'Organization not found' }, 404);
   }
 
@@ -1353,10 +1363,21 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWrite, re
     updates.contractEnd = data.contractEnd ? new Date(data.contractEnd) : null;
   }
 
-  const conditions = organizationLifecycleWriteCondition(auth, id);
-
   let lifecycleSnapshot: OrganizationLifecycleSnapshot | undefined;
   const updateOrganization = async (tx: typeof db) => {
+    const authorization = await authorizeOrganizationLifecycleWrite(
+      tx as any,
+      {
+        scope: auth.scope,
+        userId: auth.user.id,
+        partnerId: auth.partnerId,
+        orgId: auth.orgId,
+      },
+      id,
+    );
+    if (!authorization.authorized) return undefined;
+
+    const conditions = organizationLifecycleWriteCondition(id, authorization.targetPartnerId);
     const [before] = data.status === undefined
       ? []
       : await tx
@@ -1379,9 +1400,9 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWrite, re
     }
     return updatedOrganization;
   };
-  const organization = data.status === undefined
-    ? await updateOrganization(db)
-    : await withAuthLifecycleSystemTransaction((tx) => updateOrganization(tx as unknown as typeof db));
+  const organization = await withAuthLifecycleSystemTransaction(
+    (tx) => updateOrganization(tx as unknown as typeof db),
+  );
 
   if (!organization) {
     return c.json({ error: 'Organization not found' }, 404);
@@ -1426,18 +1447,32 @@ registerOrgPortalUsersRoutes(orgRoutes);
 // Org ticketing overrides (org_ticket_settings) — see routes/orgTicketSettings.ts
 registerOrgTicketSettingsRoutes(orgRoutes);
 
-orgRoutes.delete('/organizations/:id', requireScope('partner', 'system'), requireOrgWrite, requireMfa(), async (c) => {
+orgRoutes.delete('/organizations/:id', requireScope('organization', 'partner', 'system'), requireOrgWrite, requireMfa(), async (c) => {
   const auth = c.get('auth') as AuthContext;
   const id = c.req.param('id')!;
 
   if (auth.scope === 'partner' && !auth.canAccessOrg(id)) {
     return c.json({ error: 'Organization not found' }, 404);
   }
-
-  const conditions = organizationLifecycleWriteCondition(auth, id);
+  if (auth.scope === 'organization' && auth.orgId !== id) {
+    return c.json({ error: 'Organization not found' }, 404);
+  }
 
   let lifecycleSnapshot: OrganizationLifecycleSnapshot | undefined;
   const organization = await withAuthLifecycleSystemTransaction(async (tx) => {
+    const authorization = await authorizeOrganizationLifecycleWrite(
+      tx,
+      {
+        scope: auth.scope,
+        userId: auth.user.id,
+        partnerId: auth.partnerId,
+        orgId: auth.orgId,
+      },
+      id,
+    );
+    if (!authorization.authorized) return undefined;
+
+    const conditions = organizationLifecycleWriteCondition(id, authorization.targetPartnerId);
     const [updatedOrganization] = await tx
       .update(organizations)
       .set({ status: 'churned', deletedAt: new Date(), updatedAt: new Date() })

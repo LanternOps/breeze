@@ -8,6 +8,10 @@ const tenantLifecycleTxMocks = vi.hoisted(() => ({
   withSystemTransaction: vi.fn(),
 }));
 
+const lifecycleAuthorizationMocks = vi.hoisted(() => ({
+  authorizeOrganizationWrite: vi.fn(),
+}));
+
 vi.mock('../services', () => ({}));
 
 vi.mock('../services/sentry', () => ({
@@ -50,6 +54,11 @@ vi.mock('../services/tenantLifecycle', () => ({
 
 vi.mock('../services/authLifecycle', () => ({
   withAuthLifecycleSystemTransaction: tenantLifecycleTxMocks.withSystemTransaction,
+}));
+
+vi.mock('../services/lifecycleAuthorization', () => ({
+  organizationLifecycleWriteCondition: vi.fn(() => ({})),
+  authorizeOrganizationLifecycleWrite: lifecycleAuthorizationMocks.authorizeOrganizationWrite,
 }));
 
 vi.mock('../db', () => ({
@@ -235,6 +244,11 @@ describe('org routes', () => {
     );
     tenantLifecycleTxMocks.invalidatePartner.mockClear();
     tenantLifecycleTxMocks.invalidateOrganization.mockClear();
+    lifecycleAuthorizationMocks.authorizeOrganizationWrite.mockReset();
+    lifecycleAuthorizationMocks.authorizeOrganizationWrite.mockResolvedValue({
+      authorized: true,
+      targetPartnerId: 'partner-123',
+    });
   });
 
   describe('GET /orgs/partners', () => {
@@ -1377,6 +1391,52 @@ describe('org routes', () => {
   });
 
   describe('PATCH /orgs/organizations/:id', () => {
+    it('denies an organization caller whose live membership was removed before the system transaction', async () => {
+      setAuthContext({
+        scope: 'organization',
+        partnerId: 'partner-123',
+        orgId: 'org-1',
+      });
+      lifecycleAuthorizationMocks.authorizeOrganizationWrite.mockResolvedValueOnce({ authorized: false });
+
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'suspended' }),
+      });
+
+      expect(res.status).toBe(404);
+      expect(lifecycleAuthorizationMocks.authorizeOrganizationWrite).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ scope: 'organization', userId: 'user-123', orgId: 'org-1' }),
+        'org-1',
+      );
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('denies a partner caller whose live organization access changed before the system transaction', async () => {
+      setAuthContext({
+        scope: 'partner',
+        partnerId: 'partner-123',
+        accessibleOrgIds: ['org-1'],
+      });
+      lifecycleAuthorizationMocks.authorizeOrganizationWrite.mockResolvedValueOnce({ authorized: false });
+
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'suspended' }),
+      });
+
+      expect(res.status).toBe(404);
+      expect(lifecycleAuthorizationMocks.authorizeOrganizationWrite).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ scope: 'partner', userId: 'user-123', partnerId: 'partner-123' }),
+        'org-1',
+      );
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
     it('should reject empty updates', async () => {
       setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
       const res = await app.request('/orgs/organizations/org-1', {

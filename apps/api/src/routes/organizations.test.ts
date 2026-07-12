@@ -71,6 +71,8 @@ vi.mock('../services/auditEvents', () => ({
 // test doesn't have to mock those schema tables; severance behavior is covered
 // in tenantLifecycle.test.ts.
 vi.mock('../services/tenantLifecycle', () => ({
+  invalidateOrganizationUsersInTransaction: vi.fn().mockResolvedValue([]),
+  invalidatePartnerUsersInTransaction: vi.fn().mockResolvedValue({ userIds: [], orgIds: [] }),
   revokeOrganizationTenantAccess: vi.fn().mockResolvedValue({
     apiKeysRevoked: 0,
     userSessionsRevoked: 0,
@@ -89,6 +91,14 @@ vi.mock('../services/tenantLifecycle', () => ({
   }),
   restoreOrganizationTenantAccess: vi.fn().mockResolvedValue({ agentTokensRestored: 0 }),
   restorePartnerTenantAccess: vi.fn().mockResolvedValue({ agentTokensRestored: 0 })
+}));
+
+vi.mock('../services/lifecycleAuthorization', () => ({
+  authorizeOrganizationLifecycleWrite: vi.fn().mockResolvedValue({
+    authorized: true,
+    targetPartnerId: 'partner-123',
+  }),
+  organizationLifecycleWriteCondition: vi.fn(() => ({})),
 }));
 
 vi.mock('../middleware/auth', () => ({

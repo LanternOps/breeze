@@ -140,6 +140,8 @@ vi.mock('../db/schema', () => ({
   users: {},
   partnerUsers: {},
   organizationUsers: {},
+  userSsoIdentities: {},
+  userPasskeys: {},
   roles: {},
   permissions: {},
   rolePermissions: {},
@@ -550,7 +552,20 @@ describe('user routes', () => {
             name: 'Old Name',
             status: 'disabled',
             passwordHash: null,
+            disabledReason: 'removed',
           }]) })) })),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => []) })) })),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => []) })) })),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => []) })) })),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => []) })) })),
         } as any)
         .mockReturnValueOnce({
           from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => []) })) })),
