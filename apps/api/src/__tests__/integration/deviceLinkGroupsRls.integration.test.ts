@@ -233,6 +233,65 @@ describe('device link-group dissolution', () => {
     expect(survivor[0]?.linkGroupId).toBeNull();
   });
 
+  runDb('vm_host group survives guest loss but dissolves headless when the host unlinks (#2308)', async () => {
+    const { orgA, deviceA1, deviceA2 } = await seed();
+
+    // deviceA1 = host, deviceA2 = guest.
+    const groupId = await withSystemDbAccessContext(async () => {
+      const [group] = await db
+        .insert(deviceLinkGroups)
+        .values({ orgId: orgA.id, kind: 'vm_host', name: 'hv-01' })
+        .returning({ id: deviceLinkGroups.id });
+      await db
+        .update(devices)
+        .set({ linkGroupId: group!.id, linkGroupRole: 'host' })
+        .where(eq(devices.id, deviceA1.id));
+      await db
+        .update(devices)
+        .set({ linkGroupId: group!.id, linkGroupRole: 'guest' })
+        .where(eq(devices.id, deviceA2.id));
+      return group!.id;
+    });
+
+    // Host + guest present: no dissolution.
+    const keptOpen = await withSystemDbAccessContext(() => dissolveLinkGroupIfBelowMinimum(db, groupId));
+    expect(keptOpen).toBe(false);
+
+    // Unlink the HOST (as a PATCH remove / move-org would): the guest remains
+    // but the group is headless — the dissolve check must remove it and clear
+    // the guest's membership AND role.
+    await withSystemDbAccessContext(async () => {
+      await db
+        .update(devices)
+        .set({ linkGroupId: null, linkGroupRole: null })
+        .where(eq(devices.id, deviceA1.id));
+      // Re-seed a second guest so the member count stays >= 2 and ONLY the
+      // headless rule (not the below-minimum rule) can dissolve the group.
+      const extra = await seedDevice(orgA.id, (await db.select({ siteId: devices.siteId }).from(devices).where(eq(devices.id, deviceA2.id)))[0]!.siteId!, `extra-${Date.now()}`);
+      await db
+        .update(devices)
+        .set({ linkGroupId: groupId, linkGroupRole: 'guest' })
+        .where(eq(devices.id, extra.id));
+    });
+
+    const dissolved = await withSystemDbAccessContext(() => dissolveLinkGroupIfBelowMinimum(db, groupId));
+    expect(dissolved).toBe(true);
+
+    const remaining = await withSystemDbAccessContext(() =>
+      db.select({ id: deviceLinkGroups.id }).from(deviceLinkGroups).where(eq(deviceLinkGroups.id, groupId)),
+    );
+    expect(remaining).toHaveLength(0);
+
+    const exGuest = await withSystemDbAccessContext(() =>
+      db
+        .select({ linkGroupId: devices.linkGroupId, linkGroupRole: devices.linkGroupRole })
+        .from(devices)
+        .where(eq(devices.id, deviceA2.id)),
+    );
+    expect(exGuest[0]?.linkGroupId).toBeNull();
+    expect(exGuest[0]?.linkGroupRole).toBeNull();
+  });
+
   runDb('deleteLinkGroup unlinks every member and removes the group row', async () => {
     const { orgA, deviceA1, deviceA2 } = await seed();
 

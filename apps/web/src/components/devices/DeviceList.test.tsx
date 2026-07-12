@@ -960,3 +960,102 @@ describe('DeviceList — hidden-decommissioned hint (#2251)', () => {
     expect(screen.queryByTestId('decommissioned-hidden-hint')).toBeNull();
   });
 });
+
+describe('DeviceList — vm_host guest nesting (#2308)', () => {
+  beforeEach(() => {
+    window.localStorage?.clear();
+  });
+
+  const hostId = '71111111-1111-1111-1111-111111111111';
+  const vm1Id = '72222222-2222-2222-2222-222222222222';
+  const vm2Id = '73333333-3333-3333-3333-333333333333';
+
+  const mkVm = (over: Partial<Device>): Device => ({
+    ...baseDevice,
+    linkGroupId: 'vm-group-1',
+    status: 'online',
+    ...over,
+  });
+
+  const hostDev = () =>
+    mkVm({ id: hostId, hostname: 'hv-01', linkGroupRole: 'host' });
+  const guest1 = () =>
+    mkVm({ id: vm1Id, hostname: 'vm-web', os: 'linux', linkGroupRole: 'guest' });
+  const guest2 = () =>
+    mkVm({ id: vm2Id, hostname: 'vm-db', os: 'linux', linkGroupRole: 'guest' });
+
+  it('renders guests as full selectable rows nested beneath the host', () => {
+    render(<DeviceList devices={[guest1(), hostDev(), guest2()]} />);
+
+    // Guests keep their own checkboxes — fully managed rows, not strips.
+    expect(screen.getByLabelText('Select hv-01')).toBeInTheDocument();
+    expect(screen.getByLabelText('Select vm-web')).toBeInTheDocument();
+    expect(screen.getByLabelText('Select vm-db')).toBeInTheDocument();
+    // Nesting affordances: toggle on the host, glyphs on the guests.
+    expect(screen.getByTestId(`device-${hostId}-vm-toggle`)).toBeInTheDocument();
+    expect(screen.getByTestId(`device-${vm1Id}-vm-guest-glyph`)).toBeInTheDocument();
+    expect(screen.getByTestId(`device-${vm2Id}-vm-guest-glyph`)).toBeInTheDocument();
+    // No multiboot treatment leaks in.
+    expect(screen.queryByTestId(`device-${vm1Id}-inactive-strip`)).toBeNull();
+    expect(screen.queryByTestId(`device-${hostId}-group-bar`)).toBeNull();
+  });
+
+  it('collapses guests behind a summary strip and expands them again', () => {
+    render(<DeviceList devices={[hostDev(), guest1(), guest2()]} />);
+
+    const toggle = screen.getByTestId(`device-${hostId}-vm-toggle`);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+
+    fireEvent.click(toggle);
+    // Guests are hidden; a summary strip stands in.
+    expect(screen.queryByLabelText('Select vm-web')).toBeNull();
+    expect(screen.queryByLabelText('Select vm-db')).toBeNull();
+    const strip = screen.getByTestId(`device-${hostId}-vm-collapsed-strip`);
+    expect(strip.textContent).toContain('2 guest VMs hidden');
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+
+    // Clicking the strip expands again.
+    fireEvent.click(strip);
+    expect(screen.getByLabelText('Select vm-web')).toBeInTheDocument();
+    expect(screen.queryByTestId(`device-${hostId}-vm-collapsed-strip`)).toBeNull();
+  });
+
+  it('excludes collapsed (hidden) guests from select-all', () => {
+    const onBulkAction = vi.fn();
+    render(<DeviceList devices={[hostDev(), guest1(), guest2()]} onBulkAction={onBulkAction} />);
+
+    fireEvent.click(screen.getByTestId(`device-${hostId}-vm-toggle`));
+    fireEvent.click(screen.getByLabelText('Select all devices on this page'));
+    fireEvent.click(screen.getByRole('button', { name: /bulk actions/i }));
+    fireEvent.click(screen.getByText('Reboot Selected'));
+
+    expect(onBulkAction).toHaveBeenCalledTimes(1);
+    const selected = onBulkAction.mock.calls[0]![1] as Device[];
+    expect(selected.map((d) => d.id)).toEqual([hostId]);
+  });
+
+  it('offers the "Link as VM host + guests" bulk action when 2+ devices are selected', () => {
+    const onBulkAction = vi.fn();
+    const plain = { ...baseDevice, id: '74444444-4444-4444-4444-444444444444', hostname: 'plain-b' };
+    render(<DeviceList devices={[baseDevice, plain]} onBulkAction={onBulkAction} />);
+
+    fireEvent.click(screen.getByLabelText('Select all devices on this page'));
+    fireEvent.click(screen.getByRole('button', { name: /bulk actions/i }));
+    fireEvent.click(screen.getByTestId('bulk-link-vm-host'));
+
+    expect(onBulkAction).toHaveBeenCalledTimes(1);
+    expect(onBulkAction.mock.calls[0]![0]).toBe('link-vm-host');
+    expect((onBulkAction.mock.calls[0]![1] as Device[]).map((d) => d.id).sort()).toEqual(
+      [baseDevice.id, plain.id].sort(),
+    );
+  });
+
+  it('renders guests as plain ungrouped rows when the host is not on the page', () => {
+    render(<DeviceList devices={[guest1(), guest2()]} />);
+
+    expect(screen.queryByTestId(`device-${vm1Id}-vm-guest-glyph`)).toBeNull();
+    expect(screen.queryByTestId(`device-${vm2Id}-vm-guest-glyph`)).toBeNull();
+    expect(screen.getByLabelText('Select vm-web')).toBeInTheDocument();
+    expect(screen.getByLabelText('Select vm-db')).toBeInTheDocument();
+  });
+});

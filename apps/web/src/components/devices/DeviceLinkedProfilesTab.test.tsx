@@ -122,4 +122,55 @@ describe('DeviceLinkedProfilesTab', () => {
     expect(deleteCall[0]).toBe('/devices/link-groups/g1');
     expect(deleteCall[1]).toMatchObject({ method: 'DELETE' });
   });
+
+  describe('vm_host groups (#2308)', () => {
+    const vmPayload = {
+      group: { id: 'g-vm', kind: 'vm_host', name: null },
+      members: [
+        { deviceId: 'dev-vm1', hostname: 'vm-web', displayName: null, osType: 'linux', osVersion: '22', agentVersion: '1', status: 'online', lastSeenAt: null, role: 'guest' },
+        { deviceId: 'dev-host', hostname: 'hv-01', displayName: null, osType: 'windows', osVersion: '2022', agentVersion: '1', status: 'online', lastSeenAt: null, role: 'host' },
+      ],
+    };
+
+    it('shows the vm_host heading, guest count, and a Role column with the host sorted first', async () => {
+      fetchWithAuthMock.mockResolvedValue(jsonResponse(vmPayload));
+      render(<DeviceLinkedProfilesTab deviceId="dev-vm1" />);
+      await waitFor(() => expect(screen.getByTestId('linked-profiles-tab')).toBeInTheDocument());
+
+      expect(screen.getByText('VM host + guests')).toBeInTheDocument();
+      expect(screen.getByText('1 guests')).toBeInTheDocument();
+      expect(screen.getByTestId('linked-profile-dev-host-role')).toHaveTextContent('Host');
+      expect(screen.getByTestId('linked-profile-dev-vm1-role')).toHaveTextContent('Guest');
+      // Host row sorted above the guest despite arriving second from the API.
+      const rows = screen.getAllByTestId(/^linked-profile-dev-(host|vm1)$/);
+      expect(rows[0]!.getAttribute('data-testid')).toBe('linked-profile-dev-host');
+    });
+
+    it('renders no Role column for multiboot groups', async () => {
+      fetchWithAuthMock.mockResolvedValue(
+        jsonResponse({
+          group: { id: 'g1', kind: 'multiboot', name: null },
+          members: [
+            { deviceId: 'dev-1', hostname: 'a', displayName: null, osType: 'windows', osVersion: '11', agentVersion: '1', status: 'online', lastSeenAt: null, role: null },
+            { deviceId: 'dev-2', hostname: 'b', displayName: null, osType: 'linux', osVersion: '22', agentVersion: '1', status: 'offline', lastSeenAt: null, role: null },
+          ],
+        }),
+      );
+      render(<DeviceLinkedProfilesTab deviceId="dev-1" />);
+      await waitFor(() => expect(screen.getByTestId('linked-profiles-tab')).toBeInTheDocument());
+
+      expect(screen.queryByText('Role')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('linked-profile-dev-1-role')).not.toBeInTheDocument();
+      expect(screen.getByText('2 profiles')).toBeInTheDocument();
+    });
+
+    it('warns on the unlink button when the current device is the host', async () => {
+      fetchWithAuthMock.mockResolvedValue(jsonResponse(vmPayload));
+      render(<DeviceLinkedProfilesTab deviceId="dev-host" />);
+      await waitFor(() => expect(screen.getByTestId('linked-profiles-tab')).toBeInTheDocument());
+
+      const unlink = screen.getByTestId('linked-profiles-unlink-self');
+      expect(unlink.getAttribute('title')).toContain('host');
+    });
+  });
 });
