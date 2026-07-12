@@ -101,7 +101,8 @@ export const phoneVerifySchema = z.object({
 export const phoneConfirmSchema = z.object({
   phoneNumber: z.string().regex(/^\+[1-9]\d{6,14}$/),
   code: z.string().length(6),
-  currentPassword: z.string().min(1).max(256)
+  currentPassword: z.string().min(1).max(256),
+  mfaGrant: z.string().min(32).max(512).optional(),
 });
 
 export const smsMfaEnableSchema = z.object({

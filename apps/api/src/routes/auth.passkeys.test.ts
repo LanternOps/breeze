@@ -53,6 +53,7 @@ const {
       user: null as Record<string, unknown> | null,
       activePasskeyCount: 0,
       allowedMethods: new Set(['totp', 'sms', 'passkey', 'recovery_code']),
+      policyRequired: false,
     },
     twilioMocks: {
       sendVerificationCode: vi.fn(),
@@ -147,9 +148,26 @@ vi.mock('../services/mfaAssuranceLocks', () => ({
   })),
 }));
 
+vi.mock('../services/mfaAssuranceMutation', () => ({
+  MfaAssuranceMutationStaleError: class MfaAssuranceMutationStaleError extends Error {},
+  runLockedMfaMutation: vi.fn(async (_input: unknown, mutate: (tx: unknown, locked: unknown) => Promise<unknown>) => {
+    const { db } = await import('../db');
+    const result = await mutate(db, {
+      user: mfaLockState.user,
+      activePasskeyCount: mfaLockState.activePasskeyCount,
+    });
+    return { result, securityState: { id: 'user-123', mfaEpoch: 8 }, revokedFamilyCount: 1 };
+  }),
+  cleanupMfaAssuranceUsers: vi.fn(async () => ({
+    cleanupStatus: 'complete' as const,
+    cleanupFailures: [],
+    failures: [],
+  })),
+}));
+
 vi.mock('../services/mfaPolicy', () => ({
   resolveEffectiveMfaPolicy: vi.fn(async () => ({
-    required: false,
+    required: mfaLockState.policyRequired,
     allowedMethods: mfaLockState.allowedMethods,
     sources: [],
   })),
@@ -396,6 +414,7 @@ describe('passkey MFA auth routes', () => {
     };
     mfaLockState.activePasskeyCount = 0;
     mfaLockState.allowedMethods = new Set(['totp', 'sms', 'passkey', 'recovery_code']);
+    mfaLockState.policyRequired = false;
     twilioMocks.sendVerificationCode.mockResolvedValue({ success: true });
     twilioMocks.checkVerificationCode.mockResolvedValue({ valid: true });
     vi.mocked(consumeMFAToken).mockResolvedValue(true);
@@ -621,7 +640,7 @@ describe('passkey MFA auth routes', () => {
     expect(responses.map((response) => response.status).sort()).toEqual([200, 401]);
     const { db } = await import('../db');
     expect(db.insert).toHaveBeenCalledOnce();
-    expect(redisMock.getdel).toHaveBeenCalledTimes(2);
+    expect(redisMock.getdel).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -1074,11 +1093,13 @@ describe('passkey MFA auth routes', () => {
   });
 
   it('blocks deleting the last MFA factor when MFA is required', async () => {
+    mfaLockState.user = { ...mfaLockState.user!, mfaEnabled: true, mfaMethod: 'passkey' };
+    mfaLockState.activePasskeyCount = 1;
+    mfaLockState.policyRequired = true;
     vi.mocked(verifyPassword).mockResolvedValueOnce(true);
     dbState.selectQueue.push(
       [{ passwordHash: '$argon2id$hash' }],
       [{ id: 'credential-1', userId: 'user-123' }],
-      [{ passkeyCount: 1, hasTotp: false, hasSms: false, forceMfa: true }],
     );
 
     const res = await app.request('/auth/passkeys/credential-1', {
@@ -1106,11 +1127,17 @@ describe('passkey MFA auth routes', () => {
   });
 
   it('falls back to TOTP preference when deleting the last passkey and TOTP remains', async () => {
+    mfaLockState.user = {
+      ...mfaLockState.user!,
+      mfaEnabled: true,
+      mfaMethod: 'passkey',
+      mfaSecret: 'encrypted-totp-secret',
+    };
+    mfaLockState.activePasskeyCount = 1;
     vi.mocked(verifyPassword).mockResolvedValueOnce(true);
     dbState.selectQueue.push(
       [{ passwordHash: '$argon2id$hash' }],
       [{ id: 'credential-1', userId: 'user-123' }],
-      [{ passkeyCount: 1, hasTotp: true, hasSms: false, currentMfaMethod: 'passkey', forceMfa: false }],
     );
 
     const res = await app.request('/auth/passkeys/credential-1', {
@@ -1307,18 +1334,26 @@ describe('passkey MFA auth routes', () => {
 
   // (f) register/verify must NOT clobber an existing TOTP/SMS factor's method.
   it('does not overwrite an existing TOTP factor method when registering a passkey', async () => {
-    // Current MFA select returns an existing TOTP factor.
-    dbState.selectQueue.push([{ mfaSecret: 'enc-secret', mfaMethod: 'totp' }]);
+    mfaLockState.user = { ...mfaLockState.user!, mfaSecret: 'enc-secret', mfaMethod: 'totp' };
+    const mfaGrant = await issueMfaStepUpGrant({
+      purpose: 'passkey.register',
+      userId: 'user-123',
+      sessionId: 'family-123',
+      authEpoch: 4,
+      mfaEpoch: 7,
+      verifiedMethod: 'totp',
+    });
 
     const res = await app.request('/auth/passkeys/register/verify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
-      body: JSON.stringify({ credential: { id: 'credential-1', response: {} } }),
+      body: JSON.stringify({ mfaGrant, credential: { id: 'credential-1', response: {} } }),
     });
 
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({
       success: true,
+      reauthenticate: true,
       passkey: { id: 'passkey-credential-1', name: 'Passkey' },
     });
     // The users UPDATE enables MFA but must leave mfaMethod untouched.
@@ -1329,8 +1364,6 @@ describe('passkey MFA auth routes', () => {
   });
 
   it('makes passkey the primary MFA method when the user has no existing factor', async () => {
-    dbState.selectQueue.push([{ mfaSecret: null, mfaMethod: null }]);
-
     const res = await app.request('/auth/passkeys/register/verify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
@@ -1358,12 +1391,18 @@ describe('passkey MFA auth routes', () => {
     expect(dbState.updateSets).toHaveLength(0);
   });
 
-  it('switches the primary method to SMS when deleting the last passkey and SMS remains', async () => {
+  it('switches the primary method to TOTP when deleting the last passkey and TOTP remains', async () => {
+    mfaLockState.user = {
+      ...mfaLockState.user!,
+      mfaEnabled: true,
+      mfaMethod: 'passkey',
+      mfaSecret: 'encrypted-totp-secret',
+    };
+    mfaLockState.activePasskeyCount = 1;
     vi.mocked(verifyPassword).mockResolvedValueOnce(true);
     dbState.selectQueue.push(
       [{ passwordHash: '$argon2id$hash' }],
       [{ id: 'credential-1', userId: 'user-123' }],
-      [{ passkeyCount: 1, hasTotp: false, hasSms: true, currentMfaMethod: 'passkey', forceMfa: false, orgRequiresMfa: false }],
     );
 
     const res = await app.request('/auth/passkeys/credential-1', {
@@ -1373,18 +1412,20 @@ describe('passkey MFA auth routes', () => {
     });
 
     expect(res.status).toBe(200);
+    expect(await res.clone().json()).toMatchObject({ success: true, reauthenticate: true });
     expect(dbState.updateSets).toContainEqual(expect.objectContaining({
       mfaEnabled: true,
-      mfaMethod: 'sms',
+      mfaMethod: 'totp',
     }));
   });
 
   it('disables MFA when deleting the only passkey and no other factor remains', async () => {
+    mfaLockState.user = { ...mfaLockState.user!, mfaEnabled: true, mfaMethod: 'passkey' };
+    mfaLockState.activePasskeyCount = 1;
     vi.mocked(verifyPassword).mockResolvedValueOnce(true);
     dbState.selectQueue.push(
       [{ passwordHash: '$argon2id$hash' }],
       [{ id: 'credential-1', userId: 'user-123' }],
-      [{ passkeyCount: 1, hasTotp: false, hasSms: false, currentMfaMethod: 'passkey', forceMfa: false, orgRequiresMfa: false }],
     );
 
     const res = await app.request('/auth/passkeys/credential-1', {
@@ -1394,6 +1435,7 @@ describe('passkey MFA auth routes', () => {
     });
 
     expect(res.status).toBe(200);
+    expect(await res.clone().json()).toMatchObject({ success: true, reauthenticate: true });
     expect(dbState.updateSets).toContainEqual(expect.objectContaining({
       mfaEnabled: false,
       mfaMethod: null,

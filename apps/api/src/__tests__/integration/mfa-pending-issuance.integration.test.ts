@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it } from 'vitest';
-import { eq, sql } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import './setup';
 import { getTestDb } from './setup';
 import {
@@ -16,6 +16,7 @@ import {
   readPendingMfa,
 } from '../../services/mfaAssurance';
 import { closeRedis, getRedis } from '../../services/redis';
+import { runLockedMfaMutation } from '../../services/mfaAssuranceMutation';
 
 function deferred() {
   let resolve!: () => void;
@@ -64,9 +65,14 @@ describe('pending MFA issuance serialization against real PostgreSQL and Redis',
 
     const mutationLocked = deferred();
     const allowMutationCommit = deferred();
-    const mutation = tdb.transaction(async (tx) => {
-      await tx.select({ id: users.id }).from(users).where(eq(users.id, user.id)).for('update');
-      await tx.update(users).set({ mfaEpoch: sql`${users.mfaEpoch} + 1` }).where(eq(users.id, user.id));
+    const mutation = runLockedMfaMutation({
+      userId: user.id,
+      partnerId: partner.id,
+      authEpoch: enrolledUser.authEpoch,
+      mfaEpoch: enrolledUser.mfaEpoch,
+      reason: 'totp-factor-changed',
+    }, async (tx) => {
+      await tx.update(users).set({ updatedAt: new Date() }).where(eq(users.id, user.id));
       mutationLocked.resolve();
       await allowMutationCommit.promise;
     });

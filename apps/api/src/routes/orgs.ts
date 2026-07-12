@@ -59,6 +59,10 @@ import {
   validatePartnerMfaPolicySettingsWrite,
   withMfaPolicySystemTransaction,
 } from '../services/mfaPolicy';
+import {
+  cleanupMfaAssuranceUsers,
+  invalidateMfaPolicyAssurance,
+} from '../services/mfaAssuranceMutation';
 
 export const orgRoutes = new Hono();
 const requireOrgRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
@@ -786,7 +790,13 @@ orgRoutes.patch(
     return { response: c.json({ error: 'Partner not found' }, 404) } as const;
   }
 
-  return { partner } as const;
+  const policyInvalidation = isMfaPolicyWrite
+    ? await invalidateMfaPolicyAssurance(writeDb as any, {
+      partnerId,
+      reason: 'partner-mfa-policy-changed',
+    })
+    : { userIds: [], revokedFamilyCount: 0 };
+  return { partner, policyInvalidation } as const;
   };
 
   let writeResult;
@@ -801,7 +811,8 @@ orgRoutes.patch(
     throw error;
   }
   if ('response' in writeResult) return writeResult.response;
-  const { partner } = writeResult;
+  const { partner, policyInvalidation } = writeResult;
+  const mfaCleanup = await cleanupMfaAssuranceUsers(policyInvalidation.userIds);
 
   // Invalidate the OAuth scope-policy cache so a change to
   // `settings.oauth_scope_policy.mcp_allowed_scopes` takes effect on the
@@ -816,10 +827,20 @@ orgRoutes.patch(
     resourceType: 'partner',
     resourceId: partner.id,
     resourceName: partner.name,
-    details: { changedFields: Object.keys(body) }
+    details: {
+      changedFields: Object.keys(body),
+      mfaUsersInvalidated: policyInvalidation.userIds.length,
+      mfaFamiliesRevoked: policyInvalidation.revokedFamilyCount,
+      cleanupStatus: mfaCleanup.cleanupStatus,
+      cleanupFailures: mfaCleanup.cleanupFailures,
+    }
   });
 
-  return c.json(partner);
+  return c.json({
+    ...partner,
+    cleanupStatus: mfaCleanup.cleanupStatus,
+    cleanupFailures: mfaCleanup.cleanupFailures,
+  });
 });
 
 // --- Individual partner management (system-scoped) ---
@@ -910,6 +931,7 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
   }
 
   let lifecycleSnapshot: PartnerLifecycleSnapshot | undefined;
+  let mfaPolicyInvalidation = { userIds: [] as string[], revokedFamilyCount: 0 };
   const updatePartner = async (tx: typeof db) => {
     if (data.settings && hasMfaPolicyInput(data.settings)) {
       await validatePartnerMfaPolicySettingsWrite({
@@ -949,6 +971,12 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
       .set(updates)
       .where(and(eq(partners.id, id), isNull(partners.deletedAt)))
       .returning();
+    if (updatedPartner && data.settings && hasMfaPolicyInput(data.settings)) {
+      mfaPolicyInvalidation = await invalidateMfaPolicyAssurance(tx as any, {
+        partnerId: id,
+        reason: 'partner-mfa-policy-changed',
+      });
+    }
     if (updatedPartner && data.status !== undefined && before?.status !== data.status) {
       lifecycleSnapshot = await invalidatePartnerUsersInTransaction(
         tx as any,
@@ -975,6 +1003,7 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
   if (!partner) {
     return c.json({ error: 'Partner not found' }, 404);
   }
+  const mfaCleanup = await cleanupMfaAssuranceUsers(mfaPolicyInvalidation.userIds);
 
   // Invalidate the OAuth scope-policy cache (settings may have changed).
   clearPartnerScopePolicyCache(partner.id);
@@ -988,11 +1017,12 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
   // tenant cascade (getActivePartner is strict) — severing here would expire
   // enrollment keys irreversibly on a transient state.
   let cleanupStatus: 'complete' | 'partial' = 'complete';
-  let cleanupFailures: string[] = [];
+  let cleanupFailures: string[] = [...mfaCleanup.cleanupFailures];
+  if (cleanupFailures.length > 0) cleanupStatus = 'partial';
   if ('status' in data && (data.status === 'suspended' || data.status === 'churned')) {
     const cleanup = await revokePartnerTenantAccess(partner.id, lifecycleSnapshot);
-    cleanupStatus = cleanup.cleanupStatus;
-    cleanupFailures = cleanup.cleanupFailures;
+    cleanupFailures = [...cleanupFailures, ...cleanup.cleanupFailures];
+    cleanupStatus = cleanupFailures.length === 0 ? 'complete' : 'partial';
   }
 
   const auditOrgId = auth.orgId ?? await resolveAuditOrgIdForPartner(id);
@@ -1008,6 +1038,8 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
       changedFields: Object.keys(data),
       cleanupStatus,
       cleanupFailures,
+      mfaUsersInvalidated: mfaPolicyInvalidation.userIds.length,
+      mfaFamiliesRevoked: mfaPolicyInvalidation.revokedFamilyCount,
     }
   });
 
@@ -1488,6 +1520,7 @@ const updateOrgHandler = [requireScope('organization', 'partner', 'system'), req
   }
 
   let lifecycleSnapshot: OrganizationLifecycleSnapshot | undefined;
+  let mfaPolicyInvalidation = { userIds: [] as string[], revokedFamilyCount: 0 };
   const updateOrganization = async (tx: typeof db) => {
     const authorization = await authorizeOrganizationLifecycleWrite(
       tx as any,
@@ -1523,6 +1556,13 @@ const updateOrgHandler = [requireScope('organization', 'partner', 'system'), req
       .set(updates)
       .where(conditions)
       .returning();
+    if (updatedOrganization && data.settings && hasMfaPolicyInput(data.settings)) {
+      mfaPolicyInvalidation = await invalidateMfaPolicyAssurance(tx as any, {
+        partnerId: authorization.targetPartnerId,
+        orgId: id,
+        reason: 'organization-mfa-policy-changed',
+      });
+    }
     if (updatedOrganization && data.status !== undefined && before?.status !== data.status) {
       const userIds = await invalidateOrganizationUsersInTransaction(
         tx as any,
@@ -1548,20 +1588,21 @@ const updateOrgHandler = [requireScope('organization', 'partner', 'system'), req
   if (!organization) {
     return c.json({ error: 'Organization not found' }, 404);
   }
+  const mfaCleanup = await cleanupMfaAssuranceUsers(mfaPolicyInvalidation.userIds);
 
-  let cleanupStatus: 'complete' | 'partial' = 'complete';
-  let cleanupFailures: string[] = [];
+  let cleanupStatus: 'complete' | 'partial' = mfaCleanup.cleanupStatus;
+  let cleanupFailures: string[] = [...mfaCleanup.cleanupFailures];
   if (data.status !== undefined && data.status !== 'active' && data.status !== 'trial') {
     const cleanup = await revokeOrganizationTenantAccess(organization.id, lifecycleSnapshot);
-    cleanupStatus = cleanup.cleanupStatus;
-    cleanupFailures = cleanup.cleanupFailures;
+    cleanupFailures = [...cleanupFailures, ...cleanup.cleanupFailures];
+    cleanupStatus = cleanupFailures.length === 0 ? 'complete' : 'partial';
   } else if (data.status === 'active' || data.status === 'trial') {
     // Reactivation: restore agent tokens this org's revoke suspended.
     try {
       await restoreOrganizationTenantAccess(organization.id);
     } catch (error) {
       cleanupStatus = 'partial';
-      cleanupFailures = ['agent-restore'];
+      cleanupFailures = [...cleanupFailures, 'agent-restore'];
       console.error('[orgs] organization agent restore failed after durable status change', error);
     }
   }
@@ -1572,7 +1613,13 @@ const updateOrgHandler = [requireScope('organization', 'partner', 'system'), req
     resourceType: 'organization',
     resourceId: organization.id,
     resourceName: organization.name,
-    details: { changedFields: Object.keys(data), cleanupStatus, cleanupFailures }
+    details: {
+      changedFields: Object.keys(data),
+      cleanupStatus,
+      cleanupFailures,
+      mfaUsersInvalidated: mfaPolicyInvalidation.userIds.length,
+      mfaFamiliesRevoked: mfaPolicyInvalidation.revokedFamilyCount,
+    }
   });
 
   return c.json({ ...organization, cleanupStatus, cleanupFailures });

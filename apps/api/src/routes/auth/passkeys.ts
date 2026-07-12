@@ -32,6 +32,11 @@ import {
 import { readMobileDeviceId } from '../../services/mobileDeviceBinding';
 import { decryptMfaTotpSecret } from '../../services/mfaSecretCrypto';
 import {
+  cleanupMfaAssuranceUsers,
+  MfaAssuranceMutationStaleError,
+  runLockedMfaMutation,
+} from '../../services/mfaAssuranceMutation';
+import {
   ENABLE_2FA,
   mfaStepUpOptionsSchema,
   mfaStepUpVerifySchema,
@@ -58,6 +63,7 @@ import {
 } from './helpers';
 import type {
   MfaStepUpGrantExpectedBinding,
+  MfaStepUpGrantRecord,
   MfaStepUpPurpose,
   MfaStepUpVerifiedMethod,
 } from './helpers';
@@ -295,7 +301,7 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
   } catch (error) {
     return mfaStepUpErrorResponse(c, error);
   }
-  let grantRecord;
+  let grantRecord: MfaStepUpGrantRecord | undefined;
   let authorization;
   if (state.hasAnyFactor) {
     if (!mfaGrant) return c.json({ error: 'Existing MFA factor proof is required' }, 403);
@@ -345,60 +351,77 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
   }
 
   const fields = registrationInfoToPasskeyFields(verification, credential);
-  if (mfaGrant && grantRecord) {
-    try {
-      const finalState = await loadMfaStepUpFactorState(auth);
-      if (!finalState.allowedExistingMethods.has(grantRecord.verifiedMethod)) {
-        throw new MfaStepUpGrantInvalidError();
-      }
-      await consumeMfaStepUpGrant(mfaGrant, {
-        ...mfaStepUpBinding(auth, 'passkey.register'),
-        verifiedMethod: grantRecord.verifiedMethod,
-      });
-    } catch (error) {
-      return mfaStepUpErrorResponse(c, error);
+  let inserted: PasskeyRow;
+  try {
+    const mutation = await runLockedMfaMutation(
+      lockedMutationInput(auth, 'passkey-added'),
+      async (tx, locked) => {
+        const user = locked.user!;
+        const policy = await resolveEffectiveMfaPolicy({
+          userId: auth.user.id,
+          roleId: auth.token.roleId,
+          orgId: auth.token.orgId,
+          partnerId: auth.token.partnerId,
+          scope: auth.token.scope,
+          tx,
+        });
+        if (!policy.allowedMethods.has('passkey')) throw new MfaStepUpGrantInvalidError();
+        const existingMethods = new Set<MfaStepUpVerifiedMethod>();
+        if (user.mfaSecret) existingMethods.add('totp');
+        if (user.mfaMethod === 'sms' && user.phoneVerified && user.phoneNumber) existingMethods.add('sms');
+        if (locked.activePasskeyCount > 0) existingMethods.add('passkey');
+        const allowedExistingMethods = new Set(
+          [...existingMethods].filter((method) => policy.allowedMethods.has(method)),
+        );
+        if (existingMethods.size > 0) {
+          if (!mfaGrant || !grantRecord || !allowedExistingMethods.has(grantRecord.verifiedMethod)) {
+            throw new MfaStepUpGrantInvalidError();
+          }
+          await consumeMfaStepUpGrant(mfaGrant, {
+            ...mfaStepUpBinding(auth, 'passkey.register'),
+            verifiedMethod: grantRecord.verifiedMethod,
+          });
+        } else if (mfaGrant) {
+          throw new MfaStepUpGrantInvalidError();
+        }
+
+        const [created] = await tx
+          .insert(userPasskeys)
+          .values({
+            userId: auth.user.id,
+            credentialId: fields.credentialId,
+            publicKey: fields.publicKey,
+            counter: fields.counter,
+            deviceType: fields.deviceType,
+            backedUp: fields.backedUp,
+            transports: fields.transports,
+            name: name ?? 'Passkey',
+            aaguid: fields.aaguid,
+            updatedAt: new Date()
+          })
+          .returning();
+        if (!created) throw new Error('Passkey insert returned no row');
+
+        const hasExistingPrimaryFactor = Boolean(user.mfaSecret) || user.mfaMethod === 'sms';
+        await tx
+          .update(users)
+          .set({
+            mfaEnabled: true,
+            ...(hasExistingPrimaryFactor ? {} : { mfaMethod: 'passkey' }),
+            updatedAt: new Date()
+          })
+          .where(eq(users.id, auth.user.id));
+        return created;
+      },
+    );
+    inserted = mutation.result;
+  } catch (error) {
+    if (error instanceof MfaAssuranceMutationStaleError) {
+      return c.json({ error: 'Authentication state changed. Please sign in again.' }, 401);
     }
+    return mfaStepUpErrorResponse(c, error);
   }
-  const [inserted] = await db
-    .insert(userPasskeys)
-    .values({
-      userId: auth.user.id,
-      credentialId: fields.credentialId,
-      publicKey: fields.publicKey,
-      counter: fields.counter,
-      deviceType: fields.deviceType,
-      backedUp: fields.backedUp,
-      transports: fields.transports,
-      name: name ?? 'Passkey',
-      aaguid: fields.aaguid,
-      updatedAt: new Date()
-    })
-    .returning();
-
-  if (!inserted) {
-    throw new Error('Passkey insert returned no row');
-  }
-
-  // Enable MFA, but do NOT overwrite an existing TOTP/SMS factor's method.
-  // `mfaMethod` is single-valued and drives login routing (login.ts/mfa.ts);
-  // clobbering it to 'passkey' would strand a user's working authenticator
-  // and risk lockout if they later lose the passkey device. Only make passkey
-  // the primary method when the user has no other factor configured.
-  const [currentMfa] = await db
-    .select({ mfaSecret: users.mfaSecret, mfaMethod: users.mfaMethod })
-    .from(users)
-    .where(eq(users.id, auth.user.id))
-    .limit(1);
-  const hasExistingFactor = Boolean(currentMfa?.mfaSecret) || currentMfa?.mfaMethod === 'sms';
-
-  await db
-    .update(users)
-    .set({
-      mfaEnabled: true,
-      ...(hasExistingFactor ? {} : { mfaMethod: 'passkey' }),
-      updatedAt: new Date()
-    })
-    .where(eq(users.id, auth.user.id));
+  const cleanup = await cleanupMfaAssuranceUsers([auth.user.id]);
 
   writeAuthAudit(c, {
     orgId: auth.orgId ?? undefined,
@@ -411,6 +434,9 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
 
   return c.json({
     success: true,
+    reauthenticate: true,
+    cleanupStatus: cleanup.cleanupStatus,
+    cleanupFailures: cleanup.cleanupFailures,
     passkey: toPublicPasskey(inserted)
   });
 });
@@ -641,44 +667,60 @@ passkeyRoutes.delete('/passkeys/:id', authMiddleware, zValidator('json', deleteP
   const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'passkey:pwd');
   if (passwordError) return passwordError;
 
-  const [passkey] = await findOwnedPasskey(id, auth.user.id);
-  if (!passkey) {
-    return c.json({ error: 'Passkey not found' }, 404);
+  try {
+    await runLockedMfaMutation(
+      lockedMutationInput(auth, 'passkey-deleted'),
+      async (tx, locked) => {
+        const [passkey] = await tx
+          .select()
+          .from(userPasskeys)
+          .where(and(
+            eq(userPasskeys.id, id),
+            eq(userPasskeys.userId, auth.user.id),
+            isNull(userPasskeys.disabledAt),
+          ))
+          .limit(1);
+        if (!passkey) throw new Error('PASSKEY_NOT_FOUND');
+        const user = locked.user!;
+        const policy = await resolveEffectiveMfaPolicy({
+          userId: auth.user.id,
+          roleId: auth.token.roleId,
+          orgId: auth.token.orgId,
+          partnerId: auth.token.partnerId,
+          scope: auth.token.scope,
+          tx,
+        });
+        const hasTotp = Boolean(user.mfaSecret);
+        const hasSms = user.mfaMethod === 'sms' && user.phoneVerified === true && Boolean(user.phoneNumber);
+        const remainingPasskeys = Math.max(0, locked.activePasskeyCount - 1);
+        const remainingFactorCount = remainingPasskeys + (hasTotp ? 1 : 0) + (hasSms ? 1 : 0);
+        if (policy.required && remainingFactorCount === 0) throw new Error('LAST_REQUIRED_FACTOR');
+        await tx.delete(userPasskeys).where(eq(userPasskeys.id, id));
+        if (remainingFactorCount === 0) {
+          await tx.update(users).set({ mfaEnabled: false, mfaMethod: null, updatedAt: new Date() })
+            .where(eq(users.id, auth.user.id));
+        } else if (user.mfaMethod === 'passkey' && remainingPasskeys === 0) {
+          await tx.update(users).set({
+            mfaEnabled: true,
+            mfaMethod: hasTotp ? 'totp' : 'sms',
+            updatedAt: new Date(),
+          }).where(eq(users.id, auth.user.id));
+        }
+      },
+    );
+  } catch (error) {
+    if (error instanceof MfaAssuranceMutationStaleError) {
+      return c.json({ error: 'Authentication state changed. Please sign in again.' }, 401);
+    }
+    if (error instanceof Error && error.message === 'PASSKEY_NOT_FOUND') {
+      return c.json({ error: 'Passkey not found' }, 404);
+    }
+    if (error instanceof Error && error.message === 'LAST_REQUIRED_FACTOR') {
+      return c.json({ error: 'Cannot remove the last MFA factor while your role or organization requires MFA' }, 403);
+    }
+    throw error;
   }
-
-  const factorState = await getMfaFactorState(auth);
-  const remainingFactorCount =
-    Math.max(0, factorState.passkeyCount - 1)
-    + (factorState.hasTotp ? 1 : 0)
-    + (factorState.hasSms ? 1 : 0);
-
-  if (factorState.mfaRequired && remainingFactorCount === 0) {
-    return c.json({ error: 'Cannot remove the last MFA factor while your role or organization requires MFA' }, 403);
-  }
-
-  await db
-    .delete(userPasskeys)
-    .where(eq(userPasskeys.id, id));
-
-  if (remainingFactorCount === 0) {
-    await db
-      .update(users)
-      .set({
-        mfaEnabled: false,
-        mfaMethod: null,
-        updatedAt: new Date()
-      })
-      .where(eq(users.id, auth.user.id));
-  } else if (factorState.currentMfaMethod === 'passkey' && factorState.passkeyCount - 1 === 0) {
-    await db
-      .update(users)
-      .set({
-        mfaEnabled: true,
-        mfaMethod: factorState.hasTotp ? 'totp' : 'sms',
-        updatedAt: new Date()
-      })
-      .where(eq(users.id, auth.user.id));
-  }
+  const cleanup = await cleanupMfaAssuranceUsers([auth.user.id]);
 
   writeAuthAudit(c, {
     orgId: auth.orgId ?? undefined,
@@ -689,7 +731,12 @@ passkeyRoutes.delete('/passkeys/:id', authMiddleware, zValidator('json', deleteP
     details: { method: 'passkey', passkeyId: id }
   });
 
-  return c.json({ success: true });
+  return c.json({
+    success: true,
+    reauthenticate: true,
+    cleanupStatus: cleanup.cleanupStatus,
+    cleanupFailures: cleanup.cleanupFailures,
+  });
 });
 
 async function listActivePasskeys(userId: string): Promise<PasskeyRow[]> {
@@ -722,6 +769,17 @@ function mfaStepUpBinding(
     sessionId: sid,
     authEpoch: ae,
     mfaEpoch: me,
+  };
+}
+
+function lockedMutationInput(auth: AuthContext, reason: string) {
+  const binding = mfaStepUpBinding(auth, 'passkey.register');
+  return {
+    userId: auth.user.id,
+    partnerId: auth.token.partnerId,
+    authEpoch: binding.authEpoch,
+    mfaEpoch: binding.mfaEpoch,
+    reason,
   };
 }
 
@@ -771,62 +829,6 @@ function mfaStepUpErrorResponse(c: Context, error: unknown): Response {
     return c.json({ error: 'Invalid or expired MFA step-up authorization' }, 401);
   }
   throw error;
-}
-
-async function getMfaFactorState(auth: AuthContext): Promise<{
-  passkeyCount: number;
-  hasTotp: boolean;
-  hasSms: boolean;
-  currentMfaMethod: 'totp' | 'sms' | 'passkey' | null;
-  mfaRequired: boolean;
-}> {
-  // This runs inside the DELETE handler's request (user-scoped) context, where
-  // a bare `withSystemDbAccessContext` would be a no-op. Escape the active
-  // context first so the roles / partner_users / organization_users /
-  // organizations reads that decide `mfaRequired` actually run under system
-  // scope — otherwise user-scoped RLS could hide a force_mfa role/org-setting
-  // row, under-count factors, and let the last MFA factor be removed.
-  const [state] = await runOutsideDbContext(() => withSystemDbAccessContext(async () =>
-    db
-      .select({
-        passkeyCount: sql<number>`(
-          SELECT COUNT(*)::int
-          FROM user_passkeys
-          WHERE user_id = ${auth.user.id}
-            AND disabled_at IS NULL
-        )`,
-        hasTotp: sql<boolean>`${users.mfaSecret} IS NOT NULL`,
-        hasSms: sql<boolean>`${users.mfaMethod} = 'sms' AND ${users.phoneVerified} = true`,
-        currentMfaMethod: users.mfaMethod,
-        forceMfa: sql<boolean>`EXISTS (
-          SELECT 1
-          FROM roles r
-          LEFT JOIN partner_users pu ON pu.role_id = r.id
-          LEFT JOIN organization_users ou ON ou.role_id = r.id
-          WHERE (pu.user_id = ${auth.user.id} OR ou.user_id = ${auth.user.id})
-            AND r.force_mfa = true
-        )`,
-        orgRequiresMfa: auth.orgId
-          ? sql<boolean>`EXISTS (
-              SELECT 1
-              FROM organizations o
-              WHERE o.id = ${auth.orgId}
-                AND COALESCE((o.settings->'security'->>'requireMfa')::boolean, false) = true
-            )`
-          : sql<boolean>`false`
-      })
-      .from(users)
-      .where(eq(users.id, auth.user.id))
-      .limit(1)
-  ));
-
-  return {
-    passkeyCount: Number(state?.passkeyCount ?? 0),
-    hasTotp: Boolean(state?.hasTotp),
-    hasSms: Boolean(state?.hasSms),
-    currentMfaMethod: state?.currentMfaMethod ?? null,
-    mfaRequired: Boolean((state as { forceMfa?: boolean; orgRequiresMfa?: boolean } | undefined)?.forceMfa || (state as { forceMfa?: boolean; orgRequiresMfa?: boolean } | undefined)?.orgRequiresMfa)
-  };
 }
 
 function toStoredCredential(passkey: Pick<PasskeyRow, 'credentialId' | 'publicKey' | 'counter' | 'transports'>) {

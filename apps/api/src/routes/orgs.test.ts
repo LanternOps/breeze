@@ -21,6 +21,15 @@ const mfaPolicyMocks = vi.hoisted(() => ({
   withSystemTransaction: vi.fn(),
 }));
 
+const mfaInvalidationMocks = vi.hoisted(() => ({
+  invalidatePolicy: vi.fn(async () => ({ userIds: ['user-1'], revokedFamilyCount: 1 })),
+  cleanupUsers: vi.fn(async () => ({
+    cleanupStatus: 'complete' as const,
+    cleanupFailures: [],
+    failures: [],
+  })),
+}));
+
 vi.mock('../services', () => ({}));
 
 vi.mock('../services/sentry', () => ({
@@ -45,7 +54,9 @@ vi.mock('../services/tenantLifecycle', () => ({
     oauthGrantsRevoked: 0,
     oauthRefreshTokensRevoked: 0,
     agentTokensSuspended: 0,
-    enrollmentKeysInvalidated: 0
+    enrollmentKeysInvalidated: 0,
+    cleanupStatus: 'complete',
+    cleanupFailures: [],
   }),
   revokeOrganizationTenantAccess: vi.fn().mockResolvedValue({
     apiKeysRevoked: 0,
@@ -53,7 +64,9 @@ vi.mock('../services/tenantLifecycle', () => ({
     oauthGrantsRevoked: 0,
     oauthRefreshTokensRevoked: 0,
     agentTokensSuspended: 0,
-    enrollmentKeysInvalidated: 0
+    enrollmentKeysInvalidated: 0,
+    cleanupStatus: 'complete',
+    cleanupFailures: [],
   }),
   restorePartnerTenantAccess: vi.fn().mockResolvedValue({ agentTokensRestored: 0 }),
   restoreOrganizationTenantAccess: vi.fn().mockResolvedValue({ agentTokensRestored: 0 }),
@@ -77,6 +90,11 @@ vi.mock('../services/mfaPolicy', () => ({
   authorizePartnerMfaPolicyWrite: mfaPolicyMocks.authorizePartnerWrite,
   lockMfaPolicyPartner: mfaPolicyMocks.lockPartner,
   withMfaPolicySystemTransaction: mfaPolicyMocks.withSystemTransaction,
+}));
+
+vi.mock('../services/mfaAssuranceMutation', () => ({
+  invalidateMfaPolicyAssurance: mfaInvalidationMocks.invalidatePolicy,
+  cleanupMfaAssuranceUsers: mfaInvalidationMocks.cleanupUsers,
 }));
 
 vi.mock('../db', () => ({
@@ -822,10 +840,14 @@ describe('org routes', () => {
 
         expect(res.status).toBe(200);
         expect(mfaPolicyMocks.withSystemTransaction).toHaveBeenCalledTimes(1);
-        expect(mfaPolicyMocks.validatePartnerWrite).toHaveBeenCalledWith(expect.objectContaining({
-          tx: db,
-          partnerId: 'partner-1',
-        }));
+      expect(mfaPolicyMocks.validatePartnerWrite).toHaveBeenCalledWith(expect.objectContaining({
+        tx: db,
+        partnerId: 'partner-1',
+      }));
+      expect(mfaInvalidationMocks.invalidatePolicy).toHaveBeenCalledWith(db, {
+        partnerId: 'partner-1',
+        reason: 'partner-mfa-policy-changed',
+      });
       });
     });
 
@@ -1561,6 +1583,11 @@ describe('org routes', () => {
         orgId: 'org-1',
         partnerId: 'partner-123',
       }));
+      expect(mfaInvalidationMocks.invalidatePolicy).toHaveBeenCalledWith(db, {
+        partnerId: 'partner-123',
+        orgId: 'org-1',
+        reason: 'organization-mfa-policy-changed',
+      });
     });
 
     it('canonicalizes the legacy alias before the organization settings write', async () => {
@@ -2822,6 +2849,10 @@ describe('org routes', () => {
         tx: db,
         partnerId: 'partner-123',
       }));
+      expect(mfaInvalidationMocks.invalidatePolicy).toHaveBeenCalledWith(db, {
+        partnerId: 'partner-123',
+        reason: 'partner-mfa-policy-changed',
+      });
     });
 
     it('does not let selected-org request RLS hide an incompatible child policy', async () => {

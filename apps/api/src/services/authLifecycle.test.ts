@@ -56,6 +56,7 @@ vi.mock('drizzle-orm', () => ({
   and: vi.fn((...clauses: unknown[]) => ({ and: clauses })),
   eq: vi.fn((left: unknown, right: unknown) => ({ eq: [left, right] })),
   isNull: vi.fn((column: unknown) => ({ isNull: column })),
+  inArray: vi.fn((column: unknown, values: unknown[]) => ({ inArray: [column, values] })),
   sql: vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({
     sql: Array.from(strings).join('?'),
     values,
@@ -84,6 +85,7 @@ vi.mock('../db/schema/refreshTokenFamilies', () => ({
 import {
   advanceUserSecurityState,
   revokeAllUserSessionFamilies,
+  invalidateUsersMfaAssurance,
   revokeUserSessionFamily,
   revokeUserSessionFamilyForLogout,
   type AuthLifecycleTransaction,
@@ -195,6 +197,63 @@ describe('authLifecycle transaction primitives', () => {
 
     expect(dbState.updateCalls[0]?.values).toEqual({
       authEpoch: { sql: '? + 1', values: ['users.authEpoch'] },
+    });
+  });
+
+  it('advances MFA epoch and revokes every family as one caller-owned transaction primitive', async () => {
+    const invalidateMfa = (authLifecycle as Record<string, unknown>)
+      .invalidateUserMfaAssurance;
+    expect(invalidateMfa).toEqual(expect.any(Function));
+    dbState.returningQueue.push(
+      [{
+        id: 'user-1',
+        authEpoch: 3,
+        mfaEpoch: 6,
+        emailEpoch: 7,
+        passwordResetEpoch: 11,
+      }],
+      [{ familyId: 'family-1' }, { familyId: 'family-2' }],
+    );
+
+    const result = await (invalidateMfa as (
+      tx: AuthLifecycleTransaction,
+      userId: string,
+      reason: string,
+    ) => Promise<unknown>)(makeTx(), 'user-1', 'mfa-factor-changed');
+
+    expect(result).toEqual({
+      securityState: expect.objectContaining({ id: 'user-1', mfaEpoch: 6 }),
+      revokedFamilyCount: 2,
+    });
+    expect(dbState.updateCalls).toHaveLength(2);
+    expect(dbState.updateCalls[0]?.values).toEqual({
+      mfaEpoch: { sql: '? + 1', values: ['users.mfaEpoch'] },
+    });
+    expect(dbState.updateCalls[1]?.table).toBe(refreshTokenFamilies);
+  });
+
+  it('batch-invalidates policy users with exact affected counts', async () => {
+    dbState.returningQueue.push(
+      [{ id: 'user-a' }, { id: 'user-b' }],
+      [{ familyId: 'family-1' }, { familyId: 'family-2' }, { familyId: 'family-3' }],
+    );
+
+    const result = await invalidateUsersMfaAssurance(
+      makeTx(),
+      ['user-b', 'user-a', 'user-a'],
+      'partner-mfa-policy-changed',
+    );
+
+    expect(result).toEqual({ advancedUserCount: 2, revokedFamilyCount: 3 });
+    expect(dbState.updateCalls).toHaveLength(2);
+    expect(dbState.updateCalls[0]?.where).toEqual({
+      inArray: ['users.id', ['user-a', 'user-b']],
+    });
+    expect(dbState.updateCalls[1]?.where).toEqual({
+      and: [
+        { inArray: ['refreshTokenFamilies.userId', ['user-a', 'user-b']] },
+        { isNull: 'refreshTokenFamilies.revokedAt' },
+      ],
     });
   });
 

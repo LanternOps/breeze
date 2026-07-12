@@ -8,7 +8,12 @@ import {
   type MfaMethod,
   type MfaPrimaryMethod,
 } from '@breeze/shared';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import {
+  db,
+  runOutsideDbContext,
+  withSystemDbAccessContext,
+  withSystemDbAccessTransaction,
+} from '../db';
 import {
   organizationUsers,
   organizations,
@@ -374,7 +379,7 @@ export function withMfaPolicySystemTransaction<T>(
   fn: (tx: AuthLifecycleTransaction) => Promise<T>,
 ): Promise<T> {
   return runOutsideDbContext(() =>
-    withSystemDbAccessContext(() => fn(db as unknown as AuthLifecycleTransaction))
+    withSystemDbAccessTransaction(fn)
   );
 }
 

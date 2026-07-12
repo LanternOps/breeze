@@ -2,6 +2,22 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { authRoutes } from './auth';
 
+const mfaMutationState = vi.hoisted(() => ({
+  user: {
+    id: 'user-123',
+    status: 'active',
+    authEpoch: 1,
+    mfaEpoch: 1,
+    mfaEnabled: true,
+    mfaMethod: 'sms',
+    mfaSecret: null,
+    phoneNumber: '+14155551234',
+    phoneVerified: true,
+  } as Record<string, unknown>,
+  cleanupStatus: 'complete' as 'complete' | 'partial',
+  cleanupFailures: [] as string[],
+}));
+
 // Mock all services
 vi.mock('../services', () => ({
   hashPassword: vi.fn().mockResolvedValue('$argon2id$hashed'),
@@ -77,6 +93,9 @@ vi.mock('../services', () => ({
   mfaLimiter: { limit: 5, windowSeconds: 300 },
   smsLoginSendLimiter: { limit: 3, windowSeconds: 300 },
   smsLoginGlobalLimiter: { limit: 5, windowSeconds: 3600 },
+  smsPhoneVerifyLimiter: { limit: 3, windowSeconds: 300 },
+  smsPhoneVerifyUserLimiter: { limit: 3, windowSeconds: 300 },
+  phoneConfirmLimiter: { limit: 5, windowSeconds: 300 },
   // Task 10: per-account lockout helpers. Default mocks mirror the
   // "no failures, not locked" happy path so existing tests keep working.
   recordAccountFailure: vi.fn().mockResolvedValue({ count: 1, locked: false, newlyLocked: false }),
@@ -95,7 +114,10 @@ vi.mock('../services', () => ({
 }));
 
 vi.mock('../services/authLifecycle', () => ({
-  withAuthLifecycleSystemTransaction: vi.fn(async (fn: (tx: object) => Promise<unknown>) => fn({})),
+  withAuthLifecycleSystemTransaction: vi.fn(async (fn: (tx: object) => Promise<unknown>) => {
+    const { db } = await import('../db');
+    return fn(db);
+  }),
   advanceUserSecurityState: vi.fn(async () => ({
     id: 'user-123',
     authEpoch: 2,
@@ -104,7 +126,32 @@ vi.mock('../services/authLifecycle', () => ({
     passwordResetEpoch: 2,
   })),
   revokeAllUserSessionFamilies: vi.fn(async () => 1),
+  invalidateUserMfaAssurance: vi.fn(async () => ({
+    securityState: { id: 'user-123', mfaEpoch: 2 },
+    revokedFamilyCount: 1,
+  })),
   revokeUserSessionFamilyForLogout: vi.fn(async () => ({ status: 'revoked' })),
+}));
+
+vi.mock('../services/mfaAssuranceLocks', () => ({
+  lockMfaAssuranceState: vi.fn(async () => ({
+    user: mfaMutationState.user,
+    activePasskeyCount: 0,
+  })),
+}));
+
+vi.mock('../services/mfaAssuranceMutation', () => ({
+  MfaAssuranceMutationStaleError: class MfaAssuranceMutationStaleError extends Error {},
+  runLockedMfaMutation: vi.fn(async (_input: unknown, mutate: (tx: unknown, locked: unknown) => Promise<unknown>) => {
+    const { db } = await import('../db');
+    const result = await mutate(db, { user: mfaMutationState.user, activePasskeyCount: 0 });
+    return { result, securityState: { id: 'user-123', mfaEpoch: 2 }, revokedFamilyCount: 1 };
+  }),
+  cleanupMfaAssuranceUsers: vi.fn(async () => ({
+    cleanupStatus: mfaMutationState.cleanupStatus,
+    cleanupFailures: mfaMutationState.cleanupFailures,
+    failures: [],
+  })),
 }));
 
 const sendAccountLockedMock = vi.fn().mockResolvedValue(undefined);
@@ -256,6 +303,7 @@ import {
   issueUserSession,
   verifyToken,
   verifyMFAToken,
+  consumeMFAToken,
   generateRecoveryCodes,
   invalidateAllUserSessions,
   isUserTokenRevoked,
@@ -288,6 +336,7 @@ import {
 } from '../services/passwordResetEligibility';
 import { db } from '../db';
 import { revokeUserSessionFamilyForLogout } from '../services/authLifecycle';
+import { encryptMfaSecret, issueMfaStepUpGrant } from './auth/helpers';
 
 describe('auth routes', () => {
   let app: Hono;
@@ -295,6 +344,13 @@ describe('auth routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mfaMutationState.user = {
+      id: 'user-123', status: 'active', authEpoch: 1, mfaEpoch: 1,
+      mfaEnabled: true, mfaMethod: 'sms', mfaSecret: null,
+      phoneNumber: '+14155551234', phoneVerified: true,
+    };
+    mfaMutationState.cleanupStatus = 'complete';
+    mfaMutationState.cleanupFailures = [];
     // clearAllMocks clears call history but NOT a mockReturnValue base, so a
     // base set inside one test would otherwise bleed into the next. Reset
     // db.select to an empty-resolving default each test (mirrors sso.test.ts).
@@ -2320,6 +2376,13 @@ describe('auth routes', () => {
     });
 
     it('POST /auth/mfa/enable should enable MFA and return recovery codes', async () => {
+      mfaMutationState.user = {
+        ...mfaMutationState.user,
+        mfaEnabled: false,
+        mfaMethod: null,
+        phoneNumber: null,
+        phoneVerified: false,
+      };
       const setupRecoveryCodes = ['CODE-0001', 'CODE-0002'];
       const mockRedis = {
         get: vi.fn().mockResolvedValue(JSON.stringify({
@@ -2368,8 +2431,11 @@ describe('auth routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
+      expect(body.reauthenticate).toBe(true);
       expect(body.recoveryCodes).toEqual(setupRecoveryCodes);
       expect(body.message).toBe('MFA enabled successfully');
+      expect(consumeMFAToken).toHaveBeenCalledWith('MFASECRET123', '123456', 'user-123');
+      expect(verifyMFAToken).not.toHaveBeenCalled();
     });
 
     it('POST /auth/mfa/enable should reject missing currentPassword (G1)', async () => {
@@ -2455,7 +2521,58 @@ describe('auth routes', () => {
       expect(res.status).toBe(400);
     });
 
+    it('POST /auth/mfa/disable invalidates the current browser after disabling SMS MFA', async () => {
+      vi.mocked(verifyPassword).mockResolvedValue(true);
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash' }]) })) })),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([{
+            mfaSecret: null,
+            mfaEnabled: true,
+            mfaMethod: 'sms',
+            phoneNumber: '+14155551234',
+          }]) })) })),
+        } as any);
+
+      const res = await app.request('/auth/mfa/disable', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: '123456', currentPassword: 'OldStrongPass123' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ success: true, reauthenticate: true });
+    });
+
+    it('POST /auth/mfa/disable consumes the live TOTP step inside the locked mutation', async () => {
+      mfaMutationState.user = {
+        ...mfaMutationState.user,
+        mfaMethod: 'totp',
+        mfaSecret: encryptMfaSecret('TOTPSECRET'),
+        phoneNumber: null,
+        phoneVerified: false,
+      };
+      vi.mocked(verifyPassword).mockResolvedValue(true);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash' }]) })) })),
+      } as any);
+
+      const res = await app.request('/auth/mfa/disable', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: '123456', currentPassword: 'OldStrongPass123' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(consumeMFAToken).toHaveBeenCalledWith('TOTPSECRET', '123456', 'user-123');
+      expect(await res.json()).toMatchObject({ success: true, reauthenticate: true });
+    });
+
     it('POST /auth/mfa/recovery-codes should rotate recovery codes when MFA is enabled', async () => {
+      mfaMutationState.cleanupStatus = 'partial';
+      mfaMutationState.cleanupFailures = ['remote-sessions:user-123'];
       const newRecoveryCodes = ['NEW-0001', 'NEW-0002'];
       vi.mocked(generateRecoveryCodes).mockReturnValue(newRecoveryCodes);
       vi.mocked(verifyPassword).mockResolvedValue(true);
@@ -2501,8 +2618,11 @@ describe('auth routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
+      expect(body.reauthenticate).toBe(true);
       expect(body.recoveryCodes).toEqual(newRecoveryCodes);
       expect(body.message).toBe('Recovery codes generated successfully');
+      expect(body.cleanupStatus).toBe('partial');
+      expect(body.cleanupFailures).toEqual(['remote-sessions:user-123']);
     });
 
     it('POST /auth/mfa/recovery-codes should reject missing currentPassword', async () => {
@@ -2551,6 +2671,102 @@ describe('auth routes', () => {
       });
 
       expect(res.status).toBe(401);
+    });
+
+    it('POST /auth/mfa/sms/enable invalidates the current browser after initial SMS enrollment', async () => {
+      mfaMutationState.user = {
+        ...mfaMutationState.user,
+        mfaEnabled: false,
+        mfaMethod: null,
+      };
+      vi.mocked(verifyPassword).mockResolvedValue(true);
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash' }]) })) })),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([{
+            phoneNumber: '+14155551234',
+            phoneVerified: true,
+            mfaEnabled: false,
+          }]) })) })),
+        } as any);
+
+      const res = await app.request('/auth/mfa/sms/enable', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentPassword: 'OldStrongPass123' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ success: true, reauthenticate: true });
+    });
+
+    it('POST /auth/phone/confirm reports reauthentication when replacing the active SMS factor phone', async () => {
+      const grantStore = new Map<string, string>();
+      vi.mocked(getRedis).mockReturnValue({
+        setex: vi.fn(async (key: string, _ttl: number, value: string) => {
+          grantStore.set(key, value);
+          return 'OK';
+        }),
+        get: vi.fn(async (key: string) => grantStore.get(key) ?? null),
+        getdel: vi.fn(async (key: string) => {
+          const value = grantStore.get(key) ?? null;
+          grantStore.delete(key);
+          return value;
+        }),
+        del: vi.fn(),
+      } as any);
+      const mfaGrant = await issueMfaStepUpGrant({
+        purpose: 'sms.replace',
+        userId: 'user-123',
+        sessionId: 'family-current',
+        authEpoch: 1,
+        mfaEpoch: 1,
+        verifiedMethod: 'sms',
+      });
+      vi.mocked(verifyPassword).mockResolvedValue(true);
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash' }]) })) })),
+        } as any)
+        .mockReturnValue({
+          from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([]) })) })),
+        } as any);
+
+      const res = await app.request('/auth/phone/confirm', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phoneNumber: '+14155559876',
+          code: '123456',
+          currentPassword: 'OldStrongPass123',
+          mfaGrant,
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ success: true, reauthenticate: true });
+    });
+
+    it('POST /auth/phone/confirm rejects active SMS phone replacement without existing-factor proof', async () => {
+      vi.mocked(verifyPassword).mockResolvedValue(true);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash' }]) })) })),
+      } as any);
+
+      const res = await app.request('/auth/phone/confirm', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phoneNumber: '+14155559876',
+          code: '123456',
+          currentPassword: 'OldStrongPass123',
+        }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ error: expect.stringMatching(/existing.*factor.*proof/i) });
     });
   });
 

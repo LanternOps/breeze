@@ -15,6 +15,7 @@ vi.mock('../db', () => ({
     contextState.events.push('system');
     return fn();
   }),
+  withSystemDbAccessTransaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn({})),
 }));
 
 import {

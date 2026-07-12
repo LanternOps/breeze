@@ -3,10 +3,9 @@ import { zValidator } from '../../lib/validation';
 import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import * as dbModule from '../../db';
-import { users, organizations } from '../../db/schema';
+import { users } from '../../db/schema';
 import {
   generateMFASecret,
-  verifyMFAToken,
   consumeMFAToken,
   generateOTPAuthURL,
   generateQRCode,
@@ -39,6 +38,12 @@ import {
   userRequiresSetup,
   requireCurrentPasswordStepUp
 } from './helpers';
+import {
+  cleanupMfaAssuranceUsers,
+  MfaAssuranceMutationStaleError,
+  runLockedMfaMutation,
+} from '../../services/mfaAssuranceMutation';
+import { resolveEffectiveMfaPolicy } from '../../services/mfaPolicy';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
@@ -57,6 +62,45 @@ const mfaDisableSchema = mfaVerifySchema.extend({
 });
 
 export const mfaRoutes = new Hono();
+
+class MfaMutationRouteError extends Error {
+  constructor(
+    readonly status: 400 | 401 | 403 | 501 | 502,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'MfaMutationRouteError';
+  }
+}
+
+function lockedMutationInput(auth: ReturnType<typeof mfaAuthShape>, reason: string) {
+  const authEpoch = auth.token.ae;
+  const mfaEpoch = auth.token.me;
+  if (!Number.isSafeInteger(authEpoch) || !Number.isSafeInteger(mfaEpoch)) {
+    throw new MfaAssuranceMutationStaleError();
+  }
+  return {
+    userId: auth.user.id,
+    partnerId: auth.token.partnerId,
+    authEpoch,
+    mfaEpoch,
+    reason,
+  };
+}
+
+// Keeps the helper inferred from the middleware-owned auth object without
+// duplicating the complete AuthContext type in this route module.
+function mfaAuthShape(auth: any) { return auth; }
+
+function mfaMutationErrorResponse(c: any, error: unknown) {
+  if (error instanceof MfaAssuranceMutationStaleError) {
+    return c.json({ error: 'Authentication state changed. Please sign in again.' }, 401);
+  }
+  if (error instanceof MfaMutationRouteError) {
+    return c.json({ error: error.message }, error.status);
+  }
+  throw error;
+}
 
 // MFA setup (requires auth + current-password re-prompt)
 mfaRoutes.post('/mfa/setup', authMiddleware, zValidator('json', passwordOnlySchema), async (c) => {
@@ -279,32 +323,43 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
   } catch {
     return c.json({ error: 'Invalid MFA setup data' }, 500);
   }
-  const valid = await verifyMFAToken(secret, code);
-
-  if (!valid) {
-    const orgId = await resolveUserAuditOrgId(auth.user.id);
-    writeAuthAudit(c, {
-      orgId: orgId ?? undefined,
-      action: 'auth.mfa.setup.failed',
-      result: 'failure',
-      reason: 'invalid_mfa_code',
-      userId: auth.user.id,
-      email: auth.user.email,
-      details: { phase: 'setup_confirmation' }
-    });
-    return c.json({ error: 'Invalid MFA code' }, 401);
+  try {
+    await runLockedMfaMutation(
+      lockedMutationInput(auth, 'totp-factor-changed'),
+      async (tx, locked) => {
+        if (locked.user?.mfaEnabled) {
+          throw new MfaMutationRouteError(403, 'Existing MFA factor proof is required to replace TOTP');
+        }
+        if (!await consumeMFAToken(secret, code, auth.user.id)) {
+          const orgId = await resolveUserAuditOrgId(auth.user.id);
+          writeAuthAudit(c, {
+            orgId: orgId ?? undefined,
+            action: 'auth.mfa.setup.failed',
+            result: 'failure',
+            reason: 'invalid_mfa_code',
+            userId: auth.user.id,
+            email: auth.user.email,
+            details: { phase: 'setup_confirmation' }
+          });
+          throw new MfaMutationRouteError(401, 'Invalid MFA code');
+        }
+        await tx
+          .update(users)
+          .set({
+            mfaSecret: encryptMfaSecret(secret),
+            mfaEnabled: true,
+            mfaMethod: 'totp',
+            mfaRecoveryCodes: hashRecoveryCodes(recoveryCodes),
+            updatedAt: new Date()
+          })
+          .where(eq(users.id, auth.user.id));
+      },
+    );
+  } catch (error) {
+    return mfaMutationErrorResponse(c, error);
   }
 
-  await db
-    .update(users)
-    .set({
-      mfaSecret: encryptMfaSecret(secret),
-      mfaEnabled: true,
-      mfaMethod: 'totp',
-      mfaRecoveryCodes: hashRecoveryCodes(recoveryCodes),
-      updatedAt: new Date()
-    })
-    .where(eq(users.id, auth.user.id));
+  const cleanup = await cleanupMfaAssuranceUsers([auth.user.id]);
 
   const setupOrgId = await resolveUserAuditOrgId(auth.user.id);
   writeAuthAudit(c, {
@@ -318,7 +373,13 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
 
   await redis.del(`mfa:setup:${auth.user.id}`);
 
-  return c.json({ success: true, message: 'MFA enabled successfully' });
+  return c.json({
+    success: true,
+    reauthenticate: true,
+    message: 'MFA enabled successfully',
+    cleanupStatus: cleanup.cleanupStatus,
+    cleanupFailures: cleanup.cleanupFailures,
+  });
 });
 
 // MFA disable (requires auth + current MFA code + current password)
@@ -337,98 +398,57 @@ mfaRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaDisableSche
   const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'mfa:pwd');
   if (passwordError) return passwordError;
 
-  // Check org policy — if requireMfa is true, block disable
-  if (auth.orgId) {
-    const [org] = await db
-      .select({ settings: organizations.settings })
-      .from(organizations)
-      .where(eq(organizations.id, auth.orgId))
-      .limit(1);
-
-    const orgSettings = org?.settings as { security?: { requireMfa?: boolean } } | null;
-    if (orgSettings?.security?.requireMfa) {
-      return c.json({ error: 'Your organization requires MFA. Contact your admin to change this policy.' }, 403);
-    }
+  let currentMethod: string = 'totp';
+  try {
+    await runLockedMfaMutation(
+      lockedMutationInput(auth, 'mfa-disabled'),
+      async (tx, locked) => {
+        const user = locked.user!;
+        const policy = await resolveEffectiveMfaPolicy({
+          userId: auth.user.id,
+          roleId: auth.token.roleId,
+          orgId: auth.token.orgId,
+          partnerId: auth.token.partnerId,
+          scope: auth.token.scope,
+          tx,
+        });
+        if (policy.required) {
+          throw new MfaMutationRouteError(403, 'Your organization or role requires MFA. Contact your admin to change this policy.');
+        }
+        if (!user.mfaEnabled) throw new MfaMutationRouteError(400, 'MFA is not enabled');
+        currentMethod = user.mfaMethod || 'totp';
+        if (currentMethod === 'sms') {
+          const twilio = getTwilioService();
+          if (!twilio) throw new MfaMutationRouteError(501, 'SMS service not configured');
+          if (!user.phoneNumber) throw new MfaMutationRouteError(400, 'No phone number configured');
+          const result = await twilio.checkVerificationCode(user.phoneNumber, code);
+          if (result.serviceError) throw new MfaMutationRouteError(502, 'SMS verification service temporarily unavailable. Please try again.');
+          if (!result.valid) throw new MfaMutationRouteError(401, 'Invalid verification code');
+        } else {
+          const decryptedMfaSecret = decryptMfaSecret(user.mfaSecret);
+          if (!decryptedMfaSecret) throw new MfaMutationRouteError(400, 'Invalid MFA configuration');
+          if (!await consumeMFAToken(decryptedMfaSecret, code, auth.user.id)) {
+            throw new MfaMutationRouteError(401, 'Invalid MFA code');
+          }
+        }
+        await tx
+          .update(users)
+          .set({
+            mfaSecret: null,
+            mfaEnabled: false,
+            mfaMethod: null,
+            mfaRecoveryCodes: null,
+            phoneNumber: null,
+            phoneVerified: false,
+            updatedAt: new Date()
+          })
+          .where(eq(users.id, auth.user.id));
+      },
+    );
+  } catch (error) {
+    return mfaMutationErrorResponse(c, error);
   }
-
-  const [user] = await db
-    .select({
-      mfaSecret: users.mfaSecret,
-      mfaEnabled: users.mfaEnabled,
-      mfaMethod: users.mfaMethod,
-      phoneNumber: users.phoneNumber
-    })
-    .from(users)
-    .where(eq(users.id, auth.user.id))
-    .limit(1);
-
-  if (!user?.mfaEnabled) {
-    return c.json({ error: 'MFA is not enabled' }, 400);
-  }
-
-  const currentMethod = user.mfaMethod || 'totp';
-
-  // Verify using the appropriate method
-  if (currentMethod === 'sms') {
-    // For SMS MFA disable, we require a fresh SMS code
-    const twilio = getTwilioService();
-    if (!twilio) {
-      return c.json({ error: 'SMS service not configured' }, 501);
-    }
-
-    if (!user.phoneNumber) {
-      return c.json({ error: 'No phone number configured' }, 400);
-    }
-    const result = await twilio.checkVerificationCode(user.phoneNumber, code);
-    if (result.serviceError) {
-      return c.json({ error: 'SMS verification service temporarily unavailable. Please try again.' }, 502);
-    }
-    if (!result.valid) {
-      writeAuthAudit(c, {
-        orgId: auth.orgId ?? undefined,
-        action: 'auth.mfa.disable.failed',
-        result: 'failure',
-        reason: 'invalid_sms_code',
-        userId: auth.user.id,
-        email: auth.user.email,
-        details: { method: 'sms' }
-      });
-      return c.json({ error: 'Invalid verification code' }, 401);
-    }
-  } else {
-    // TOTP
-    const decryptedMfaSecret = decryptMfaSecret(user.mfaSecret);
-    if (!decryptedMfaSecret) {
-      return c.json({ error: 'Invalid MFA configuration' }, 400);
-    }
-    // consumeMFAToken: a replayed live code must not disable MFA. (sec review #2)
-    const valid = await consumeMFAToken(decryptedMfaSecret, code, auth.user.id);
-    if (!valid) {
-      writeAuthAudit(c, {
-        orgId: auth.orgId ?? undefined,
-        action: 'auth.mfa.disable.failed',
-        result: 'failure',
-        reason: 'invalid_mfa_code',
-        userId: auth.user.id,
-        email: auth.user.email,
-        details: { method: 'totp' }
-      });
-      return c.json({ error: 'Invalid MFA code' }, 401);
-    }
-  }
-
-  await db
-    .update(users)
-    .set({
-      mfaSecret: null,
-      mfaEnabled: false,
-      mfaMethod: null,
-      mfaRecoveryCodes: null,
-      phoneNumber: null,
-      phoneVerified: false,
-      updatedAt: new Date()
-    })
-    .where(eq(users.id, auth.user.id));
+  const cleanup = await cleanupMfaAssuranceUsers([auth.user.id]);
 
   writeAuthAudit(c, {
     orgId: auth.orgId ?? undefined,
@@ -439,7 +459,13 @@ mfaRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaDisableSche
     details: { method: currentMethod }
   });
 
-  return c.json({ success: true, message: 'MFA disabled successfully' });
+  return c.json({
+    success: true,
+    reauthenticate: true,
+    message: 'MFA disabled successfully',
+    cleanupStatus: cleanup.cleanupStatus,
+    cleanupFailures: cleanup.cleanupFailures,
+  });
 });
 
 // MFA enable compatibility endpoint for frontend settings flow
@@ -482,34 +508,34 @@ mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableWithPa
     return c.json({ error: message, message }, 500);
   }
 
-  const valid = await verifyMFAToken(secret, code);
-  if (!valid) {
-    const orgId = await resolveUserAuditOrgId(auth.user.id);
-    writeAuthAudit(c, {
-      orgId: orgId ?? undefined,
-      action: 'auth.mfa.setup.failed',
-      result: 'failure',
-      reason: 'invalid_mfa_code',
-      userId: auth.user.id,
-      email: auth.user.email,
-      details: { phase: 'setup_confirmation' }
-    });
-    const message = 'Invalid MFA code';
-    return c.json({ error: message, message }, 401);
+  try {
+    await runLockedMfaMutation(
+      lockedMutationInput(auth, 'totp-factor-changed'),
+      async (tx, locked) => {
+        if (locked.user?.mfaEnabled) {
+          throw new MfaMutationRouteError(403, 'Existing MFA factor proof is required to replace TOTP');
+        }
+        if (!await consumeMFAToken(secret, code, auth.user.id)) {
+          throw new MfaMutationRouteError(401, 'Invalid MFA code');
+        }
+        await tx
+          .update(users)
+          .set({
+            mfaSecret: encryptMfaSecret(secret),
+            mfaEnabled: true,
+            mfaMethod: 'totp',
+            mfaRecoveryCodes: hashRecoveryCodes(recoveryCodes),
+            updatedAt: new Date()
+          })
+          .where(eq(users.id, auth.user.id));
+      },
+    );
+  } catch (error) {
+    return mfaMutationErrorResponse(c, error);
   }
 
-  await db
-    .update(users)
-    .set({
-      mfaSecret: encryptMfaSecret(secret),
-      mfaEnabled: true,
-      mfaMethod: 'totp',
-      mfaRecoveryCodes: hashRecoveryCodes(recoveryCodes),
-      updatedAt: new Date()
-    })
-    .where(eq(users.id, auth.user.id));
-
   await redis.del(`mfa:setup:${auth.user.id}`);
+  const cleanup = await cleanupMfaAssuranceUsers([auth.user.id]);
 
   const setupOrgId = await resolveUserAuditOrgId(auth.user.id);
   writeAuthAudit(c, {
@@ -521,7 +547,14 @@ mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableWithPa
     details: { method: 'totp' }
   });
 
-  return c.json({ success: true, recoveryCodes, message: 'MFA enabled successfully' });
+  return c.json({
+    success: true,
+    reauthenticate: true,
+    recoveryCodes,
+    message: 'MFA enabled successfully',
+    cleanupStatus: cleanup.cleanupStatus,
+    cleanupFailures: cleanup.cleanupFailures,
+  });
 });
 
 // Generate new MFA recovery codes for the authenticated user
@@ -536,25 +569,27 @@ mfaRoutes.post('/mfa/recovery-codes', authMiddleware, zValidator('json', passwor
   const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'mfa:pwd');
   if (passwordError) return passwordError;
 
-  const [user] = await db
-    .select({ mfaEnabled: users.mfaEnabled })
-    .from(users)
-    .where(eq(users.id, auth.user.id))
-    .limit(1);
-
-  if (!user?.mfaEnabled) {
-    const message = 'MFA must be enabled before generating recovery codes';
-    return c.json({ error: message, message }, 400);
-  }
-
   const recoveryCodes = generateRecoveryCodes();
-  await db
-    .update(users)
-    .set({
-      mfaRecoveryCodes: hashRecoveryCodes(recoveryCodes),
-      updatedAt: new Date()
-    })
-    .where(eq(users.id, auth.user.id));
+  try {
+    await runLockedMfaMutation(
+      lockedMutationInput(auth, 'mfa-recovery-codes-rotated'),
+      async (tx, locked) => {
+        if (!locked.user?.mfaEnabled) {
+          throw new MfaMutationRouteError(400, 'MFA must be enabled before generating recovery codes');
+        }
+        await tx
+          .update(users)
+          .set({
+            mfaRecoveryCodes: hashRecoveryCodes(recoveryCodes),
+            updatedAt: new Date()
+          })
+          .where(eq(users.id, auth.user.id));
+      },
+    );
+  } catch (error) {
+    return mfaMutationErrorResponse(c, error);
+  }
+  const cleanup = await cleanupMfaAssuranceUsers([auth.user.id]);
 
   const orgId = await resolveUserAuditOrgId(auth.user.id);
   writeAuthAudit(c, {
@@ -566,5 +601,12 @@ mfaRoutes.post('/mfa/recovery-codes', authMiddleware, zValidator('json', passwor
     details: { count: recoveryCodes.length }
   });
 
-  return c.json({ success: true, recoveryCodes, message: 'Recovery codes generated successfully' });
+  return c.json({
+    success: true,
+    reauthenticate: true,
+    recoveryCodes,
+    message: 'Recovery codes generated successfully',
+    cleanupStatus: cleanup.cleanupStatus,
+    cleanupFailures: cleanup.cleanupFailures,
+  });
 });

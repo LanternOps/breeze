@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { eq } from 'drizzle-orm';
 import * as dbModule from '../../db';
-import { users, organizations } from '../../db/schema';
+import { users } from '../../db/schema';
 import {
   generateRecoveryCodes,
   rateLimiter,
@@ -23,12 +23,37 @@ import {
   hashRecoveryCodes,
   resolveUserAuditOrgId,
   writeAuthAudit,
-  requireCurrentPasswordStepUp
+  requireCurrentPasswordStepUp,
+  consumeMfaStepUpGrant,
+  readMfaStepUpGrant,
+  MfaStepUpGrantInvalidError,
+  MfaStepUpGrantUnavailableError,
 } from './helpers';
+import {
+  cleanupMfaAssuranceUsers,
+  MfaAssuranceMutationStaleError,
+  runLockedMfaMutation,
+} from '../../services/mfaAssuranceMutation';
+import { invalidateUserMfaAssurance, withAuthLifecycleSystemTransaction } from '../../services/authLifecycle';
+import { lockMfaAssuranceState } from '../../services/mfaAssuranceLocks';
+import { resolveEffectiveMfaPolicy } from '../../services/mfaPolicy';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
 export const phoneRoutes = new Hono();
+
+function mutationInput(auth: any, reason: string) {
+  if (!Number.isSafeInteger(auth.token.ae) || !Number.isSafeInteger(auth.token.me)) {
+    throw new MfaAssuranceMutationStaleError();
+  }
+  return {
+    userId: auth.user.id,
+    partnerId: auth.token.partnerId,
+    authEpoch: auth.token.ae,
+    mfaEpoch: auth.token.me,
+    reason,
+  };
+}
 
 // Phone verification - send code (authenticated)
 phoneRoutes.post('/phone/verify', authMiddleware, zValidator('json', phoneVerifySchema), async (c) => {
@@ -102,7 +127,7 @@ phoneRoutes.post('/phone/confirm', authMiddleware, zValidator('json', phoneConfi
   }
 
   const auth = c.get('auth');
-  const { phoneNumber, code, currentPassword } = c.req.valid('json');
+  const { phoneNumber, code, currentPassword, mfaGrant } = c.req.valid('json');
 
   const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'mfa:pwd');
   if (passwordError) return passwordError;
@@ -148,15 +173,83 @@ phoneRoutes.post('/phone/confirm', authMiddleware, zValidator('json', phoneConfi
     return c.json({ error: 'Invalid verification code' }, 401);
   }
 
-  // Update user with verified phone
-  await db
-    .update(users)
-    .set({
-      phoneNumber,
-      phoneVerified: true,
-      updatedAt: new Date()
-    })
-    .where(eq(users.id, auth.user.id));
+  let requiresReauthentication = false;
+  try {
+    await withAuthLifecycleSystemTransaction(async (tx) => {
+      const locked = await lockMfaAssuranceState(tx, {
+        partnerId: auth.token.partnerId,
+        userId: auth.user.id,
+      });
+      if (!locked.user
+        || locked.user.status !== 'active'
+        || locked.user.authEpoch !== auth.token.ae
+        || locked.user.mfaEpoch !== auth.token.me) {
+        throw new MfaAssuranceMutationStaleError();
+      }
+      requiresReauthentication = locked.user.mfaEnabled === true
+        && locked.user.mfaMethod === 'sms'
+        && locked.user.phoneVerified === true
+        && locked.user.phoneNumber !== phoneNumber;
+      if (requiresReauthentication) {
+        if (!mfaGrant) throw new Error('MFA_PROOF_REQUIRED');
+        const sessionId = auth.token.sid;
+        if (!sessionId) throw new MfaAssuranceMutationStaleError();
+        const binding = {
+          purpose: 'sms.replace' as const,
+          userId: auth.user.id,
+          sessionId,
+          authEpoch: auth.token.ae,
+          mfaEpoch: auth.token.me,
+        };
+        const policy = await resolveEffectiveMfaPolicy({
+          userId: auth.user.id,
+          roleId: auth.token.roleId,
+          orgId: auth.token.orgId,
+          partnerId: auth.token.partnerId,
+          scope: auth.token.scope,
+          tx,
+        });
+        const grant = await readMfaStepUpGrant(mfaGrant, binding);
+        const existingMethodAllowed = grant.verifiedMethod === 'passkey'
+          ? locked.activePasskeyCount > 0 && policy.allowedMethods.has('passkey')
+          : grant.verifiedMethod === 'totp'
+            ? Boolean(locked.user.mfaSecret) && policy.allowedMethods.has('totp')
+            : locked.user.mfaMethod === 'sms'
+              && locked.user.phoneVerified === true
+              && Boolean(locked.user.phoneNumber)
+              && policy.allowedMethods.has('sms');
+        if (!existingMethodAllowed) throw new Error('MFA_PROOF_REQUIRED');
+        await consumeMfaStepUpGrant(mfaGrant, {
+          ...binding,
+          verifiedMethod: grant.verifiedMethod,
+        });
+      }
+      await tx
+        .update(users)
+        .set({ phoneNumber, phoneVerified: true, updatedAt: new Date() })
+        .where(eq(users.id, auth.user.id));
+      if (requiresReauthentication) {
+        await invalidateUserMfaAssurance(tx, auth.user.id, 'sms-phone-replaced');
+      }
+    });
+  } catch (error) {
+    if (error instanceof MfaAssuranceMutationStaleError) {
+      return c.json({ error: 'Authentication state changed. Please sign in again.' }, 401);
+    }
+    if (error instanceof Error && error.message === 'MFA_PROOF_REQUIRED') {
+      return c.json({ error: 'Existing MFA factor proof is required to replace the SMS phone' }, 403);
+    }
+    if (error instanceof MfaStepUpGrantInvalidError) {
+      return c.json({ error: 'Invalid or expired MFA step-up authorization' }, 401);
+    }
+    if (error instanceof MfaStepUpGrantUnavailableError) {
+      return c.json({ error: 'MFA verification unavailable. Please try again later.' }, 503);
+    }
+    throw error;
+  }
+  const cleanup = requiresReauthentication
+    ? await cleanupMfaAssuranceUsers([auth.user.id])
+    : { cleanupStatus: 'complete' as const, cleanupFailures: [] as string[] };
 
   writeAuthAudit(c, {
     orgId: orgId ?? undefined,
@@ -167,7 +260,13 @@ phoneRoutes.post('/phone/confirm', authMiddleware, zValidator('json', phoneConfi
     details: { phoneLast4: phoneNumber.slice(-4) }
   });
 
-  return c.json({ success: true, message: 'Phone number verified' });
+  return c.json({
+    success: true,
+    ...(requiresReauthentication ? { reauthenticate: true } : {}),
+    message: 'Phone number verified',
+    cleanupStatus: cleanup.cleanupStatus,
+    cleanupFailures: cleanup.cleanupFailures,
+  });
 });
 
 // SMS MFA enable (authenticated, requires verified phone)
@@ -182,56 +281,51 @@ phoneRoutes.post('/mfa/sms/enable', authMiddleware, zValidator('json', smsMfaEna
   const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'mfa:pwd');
   if (passwordError) return passwordError;
 
-  const [user] = await db
-    .select({
-      phoneNumber: users.phoneNumber,
-      phoneVerified: users.phoneVerified,
-      mfaEnabled: users.mfaEnabled
-    })
-    .from(users)
-    .where(eq(users.id, auth.user.id))
-    .limit(1);
-
-  if (!user) {
-    return c.json({ error: 'User not found' }, 404);
-  }
-
-  if (!user.phoneVerified || !user.phoneNumber) {
-    return c.json({ error: 'Phone number must be verified before enabling SMS MFA' }, 400);
-  }
-
-  if (user.mfaEnabled) {
-    return c.json({ error: 'MFA is already enabled. Disable it first to switch methods.' }, 400);
-  }
-
-  // Check org policy — is SMS allowed?
-  if (auth.orgId) {
-    const [org] = await db
-      .select({ settings: organizations.settings })
-      .from(organizations)
-      .where(eq(organizations.id, auth.orgId))
-      .limit(1);
-
-    const orgSettings = org?.settings as { security?: { allowedMfaMethods?: { sms?: boolean } } } | null;
-    if (orgSettings?.security?.allowedMfaMethods && !orgSettings.security.allowedMfaMethods.sms) {
-      return c.json({ error: 'Your organization does not allow SMS MFA' }, 403);
-    }
-  }
-
   // Generate recovery codes
   const recoveryCodes = generateRecoveryCodes();
-
-  // Enable SMS MFA
-  await db
-    .update(users)
-    .set({
-      mfaEnabled: true,
-      mfaMethod: 'sms',
-      mfaSecret: null,
-      mfaRecoveryCodes: hashRecoveryCodes(recoveryCodes),
-      updatedAt: new Date()
-    })
-    .where(eq(users.id, auth.user.id));
+  try {
+    await runLockedMfaMutation(mutationInput(auth, 'sms-factor-enabled'), async (tx, locked) => {
+      const user = locked.user!;
+      if (!user.phoneVerified || !user.phoneNumber) {
+        throw new Error('PHONE_NOT_VERIFIED');
+      }
+      if (user.mfaEnabled) throw new Error('MFA_ALREADY_ENABLED');
+      const policy = await resolveEffectiveMfaPolicy({
+        userId: auth.user.id,
+        roleId: auth.token.roleId,
+        orgId: auth.token.orgId,
+        partnerId: auth.token.partnerId,
+        scope: auth.token.scope,
+        tx,
+      });
+      if (!policy.allowedMethods.has('sms')) throw new Error('SMS_NOT_ALLOWED');
+      await tx
+        .update(users)
+        .set({
+          mfaEnabled: true,
+          mfaMethod: 'sms',
+          mfaSecret: null,
+          mfaRecoveryCodes: hashRecoveryCodes(recoveryCodes),
+          updatedAt: new Date()
+        })
+        .where(eq(users.id, auth.user.id));
+    });
+  } catch (error) {
+    if (error instanceof MfaAssuranceMutationStaleError) {
+      return c.json({ error: 'Authentication state changed. Please sign in again.' }, 401);
+    }
+    if (error instanceof Error && error.message === 'PHONE_NOT_VERIFIED') {
+      return c.json({ error: 'Phone number must be verified before enabling SMS MFA' }, 400);
+    }
+    if (error instanceof Error && error.message === 'MFA_ALREADY_ENABLED') {
+      return c.json({ error: 'MFA is already enabled. Disable it first to switch methods.' }, 400);
+    }
+    if (error instanceof Error && error.message === 'SMS_NOT_ALLOWED') {
+      return c.json({ error: 'Your effective MFA policy does not allow SMS MFA' }, 403);
+    }
+    throw error;
+  }
+  const cleanup = await cleanupMfaAssuranceUsers([auth.user.id]);
 
   const orgId = await resolveUserAuditOrgId(auth.user.id);
   writeAuthAudit(c, {
@@ -243,7 +337,14 @@ phoneRoutes.post('/mfa/sms/enable', authMiddleware, zValidator('json', smsMfaEna
     details: { method: 'sms' }
   });
 
-  return c.json({ success: true, recoveryCodes, message: 'SMS MFA enabled successfully' });
+  return c.json({
+    success: true,
+    reauthenticate: true,
+    recoveryCodes,
+    message: 'SMS MFA enabled successfully',
+    cleanupStatus: cleanup.cleanupStatus,
+    cleanupFailures: cleanup.cleanupFailures,
+  });
 });
 
 // SMS MFA send code during login (unauthenticated, requires tempToken)
