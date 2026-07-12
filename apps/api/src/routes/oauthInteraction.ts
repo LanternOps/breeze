@@ -341,8 +341,13 @@ if (MCP_OAUTH_ENABLED) {
     // the MCP resource here entirely — the effective-scopes call below owns
     // it exclusively and unconditionally, so it is the ONLY write the MCP
     // resource ever receives. Non-MCP resources (if any) are unaffected.
+    // (#2363 interplay) The MCP resource may be keyed by an accepted alias
+    // (…/sse, trailing slash, …/message) on flows that predate or bypass the
+    // /oauth/auth normalization, so match the full accepted set — not just
+    // the canonical OAUTH_RESOURCE_URL — or an alias-keyed flow would get
+    // the unfiltered union write this skip exists to prevent.
     for (const [res, scopes] of Object.entries(missingResourceScopes)) {
-      if (res === OAUTH_RESOURCE_URL) continue;
+      if (isAcceptedResourceIndicator(res)) continue;
       grant.addResourceScope(res, scopes.join(' '));
     }
     // H3: only grant the intersection of (requested) ∩ (displayed). The UI

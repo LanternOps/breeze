@@ -7,7 +7,9 @@ vi.mock('../db', () => ({
   db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn() },
 }));
 
+import { eq } from 'drizzle-orm';
 import { db } from '../db';
+import { deploymentInvites } from '../db/schema/deploymentInvites';
 import { registerFleetStatusTools } from './aiToolsFleetStatus';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
@@ -100,12 +102,26 @@ describe('get_fleet_status — SR5-18 invite-total narrowing', () => {
     expect(parsed.invite_funnel.invites_clicked).toBe(2);
   });
 
-  it('applies the actor org condition to the invite query (org-scoped caller not shown partner-wide totals)', async () => {
-    mockSelects([]);
-    const orgCondition = vi.fn(() => undefined as any);
-    const auth = makeAuth(undefined, { scope: 'organization', orgId: 'org-1', orgCondition });
+  it('narrows the invite query to the caller org (org-scoped caller not shown partner-wide totals)', async () => {
+    // MCP-OAUTH-06 superseded the SR5-18 `auth.orgCondition` mechanism here:
+    // computeInviteFunnel now selects the axis explicitly from auth.scope, so
+    // an org-scoped caller filters deployment_invites by their OWN org id
+    // (strictly narrower than the partner-wide condition SR5-18 guarded
+    // against). Assert the WHERE predicate directly.
+    let capturedWhere: unknown;
+    mockDb.select.mockImplementation(() => ({
+      from: () => ({
+        leftJoin: () => ({
+          where: (predicate: unknown) => {
+            capturedWhere = predicate;
+            return Promise.resolve([]);
+          },
+        }),
+      }),
+    }));
+    const auth = makeAuth(undefined, { scope: 'organization', orgId: 'org-1' });
     await handlerFor('get_fleet_status')({}, auth);
     // The invite query narrows by the actor's org axis, not partner-wide only.
-    expect(orgCondition).toHaveBeenCalled();
+    expect(capturedWhere).toEqual(eq(deploymentInvites.orgId, 'org-1'));
   });
 });

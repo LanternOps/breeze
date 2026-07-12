@@ -9,6 +9,7 @@ import {
   resolvePartnerIdForResourceServerInfo,
 } from './provider';
 import { GRANT_REVOCATION_TTL_SECONDS } from './adapter';
+import { GRANT_REVOCATION_TTL_SECONDS as REVOCATION_SERVICE_GRANT_TTL_SECONDS } from './revocationService';
 import { GrantTenancyError } from './effectiveScopes';
 
 // Mock the tenant-status assertion so provider tests stay hermetic — the
@@ -72,6 +73,11 @@ describe('OAuth token TTL policy', () => {
     // expired first, revoked grants' sibling access tokens would validate
     // again for the remainder of their lifetime.
     expect(GRANT_REVOCATION_TTL_SECONDS).toBeGreaterThanOrEqual(ACCESS_TOKEN_TTL_SECONDS);
+    // revocationService.ts hand-syncs the same marker TTL (it stays off the
+    // provider import chain for the same cycle reason) — hold it to the same
+    // floor so a future TTL bump can't silently reopen the residual-access
+    // window through the grants-driven revocation path (MCP-OAUTH-07/10).
+    expect(REVOCATION_SERVICE_GRANT_TTL_SECONDS).toBeGreaterThanOrEqual(ACCESS_TOKEN_TTL_SECONDS);
   });
 });
 
