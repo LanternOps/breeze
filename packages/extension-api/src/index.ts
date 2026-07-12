@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { SQLWrapper } from 'drizzle-orm';
 import type { Hono } from 'hono';
 import type { MiddlewareHandler } from 'hono';
 
@@ -21,6 +22,8 @@ const tenancySchema = z.object({
   deviceCascadeDeleteTables: z.array(z.string()).default([]),
   /** device_id + org_id tables whose org_id is rewritten when a device moves org. */
   deviceOrgDenormalizedTables: z.array(z.string()).default([]),
+  /** device_id tables whose rows are deleted when a device moves org. */
+  deviceOrgMoveDeleteTables: z.array(z.string()).optional(),
 });
 
 const manifestSchema = z
@@ -36,6 +39,7 @@ const manifestSchema = z
       }),
     entry: z.string().min(1),
     migrationsDir: z.string().min(1).default('migrations'),
+    agentRoutes: z.boolean().optional(),
     tenancy: tenancySchema.optional().default({
       orgCascadeDeleteTables: [],
       deviceCascadeDeleteTables: [],
@@ -47,6 +51,7 @@ const manifestSchema = z
       ...m.tenancy.orgCascadeDeleteTables,
       ...m.tenancy.deviceCascadeDeleteTables,
       ...m.tenancy.deviceOrgDenormalizedTables,
+      ...(m.tenancy.deviceOrgMoveDeleteTables ?? []),
     ];
     // memory_blocks is a deliberately shared cross-extension table.
     const SHARED_TABLE_ALLOWLIST = new Set(['memory_blocks']);
@@ -82,12 +87,58 @@ export interface AiToolLike {
   deviceArgs?: readonly string[];
 }
 
+/** Agent identity injected by the core agent authentication middleware. */
+export interface ExtensionAgentContext {
+  deviceId: string;
+  agentId: string;
+  orgId: string;
+  siteId: string | null;
+  role: string;
+}
+
+/** Audit event accepted by the core audit pipeline. */
+export interface ExtensionAuditEvent {
+  orgId?: string | null;
+  actorType?: 'user' | 'api_key' | 'agent' | 'system';
+  actorId: string;
+  action: string;
+  resourceType: string;
+  resourceId?: string;
+  resourceName?: string;
+  details?: Record<string, unknown>;
+  result: 'success' | 'failure' | 'denied';
+  errorMessage?: string;
+}
+
+/** Column-bound encryption helpers injected by core. */
+export interface ExtensionSecrets {
+  encryptForColumn(table: string, column: string, plaintext: string): string;
+  decryptForColumn(table: string, column: string, ciphertext: string): string;
+}
+
+/**
+ * Structural core database handle. Extensions cast this to their own Drizzle type:
+ * `const db = ctx.db as unknown as PostgresJsDatabase;` The extension must pin the
+ * same drizzle-orm version as core.
+ */
+export type ExtensionDatabase = {
+  execute(query: SQLWrapper | string): Promise<unknown>;
+} & Record<string, unknown>;
+
 /** Injected by the core loader — the ONLY channel through which an extension touches Breeze. */
 export interface ExtensionContext {
   /** Mounts subApp at /api/v1/<routeNamespace>. Extension must apply its own auth middleware. */
   mountRoute: (subApp: Hono) => void;
   /** Core auth middleware, injected so the extension need not import @breeze/api. */
   authMiddleware: MiddlewareHandler;
+  /** Core agent auth middleware; sets `c.get('agent')` and opens the org RLS context. */
+  agentAuthMiddleware: MiddlewareHandler;
+  /** Core ALS-bound Drizzle handle; active RLS GUCs apply. */
+  db: ExtensionDatabase;
+  /** Core column-bound encryption helpers. */
+  secrets: ExtensionSecrets;
+  /** Queues an audit event with fire-and-forget retry semantics. */
+  audit: (event: ExtensionAuditEvent) => Promise<void>;
   /** The shared AI tool registry map (keys = tool names; collisions throw in the loader). */
   aiTools: Map<string, AiToolLike>;
   log: (message: string) => void;

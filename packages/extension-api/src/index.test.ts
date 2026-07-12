@@ -18,6 +18,24 @@ describe('parseExtensionManifest', () => {
     expect(m.name).toBe('sample');
     expect(m.migrationsDir).toBe('migrations'); // default
     expect(m.tenancy.deviceCascadeDeleteTables).toEqual([]); // default
+    expect(m.tenancy.deviceOrgMoveDeleteTables).toBeUndefined(); // optional
+  });
+
+  it('accepts agentRoutes and deviceOrgMoveDeleteTables', () => {
+    const m = parseExtensionManifest({
+      name: 'demo', routeNamespace: 'demo', entry: 'src/index.ts',
+      agentRoutes: true,
+      tenancy: { deviceOrgMoveDeleteTables: ['demo_things'] },
+    });
+    expect(m.agentRoutes).toBe(true);
+    expect(m.tenancy.deviceOrgMoveDeleteTables).toEqual(['demo_things']);
+  });
+
+  it('rejects unprefixed tables in deviceOrgMoveDeleteTables', () => {
+    expect(() => parseExtensionManifest({
+      name: 'demo', routeNamespace: 'demo', entry: 'src/index.ts',
+      tenancy: { deviceOrgMoveDeleteTables: ['other_things'] },
+    })).toThrow(/demo_/);
   });
 
   it('rejects invalid names (uppercase, spaces, leading digit, "plugins")', () => {
