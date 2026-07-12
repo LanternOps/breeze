@@ -39,7 +39,13 @@ import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from 
 import { getTrustedClientIp } from '../services/clientIp';
 import { captureException } from '../services/sentry';
 import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
-import { PERMISSIONS } from '../services/permissions';
+import { PERMISSIONS, getUserPermissions } from '../services/permissions';
+import {
+  getScopedRole,
+  validateAssignableRole,
+  checkRolePermissionCeiling,
+  type ScopeContext,
+} from '../services/roleAssignment';
 import { selfHostAllowsPrivateNetwork } from '../config/env';
 import { envFlag } from '../utils/envFlag';
 import { setRefreshTokenCookie, getCookieValue, auditLogin } from './auth/helpers';
@@ -308,6 +314,158 @@ function buildSsoCallbackUri(): string {
   return `${getCanonicalPublicBaseUrl()}/api/v1/sso/callback`;
 }
 
+// ============================================
+// SR2-10 — SSO default-role delegation ceiling
+// ============================================
+//
+// An SSO provider's `defaultRoleId` is a STANDING DELEGATION: every future
+// JIT-provisioned user gets that role. Before this, nobody checked that the
+// admin who configured it was entitled to grant it — so an admin who could edit
+// an SSO provider could mint users more privileged than themselves. The same
+// permission-subset ceiling the user-invite path enforces (routes/users.ts, via
+// services/roleAssignment) now applies HERE, twice:
+//
+//   1. CONFIG TIME  — against the LIVE, authenticated caller (both axes: their
+//      permission set is whatever authMiddleware/requirePermission resolved for
+//      their real membership, org OR partner).
+//   2. JIT TIME     — against the LIVE permissions of the admin who last SET the
+//      role (`default_role_configured_by`, falling back to `created_by`). A
+//      delegation must not outlive its configurer's authority: config time may
+//      have been months ago, and that admin may since have been demoted or
+//      offboarded.
+//
+// FAIL CLOSED. `checkRoleStructure` is deliberately NOT used as a fallback
+// ceiling anywhere in this file: it returns null (= assignable) for a SYSTEM
+// role carrying `*:*`, so a provider whose default role is the built-in
+// super-admin role would JIT every user at FULL WILDCARD — the exact
+// vulnerability this code exists to close. If a ceiling cannot be established
+// against a real principal's live permissions, the role is NOT assignable and
+// JIT provisioning is refused.
+
+/**
+ * The ScopeContext a provider's defaultRoleId must satisfy — the PROVIDER's own
+ * axis, never the caller's. (a) These routes admit system scope, for which
+ * getScopeContext(auth) throws 403; (b) the role must belong to the tenant the
+ * provider provisions INTO, which is the provider's axis by definition.
+ */
+function providerScopeContext(p: { orgId: string | null; partnerId: string | null }): ScopeContext | null {
+  if (p.partnerId) return { scope: 'partner', partnerId: p.partnerId };
+  if (p.orgId) return { scope: 'organization', orgId: p.orgId };
+  return null;
+}
+
+/**
+ * CONFIG-TIME gate, shared by POST /providers and PATCH /providers/:id.
+ * Returns an error message (caller returns 400) or null.
+ *
+ * The ceiling principal is the authenticated caller. `validateAssignableRole`
+ * resolves them from `c.get('permissions')` — the set requirePermission already
+ * resolved on whichever axis they actually hold (org_users OR partner_users), so
+ * an MSP partner admin with no organization_users row is measured against their
+ * real partner permissions, not a null set. Every scope goes through the ceiling:
+ * a caller who reaches this route body provably HAS a resolved permission set
+ * (requirePermission 403s "No permissions found" otherwise), so there is no
+ * principal here for whom a structural-only check would be the only option.
+ */
+async function validateProviderDefaultRole(
+  c: any,
+  auth: AuthContext,
+  defaultRoleId: string,
+  scopeContext: ScopeContext,
+): Promise<string | null> {
+  const role = await getScopedRole(defaultRoleId, scopeContext);
+  if (!role) {
+    return scopeContext.scope === 'partner'
+      ? 'defaultRoleId must be a partner-scoped role belonging to your partner'
+      : 'defaultRoleId must be an organization-scoped role belonging to this organization';
+  }
+  return validateAssignableRole(c, auth, role);
+}
+
+/**
+ * JIT-TIME gate. Runs immediately before the SSO callback provisions a NEW user
+ * with the provider's defaultRoleId. Re-checks, against LIVE state:
+ *   (a) the role still exists on the provider's axis;
+ *   (b) the configurer is still a real, ACTIVE account; and
+ *   (c) the role's effective permissions are still within that configurer's
+ *       live permission ceiling.
+ *
+ * PRINCIPAL PRECEDENCE: `default_role_configured_by` (stamped by every write
+ * that SETS defaultRoleId) → `created_by` (rows predating that column) → FAIL
+ * CLOSED. Neither resolving is NOT a licence to fall back to a structural check
+ * (see the wildcard trap above); the sign-in is refused and the repair is to
+ * re-save the default role as a current admin, which re-stamps the column.
+ *
+ * BOTH AXES are handed to getUserPermissions. Passing only { orgId } would run
+ * only resolveOrgAxis (services/permissions.ts), which needs an
+ * organization_users row — and an MSP PARTNER ADMIN configuring SSO for a
+ * customer org has none (they act via partner_users + orgAccess). That would
+ * return null → fail closed → every JIT sign-in on that provider would fail
+ * forever, on the most normal MSP topology there is. Supplying the provider
+ * org's owning partner as well lets getUserPermissions' own org→partner
+ * fall-through resolve them correctly.
+ *
+ * DB CONTEXT: MUST be called inside withSystemDbAccessContext. /sso/callback is
+ * unauthenticated — it has no request context at all, so a bare read here is
+ * denied by forced RLS and silently returns 0 rows. On this path a 0-row read
+ * means "role not found" / "configurer has no permissions", i.e. it fails closed
+ * rather than open — but it would brick every SSO login, so the wrap is
+ * mandatory, not cosmetic.
+ */
+async function revalidateSsoDefaultRole(params: {
+  roleId: string;
+  scopeContext: ScopeContext;
+  configuredByUserId: string | null;
+}): Promise<{ ok: true; roleId: string } | { ok: false; reason: string }> {
+  const role = await getScopedRole(params.roleId, params.scopeContext);
+  if (!role) {
+    return { ok: false, reason: 'default_role_not_on_provider_axis' };
+  }
+
+  // No resolvable principal → no ceiling → refuse. (Never a structural check.)
+  if (!params.configuredByUserId) {
+    return { ok: false, reason: 'default_role_configurer_unknown' };
+  }
+
+  const [configurer] = await db
+    .select({ id: users.id, status: users.status })
+    .from(users)
+    .where(eq(users.id, params.configuredByUserId))
+    .limit(1);
+
+  // Deleted or deactivated configurer: their authority is gone, so the standing
+  // delegation goes with it. getUserPermissions does NOT look at users.status,
+  // so without this an offboarded-but-still-role-bearing admin would keep
+  // minting privileged users indefinitely.
+  if (!configurer || configurer.status !== 'active') {
+    return { ok: false, reason: 'default_role_configurer_inactive' };
+  }
+
+  let orgId: string | undefined;
+  let partnerId: string | undefined;
+  if (params.scopeContext.scope === 'organization') {
+    orgId = params.scopeContext.orgId;
+    const [org] = await db
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, orgId))
+      .limit(1);
+    partnerId = org?.partnerId ?? undefined;
+  } else {
+    partnerId = params.scopeContext.partnerId;
+  }
+
+  const configurerPermissions = await getUserPermissions(configurer.id, { orgId, partnerId });
+  if (!configurerPermissions) {
+    return { ok: false, reason: 'default_role_configurer_no_permissions' };
+  }
+
+  const ceilingError = await checkRolePermissionCeiling(configurerPermissions, role);
+  return ceilingError
+    ? { ok: false, reason: 'default_role_exceeds_configurer_permissions' }
+    : { ok: true, roleId: role.id };
+}
+
 function getOIDCConfig(provider: typeof ssoProviders.$inferSelect): OIDCConfig {
   const decryptedClientSecret = decryptForColumn('sso_providers', 'client_secret', provider.clientSecret);
 
@@ -509,18 +667,14 @@ ssoRoutes.post(
     if (!canManagePartnerWidePolicies(auth)) {
       return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
+    // SR2-10: existence + scope + tenant (as before) AND the permission-subset
+    // ceiling against the configuring admin.
     if (body.defaultRoleId) {
-      const [role] = await db
-        .select({ id: roles.id })
-        .from(roles)
-        .where(and(
-          eq(roles.id, body.defaultRoleId),
-          eq(roles.scope, 'partner'),
-          eq(roles.partnerId, auth.partnerId)
-        ))
-        .limit(1);
-      if (!role) {
-        return c.json({ error: 'defaultRoleId must be a partner-scoped role belonging to your partner' }, 400);
+      const roleError = await validateProviderDefaultRole(
+        c, auth, body.defaultRoleId, { scope: 'partner', partnerId: auth.partnerId },
+      );
+      if (roleError) {
+        return c.json({ error: roleError }, 400);
       }
     }
     ownerColumns = { orgId: null, partnerId: auth.partnerId };
@@ -528,6 +682,17 @@ ssoRoutes.post(
     const orgResult = resolveOrgIdForProviderRoute(auth, body.orgId);
     if ('error' in orgResult) {
       return c.json({ error: orgResult.error }, orgResult.status);
+    }
+    // SR2-10: the org axis validated NOTHING here — and it is the ONLY axis that
+    // JIT-provisions, so an org admin could delegate a role broader than their
+    // own authority to every future SSO sign-in.
+    if (body.defaultRoleId) {
+      const roleError = await validateProviderDefaultRole(
+        c, auth, body.defaultRoleId, { scope: 'organization', orgId: orgResult.orgId },
+      );
+      if (roleError) {
+        return c.json({ error: roleError }, 400);
+      }
     }
     ownerColumns = { orgId: orgResult.orgId, partnerId: null };
   }
@@ -579,6 +744,10 @@ ssoRoutes.post(
       jwksUrl: config.jwksUrl,
       autoProvision: body.autoProvision ?? true,
       defaultRoleId: body.defaultRoleId,
+      // SR2-10: the admin whose LIVE permission ceiling the callback re-checks
+      // this delegation against before JIT. Stamped only when a role is actually
+      // delegated. Never client-settable (not in createProviderSchema).
+      defaultRoleConfiguredBy: body.defaultRoleId ? auth.user.id : null,
       allowedDomains: body.allowedDomains,
       enforceSSO: body.enforceSSO ?? false,
       trustsIdpMfa: body.trustsIdpMfa ?? false,
@@ -633,24 +802,31 @@ ssoRoutes.patch(
     return c.json({ error: 'Access denied' }, 403);
   }
 
-  if (existing.partnerId && body.defaultRoleId) {
-    const [role] = await db
-      .select({ id: roles.id })
-      .from(roles)
-      .where(and(
-        eq(roles.id, body.defaultRoleId),
-        eq(roles.scope, 'partner'),
-        eq(roles.partnerId, existing.partnerId)
-      ))
-      .limit(1);
-    if (!role) {
-      return c.json({ error: 'defaultRoleId must be a partner-scoped role belonging to your partner' }, 400);
+  // SR2-10: axis-aware. This was partner-only (`existing.partnerId && ...`), so
+  // a PATCH could set ANY defaultRoleId on an org-axis provider — the axis that
+  // actually JIT-provisions — with no existence, tenant, or ceiling check.
+  if (body.defaultRoleId) {
+    const scopeContext = providerScopeContext(existing);
+    if (!scopeContext) {
+      return c.json({ error: 'Provider has no owning organization or partner' }, 400);
+    }
+    const roleError = await validateProviderDefaultRole(c, auth, body.defaultRoleId, scopeContext);
+    if (roleError) {
+      return c.json({ error: roleError }, 400);
     }
   }
 
   const updates: Partial<typeof ssoProviders.$inferInsert> = {
     ...body,
-    updatedAt: new Date()
+    updatedAt: new Date(),
+    // SR2-10: re-stamp the JIT principal whenever the delegation is (re-)set.
+    // This is the repair path when the previous configurer offboards: re-saving
+    // the default role as a current admin re-points the ceiling at a live
+    // account. Untouched by a PATCH that doesn't carry defaultRoleId, so an
+    // unrelated edit (rename, secret rotation) can never clobber it to null.
+    ...(body.defaultRoleId !== undefined
+      ? { defaultRoleConfiguredBy: body.defaultRoleId ? auth.user.id : null }
+      : {}),
   };
 
   if (body.clientSecret !== undefined) {
@@ -1777,6 +1953,49 @@ ssoRoutes.get('/callback', async (c) => {
       if (!validatedDefaultRoleId) {
         clearStateCookie();
         return c.redirect('/login?error=default_role_required');
+      }
+
+      // SR2-10: re-validate the standing delegation against LIVE state at the
+      // moment of provisioning. The config-time ceiling ran when the provider was
+      // saved — possibly months ago, by an admin who has since been demoted or
+      // offboarded. Fails CLOSED: no resolvable configurer ⇒ no ceiling ⇒ no
+      // provisioning (a structural check would wave a SYSTEM wildcard role
+      // straight through — see revalidateSsoDefaultRole).
+      //
+      // System DB context: the callback is unauthenticated and has no request
+      // context, so these reads would otherwise be denied by forced RLS.
+      const jitScope = providerScopeContext(provider);
+      const jitRole = jitScope
+        ? await withSystemDbAccessContext(() =>
+            revalidateSsoDefaultRole({
+              roleId: validatedDefaultRoleId!,
+              scopeContext: jitScope,
+              // The admin who last SET the delegated role; fall back to the
+              // original creator for rows predating that column.
+              configuredByUserId: provider.defaultRoleConfiguredBy ?? provider.createdBy ?? null,
+            }),
+          )
+        : ({ ok: false, reason: 'provider_axis_missing' } as const);
+
+      if (!jitRole.ok) {
+        writeRouteAudit(c, {
+          orgId: provider.orgId,
+          action: 'sso.callback.rejected',
+          resourceType: 'sso_provider',
+          resourceId: provider.id,
+          resourceName: provider.name,
+          result: 'denied',
+          details: {
+            mode: 'login',
+            phase: 'jit_default_role',
+            reason: jitRole.reason,
+            roleId: validatedDefaultRoleId,
+            partnerId: provider.partnerId,
+            remediation: 're-save the provider defaultRoleId as a current admin entitled to grant it',
+          },
+        });
+        clearStateCookie();
+        return c.redirect('/login?error=invalid_provider_configuration');
       }
 
       // Reachable on the ORG axis ONLY — the partner axis returned

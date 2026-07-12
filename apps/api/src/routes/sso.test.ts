@@ -151,7 +151,10 @@ vi.mock('../db/schema', () => ({
     id: 'id',
     email: 'email',
     orgId: 'orgId',
-    partnerId: 'partnerId'
+    partnerId: 'partnerId',
+    // SR2-10: the JIT ceiling re-check reads the configurer's live status —
+    // a disabled/offboarded configurer must not keep delegating a role.
+    status: 'status'
   },
   organizationUsers: {
     orgId: 'orgId',
@@ -163,13 +166,56 @@ vi.mock('../db/schema', () => ({
     partnerId: 'partnerId',
     roleId: 'roleId'
   },
+  // SR2-10: the callback resolves the provider org's owning partner so the
+  // configurer's permissions resolve on the PARTNER axis too (an MSP partner
+  // admin has no organization_users row). Previously absent from this mock —
+  // the JIT provisioning path was never exercised by a unit test.
+  organizations: {
+    id: 'id',
+    partnerId: 'partnerId'
+  },
   roles: {
     id: 'id',
     name: 'name',
     scope: 'scope',
     orgId: 'orgId',
-    partnerId: 'partnerId'
+    partnerId: 'partnerId',
+    isSystem: 'isSystem',
+    description: 'description',
+    parentRoleId: 'parentRoleId'
+  },
+  // Consumed by the REAL services/roleAssignment (deliberately not mocked in
+  // this suite — see the SR2-10 describe block).
+  permissions: {
+    id: 'id',
+    resource: 'resource',
+    action: 'action'
+  },
+  rolePermissions: {
+    roleId: 'roleId',
+    permissionId: 'permissionId'
   }
+}));
+
+// SR2-10: keep PERMISSIONS (read at module scope by the route's
+// requirePermission guard) REAL; only getUserPermissions is driven per-test.
+// It is the resolver for BOTH the config-time caller ceiling and the JIT
+// configurer ceiling.
+const { permissionsByUser } = vi.hoisted(() => ({
+  permissionsByUser: {} as Record<string, { permissions: Array<{ resource: string; action: string }> } | null>,
+}));
+
+vi.mock('../services/permissions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/permissions')>()),
+  getUserPermissions: vi.fn(async (userId: string) => permissionsByUser[userId] ?? null),
+}));
+
+// Spy on the audit sink so SR2-10 denials can be asserted by action/reason.
+// Also removes writeRouteAudit's fire-and-forget audit-log db.insert from the
+// mock queues, which keeps the callback select/insert ordering deterministic.
+vi.mock('../services/auditEvents', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/auditEvents')>()),
+  writeRouteAudit: vi.fn(),
 }));
 
 vi.mock('../services/ssoDomainVerification', () => ({
@@ -236,6 +282,8 @@ import {
 } from '../services/sso';
 import { createPendingDomain, verifyDomain, isSsoProvisioningBlocked } from '../services/ssoDomainVerification';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
+import { getUserPermissions } from '../services/permissions';
+import { writeRouteAudit } from '../services/auditEvents';
 import { auditLogin } from './auth/helpers';
 
 const PROVIDER_UUID = '00000000-0000-4000-8000-000000000001';
@@ -311,6 +359,7 @@ describe('sso routes', () => {
     process.env.APP_ENCRYPTION_KEY = SSO_STATE_COOKIE_SECRET;
     permissionGate.deny = false;
     mfaGate.deny = false;
+    for (const key of Object.keys(permissionsByUser)) delete permissionsByUser[key];
     // security review #2: the callback now requires a signature-verified id_token
     // (jwksUrl + id_token mandatory; the unsigned decode path was removed).
     // Default the verifier to "passes" with minimal claims so flows that don't
@@ -2712,6 +2761,501 @@ describe('sso routes', () => {
       expect(res.headers.get('location')).toContain('ssoLinkError=identity_in_use');
       expect(db.insert).not.toHaveBeenCalled();
       expect(createTokenPair).not.toHaveBeenCalled();
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // SR2-10: SSO default-role delegation ceiling
+  //
+  // The vulnerability: an SSO provider's defaultRoleId was applied to every
+  // JIT-provisioned user with NO permission ceiling — nobody checked that the
+  // admin who configured it was entitled to grant that role. The org axis (the
+  // ONLY axis that JIT-provisions) validated nothing at all.
+  //
+  // NOTE: services/roleAssignment is deliberately NOT mocked in this suite.
+  // The ceiling is the security control under test; stubbing it would make
+  // every assertion below vacuous (we would only be testing our own stub). The
+  // real validator runs against the db mock, so the queues here include its
+  // selects.
+  // ══════════════════════════════════════════════════════════════════════════
+  describe('SSO default-role delegation ceiling (SR2-10)', () => {
+    const ROLE_UUID = '00000000-0000-4000-8000-000000000040';
+    const CONFIGURER_UUID = '00000000-0000-4000-8000-000000000050';
+    const CREATOR_UUID = '00000000-0000-4000-8000-000000000051';
+    const NEW_USER_UUID = '00000000-0000-4000-8000-000000000052';
+
+    // select().from().where().limit()
+    const selLimit = (rows: unknown[]) => ({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) })
+      })
+    }) as any;
+    // select().from().innerJoin().where()  — getEffectiveRolePermissions (no limit)
+    const selJoin = (rows: unknown[]) => ({
+      from: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(rows) })
+      })
+    }) as any;
+    // select().from().innerJoin().where().limit() — org membership resolution
+    const selJoinLimit = (rows: unknown[]) => ({
+      from: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) })
+        })
+      })
+    }) as any;
+
+    const ORG_ROLE_ROW = {
+      id: ROLE_UUID,
+      scope: 'organization',
+      name: 'Support',
+      description: null,
+      isSystem: false,
+      parentRoleId: null,
+      partnerId: null,
+      orgId: ORG_UUID
+    };
+    const PARTNER_ROLE_ROW = {
+      id: ROLE_UUID,
+      scope: 'partner',
+      name: 'Partner Tech',
+      description: null,
+      isSystem: false,
+      parentRoleId: null,
+      partnerId: PARTNER_UUID,
+      orgId: null
+    };
+    // The trap (binding decision A): a SYSTEM role carrying the `*:*` wildcard.
+    // checkRoleStructure() returns null (= "assignable") for exactly this row —
+    // so a structural fallback would JIT-provision every SSO user at FULL
+    // WILDCARD. Only a real permission ceiling against a real principal stops it.
+    const SYSTEM_WILDCARD_ROLE_ROW = {
+      id: ROLE_UUID,
+      scope: 'organization',
+      name: 'Super Admin',
+      description: null,
+      isSystem: true,
+      parentRoleId: null,
+      partnerId: null,
+      orgId: null
+    };
+
+    const createBody = (extra: Record<string, unknown> = {}) => JSON.stringify({
+      name: 'Okta',
+      type: 'oidc',
+      clientId: 'client-id',
+      clientSecret: 'client-secret',
+      defaultRoleId: ROLE_UUID,
+      ...extra
+    });
+
+    // ─── Config time ────────────────────────────────────────────────────────
+
+    it('POST /providers (org axis) rejects a defaultRoleId above the caller ceiling', async () => {
+      permissionsByUser[USER_UUID] = { permissions: [{ resource: 'devices', action: 'read' }] };
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selLimit([ORG_ROLE_ROW]))               // getScopedRole
+        .mockReturnValueOnce(selLimit([{ parentRoleId: null }]))     // effective perms: role row
+        .mockReturnValueOnce(selJoin([{ resource: 'users', action: 'write' }])); // role's perms
+
+      const res = await app.request('/sso/providers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: createBody({ ownerScope: 'organization' })
+      });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).error)
+        .toBe('Cannot assign a role with permission not held by caller: users:write');
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('POST /providers (org axis) rejects an unknown defaultRoleId', async () => {
+      permissionsByUser[USER_UUID] = { permissions: [{ resource: '*', action: '*' }] };
+      vi.mocked(db.select).mockReturnValueOnce(selLimit([])); // getScopedRole → null
+
+      const res = await app.request('/sso/providers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: createBody({ ownerScope: 'organization' })
+      });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).error)
+        .toBe('defaultRoleId must be an organization-scoped role belonging to this organization');
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('POST /providers (org axis) accepts an in-ceiling defaultRoleId and stamps defaultRoleConfiguredBy', async () => {
+      permissionsByUser[USER_UUID] = { permissions: [{ resource: 'users', action: 'write' }] };
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selLimit([ORG_ROLE_ROW]))
+        .mockReturnValueOnce(selLimit([{ parentRoleId: null }]))
+        .mockReturnValueOnce(selJoin([{ resource: 'users', action: 'write' }]));
+
+      const insertValues = vi.fn(() => ({
+        returning: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID, orgId: ORG_UUID, partnerId: null, name: 'Okta', type: 'oidc', status: 'inactive' }])
+      }));
+      vi.mocked(db.insert).mockReturnValueOnce({ values: insertValues } as any);
+
+      const res = await app.request('/sso/providers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: createBody({ ownerScope: 'organization' })
+      });
+
+      expect(res.status).toBe(201);
+      expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({
+        defaultRoleId: ROLE_UUID,
+        defaultRoleConfiguredBy: USER_UUID
+      }));
+    });
+
+    it('POST /providers does NOT stamp defaultRoleConfiguredBy when no role is delegated', async () => {
+      const insertValues = vi.fn(() => ({
+        returning: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID, orgId: ORG_UUID, partnerId: null, name: 'Okta', type: 'oidc', status: 'inactive' }])
+      }));
+      vi.mocked(db.insert).mockReturnValueOnce({ values: insertValues } as any);
+
+      const res = await app.request('/sso/providers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Okta', type: 'oidc', ownerScope: 'organization' })
+      });
+
+      expect(res.status).toBe(201);
+      expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ defaultRoleConfiguredBy: null }));
+    });
+
+    it('POST /providers (PARTNER axis) rejects a defaultRoleId above the partner admin ceiling', async () => {
+      setAuthContext({
+        scope: 'partner', orgId: null, partnerId: PARTNER_UUID,
+        accessibleOrgIds: [], partnerOrgAccess: 'all'
+      });
+      // Partner admin holds devices:read only — they may not delegate users:write.
+      permissionsByUser[USER_UUID] = { permissions: [{ resource: 'devices', action: 'read' }] };
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selLimit([PARTNER_ROLE_ROW]))
+        .mockReturnValueOnce(selLimit([{ parentRoleId: null }]))
+        .mockReturnValueOnce(selJoin([{ resource: 'users', action: 'write' }]));
+
+      const res = await app.request('/sso/providers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: createBody({ ownerScope: 'partner' })
+      });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).error)
+        .toBe('Cannot assign a role with permission not held by caller: users:write');
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('PATCH /providers/:id rejects an out-of-ceiling defaultRoleId (no update)', async () => {
+      permissionsByUser[USER_UUID] = { permissions: [{ resource: 'devices', action: 'read' }] };
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selLimit([{ id: PROVIDER_UUID, orgId: ORG_UUID, partnerId: null }])) // existing
+        .mockReturnValueOnce(selLimit([ORG_ROLE_ROW]))
+        .mockReturnValueOnce(selLimit([{ parentRoleId: null }]))
+        .mockReturnValueOnce(selJoin([{ resource: 'users', action: 'write' }]));
+
+      const res = await app.request(`/sso/providers/${PROVIDER_UUID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ defaultRoleId: ROLE_UUID })
+      });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).error)
+        .toBe('Cannot assign a role with permission not held by caller: users:write');
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('PATCH /providers/:id re-stamps defaultRoleConfiguredBy when the default role is set', async () => {
+      permissionsByUser[USER_UUID] = { permissions: [{ resource: 'users', action: 'write' }] };
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selLimit([{ id: PROVIDER_UUID, orgId: ORG_UUID, partnerId: null }]))
+        .mockReturnValueOnce(selLimit([ORG_ROLE_ROW]))
+        .mockReturnValueOnce(selLimit([{ parentRoleId: null }]))
+        .mockReturnValueOnce(selJoin([{ resource: 'users', action: 'write' }]));
+
+      const updateSet = vi.fn(() => ({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID, orgId: ORG_UUID, partnerId: null, name: 'Okta' }])
+        })
+      }));
+      vi.mocked(db.update).mockReturnValueOnce({ set: updateSet } as any);
+
+      const res = await app.request(`/sso/providers/${PROVIDER_UUID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ defaultRoleId: ROLE_UUID })
+      });
+
+      expect(res.status).toBe(200);
+      expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({ defaultRoleConfiguredBy: USER_UUID }));
+    });
+
+    it('PATCH /providers/:id without defaultRoleId does NOT touch defaultRoleConfiguredBy', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selLimit([{ id: PROVIDER_UUID, orgId: ORG_UUID, partnerId: null }]));
+
+      const updateSet = vi.fn((_values: Record<string, unknown>) => ({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID, orgId: ORG_UUID, partnerId: null, name: 'Renamed' }])
+        })
+      }));
+      vi.mocked(db.update).mockReturnValueOnce({ set: updateSet } as any);
+
+      const res = await app.request(`/sso/providers/${PROVIDER_UUID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Renamed' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(updateSet).toHaveBeenCalledTimes(1);
+      expect(Object.keys(updateSet.mock.calls[0]![0])).not.toContain('defaultRoleConfiguredBy');
+    });
+
+    // ─── JIT time ───────────────────────────────────────────────────────────
+
+    const jitProvider = (overrides: Record<string, unknown> = {}) => ({
+      id: PROVIDER_UUID,
+      orgId: ORG_UUID,
+      partnerId: null,
+      name: 'Okta',
+      type: 'oidc',
+      issuer: 'https://issuer.example.com',
+      authorizationUrl: 'https://issuer.example.com/auth',
+      tokenUrl: 'https://issuer.example.com/token',
+      userInfoUrl: 'https://issuer.example.com/userinfo',
+      jwksUrl: 'https://issuer.example.com/jwks',
+      clientId: 'client-id',
+      clientSecret: 'client-secret',
+      scopes: 'openid profile email',
+      attributeMapping: { email: 'email', name: 'name' },
+      autoProvision: true,
+      allowedDomains: null,
+      trustsIdpMfa: false,
+      defaultRoleId: ROLE_UUID,
+      defaultRoleConfiguredBy: CONFIGURER_UUID,
+      createdBy: CREATOR_UUID,
+      ...overrides
+    });
+
+    // Primes the IdP round-trip + the callback's pre-JIT selects for a BRAND NEW
+    // (unlinked, unknown-email) org-axis user. Leaves the db.select queue
+    // positioned at the SR2-10 re-validation selects.
+    const primeJitCallback = (provider: Record<string, unknown>, ...tail: any[]) => {
+      // vi.clearAllMocks() clears CALLS but not implementations, and an earlier
+      // suite pins this to `true` — pin it back or every JIT test dies at the
+      // domain gate before reaching the ceiling under test.
+      vi.mocked(isSsoProvisioningBlocked).mockResolvedValue(false);
+      vi.mocked(exchangeCodeForTokens).mockResolvedValue({
+        access_token: 'idp-access-token', refresh_token: 'idp-refresh-token',
+        expires_in: 3600, id_token: 'header.payload.sig'
+      } as any);
+      vi.mocked(getUserInfo).mockResolvedValue({
+        sub: 'external-user-1', email: 'new@example.com', name: 'New User'
+      } as any);
+      vi.mocked(mapUserAttributes).mockReturnValue({ email: 'new@example.com', name: 'New User' } as any);
+      vi.mocked(verifyIdTokenSignature).mockResolvedValue({ sub: 'external-user-1', nonce: 'nonce' } as any);
+
+      vi.mocked(db.delete).mockReturnValueOnce({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{
+            id: 'sso-session-jit', providerId: PROVIDER_UUID, state: 'state',
+            nonce: 'nonce', codeVerifier: 'verifier', redirectUrl: '/'
+          }])
+        })
+      } as any);
+
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selLimit([provider]))              // 1. provider
+        .mockReturnValueOnce(selLimit([{ id: ROLE_UUID }]))     // 2. legacy axis/scope check
+        .mockReturnValueOnce(selLimit([]))                      // 3. (provider, sub) → unlinked
+        .mockReturnValueOnce(selLimit([]));                     // 4. users by email → none
+      for (const t of tail) vi.mocked(db.select).mockReturnValueOnce(t);
+    };
+
+    const doJitCallback = () => app.request('/sso/callback?code=oidc-code&state=state', {
+      headers: { cookie: ssoStateCookieHeader('state') }
+    });
+
+    it('refuses JIT when the configurer has since been stripped of the delegated permission', async () => {
+      // Legal at config time; the configurer has since been demoted to devices:read.
+      permissionsByUser[CONFIGURER_UUID] = { permissions: [{ resource: 'devices', action: 'read' }] };
+      primeJitCallback(
+        jitProvider(),
+        selLimit([ORG_ROLE_ROW]),                                  // 5. getScopedRole (live)
+        selLimit([{ id: CONFIGURER_UUID, status: 'active' }]),     // 6. configurer live status
+        selLimit([{ partnerId: PARTNER_UUID }]),                   // 7. org's owning partner
+        selLimit([{ parentRoleId: null }]),                        // 8. role's effective perms
+        selJoin([{ resource: 'users', action: 'write' }])          // 9. → users:write
+      );
+
+      const res = await doJitCallback();
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/login?error=invalid_provider_configuration');
+      expect(db.insert).not.toHaveBeenCalled(); // no users row, no organization_users row
+      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: 'sso.callback.rejected',
+        result: 'denied',
+        details: expect.objectContaining({ reason: 'default_role_exceeds_configurer_permissions' })
+      }));
+    });
+
+    it('refuses JIT when the configurer account has been deactivated', async () => {
+      permissionsByUser[CONFIGURER_UUID] = { permissions: [{ resource: '*', action: '*' }] };
+      primeJitCallback(
+        jitProvider(),
+        selLimit([ORG_ROLE_ROW]),
+        selLimit([{ id: CONFIGURER_UUID, status: 'disabled' }]) // offboarded
+      );
+
+      const res = await doJitCallback();
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/login?error=invalid_provider_configuration');
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        result: 'denied',
+        details: expect.objectContaining({ reason: 'default_role_configurer_inactive' })
+      }));
+    });
+
+    // Binding decision (A): the unknowable-configurer fallback FAILS CLOSED.
+    // A structural check (checkRoleStructure) returns null for a SYSTEM wildcard
+    // role — using it here would JIT every user at full wildcard.
+    it('refuses JIT when NO configurer can be resolved (fails closed, never structural)', async () => {
+      primeJitCallback(
+        jitProvider({ defaultRoleConfiguredBy: null, createdBy: null }),
+        selLimit([ORG_ROLE_ROW])
+      );
+
+      const res = await doJitCallback();
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/login?error=invalid_provider_configuration');
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        result: 'denied',
+        details: expect.objectContaining({ reason: 'default_role_configurer_unknown' })
+      }));
+    });
+
+    // THE WILDCARD TRAP (binding decision A). The provider's default role is the
+    // built-in SYSTEM super-admin role (`*:*`). checkRoleStructure() would say
+    // "assignable". The real ceiling must refuse it because the configuring org
+    // admin does not hold `*:*`.
+    it('refuses to JIT-provision at the SYSTEM WILDCARD role when the configurer does not hold the wildcard', async () => {
+      permissionsByUser[CONFIGURER_UUID] = {
+        permissions: [{ resource: 'users', action: 'write' }, { resource: 'sso', action: 'admin' }]
+      };
+      primeJitCallback(
+        jitProvider(),
+        selLimit([SYSTEM_WILDCARD_ROLE_ROW]),
+        selLimit([{ id: CONFIGURER_UUID, status: 'active' }]),
+        selLimit([{ partnerId: PARTNER_UUID }]),
+        selLimit([{ parentRoleId: null }]),
+        selJoin([{ resource: '*', action: '*' }])   // the built-in super-admin grant
+      );
+
+      const res = await doJitCallback();
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/login?error=invalid_provider_configuration');
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        result: 'denied',
+        details: expect.objectContaining({ reason: 'default_role_exceeds_configurer_permissions' })
+      }));
+    });
+
+    // Binding decision (B): an MSP partner admin has NO organization_users row in
+    // the customer org. Resolving the configurer on the org axis ALONE would
+    // return null permissions → every JIT sign-in on their provider would fail
+    // forever. Both axes must be supplied.
+    it('JIT-provisions successfully when the configurer is a PARTNER admin with no organization_users row', async () => {
+      // Keyed by (userId) in the mock; the route must pass BOTH orgId and the
+      // org owning partnerId, or getUserPermissions could never resolve them.
+      permissionsByUser[CONFIGURER_UUID] = { permissions: [{ resource: 'users', action: 'write' }] };
+
+      primeJitCallback(
+        jitProvider(),
+        selLimit([ORG_ROLE_ROW]),                              // 5. getScopedRole
+        selLimit([{ id: CONFIGURER_UUID, status: 'active' }]), // 6. configurer status
+        selLimit([{ partnerId: PARTNER_UUID }]),               // 7. org's owning partner (partner axis!)
+        selLimit([{ parentRoleId: null }]),                    // 8. effective perms: role row
+        selJoin([{ resource: 'users', action: 'write' }]),     // 9. in-ceiling
+        selLimit([{ partnerId: PARTNER_UUID }]),               // 10. provisioning: org partner
+        selJoinLimit([{ orgId: ORG_UUID, roleId: ROLE_UUID, roleName: 'Support', roleScope: 'organization' }]), // membership
+        selLimit([])                                           // existing identity → none
+      );
+
+      const usersInsertValues = vi.fn(() => ({
+        returning: vi.fn().mockResolvedValue([{
+          id: NEW_USER_UUID, email: 'new@example.com', name: 'New User', orgId: ORG_UUID, partnerId: PARTNER_UUID
+        }])
+      }));
+      const orgUsersInsertValues = vi.fn(() => ({ returning: vi.fn().mockResolvedValue([]) }));
+      vi.mocked(db.insert)
+        .mockReturnValueOnce({ values: usersInsertValues } as any)
+        .mockReturnValueOnce({ values: orgUsersInsertValues } as any);
+
+      const res = await doJitCallback();
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toContain('ssoCode=');
+      expect(usersInsertValues).toHaveBeenCalledWith(expect.objectContaining({ email: 'new@example.com' }));
+      expect(orgUsersInsertValues).toHaveBeenCalledWith(expect.objectContaining({
+        orgId: ORG_UUID, userId: NEW_USER_UUID, roleId: ROLE_UUID
+      }));
+      // The configurer's permissions were resolved on BOTH axes.
+      expect(getUserPermissions).toHaveBeenCalledWith(CONFIGURER_UUID, {
+        orgId: ORG_UUID, partnerId: PARTNER_UUID
+      });
+    });
+
+    it('falls back to created_by when default_role_configured_by is NULL (legacy rows)', async () => {
+      permissionsByUser[CREATOR_UUID] = { permissions: [{ resource: 'devices', action: 'read' }] };
+      primeJitCallback(
+        jitProvider({ defaultRoleConfiguredBy: null }),         // createdBy: CREATOR_UUID
+        selLimit([ORG_ROLE_ROW]),
+        selLimit([{ id: CREATOR_UUID, status: 'active' }]),
+        selLimit([{ partnerId: PARTNER_UUID }]),
+        selLimit([{ parentRoleId: null }]),
+        selJoin([{ resource: 'users', action: 'write' }])       // above the creator's ceiling
+      );
+
+      const res = await doJitCallback();
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/login?error=invalid_provider_configuration');
+      expect(getUserPermissions).toHaveBeenCalledWith(CREATOR_UUID, { orgId: ORG_UUID, partnerId: PARTNER_UUID });
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('refuses JIT when the delegated role no longer exists on the provider axis', async () => {
+      permissionsByUser[CONFIGURER_UUID] = { permissions: [{ resource: '*', action: '*' }] };
+      primeJitCallback(
+        jitProvider(),
+        selLimit([])   // getScopedRole → role deleted / re-scoped
+      );
+
+      const res = await doJitCallback();
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/login?error=invalid_provider_configuration');
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        result: 'denied',
+        details: expect.objectContaining({ reason: 'default_role_not_on_provider_axis' })
+      }));
     });
   });
 });
