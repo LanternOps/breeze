@@ -13,7 +13,7 @@ git config core.hooksPath .githooks
 ## pre-commit
 
 Runs `scripts/security/scan-confidential.sh --staged` — blocks confidential
-infrastructure identifiers / secrets (prod IPs, DB cluster ids, `PGPASSWORD=`,
+infrastructure identifiers / secrets (prod IPs, DB cluster ids, `PGPASSWORD=<value>`,
 and any value in the gitignored `internal/security/denylist.txt`) from being
 committed. See that script's header for details and the `confidential-ok`
 escape hatch. The same scan runs in CI (`.github/workflows/secret-scan.yml`) as
