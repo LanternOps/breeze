@@ -2,6 +2,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Redis } from 'ioredis';
 
 const dbMocks = vi.hoisted(() => ({
+  selectedRows: [] as unknown[][],
+  select: vi.fn(),
+  from: vi.fn(),
+  selectWhere: vi.fn(),
+  limit: vi.fn(),
   update: vi.fn(),
   set: vi.fn(),
   where: vi.fn(),
@@ -15,6 +20,7 @@ vi.mock('./redis', () => ({
 
 vi.mock('../db', () => ({
   db: {
+    select: dbMocks.select,
     update: dbMocks.update
   },
   withSystemDbAccessContext: dbMocks.withSystemDbAccessContext
@@ -29,7 +35,8 @@ import {
   isRefreshTokenJtiRevoked,
   revokeRefreshTokenJti,
   markRefreshTokenJtiRotated,
-  wasRefreshTokenJtiRecentlyRotated
+  wasRefreshTokenJtiRecentlyRotated,
+  isFamilyRevoked
 } from './tokenRevocation';
 
 const mockGetRedis = vi.mocked(getRedis);
@@ -56,6 +63,11 @@ describe('tokenRevocation', () => {
   beforeEach(() => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.spyOn(console, 'warn').mockImplementation(() => {});
+    dbMocks.selectedRows.length = 0;
+    dbMocks.limit.mockImplementation(async () => dbMocks.selectedRows.shift() ?? []);
+    dbMocks.selectWhere.mockReturnValue({ limit: dbMocks.limit });
+    dbMocks.from.mockReturnValue({ where: dbMocks.selectWhere });
+    dbMocks.select.mockReturnValue({ from: dbMocks.from });
     dbMocks.where.mockResolvedValue(undefined);
     dbMocks.set.mockReturnValue({ where: dbMocks.where });
     dbMocks.update.mockReturnValue({ set: dbMocks.set });
@@ -297,6 +309,18 @@ describe('tokenRevocation', () => {
         revokedReason: expect.anything(),
       });
       expect(dbMocks.where).toHaveBeenCalled();
+    });
+  });
+
+  describe('isFamilyRevoked', () => {
+    it('fails closed when the durable absolute expiry is non-finite', async () => {
+      mockGetRedis.mockReturnValue(null as unknown as Redis);
+      dbMocks.selectedRows.push([{
+        revokedAt: null,
+        absoluteExpiresAt: new Date('invalid'),
+      }]);
+
+      await expect(isFamilyRevoked('family-invalid-expiry')).resolves.toBe(true);
     });
   });
 

@@ -430,7 +430,10 @@ export async function isFamilyRevoked(familyId: string): Promise<boolean> {
       // forged; either way we reject.
       return true;
     }
-    return row.revokedAt !== null || row.absoluteExpiresAt.getTime() <= Date.now();
+    const absoluteExpiresAtMs = row.absoluteExpiresAt.getTime();
+    return row.revokedAt !== null
+      || !Number.isFinite(absoluteExpiresAtMs)
+      || absoluteExpiresAtMs <= Date.now();
   } catch (error) {
     console.error(
       '[token-revocation] Family-revoked DB lookup failed — failing closed:',

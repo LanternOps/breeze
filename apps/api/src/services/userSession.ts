@@ -25,15 +25,17 @@ type UserSecurityEpochs = {
 };
 
 async function loadUserSecurityEpochs(userId: string): Promise<UserSecurityEpochs> {
-  const rows = await dbModule.withSystemDbAccessContext(async () =>
-    dbModule.db
-      .select({
-        authEpoch: users.authEpoch,
-        mfaEpoch: users.mfaEpoch,
-      })
-      .from(users)
-      .where(eq(users.id, userId))
-      .limit(1)
+  const rows = await dbModule.runOutsideDbContext(() =>
+    dbModule.withSystemDbAccessContext(async () =>
+      dbModule.db
+        .select({
+          authEpoch: users.authEpoch,
+          mfaEpoch: users.mfaEpoch,
+        })
+        .from(users)
+        .where(eq(users.id, userId))
+        .limit(1)
+    )
   );
   const epochs = rows[0];
   if (!epochs) {

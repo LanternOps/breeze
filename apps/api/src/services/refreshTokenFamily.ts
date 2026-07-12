@@ -65,23 +65,28 @@ export async function getActiveRefreshTokenFamily(
   familyId: string,
   userId: string
 ): Promise<RefreshTokenFamily | null> {
-  const rows = await dbModule.withSystemDbAccessContext(async () =>
-    dbModule.db
-      .select()
-      .from(refreshTokenFamilies)
-      .where(and(
-        eq(refreshTokenFamilies.familyId, familyId),
-        eq(refreshTokenFamilies.userId, userId)
-      ))
-      .limit(1)
+  const rows = await dbModule.runOutsideDbContext(() =>
+    dbModule.withSystemDbAccessContext(async () =>
+      dbModule.db
+        .select()
+        .from(refreshTokenFamilies)
+        .where(and(
+          eq(refreshTokenFamilies.familyId, familyId),
+          eq(refreshTokenFamilies.userId, userId)
+        ))
+        .limit(1)
+    )
   );
   const family = rows[0];
+  const absoluteExpiresAtMs = family?.absoluteExpiresAt instanceof Date
+    ? family.absoluteExpiresAt.getTime()
+    : Number.NaN;
   if (
     !family
     || family.userId !== userId
     || family.revokedAt !== null
-    || !(family.absoluteExpiresAt instanceof Date)
-    || family.absoluteExpiresAt.getTime() <= Date.now()
+    || !Number.isFinite(absoluteExpiresAtMs)
+    || absoluteExpiresAtMs <= Date.now()
   ) {
     return null;
   }

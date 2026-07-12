@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const dbMocks = vi.hoisted(() => ({
+  currentContext: null as 'request' | 'system' | null,
+  queryContexts: [] as Array<'request' | 'system' | null>,
   selectedRows: [] as unknown[][],
   select: vi.fn(),
   from: vi.fn(),
@@ -9,6 +11,8 @@ const dbMocks = vi.hoisted(() => ({
   insert: vi.fn(),
   values: vi.fn(),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  runInRequestContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   rememberJtiFamily: vi.fn()
 }));
 
@@ -17,7 +21,8 @@ vi.mock('../db', () => ({
     select: dbMocks.select,
     insert: dbMocks.insert
   },
-  withSystemDbAccessContext: dbMocks.withSystemDbAccessContext
+  withSystemDbAccessContext: dbMocks.withSystemDbAccessContext,
+  runOutsideDbContext: dbMocks.runOutsideDbContext
 }));
 
 vi.mock('./tokenRevocation', () => ({
@@ -55,14 +60,48 @@ function activeFamily(familyId: string, userId = identity.userId) {
 describe('issueUserSession', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    dbMocks.currentContext = null;
+    dbMocks.queryContexts.length = 0;
     dbMocks.selectedRows.length = 0;
-    dbMocks.limit.mockImplementation(async () => dbMocks.selectedRows.shift() ?? []);
+    dbMocks.limit.mockImplementation(async () => {
+      dbMocks.queryContexts.push(dbMocks.currentContext);
+      if (dbMocks.currentContext !== 'system') {
+        throw new Error(`query ran under ${dbMocks.currentContext ?? 'no'} DB context`);
+      }
+      return dbMocks.selectedRows.shift() ?? [];
+    });
     dbMocks.where.mockReturnValue({ limit: dbMocks.limit });
     dbMocks.from.mockReturnValue({ where: dbMocks.where });
     dbMocks.select.mockReturnValue({ from: dbMocks.from });
     dbMocks.values.mockResolvedValue(undefined);
     dbMocks.insert.mockReturnValue({ values: dbMocks.values });
-    dbMocks.withSystemDbAccessContext.mockImplementation(async (fn: () => Promise<unknown>) => fn());
+    dbMocks.withSystemDbAccessContext.mockImplementation(async (fn: () => Promise<unknown>) => {
+      if (dbMocks.currentContext) {
+        return fn();
+      }
+      dbMocks.currentContext = 'system';
+      try {
+        return await fn();
+      } finally {
+        dbMocks.currentContext = null;
+      }
+    });
+    dbMocks.runOutsideDbContext.mockImplementation((fn: () => unknown) => {
+      const previousContext = dbMocks.currentContext;
+      dbMocks.currentContext = null;
+      const result = fn();
+      return Promise.resolve(result).finally(() => {
+        dbMocks.currentContext = previousContext;
+      });
+    });
+    dbMocks.runInRequestContext.mockImplementation(async (fn: () => Promise<unknown>) => {
+      dbMocks.currentContext = 'request';
+      try {
+        return await fn();
+      } finally {
+        dbMocks.currentContext = null;
+      }
+    });
     dbMocks.rememberJtiFamily.mockResolvedValue(undefined);
   });
 
@@ -114,6 +153,22 @@ describe('issueUserSession', () => {
     await expect(verifyToken(session.refreshToken)).resolves.toMatchObject({ fam: familyId });
   });
 
+  it('escapes an active request DB context for epoch and family lifecycle reads', async () => {
+    const familyId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    dbMocks.selectedRows.push(
+      [{ authEpoch: 4, mfaEpoch: 9 }],
+      [activeFamily(familyId)]
+    );
+
+    const session = await dbMocks.runInRequestContext(
+      () => issueUserSession(identity, { familyId })
+    );
+
+    expect(session).toMatchObject({ familyId });
+    expect(dbMocks.queryContexts).toEqual(['system', 'system']);
+    expect(dbMocks.runOutsideDbContext).toHaveBeenCalledTimes(2);
+  });
+
   it('rejects a revoked existing family', async () => {
     const familyId = '66666666-6666-4666-8666-666666666666';
     dbMocks.selectedRows.push(
@@ -130,6 +185,17 @@ describe('issueUserSession', () => {
     dbMocks.selectedRows.push(
       [{ authEpoch: 3, mfaEpoch: 7 }],
       [{ ...activeFamily(familyId), absoluteExpiresAt: new Date(Date.now() - 1) }]
+    );
+
+    await expect(issueUserSession(identity, { familyId })).rejects.toThrow('refresh token family');
+    expect(dbMocks.rememberJtiFamily).not.toHaveBeenCalled();
+  });
+
+  it('rejects an existing family with a non-finite absolute expiry', async () => {
+    const familyId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    dbMocks.selectedRows.push(
+      [{ authEpoch: 3, mfaEpoch: 7 }],
+      [{ ...activeFamily(familyId), absoluteExpiresAt: new Date('invalid') }]
     );
 
     await expect(issueUserSession(identity, { familyId })).rejects.toThrow('refresh token family');
