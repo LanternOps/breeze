@@ -57,6 +57,7 @@ vi.mock('../services', () => ({
     refreshToken: 'refresh-token',
     refreshJti: 'refresh-jti',
     expiresInSeconds: 900,
+    familyId: 'family-passkey',
   }),
   verifyToken: vi.fn(),
   generateMFASecret: vi.fn(),

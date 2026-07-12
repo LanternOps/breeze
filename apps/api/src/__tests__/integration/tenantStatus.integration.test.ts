@@ -88,6 +88,9 @@ async function mintOrgScopedToken(opts: {
     orgId: opts.orgId,
     partnerId: opts.tokenPartnerId,
     scope: 'organization',
+    ae: user.authEpoch,
+    me: user.mfaEpoch,
+    sid: `test-session:${user.id}`,
     mfa: false
   };
   return createAccessToken(payload);
@@ -105,6 +108,9 @@ async function mintPartnerScopedToken(partnerId: string): Promise<string> {
     orgId: null,
     partnerId,
     scope: 'partner',
+    ae: user.authEpoch,
+    me: user.mfaEpoch,
+    sid: `test-session:${user.id}`,
     mfa: false
   };
   return createAccessToken(payload);

@@ -19,6 +19,13 @@ export type UserSessionIdentity = {
   mobileDeviceId?: string;
 };
 
+export class UserSessionFamilyInactiveError extends Error {
+  constructor() {
+    super('Cannot issue session for inactive refresh token family');
+    this.name = 'UserSessionFamilyInactiveError';
+  }
+}
+
 type UserSecurityEpochs = {
   authEpoch: number;
   mfaEpoch: number;
@@ -59,7 +66,7 @@ export async function issueUserSession(
   if (options.familyId) {
     const family = await getActiveRefreshTokenFamily(options.familyId, identity.userId);
     if (!family) {
-      throw new Error('Cannot issue session for inactive refresh token family');
+      throw new UserSessionFamilyInactiveError();
     }
     familyId = family.familyId;
   } else {

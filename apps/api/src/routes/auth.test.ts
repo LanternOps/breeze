@@ -11,7 +11,8 @@ vi.mock('../services', () => ({
     accessToken: 'access-token',
     refreshToken: 'refresh-token',
     refreshJti: 'jti-mock',
-    expiresInSeconds: 900
+    expiresInSeconds: 900,
+    familyId: 'family-id-mock'
   }),
   verifyToken: vi.fn(),
   generateMFASecret: vi.fn().mockReturnValue('MFASECRET123'),
@@ -427,6 +428,8 @@ describe('auth routes', () => {
               name: 'Test User',
               passwordHash: '$argon2id$hash',
               status: 'active',
+              authEpoch: 1,
+              mfaEpoch: 1,
               mfaEnabled: false,
               // security review #2: a provisioned user has a partner membership.
               // The blanket mock returns this row for the partnerUsers lookup too,
@@ -480,6 +483,8 @@ describe('auth routes', () => {
                 name: 'Test User',
                 passwordHash: '$argon2id$hash',
                 status: 'active',
+                authEpoch: 1,
+                mfaEpoch: 1,
                 mfaEnabled: false
               }])
             })
@@ -524,6 +529,8 @@ describe('auth routes', () => {
                 name: 'Test User',
                 passwordHash: '$argon2id$hash',
                 status: 'active',
+                authEpoch: 1,
+                mfaEpoch: 1,
                 mfaEnabled: true,
                 mfaSecret: 'secret'
               }])
@@ -607,7 +614,9 @@ describe('auth routes', () => {
               id: 'user-123',
               email: 'test@example.com',
               passwordHash: '$argon2id$hash',
-              status: 'active'
+              status: 'active',
+              authEpoch: 1,
+              mfaEpoch: 1,
             }])
           })
         })
@@ -724,6 +733,8 @@ describe('auth routes', () => {
               email: 'test@example.com',
               passwordHash: '$argon2id$hash',
               status: 'active',
+              authEpoch: 1,
+              mfaEpoch: 1,
               mfaEnabled: true,
               mfaSecret: 'secret123',
               // security review #2: provisioned user → partner membership.
@@ -766,6 +777,8 @@ describe('auth routes', () => {
               email: 'rate@x.com',
               passwordHash: '$argon2id$hash',
               status: 'active',
+              authEpoch: 1,
+              mfaEpoch: 1,
               mfaEnabled: false
             }])
           })
@@ -815,6 +828,8 @@ describe('auth routes', () => {
               name: 'Victim User',
               passwordHash: '$argon2id$hash',
               status: 'active',
+              authEpoch: 1,
+              mfaEpoch: 1,
               mfaEnabled: false
             }])
           })
@@ -845,6 +860,8 @@ describe('auth routes', () => {
               name: 'Victim User',
               passwordHash: '$argon2id$hash',
               status: 'active',
+              authEpoch: 1,
+              mfaEpoch: 1,
               mfaEnabled: false
             }])
           })
@@ -887,6 +904,8 @@ describe('auth routes', () => {
               name: 'Victim User',
               passwordHash: '$argon2id$hash',
               status: 'active',
+              authEpoch: 1,
+              mfaEpoch: 1,
               mfaEnabled: false
             }])
           })
@@ -919,6 +938,8 @@ describe('auth routes', () => {
               name: 'Recover User',
               passwordHash: '$argon2id$hash',
               status: 'active',
+              authEpoch: 1,
+              mfaEpoch: 1,
               mfaEnabled: false,
               // security review #2: provisioned user → partner membership.
               partnerId: 'partner-1',
@@ -984,6 +1005,8 @@ describe('auth routes', () => {
               email: 'mfa@x.com',
               passwordHash: '$argon2id$hash',
               status: 'active',
+              authEpoch: 1,
+              mfaEpoch: 1,
               mfaEnabled: true,
               mfaSecret: 'secret',
               // security review #2: provisioned user → partner membership.
@@ -1056,7 +1079,9 @@ describe('auth routes', () => {
                 id: 'user-wrong',
                 email: 'wrong@x.com',
                 passwordHash: '$argon2id$hash',
-                status: 'active'
+                status: 'active',
+                authEpoch: 1,
+                mfaEpoch: 1,
               }])
             })
           })
@@ -1073,7 +1098,9 @@ describe('auth routes', () => {
                 id: 'user-sso',
                 email: 'sso@x.com',
                 passwordHash: '$argon2id$hash',
-                status: 'active'
+                status: 'active',
+                authEpoch: 1,
+                mfaEpoch: 1,
               }])
             })
           })
@@ -1111,6 +1138,8 @@ describe('auth routes', () => {
         partnerId: null,
         scope: 'system',
         type: 'refresh',
+        ae: 1,
+        me: 1,
         mfa: false,
         iat: 123456,
         jti: 'refresh-jti-1',
@@ -1123,7 +1152,9 @@ describe('auth routes', () => {
               limit: vi.fn().mockResolvedValue([{
                 id: 'user-123',
                 email: 'test@example.com',
-                status: 'active'
+                status: 'active',
+                authEpoch: 1,
+                mfaEpoch: 1,
               }])
             })
           })
@@ -1201,6 +1232,9 @@ describe('auth routes', () => {
         partnerId: null,
         scope: 'system',
         type: 'access', // Wrong type
+        ae: 1,
+        me: 1,
+        sid: 'test-session:user-123',
         mfa: false
       });
 
@@ -1226,6 +1260,8 @@ describe('auth routes', () => {
         partnerId: 'partner-old',
         scope: 'partner',
         type: 'refresh',
+        ae: 1,
+        me: 1,
         mfa: false,
         iat: 123456,
         jti: 'refresh-jti-2',
@@ -1252,13 +1288,19 @@ describe('auth routes', () => {
     it('rejects a refresh from a membership-less non-admin user (no system-scope token)', async () => {
       vi.mocked(verifyToken).mockResolvedValue({
         sub: 'user-123', email: 'test@example.com', roleId: null, orgId: null,
-        partnerId: null, scope: 'system', type: 'refresh', mfa: false,
-        iat: 123456, jti: 'refresh-jti-orphan'
+        partnerId: null, scope: 'system', type: 'refresh', ae: 1, me: 1,
+        mfa: false, iat: 123456, jti: 'refresh-jti-orphan', fam: 'family-id-mock'
       });
       vi.mocked(db.select)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{ id: 'user-123', email: 'test@example.com', status: 'active' }]) }) })
+            limit: vi.fn().mockResolvedValue([{
+              id: 'user-123',
+              email: 'test@example.com',
+              status: 'active',
+              authEpoch: 1,
+              mfaEpoch: 1,
+            }]) }) })
         } as any)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) })
@@ -1298,6 +1340,8 @@ describe('auth routes', () => {
         partnerId: null,
         scope: 'system',
         type: 'refresh',
+        ae: 1,
+        me: 1,
         mfa: false,
         iat: 123456,
         jti: 'refresh-jti-race',
@@ -1309,7 +1353,9 @@ describe('auth routes', () => {
             limit: vi.fn().mockResolvedValue([{
               id: 'user-123',
               email: 'test@example.com',
-              status: 'active'
+              status: 'active',
+              authEpoch: 1,
+              mfaEpoch: 1,
             }])
           })
         })
@@ -1358,6 +1404,8 @@ describe('auth routes', () => {
         partnerId: null,
         scope: 'system',
         type: 'refresh',
+        ae: 1,
+        me: 1,
         mfa: false,
         iat: 123456,
         jti: 'refresh-jti-graced',
@@ -1396,6 +1444,8 @@ describe('auth routes', () => {
         partnerId: null,
         scope: 'system',
         type: 'refresh',
+        ae: 1,
+        me: 1,
         mfa: false,
         iat: 123456,
         jti: 'refresh-jti-stolen',
@@ -1427,6 +1477,8 @@ describe('auth routes', () => {
         partnerId: null,
         scope: 'organization',
         type: 'refresh',
+        ae: 1,
+        me: 1,
         mfa: false,
         iat: 123456,
         jti: 'refresh-jti-winner',
@@ -1438,7 +1490,9 @@ describe('auth routes', () => {
             limit: vi.fn().mockResolvedValue([{
               id: 'user-123',
               email: 'test@example.com',
-              status: 'active'
+              status: 'active',
+              authEpoch: 1,
+              mfaEpoch: 1,
             }])
           })
         })
@@ -1482,6 +1536,8 @@ describe('auth routes', () => {
         partnerId: 'stale-partner',
         scope: 'partner',
         type: 'refresh',
+        ae: 1,
+        me: 1,
         mfa: false,
         iat: 123456,
         jti: 'refresh-jti-3',
@@ -1494,7 +1550,9 @@ describe('auth routes', () => {
               limit: vi.fn().mockResolvedValue([{
                 id: 'user-123',
                 email: 'test@example.com',
-                status: 'active'
+                status: 'active',
+                authEpoch: 1,
+                mfaEpoch: 1,
               }])
             })
           })
@@ -1556,6 +1614,8 @@ describe('auth routes', () => {
         partnerId: 'partner-old',
         scope: 'partner',
         type: 'refresh',
+        ae: 1,
+        me: 1,
         mfa: false,
         iat: 123456,
         jti: 'refresh-jti-tenant',
@@ -1569,7 +1629,9 @@ describe('auth routes', () => {
               limit: vi.fn().mockResolvedValue([{
                 id: 'user-123',
                 email: 'test@example.com',
-                status: 'active'
+                status: 'active',
+                authEpoch: 1,
+                mfaEpoch: 1,
               }])
             })
           })
@@ -2117,6 +2179,8 @@ describe('auth routes', () => {
               avatarUrl: null,
               mfaEnabled: false,
               status: 'active',
+              authEpoch: 1,
+              mfaEpoch: 1,
               lastLoginAt: new Date(),
               createdAt: new Date()
             }])
@@ -2203,6 +2267,8 @@ describe('auth routes', () => {
         partnerId: null,
         scope: 'system',
         type: 'refresh',
+        ae: 1,
+        me: 1,
         mfa: false,
         iat: 123456,
         jti: 'refresh-jti-sec',
@@ -2215,7 +2281,9 @@ describe('auth routes', () => {
               limit: vi.fn().mockResolvedValue([{
                 id: 'user-123',
                 email: 'test@example.com',
-                status: 'active'
+                status: 'active',
+                authEpoch: 1,
+                mfaEpoch: 1,
               }])
             })
           })
@@ -2266,6 +2334,8 @@ describe('auth routes', () => {
         partnerId: null,
         scope: 'system',
         type: 'refresh',
+        ae: 1,
+        me: 1,
         mfa: false,
         iat: 123456,
         jti: 'refresh-jti-no-sec',
@@ -2278,7 +2348,9 @@ describe('auth routes', () => {
               limit: vi.fn().mockResolvedValue([{
                 id: 'user-123',
                 email: 'test@example.com',
-                status: 'active'
+                status: 'active',
+                authEpoch: 1,
+                mfaEpoch: 1,
               }])
             })
           })

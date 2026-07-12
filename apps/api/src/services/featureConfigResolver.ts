@@ -54,6 +54,11 @@ export function createSystemAuthContext(): AuthContext {
     partnerId: null,
     scope: 'system',
     type: 'access',
+    // Structural AuthContext only for trusted workers; this is never signed or
+    // verified as a user JWT, so use explicit synthetic lifecycle markers.
+    ae: 1,
+    me: 1,
+    sid: 'synthetic:feature-config-system',
     mfa: false,
   };
 

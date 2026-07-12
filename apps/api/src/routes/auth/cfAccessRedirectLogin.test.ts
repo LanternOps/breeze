@@ -390,7 +390,9 @@ describe('GET /cf-access-login', () => {
 
   it('logout revokes all user tokens + the refresh jti when a valid refresh cookie is present', async () => {
     envState.enabled = true;
-    servicesState.verifyResult = { type: 'refresh', sub: 'user-1', jti: 'jti-current' };
+    servicesState.verifyResult = {
+      type: 'refresh', sub: 'user-1', jti: 'jti-current', ae: 1, me: 1, fam: 'family-1',
+    };
     const res = await cfAccessRedirectLoginRoutes.request('http://api.example/cf-access-logout', {
       method: 'GET',
       headers: {
@@ -434,7 +436,9 @@ describe('GET /cf-access-login', () => {
 
   it('logout still clears + 302s when revocation throws (e.g. Redis down)', async () => {
     envState.enabled = true;
-    servicesState.verifyResult = { type: 'refresh', sub: 'user-1', jti: 'jti-current' };
+    servicesState.verifyResult = {
+      type: 'refresh', sub: 'user-1', jti: 'jti-current', ae: 1, me: 1, fam: 'family-1',
+    };
     const services = await import('../../services');
     vi.mocked(services.revokeAllUserTokens).mockRejectedValueOnce(new Error('redis down'));
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});

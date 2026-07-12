@@ -27,7 +27,14 @@ vi.mock('../../services', () => ({
     refreshToken: 'refresh-token',
     refreshJti: 'refresh-jti',
     expiresInSeconds: 900,
+    familyId: 'family-id',
   })),
+  UserSessionFamilyInactiveError: class UserSessionFamilyInactiveError extends Error {
+    constructor() {
+      super('Inactive user session family');
+      this.name = 'UserSessionFamilyInactiveError';
+    }
+  },
   verifyToken: vi.fn(async () => null),
   verifyPassword: vi.fn(async () => true),
   hashPassword: vi.fn(async () => 'dummy-hash'),
@@ -147,7 +154,10 @@ import {
   isRefreshTokenJtiRevoked,
   revokeFamily,
   revokeRefreshTokenJti,
+  markRefreshTokenJtiRotated,
+  touchFamilyLastUsed,
   isTokenIssuedBeforePasswordChange,
+  UserSessionFamilyInactiveError,
 } from '../../services';
 import { enforceIpAllowlist } from '../../services/ipAllowlist';
 import { recordFailedLogin } from '../../services/anomalyMetrics';
@@ -158,6 +168,7 @@ import {
   resolveRefreshToken,
   validateCookieCsrfRequest,
   clearRefreshTokenCookie,
+  setRefreshTokenCookie,
 } from './helpers';
 
 function selectChain(rows: unknown[]) {
@@ -441,6 +452,8 @@ describe('POST /refresh — hard-reject fam-less legacy tokens (#917 L-1)', () =
       id: 'user-1',
       email: 'admin@msp.com',
       status: 'active',
+      authEpoch: 4,
+      mfaEpoch: 7,
     }]) as any);
     vi.mocked(isRefreshTokenJtiRevoked).mockResolvedValue(false);
     vi.mocked(revokeRefreshTokenJti).mockResolvedValue(true);
@@ -458,6 +471,8 @@ describe('POST /refresh — hard-reject fam-less legacy tokens (#917 L-1)', () =
       email: 'admin@msp.com',
       type: 'refresh',
       jti: 'jti-legacy',
+      ae: 4,
+      me: 7,
       // no `fam` — pre-rollout token
     } as any);
 
@@ -483,6 +498,8 @@ describe('POST /refresh — hard-reject fam-less legacy tokens (#917 L-1)', () =
       type: 'refresh',
       jti: 'jti-current',
       fam: 'family-42',
+      ae: 4,
+      me: 7,
     } as any);
 
     const res = await postRefresh();
@@ -492,5 +509,70 @@ describe('POST /refresh — hard-reject fam-less legacy tokens (#917 L-1)', () =
     // Rotation reuses the verified family rather than minting a new one.
     expect(vi.mocked(issueUserSession).mock.calls[0]?.[1]).toEqual({ familyId: 'family-42' });
     expect(revokeFamily).not.toHaveBeenCalled();
+  });
+
+  it('rejects an auth-epoch mismatch before claiming or rotating the old jti', async () => {
+    vi.mocked(verifyToken).mockResolvedValue({
+      sub: 'user-1',
+      email: 'admin@msp.com',
+      type: 'refresh',
+      jti: 'jti-stale-auth',
+      fam: 'family-42',
+      ae: 3,
+      me: 7,
+    } as any);
+
+    const res = await postRefresh();
+
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Invalid refresh token' });
+    expect(clearRefreshTokenCookie).toHaveBeenCalled();
+    expect(markRefreshTokenJtiRotated).not.toHaveBeenCalled();
+    expect(revokeRefreshTokenJti).not.toHaveBeenCalled();
+    expect(issueUserSession).not.toHaveBeenCalled();
+  });
+
+  it('rejects an mfa-epoch mismatch before claiming or rotating the old jti', async () => {
+    vi.mocked(verifyToken).mockResolvedValue({
+      sub: 'user-1',
+      email: 'admin@msp.com',
+      type: 'refresh',
+      jti: 'jti-stale-mfa',
+      fam: 'family-42',
+      ae: 4,
+      me: 6,
+    } as any);
+
+    const res = await postRefresh();
+
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Invalid refresh token' });
+    expect(clearRefreshTokenCookie).toHaveBeenCalled();
+    expect(markRefreshTokenJtiRotated).not.toHaveBeenCalled();
+    expect(revokeRefreshTokenJti).not.toHaveBeenCalled();
+    expect(issueUserSession).not.toHaveBeenCalled();
+  });
+
+  it('maps a durable family rejection after jti claim to the generic refresh 401', async () => {
+    vi.mocked(verifyToken).mockResolvedValue({
+      sub: 'user-1',
+      email: 'admin@msp.com',
+      type: 'refresh',
+      jti: 'jti-inactive-family',
+      fam: 'family-42',
+      ae: 4,
+      me: 7,
+    } as any);
+    vi.mocked(issueUserSession).mockRejectedValueOnce(new UserSessionFamilyInactiveError());
+
+    const res = await postRefresh();
+
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Invalid refresh token' });
+    expect(markRefreshTokenJtiRotated).toHaveBeenCalledWith('jti-inactive-family');
+    expect(revokeRefreshTokenJti).toHaveBeenCalledWith('jti-inactive-family');
+    expect(clearRefreshTokenCookie).toHaveBeenCalled();
+    expect(setRefreshTokenCookie).not.toHaveBeenCalled();
+    expect(touchFamilyLastUsed).not.toHaveBeenCalled();
   });
 });

@@ -147,6 +147,11 @@ async function helperAuth(c: import('hono').Context, next: import('hono').Next) 
       orgId: device.orgId,
       partnerId: null,
       iat: Math.floor(Date.now() / 1000),
+      // Structural AuthContext only: helper device sessions never pass through
+      // JWT verification, but retain explicit valid lifecycle markers.
+      ae: 1,
+      me: 1,
+      sid: `synthetic:helper:${device.id}`,
       mfa: false,
     },
     partnerId: null,

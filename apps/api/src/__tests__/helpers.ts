@@ -70,6 +70,9 @@ export async function createTestToken(options: TestTokenOptions = {}): Promise<s
     orgId: options.orgId ?? 'test-org-id',
     partnerId: options.partnerId ?? 'test-partner-id',
     scope: options.scope ?? 'organization',
+    ae: 1,
+    me: 1,
+    sid: `test-session:${options.userId ?? 'test-user-id'}`,
     mfa: options.mfa ?? false
   };
   return createAccessToken(payload);

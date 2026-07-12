@@ -51,7 +51,8 @@ vi.mock('../services', () => ({
     accessToken: 'access-token',
     refreshToken: 'refresh-token',
     refreshJti: 'sso-jti-mock',
-    expiresInSeconds: 900
+    expiresInSeconds: 900,
+    familyId: 'sso-family-id-mock'
   }),
   createSession: vi.fn(),
   // Partner-axis login rate limiting (#2183 spec §5) — default allowed so

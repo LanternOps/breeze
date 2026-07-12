@@ -195,7 +195,9 @@ describe('issueUserSession', () => {
       [{ ...activeFamily(familyId), revokedAt: new Date() }]
     );
 
-    await expect(issueUserSession(identity, { familyId })).rejects.toThrow('refresh token family');
+    await expect(issueUserSession(identity, { familyId })).rejects.toMatchObject({
+      name: 'UserSessionFamilyInactiveError',
+    });
     expect(dbMocks.rememberJtiFamily).not.toHaveBeenCalled();
   });
 

@@ -165,6 +165,11 @@ export function buildClientAuthContext(params: {
       orgId,
       partnerId: null,
       iat: Math.floor(Date.now() / 1000),
+      // Structural AuthContext only: client AI sessions are authenticated by
+      // their host flow, not this synthetic token-shaped object.
+      ae: 1,
+      me: 1,
+      sid: `synthetic:client-ai:${clientUserId}`,
       mfa: false,
     },
     partnerId: null,

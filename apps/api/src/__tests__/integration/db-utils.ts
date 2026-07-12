@@ -380,6 +380,9 @@ export async function setupTestEnvironment(
     orgId: scope === 'organization' ? organization.id : null,
     partnerId: scope !== 'system' ? partner.id : null,
     scope,
+    ae: user.authEpoch,
+    me: user.mfaEpoch,
+    sid: `test-session:${user.id}`,
     mfa: false
   };
   const token = await createAccessToken(tokenPayload);

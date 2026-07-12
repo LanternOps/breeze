@@ -5,6 +5,7 @@ import * as dbModule from '../../db';
 import { users } from '../../db/schema';
 import {
   issueUserSession,
+  UserSessionFamilyInactiveError,
   verifyToken,
   verifyPassword,
   hashPassword,
@@ -697,6 +698,8 @@ loginRoutes.post('/refresh', async (c) => {
         email: users.email,
         status: users.status,
         passwordChangedAt: users.passwordChangedAt,
+        authEpoch: users.authEpoch,
+        mfaEpoch: users.mfaEpoch,
       })
       .from(users)
       .where(eq(users.id, payload.sub))
@@ -709,6 +712,14 @@ loginRoutes.post('/refresh', async (c) => {
   }
 
   if (isTokenIssuedBeforePasswordChange(payload.iat, user.passwordChangedAt)) {
+    clearRefreshTokenCookie(c);
+    return c.json({ error: 'Invalid refresh token' }, 401);
+  }
+
+  // Epoch changes are global sign-out boundaries. Compare the verified token
+  // claims with the live user row before claiming the old jti so a stale token
+  // cannot be laundered into a newly issued session.
+  if (user.authEpoch !== payload.ae || user.mfaEpoch !== payload.me) {
     clearRefreshTokenCookie(c);
     return c.json({ error: 'Invalid refresh token' }, 401);
   }
@@ -756,19 +767,26 @@ loginRoutes.post('/refresh', async (c) => {
 
   // Create new token pair. The rotated refresh token inherits the family from
   // the verified `fam` claim so reuse-detection follows the whole chain.
-  const tokens = await issueUserSession({
-    userId: user.id,
-    email: user.email,
-    roleId: context.roleId,
-    orgId: context.orgId,
-    partnerId: context.partnerId,
-    scope: context.scope,
-    mfa: ENABLE_2FA ? payload.mfa : false,
-    // SR-001: preserve the device binding from the prior (signed) refresh
-    // token. Deliberately NOT re-read from the header — a refresh must not be
-    // able to drop the binding by omitting it.
-    mobileDeviceId: carryForwardBinding(payload)
-  }, { familyId });
+  let tokens: Awaited<ReturnType<typeof issueUserSession>>;
+  try {
+    tokens = await issueUserSession({
+      userId: user.id,
+      email: user.email,
+      roleId: context.roleId,
+      orgId: context.orgId,
+      partnerId: context.partnerId,
+      scope: context.scope,
+      mfa: ENABLE_2FA ? payload.mfa : false,
+      // SR-001: preserve the device binding from the prior (signed) refresh
+      // token. Deliberately NOT re-read from the header — a refresh must not be
+      // able to drop the binding by omitting it.
+      mobileDeviceId: carryForwardBinding(payload)
+    }, { familyId });
+  } catch (error) {
+    if (!(error instanceof UserSessionFamilyInactiveError)) throw error;
+    clearRefreshTokenCookie(c);
+    return c.json({ error: 'Invalid refresh token' }, 401);
+  }
   // Telemetry: bump lastUsedAt on the family row. Fire-and-forget — never
   // blocks the refresh.
   void touchFamilyLastUsed(familyId);

@@ -1,23 +1,26 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
+import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
 const SRC_DIR = join(__dirname, '..');
-const PRODUCTION_ISSUER_DIRS = [
-  join(SRC_DIR, 'routes'),
-  join(SRC_DIR, 'middleware'),
-];
 const LOW_LEVEL_ISSUERS = [
   'createTokenPair',
   'mintRefreshTokenFamily',
   'bindRefreshJtiToFamily',
 ];
+const APPROVED_LOW_LEVEL_ISSUER_FILES = new Set([
+  'services/jwt.ts',
+  'services/refreshTokenFamily.ts',
+  'services/userSession.ts',
+]);
 
 function walkProductionTypeScript(dir: string): string[] {
   const files: string[] = [];
   for (const entry of readdirSync(dir)) {
     const fullPath = join(dir, entry);
     if (statSync(fullPath).isDirectory()) {
+      if (entry === '__tests__') continue;
       files.push(...walkProductionTypeScript(fullPath));
     } else if (entry.endsWith('.ts') && !entry.endsWith('.test.ts')) {
       files.push(fullPath);
@@ -26,19 +29,51 @@ function walkProductionTypeScript(dir: string): string[] {
   return files;
 }
 
+function findLowLevelIssuerIdentifiers(source: string): string[] {
+  const found = new Set<string>();
+  const sourceFile = ts.createSourceFile(
+    'issuer-audit.ts',
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const visit = (node: ts.Node): void => {
+    if (ts.isIdentifier(node) && LOW_LEVEL_ISSUERS.includes(node.text)) {
+      found.add(node.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return LOW_LEVEL_ISSUERS.filter((issuer) => found.has(issuer));
+}
+
 describe('first-party user session issuer coverage', () => {
-  it('routes and middleware do not import low-level token issuers', () => {
-    const importDeclaration = /import\s+(?:type\s+)?[\w$*{},\s]+\s+from\s+['"][^'"]+['"]/g;
-    const offenders = PRODUCTION_ISSUER_DIRS
-      .flatMap(walkProductionTypeScript)
-      .filter((file) => {
-        const imports = readFileSync(file, 'utf8').match(importDeclaration) ?? [];
-        return imports.some((declaration) =>
-          LOW_LEVEL_ISSUERS.some((issuer) =>
-            new RegExp(String.raw`\b${issuer}\b`).test(declaration),
-          ),
-        );
-      })
+  it.each([
+    ['named import', "import { createTokenPair } from './jwt';", 'createTokenPair'],
+    [
+      'namespace import usage',
+      "import * as services from './index'; void services.createTokenPair;",
+      'createTokenPair',
+    ],
+    [
+      'dynamic import destructuring',
+      "const { mintRefreshTokenFamily } = await import('./refreshTokenFamily');",
+      'mintRefreshTokenFamily',
+    ],
+    [
+      're-export',
+      "export { bindRefreshJtiToFamily } from './refreshTokenFamily';",
+      'bindRefreshJtiToFamily',
+    ],
+  ])('detects %s', (_name, source, issuer) => {
+    expect(findLowLevelIssuerIdentifiers(source)).toContain(issuer);
+  });
+
+  it('production API TypeScript uses low-level issuers only in approved services', () => {
+    const offenders = walkProductionTypeScript(SRC_DIR)
+      .filter((file) => !APPROVED_LOW_LEVEL_ISSUER_FILES.has(relative(SRC_DIR, file)))
+      .filter((file) => findLowLevelIssuerIdentifiers(readFileSync(file, 'utf8')).length > 0)
       .map((file) => relative(SRC_DIR, file))
       .sort();
 

@@ -10,7 +10,9 @@ vi.mock('../services', () => ({
   issueUserSession: vi.fn().mockResolvedValue({
     accessToken: 'access-token',
     refreshToken: 'refresh-token',
-    expiresInSeconds: 900
+    refreshJti: 'refresh-jti',
+    expiresInSeconds: 900,
+    familyId: 'family-id-mock'
   }),
   verifyToken: vi.fn(),
   generateMFASecret: vi.fn().mockReturnValue('MFASECRET123'),
