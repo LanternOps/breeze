@@ -21,6 +21,7 @@ import {
 import { getTwilioService } from '../../services/twilio';
 import { readMobileDeviceId } from '../../services/mobileDeviceBinding';
 import { authMiddleware } from '../../middleware/auth';
+import type { AuthContext } from '../../middleware/auth';
 import { ENABLE_2FA, mfaVerifySchema, mfaEnableSchema } from './schemas';
 import {
   getClientIP,
@@ -36,7 +37,12 @@ import {
   auditUserLoginFailure,
   auditLogin,
   userRequiresSetup,
-  requireCurrentPasswordStepUp
+  requireCurrentPasswordStepUp,
+  consumeMfaStepUpGrant,
+  hashMfaStepUpGrant,
+  MfaStepUpGrantInvalidError,
+  MfaStepUpGrantUnavailableError,
+  readMfaStepUpGrant,
 } from './helpers';
 import {
   cleanupMfaAssuranceUsers,
@@ -44,6 +50,8 @@ import {
   runLockedMfaMutation,
 } from '../../services/mfaAssuranceMutation';
 import { resolveEffectiveMfaPolicy } from '../../services/mfaPolicy';
+import { withAuthLifecycleSystemTransaction } from '../../services/authLifecycle';
+import { lockMfaAssuranceState } from '../../services/mfaAssuranceLocks';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
@@ -53,6 +61,9 @@ const { db, withSystemDbAccessContext } = dbModule;
 // argon2 hash, rate-limited per user to blunt online password guessing.
 const passwordOnlySchema = z.object({
   currentPassword: z.string().min(1).max(256)
+});
+const mfaSetupSchema = passwordOnlySchema.extend({
+  mfaGrant: z.string().min(32).max(512).optional(),
 });
 const mfaEnableWithPasswordSchema = mfaEnableSchema.extend({
   currentPassword: z.string().min(1).max(256)
@@ -90,7 +101,7 @@ function lockedMutationInput(auth: ReturnType<typeof mfaAuthShape>, reason: stri
 
 // Keeps the helper inferred from the middleware-owned auth object without
 // duplicating the complete AuthContext type in this route module.
-function mfaAuthShape(auth: any) { return auth; }
+function mfaAuthShape(auth: AuthContext) { return auth; }
 
 function mfaMutationErrorResponse(c: any, error: unknown) {
   if (error instanceof MfaAssuranceMutationStaleError) {
@@ -99,17 +110,154 @@ function mfaMutationErrorResponse(c: any, error: unknown) {
   if (error instanceof MfaMutationRouteError) {
     return c.json({ error: error.message }, error.status);
   }
+  if (error instanceof MfaStepUpGrantInvalidError) {
+    return c.json({ error: 'Invalid or expired MFA step-up authorization' }, 401);
+  }
+  if (error instanceof MfaStepUpGrantUnavailableError) {
+    return c.json({ error: 'MFA verification unavailable. Please try again later.' }, 503);
+  }
   throw error;
 }
 
+function totpReplaceBinding(auth: AuthContext) {
+  const { sid, ae, me } = auth.token;
+  if (!sid || !Number.isSafeInteger(ae) || !Number.isSafeInteger(me) || ae < 1 || me < 1) {
+    throw new MfaStepUpGrantInvalidError();
+  }
+  return {
+    purpose: 'totp.replace' as const,
+    userId: auth.user.id,
+    sessionId: sid,
+    authEpoch: ae,
+    mfaEpoch: me,
+  };
+}
+
+function enrolledAllowedFactor(
+  method: 'totp' | 'sms' | 'passkey',
+  locked: Awaited<ReturnType<typeof lockMfaAssuranceState>>,
+  allowedMethods: ReadonlySet<string>,
+) {
+  if (!allowedMethods.has(method)) return false;
+  if (method === 'totp') return Boolean(locked.user?.mfaSecret);
+  if (method === 'passkey') return locked.activePasskeyCount > 0;
+  return locked.user?.mfaMethod === 'sms'
+    && locked.user.phoneVerified === true
+    && Boolean(locked.user.phoneNumber);
+}
+
+type TotpSetupState = { secret: string; recoveryCodes: string[]; grantHash?: string };
+
+function parseTotpSetupState(raw: string): TotpSetupState {
+  const parsed = JSON.parse(raw) as Record<string, unknown>;
+  if (typeof parsed.secret !== 'string'
+    || !Array.isArray(parsed.recoveryCodes)
+    || parsed.recoveryCodes.some((code) => typeof code !== 'string')
+    || (parsed.grantHash !== undefined && typeof parsed.grantHash !== 'string')) {
+    throw new Error('Invalid setup data');
+  }
+  return parsed as TotpSetupState;
+}
+
+async function auditMfaMutationFailure(c: any, auth: AuthContext, input: {
+  action: 'auth.mfa.disable.failed' | 'auth.mfa.setup.failed';
+  reason: string;
+  details: Record<string, unknown>;
+}) {
+  const orgId = await resolveUserAuditOrgId(auth.user.id);
+  writeAuthAudit(c, {
+    orgId: orgId ?? undefined,
+    action: input.action,
+    result: 'failure',
+    reason: input.reason,
+    userId: auth.user.id,
+    email: auth.user.email,
+    details: input.details,
+  });
+}
+
+async function confirmTotpSetup(c: any, input: {
+  auth: AuthContext;
+  code: string;
+  mfaGrant?: string;
+  redis: NonNullable<ReturnType<typeof getRedis>>;
+  setup: TotpSetupState;
+}) {
+  const { auth, code, mfaGrant, redis, setup } = input;
+  await runLockedMfaMutation(
+    lockedMutationInput(auth, 'totp-factor-changed'),
+    async (tx, locked) => {
+      const policy = await resolveEffectiveMfaPolicy({
+        userId: auth.user.id,
+        roleId: auth.token.roleId,
+        orgId: auth.token.orgId,
+        partnerId: auth.token.partnerId,
+        scope: auth.token.scope,
+        tx,
+      });
+      if (!policy.allowedMethods.has('totp')) {
+        throw new MfaMutationRouteError(403, 'TOTP is not allowed by the current MFA policy');
+      }
+
+      const hasExistingFactor = Boolean(locked.user?.mfaSecret)
+        || (locked.user?.mfaMethod === 'sms' && locked.user.phoneVerified && Boolean(locked.user.phoneNumber))
+        || locked.activePasskeyCount > 0;
+      if (hasExistingFactor) {
+        if (!mfaGrant || setup.grantHash !== hashMfaStepUpGrant(mfaGrant)) {
+          throw new MfaMutationRouteError(403, 'Existing MFA factor proof is required to replace TOTP');
+        }
+        const binding = totpReplaceBinding(auth);
+        const grant = await readMfaStepUpGrant(mfaGrant, binding);
+        if (!enrolledAllowedFactor(grant.verifiedMethod, locked, policy.allowedMethods)) {
+          throw new MfaMutationRouteError(403, 'Existing MFA factor proof is required to replace TOTP');
+        }
+        await consumeMfaStepUpGrant(mfaGrant, { ...binding, verifiedMethod: grant.verifiedMethod });
+      } else if (setup.grantHash !== undefined || mfaGrant !== undefined) {
+        throw new MfaStepUpGrantInvalidError();
+      }
+
+      if (!await consumeMFAToken(setup.secret, code, auth.user.id)) {
+        await auditMfaMutationFailure(c, auth, {
+          action: 'auth.mfa.setup.failed',
+          reason: 'invalid_mfa_code',
+          details: { phase: 'setup_confirmation' },
+        });
+        throw new MfaMutationRouteError(401, 'Invalid MFA code');
+      }
+      await tx.update(users).set({
+        mfaSecret: encryptMfaSecret(setup.secret),
+        mfaEnabled: true,
+        mfaMethod: 'totp',
+        mfaRecoveryCodes: hashRecoveryCodes(setup.recoveryCodes),
+        updatedAt: new Date(),
+      }).where(eq(users.id, auth.user.id));
+    },
+  );
+
+  const setupKey = `mfa:setup:${auth.user.id}`;
+  const cleanup = await cleanupMfaAssuranceUsers([auth.user.id], [
+    { name: `mfa-setup-state:${auth.user.id}`, run: () => redis.del(setupKey) },
+  ]);
+  const orgId = await resolveUserAuditOrgId(auth.user.id);
+  writeAuthAudit(c, {
+    orgId: orgId ?? undefined,
+    action: 'auth.mfa.setup',
+    result: 'success',
+    userId: auth.user.id,
+    email: auth.user.email,
+    details: { method: 'totp' },
+  });
+  return cleanup;
+}
+
 // MFA setup (requires auth + current-password re-prompt)
-mfaRoutes.post('/mfa/setup', authMiddleware, zValidator('json', passwordOnlySchema), async (c) => {
+mfaRoutes.post('/mfa/setup', authMiddleware, zValidator('json', mfaSetupSchema), async (c) => {
   if (!ENABLE_2FA) {
     return mfaDisabledResponse(c);
   }
 
   const auth = c.get('auth');
-  const { currentPassword } = c.req.valid('json');
+  const { currentPassword, mfaGrant } = c.req.valid('json');
 
   // Re-verify password before allowing MFA factor installation. A stolen
   // access token is not sufficient — the user must prove possession of
@@ -117,15 +265,41 @@ mfaRoutes.post('/mfa/setup', authMiddleware, zValidator('json', passwordOnlySche
   const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'mfa:pwd');
   if (passwordError) return passwordError;
 
-  // Check if MFA is already enabled
-  const [user] = await db
-    .select({ mfaEnabled: users.mfaEnabled })
-    .from(users)
-    .where(eq(users.id, auth.user.id))
-    .limit(1);
-
-  if (user?.mfaEnabled) {
-    return c.json({ error: 'MFA is already enabled' }, 400);
+  let grantHash: string | undefined;
+  try {
+    grantHash = await withAuthLifecycleSystemTransaction(async (tx) => {
+      const locked = await lockMfaAssuranceState(tx, {
+        partnerId: auth.token.partnerId,
+        userId: auth.user.id,
+      });
+      const binding = totpReplaceBinding(auth);
+      if (!locked.user || locked.user.status !== 'active'
+        || locked.user.authEpoch !== binding.authEpoch || locked.user.mfaEpoch !== binding.mfaEpoch) {
+        throw new MfaStepUpGrantInvalidError();
+      }
+      const policy = await resolveEffectiveMfaPolicy({
+        userId: auth.user.id, roleId: auth.token.roleId, orgId: auth.token.orgId,
+        partnerId: auth.token.partnerId, scope: auth.token.scope, tx,
+      });
+      if (!policy.allowedMethods.has('totp')) {
+        throw new MfaMutationRouteError(403, 'TOTP is not allowed by the current MFA policy');
+      }
+      const hasExistingFactor = Boolean(locked.user.mfaSecret)
+        || (locked.user.mfaMethod === 'sms' && locked.user.phoneVerified && Boolean(locked.user.phoneNumber))
+        || locked.activePasskeyCount > 0;
+      if (!hasExistingFactor) {
+        if (mfaGrant) throw new MfaStepUpGrantInvalidError();
+        return undefined;
+      }
+      if (!mfaGrant) throw new MfaMutationRouteError(403, 'Existing MFA factor proof is required to replace TOTP');
+      const grant = await readMfaStepUpGrant(mfaGrant, binding);
+      if (!enrolledAllowedFactor(grant.verifiedMethod, locked, policy.allowedMethods)) {
+        throw new MfaMutationRouteError(403, 'Existing MFA factor proof is required to replace TOTP');
+      }
+      return hashMfaStepUpGrant(mfaGrant);
+    });
+  } catch (error) {
+    return mfaMutationErrorResponse(c, error);
   }
 
   // Generate new secret
@@ -142,7 +316,7 @@ mfaRoutes.post('/mfa/setup', authMiddleware, zValidator('json', passwordOnlySche
   await redis.setex(
     `mfa:setup:${auth.user.id}`,
     600, // 10 min expiry
-    JSON.stringify({ secret, recoveryCodes })
+    JSON.stringify({ secret, recoveryCodes, ...(grantHash ? { grantHash } : {}) })
   );
 
   return c.json({
@@ -159,7 +333,7 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
     return mfaDisabledResponse(c);
   }
 
-  const { code, tempToken } = c.req.valid('json');
+  const { code, tempToken, mfaGrant } = c.req.valid('json');
   const redis = getRedis();
 
   if (!redis) {
@@ -314,64 +488,18 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
     return c.json({ error: 'No pending MFA setup' }, 400);
   }
 
-  let secret: string;
-  let recoveryCodes: string[];
+  let setup: TotpSetupState;
   try {
-    const parsed = JSON.parse(setupData);
-    secret = parsed.secret;
-    recoveryCodes = parsed.recoveryCodes;
+    setup = parseTotpSetupState(setupData);
   } catch {
     return c.json({ error: 'Invalid MFA setup data' }, 500);
   }
+  let cleanup;
   try {
-    await runLockedMfaMutation(
-      lockedMutationInput(auth, 'totp-factor-changed'),
-      async (tx, locked) => {
-        if (locked.user?.mfaEnabled) {
-          throw new MfaMutationRouteError(403, 'Existing MFA factor proof is required to replace TOTP');
-        }
-        if (!await consumeMFAToken(secret, code, auth.user.id)) {
-          const orgId = await resolveUserAuditOrgId(auth.user.id);
-          writeAuthAudit(c, {
-            orgId: orgId ?? undefined,
-            action: 'auth.mfa.setup.failed',
-            result: 'failure',
-            reason: 'invalid_mfa_code',
-            userId: auth.user.id,
-            email: auth.user.email,
-            details: { phase: 'setup_confirmation' }
-          });
-          throw new MfaMutationRouteError(401, 'Invalid MFA code');
-        }
-        await tx
-          .update(users)
-          .set({
-            mfaSecret: encryptMfaSecret(secret),
-            mfaEnabled: true,
-            mfaMethod: 'totp',
-            mfaRecoveryCodes: hashRecoveryCodes(recoveryCodes),
-            updatedAt: new Date()
-          })
-          .where(eq(users.id, auth.user.id));
-      },
-    );
+    cleanup = await confirmTotpSetup(c, { auth, code, mfaGrant, redis, setup });
   } catch (error) {
     return mfaMutationErrorResponse(c, error);
   }
-
-  const cleanup = await cleanupMfaAssuranceUsers([auth.user.id]);
-
-  const setupOrgId = await resolveUserAuditOrgId(auth.user.id);
-  writeAuthAudit(c, {
-    orgId: setupOrgId ?? undefined,
-    action: 'auth.mfa.setup',
-    result: 'success',
-    userId: auth.user.id,
-    email: auth.user.email,
-    details: { method: 'totp' }
-  });
-
-  await redis.del(`mfa:setup:${auth.user.id}`);
 
   return c.json({
     success: true,
@@ -423,11 +551,23 @@ mfaRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaDisableSche
           if (!user.phoneNumber) throw new MfaMutationRouteError(400, 'No phone number configured');
           const result = await twilio.checkVerificationCode(user.phoneNumber, code);
           if (result.serviceError) throw new MfaMutationRouteError(502, 'SMS verification service temporarily unavailable. Please try again.');
-          if (!result.valid) throw new MfaMutationRouteError(401, 'Invalid verification code');
+          if (!result.valid) {
+            await auditMfaMutationFailure(c, auth, {
+              action: 'auth.mfa.disable.failed',
+              reason: 'invalid_sms_code',
+              details: { method: 'sms' },
+            });
+            throw new MfaMutationRouteError(401, 'Invalid verification code');
+          }
         } else {
           const decryptedMfaSecret = decryptMfaSecret(user.mfaSecret);
           if (!decryptedMfaSecret) throw new MfaMutationRouteError(400, 'Invalid MFA configuration');
           if (!await consumeMFAToken(decryptedMfaSecret, code, auth.user.id)) {
+            await auditMfaMutationFailure(c, auth, {
+              action: 'auth.mfa.disable.failed',
+              reason: 'invalid_mfa_code',
+              details: { method: 'totp' },
+            });
             throw new MfaMutationRouteError(401, 'Invalid MFA code');
           }
         }
@@ -475,7 +615,7 @@ mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableWithPa
   }
 
   const auth = c.get('auth');
-  const { code, currentPassword } = c.req.valid('json');
+  const { code, currentPassword, mfaGrant } = c.req.valid('json');
 
   // Re-verify password before flipping mfaEnabled=true on the user row.
   const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'mfa:pwd');
@@ -494,63 +634,25 @@ mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableWithPa
     return c.json({ error: message, message }, 400);
   }
 
-  let secret: string;
-  let recoveryCodes: string[];
+  let setup: TotpSetupState;
   try {
-    const parsed = JSON.parse(setupData) as { secret?: unknown; recoveryCodes?: unknown };
-    if (typeof parsed.secret !== 'string' || !Array.isArray(parsed.recoveryCodes) || parsed.recoveryCodes.some(code => typeof code !== 'string')) {
-      throw new Error('Invalid setup data');
-    }
-    secret = parsed.secret;
-    recoveryCodes = parsed.recoveryCodes;
+    setup = parseTotpSetupState(setupData);
   } catch {
     const message = 'Invalid MFA setup data';
     return c.json({ error: message, message }, 500);
   }
 
+  let cleanup;
   try {
-    await runLockedMfaMutation(
-      lockedMutationInput(auth, 'totp-factor-changed'),
-      async (tx, locked) => {
-        if (locked.user?.mfaEnabled) {
-          throw new MfaMutationRouteError(403, 'Existing MFA factor proof is required to replace TOTP');
-        }
-        if (!await consumeMFAToken(secret, code, auth.user.id)) {
-          throw new MfaMutationRouteError(401, 'Invalid MFA code');
-        }
-        await tx
-          .update(users)
-          .set({
-            mfaSecret: encryptMfaSecret(secret),
-            mfaEnabled: true,
-            mfaMethod: 'totp',
-            mfaRecoveryCodes: hashRecoveryCodes(recoveryCodes),
-            updatedAt: new Date()
-          })
-          .where(eq(users.id, auth.user.id));
-      },
-    );
+    cleanup = await confirmTotpSetup(c, { auth, code, mfaGrant, redis, setup });
   } catch (error) {
     return mfaMutationErrorResponse(c, error);
   }
 
-  await redis.del(`mfa:setup:${auth.user.id}`);
-  const cleanup = await cleanupMfaAssuranceUsers([auth.user.id]);
-
-  const setupOrgId = await resolveUserAuditOrgId(auth.user.id);
-  writeAuthAudit(c, {
-    orgId: setupOrgId ?? undefined,
-    action: 'auth.mfa.setup',
-    result: 'success',
-    userId: auth.user.id,
-    email: auth.user.email,
-    details: { method: 'totp' }
-  });
-
   return c.json({
     success: true,
     reauthenticate: true,
-    recoveryCodes,
+    recoveryCodes: setup.recoveryCodes,
     message: 'MFA enabled successfully',
     cleanupStatus: cleanup.cleanupStatus,
     cleanupFailures: cleanup.cleanupFailures,

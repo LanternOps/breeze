@@ -1112,6 +1112,33 @@ describe('passkey MFA auth routes', () => {
     expect(await res.json()).toMatchObject({ error: expect.stringMatching(/last.*factor|requires mfa/i) });
   });
 
+  it('does not count a policy-disallowed TOTP enrollment as a remaining required factor', async () => {
+    mfaLockState.user = {
+      ...mfaLockState.user!,
+      mfaEnabled: true,
+      mfaMethod: 'passkey',
+      mfaSecret: 'encrypted-totp-secret',
+    };
+    mfaLockState.activePasskeyCount = 1;
+    mfaLockState.policyRequired = true;
+    mfaLockState.allowedMethods = new Set(['passkey']);
+    vi.mocked(verifyPassword).mockResolvedValueOnce(true);
+    dbState.selectQueue.push(
+      [{ passwordHash: '$argon2id$hash' }],
+      [{ id: 'credential-1', userId: 'user-123' }],
+    );
+
+    const res = await app.request('/auth/passkeys/credential-1', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+      body: JSON.stringify({ currentPassword: 'correct-password' }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ error: expect.stringMatching(/last.*factor|requires mfa/i) });
+    expect(dbState.updateSets).toHaveLength(0);
+  });
+
   it('requires an MFA-satisfied session before deleting a passkey', async () => {
     authState.mfaSatisfied = false;
 

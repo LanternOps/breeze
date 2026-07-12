@@ -45,7 +45,8 @@ export const registerPartnerSchema = z.object({
 export const mfaVerifySchema = z.object({
   code: z.string().length(6),
   tempToken: z.string().optional(),
-  method: z.enum(['totp', 'sms']).optional()
+  method: z.enum(['totp', 'sms']).optional(),
+  mfaGrant: z.string().min(32).max(512).optional(),
 });
 
 export const mfaStepUpPurposeSchema = z.enum([
@@ -128,7 +129,8 @@ export const changePasswordSchema = z.object({
 });
 
 export const mfaEnableSchema = z.object({
-  code: z.string().length(6)
+  code: z.string().length(6),
+  mfaGrant: z.string().min(32).max(512).optional(),
 });
 
 export const acceptInviteSchema = z.object({

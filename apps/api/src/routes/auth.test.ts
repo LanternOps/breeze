@@ -16,6 +16,10 @@ const mfaMutationState = vi.hoisted(() => ({
   } as Record<string, unknown>,
   cleanupStatus: 'complete' as 'complete' | 'partial',
   cleanupFailures: [] as string[],
+  allowedMethods: new Set(['totp', 'sms', 'passkey', 'recovery_code']),
+  activePasskeyCount: 0,
+  auditWrites: [] as Record<string, unknown>[],
+  twilioResult: { valid: true } as { valid: boolean; serviceError?: boolean },
 }));
 
 // Mock all services
@@ -136,7 +140,7 @@ vi.mock('../services/authLifecycle', () => ({
 vi.mock('../services/mfaAssuranceLocks', () => ({
   lockMfaAssuranceState: vi.fn(async () => ({
     user: mfaMutationState.user,
-    activePasskeyCount: 0,
+    activePasskeyCount: mfaMutationState.activePasskeyCount,
   })),
 }));
 
@@ -144,14 +148,24 @@ vi.mock('../services/mfaAssuranceMutation', () => ({
   MfaAssuranceMutationStaleError: class MfaAssuranceMutationStaleError extends Error {},
   runLockedMfaMutation: vi.fn(async (_input: unknown, mutate: (tx: unknown, locked: unknown) => Promise<unknown>) => {
     const { db } = await import('../db');
-    const result = await mutate(db, { user: mfaMutationState.user, activePasskeyCount: 0 });
+    const result = await mutate(db, { user: mfaMutationState.user, activePasskeyCount: mfaMutationState.activePasskeyCount });
     return { result, securityState: { id: 'user-123', mfaEpoch: 2 }, revokedFamilyCount: 1 };
   }),
-  cleanupMfaAssuranceUsers: vi.fn(async () => ({
-    cleanupStatus: mfaMutationState.cleanupStatus,
-    cleanupFailures: mfaMutationState.cleanupFailures,
-    failures: [],
-  })),
+  cleanupMfaAssuranceUsers: vi.fn(async (_userIds: string[], extra: Array<{ name: string; run: () => Promise<unknown> }> = []) => {
+    const cleanupFailures = [...mfaMutationState.cleanupFailures];
+    for (const operation of extra) {
+      try {
+        await operation.run();
+      } catch {
+        cleanupFailures.push(operation.name);
+      }
+    }
+    return {
+      cleanupStatus: cleanupFailures.length > 0 ? 'partial' as const : mfaMutationState.cleanupStatus,
+      cleanupFailures,
+      failures: [],
+    };
+  }),
 }));
 
 const sendAccountLockedMock = vi.fn().mockResolvedValue(undefined);
@@ -169,7 +183,7 @@ vi.mock('../services/email', () => ({
 vi.mock('../services/twilio', () => ({
   getTwilioService: vi.fn(() => ({
     sendVerificationCode: vi.fn().mockResolvedValue({ success: true }),
-    checkVerificationCode: vi.fn().mockResolvedValue({ valid: true })
+    checkVerificationCode: vi.fn(async () => mfaMutationState.twilioResult)
   }))
 }));
 
@@ -183,9 +197,11 @@ vi.mock('../db', () => ({
       }))
     })),
     insert: vi.fn(() => ({
-      values: vi.fn(() => ({
+      values: vi.fn((values: Record<string, unknown>) => {
+        mfaMutationState.auditWrites.push(values);
+        return ({
         returning: vi.fn(() => Promise.resolve([]))
-      }))
+      }); })
     })),
     update: vi.fn(() => ({
       set: vi.fn(() => ({
@@ -247,7 +263,7 @@ vi.mock('../services/tenantStatus', () => ({
 vi.mock('../services/mfaPolicy', () => ({
   resolveEffectiveMfaPolicy: vi.fn(async () => ({
     required: false,
-    allowedMethods: new Set(['totp', 'sms', 'passkey', 'recovery_code']),
+    allowedMethods: mfaMutationState.allowedMethods,
     sources: [],
   })),
   getMfaAssuranceFailure: vi.fn(() => null),
@@ -336,7 +352,30 @@ import {
 } from '../services/passwordResetEligibility';
 import { db } from '../db';
 import { revokeUserSessionFamilyForLogout } from '../services/authLifecycle';
-import { encryptMfaSecret, issueMfaStepUpGrant } from './auth/helpers';
+import { encryptMfaSecret, hashMfaStepUpGrant, issueMfaStepUpGrant } from './auth/helpers';
+
+function installRedisStore(options: { failDelete?: boolean } = {}) {
+  const store = new Map<string, string>();
+  const redis = {
+    setex: vi.fn(async (key: string, _ttl: number, value: string) => {
+      store.set(key, value);
+      return 'OK';
+    }),
+    get: vi.fn(async (key: string) => store.get(key) ?? null),
+    getdel: vi.fn(async (key: string) => {
+      const value = store.get(key) ?? null;
+      store.delete(key);
+      return value;
+    }),
+    del: vi.fn(async (key: string) => {
+      if (options.failDelete) throw new Error('redis delete failed');
+      const existed = store.delete(key);
+      return existed ? 1 : 0;
+    }),
+  };
+  vi.mocked(getRedis).mockReturnValue(redis as any);
+  return { store, redis };
+}
 
 describe('auth routes', () => {
   let app: Hono;
@@ -351,6 +390,10 @@ describe('auth routes', () => {
     };
     mfaMutationState.cleanupStatus = 'complete';
     mfaMutationState.cleanupFailures = [];
+    mfaMutationState.allowedMethods = new Set(['totp', 'sms', 'passkey', 'recovery_code']);
+    mfaMutationState.activePasskeyCount = 0;
+    mfaMutationState.auditWrites = [];
+    mfaMutationState.twilioResult = { valid: true };
     // clearAllMocks clears call history but NOT a mockReturnValue base, so a
     // base set inside one test would otherwise bleed into the next. Reset
     // db.select to an empty-resolving default each test (mirrors sso.test.ts).
@@ -2438,6 +2481,229 @@ describe('auth routes', () => {
       expect(verifyMFAToken).not.toHaveBeenCalled();
     });
 
+    it.each(['/auth/mfa/enable', '/auth/mfa/verify'])(
+      '%s rejects setup confirmation when live policy disallows TOTP',
+      async (path) => {
+        mfaMutationState.user = {
+          ...mfaMutationState.user,
+          mfaEnabled: false,
+          mfaMethod: null,
+          phoneNumber: null,
+          phoneVerified: false,
+        };
+        mfaMutationState.allowedMethods = new Set(['passkey', 'recovery_code']);
+        const { store } = installRedisStore();
+        store.set('mfa:setup:user-123', JSON.stringify({
+          secret: 'MFASECRET123',
+          recoveryCodes: ['CODE-0001', 'CODE-0002'],
+        }));
+        vi.mocked(verifyPassword).mockResolvedValue(true);
+        vi.mocked(db.select).mockReturnValue({
+          from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash' }]) })) })),
+        } as any);
+
+        const res = await app.request(path, {
+          method: 'POST',
+          headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            code: '123456',
+            ...(path.endsWith('/enable') ? { currentPassword: 'OldStrongPass123' } : {}),
+          }),
+        });
+
+        expect(res.status).toBe(403);
+        expect(consumeMFAToken).not.toHaveBeenCalled();
+        expect(db.update).not.toHaveBeenCalled();
+      },
+    );
+
+    it('supports a bound totp.replace grant and rejects its replay', async () => {
+      const { store, redis } = installRedisStore();
+      const mfaGrant = await issueMfaStepUpGrant({
+        purpose: 'totp.replace',
+        userId: 'user-123',
+        sessionId: 'family-current',
+        authEpoch: 1,
+        mfaEpoch: 1,
+        verifiedMethod: 'sms',
+      });
+      vi.mocked(verifyPassword).mockResolvedValue(true);
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash' }]) })) })),
+      } as any);
+
+      const setup = await app.request('/auth/mfa/setup', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentPassword: 'OldStrongPass123', mfaGrant }),
+      });
+      expect(setup.status).toBe(200);
+      const storedSetup = store.get('mfa:setup:user-123');
+      expect(storedSetup).toBeDefined();
+      expect(JSON.parse(storedSetup!)).toMatchObject({ grantHash: hashMfaStepUpGrant(mfaGrant) });
+      expect(storedSetup).not.toContain(mfaGrant);
+
+      const confirm = () => app.request('/auth/mfa/enable', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: '123456', currentPassword: 'OldStrongPass123', mfaGrant }),
+      });
+      const first = await confirm();
+      expect(first.status).toBe(200);
+      expect(redis.getdel).toHaveBeenCalledOnce();
+
+      store.set('mfa:setup:user-123', storedSetup!);
+      const replay = await confirm();
+      expect(replay.status).toBe(401);
+      expect(db.update).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['stale binding', { purpose: 'totp.replace' as const, mfaEpoch: 9 }],
+      ['wrong purpose', { purpose: 'passkey.register' as const, mfaEpoch: 1 }],
+    ])('rejects a %s grant before creating TOTP setup state', async (_label, grantInput) => {
+      const { store } = installRedisStore();
+      const mfaGrant = await issueMfaStepUpGrant({
+        purpose: grantInput.purpose,
+        userId: 'user-123',
+        sessionId: 'family-current',
+        authEpoch: 1,
+        mfaEpoch: grantInput.mfaEpoch,
+        verifiedMethod: 'sms',
+      });
+      vi.mocked(verifyPassword).mockResolvedValue(true);
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash' }]) })) })),
+      } as any);
+
+      const res = await app.request('/auth/mfa/setup', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentPassword: 'OldStrongPass123', mfaGrant }),
+      });
+
+      expect(res.status).toBe(401);
+      expect(store.has('mfa:setup:user-123')).toBe(false);
+    });
+
+    it('commits TOTP enablement and reports partial cleanup when setup-key deletion fails', async () => {
+      mfaMutationState.user = { ...mfaMutationState.user, mfaEnabled: false, mfaMethod: null };
+      const { store } = installRedisStore({ failDelete: true });
+      store.set('mfa:setup:user-123', JSON.stringify({
+        secret: 'MFASECRET123',
+        recoveryCodes: ['CODE-0001', 'CODE-0002'],
+      }));
+      vi.mocked(verifyPassword).mockResolvedValue(true);
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash' }]) })) })),
+      } as any);
+
+      const res = await app.request('/auth/mfa/enable', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: '123456', currentPassword: 'OldStrongPass123' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({
+        success: true,
+        reauthenticate: true,
+        cleanupStatus: 'partial',
+        cleanupFailures: ['mfa-setup-state:user-123'],
+      });
+      expect(db.update).toHaveBeenCalledOnce();
+    });
+
+    it('audits a redacted invalid TOTP setup confirmation', async () => {
+      mfaMutationState.user = {
+        ...mfaMutationState.user,
+        mfaEnabled: false,
+        mfaMethod: null,
+        phoneNumber: null,
+        phoneVerified: false,
+      };
+      const { store } = installRedisStore();
+      store.set('mfa:setup:user-123', JSON.stringify({
+        secret: 'MFASECRET123',
+        recoveryCodes: ['CODE-0001', 'CODE-0002'],
+      }));
+      vi.mocked(consumeMFAToken).mockResolvedValueOnce(false);
+      vi.mocked(verifyPassword).mockResolvedValue(true);
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash' }]) })) })),
+      } as any);
+
+      const res = await app.request('/auth/mfa/enable', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: '654321', currentPassword: 'OldStrongPass123' }),
+      });
+
+      expect(res.status).toBe(401);
+      expect(mfaMutationState.auditWrites).toContainEqual(expect.objectContaining({
+        action: 'auth.mfa.setup.failed',
+        result: 'failure',
+        details: expect.objectContaining({ reason: 'invalid_mfa_code', phase: 'setup_confirmation' }),
+      }));
+      expect(JSON.stringify(mfaMutationState.auditWrites)).not.toContain('654321');
+    });
+
+    it('does not accept a TOTP step consumed by setup confirmation for login', async () => {
+      mfaMutationState.user = {
+        ...mfaMutationState.user,
+        mfaEnabled: false,
+        mfaMethod: null,
+        phoneNumber: null,
+        phoneVerified: false,
+      };
+      const { store } = installRedisStore();
+      store.set('mfa:setup:user-123', JSON.stringify({
+        secret: 'TOTPSECRET',
+        recoveryCodes: ['CODE-0001', 'CODE-0002'],
+      }));
+      vi.mocked(verifyPassword).mockResolvedValue(true);
+      vi.mocked(consumeMFAToken).mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+      vi.mocked(readPendingMfa).mockResolvedValue({
+        version: 2,
+        userId: 'user-123',
+        sessionId: 'pending-session',
+        authEpoch: 2,
+        mfaEpoch: 2,
+        primaryMfaMethod: 'totp',
+        allowedMethods: ['totp'],
+        enrolledMethods: ['totp'],
+      } as any);
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash' }]) })) })),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([]) })) })),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([{
+            id: 'user-123', email: 'user@example.com', name: 'Test User',
+            mfaSecret: encryptMfaSecret('TOTPSECRET'), mfaMethod: 'totp',
+          }]) })) })),
+        } as any);
+
+      const enabled = await app.request('/auth/mfa/enable', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: '123456', currentPassword: 'OldStrongPass123' }),
+      });
+      expect(enabled.status).toBe(200);
+
+      const login = await app.request('/auth/mfa/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: '123456', tempToken: 'pending-token' }),
+      });
+      expect(login.status).toBe(401);
+      expect(issueVerifiedPendingMfaSession).not.toHaveBeenCalled();
+      expect(consumeMFAToken).toHaveBeenCalledTimes(2);
+    });
+
     it('POST /auth/mfa/enable should reject missing currentPassword (G1)', async () => {
       const res = await app.request('/auth/mfa/enable', {
         method: 'POST',
@@ -2544,6 +2810,57 @@ describe('auth routes', () => {
 
       expect(res.status).toBe(200);
       expect(await res.json()).toMatchObject({ success: true, reauthenticate: true });
+    });
+
+    it('audits a redacted SMS failure when MFA disable confirmation is invalid', async () => {
+      mfaMutationState.twilioResult = { valid: false };
+      vi.mocked(verifyPassword).mockResolvedValue(true);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash' }]) })) })),
+      } as any);
+
+      const res = await app.request('/auth/mfa/disable', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: '654321', currentPassword: 'OldStrongPass123' }),
+      });
+
+      expect(res.status).toBe(401);
+      expect(mfaMutationState.auditWrites).toContainEqual(expect.objectContaining({
+        action: 'auth.mfa.disable.failed',
+        result: 'failure',
+        details: expect.objectContaining({ reason: 'invalid_sms_code', method: 'sms' }),
+      }));
+      expect(JSON.stringify(mfaMutationState.auditWrites)).not.toContain('654321');
+    });
+
+    it('audits a redacted TOTP failure when MFA disable confirmation is invalid', async () => {
+      mfaMutationState.user = {
+        ...mfaMutationState.user,
+        mfaMethod: 'totp',
+        mfaSecret: encryptMfaSecret('TOTPSECRET'),
+        phoneNumber: null,
+        phoneVerified: false,
+      };
+      vi.mocked(consumeMFAToken).mockResolvedValueOnce(false);
+      vi.mocked(verifyPassword).mockResolvedValue(true);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash' }]) })) })),
+      } as any);
+
+      const res = await app.request('/auth/mfa/disable', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: '654321', currentPassword: 'OldStrongPass123' }),
+      });
+
+      expect(res.status).toBe(401);
+      expect(mfaMutationState.auditWrites).toContainEqual(expect.objectContaining({
+        action: 'auth.mfa.disable.failed',
+        result: 'failure',
+        details: expect.objectContaining({ reason: 'invalid_mfa_code', method: 'totp' }),
+      }));
+      expect(JSON.stringify(mfaMutationState.auditWrites)).not.toContain('654321');
     });
 
     it('POST /auth/mfa/disable consumes the live TOTP step inside the locked mutation', async () => {

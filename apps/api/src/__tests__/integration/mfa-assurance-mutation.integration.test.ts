@@ -10,7 +10,7 @@ import {
   createRole,
   createUser,
 } from './db-utils';
-import { refreshTokenFamilies, users } from '../../db/schema';
+import { partners, refreshTokenFamilies, users } from '../../db/schema';
 import {
   createPendingMfa,
   issueVerifiedPendingMfaSession,
@@ -24,6 +24,12 @@ import {
 } from '../../services/mfaAssuranceMutation';
 import { mintRefreshTokenFamily, getActiveRefreshTokenFamily } from '../../services/refreshTokenFamily';
 import { closeRedis } from '../../services/redis';
+import {
+  consumeMfaStepUpGrant,
+  issueMfaStepUpGrant,
+  MfaStepUpGrantInvalidError,
+  readMfaStepUpGrant,
+} from '../../routes/auth/helpers';
 
 function deferred() {
   let resolve!: () => void;
@@ -95,6 +101,70 @@ describe('MFA assurance mutation atomicity against real PostgreSQL', () => {
     expect(afterUser?.mfaMethod).toBe('totp');
     expect(afterUser?.mfaEpoch).toBe(seeded.user.mfaEpoch);
     expect(afterFamily?.revokedAt).toBeNull();
+  });
+
+  it('rolls policy settings, member epochs, and family revocation back together', async () => {
+    const tdb = getTestDb();
+    const seeded = await seedPartnerMfaUser();
+    const originalSettings = { security: { allowedMethods: { totp: true, passkey: true } } };
+    await tdb.update(partners).set({ settings: originalSettings }).where(eq(partners.id, seeded.partner.id));
+    const familyId = await tdb.transaction((tx) => mintRefreshTokenFamily(seeded.user.id, { tx }));
+
+    await expect(tdb.transaction(async (tx) => {
+      await tx.update(partners).set({
+        settings: { security: { allowedMethods: { passkey: true } } },
+      }).where(eq(partners.id, seeded.partner.id));
+      await invalidateMfaPolicyAssurance(tx, {
+        partnerId: seeded.partner.id,
+        reason: 'partner-mfa-policy-changed',
+      });
+      throw new Error('inject policy rollback');
+    })).rejects.toThrow('inject policy rollback');
+
+    const [afterPartner] = await tdb.select().from(partners).where(eq(partners.id, seeded.partner.id));
+    const [afterUser] = await tdb.select().from(users).where(eq(users.id, seeded.user.id));
+    const [afterFamily] = await tdb.select().from(refreshTokenFamilies)
+      .where(eq(refreshTokenFamilies.familyId, familyId));
+    expect(afterPartner?.settings).toEqual(originalSettings);
+    expect(afterUser?.mfaEpoch).toBe(seeded.user.mfaEpoch);
+    expect(afterFamily?.revokedAt).toBeNull();
+  });
+
+  it('burns SMS replacement proof while rolling back the DB mutation and assurance invalidation', async () => {
+    const tdb = getTestDb();
+    const seeded = await seedPartnerMfaUser();
+    const familyId = await tdb.transaction((tx) => mintRefreshTokenFamily(seeded.user.id, { tx }));
+    const binding = {
+      purpose: 'sms.replace' as const,
+      userId: seeded.user.id,
+      sessionId: familyId,
+      authEpoch: seeded.user.authEpoch,
+      mfaEpoch: seeded.user.mfaEpoch,
+      verifiedMethod: 'totp' as const,
+    };
+    const grant = await issueMfaStepUpGrant(binding);
+
+    await expect(runLockedMfaMutation({
+      userId: seeded.user.id,
+      partnerId: seeded.partner.id,
+      authEpoch: seeded.user.authEpoch,
+      mfaEpoch: seeded.user.mfaEpoch,
+      reason: 'sms-phone-replaced',
+    }, async (tx) => {
+      await consumeMfaStepUpGrant(grant, binding);
+      await tx.update(users).set({ phoneNumber: '+14155550199', phoneVerified: true })
+        .where(eq(users.id, seeded.user.id));
+      throw new Error('inject SMS replacement rollback');
+    })).rejects.toThrow('inject SMS replacement rollback');
+
+    const [afterUser] = await tdb.select().from(users).where(eq(users.id, seeded.user.id));
+    const [afterFamily] = await tdb.select().from(refreshTokenFamilies)
+      .where(eq(refreshTokenFamilies.familyId, familyId));
+    expect(afterUser?.phoneNumber).toBe(seeded.user.phoneNumber);
+    expect(afterUser?.phoneVerified).toBe(seeded.user.phoneVerified);
+    expect(afterUser?.mfaEpoch).toBe(seeded.user.mfaEpoch);
+    expect(afterFamily?.revokedAt).toBeNull();
+    await expect(readMfaStepUpGrant(grant, binding)).rejects.toBeInstanceOf(MfaStepUpGrantInvalidError);
   });
 
   it('revokes a session family and makes its issued assurance stale when issuance wins first', async () => {

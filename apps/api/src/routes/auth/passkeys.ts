@@ -692,17 +692,22 @@ passkeyRoutes.delete('/passkeys/:id', authMiddleware, zValidator('json', deleteP
         });
         const hasTotp = Boolean(user.mfaSecret);
         const hasSms = user.mfaMethod === 'sms' && user.phoneVerified === true && Boolean(user.phoneNumber);
+        const hasAllowedTotp = hasTotp && policy.allowedMethods.has('totp');
+        const hasAllowedSms = hasSms && policy.allowedMethods.has('sms');
         const remainingPasskeys = Math.max(0, locked.activePasskeyCount - 1);
-        const remainingFactorCount = remainingPasskeys + (hasTotp ? 1 : 0) + (hasSms ? 1 : 0);
-        if (policy.required && remainingFactorCount === 0) throw new Error('LAST_REQUIRED_FACTOR');
+        const allowedRemainingPasskeys = policy.allowedMethods.has('passkey') ? remainingPasskeys : 0;
+        const remainingAllowedFactorCount = allowedRemainingPasskeys
+          + (hasAllowedTotp ? 1 : 0)
+          + (hasAllowedSms ? 1 : 0);
+        if (policy.required && remainingAllowedFactorCount === 0) throw new Error('LAST_REQUIRED_FACTOR');
         await tx.delete(userPasskeys).where(eq(userPasskeys.id, id));
-        if (remainingFactorCount === 0) {
+        if (remainingAllowedFactorCount === 0) {
           await tx.update(users).set({ mfaEnabled: false, mfaMethod: null, updatedAt: new Date() })
             .where(eq(users.id, auth.user.id));
-        } else if (user.mfaMethod === 'passkey' && remainingPasskeys === 0) {
+        } else if (user.mfaMethod === 'passkey' && allowedRemainingPasskeys === 0) {
           await tx.update(users).set({
             mfaEnabled: true,
-            mfaMethod: hasTotp ? 'totp' : 'sms',
+            mfaMethod: hasAllowedTotp ? 'totp' : hasAllowedSms ? 'sms' : 'passkey',
             updatedAt: new Date(),
           }).where(eq(users.id, auth.user.id));
         }

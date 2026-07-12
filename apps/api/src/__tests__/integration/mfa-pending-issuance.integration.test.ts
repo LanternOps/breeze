@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import './setup';
 import { getTestDb } from './setup';
 import {
@@ -22,6 +22,23 @@ function deferred() {
   let resolve!: () => void;
   const promise = new Promise<void>((done) => { resolve = done; });
   return { promise, resolve };
+}
+
+async function waitForBlockedRefreshFamilyInsert(): Promise<void> {
+  const tdb = getTestDb();
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const rows = await tdb.execute(sql`
+      SELECT count(*)::int AS blocked_count
+      FROM pg_stat_activity
+      WHERE datname = current_database()
+        AND usename = 'breeze_app'
+        AND wait_event_type = 'Lock'
+        AND position('insert into "refresh_token_families"' in lower(query)) > 0
+    `) as unknown as Array<{ blocked_count: number }>;
+    if (Number(rows[0]?.blocked_count ?? 0) > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error('Pending issuance never reached the blocked refresh-family insert');
 }
 
 describe('pending MFA issuance serialization against real PostgreSQL and Redis', () => {
@@ -99,5 +116,59 @@ describe('pending MFA issuance serialization against real PostgreSQL and Redis',
       .from(refreshTokenFamilies)
       .where(eq(refreshTokenFamilies.userId, user.id));
     expect(families).toEqual([]);
+  });
+
+  it('lets an overlapping issuance that holds assurance locks commit before mutation without deadlock', async () => {
+    const tdb = getTestDb();
+    const partner = await createPartner();
+    const role = await createRole({ scope: 'partner', partnerId: partner.id });
+    const user = await createUser({ partnerId: partner.id, mfaEnabled: true });
+    await assignUserToPartner(user.id, partner.id, role.id, 'all');
+    const [enrolled] = await tdb.update(users).set({
+      mfaMethod: 'totp', mfaSecret: 'integration-encrypted-secret',
+    }).where(eq(users.id, user.id)).returning();
+    if (!enrolled) throw new Error('Failed to seed issuance-first user');
+    const tempToken = await createPendingMfa({
+      userId: user.id, authEpoch: enrolled.authEpoch, mfaEpoch: enrolled.mfaEpoch,
+      expectedStatus: 'active', roleId: role.id, orgId: null, partnerId: partner.id,
+      scope: 'partner', policyRequired: false, policySources: [],
+      allowedMethods: new Set(['totp', 'sms', 'passkey', 'recovery_code']),
+      enrolledMethods: new Set(['totp']), primaryAuthenticationMethod: 'password',
+      configuredMfaMethod: 'totp', primaryMfaMethod: 'totp',
+    });
+    const expectedPending = await readPendingMfa(tempToken);
+    if (!expectedPending) throw new Error('Pending state missing');
+
+    const tableLocked = deferred();
+    const releaseTable = deferred();
+    const blocker = tdb.transaction(async (tx) => {
+      await tx.execute(sql`LOCK TABLE refresh_token_families IN ACCESS EXCLUSIVE MODE`);
+      tableLocked.resolve();
+      await releaseTable.promise;
+    });
+    await tableLocked.promise;
+
+    const issuance = issueVerifiedPendingMfaSession({ tempToken, expectedPending, verifiedMethod: 'totp' });
+    // Reaching this blocked INSERT proves issuance already acquired the shared
+    // partner -> user -> factor locks. Starting mutation only after that point
+    // makes this a deterministic issuance-first overlap instead of a sleep race.
+    await waitForBlockedRefreshFamilyInsert();
+    const mutation = runLockedMfaMutation({
+      userId: user.id, partnerId: partner.id,
+      authEpoch: enrolled.authEpoch, mfaEpoch: enrolled.mfaEpoch,
+      reason: 'issuance-first-overlap',
+    }, async () => undefined);
+    releaseTable.resolve();
+    await blocker;
+
+    const timeout = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('issuance-vs-mutation deadlock')), 5_000);
+    });
+    const [issued] = await Promise.race([Promise.all([issuance, mutation]), timeout]);
+    const [afterUser] = await tdb.select().from(users).where(eq(users.id, user.id));
+    expect(afterUser?.mfaEpoch).toBe(enrolled.mfaEpoch + 1);
+    const [family] = await tdb.select().from(refreshTokenFamilies)
+      .where(eq(refreshTokenFamilies.familyId, issued.tokens.familyId));
+    expect(family?.revokedAt).not.toBeNull();
   });
 });

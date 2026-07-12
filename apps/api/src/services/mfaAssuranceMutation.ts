@@ -133,9 +133,12 @@ export async function invalidateMfaPolicyAssurance(
 }
 
 /** Post-commit acceleration/teardown. Durable DB invalidation already won. */
-export async function cleanupMfaAssuranceUsers(userIds: readonly string[]) {
+export async function cleanupMfaAssuranceUsers(
+  userIds: readonly string[],
+  extraOperations: ReadonlyArray<{ name: string; run: () => Promise<unknown> }> = [],
+) {
   const uniqueUserIds = [...new Set(userIds)].sort();
-  const cleanup = await runPostCommitCleanup(uniqueUserIds.flatMap((userId) => [
+  const cleanup = await runPostCommitCleanup([...uniqueUserIds.flatMap((userId) => [
     { name: `sessions:${userId}`, run: () => invalidateAllUserSessions(userId) },
     { name: `user-tokens:${userId}`, run: () => revokeAllUserTokens(userId) },
     { name: `permission-cache:${userId}`, run: () => clearPermissionCache(userId) },
@@ -148,7 +151,7 @@ export async function cleanupMfaAssuranceUsers(userIds: readonly string[]) {
         }
       },
     },
-  ]));
+  ]), ...extraOperations]);
   for (const failure of cleanup.failures) {
     console.error('[mfa] post-commit assurance cleanup failed', failure.name, failure.error);
   }
