@@ -1,4 +1,5 @@
 import postgres from 'postgres';
+import { getAppDatabasePassword } from './requestDatabaseConfig';
 
 /**
  * Ensures a non-superuser, non-BYPASSRLS role `breeze_app` exists and has the
@@ -17,8 +18,7 @@ export async function ensureAppRole(): Promise<void> {
 
   // The password the breeze_app role should be (re)set to. In dev we fall back
   // to POSTGRES_PASSWORD so the same password works for both admin and app.
-  const password =
-    process.env.BREEZE_APP_DB_PASSWORD || process.env.POSTGRES_PASSWORD || '';
+  const password = getAppDatabasePassword() || '';
 
   if (!password) {
     console.warn(

@@ -12,8 +12,23 @@ export interface RequestDatabaseConfig {
 
 type RequestDatabaseConfigLogger = Pick<Console, 'log' | 'warn'>;
 
+interface AppDatabasePasswordEnv {
+  BREEZE_APP_DB_PASSWORD?: string;
+  POSTGRES_PASSWORD?: string;
+}
+
 const SINGLE_ENDPOINT_GUIDANCE =
   'Configure a valid PostgreSQL URL for a single database/HA endpoint.';
+
+/**
+ * Select the password bytes used both to configure and connect as breeze_app.
+ * Database passwords are opaque secrets, so whitespace must not be normalized.
+ */
+export function getAppDatabasePassword(
+  env: AppDatabasePasswordEnv = process.env,
+): string | undefined {
+  return env.BREEZE_APP_DB_PASSWORD || env.POSTGRES_PASSWORD || undefined;
+}
 
 function canonicalizeRequestDatabaseUrl(
   connectionUrl: string,
@@ -67,8 +82,7 @@ export function resolveRequestDatabaseConfig(
   const rawAdminUrl =
     env.DATABASE_URL?.trim() || 'postgresql://breeze:breeze@localhost:5432/breeze';
   const adminUrl = canonicalizeRequestDatabaseUrl(rawAdminUrl, 'DATABASE_URL');
-  const password =
-    env.BREEZE_APP_DB_PASSWORD?.trim() || env.POSTGRES_PASSWORD?.trim();
+  const password = getAppDatabasePassword(env);
   const derived = deriveAppConnectionString(adminUrl, password);
   if (derived) return { url: derived, source: 'derived' };
 

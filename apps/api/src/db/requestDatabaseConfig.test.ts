@@ -1,11 +1,32 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   deriveAppConnectionString,
+  getAppDatabasePassword,
   logRequestDatabaseConfigSource,
   resolveRequestDatabaseConfig,
 } from './requestDatabaseConfig';
 
 describe('requestDatabaseConfig', () => {
+  describe('getAppDatabasePassword', () => {
+    it('preserves leading and trailing whitespace in the selected secret', () => {
+      expect(
+        getAppDatabasePassword({
+          BREEZE_APP_DB_PASSWORD: ' request secret ',
+          POSTGRES_PASSWORD: 'fallback',
+        }),
+      ).toBe(' request secret ');
+    });
+
+    it('treats an all-whitespace app password as the selected secret', () => {
+      expect(
+        getAppDatabasePassword({
+          BREEZE_APP_DB_PASSWORD: '   ',
+          POSTGRES_PASSWORD: 'fallback',
+        }),
+      ).toBe('   ');
+    });
+  });
+
   describe('deriveAppConnectionString', () => {
     it('derives the breeze_app URL from the admin URL and app password', () => {
       expect(
@@ -236,6 +257,30 @@ describe('requestDatabaseConfig', () => {
         url: 'postgresql://breeze_app:app-specific-secret@db:5432/breeze',
         source: 'derived',
       });
+    });
+
+    it('preserves whitespace bytes when deriving the request password', () => {
+      const config = resolveRequestDatabaseConfig({
+        NODE_ENV: 'production',
+        DATABASE_URL: 'postgresql://admin:admin-secret@db:5432/breeze',
+        BREEZE_APP_DB_PASSWORD: ' request secret ',
+        POSTGRES_PASSWORD: 'fallback',
+      });
+
+      expect(decodeURIComponent(new URL(config.url).password)).toBe(
+        ' request secret ',
+      );
+    });
+
+    it('does not replace an all-whitespace app password with POSTGRES_PASSWORD', () => {
+      const config = resolveRequestDatabaseConfig({
+        NODE_ENV: 'production',
+        DATABASE_URL: 'postgresql://admin:admin-secret@db:5432/breeze',
+        BREEZE_APP_DB_PASSWORD: '   ',
+        POSTGRES_PASSWORD: 'fallback',
+      });
+
+      expect(decodeURIComponent(new URL(config.url).password)).toBe('   ');
     });
 
     it.each([
