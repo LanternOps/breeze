@@ -98,18 +98,43 @@ func runCollectorLimitedOutput(timeout time.Duration, name string, args ...strin
 	return output, nil
 }
 
+// cappedBuffer captures up to max bytes and silently discards the rest,
+// always reporting a full write so the child process never sees a write error.
+type cappedBuffer struct {
+	buf bytes.Buffer
+	max int
+}
+
+func (c *cappedBuffer) Write(p []byte) (int, error) {
+	if remaining := c.max - c.buf.Len(); remaining > 0 {
+		if len(p) > remaining {
+			c.buf.Write(p[:remaining])
+		} else {
+			c.buf.Write(p)
+		}
+	}
+	return len(p), nil
+}
+
 // runCollectorBoundedOutput runs a command, streaming stdout through an
 // io.LimitReader so at most collectorCommandOutputLimit+1 bytes are ever
 // buffered. Unlike runCollectorLimitedOutput it does not silently truncate:
 // output exceeding the limit is an error (matching runCollectorOutput's
 // semantics but enforced BEFORE buffering, not post-hoc), and a non-zero exit
-// or read failure is surfaced. Use for structured output (e.g. JSON) where a
-// truncated payload would be garbage anyway.
+// or read failure is surfaced — with the command's (capped) stderr included so
+// failures are diagnosable from agent logs. Use for structured output (e.g.
+// JSON) where a truncated payload would be garbage anyway.
 func runCollectorBoundedOutput(timeout time.Duration, name string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, name, args...)
+	stderr := &cappedBuffer{max: 4 * 1024}
+	cmd.Stderr = stderr
+	// Insurance against an orphaned descendant inheriting the stdout pipe: if
+	// the context is cancelled and the pipe is still open after this delay,
+	// os/exec force-closes it so the ReadAll below can never block forever.
+	cmd.WaitDelay = 10 * time.Second
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("%s pipe failed: %w", name, err)
@@ -133,6 +158,9 @@ func runCollectorBoundedOutput(timeout time.Duration, name string, args ...strin
 		return nil, fmt.Errorf("%s output too large", name)
 	}
 	if waitErr != nil {
+		if msg := strings.TrimSpace(stderr.buf.String()); msg != "" {
+			return nil, fmt.Errorf("%s failed: %w (stderr: %s)", name, waitErr, truncateCollectorString(msg))
+		}
 		return nil, fmt.Errorf("%s failed: %w", name, waitErr)
 	}
 	return output, nil

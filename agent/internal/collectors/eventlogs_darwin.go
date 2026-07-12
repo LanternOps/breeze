@@ -50,6 +50,7 @@ func (c *EventLogCollector) Collect() ([]EventLogEntry, error) {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var allEvents []EventLogEntry
+	var failures int
 
 	wg.Add(len(subCollectors))
 	for _, fn := range subCollectors {
@@ -58,6 +59,9 @@ func (c *EventLogCollector) Collect() ([]EventLogEntry, error) {
 			events, err := f(lastCollect)
 			if err != nil {
 				slog.Warn("event log sub-collector error", "error", err.Error())
+				mu.Lock()
+				failures++
+				mu.Unlock()
 				return
 			}
 			mu.Lock()
@@ -67,9 +71,17 @@ func (c *EventLogCollector) Collect() ([]EventLogEntry, error) {
 	}
 	wg.Wait()
 
-	c.mu.Lock()
-	c.lastCollectTime = passStart
-	c.mu.Unlock()
+	// Only advance the watermark when every sub-collector succeeded; on a
+	// transient failure (e.g. `log show` timing out under load) the next pass
+	// retries the same window instead of silently dropping it. Retry cost is
+	// bounded — the unified-log query clamps to unifiedLogMaxLookback — and
+	// re-collected events from the sub-collectors that DID succeed are absorbed
+	// server-side (event ingestion inserts with onConflictDoNothing).
+	if failures == 0 {
+		c.mu.Lock()
+		c.lastCollectTime = passStart
+		c.mu.Unlock()
+	}
 
 	// Filter by minimum level
 	allEvents = filterByLevel(allEvents, minLevel)
@@ -93,10 +105,6 @@ type unifiedLogEntry struct {
 	ProcessID        int    `json:"processID"`
 }
 
-// unifiedLogStartFormat is the "YYYY-MM-DD HH:MM:SSZZZZZ" form accepted by
-// `log show --start` (see log(1)).
-const unifiedLogStartFormat = "2006-01-02 15:04:05-0700"
-
 // collectUnifiedLogEvents gathers security events (auth failures, TCC changes)
 // and hardware errors (disk, thermal, kernel) from the unified log in a single
 // `log show` invocation, re-categorizing each entry in Go. Querying the
@@ -119,7 +127,9 @@ func (c *EventLogCollector) collectUnifiedLogEvents(since time.Time, securityEna
 		"--start", start.Format(unifiedLogStartFormat),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("log show failed: %w", err)
+		// The runner's error already names the command and includes capped
+		// stderr; don't double-wrap.
+		return nil, err
 	}
 
 	if len(output) == 0 {

@@ -112,6 +112,22 @@ func TestUnifiedLogQueryStart(t *testing.T) {
 	}
 }
 
+func TestUnifiedLogStartFormat(t *testing.T) {
+	t.Parallel()
+
+	// Pins the exact "YYYY-MM-DD HH:MM:SSZZZZZ" shape log(1) documents for
+	// --start. This is the only stringly-typed contract with `log show`; a
+	// regression (e.g. RFC3339's "T" separator) would kill security+hardware
+	// collection fleet-wide on macOS with nothing but an agent-local Warn.
+	ts := time.Date(2026, 7, 12, 12, 0, 0, 0, time.FixedZone("MDT", -6*60*60))
+	if got := ts.Format(unifiedLogStartFormat); got != "2026-07-12 12:00:00-0600" {
+		t.Errorf("unifiedLogStartFormat produced %q, want %q", got, "2026-07-12 12:00:00-0600")
+	}
+	if got := ts.UTC().Format(unifiedLogStartFormat); got != "2026-07-12 18:00:00+0000" {
+		t.Errorf("unifiedLogStartFormat (UTC) produced %q, want %q", got, "2026-07-12 18:00:00+0000")
+	}
+}
+
 func TestDefaultEventLogIntervalIsFifteenMinutes(t *testing.T) {
 	t.Parallel()
 

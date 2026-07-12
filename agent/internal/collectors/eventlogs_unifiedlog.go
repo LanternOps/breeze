@@ -69,6 +69,13 @@ func classifyUnifiedLogCategory(subsystem, message string, securityEnabled, hard
 	return "hardware"
 }
 
+// unifiedLogStartFormat is the "YYYY-MM-DD HH:MM:SSZZZZZ" form accepted by
+// `log show --start` (see log(1)). It lives in this platform-neutral file so
+// Linux CI compiles and tests the only stringly-typed contract with log(1) —
+// a bad format here would kill security+hardware collection fleet-wide on
+// macOS with nothing but an agent-local Warn.
+const unifiedLogStartFormat = "2006-01-02 15:04:05-0700"
+
 // unifiedLogQueryStart clamps the `--start` timestamp for a unified-log
 // query: never in the future (clock steps) and never more than
 // unifiedLogMaxLookback ago. Using an explicit --start instead of the old

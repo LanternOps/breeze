@@ -85,6 +85,37 @@ func TestRunCollectorBoundedOutputSurfacesCommandFailure(t *testing.T) {
 	}
 }
 
+func TestRunCollectorBoundedOutputIncludesStderrOnFailure(t *testing.T) {
+	requirePOSIXShell(t)
+	t.Parallel()
+
+	// Failure diagnostics (e.g. `log show` predicate complaints) go to stderr;
+	// the runner must surface them so agent Warn logs are debuggable.
+	_, err := runCollectorBoundedOutput(30*time.Second, "/bin/sh", "-c",
+		"echo 'bad predicate near foo' >&2; exit 64")
+	if err == nil {
+		t.Fatal("expected non-zero exit to surface as an error")
+	}
+	if !strings.Contains(err.Error(), "bad predicate near foo") {
+		t.Fatalf("expected stderr in error message, got: %v", err)
+	}
+}
+
+func TestCappedBufferStopsAtMax(t *testing.T) {
+	t.Parallel()
+
+	c := &cappedBuffer{max: 8}
+	for i := 0; i < 10; i++ {
+		n, err := c.Write([]byte("abcd"))
+		if n != 4 || err != nil {
+			t.Fatalf("Write = (%d, %v), want (4, nil)", n, err)
+		}
+	}
+	if got := c.buf.String(); got != "abcdabcd" {
+		t.Fatalf("captured %q, want %q", got, "abcdabcd")
+	}
+}
+
 func TestRunCollectorBoundedOutputTimesOut(t *testing.T) {
 	requirePOSIXShell(t)
 	t.Parallel()
