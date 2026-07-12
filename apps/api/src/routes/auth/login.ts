@@ -29,7 +29,7 @@ import {
   getUserEpochs,
   getRefreshFamily
 } from '../../services';
-import { revokeRefreshFamilyById } from '../../services/authLifecycle';
+import { advanceUserEpochs, revokeRefreshFamilyById } from '../../services/authLifecycle';
 import { getEmailService } from '../../services/email';
 import { createHash } from 'crypto';
 import { authMiddleware } from '../../middleware/auth';
@@ -151,11 +151,25 @@ async function recordAccountFailureAndMaybeNotify(
     // user a path back in without waiting out the lockout window. Reuses
     // the same `reset:<hash>` Redis convention as /forgot-password. 1h TTL
     // matches that endpoint.
+    //
+    // SR2-08: same generation+email envelope as /forgot-password. Pre-auth
+    // path (no ambient DB context) — wrap the epoch advance in the system
+    // context, same reasoning as /forgot-password.
     const resetToken = nanoid(48);
     const tokenHash = createHash('sha256').update(resetToken).digest('hex');
     const redis = getRedis();
     if (redis) {
-      await redis.setex(`reset:${tokenHash}`, 3600, user.id);
+      const gen = await withSystemDbAccessContext(() =>
+        db.transaction(async (tx) => advanceUserEpochs(tx, user.id, { passwordReset: true }))
+      );
+      const envelope = {
+        userId: user.id,
+        passwordResetEpoch: gen.passwordResetEpoch,
+        // The lockout path only has the user's live email (not a
+        // request-supplied address) — this is always the current one.
+        email: user.email.toLowerCase(),
+      };
+      await redis.setex(`reset:${tokenHash}`, 3600, JSON.stringify(envelope));
     }
     const appBaseUrl = (process.env.DASHBOARD_URL || process.env.PUBLIC_APP_URL || 'http://localhost:4321').replace(/\/$/, '');
     const resetUrl = `${appBaseUrl}/reset-password?token=${encodeURIComponent(resetToken)}`;

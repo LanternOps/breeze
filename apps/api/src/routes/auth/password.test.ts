@@ -4,23 +4,24 @@ const {
   sendPasswordResetMock,
   setexMock,
   getdelMock,
-  updateWhereMock,
   getEligibilityMock,
   getEligibilityForUserMock,
-  revokeOauthArtifactsMock,
-  revokeRefreshFamiliesMock,
-  revokeAllUserTokensMock,
+  runPostCommitCleanupMock,
   recordFailedLoginMock,
 } = vi.hoisted(() => ({
   sendPasswordResetMock: vi.fn(async () => undefined),
-  setexMock: vi.fn(async () => 'OK'),
-  getdelMock: vi.fn(async () => null as string | null),
-  updateWhereMock: vi.fn(async () => undefined),
+  setexMock: vi.fn(async (_key: string, _ttlSeconds: number, _value: string) => 'OK'),
+  getdelMock: vi.fn(async (_key: string) => null as string | null),
   getEligibilityMock: vi.fn(),
   getEligibilityForUserMock: vi.fn(),
-  revokeOauthArtifactsMock: vi.fn(async () => ({ grantsRevoked: 0, refreshTokensRevoked: 0, jtisRevoked: 0 })),
-  revokeRefreshFamiliesMock: vi.fn(async () => undefined),
-  revokeAllUserTokensMock: vi.fn(async () => undefined),
+  runPostCommitCleanupMock: vi.fn(async () => ({
+    redisOk: true,
+    permissionCacheOk: true,
+    oauthOk: true,
+    oauthResult: { grantsRevoked: 0, refreshTokensRevoked: 0, jtisRevoked: 0 } as
+      | { grantsRevoked: number; refreshTokensRevoked: number; jtisRevoked: number }
+      | undefined,
+  })),
   recordFailedLoginMock: vi.fn(),
 }));
 
@@ -28,6 +29,7 @@ vi.mock('../../db', () => ({
   db: {
     select: vi.fn(),
     update: vi.fn(),
+    transaction: vi.fn(),
   },
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
@@ -41,6 +43,10 @@ vi.mock('../../db/schema', () => ({
     passwordHash: 'users.passwordHash',
     passwordChangedAt: 'users.passwordChangedAt',
     updatedAt: 'users.updatedAt',
+    authEpoch: 'users.authEpoch',
+    mfaEpoch: 'users.mfaEpoch',
+    emailEpoch: 'users.emailEpoch',
+    passwordResetEpoch: 'users.passwordResetEpoch',
   },
 }));
 
@@ -55,8 +61,6 @@ vi.mock('../../services', () => ({
     getdel: getdelMock,
   })),
   invalidateAllUserSessions: vi.fn(async () => undefined),
-  revokeAllRefreshTokenFamiliesForUser: revokeRefreshFamiliesMock,
-  revokeAllUserTokens: revokeAllUserTokensMock,
 }));
 
 vi.mock('../../services/email', () => ({
@@ -86,7 +90,7 @@ vi.mock('../../middleware/auth', () => ({
   }),
 }));
 
-vi.mock('./helpers', async () => {
+vi.mock('./helpers', async (importOriginal) => {
   const actual = await vi.importActual<typeof import('./helpers')>('./helpers');
   return {
     ...actual,
@@ -97,9 +101,18 @@ vi.mock('./helpers', async () => {
   };
 });
 
-vi.mock('../../oauth/grantRevocation', () => ({
-  revokeAllUserOauthArtifacts: revokeOauthArtifactsMock,
-}));
+// advanceUserEpochs/revokeAllRefreshFamilies stay REAL so tests can assert on
+// the tx-shaped `users`/`refresh_token_families` updates they issue (SR2-08).
+// runPostCommitCleanup is mocked so tests control the post-commit outcome
+// without exercising the real Redis/permission-cache/OAuth side effects it
+// wraps (those are covered by authLifecycle.test.ts).
+vi.mock('../../services/authLifecycle', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/authLifecycle')>();
+  return {
+    ...actual,
+    runPostCommitCleanup: runPostCommitCleanupMock,
+  };
+});
 
 vi.mock('./ssoPolicy', () => ({
   assertPasswordAuthAllowedBySso: vi.fn(async () => undefined),
@@ -125,12 +138,36 @@ function selectChain(rows: unknown[]) {
   };
 }
 
-function updateChain() {
-  return {
-    set: vi.fn().mockReturnValue({
-      where: updateWhereMock,
-    }),
-  };
+interface EpochRow {
+  authEpoch: number;
+  mfaEpoch: number;
+  emailEpoch: number;
+  passwordResetEpoch: number;
+}
+
+const DEFAULT_EPOCH_ROW: EpochRow = { authEpoch: 1, mfaEpoch: 1, emailEpoch: 1, passwordResetEpoch: 1 };
+
+// Stub `db.transaction` so advanceUserEpochs/revokeAllRefreshFamilies (kept
+// REAL, see authLifecycle mock above) run against a fake `tx` and return
+// `epochRow` from their `.returning(...)` call. Every update issued inside
+// the transaction (main password write, epoch advance, family revoke) is
+// captured so tests can assert all three land in the SAME transaction.
+function stubTransaction(epochRow: EpochRow = DEFAULT_EPOCH_ROW): Array<Record<string, unknown>> {
+  const capturedUpdates: Array<Record<string, unknown>> = [];
+  const txUpdate = vi.fn((_table: unknown) => ({
+    set: (values: Record<string, unknown>) => {
+      capturedUpdates.push(values);
+      return {
+        where: (..._args: unknown[]) => {
+          const result = Promise.resolve(undefined) as Promise<undefined> & { returning?: (sel?: unknown) => Promise<EpochRow[]> };
+          result.returning = (_sel?: unknown) => Promise.resolve([epochRow]);
+          return result;
+        },
+      };
+    },
+  }));
+  vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn({ update: txUpdate }));
+  return capturedUpdates;
 }
 
 async function postJson(path: string, body: unknown) {
@@ -147,16 +184,18 @@ describe('password reset eligibility (#719)', () => {
     sendPasswordResetMock.mockClear();
     setexMock.mockClear();
     getdelMock.mockReset();
-    updateWhereMock.mockReset();
     getEligibilityMock.mockReset();
     getEligibilityForUserMock.mockReset();
-    revokeOauthArtifactsMock.mockReset();
-    revokeOauthArtifactsMock.mockResolvedValue({ grantsRevoked: 0, refreshTokensRevoked: 0, jtisRevoked: 0 });
-    revokeRefreshFamiliesMock.mockReset();
-    revokeRefreshFamiliesMock.mockResolvedValue(undefined);
-    revokeAllUserTokensMock.mockReset();
-    revokeAllUserTokensMock.mockResolvedValue(undefined);
+    runPostCommitCleanupMock.mockReset();
+    runPostCommitCleanupMock.mockResolvedValue({
+      redisOk: true,
+      permissionCacheOk: true,
+      oauthOk: true,
+      oauthResult: { grantsRevoked: 0, refreshTokensRevoked: 0, jtisRevoked: 0 },
+    });
     recordFailedLoginMock.mockReset();
+    vi.mocked(db.transaction).mockReset();
+    stubTransaction();
   });
 
   describe('POST /forgot-password', () => {
@@ -174,10 +213,12 @@ describe('password reset eligibility (#719)', () => {
       expect(sendPasswordResetMock).toHaveBeenCalledWith(
         expect.objectContaining({ to: 'pending@x.com' }),
       );
+      // SR2-08: the stored token value is now a generation+email envelope,
+      // not a bare userId.
       expect(setexMock).toHaveBeenCalledWith(
         expect.stringMatching(/^reset:/),
         3600,
-        'u-pending',
+        JSON.stringify({ userId: 'u-pending', passwordResetEpoch: DEFAULT_EPOCH_ROW.passwordResetEpoch, email: 'pending@x.com' }),
       );
       expect(writeAuthAudit).toHaveBeenCalledWith(
         expect.anything(),
@@ -210,6 +251,7 @@ describe('password reset eligibility (#719)', () => {
       expect(JSON.stringify(body)).not.toContain('suspended');
       expect(sendPasswordResetMock).not.toHaveBeenCalled();
       expect(setexMock).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
       expect(writeAuthAudit).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({
@@ -293,18 +335,136 @@ describe('password reset eligibility (#719)', () => {
     });
   });
 
-  describe('POST /reset-password', () => {
+  // SR2-08: sibling password-reset tokens are superseded by a newer request,
+  // a completed reset, or a password change. Redemption re-reads the live
+  // password_reset_epoch + email and requires BOTH to match the envelope
+  // embedded at issuance — only the newest generation, bound to the address
+  // it was issued for, can redeem.
+  describe('password-reset generation binding (SR2-08)', () => {
     beforeEach(() => {
-      vi.mocked(db.update).mockReturnValue(updateChain() as any);
+      getEligibilityMock.mockResolvedValue({
+        allowed: true,
+        userId: 'u-1',
+        email: 'user@example.test',
+      });
     });
 
+    it('(a) rejects redemption via an older token once a newer reset token has been issued', async () => {
+      // First issuance: epoch advances to 2, embedded in the token.
+      stubTransaction({ ...DEFAULT_EPOCH_ROW, passwordResetEpoch: 2 });
+      await postJson('/forgot-password', { email: 'user@example.test' });
+      const firstEnvelope = setexMock.mock.calls[0]?.[2] as string;
+      expect(JSON.parse(firstEnvelope)).toEqual({
+        userId: 'u-1',
+        passwordResetEpoch: 2,
+        email: 'user@example.test',
+      });
+
+      // Second issuance (e.g. the user requests another reset before using
+      // the first): epoch advances again to 3.
+      stubTransaction({ ...DEFAULT_EPOCH_ROW, passwordResetEpoch: 3 });
+      await postJson('/forgot-password', { email: 'user@example.test' });
+      expect(setexMock).toHaveBeenCalledTimes(2);
+
+      // Redeem the FIRST (older, epoch-2) token. The live user row is now at
+      // epoch 3 (the second issuance already advanced it) — must fail closed
+      // even though the token itself hasn't expired.
+      getdelMock.mockResolvedValue(firstEnvelope);
+      vi.mocked(db.select).mockReturnValue(
+        selectChain([{ passwordResetEpoch: 3, email: 'user@example.test' }]) as any,
+      );
+
+      const res = await postJson('/reset-password', {
+        token: 'reset-token',
+        password: 'new-strong-pw-1234',
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json() as { error: string };
+      expect(body.error).toBe('Invalid or expired reset token');
+      // The generation check fails BEFORE eligibility is even consulted.
+      expect(getEligibilityForUserMock).not.toHaveBeenCalled();
+    });
+
+    it('(b) rejects redemption when the embedded email no longer matches the live email', async () => {
+      const envelope = JSON.stringify({ userId: 'u-1', passwordResetEpoch: 5, email: 'old@example.test' });
+      getdelMock.mockResolvedValue(envelope);
+      // Generation matches, but the account's email changed since issuance.
+      vi.mocked(db.select).mockReturnValue(
+        selectChain([{ passwordResetEpoch: 5, email: 'new@example.test' }]) as any,
+      );
+
+      const res = await postJson('/reset-password', {
+        token: 'reset-token',
+        password: 'new-strong-pw-1234',
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json() as { error: string };
+      expect(body.error).toBe('Invalid or expired reset token');
+      expect(getEligibilityForUserMock).not.toHaveBeenCalled();
+    });
+
+    it('(c) advances both epochs and revokes all refresh families in one transaction on a successful reset', async () => {
+      const envelope = JSON.stringify({ userId: 'u-1', passwordResetEpoch: 5, email: 'user@example.test' });
+      getdelMock.mockResolvedValue(envelope);
+      vi.mocked(db.select).mockReturnValue(
+        selectChain([{ passwordResetEpoch: 5, email: 'user@example.test' }]) as any,
+      );
+      getEligibilityForUserMock.mockResolvedValue({
+        allowed: true,
+        userId: 'u-1',
+        email: 'user@example.test',
+      });
+
+      const capturedUpdates = stubTransaction({ authEpoch: 2, mfaEpoch: 1, emailEpoch: 1, passwordResetEpoch: 6 });
+
+      const res = await postJson('/reset-password', {
+        token: 'reset-token',
+        password: 'new-strong-pw-1234',
+      });
+
+      expect(res.status).toBe(200);
+      // Main password write.
+      expect(capturedUpdates.some((v) => 'passwordHash' in v)).toBe(true);
+      // advanceUserEpochs({ auth: true, passwordReset: true }) — both bumped
+      // in the SAME update.
+      expect(capturedUpdates.some((v) => 'authEpoch' in v && 'passwordResetEpoch' in v)).toBe(true);
+      // revokeAllRefreshFamilies durable family revoke.
+      expect(capturedUpdates.some((v) => 'revokedReason' in v)).toBe(true);
+      expect(db.transaction).toHaveBeenCalledTimes(1);
+      expect(runPostCommitCleanupMock).toHaveBeenCalledWith('u-1');
+    });
+
+    it('rejects a token whose stored value is not valid JSON (pre-SR2-08 / corrupted envelope)', async () => {
+      getdelMock.mockResolvedValue('u-legacy-bare-userid');
+
+      const res = await postJson('/reset-password', {
+        token: 'reset-token',
+        password: 'new-strong-pw-1234',
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json() as { error: string };
+      expect(body.error).toBe('Invalid or expired reset token');
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('POST /reset-password', () => {
     it('allows reset completion for users in pending partners (#719)', async () => {
-      getdelMock.mockResolvedValue('u-pending');
+      const envelope = JSON.stringify({ userId: 'u-pending', passwordResetEpoch: 1, email: 'pending2@x.com' });
+      getdelMock.mockResolvedValue(envelope);
+      vi.mocked(db.select).mockReturnValue(
+        selectChain([{ passwordResetEpoch: 1, email: 'pending2@x.com' }]) as any,
+      );
       getEligibilityForUserMock.mockResolvedValue({
         allowed: true,
         userId: 'u-pending',
         email: 'pending2@x.com',
       });
+
+      const capturedUpdates = stubTransaction();
 
       const res = await postJson('/reset-password', {
         token: 'reset-token',
@@ -314,11 +474,10 @@ describe('password reset eligibility (#719)', () => {
       expect(res.status).toBe(200);
       const body = await res.json() as { success: boolean };
       expect(body.success).toBe(true);
-      expect(updateWhereMock).toHaveBeenCalled();
-      // Stolen MCP OAuth refresh tokens must be revoked on reset, not just
-      // first-party JWTs.
-      expect(revokeOauthArtifactsMock).toHaveBeenCalledWith('u-pending');
-      expect(revokeRefreshFamiliesMock).toHaveBeenCalledWith('u-pending', 'password-reset');
+      expect(capturedUpdates.some((v) => 'passwordHash' in v)).toBe(true);
+      // Stolen MCP OAuth refresh tokens / stale JWTs must be revoked on reset
+      // too — that now happens inside runPostCommitCleanup.
+      expect(runPostCommitCleanupMock).toHaveBeenCalledWith('u-pending');
       expect(writeAuthAudit).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({
@@ -329,39 +488,22 @@ describe('password reset eligibility (#719)', () => {
       );
     });
 
-    it('still revokes OAuth artifacts when the JWT revoke throws (ordering bug)', async () => {
-      getdelMock.mockResolvedValue('u-pending');
-      getEligibilityForUserMock.mockResolvedValue({
-        allowed: true,
-        userId: 'u-pending',
-        email: 'pending3@x.com',
-      });
-      // Redis blip: JWT revoke rejects. The OAuth revoke must NOT be
-      // short-circuited — it closes the (up to 14-day) stolen-refresh-token
-      // window and is the more durable threat.
-      revokeAllUserTokensMock.mockRejectedValue(new Error('redis down'));
-
-      const res = await postJson('/reset-password', {
-        token: 'reset-token',
-        password: 'new-strong-pw-1234',
-      });
-
-      expect(res.status).toBe(200);
-      const body = await res.json() as { success: boolean };
-      expect(body.success).toBe(true);
-      expect(revokeAllUserTokensMock).toHaveBeenCalledWith('u-pending');
-      expect(revokeRefreshFamiliesMock).toHaveBeenCalledWith('u-pending', 'password-reset');
-      expect(revokeOauthArtifactsMock).toHaveBeenCalledWith('u-pending');
-    });
-
-    it('still returns success when the OAuth revoke itself throws (best-effort)', async () => {
-      getdelMock.mockResolvedValue('u-pending');
+    it('still returns success when runPostCommitCleanup reports a partial failure (best-effort)', async () => {
+      const envelope = JSON.stringify({ userId: 'u-pending', passwordResetEpoch: 1, email: 'pending4@x.com' });
+      getdelMock.mockResolvedValue(envelope);
+      vi.mocked(db.select).mockReturnValue(
+        selectChain([{ passwordResetEpoch: 1, email: 'pending4@x.com' }]) as any,
+      );
       getEligibilityForUserMock.mockResolvedValue({
         allowed: true,
         userId: 'u-pending',
         email: 'pending4@x.com',
       });
-      revokeOauthArtifactsMock.mockRejectedValue(new Error('oauth store down'));
+      stubTransaction();
+      // runPostCommitCleanup never throws by contract — it reports partial
+      // failure instead. The durable revoke already committed above, so the
+      // reset must still be reported as successful.
+      runPostCommitCleanupMock.mockResolvedValue({ redisOk: false, permissionCacheOk: true, oauthOk: false, oauthResult: undefined });
 
       const res = await postJson('/reset-password', {
         token: 'reset-token',
@@ -371,11 +513,15 @@ describe('password reset eligibility (#719)', () => {
       expect(res.status).toBe(200);
       const body = await res.json() as { success: boolean };
       expect(body.success).toBe(true);
-      expect(revokeOauthArtifactsMock).toHaveBeenCalledWith('u-pending');
+      expect(runPostCommitCleanupMock).toHaveBeenCalledWith('u-pending');
     });
 
-    it('does not revoke OAuth artifacts when the reset is denied', async () => {
-      getdelMock.mockResolvedValue('u-suspended');
+    it('does not run the password-write transaction when the reset is denied', async () => {
+      const envelope = JSON.stringify({ userId: 'u-suspended', passwordResetEpoch: 1, email: 'sus2@x.com' });
+      getdelMock.mockResolvedValue(envelope);
+      vi.mocked(db.select).mockReturnValue(
+        selectChain([{ passwordResetEpoch: 1, email: 'sus2@x.com' }]) as any,
+      );
       getEligibilityForUserMock.mockResolvedValue({
         allowed: false,
         reason: 'tenant_inactive',
@@ -388,12 +534,16 @@ describe('password reset eligibility (#719)', () => {
       });
 
       expect(res.status).toBe(400);
-      expect(revokeOauthArtifactsMock).not.toHaveBeenCalled();
-      expect(revokeRefreshFamiliesMock).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+      expect(runPostCommitCleanupMock).not.toHaveBeenCalled();
     });
 
     it('refuses reset completion if partner became suspended after token issue', async () => {
-      getdelMock.mockResolvedValue('u-suspended');
+      const envelope = JSON.stringify({ userId: 'u-suspended', passwordResetEpoch: 1, email: 'sus@x.com' });
+      getdelMock.mockResolvedValue(envelope);
+      vi.mocked(db.select).mockReturnValue(
+        selectChain([{ passwordResetEpoch: 1, email: 'sus@x.com' }]) as any,
+      );
       getEligibilityForUserMock.mockResolvedValue({
         allowed: false,
         reason: 'tenant_inactive',
@@ -411,7 +561,7 @@ describe('password reset eligibility (#719)', () => {
       // Generic message — never leaks partner-status.
       expect(body.error).toBe('Invalid or expired reset token');
       expect(JSON.stringify(body)).not.toContain('suspended');
-      expect(updateWhereMock).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
       expect(writeAuthAudit).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({
@@ -428,7 +578,11 @@ describe('password reset eligibility (#719)', () => {
     });
 
     it('returns 403 when org enforces SSO', async () => {
-      getdelMock.mockResolvedValue('u-sso');
+      const envelope = JSON.stringify({ userId: 'u-sso', passwordResetEpoch: 1, email: 'sso@x.com' });
+      getdelMock.mockResolvedValue(envelope);
+      vi.mocked(db.select).mockReturnValue(
+        selectChain([{ passwordResetEpoch: 1, email: 'sso@x.com' }]) as any,
+      );
       getEligibilityForUserMock.mockResolvedValue({
         allowed: false,
         reason: 'sso_required',
@@ -441,7 +595,7 @@ describe('password reset eligibility (#719)', () => {
       });
 
       expect(res.status).toBe(403);
-      expect(updateWhereMock).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
       expect(writeAuthAudit).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({
@@ -463,17 +617,18 @@ describe('password reset eligibility (#719)', () => {
 
       expect(res.status).toBe(400);
       expect(getEligibilityForUserMock).not.toHaveBeenCalled();
-      expect(updateWhereMock).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
     });
   });
 
   describe('POST /change-password', () => {
     beforeEach(() => {
       vi.mocked(db.select).mockReturnValue(selectChain([{ passwordHash: 'existing-hash' }]) as any);
-      vi.mocked(db.update).mockReturnValue(updateChain() as any);
     });
 
-    it('revokes OAuth artifacts for the authenticated user on success', async () => {
+    it('advances auth_epoch + password_reset_epoch and revokes refresh families in one transaction, then runs post-commit cleanup', async () => {
+      const capturedUpdates = stubTransaction({ authEpoch: 4, mfaEpoch: 1, emailEpoch: 1, passwordResetEpoch: 4 });
+
       const res = await postJson('/change-password', {
         currentPassword: 'old-strong-pw-1234',
         newPassword: 'new-strong-pw-1234',
@@ -482,16 +637,22 @@ describe('password reset eligibility (#719)', () => {
       expect(res.status).toBe(200);
       const body = await res.json() as { success: boolean };
       expect(body.success).toBe(true);
+      expect(capturedUpdates.some((v) => 'passwordHash' in v)).toBe(true);
+      // advanceUserEpochs({ auth: true, passwordReset: true }): SR2-08 closes
+      // the same sibling-reset-token window from the authenticated path too —
+      // a password change must also supersede any outstanding reset token.
+      expect(capturedUpdates.some((v) => 'authEpoch' in v && 'passwordResetEpoch' in v)).toBe(true);
+      expect(capturedUpdates.some((v) => 'revokedReason' in v)).toBe(true);
+      expect(db.transaction).toHaveBeenCalledTimes(1);
       // A previously authorized MCP OAuth refresh token must be revoked on a
-      // password change, not just first-party JWTs.
-      expect(revokeRefreshFamiliesMock).toHaveBeenCalledWith('u-1', 'password-change');
-      expect(revokeOauthArtifactsMock).toHaveBeenCalledWith('u-1');
+      // password change too, not just first-party JWTs — now via
+      // runPostCommitCleanup.
+      expect(runPostCommitCleanupMock).toHaveBeenCalledWith('u-1');
     });
 
-    it('still revokes OAuth artifacts when the JWT revoke throws (ordering bug)', async () => {
-      // Redis blip: JWT revoke rejects. The OAuth revoke must NOT be
-      // short-circuited — it's the more durable threat.
-      revokeAllUserTokensMock.mockRejectedValue(new Error('redis down'));
+    it('still returns success when runPostCommitCleanup reports a partial failure (best-effort)', async () => {
+      stubTransaction();
+      runPostCommitCleanupMock.mockResolvedValue({ redisOk: false, permissionCacheOk: true, oauthOk: false, oauthResult: undefined });
 
       const res = await postJson('/change-password', {
         currentPassword: 'old-strong-pw-1234',
@@ -501,23 +662,7 @@ describe('password reset eligibility (#719)', () => {
       expect(res.status).toBe(200);
       const body = await res.json() as { success: boolean };
       expect(body.success).toBe(true);
-      expect(revokeAllUserTokensMock).toHaveBeenCalledWith('u-1');
-      expect(revokeRefreshFamiliesMock).toHaveBeenCalledWith('u-1', 'password-change');
-      expect(revokeOauthArtifactsMock).toHaveBeenCalledWith('u-1');
-    });
-
-    it('still returns success when the OAuth revoke itself throws (best-effort)', async () => {
-      revokeOauthArtifactsMock.mockRejectedValue(new Error('oauth store down'));
-
-      const res = await postJson('/change-password', {
-        currentPassword: 'old-strong-pw-1234',
-        newPassword: 'new-strong-pw-1234',
-      });
-
-      expect(res.status).toBe(200);
-      const body = await res.json() as { success: boolean };
-      expect(body.success).toBe(true);
-      expect(revokeOauthArtifactsMock).toHaveBeenCalledWith('u-1');
+      expect(runPostCommitCleanupMock).toHaveBeenCalledWith('u-1');
     });
   });
 });

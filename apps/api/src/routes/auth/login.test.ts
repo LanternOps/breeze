@@ -13,6 +13,11 @@ vi.mock('../../db', () => ({
 
 vi.mock('../../services/authLifecycle', () => ({
   revokeRefreshFamilyById: vi.fn(async () => undefined),
+  // SR2-08: the account-locked reset link (recordAccountFailureAndMaybeNotify)
+  // advances password_reset_epoch the same way /forgot-password does. No
+  // current test drives the `newlyLocked` branch, but this keeps the mock
+  // shape consistent with what login.ts now imports.
+  advanceUserEpochs: vi.fn(async () => ({ authEpoch: 1, mfaEpoch: 1, emailEpoch: 1, passwordResetEpoch: 2 })),
 }));
 
 vi.mock('../../db/schema', () => ({

@@ -10,9 +10,7 @@ import {
   rateLimiter,
   forgotPasswordLimiter,
   getRedis,
-  invalidateAllUserSessions,
-  revokeAllRefreshTokenFamiliesForUser,
-  revokeAllUserTokens
+  invalidateAllUserSessions
 } from '../../services';
 import { getEmailService } from '../../services/email';
 import { authMiddleware } from '../../middleware/auth';
@@ -31,11 +29,22 @@ import {
   writeAuthAudit
 } from './helpers';
 import { assertPasswordAuthAllowedBySso, SsoPasswordAuthRequiredError } from './ssoPolicy';
-import { revokeAllUserOauthArtifacts } from '../../oauth/grantRevocation';
+import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup } from '../../services/authLifecycle';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
 export const passwordRoutes = new Hono();
+
+// SR2-08: the reset token's Redis value is a JSON envelope binding the token
+// to the generation (password_reset_epoch) and the exact normalized email it
+// was issued for. Only the newest generation, bound to the address it was
+// issued for, can redeem — an older/superseded token fails closed even if
+// unexpired (closes the sibling-token account-takeover window).
+interface ResetTokenEnvelope {
+  userId: string;
+  passwordResetEpoch: number;
+  email: string;
+}
 
 async function consumePasswordResetToken(
   redis: ReturnType<typeof getRedis>,
@@ -102,8 +111,24 @@ passwordRoutes.post('/forgot-password', zValidator('json', forgotPasswordSchema)
     const resetToken = nanoid(48);
     const tokenHash = createHash('sha256').update(resetToken).digest('hex');
 
+    // SR2-08: advance password_reset_epoch and bind the token to the new
+    // generation + the exact normalized email it was issued for. Pre-auth
+    // path — there is no ambient DB context, so a bare db.transaction would
+    // hit `users` as breeze_app with no GUCs and the UPDATE would be
+    // RLS-filtered to 0 rows (advanceUserEpochs then throws "user not
+    // found"). Wrap in the system context.
+    const gen = await withSystemDbAccessContext(() =>
+      db.transaction(async (tx) =>
+        advanceUserEpochs(tx, eligibility.userId!, { passwordReset: true })
+      )
+    );
+    const envelope: ResetTokenEnvelope = {
+      userId: eligibility.userId,
+      passwordResetEpoch: gen.passwordResetEpoch,
+      email: normalizedEmail,
+    };
     // Store token with 1 hour expiry
-    await redis.setex(`reset:${tokenHash}`, 3600, eligibility.userId);
+    await redis.setex(`reset:${tokenHash}`, 3600, JSON.stringify(envelope));
 
     const appBaseUrl = (process.env.DASHBOARD_URL || process.env.PUBLIC_APP_URL || 'http://localhost:4321').replace(/\/$/, '');
     const resetUrl = `${appBaseUrl}/reset-password?token=${encodeURIComponent(resetToken)}`;
@@ -171,9 +196,34 @@ passwordRoutes.post('/reset-password', zValidator('json', resetPasswordSchema), 
     return c.json({ error: 'Password reset unavailable. Please try again later.' }, 503);
   }
   const tokenHash = createHash('sha256').update(token).digest('hex');
-  const userId = await consumePasswordResetToken(redis, tokenHash);
+  const raw = await consumePasswordResetToken(redis, tokenHash);
 
-  if (!userId) {
+  if (!raw) {
+    return c.json({ error: 'Invalid or expired reset token' }, 400);
+  }
+
+  let envelope: ResetTokenEnvelope;
+  try {
+    envelope = JSON.parse(raw);
+  } catch {
+    return c.json({ error: 'Invalid or expired reset token' }, 400);
+  }
+  const userId = envelope.userId;
+
+  // SR2-08: reload the live generation + email and require BOTH to match
+  // the envelope. A newer reset request, a completed reset, or a password
+  // change all advance password_reset_epoch — so only the newest generation,
+  // bound to the address it was issued for, can redeem. Fails closed even
+  // if the token is otherwise unexpired.
+  const [live] = await withSystemDbAccessContext(async () =>
+    db.select({ passwordResetEpoch: users.passwordResetEpoch, email: users.email })
+      .from(users).where(eq(users.id, userId)).limit(1)
+  );
+  if (!live ||
+      live.passwordResetEpoch !== envelope.passwordResetEpoch ||
+      live.email.toLowerCase() !== envelope.email.toLowerCase()) {
+    // A newer reset was issued, the password already changed, or the address
+    // moved — only the newest generation bound to the current address wins.
     return c.json({ error: 'Invalid or expired reset token' }, 400);
   }
 
@@ -222,32 +272,33 @@ passwordRoutes.post('/reset-password', zValidator('json', resetPasswordSchema), 
   // password never changes, the next login fails, and we ship a broken
   // reset flow. Wrap so RLS is bypassed for this trusted token-gated
   // path. Same fix needed in accept-invite (see invite.ts).
+  //
+  // SR2-08: the password write, the auth-epoch + password-reset-epoch
+  // advance, and the durable refresh-family revoke all land in ONE
+  // transaction — a successful reset must atomically supersede every
+  // sibling reset token AND every existing session/refresh family.
   await withSystemDbAccessContext(async () =>
-    db
-      .update(users)
-      .set({
-        passwordHash,
-        passwordChangedAt: new Date(),
-        updatedAt: new Date()
-      })
-      .where(eq(users.id, userId))
+    db.transaction(async (tx) => {
+      await tx.update(users)
+        .set({
+          passwordHash,
+          passwordChangedAt: new Date(),
+          updatedAt: new Date()
+        })
+        .where(eq(users.id, userId));
+      await advanceUserEpochs(tx, userId, { auth: true, passwordReset: true });
+      await revokeAllRefreshFamilies(tx, userId, 'password-reset');
+    })
   );
 
-  // Invalidate all sessions — best-effort; password is already changed above.
+  // Invalidate all sessions — separate legacy mechanism, not absorbed by the
+  // lifecycle service (overseer decision 2026-07-11); best-effort, password
+  // is already changed and durably committed above.
   await invalidateAllUserSessions(userId);
-  // Decouple the two revokes so each runs and fails independently. The OAuth
-  // revoke (more durable threat — a stolen refresh token mints access tokens
-  // for up to 14 days) must NOT be short-circuited by a JWT-revoke failure
-  // (e.g. a Redis blip), which is the exact window this revoke closes.
-  await revokeAllUserTokens(userId).catch((error) =>
-    console.error('[auth] Failed to revoke JWTs after password reset:', error),
-  );
-  await revokeAllRefreshTokenFamiliesForUser(userId, 'password-reset').catch((error) =>
-    console.error('[auth] Failed to revoke refresh-token families after password reset:', error),
-  );
-  await revokeAllUserOauthArtifacts(userId).catch((error) =>
-    console.error('[auth] Failed to revoke OAuth artifacts after password reset:', error),
-  );
+  // Post-commit cleanup (Redis JWT cutoff + permission-cache clear + MCP
+  // OAuth grant sweep) — best-effort and independent per step; the durable
+  // revocation above is already committed regardless of outcome here.
+  await runPostCommitCleanup(userId);
 
   // Audit log
   const auditOrgId = await resolveUserAuditOrgId(userId);
@@ -304,32 +355,36 @@ passwordRoutes.post('/change-password', authMiddleware, zValidator('json', chang
   }
 
   const passwordHash = await hashPassword(newPassword);
-  await db
-    .update(users)
-    .set({
-      passwordHash,
-      passwordChangedAt: new Date(),
-      updatedAt: new Date()
-    })
-    .where(eq(users.id, auth.user.id));
+  // SR2-08: same in-transaction epoch-advance + durable family revoke as
+  // /reset-password. This path runs authenticated as the user themselves,
+  // so the user-id-scoped refresh_token_families RLS policy admits the
+  // write and the `users` self-update passes the self policy — no
+  // system-context wrap needed (unlike the two pre-auth paths above).
+  await db.transaction(async (tx) => {
+    await tx.update(users)
+      .set({
+        passwordHash,
+        passwordChangedAt: new Date(),
+        updatedAt: new Date()
+      })
+      .where(eq(users.id, auth.user.id));
+    await advanceUserEpochs(tx, auth.user.id, { auth: true, passwordReset: true });
+    await revokeAllRefreshFamilies(tx, auth.user.id, 'password-change');
+  });
 
+  // Invalidate all sessions — separate legacy mechanism, not absorbed by the
+  // lifecycle service (overseer decision 2026-07-11); best-effort, password
+  // is already changed and durably committed above.
   await invalidateAllUserSessions(auth.user.id);
-  // Decouple the revokes so each runs and fails independently. The OAuth
-  // revoke (more durable threat — a previously authorized refresh token can
-  // keep minting access tokens) must NOT be short-circuited by a JWT-revoke
-  // failure (e.g. a Redis blip), which is the exact window this revoke closes.
-  await revokeAllUserTokens(auth.user.id).catch((error) =>
-    console.error('[auth] Failed to revoke JWTs after password change:', error),
-  );
-  await revokeAllRefreshTokenFamiliesForUser(auth.user.id, 'password-change').catch((error) =>
-    console.error('[auth] Failed to revoke refresh-token families after password change:', error),
-  );
+  // Cheap hot-path marker for the caller's own cookie — decoupled from the
+  // durable per-family revoke above so a Redis blip here can't roll it back.
   await revokeCurrentRefreshTokenJti(c, auth.user.id).catch((error) =>
     console.error('[auth] Failed to revoke current refresh token after password change:', error),
   );
-  await revokeAllUserOauthArtifacts(auth.user.id).catch((error) =>
-    console.error('[auth] Failed to revoke OAuth artifacts after password change:', error),
-  );
+  // Post-commit cleanup (Redis JWT cutoff + permission-cache clear + MCP
+  // OAuth grant sweep) — best-effort and independent per step; the durable
+  // revocation above is already committed regardless of outcome here.
+  await runPostCommitCleanup(auth.user.id);
 
   // Audit log
   const changeAuditOrgId = await resolveUserAuditOrgId(auth.user.id);

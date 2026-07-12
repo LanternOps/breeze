@@ -109,11 +109,32 @@ vi.mock('../db', () => ({
           returning: vi.fn(() => Promise.resolve([{ id: 'user-1' }]))
         }))
       }))
-    }))
+    })),
+    // SR2-08: reset-password/change-password and the account-locked reset
+    // link now run the password write + epoch advance(s) + family revoke in
+    // ONE db.transaction. Overridden per-suite via stubTx() below.
+    transaction: vi.fn()
   },
   withSystemDbAccessContext: vi.fn(async <T>(fn: () => Promise<T>) => fn()),
   runOutsideDbContext: vi.fn((fn: () => any) => fn())
 }));
+
+// advanceUserEpochs/revokeAllRefreshFamilies stay REAL (they just issue
+// `tx.update(...)` calls against the stubbed transaction below); only
+// runPostCommitCleanup — which fans out to real Redis/permission-cache/OAuth
+// side effects — is mocked so these unit tests don't exercise them.
+vi.mock('../services/authLifecycle', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/authLifecycle')>();
+  return {
+    ...actual,
+    runPostCommitCleanup: vi.fn().mockResolvedValue({
+      redisOk: true,
+      permissionCacheOk: true,
+      oauthOk: true,
+      oauthResult: { grantsRevoked: 0, refreshTokensRevoked: 0, jtisRevoked: 0 },
+    }),
+  };
+});
 
 vi.mock('../db/schema', () => ({
   users: {},
@@ -210,6 +231,31 @@ import {
   getPasswordResetEligibilityForUser,
 } from '../services/passwordResetEligibility';
 import { db } from '../db';
+import { runPostCommitCleanup } from '../services/authLifecycle';
+
+// SR2-08: stub `db.transaction` so advanceUserEpochs/revokeAllRefreshFamilies
+// (kept REAL, see the authLifecycle mock above) run against a fake `tx`
+// without touching a real database. Every `.set()` call across the
+// transaction (main row write, epoch advance, family revoke) is captured.
+function stubTx(epochRow: { authEpoch: number; mfaEpoch: number; emailEpoch: number; passwordResetEpoch: number } = {
+  authEpoch: 1, mfaEpoch: 1, emailEpoch: 1, passwordResetEpoch: 2,
+}): Array<Record<string, unknown>> {
+  const capturedUpdates: Array<Record<string, unknown>> = [];
+  const txUpdate = vi.fn((_table: unknown) => ({
+    set: (values: Record<string, unknown>) => {
+      capturedUpdates.push(values);
+      return {
+        where: (..._args: unknown[]) => {
+          const result = Promise.resolve(undefined) as Promise<undefined> & { returning?: (sel?: unknown) => Promise<unknown[]> };
+          result.returning = (_sel?: unknown) => Promise.resolve([epochRow]);
+          return result;
+        },
+      };
+    },
+  }));
+  vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn({ update: txUpdate }));
+  return capturedUpdates;
+}
 
 describe('auth routes', () => {
   let app: Hono;
@@ -247,6 +293,8 @@ describe('auth routes', () => {
     vi.mocked(recordAccountFailure).mockResolvedValue({ count: 1, locked: false, newlyLocked: false });
     vi.mocked(clearAccountFailures).mockResolvedValue(undefined);
     sendAccountLockedMock.mockClear();
+    vi.mocked(db.transaction).mockReset();
+    stubTx();
     app = new Hono();
     app.route('/auth', authRoutes);
   });
@@ -1686,19 +1734,24 @@ describe('auth routes', () => {
   describe('POST /auth/reset-password', () => {
     it('should reset password successfully', async () => {
       vi.mocked(isPasswordStrong).mockReturnValue({ valid: true, errors: [] });
+      // SR2-08: the stored reset token is a generation+email envelope, not a
+      // bare userId. Redemption reloads the live row and requires BOTH the
+      // epoch and email to match.
+      const envelope = JSON.stringify({ userId: 'user-123', passwordResetEpoch: 3, email: 'test@example.com' });
       const mockRedis = {
-        getdel: vi.fn().mockResolvedValue('user-123'),
+        getdel: vi.fn().mockResolvedValue(envelope),
         del: vi.fn().mockResolvedValue(1),
         setex: vi.fn()
       };
       vi.mocked(getRedis).mockReturnValue(mockRedis as any);
-      vi.mocked(db.update).mockReturnValue({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn(() => Object.assign(Promise.resolve(undefined), {
-            returning: vi.fn().mockResolvedValue([{ id: 'user-1' }])
-          }))
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ passwordResetEpoch: 3, email: 'test@example.com' }])
+          })
         })
       } as any);
+      const capturedUpdates = stubTx();
 
       const res = await app.request('/auth/reset-password', {
         method: 'POST',
@@ -1712,7 +1765,13 @@ describe('auth routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
-      expect(revokeAllUserTokens).toHaveBeenCalledWith('user-123');
+      // Password write + both epoch advances + family revoke all land in the
+      // same transaction (SR2-08); the JWT/OAuth/permission-cache cleanup now
+      // happens inside runPostCommitCleanup.
+      expect(capturedUpdates.some((v) => 'passwordHash' in v)).toBe(true);
+      expect(capturedUpdates.some((v) => 'authEpoch' in v && 'passwordResetEpoch' in v)).toBe(true);
+      expect(capturedUpdates.some((v) => 'revokedReason' in v)).toBe(true);
+      expect(runPostCommitCleanup).toHaveBeenCalledWith('user-123');
       expect(mockRedis.getdel).toHaveBeenCalledTimes(1);
     });
 
@@ -1762,12 +1821,20 @@ describe('auth routes', () => {
         reason: 'sso_required',
         userId: 'user-123',
       });
+      const envelope = JSON.stringify({ userId: 'user-123', passwordResetEpoch: 3, email: 'test@example.com' });
       const mockRedis = {
-        getdel: vi.fn().mockResolvedValue('user-123'),
+        getdel: vi.fn().mockResolvedValue(envelope),
         del: vi.fn().mockResolvedValue(1),
         setex: vi.fn()
       };
       vi.mocked(getRedis).mockReturnValue(mockRedis as any);
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ passwordResetEpoch: 3, email: 'test@example.com' }])
+          })
+        })
+      } as any);
 
       const res = await app.request('/auth/reset-password', {
         method: 'POST',
@@ -1780,27 +1847,29 @@ describe('auth routes', () => {
 
       expect(res.status).toBe(403);
       expect(hashPassword).not.toHaveBeenCalled();
-      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+      expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
       expect(mockRedis.del).not.toHaveBeenCalled();
     });
 
     it('consumes reset tokens atomically so concurrent redemption only succeeds once', async () => {
       vi.mocked(isPasswordStrong).mockReturnValue({ valid: true, errors: [] });
+      const envelope = JSON.stringify({ userId: 'user-123', passwordResetEpoch: 3, email: 'test@example.com' });
       const mockRedis = {
         getdel: vi.fn()
-          .mockResolvedValueOnce('user-123')
+          .mockResolvedValueOnce(envelope)
           .mockResolvedValueOnce(null),
         del: vi.fn(),
         setex: vi.fn()
       };
       vi.mocked(getRedis).mockReturnValue(mockRedis as any);
-      vi.mocked(db.update).mockReturnValue({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn(() => Object.assign(Promise.resolve(undefined), {
-            returning: vi.fn().mockResolvedValue([{ id: 'user-1' }])
-          }))
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ passwordResetEpoch: 3, email: 'test@example.com' }])
+          })
         })
       } as any);
+      stubTx();
 
       const request = () => app.request('/auth/reset-password', {
         method: 'POST',
@@ -1831,13 +1900,7 @@ describe('auth routes', () => {
           })
         })
       } as any);
-      vi.mocked(db.update).mockReturnValue({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn(() => Object.assign(Promise.resolve(undefined), {
-            returning: vi.fn().mockResolvedValue([{ id: 'user-1' }])
-          }))
-        })
-      } as any);
+      const capturedUpdates = stubTx();
 
       const res = await app.request('/auth/change-password', {
         method: 'POST',
@@ -1857,7 +1920,13 @@ describe('auth routes', () => {
       expect(body.message).toBe('Password changed successfully');
       expect(hashPassword).toHaveBeenCalledWith('NewStrongPass123');
       expect(invalidateAllUserSessions).toHaveBeenCalledWith('user-123');
-      expect(revokeAllUserTokens).toHaveBeenCalledWith('user-123');
+      // SR2-08: password write + both epoch advances + family revoke in ONE
+      // transaction; JWT/OAuth/permission-cache cleanup now happens inside
+      // runPostCommitCleanup.
+      expect(capturedUpdates.some((v) => 'passwordHash' in v)).toBe(true);
+      expect(capturedUpdates.some((v) => 'authEpoch' in v && 'passwordResetEpoch' in v)).toBe(true);
+      expect(capturedUpdates.some((v) => 'revokedReason' in v)).toBe(true);
+      expect(runPostCommitCleanup).toHaveBeenCalledWith('user-123');
     });
 
     it('POST /auth/change-password should reject when organization SSO policy disables passwords', async () => {
