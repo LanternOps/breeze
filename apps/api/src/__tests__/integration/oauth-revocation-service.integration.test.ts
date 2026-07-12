@@ -17,6 +17,7 @@
  */
 import './setup';
 import { describe, it, expect, beforeEach } from 'vitest';
+import { createHash } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import {
   oauthAuthorizationCodes,
@@ -33,6 +34,8 @@ import { createOrganization, createPartner, createUser } from './db-utils';
 import { getTestDb } from './setup';
 
 const future = () => new Date(Date.now() + 60 * 60 * 1000);
+
+const digestId = (raw: string) => createHash('sha256').update(raw).digest('hex');
 
 async function seedGrant(opts: {
   id: string;
@@ -140,8 +143,10 @@ describe('revokeClientFamilies (integration)', () => {
     await seedGrant({ id: 'grant-g1', clientId, accountId: u1.id, partnerId: p1.id, orgId: o1.id });
     await seedGrant({ id: 'grant-g2', clientId, accountId: u2.id, partnerId: p2.id, orgId: o2.id });
     // One grant also has a refresh row — proves refresh rows are revoked too.
+    // Id must be a sha256 digest (oauth_refresh_tokens_id_digest_chk).
+    const rtGlobalId = digestId('rt-global');
     await getTestDb().insert(oauthRefreshTokens).values({
-      id: 'rt-global', userId: u1.id, clientId, partnerId: p1.id, orgId: o1.id,
+      id: rtGlobalId, userId: u1.id, clientId, partnerId: p1.id, orgId: o1.id,
       payload: { sub: u1.id, grantId: 'grant-g1' }, expiresAt: future(),
     });
 
@@ -153,7 +158,7 @@ describe('revokeClientFamilies (integration)', () => {
     // Bearer-path proof: both grant markers reject already-minted access JWTs.
     expect(await isGrantRevoked('grant-g1')).toBe(true);
     expect(await isGrantRevoked('grant-g2')).toBe(true);
-    const [rt] = await getTestDb().select({ revokedAt: oauthRefreshTokens.revokedAt }).from(oauthRefreshTokens).where(eq(oauthRefreshTokens.id, 'rt-global'));
+    const [rt] = await getTestDb().select({ revokedAt: oauthRefreshTokens.revokedAt }).from(oauthRefreshTokens).where(eq(oauthRefreshTokens.id, rtGlobalId));
     expect(rt?.revokedAt).not.toBeNull();
     // Client disabled only after every family is revoked.
     const [client] = await getTestDb().select({ disabledAt: oauthClients.disabledAt }).from(oauthClients).where(eq(oauthClients.id, clientId));

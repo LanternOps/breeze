@@ -1,5 +1,6 @@
 import './setup';
 import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 import { eq, inArray } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import {
@@ -10,6 +11,12 @@ import {
 } from '../../db/schema';
 import { createOrganization, createPartner, createUser } from './db-utils';
 import { getTestDb } from './setup';
+
+// Refresh-token ids must be sha256 digests and payloads must omit `jti`
+// (oauth_refresh_tokens_id_digest_chk / oauth_refresh_tokens_no_jti_chk).
+const digestId = (raw: string) => createHash('sha256').update(raw).digest('hex');
+const refreshIdUserA = digestId('rls-refresh-user-a');
+const refreshIdUserB = digestId('rls-refresh-user-b');
 
 async function seedTwoUserOauthRows() {
   const partner = await createPartner();
@@ -78,21 +85,21 @@ async function seedTwoUserOauthRows() {
   ]);
   await getTestDb().insert(oauthRefreshTokens).values([
     {
-      id: 'rls-refresh-user-a',
+      id: refreshIdUserA,
       userId: userA.id,
       clientId: client.id,
       partnerId: partner.id,
       orgId: org.id,
-      payload: { sub: userA.id, jti: 'jti-a', grantId: 'rls-grant-user-a' },
+      payload: { sub: userA.id, grantId: 'rls-grant-user-a' },
       expiresAt,
     },
     {
-      id: 'rls-refresh-user-b',
+      id: refreshIdUserB,
       userId: userB.id,
       clientId: client.id,
       partnerId: partner.id,
       orgId: org.id,
-      payload: { sub: userB.id, jti: 'jti-b', grantId: 'rls-grant-user-b' },
+      payload: { sub: userB.id, grantId: 'rls-grant-user-b' },
       expiresAt,
     },
   ]);
@@ -124,13 +131,13 @@ describe('OAuth token-row RLS', () => {
         db
           .select({ id: oauthRefreshTokens.id })
           .from(oauthRefreshTokens)
-          .where(inArray(oauthRefreshTokens.id, ['rls-refresh-user-a', 'rls-refresh-user-b'])),
+          .where(inArray(oauthRefreshTokens.id, [refreshIdUserA, refreshIdUserB])),
       ])
     );
 
     expect(codes.map((row) => row.id)).toEqual(['rls-code-user-a']);
     expect(grants.map((row) => row.id)).toEqual(['rls-grant-user-a']);
-    expect(refreshTokens.map((row) => row.id)).toEqual(['rls-refresh-user-a']);
+    expect(refreshTokens.map((row) => row.id)).toEqual([refreshIdUserA]);
   });
 
   it('preserves tenant-wide revocation semantics through explicit system context', async () => {
@@ -144,9 +151,8 @@ describe('OAuth token-row RLS', () => {
         .returning({ id: oauthRefreshTokens.id })
     );
 
-    expect(revoked.map((row) => row.id).sort()).toEqual([
-      'rls-refresh-user-a',
-      'rls-refresh-user-b',
-    ]);
+    expect(revoked.map((row) => row.id).sort()).toEqual(
+      [refreshIdUserA, refreshIdUserB].sort()
+    );
   });
 });

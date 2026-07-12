@@ -339,10 +339,13 @@ describe.skipIf(!SHOULD_RUN)('OAuth pre-handler body-drain regressions', () => {
     // which is the path that depends on the body reaching the Koa layer.
     expect(refreshToken.split('.').length).not.toBe(3);
 
-    // The opaque token format is `<id>.<digest>` — the row id is the prefix
-    // before the first dot. We need the id to assert against the DB row.
-    const refreshRowId = refreshToken.split('.')[0] as string;
-    expect(refreshRowId).toBeTruthy();
+    // The opaque token format is `<id>.<digest>` — the raw model id is the
+    // prefix before the first dot. The adapter no longer persists the raw id:
+    // it stores sha256(rawId) (MCP-OAUTH-04, oauth_refresh_tokens_id_digest_chk),
+    // so the DB lookup key is the digest of that prefix.
+    const rawRefreshId = refreshToken.split('.')[0] as string;
+    expect(rawRefreshId).toBeTruthy();
+    const refreshRowId = createHash('sha256').update(rawRefreshId).digest('hex');
 
     const revokeRes = await fetch(`${baseUrl}/oauth/token/revocation`, {
       method: 'POST',
