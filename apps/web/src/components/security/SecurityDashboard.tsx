@@ -8,8 +8,8 @@ import {
   Loader2,
   Lock,
   RefreshCw,
+  Shield,
   ShieldCheck,
-  ShieldOff,
   Sparkles,
   TrendingUp,
   User,
@@ -495,25 +495,27 @@ export default function SecurityDashboard({
   timezone,
 }: SecurityDashboardProps) {
   const { t } = useTranslation("security");
-  const [overview, setOverview] = useState<SecurityOverview>(defaultOverview);
-  const [vulnerabilities, setVulnerabilities] = useState<VulnerabilitySummary>(
-    defaultVulnerabilities,
-  );
+  const [overview, setOverview] = useState<SecurityOverview | null>(null);
+  const [vulnerabilities, setVulnerabilities] =
+    useState<VulnerabilitySummary | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string>();
+  const [loadFailures, setLoadFailures] = useState({
+    overview: false,
+    vulnerabilities: false,
+  });
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const fetchSecurityData = useCallback(async () => {
-    setError(undefined);
     setLoading(true);
-    const errors: string[] = [];
+    const failures = { overview: false, vulnerabilities: false };
     await Promise.all([
       (async () => {
         try {
           const overviewData = await fetchJson("/security/dashboard");
           setOverview(normalizeOverview(overviewData));
         } catch (err) {
-          errors.push("overview");
-          setOverview(defaultOverview);
+          // Keep any previously loaded data on refresh failure rather than
+          // clobbering the dashboard with fabricated zeros.
+          failures.overview = true;
         }
       })(),
       (async () => {
@@ -521,14 +523,11 @@ export default function SecurityDashboard({
           const vulnerabilityData = await fetchJson("/security/threats");
           setVulnerabilities(normalizeVulnerabilities(vulnerabilityData));
         } catch (err) {
-          errors.push("vulnerabilities");
-          setVulnerabilities(defaultVulnerabilities);
+          failures.vulnerabilities = true;
         }
       })(),
     ]);
-    if (errors.length > 0) {
-      setError(`Unable to load: ${errors.join(", ")}`);
-    }
+    setLoadFailures(failures);
     setLastUpdated(new Date());
     setLoading(false);
   }, []);
@@ -536,62 +535,77 @@ export default function SecurityDashboard({
     fetchSecurityData();
   }, [fetchSecurityData]);
   const scoreMeta = useMemo(
-    () => getScoreMeta(overview.securityScore),
-    [overview.securityScore],
+    () => (overview ? getScoreMeta(overview.securityScore) : null),
+    [overview],
   );
+  const ovData = overview ?? defaultOverview;
+  const vulnData = vulnerabilities ?? defaultVulnerabilities;
   const antivirusTotal =
-    overview.antivirus.protected + overview.antivirus.unprotected;
+    ovData.antivirus.protected + ovData.antivirus.unprotected;
   const antivirusProtectedPercent = antivirusTotal
-    ? Math.round((overview.antivirus.protected / antivirusTotal) * 100)
+    ? Math.round((ovData.antivirus.protected / antivirusTotal) * 100)
     : 0;
   const antivirusUnprotectedPercent = antivirusTotal
-    ? Math.round((overview.antivirus.unprotected / antivirusTotal) * 100)
+    ? Math.round((ovData.antivirus.unprotected / antivirusTotal) * 100)
     : 0;
-  const firewallTotal = overview.firewall.enabled + overview.firewall.disabled;
+  const firewallTotal = ovData.firewall.enabled + ovData.firewall.disabled;
   const firewallEnabledPercent = firewallTotal
-    ? Math.round((overview.firewall.enabled / firewallTotal) * 100)
+    ? Math.round((ovData.firewall.enabled / firewallTotal) * 100)
     : 0;
   const firewallDisabledPercent = firewallTotal
-    ? Math.round((overview.firewall.disabled / firewallTotal) * 100)
+    ? Math.round((ovData.firewall.disabled / firewallTotal) * 100)
     : 0;
   const encryptionEnabledTotal =
-    overview.encryption.bitlockerEnabled + overview.encryption.filevaultEnabled;
-  const encryptionTotal = overview.encryption.total || encryptionEnabledTotal;
+    ovData.encryption.bitlockerEnabled + ovData.encryption.filevaultEnabled;
+  const encryptionTotal = ovData.encryption.total || encryptionEnabledTotal;
   const encryptionPercent = encryptionTotal
     ? Math.round((encryptionEnabledTotal / encryptionTotal) * 100)
     : 0;
-  const passwordCompliance = clamp(overview.passwordCompliance);
+  const passwordCompliance = clamp(ovData.passwordCompliance);
   const sortedRecommendations = useMemo(
     () =>
-      [...overview.recommendations].sort(
+      [...ovData.recommendations].sort(
         (a, b) => priorityOrder[a.priority] - priorityOrder[b.priority],
       ),
-    [overview.recommendations],
+    [ovData.recommendations],
   );
   const isInitialLoading = loading && !lastUpdated;
+  const anyLoadFailed = loadFailures.overview || loadFailures.vulnerabilities;
+  // A tenant with no devices reporting gets a real empty state, never a
+  // fabricated 0/100 "High risk" screen.
+  const isEmptyTenant =
+    overview !== null &&
+    !anyLoadFailed &&
+    antivirusTotal === 0 &&
+    firewallTotal === 0 &&
+    encryptionTotal === 0 &&
+    ovData.adminAudit.deviceCount === 0 &&
+    ovData.trend.length === 0 &&
+    ovData.recommendations.length === 0 &&
+    vulnData.total === 0;
   const vulnerabilityRows = [
     {
       label: t("securitySecurityDashboard.critical"),
-      value: vulnerabilities.critical,
+      value: vulnData.critical,
       severity: "critical" as const,
     },
     {
       label: t("securitySecurityDashboard.high"),
-      value: vulnerabilities.high,
+      value: vulnData.high,
       severity: "high" as const,
     },
     {
       label: t("securitySecurityDashboard.medium"),
-      value: vulnerabilities.medium,
+      value: vulnData.medium,
       severity: "medium" as const,
     },
     {
       label: t("securitySecurityDashboard.low"),
-      value: vulnerabilities.low,
+      value: vulnData.low,
       severity: "low" as const,
     },
   ];
-  const adminDevices = overview.adminAudit.devices.slice(0, 3);
+  const adminDevices = ovData.adminAudit.devices.slice(0, 3);
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
@@ -621,16 +635,23 @@ export default function SecurityDashboard({
           </button>
           {lastUpdated && (
             <span className="text-xs text-muted-foreground">
-              {t("securitySecurityDashboard.updated")}
-              {formatTime(lastUpdated, { timeZone: timezone })}
+              {t("securitySecurityDashboard.updated", {
+                time: formatTime(lastUpdated, { timeZone: timezone }),
+              })}
             </span>
           )}
         </div>
       </div>
 
-      {error && (
+      {anyLoadFailed && (
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-center">
-          <p className="text-sm text-destructive">{error}</p>
+          <p className="text-sm text-destructive">
+            {t(
+              loadFailures.overview && loadFailures.vulnerabilities
+                ? "securitySecurityDashboard.securityDataCouldNotBeLoaded"
+                : "securitySecurityDashboard.someSecurityDataCouldNotBeLoaded",
+            )}
+          </p>
           <button
             type="button"
             onClick={fetchSecurityData}
@@ -657,6 +678,25 @@ export default function SecurityDashboard({
             <div className="h-56 rounded-lg border bg-muted/30 p-6 shadow-xs lg:col-span-4" />
             <div className="h-64 rounded-lg border bg-muted/30 p-6 shadow-xs lg:col-span-12" />
           </>
+        ) : isEmptyTenant ? (
+          <div className="rounded-lg border border-dashed bg-card p-10 text-center lg:col-span-12">
+            <ShieldCheck className="mx-auto h-8 w-8 text-muted-foreground" />
+            <p className="mt-3 text-sm font-semibold">
+              {t("securitySecurityDashboard.noDevicesReportingYet")}
+            </p>
+            <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
+              {t(
+                "securitySecurityDashboard.securityPostureAppearsOnceDevicesReport",
+              )}
+            </p>
+            <a
+              href="/devices"
+              className="mt-4 inline-flex items-center gap-1 text-sm text-primary hover:underline"
+            >
+              {t("securitySecurityDashboard.goToDevices")}
+              <ChevronRight className="h-3 w-3" />
+            </a>
+          </div>
         ) : (
           <>
             <div className="rounded-lg border bg-card p-6 shadow-xs lg:col-span-4">
@@ -667,41 +707,55 @@ export default function SecurityDashboard({
                   </p>
                   <div className="mt-2 flex items-baseline gap-2">
                     <span
-                      className={cn("text-3xl font-semibold", scoreMeta.text)}
+                      className={cn(
+                        "text-3xl font-semibold",
+                        scoreMeta ? scoreMeta.text : "text-muted-foreground",
+                      )}
                     >
-                      {Math.round(overview.securityScore)}
+                      {overview ? Math.round(overview.securityScore) : "—"}
                     </span>
                     <span className="text-sm text-muted-foreground">/ 100</span>
                   </div>
                 </div>
                 <div
-                  className={cn("rounded-full border p-2.5", scoreMeta.badge)}
+                  className={cn(
+                    "rounded-full border p-2.5",
+                    scoreMeta?.badge ?? "bg-muted/30 text-muted-foreground",
+                  )}
                 >
                   <ShieldCheck className="h-4 w-4" />
                 </div>
               </div>
               <div className="mt-4 space-y-2">
-                <div
-                  className={cn(
-                    "inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium",
-                    scoreMeta.badge,
-                  )}
-                >
-                  {t(/* i18n-dynamic */ scoreMeta.labelKey)}
-                </div>
-                <div className="h-2 w-full rounded-full bg-muted">
-                  <div
-                    className={cn(
-                      "h-2 rounded-full",
-                      scoreMeta.bar,
-                      widthPercentClass(overview.securityScore),
-                    )}
-                  />
-                </div>
-                <div className="flex items-center justify-between text-xs text-muted-foreground">
-                  <span>0</span>
-                  <span>100</span>
-                </div>
+                {overview && scoreMeta ? (
+                  <>
+                    <div
+                      className={cn(
+                        "inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium",
+                        scoreMeta.badge,
+                      )}
+                    >
+                      {t(/* i18n-dynamic */ scoreMeta.labelKey)}
+                    </div>
+                    <div className="h-2 w-full rounded-full bg-muted">
+                      <div
+                        className={cn(
+                          "h-2 rounded-full",
+                          scoreMeta.bar,
+                          widthPercentClass(overview.securityScore),
+                        )}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between text-xs text-muted-foreground">
+                      <span>0</span>
+                      <span>100</span>
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    {t("securitySecurityDashboard.dataUnavailable")}
+                  </p>
+                )}
               </div>
               <div className="mt-4 flex items-center justify-between text-xs">
                 <span className="text-muted-foreground">
@@ -732,9 +786,13 @@ export default function SecurityDashboard({
                 </div>
               </div>
               <div className="mt-4 h-64">
-                {overview.trend.length === 0 ? (
+                {!overview || overview.trend.length === 0 ? (
                   <div className="flex h-full items-center justify-center rounded-md border border-dashed text-xs text-muted-foreground">
-                    {t("securitySecurityDashboard.noDataAvailable")}
+                    {t(
+                      overview
+                        ? "securitySecurityDashboard.noDataAvailable"
+                        : "securitySecurityDashboard.dataUnavailable",
+                    )}
                   </div>
                 ) : (
                   <ResponsiveContainer width="100%" height="100%">
@@ -786,35 +844,46 @@ export default function SecurityDashboard({
                   <p className="text-sm font-semibold">
                     {t("securitySecurityDashboard.vulnerabilities")}
                   </p>
-                  <p className="text-xs text-muted-foreground">
-                    {formatNumber(vulnerabilities.total)}
-                    {t("securitySecurityDashboard.openItems")}
-                  </p>
+                  {vulnerabilities && (
+                    <p className="text-xs text-muted-foreground">
+                      {t("securitySecurityDashboard.openItems", {
+                        count: formatNumber(vulnerabilities.total),
+                      })}
+                    </p>
+                  )}
                 </div>
                 <div className="rounded-full border bg-muted/30 p-2.5">
                   <AlertTriangle className="h-4 w-4 text-muted-foreground" />
                 </div>
               </div>
               <div className="mt-4 space-y-3">
-                {vulnerabilityRows.map((row) => (
-                  <div
-                    key={row.label}
-                    className="flex items-center justify-between text-sm"
-                  >
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={cn(
-                          "h-2.5 w-2.5 rounded-full",
-                          severityStyles[row.severity],
-                        )}
-                      />
-                      <span>{row.label}</span>
-                    </div>
-                    <span className="font-medium">
-                      {formatNumber(row.value)}
-                    </span>
-                  </div>
-                ))}
+                {vulnerabilities ? (
+                  vulnerabilityRows.map((row) => (
+                    <a
+                      key={row.label}
+                      href={`/security/vulnerabilities#severity=${row.severity}`}
+                      className="-mx-2 flex items-center justify-between rounded-md px-2 py-1 text-sm hover:bg-muted/50"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={cn(
+                            "h-2.5 w-2.5 rounded-full",
+                            severityStyles[row.severity],
+                          )}
+                        />
+                        <span>{row.label}</span>
+                      </div>
+                      <span className="inline-flex items-center gap-1 font-medium">
+                        {formatNumber(row.value)}
+                        <ChevronRight className="h-3 w-3 text-muted-foreground" />
+                      </span>
+                    </a>
+                  ))
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    {t("securitySecurityDashboard.dataUnavailable")}
+                  </p>
+                )}
               </div>
               <div className="mt-4 flex items-center justify-between text-xs">
                 <span className="text-muted-foreground">
@@ -836,42 +905,53 @@ export default function SecurityDashboard({
                   <p className="text-sm font-semibold">
                     {t("securitySecurityDashboard.antivirusCoverage")}
                   </p>
-                  <p className="text-xs text-muted-foreground">
-                    {formatNumber(antivirusTotal)}
-                    {t("securitySecurityDashboard.devicesTracked")}
-                  </p>
+                  {overview && (
+                    <p className="text-xs text-muted-foreground">
+                      {t("securitySecurityDashboard.devicesTracked", {
+                        count: formatNumber(antivirusTotal),
+                      })}
+                    </p>
+                  )}
                 </div>
                 <div className="rounded-full border bg-muted/30 p-2.5">
                   <ShieldCheck className="h-4 w-4 text-muted-foreground" />
                 </div>
               </div>
               <div className="mt-4 space-y-3">
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">
-                    {t("securitySecurityDashboard.protected")}
-                  </span>
-                  <span className="font-medium">
-                    {formatNumber(overview.antivirus.protected)} (
-                    {antivirusProtectedPercent}%)
-                  </span>
-                </div>
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">
-                    {t("securitySecurityDashboard.unprotected")}
-                  </span>
-                  <span className="font-medium">
-                    {formatNumber(overview.antivirus.unprotected)} (
-                    {antivirusUnprotectedPercent}%)
-                  </span>
-                </div>
-                <div className="h-2 w-full rounded-full bg-muted">
-                  <div
-                    className={cn(
-                      "h-2 rounded-full bg-emerald-500",
-                      widthPercentClass(antivirusProtectedPercent),
-                    )}
-                  />
-                </div>
+                {overview ? (
+                  <>
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-muted-foreground">
+                        {t("securitySecurityDashboard.protected")}
+                      </span>
+                      <span className="font-medium">
+                        {formatNumber(overview.antivirus.protected)} (
+                        {antivirusProtectedPercent}%)
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-muted-foreground">
+                        {t("securitySecurityDashboard.unprotected")}
+                      </span>
+                      <span className="font-medium">
+                        {formatNumber(overview.antivirus.unprotected)} (
+                        {antivirusUnprotectedPercent}%)
+                      </span>
+                    </div>
+                    <div className="h-2 w-full rounded-full bg-muted">
+                      <div
+                        className={cn(
+                          "h-2 rounded-full bg-emerald-500",
+                          widthPercentClass(antivirusProtectedPercent),
+                        )}
+                      />
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    {t("securitySecurityDashboard.dataUnavailable")}
+                  </p>
+                )}
               </div>
               <div className="mt-4 flex items-center justify-between text-xs">
                 <span className="text-muted-foreground">
@@ -893,42 +973,53 @@ export default function SecurityDashboard({
                   <p className="text-sm font-semibold">
                     {t("securitySecurityDashboard.firewallStatus")}
                   </p>
-                  <p className="text-xs text-muted-foreground">
-                    {formatNumber(firewallTotal)}
-                    {t("securitySecurityDashboard.devicesAudited")}
-                  </p>
+                  {overview && (
+                    <p className="text-xs text-muted-foreground">
+                      {t("securitySecurityDashboard.devicesAudited", {
+                        count: formatNumber(firewallTotal),
+                      })}
+                    </p>
+                  )}
                 </div>
                 <div className="rounded-full border bg-muted/30 p-2.5">
-                  <ShieldOff className="h-4 w-4 text-muted-foreground" />
+                  <Shield className="h-4 w-4 text-muted-foreground" />
                 </div>
               </div>
               <div className="mt-4 space-y-3">
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">
-                    {t("securitySecurityDashboard.enabled")}
-                  </span>
-                  <span className="font-medium">
-                    {formatNumber(overview.firewall.enabled)} (
-                    {firewallEnabledPercent}%)
-                  </span>
-                </div>
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">
-                    {t("securitySecurityDashboard.disabled")}
-                  </span>
-                  <span className="font-medium">
-                    {formatNumber(overview.firewall.disabled)} (
-                    {firewallDisabledPercent}%)
-                  </span>
-                </div>
-                <div className="h-2 w-full rounded-full bg-muted">
-                  <div
-                    className={cn(
-                      "h-2 rounded-full bg-sky-500",
-                      widthPercentClass(firewallEnabledPercent),
-                    )}
-                  />
-                </div>
+                {overview ? (
+                  <>
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-muted-foreground">
+                        {t("securitySecurityDashboard.enabled")}
+                      </span>
+                      <span className="font-medium">
+                        {formatNumber(overview.firewall.enabled)} (
+                        {firewallEnabledPercent}%)
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-muted-foreground">
+                        {t("securitySecurityDashboard.disabled")}
+                      </span>
+                      <span className="font-medium">
+                        {formatNumber(overview.firewall.disabled)} (
+                        {firewallDisabledPercent}%)
+                      </span>
+                    </div>
+                    <div className="h-2 w-full rounded-full bg-muted">
+                      <div
+                        className={cn(
+                          "h-2 rounded-full bg-sky-500",
+                          widthPercentClass(firewallEnabledPercent),
+                        )}
+                      />
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    {t("securitySecurityDashboard.dataUnavailable")}
+                  </p>
+                )}
               </div>
               <div className="mt-4 flex items-center justify-between text-xs">
                 <span className="text-muted-foreground">
@@ -950,40 +1041,51 @@ export default function SecurityDashboard({
                   <p className="text-sm font-semibold">
                     {t("securitySecurityDashboard.encryptionStatus")}
                   </p>
-                  <p className="text-xs text-muted-foreground">
-                    {formatNumber(encryptionTotal)}
-                    {t("securitySecurityDashboard.devicesReviewed")}
-                  </p>
+                  {overview && (
+                    <p className="text-xs text-muted-foreground">
+                      {t("securitySecurityDashboard.devicesReviewed", {
+                        count: formatNumber(encryptionTotal),
+                      })}
+                    </p>
+                  )}
                 </div>
                 <div className="rounded-full border bg-muted/30 p-2.5">
                   <Lock className="h-4 w-4 text-muted-foreground" />
                 </div>
               </div>
               <div className="mt-4 space-y-3">
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">
-                    {t("securitySecurityDashboard.bitlockerEnabled")}
-                  </span>
-                  <span className="font-medium">
-                    {formatNumber(overview.encryption.bitlockerEnabled)}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">
-                    {t("securitySecurityDashboard.filevaultEnabled")}
-                  </span>
-                  <span className="font-medium">
-                    {formatNumber(overview.encryption.filevaultEnabled)}
-                  </span>
-                </div>
-                <div className="h-2 w-full rounded-full bg-muted">
-                  <div
-                    className={cn(
-                      "h-2 rounded-full bg-violet-500",
-                      widthPercentClass(encryptionPercent),
-                    )}
-                  />
-                </div>
+                {overview ? (
+                  <>
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-muted-foreground">
+                        {t("securitySecurityDashboard.bitlockerEnabled")}
+                      </span>
+                      <span className="font-medium">
+                        {formatNumber(overview.encryption.bitlockerEnabled)}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-muted-foreground">
+                        {t("securitySecurityDashboard.filevaultEnabled")}
+                      </span>
+                      <span className="font-medium">
+                        {formatNumber(overview.encryption.filevaultEnabled)}
+                      </span>
+                    </div>
+                    <div className="h-2 w-full rounded-full bg-muted">
+                      <div
+                        className={cn(
+                          "h-2 rounded-full bg-violet-500",
+                          widthPercentClass(encryptionPercent),
+                        )}
+                      />
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    {t("securitySecurityDashboard.dataUnavailable")}
+                  </p>
+                )}
               </div>
               <div className="mt-4 flex items-center justify-between text-xs">
                 <span className="text-muted-foreground">
@@ -1014,22 +1116,30 @@ export default function SecurityDashboard({
                 </div>
               </div>
               <div className="mt-4 space-y-3">
-                <div className="flex items-baseline gap-2">
-                  <span className="text-3xl font-semibold">
-                    {Math.round(passwordCompliance)}%
-                  </span>
-                  <span className="text-xs text-muted-foreground">
-                    compliant
-                  </span>
-                </div>
-                <div className="h-2 w-full rounded-full bg-muted">
-                  <div
-                    className={cn(
-                      "h-2 rounded-full bg-emerald-500",
-                      widthPercentClass(passwordCompliance),
-                    )}
-                  />
-                </div>
+                {overview ? (
+                  <>
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-3xl font-semibold">
+                        {Math.round(passwordCompliance)}%
+                      </span>
+                      <span className="text-xs text-muted-foreground">
+                        {t("securitySecurityDashboard.compliant")}
+                      </span>
+                    </div>
+                    <div className="h-2 w-full rounded-full bg-muted">
+                      <div
+                        className={cn(
+                          "h-2 rounded-full bg-emerald-500",
+                          widthPercentClass(passwordCompliance),
+                        )}
+                      />
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    {t("securitySecurityDashboard.dataUnavailable")}
+                  </p>
+                )}
               </div>
               <div className="mt-4 flex items-center justify-between text-xs">
                 <span className="text-muted-foreground">
@@ -1051,52 +1161,86 @@ export default function SecurityDashboard({
                   <p className="text-sm font-semibold">
                     {t("securitySecurityDashboard.adminAccountAudit")}
                   </p>
-                  <p className="text-xs text-muted-foreground">
-                    {formatNumber(overview.adminAudit.deviceCount)}
-                    {t("securitySecurityDashboard.devicesFlagged")}
-                  </p>
+                  {overview && (
+                    <p className="text-xs text-muted-foreground">
+                      {t("securitySecurityDashboard.devicesFlagged", {
+                        count: formatNumber(overview.adminAudit.deviceCount),
+                      })}
+                    </p>
+                  )}
                 </div>
                 <div className="rounded-full border bg-muted/30 p-2.5">
                   <User className="h-4 w-4 text-muted-foreground" />
                 </div>
               </div>
-              <div className="mt-4 grid grid-cols-2 gap-3">
-                <div className="rounded-md border bg-muted/30 p-3">
-                  <p className="text-xs text-muted-foreground">
-                    {t("securitySecurityDashboard.defaultAdmins")}
-                  </p>
-                  <p className="mt-1 text-lg font-semibold">
-                    {formatNumber(overview.adminAudit.defaultAccounts)}
-                  </p>
-                </div>
-                <div className="rounded-md border bg-muted/30 p-3">
-                  <p className="text-xs text-muted-foreground">
-                    {t("securitySecurityDashboard.weakAdmins")}
-                  </p>
-                  <p className="mt-1 text-lg font-semibold">
-                    {formatNumber(overview.adminAudit.weakAccounts)}
-                  </p>
-                </div>
-              </div>
-              <div className="mt-4 space-y-2">
-                {adminDevices.length > 0 ? (
-                  adminDevices.map((device) => (
-                    <div
-                      key={device.id}
-                      className="rounded-md border bg-muted/30 px-3 py-2 text-xs"
-                    >
-                      <p className="font-medium">{device.name}</p>
-                      {device.issue && (
-                        <p className="text-muted-foreground">{device.issue}</p>
-                      )}
+              {overview ? (
+                <>
+                  <div className="mt-4 grid grid-cols-2 gap-3">
+                    <div>
+                      <p className="text-xs text-muted-foreground">
+                        {t("securitySecurityDashboard.defaultAdmins")}
+                      </p>
+                      <p className="mt-1 text-lg font-semibold">
+                        {formatNumber(overview.adminAudit.defaultAccounts)}
+                      </p>
                     </div>
-                  ))
-                ) : (
-                  <p className="text-xs text-muted-foreground">
-                    {t("securitySecurityDashboard.noWeakAdminAccountsDetected")}
-                  </p>
-                )}
-              </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">
+                        {t("securitySecurityDashboard.weakAdmins")}
+                      </p>
+                      <p className="mt-1 text-lg font-semibold">
+                        {formatNumber(overview.adminAudit.weakAccounts)}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="mt-4">
+                    {adminDevices.length > 0 ? (
+                      <div className="divide-y">
+                        {adminDevices.map((device) => (
+                          <a
+                            key={device.id}
+                            href={`/devices/${device.id}`}
+                            className="-mx-2 flex items-center justify-between gap-2 rounded-md px-2 py-2 text-xs hover:bg-muted/50"
+                          >
+                            <div>
+                              <p className="font-medium">{device.name}</p>
+                              {device.issue && (
+                                <p className="text-muted-foreground">
+                                  {device.issue}
+                                </p>
+                              )}
+                            </div>
+                            <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" />
+                          </a>
+                        ))}
+                        {overview.adminAudit.devices.length >
+                          adminDevices.length && (
+                          <a
+                            href="/security/admin-audit"
+                            className="block py-2 text-xs text-primary hover:underline"
+                          >
+                            {t("securitySecurityDashboard.moreDevices", {
+                              count:
+                                overview.adminAudit.devices.length -
+                                adminDevices.length,
+                            })}
+                          </a>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">
+                        {t(
+                          "securitySecurityDashboard.noWeakAdminAccountsDetected",
+                        )}
+                      </p>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <p className="mt-4 text-xs text-muted-foreground">
+                  {t("securitySecurityDashboard.dataUnavailable")}
+                </p>
+              )}
               <div className="mt-4 flex items-center justify-between text-xs">
                 <span className="text-muted-foreground">
                   {t("securitySecurityDashboard.privilegedAccess")}
@@ -1117,22 +1261,26 @@ export default function SecurityDashboard({
                   <p className="text-sm font-semibold">
                     {t("securitySecurityDashboard.securityRecommendations")}
                   </p>
-                  <p className="text-xs text-muted-foreground">
-                    {formatNumber(sortedRecommendations.length)}
-                    {t("securitySecurityDashboard.actionsPrioritized")}
-                  </p>
+                  {overview && (
+                    <p className="text-xs text-muted-foreground">
+                      {t("securitySecurityDashboard.actionsPrioritized", {
+                        count: formatNumber(sortedRecommendations.length),
+                      })}
+                    </p>
+                  )}
                 </div>
                 <div className="rounded-full border bg-muted/30 p-2.5">
                   <Sparkles className="h-4 w-4 text-muted-foreground" />
                 </div>
               </div>
               <div className="mt-4 grid gap-3 lg:grid-cols-2">
-                {sortedRecommendations.length > 0 ? (
+                {!overview ? (
+                  <p className="text-xs text-muted-foreground lg:col-span-2">
+                    {t("securitySecurityDashboard.dataUnavailable")}
+                  </p>
+                ) : sortedRecommendations.length > 0 ? (
                   sortedRecommendations.map((rec) => (
-                    <div
-                      key={rec.id}
-                      className="rounded-md border bg-muted/30 p-4"
-                    >
+                    <div key={rec.id} className="rounded-md bg-muted/30 p-4">
                       <div className="flex items-start justify-between gap-4">
                         <div>
                           <p className="text-sm font-medium">{rec.title}</p>
