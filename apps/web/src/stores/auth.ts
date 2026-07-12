@@ -86,7 +86,7 @@ type PersistedAuthState = Pick<AuthState, 'user' | 'isAuthenticated'>;
 
 export const useAuthStore = create<AuthState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       user: null,
       tokens: null,
       isAuthenticated: false,
@@ -106,7 +106,11 @@ export const useAuthStore = create<AuthState>()(
       setLoading: (loading) => set({ isLoading: loading }),
 
       login: (user, tokens) => {
-        advanceWebSessionGeneration();
+        const current = get();
+        const isAlreadyInstalled = current.user?.id === user.id
+          && current.tokens?.accessToken === tokens.accessToken
+          && current.isAuthenticated;
+        if (!isAlreadyInstalled) advanceWebSessionGeneration();
         set({
           user,
           tokens,
@@ -275,7 +279,34 @@ export function resolveApiOrigin(): string {
   return '';
 }
 
-const REFRESH_LOCK_NAME = 'breeze-token-refresh';
+const AUTH_SESSION_TRANSITION_LOCK_NAME = 'breeze-auth-session-transition';
+let authSessionTransitionTail: Promise<void> = Promise.resolve();
+
+/**
+ * Serialize every operation that can replace the shared refresh cookie.
+ * Web Locks coordinate browser tabs; the promise queue preserves invocation
+ * order within browsers that do not implement that API. Queue rejection is
+ * deliberately absorbed by the tail so one failed transition cannot poison
+ * later sign-in attempts.
+ */
+export async function withAuthSessionTransition<T>(operation: () => Promise<T>): Promise<T> {
+  const locks = typeof navigator !== 'undefined'
+    ? (navigator as Navigator & { locks?: LockManager }).locks
+    : undefined;
+  if (locks?.request) {
+    return locks.request(AUTH_SESSION_TRANSITION_LOCK_NAME, operation) as Promise<T>;
+  }
+
+  const previous = authSessionTransitionTail;
+  let release!: () => void;
+  authSessionTransitionTail = new Promise<void>((resolve) => { release = resolve; });
+  await previous.catch(() => undefined);
+  try {
+    return await operation();
+  } finally {
+    release();
+  }
+}
 
 // One low-level /auth/refresh attempt. Returns the new tokens on success, or a
 // discriminated result so the caller can tell three cases apart:
@@ -338,21 +369,6 @@ async function refreshFetchOnce(): Promise<{ tokens: Tokens | null; raced: boole
   return { tokens: null, raced: false, transient: false };
 }
 
-// Serialize refresh across tabs AND across reloads via the Web Locks API.
-// Multiple browser contexts share one refresh cookie jar; without a lock they
-// can fire concurrent rotations that replay each other's just-revoked jti and
-// (pre-#1107) tripped reuse-detection, logging everyone out on a hard refresh.
-// Falls back to a direct call where Web Locks are unavailable (older browsers).
-async function withRefreshLock<T>(fn: () => Promise<T>): Promise<T> {
-  const locks = typeof navigator !== 'undefined'
-    ? (navigator as Navigator & { locks?: LockManager }).locks
-    : undefined;
-  if (!locks?.request) {
-    return fn();
-  }
-  return locks.request(REFRESH_LOCK_NAME, fn) as Promise<T>;
-}
-
 // A single transient gateway/network blip must not boot the user mid-session
 // (QA 2026-07-08), so transient refresh failures get a bounded exponential
 // backoff. Kept small: enough to ride out a one-off 502, not so many that a
@@ -361,36 +377,25 @@ const MAX_TRANSIENT_REFRESH_RETRIES = 2;
 const TRANSIENT_REFRESH_BASE_DELAY_MS = 300;
 
 async function requestTokenRefresh(): Promise<Tokens | null> {
-  return withRefreshLock(async () => {
-    let transientRetries = 0;
-    for (;;) {
-      const result = await refreshFetchOnce();
-      if (result.tokens) return result.tokens;
+  let transientRetries = 0;
+  for (;;) {
+    const result = await refreshFetchOnce();
+    if (result.tokens) return result.tokens;
 
-      if (result.raced) {
-        // Benign race (#1107): a sibling context won the rotation. Give the
-        // winner's rotated cookie a beat to settle in the shared jar, then
-        // retry exactly once. The retry sends the now-current cookie.
-        await new Promise((resolve) => setTimeout(resolve, 200));
-        const retry = await refreshFetchOnce();
-        if (retry.tokens) return retry.tokens;
-        // If the race-retry itself hit a transient blip, fall through to the
-        // backoff path below; otherwise the session is genuinely gone.
-        if (!retry.transient) return null;
-      } else if (!result.transient) {
-        // Hard failure (expired/reused refresh cookie, real 401/403): the
-        // session is unrecoverable — evict.
-        return null;
-      }
-
-      // Transient gateway/network failure. Retry with bounded exponential
-      // backoff before giving up and letting the caller evict the session.
-      if (transientRetries >= MAX_TRANSIENT_REFRESH_RETRIES) return null;
-      const delay = TRANSIENT_REFRESH_BASE_DELAY_MS * 2 ** transientRetries;
-      transientRetries += 1;
-      await new Promise((resolve) => setTimeout(resolve, delay));
+    if (result.raced) {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      const retry = await refreshFetchOnce();
+      if (retry.tokens) return retry.tokens;
+      if (!retry.transient) return null;
+    } else if (!result.transient) {
+      return null;
     }
-  });
+
+    if (transientRetries >= MAX_TRANSIENT_REFRESH_RETRIES) return null;
+    const delay = TRANSIENT_REFRESH_BASE_DELAY_MS * 2 ** transientRetries;
+    transientRetries += 1;
+    await new Promise((resolve) => setTimeout(resolve, delay));
+  }
 }
 
 let tokenRefreshInFlight: { generation: number; promise: Promise<Tokens | null> } | null = null;
@@ -401,7 +406,7 @@ async function requestTokenRefreshShared(generation = captureWebSessionGeneratio
   }
 
   const entry = { generation, promise: Promise.resolve<Tokens | null>(null) };
-  entry.promise = requestTokenRefresh().finally(() => {
+  entry.promise = withAuthSessionTransition(requestTokenRefresh).finally(() => {
     if (tokenRefreshInFlight === entry) tokenRefreshInFlight = null;
   });
   tokenRefreshInFlight = entry;
@@ -464,33 +469,28 @@ export async function restoreAccessTokenFromCookie(): Promise<boolean> {
  * caller should fall back to the regular login form).
  */
 export async function bootstrapFromCfAccessRedirect(): Promise<boolean> {
-  const generation = captureWebSessionGeneration();
-  const tokens = await requestTokenRefreshShared(generation);
-  if (!isCurrentWebSessionGeneration(generation)) return false;
-  if (!tokens?.accessToken) return false;
+  const populated = await withAuthSessionTransition(async () => {
+    const generation = captureWebSessionGeneration();
+    const tokens = await requestTokenRefresh();
+    if (!isCurrentWebSessionGeneration(generation) || !tokens?.accessToken) return false;
 
-  let meResponse: Response;
-  try {
-    meResponse = await fetch(buildApiUrl('/users/me'), {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${tokens.accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      credentials: 'include',
-    });
-    if (!isCurrentWebSessionGeneration(generation)) return false;
-  } catch {
-    return false;
-  }
-
-  if (!meResponse.ok) return false;
-
-  const user = (await meResponse.json()) as User | null;
-  if (!isCurrentWebSessionGeneration(generation)) return false;
-  if (!user || !user.id) return false;
-
-  useAuthStore.getState().login(user, tokens);
+    try {
+      const meResponse = await fetch(buildApiUrl('/users/me'), {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${tokens.accessToken}`, 'Content-Type': 'application/json' },
+        credentials: 'include',
+      });
+      if (!isCurrentWebSessionGeneration(generation) || !meResponse.ok) return false;
+      const user = (await meResponse.json()) as User | null;
+      if (!isCurrentWebSessionGeneration(generation) || !user?.id) return false;
+      useAuthStore.getState().login(user, tokens);
+      return true;
+    } catch (error) {
+      if (error instanceof StaleWebSessionError) throw error;
+      return false;
+    }
+  });
+  if (!populated) return false;
 
   // Mirror what LoginPage does after a successful password login: pull
   // /users/me into the store and apply the theme to the DOM. Without
@@ -702,7 +702,9 @@ export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): 
   // not remain on an authenticated screen.
   let requiresReauthentication = false;
   let ephemeralRecoveryCodes: string[] | undefined;
-  if (response.ok && typeof response.clone === 'function') {
+  const responseContentType = response.headers?.get?.('content-type')?.toLowerCase() ?? '';
+  const hasJsonBody = responseContentType.includes('/json') || responseContentType.includes('+json');
+  if (response.ok && hasJsonBody && typeof response.clone === 'function') {
     try {
       const body = await response.clone().json() as { reauthenticate?: unknown };
       assertCurrent();
@@ -800,93 +802,83 @@ export async function apiLogin(email: string, password: string): Promise<{
   requiresSetup?: boolean;
   error?: string;
 }> {
-  const generation = captureWebSessionGeneration();
-  try {
-    const response = await fetch(buildApiUrl('/auth/login'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({ email, password })
-    });
-    if (!isCurrentWebSessionGeneration(generation)) throw new StaleWebSessionError();
+  return withAuthSessionTransition(async () => {
+    const generation = captureWebSessionGeneration();
+    try {
+      const response = await fetch(buildApiUrl('/auth/login'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ email, password })
+      });
+      if (!isCurrentWebSessionGeneration(generation)) throw new StaleWebSessionError();
 
-    const data = await response.json();
-    if (!isCurrentWebSessionGeneration(generation)) throw new StaleWebSessionError();
+      const data = await response.json();
+      if (!isCurrentWebSessionGeneration(generation)) throw new StaleWebSessionError();
 
-    if (!response.ok) {
-      return { success: false, error: extractApiError(data, 'Login failed') };
+      if (!response.ok) {
+        return { success: false, error: extractApiError(data, 'Login failed') };
+      }
+
+      if (data.mfaRequired) {
+        const primaryMethod: MfaMethod = data.mfaMethod || 'totp';
+        const hasExplicitMethods = Object.prototype.hasOwnProperty.call(data, 'allowedMethods');
+        const serverMethods: MfaMethod[] = Array.isArray(data.allowedMethods)
+          ? data.allowedMethods.filter((method: unknown): method is MfaMethod =>
+              method === 'totp' || method === 'sms' || method === 'passkey' || method === 'recovery_code')
+          : [];
+        const allowedMethods: MfaMethod[] = hasExplicitMethods
+          ? [...new Set(serverMethods)]
+          : [...new Set<MfaMethod>([
+              primaryMethod,
+              ...(data.passkeyAvailable === true ? ['passkey' as const] : []),
+              'recovery_code',
+            ])];
+        return {
+          success: true,
+          mfaRequired: true,
+          tempToken: data.tempToken,
+          mfaMethod: primaryMethod,
+          allowedMethods,
+          passkeyAvailable: data.passkeyAvailable === true,
+          phoneLast4: data.phoneLast4
+        };
+      }
+
+      const user = data.user ? { ...data.user, requiresSetup: !!data.requiresSetup } : data.user;
+      if (user && data.tokens) useAuthStore.getState().login(user, data.tokens);
+
+      return { success: true, user, tokens: data.tokens, requiresSetup: !!data.requiresSetup };
+    } catch (error) {
+      if (error instanceof StaleWebSessionError) throw error;
+      return { success: false, error: 'Network error' };
     }
-
-    if (data.mfaRequired) {
-      const primaryMethod: MfaMethod = data.mfaMethod || 'totp';
-      const hasExplicitMethods = Object.prototype.hasOwnProperty.call(data, 'allowedMethods');
-      const serverMethods: MfaMethod[] = Array.isArray(data.allowedMethods)
-        ? data.allowedMethods.filter((method: unknown): method is MfaMethod =>
-            method === 'totp' || method === 'sms' || method === 'passkey' || method === 'recovery_code')
-        : [];
-      const allowedMethods: MfaMethod[] = hasExplicitMethods
-        ? [...new Set(serverMethods)]
-        : [...new Set<MfaMethod>([
-            primaryMethod,
-            ...(data.passkeyAvailable === true ? ['passkey' as const] : []),
-            'recovery_code',
-          ])];
-      return {
-        success: true,
-        mfaRequired: true,
-        tempToken: data.tempToken,
-        mfaMethod: primaryMethod,
-        allowedMethods,
-        // #2153: whether a passkey can be used as an alternate factor for this
-        // login even when the primary method is totp/sms.
-        passkeyAvailable: data.passkeyAvailable === true,
-        phoneLast4: data.phoneLast4
-      };
-    }
-
-    const user = data.user ? { ...data.user, requiresSetup: !!data.requiresSetup } : data.user;
-
-    return {
-      success: true,
-      user,
-      tokens: data.tokens,
-      requiresSetup: !!data.requiresSetup
-    };
-  } catch (error) {
-    if (error instanceof StaleWebSessionError) throw error;
-    return { success: false, error: 'Network error' };
-  }
+  });
 }
 
 export async function apiVerifyMFA(code: string, tempToken: string, method: MfaCodeMethod = 'totp'): Promise<ApiAuthSuccess> {
-  try {
-    const payload = method === 'recovery_code'
-      ? { code: normalizeRecoveryCode(code), tempToken, method }
-      : { code, tempToken, method };
-    const response = await fetch(buildApiUrl('/auth/mfa/verify'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify(payload)
-    });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      return { success: false, error: extractApiError(data, 'MFA verification failed') };
+  return withAuthSessionTransition(async () => {
+    const generation = captureWebSessionGeneration();
+    try {
+      const payload = method === 'recovery_code'
+        ? { code: normalizeRecoveryCode(code), tempToken, method }
+        : { code, tempToken, method };
+      const response = await fetch(buildApiUrl('/auth/mfa/verify'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify(payload)
+      });
+      if (!isCurrentWebSessionGeneration(generation)) throw new StaleWebSessionError();
+      const data = await response.json();
+      if (!isCurrentWebSessionGeneration(generation)) throw new StaleWebSessionError();
+      if (!response.ok) return { success: false, error: extractApiError(data, 'MFA verification failed') };
+      const user = data.user ? { ...data.user, requiresSetup: !!data.requiresSetup } : data.user;
+      if (user && data.tokens) useAuthStore.getState().login(user, data.tokens);
+      return { success: true, user, tokens: data.tokens, requiresSetup: !!data.requiresSetup };
+    } catch (error) {
+      if (error instanceof StaleWebSessionError) throw error;
+      return { success: false, error: 'Network error' };
     }
-
-    const user = data.user ? { ...data.user, requiresSetup: !!data.requiresSetup } : data.user;
-
-    return {
-      success: true,
-      user,
-      tokens: data.tokens,
-      requiresSetup: !!data.requiresSetup
-    };
-  } catch {
-    return { success: false, error: 'Network error' };
-  }
+  });
 }
 
 export type MfaStepUpPurpose = 'passkey.register' | 'totp.replace' | 'sms.replace' | 'email.change';
@@ -932,53 +924,59 @@ export async function apiCreateMfaStepUpGrant(
 }
 
 export async function apiVerifyPasskeyMFA(tempToken: string): Promise<ApiAuthSuccess> {
-  try {
-    const optionsResponse = await fetch(buildApiUrl('/auth/mfa/passkey/options'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({ tempToken })
-    });
-
-    const optionsData = await optionsResponse.json();
-
-    if (!optionsResponse.ok) {
-      return { success: false, error: extractApiError(optionsData, 'Failed to start passkey verification') };
-    }
-
-    const optionsJSON = optionsData.options ?? optionsData.optionsJSON;
-    const credential = await getPasskeyCredential(optionsJSON);
-
-    const verifyResponse = await fetch(buildApiUrl('/auth/mfa/passkey/verify'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({ tempToken, credential })
-    });
-
-    const verifyData = await verifyResponse.json();
-
-    if (!verifyResponse.ok) {
-      return { success: false, error: extractApiError(verifyData, 'Passkey verification failed') };
-    }
-
-    const user = verifyData.user
-      ? { ...verifyData.user, requiresSetup: !!verifyData.requiresSetup }
-      : verifyData.user;
-
-    return {
-      success: true,
-      user,
-      tokens: verifyData.tokens,
-      requiresSetup: !!verifyData.requiresSetup
+  return withAuthSessionTransition(async () => {
+    const generation = captureWebSessionGeneration();
+    const assertCurrent = () => {
+      if (!isCurrentWebSessionGeneration(generation)) throw new StaleWebSessionError();
     };
-  } catch (error) {
-    if (error instanceof Error && error.name === 'NotAllowedError') {
-      return { success: false, error: 'Passkey verification was canceled or timed out' };
+    try {
+      const optionsResponse = await fetch(buildApiUrl('/auth/mfa/passkey/options'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ tempToken })
+      });
+      assertCurrent();
+      const optionsData = await optionsResponse.json();
+      assertCurrent();
+
+      if (!optionsResponse.ok) {
+        return { success: false, error: extractApiError(optionsData, 'Failed to start passkey verification') };
+      }
+
+      const optionsJSON = optionsData.options ?? optionsData.optionsJSON;
+      const credential = await getPasskeyCredential(optionsJSON);
+      assertCurrent();
+
+      const verifyResponse = await fetch(buildApiUrl('/auth/mfa/passkey/verify'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ tempToken, credential })
+      });
+      assertCurrent();
+      const verifyData = await verifyResponse.json();
+      assertCurrent();
+
+      if (!verifyResponse.ok) {
+        return { success: false, error: extractApiError(verifyData, 'Passkey verification failed') };
+      }
+
+      const user = verifyData.user
+        ? { ...verifyData.user, requiresSetup: !!verifyData.requiresSetup }
+        : verifyData.user;
+      if (user && verifyData.tokens) useAuthStore.getState().login(user, verifyData.tokens);
+
+      return { success: true, user, tokens: verifyData.tokens, requiresSetup: !!verifyData.requiresSetup };
+    } catch (error) {
+      if (error instanceof StaleWebSessionError) throw error;
+      if (error instanceof Error && error.name === 'NotAllowedError') {
+        return { success: false, error: 'Passkey verification was canceled or timed out' };
+      }
+      console.warn('[apiVerifyPasskeyMFA] passkey MFA verification failed:', error);
+      return { success: false, error: 'Network error' };
     }
-    console.warn('[apiVerifyPasskeyMFA] passkey MFA verification failed:', error);
-    return { success: false, error: 'Network error' };
-  }
+  });
 }
 
 export interface Partner {
@@ -1085,8 +1083,13 @@ export async function apiLogout(): Promise<void> {
 }
 
 export async function fetchAndApplyPreferences(): Promise<void> {
+  const generation = captureWebSessionGeneration();
+  const assertCurrent = () => {
+    if (!isCurrentWebSessionGeneration(generation)) throw new StaleWebSessionError();
+  };
   try {
     const response = await fetchWithAuth('/users/me');
+    assertCurrent();
     if (!response.ok) {
       console.warn(
         `[fetchAndApplyPreferences] GET /users/me returned ${response.status}; locale resolution skipped`
@@ -1095,22 +1098,28 @@ export async function fetchAndApplyPreferences(): Promise<void> {
     }
 
     const data = await response.json();
+    assertCurrent();
     // isPlatformAdmin rides along with this refresh: fresh logins carry it in
     // the login payload, but sessions persisted before the field existed only
     // learn it here — without the merge, the platform-admin nav stays hidden
     // until the next re-login.
     if (typeof data.isPlatformAdmin === 'boolean') {
+      assertCurrent();
       useAuthStore.getState().updateUser({ isPlatformAdmin: data.isPlatformAdmin });
     }
     // Permissions ride along on the same refresh so sessions persisted before
     // the field existed still pick up their grants without a re-login.
     if (Array.isArray(data.permissions)) {
+      assertCurrent();
       useAuthStore.getState().updateUser({ permissions: data.permissions });
     }
     if (data.preferences) {
+      assertCurrent();
       useAuthStore.getState().updateUser({ preferences: data.preferences });
+      assertCurrent();
       applyAppearancePreferences(data.preferences);
     }
+    assertCurrent();
     applyResolvedLocalePreferences(data.preferences?.locale, data.partnerDefaultLocale);
   } catch (err) {
     // Non-critical for theme — localStorage still has the cached theme — but this

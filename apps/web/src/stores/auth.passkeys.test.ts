@@ -14,6 +14,7 @@ vi.mock('@simplewebauthn/browser', () => ({
 }));
 
 import { apiLogin, apiVerifyPasskeyMFA, useAuthStore } from './auth';
+import { StaleWebSessionError } from './sessionTeardown';
 
 const makeResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({
@@ -129,5 +130,101 @@ describe('auth store passkey MFA helpers', () => {
         body: JSON.stringify({ tempToken: 'temp-passkey', credential }),
       }),
     ]);
+  });
+
+  it('discards account A when account B installs while its WebAuthn assertion is pending', async () => {
+    let resolveCredential!: (credential: object) => void;
+    webauthnMocks.startAuthentication.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveCredential = resolve; }),
+    );
+    const fetchMock = vi.fn().mockResolvedValueOnce(makeResponse({
+      options: { challenge: 'challenge-a', allowCredentials: [] },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const oldVerification = apiVerifyPasskeyMFA('temp-a');
+    await vi.waitFor(() => expect(webauthnMocks.startAuthentication).toHaveBeenCalledOnce());
+    const userB = { ...baseUser, id: 'user-b', email: 'b@example.com' };
+    const tokensB = { accessToken: 'access-b', expiresInSeconds: 3600 };
+    useAuthStore.getState().login(userB, tokensB);
+    resolveCredential({ id: 'credential-a', type: 'public-key', response: {} });
+
+    await expect(oldVerification).rejects.toBeInstanceOf(StaleWebSessionError);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(useAuthStore.getState()).toMatchObject({ user: userB, tokens: tokensB });
+  });
+
+  it('discards account A when account B installs while passkey options are parsing', async () => {
+    let resolveOptions!: (body: unknown) => void;
+    const optionsJson = vi.fn(() => new Promise<unknown>((resolve) => { resolveOptions = resolve; }));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200, json: optionsJson } as unknown as Response));
+    const oldVerification = apiVerifyPasskeyMFA('temp-a');
+    await vi.waitFor(() => expect(optionsJson).toHaveBeenCalledOnce());
+    const userB = { ...baseUser, id: 'user-b', email: 'b@example.com' };
+    const tokensB = { accessToken: 'access-b', expiresInSeconds: 3600 };
+    useAuthStore.getState().login(userB, tokensB);
+    resolveOptions({ options: { challenge: 'challenge-a', allowCredentials: [] } });
+
+    await expect(oldVerification).rejects.toBeInstanceOf(StaleWebSessionError);
+    expect(webauthnMocks.startAuthentication).not.toHaveBeenCalled();
+    expect(useAuthStore.getState()).toMatchObject({ user: userB, tokens: tokensB });
+  });
+
+  it('discards account A when account B installs while passkey verification is parsing', async () => {
+    webauthnMocks.startAuthentication.mockResolvedValueOnce({ id: 'credential-a', type: 'public-key', response: {} });
+    let resolveVerify!: (body: unknown) => void;
+    const verifyJson = vi.fn(() => new Promise<unknown>((resolve) => { resolveVerify = resolve; }));
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(makeResponse({ options: { challenge: 'challenge-a', allowCredentials: [] } }))
+      .mockResolvedValueOnce({ ok: true, status: 200, json: verifyJson } as unknown as Response);
+    vi.stubGlobal('fetch', fetchMock);
+    const oldVerification = apiVerifyPasskeyMFA('temp-a');
+    await vi.waitFor(() => expect(verifyJson).toHaveBeenCalledOnce());
+    const userB = { ...baseUser, id: 'user-b', email: 'b@example.com' };
+    const tokensB = { accessToken: 'access-b', expiresInSeconds: 3600 };
+    useAuthStore.getState().login(userB, tokensB);
+    resolveVerify({ user: baseUser, tokens: baseTokens });
+
+    await expect(oldVerification).rejects.toBeInstanceOf(StaleWebSessionError);
+    expect(useAuthStore.getState()).toMatchObject({ user: userB, tokens: tokensB });
+  });
+
+  it('holds the transition for the whole passkey ceremony before newer password login', async () => {
+    let resolveCredential!: (credential: object) => void;
+    webauthnMocks.startAuthentication.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveCredential = resolve; }),
+    );
+    let resolveVerifyA!: (response: Response) => void;
+    let resolveLoginB!: (response: Response) => void;
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/auth/mfa/passkey/options')) {
+        return Promise.resolve(makeResponse({ options: { challenge: 'challenge-a', allowCredentials: [] } }));
+      }
+      if (url.endsWith('/auth/mfa/passkey/verify')) {
+        return new Promise<Response>((resolve) => { resolveVerifyA = resolve; });
+      }
+      if (url.endsWith('/auth/login')) {
+        return new Promise<Response>((resolve) => { resolveLoginB = resolve; });
+      }
+      throw new Error(`unexpected request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const passkeyA = apiVerifyPasskeyMFA('temp-a');
+    await vi.waitFor(() => expect(webauthnMocks.startAuthentication).toHaveBeenCalledOnce());
+    const loginB = apiLogin('b@example.com', 'password-b');
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/auth/login'))).toHaveLength(0);
+
+    resolveCredential({ id: 'credential-a', type: 'public-key', response: {} });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/auth/login'))).toHaveLength(0);
+    resolveVerifyA(makeResponse({ user: baseUser, tokens: baseTokens }));
+    await vi.waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/auth/login'))).toBe(true));
+    const userB = { ...baseUser, id: 'user-b', email: 'b@example.com' };
+    const tokensB = { accessToken: 'access-b', expiresInSeconds: 3600 };
+    resolveLoginB(makeResponse({ user: userB, tokens: tokensB }));
+
+    await expect(passkeyA).resolves.toMatchObject({ success: true, user: baseUser });
+    await expect(loginB).resolves.toMatchObject({ success: true, user: userB });
+    expect(useAuthStore.getState()).toMatchObject({ user: userB, tokens: tokensB });
   });
 });

@@ -18,9 +18,10 @@ import {
   resolveApiOrigin,
   restoreAccessTokenFromCookie,
   useAuthStore,
-  waitForPendingRefresh
+  waitForPendingRefresh,
+  withAuthSessionTransition,
 } from './auth';
-import { registerSessionTeardown, StaleWebSessionError } from './sessionTeardown';
+import { captureWebSessionGeneration, registerSessionTeardown, StaleWebSessionError } from './sessionTeardown';
 
 // fetchAndApplyPreferences (auth.ts) is the only call site for these two exports
 // (verified via grep on auth.ts) — mocking the whole appearance module is safe
@@ -36,6 +37,7 @@ const makeResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Res
   ({
     ok,
     status,
+    headers: new Headers({ 'content-type': 'application/json' }),
     json: vi.fn().mockResolvedValue(payload),
     clone: vi.fn(() => makeResponse(payload, ok, status)),
   }) as unknown as Response;
@@ -99,6 +101,25 @@ describe('auth store fetchWithAuth', () => {
     const headers = options.headers as Headers;
     expect(headers.get('Authorization')).toBe(`Bearer ${baseTokens.accessToken}`);
     expect(headers.get('Content-Type')).toBeNull();
+  });
+
+  it('returns an open event stream without waiting for the cloned body to close', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const chunk = new TextEncoder().encode('data: {"type":"ready"}\n\n');
+    const response = new Response(new ReadableStream<Uint8Array>({
+      start(nextController) {
+        nextController.enqueue(chunk);
+      },
+    }), { headers: { 'content-type': 'text/event-stream' } });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response));
+
+    const result = await Promise.race([
+      fetchWithAuth('/events'),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('stream response was blocked')), 100)),
+    ]);
+    const reader = result.body!.getReader();
+    await expect(reader.read()).resolves.toMatchObject({ done: false, value: chunk });
+    await reader.cancel();
   });
 
   it('aborts a JSON request at the 30s default timeout', async () => {
@@ -571,6 +592,7 @@ describe('auth store fetchWithAuth', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
       clone: () => ({ json }),
     } as unknown as Response));
 
@@ -583,6 +605,179 @@ describe('auth store fetchWithAuth', () => {
     resolveBody({ reauthenticate: true, recoveryCodes: ['ACCT-A01'] });
 
     await expect(oldRequest).rejects.toBeInstanceOf(StaleWebSessionError);
+    expect(useAuthStore.getState()).toMatchObject({ user: userB, tokens: tokensB });
+  });
+
+  it.each(['totp', 'recovery_code'] as const)(
+    'discards deferred account A %s verification after account B installs',
+    async (method) => {
+      let resolveVerification!: (response: Response) => void;
+      vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => { resolveVerification = resolve; })));
+      const oldVerification = apiVerifyMFA('ABCD-EF12', 'temp-a', method);
+      await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+      const userB = { ...baseUser, id: 'user-b', email: 'b@example.com' };
+      const tokensB = { accessToken: 'access-b', expiresInSeconds: 3600 };
+      useAuthStore.getState().login(userB, tokensB);
+      resolveVerification(makeResponse({ user: baseUser, tokens: baseTokens }));
+
+      await expect(oldVerification).rejects.toBeInstanceOf(StaleWebSessionError);
+      expect(useAuthStore.getState()).toMatchObject({ user: userB, tokens: tokensB });
+    },
+  );
+
+  it('serializes password session transitions so the newer intent runs and installs last', async () => {
+    const resolvers: Array<(response: Response) => void> = [];
+    const fetchMock = vi.fn(() => new Promise<Response>((resolve) => { resolvers.push(resolve); }));
+    vi.stubGlobal('fetch', fetchMock);
+    const loginA = apiLogin('a@example.com', 'password-a');
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    const loginB = apiLogin('b@example.com', 'password-b');
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    resolvers[0](makeResponse({ user: baseUser, tokens: baseTokens }));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const userB = { ...baseUser, id: 'user-b', email: 'b@example.com' };
+    const tokensB = { accessToken: 'access-b', expiresInSeconds: 3600 };
+    resolvers[1](makeResponse({ user: userB, tokens: tokensB }));
+
+    await expect(loginA).resolves.toMatchObject({ success: true, user: baseUser });
+    await expect(loginB).resolves.toMatchObject({ success: true, user: userB });
+    expect(useAuthStore.getState()).toMatchObject({ user: userB, tokens: tokensB });
+  });
+
+  it('does not advance the boundary when a caller re-installs the exact session returned by apiLogin', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse({ user: baseUser, tokens: baseTokens })));
+    const result = await apiLogin('user@example.com', 'password');
+    expect(result).toMatchObject({ success: true, user: baseUser, tokens: baseTokens });
+    const installedGeneration = captureWebSessionGeneration();
+
+    useAuthStore.getState().login(result.user!, result.tokens!);
+
+    expect(captureWebSessionGeneration()).toBe(installedGeneration);
+  });
+
+  it.each(['totp', 'recovery_code'] as const)(
+    'serializes account A %s verification before a newer account B password intent',
+    async (method) => {
+      const resolvers: Array<(response: Response) => void> = [];
+      const fetchMock = vi.fn(() => new Promise<Response>((resolve) => { resolvers.push(resolve); }));
+      vi.stubGlobal('fetch', fetchMock);
+      const verificationA = apiVerifyMFA('ABCD-EF12', 'temp-a', method);
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+      const loginB = apiLogin('b@example.com', 'password-b');
+      expect(fetchMock).toHaveBeenCalledOnce();
+
+      resolvers[0](makeResponse({ user: baseUser, tokens: baseTokens }));
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+      const userB = { ...baseUser, id: 'user-b', email: 'b@example.com' };
+      const tokensB = { accessToken: 'access-b', expiresInSeconds: 3600 };
+      resolvers[1](makeResponse({ user: userB, tokens: tokensB }));
+
+      await expect(verificationA).resolves.toMatchObject({ success: true, user: baseUser });
+      await expect(loginB).resolves.toMatchObject({ success: true, user: userB });
+      expect(useAuthStore.getState()).toMatchObject({ user: userB, tokens: tokensB });
+    },
+  );
+
+  it('does not poison the fallback transition queue when the coordinator operation rejects', async () => {
+    let rejectA!: (error: Error) => void;
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => new Promise<Response>((_, reject) => { rejectA = reject; }))
+      .mockResolvedValueOnce(makeResponse({ user: baseUser, tokens: baseTokens }));
+    vi.stubGlobal('fetch', fetchMock);
+    const loginA = apiLogin('a@example.com', 'password-a');
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    const loginB = apiLogin('b@example.com', 'password-b');
+    expect(fetchMock).toHaveBeenCalledOnce();
+
+    rejectA(new Error('coordinator failure'));
+    await expect(loginA).resolves.toMatchObject({ success: false });
+    await expect(loginB).resolves.toMatchObject({ success: true });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('releases the fallback transition tail after an uncaught coordinator rejection', async () => {
+    let rejectFirst!: (error: Error) => void;
+    const first = withAuthSessionTransition(
+      () => new Promise<never>((_, reject) => { rejectFirst = reject; }),
+    );
+    const secondOperation = vi.fn().mockResolvedValue('second-complete');
+    const second = withAuthSessionTransition(secondOperation);
+    await vi.waitFor(() => expect(typeof rejectFirst).toBe('function'));
+    expect(secondOperation).not.toHaveBeenCalled();
+
+    rejectFirst(new Error('uncaught transition failure'));
+
+    await expect(first).rejects.toThrow('uncaught transition failure');
+    await expect(second).resolves.toBe('second-complete');
+    expect(secondOperation).toHaveBeenCalledOnce();
+  });
+
+  it('uses the cross-tab Web Lock for ordered password transitions when available', async () => {
+    let tail = Promise.resolve();
+    const request = vi.fn(<T>(_name: string, callback: () => Promise<T>) => {
+      const result = tail.then(callback, callback);
+      tail = result.then(() => undefined, () => undefined);
+      return result;
+    });
+    const originalLocks = Object.getOwnPropertyDescriptor(navigator, 'locks');
+    Object.defineProperty(navigator, 'locks', { configurable: true, value: { request } });
+    const resolvers: Array<(response: Response) => void> = [];
+    const fetchMock = vi.fn(() => new Promise<Response>((resolve) => { resolvers.push(resolve); }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const loginA = apiLogin('a@example.com', 'password-a');
+      const loginB = apiLogin('b@example.com', 'password-b');
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+      resolvers[0](makeResponse({ user: baseUser, tokens: baseTokens }));
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+      resolvers[1](makeResponse({ user: { ...baseUser, id: 'user-b' }, tokens: baseTokens }));
+      await Promise.all([loginA, loginB]);
+      expect(request).toHaveBeenCalledTimes(2);
+      expect(request.mock.calls.every(([name]) => name === 'breeze-auth-session-transition')).toBe(true);
+    } finally {
+      if (originalLocks) Object.defineProperty(navigator, 'locks', originalLocks);
+      else delete (navigator as unknown as { locks?: LockManager }).locks;
+    }
+  });
+
+  it('holds the transition through Cloudflare refresh and identity bootstrap before newer login', async () => {
+    let resolveRefresh!: (response: Response) => void;
+    let resolveMe!: (response: Response) => void;
+    let resolveLoginB!: (response: Response) => void;
+    let meCalls = 0;
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/auth/refresh')) {
+        return new Promise<Response>((resolve) => { resolveRefresh = resolve; });
+      }
+      if (url.endsWith('/auth/login')) {
+        return new Promise<Response>((resolve) => { resolveLoginB = resolve; });
+      }
+      if (url.endsWith('/users/me')) {
+        meCalls += 1;
+        if (meCalls === 1) return new Promise<Response>((resolve) => { resolveMe = resolve; });
+        return Promise.resolve(makeResponse({ preferences: {}, permissions: [] }));
+      }
+      throw new Error(`unexpected request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const bootstrapA = bootstrapFromCfAccessRedirect();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const loginB = apiLogin('b@example.com', 'password-b');
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/auth/login'))).toHaveLength(0);
+
+    resolveRefresh(makeResponse({ tokens: baseTokens }));
+    await vi.waitFor(() => expect(meCalls).toBe(1));
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/auth/login'))).toHaveLength(0);
+    resolveMe(makeResponse(baseUser));
+    await vi.waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/auth/login'))).toBe(true));
+    const userB = { ...baseUser, id: 'user-b', email: 'b@example.com' };
+    const tokensB = { accessToken: 'access-b', expiresInSeconds: 3600 };
+    resolveLoginB(makeResponse({ user: userB, tokens: tokensB }));
+
+    await expect(loginB).resolves.toMatchObject({ success: true, user: userB });
+    await expect(bootstrapA).resolves.toBe(true);
     expect(useAuthStore.getState()).toMatchObject({ user: userB, tokens: tokensB });
   });
 });
@@ -936,7 +1131,7 @@ describe('refresh rotation-race recovery (#1107)', () => {
       const restored = await restoreAccessTokenFromCookie();
 
       expect(restored).toBe(true);
-      expect(requestMock).toHaveBeenCalledWith('breeze-token-refresh', expect.any(Function));
+      expect(requestMock).toHaveBeenCalledWith('breeze-auth-session-transition', expect.any(Function));
       expect(useAuthStore.getState().tokens?.accessToken).toBe('access-locked');
     } finally {
       if (prevLocks === undefined) {
@@ -1119,5 +1314,34 @@ describe('fetchAndApplyPreferences locale wiring', () => {
     expect(warnSpy).toHaveBeenCalledTimes(1);
     const [message] = warnSpy.mock.calls[0] as [string];
     expect(message).toContain('locale resolution skipped');
+  });
+
+  it('does not apply a deferred account A preference body after account B installs', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    let resolveBody!: (body: unknown) => void;
+    const json = vi.fn(() => new Promise<unknown>((resolve) => { resolveBody = resolve; }));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      clone: () => makeResponse({}),
+      json,
+    } as unknown as Response));
+    const oldPreferences = fetchAndApplyPreferences();
+    await vi.waitFor(() => expect(json).toHaveBeenCalledOnce());
+    const userB: User = { ...baseUser, id: 'user-b', email: 'b@example.com', preferences: { theme: 'light' } };
+    const tokensB = { accessToken: 'access-b', expiresInSeconds: 3600 };
+    useAuthStore.getState().login(userB, tokensB);
+    resolveBody({
+      isPlatformAdmin: true,
+      permissions: ['account-a:write'],
+      preferences: { theme: 'dark', locale: 'pt-BR' },
+      partnerDefaultLocale: 'pt-BR',
+    });
+    await oldPreferences;
+
+    expect(useAuthStore.getState().user).toEqual(userB);
+    expect(applyResolvedLocalePreferencesMock).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 });
