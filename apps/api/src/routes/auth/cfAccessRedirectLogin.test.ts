@@ -108,6 +108,7 @@ vi.mock('../../services', () => ({
     return true;
   }),
   verifyToken: vi.fn(async () => servicesState.verifyResult),
+  getUserEpochs: vi.fn(async () => ({ authEpoch: 1, mfaEpoch: 1 })),
 }));
 
 const auditState = vi.hoisted(() => ({

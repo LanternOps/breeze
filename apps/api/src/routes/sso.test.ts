@@ -58,6 +58,7 @@ vi.mock('../services', () => ({
   // every completed sign-in so reuse-detection covers SSO sessions.
   mintRefreshTokenFamily: vi.fn().mockResolvedValue('sso-family-id-mock'),
   bindRefreshJtiToFamily: vi.fn().mockResolvedValue(undefined),
+  getUserEpochs: vi.fn().mockResolvedValue({ authEpoch: 1, mfaEpoch: 1 }),
   // Partner-axis login rate limiting (#2183 spec §5) — default allowed so
   // existing tests exercising the route body are unaffected; the dedicated
   // 429 test overrides this per-call.

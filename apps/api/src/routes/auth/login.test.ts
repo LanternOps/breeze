@@ -18,6 +18,8 @@ vi.mock('../../db/schema', () => ({
     status: 'users.status',
     passwordChangedAt: 'users.passwordChangedAt',
     lastLoginAt: 'users.lastLoginAt',
+    authEpoch: 'users.authEpoch',
+    mfaEpoch: 'users.mfaEpoch',
   },
 }));
 
@@ -51,6 +53,8 @@ vi.mock('../../services', () => ({
   clearAccountFailures: vi.fn(async () => undefined),
   isAccountLocked: vi.fn(async () => false),
   getAccountLockoutWindowSeconds: vi.fn(() => 900),
+  getUserEpochs: vi.fn(async () => ({ authEpoch: 1, mfaEpoch: 1 })),
+  getRefreshFamily: vi.fn(async () => ({ revokedAt: null, absoluteExpiresAt: new Date(Date.now() + 86_400_000) })),
 }));
 
 vi.mock('../../services/email', () => ({
@@ -151,6 +155,8 @@ import {
   revokeRefreshTokenJti,
   bindRefreshJtiToFamily,
   isTokenIssuedBeforePasswordChange,
+  getUserEpochs,
+  getRefreshFamily,
 } from '../../services';
 import { enforceIpAllowlist } from '../../services/ipAllowlist';
 import { recordFailedLogin } from '../../services/anomalyMetrics';
@@ -424,6 +430,46 @@ describe('POST /login — last_login_at write runs under system DB context (#137
   });
 });
 
+describe('POST /login — mints aep/mep/sid from the live user row', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NODE_ENV = 'test';
+    process.env.E2E_MODE = 'true';
+    vi.mocked(enforceIpAllowlist).mockResolvedValue({ decision: 'allow' });
+    vi.mocked(db.select).mockReturnValue(selectChain([{
+      id: 'user-1',
+      email: 'admin@msp.com',
+      name: 'Admin User',
+      passwordHash: 'password-hash',
+      status: 'active',
+      mfaEnabled: false,
+      mfaSecret: null,
+      mfaMethod: null,
+      phoneNumber: null,
+      avatarUrl: null,
+    }]) as any);
+    vi.mocked(db.update).mockReturnValue(updateChain() as any);
+    vi.mocked(getUserEpochs).mockResolvedValue({ authEpoch: 4, mfaEpoch: 2 });
+  });
+
+  it('passes the live epochs and the family id to createTokenPair', async () => {
+    const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+    expect(res.status).toBe(200);
+    expect(getUserEpochs).toHaveBeenCalledWith('user-1');
+    expect(createTokenPair).toHaveBeenCalledWith(
+      expect.objectContaining({ aep: 4, mep: 2 }),
+      { refreshFam: 'family-id' }
+    );
+  });
+
+  it('fails closed with a generic 401 when the epoch read returns null', async () => {
+    vi.mocked(getUserEpochs).mockResolvedValue(null);
+    const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+    expect(res.status).toBe(401);
+    expect(createTokenPair).not.toHaveBeenCalled();
+  });
+});
+
 describe('POST /refresh — hard-reject fam-less legacy tokens (#917 L-1)', () => {
   async function postRefresh() {
     return loginRoutes.request('/refresh', {
@@ -496,5 +542,137 @@ describe('POST /refresh — hard-reject fam-less legacy tokens (#917 L-1)', () =
     expect(vi.mocked(createTokenPair).mock.calls[0]?.[1]).toEqual({ refreshFam: 'family-42' });
     expect(bindRefreshJtiToFamily).toHaveBeenCalledWith('refresh-jti', 'family-42');
     expect(revokeFamily).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /refresh — epoch and absolute-expiry gates', () => {
+  async function postRefresh() {
+    return loginRoutes.request('/refresh', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NODE_ENV = 'test';
+    process.env.E2E_MODE = 'true';
+    vi.mocked(resolveRefreshToken).mockReturnValue('refresh-token');
+    vi.mocked(validateCookieCsrfRequest).mockReturnValue(null);
+    vi.mocked(db.select).mockReturnValue(selectChain([{
+      id: 'user-1',
+      email: 'admin@msp.com',
+      status: 'active',
+      authEpoch: 3,
+      mfaEpoch: 1,
+    }]) as any);
+    vi.mocked(isRefreshTokenJtiRevoked).mockResolvedValue(false);
+    vi.mocked(revokeRefreshTokenJti).mockResolvedValue(true);
+    vi.mocked(resolveCurrentUserTokenContext).mockResolvedValue({
+      roleId: 'role-1',
+      partnerId: 'partner-1',
+      orgId: null,
+      scope: 'partner',
+    } as any);
+    vi.mocked(getRefreshFamily).mockResolvedValue({
+      revokedAt: null,
+      absoluteExpiresAt: new Date(Date.now() + 86_400_000),
+    });
+    vi.mocked(verifyToken).mockResolvedValue({
+      sub: 'user-1',
+      email: 'admin@msp.com',
+      type: 'refresh',
+      jti: 'jti-current',
+      fam: 'family-42',
+      aep: 3,
+      mep: 1,
+    } as any);
+  });
+
+  it('mints a new pair carrying the live epochs when aep/mep match the user row', async () => {
+    const res = await postRefresh();
+
+    expect(res.status).toBe(200);
+    expect(createTokenPair).toHaveBeenCalledWith(
+      expect.objectContaining({ aep: 3, mep: 1 }),
+      { refreshFam: 'family-42' }
+    );
+  });
+
+  it('rejects with 401 and clears the cookie when the refresh aep no longer matches the live user row (global sign-out)', async () => {
+    vi.mocked(verifyToken).mockResolvedValue({
+      sub: 'user-1',
+      email: 'admin@msp.com',
+      type: 'refresh',
+      jti: 'jti-current',
+      fam: 'family-42',
+      aep: 1, // stale — live user row is authEpoch: 3
+      mep: 1,
+    } as any);
+
+    const res = await postRefresh();
+
+    expect(res.status).toBe(401);
+    expect(await res.json()).toMatchObject({ error: 'Invalid refresh token' });
+    expect(clearRefreshTokenCookie).toHaveBeenCalled();
+    expect(recordFailedLogin).toHaveBeenCalledWith('refresh_epoch_mismatch');
+    // Must bail BEFORE the jti rotation-claim dance so a denied refresh never
+    // burns rotation state.
+    expect(revokeRefreshTokenJti).not.toHaveBeenCalled();
+    expect(createTokenPair).not.toHaveBeenCalled();
+  });
+
+  it('rejects with 401 when the refresh mep no longer matches the live user row (global MFA reset)', async () => {
+    vi.mocked(verifyToken).mockResolvedValue({
+      sub: 'user-1',
+      email: 'admin@msp.com',
+      type: 'refresh',
+      jti: 'jti-current',
+      fam: 'family-42',
+      aep: 3,
+      mep: 0, // stale — live user row is mfaEpoch: 1
+    } as any);
+
+    const res = await postRefresh();
+
+    expect(res.status).toBe(401);
+    expect(recordFailedLogin).toHaveBeenCalledWith('refresh_epoch_mismatch');
+    expect(createTokenPair).not.toHaveBeenCalled();
+  });
+
+  it('rejects with 401 when the durable family row is revoked, even if the Redis sentinel says otherwise', async () => {
+    vi.mocked(getRefreshFamily).mockResolvedValue({
+      revokedAt: new Date(),
+      absoluteExpiresAt: new Date(Date.now() + 86_400_000),
+    });
+
+    const res = await postRefresh();
+
+    expect(res.status).toBe(401);
+    expect(clearRefreshTokenCookie).toHaveBeenCalled();
+    expect(createTokenPair).not.toHaveBeenCalled();
+    expect(revokeRefreshTokenJti).not.toHaveBeenCalled();
+  });
+
+  it('rejects with 401 once the family has passed its absolute (non-sliding) expiry', async () => {
+    vi.mocked(getRefreshFamily).mockResolvedValue({
+      revokedAt: null,
+      absoluteExpiresAt: new Date(Date.now() - 1000),
+    });
+
+    const res = await postRefresh();
+
+    expect(res.status).toBe(401);
+    expect(createTokenPair).not.toHaveBeenCalled();
+    expect(revokeRefreshTokenJti).not.toHaveBeenCalled();
+  });
+
+  it('rejects with 401 when no durable family row exists', async () => {
+    vi.mocked(getRefreshFamily).mockResolvedValue(null);
+
+    const res = await postRefresh();
+
+    expect(res.status).toBe(401);
+    expect(createTokenPair).not.toHaveBeenCalled();
   });
 });

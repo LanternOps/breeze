@@ -24,6 +24,7 @@ vi.mock('../../services', () => ({
   // token-mint path.
   mintRefreshTokenFamily: vi.fn(async () => 'family-id-mock'),
   bindRefreshJtiToFamily: vi.fn(async () => undefined),
+  getUserEpochs: vi.fn(async () => ({ authEpoch: 1, mfaEpoch: 1 })),
 }));
 
 vi.mock('../../services/partnerCreate', () => ({

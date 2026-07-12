@@ -103,6 +103,7 @@ vi.mock('../services', () => ({
   bindRefreshJtiToFamily: vi.fn(async (jti: string, familyId: string) => {
     tokenState.bindCalls.push({ jti, familyId });
   }),
+  getUserEpochs: vi.fn(async () => ({ authEpoch: 1, mfaEpoch: 1 })),
   getRedis: vi.fn(() => ({
     setex: vi.fn(async () => 'OK'),
   })),

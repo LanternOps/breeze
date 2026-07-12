@@ -25,7 +25,9 @@ import {
   recordAccountFailure,
   clearAccountFailures,
   isAccountLocked,
-  getAccountLockoutWindowSeconds
+  getAccountLockoutWindowSeconds,
+  getUserEpochs,
+  getRefreshFamily
 } from '../../services';
 import { getEmailService } from '../../services/email';
 import { createHash } from 'crypto';
@@ -488,6 +490,17 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
   // truth so no future path can quietly opt out of reuse-detection.
   const familyId = await mintRefreshTokenFamily(user.id);
 
+  // Epochs are the DB-authoritative source for aep/mep — never trust caller
+  // input. A null read means the user row vanished between the earlier
+  // lookup and here (deleted mid-request); fail closed with the same
+  // generic 401 every other login failure returns rather than leak which
+  // stage failed.
+  const epochs = await getUserEpochs(user.id);
+  if (!epochs) {
+    await floorPromise;
+    return c.json(genericAuthError(), 401);
+  }
+
   const tokens = await createTokenPair({
     sub: user.id,
     email: user.email,
@@ -496,6 +509,8 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     partnerId,
     scope,
     mfa: mfaSatisfied,
+    aep: epochs.authEpoch,
+    mep: epochs.mfaEpoch,
     // SR-001: bind the token to the mobile install id when the client sends
     // it. Web/SSO clients don't send the header → mdid stays absent → no
     // behaviour change for them.
@@ -704,6 +719,17 @@ loginRoutes.post('/refresh', async (c) => {
     return c.json({ error: 'Invalid refresh token' }, 401);
   }
 
+  // Belt-and-braces: isFamilyRevoked above may be answered from its Redis
+  // sentinel, which can lag the durable Postgres row. getRefreshFamily reads
+  // the authoritative row directly — cheap here since /refresh already reads
+  // Postgres for the user lookup below — and also enforces the absolute
+  // (non-sliding) expiry on the family.
+  const familyRow = await getRefreshFamily(familyId);
+  if (!familyRow || familyRow.revokedAt !== null || familyRow.absoluteExpiresAt.getTime() <= Date.now()) {
+    clearRefreshTokenCookie(c);
+    return c.json({ error: 'Invalid refresh token' }, 401);
+  }
+
   if (await isTokenRevokedForUser(payload.sub, payload.iat)) {
     clearRefreshTokenCookie(c);
     return c.json({ error: 'Invalid refresh token' }, 401);
@@ -717,6 +743,8 @@ loginRoutes.post('/refresh', async (c) => {
         email: users.email,
         status: users.status,
         passwordChangedAt: users.passwordChangedAt,
+        authEpoch: users.authEpoch,
+        mfaEpoch: users.mfaEpoch,
       })
       .from(users)
       .where(eq(users.id, payload.sub))
@@ -729,6 +757,16 @@ loginRoutes.post('/refresh', async (c) => {
   }
 
   if (isTokenIssuedBeforePasswordChange(payload.iat, user.passwordChangedAt)) {
+    clearRefreshTokenCookie(c);
+    return c.json({ error: 'Invalid refresh token' }, 401);
+  }
+
+  // Epoch gate: a refresh token minted before an auth/mfa state change must not
+  // rotate into a fresh access token (deliberate global sign-out). Legacy tokens
+  // lack aep/mep entirely → undefined !== number → rejected. Placed BEFORE the
+  // jti rotation-claim dance below so a denied refresh never burns rotation state.
+  if (payload.aep !== user.authEpoch || payload.mep !== user.mfaEpoch) {
+    recordFailedLogin('refresh_epoch_mismatch');
     clearRefreshTokenCookie(c);
     return c.json({ error: 'Invalid refresh token' }, 401);
   }
@@ -784,6 +822,8 @@ loginRoutes.post('/refresh', async (c) => {
     partnerId: context.partnerId,
     scope: context.scope,
     mfa: ENABLE_2FA ? payload.mfa : false,
+    aep: user.authEpoch,
+    mep: user.mfaEpoch,
     // SR-001: preserve the device binding from the prior (signed) refresh
     // token. Deliberately NOT re-read from the header — a refresh must not be
     // able to drop the binding by omitting it.

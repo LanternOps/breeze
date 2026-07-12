@@ -17,6 +17,7 @@ import {
 import {
   bindRefreshJtiToFamily,
   createTokenPair,
+  getUserEpochs,
   mintRefreshTokenFamily,
 } from '../services';
 import { getRedis } from '../services';
@@ -181,6 +182,8 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
   // other authenticated mint path (see services/refreshTokenFamily.ts and
   // the /login handler this middleware short-circuits).
   const familyId = await mintRefreshTokenFamily(user.id);
+  const epochs = await getUserEpochs(user.id);
+  if (!epochs) throw new Error('user epochs unavailable at token mint');
 
   const tokens = await createTokenPair(
     {
@@ -191,6 +194,8 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
       partnerId: context.partnerId,
       scope: context.scope,
       mfa: mfaSatisfied,
+      aep: epochs.authEpoch,
+      mep: epochs.mfaEpoch,
       mdid: readMobileDeviceId(c) ?? undefined,
     },
     { refreshFam: familyId }

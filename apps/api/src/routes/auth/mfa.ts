@@ -16,7 +16,8 @@ import {
   mfaLimiter,
   getRedis,
   mintRefreshTokenFamily,
-  bindRefreshJtiToFamily
+  bindRefreshJtiToFamily,
+  getUserEpochs
 } from '../../services';
 import { getTwilioService } from '../../services/twilio';
 import { readMobileDeviceId } from '../../services/mobileDeviceBinding';
@@ -225,6 +226,8 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
     // exempt every MFA-enabled user from RFC 9700 §4.13.2 protection —
     // exactly the wrong cohort to skip.
     const mfaFamilyId = await mintRefreshTokenFamily(user.id);
+    const epochs = await getUserEpochs(user.id);
+    if (!epochs) throw new Error('user epochs unavailable at token mint');
     const tokens = await createTokenPair({
       sub: user.id,
       email: user.email,
@@ -233,6 +236,8 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
       partnerId: mfaPartnerId,
       scope: mfaScope,
       mfa: true,
+      aep: epochs.authEpoch,
+      mep: epochs.mfaEpoch,
       // SR-001: bind to the mobile install id when present (MFA login path).
       mdid: readMobileDeviceId(c) ?? undefined
     }, { refreshFam: mfaFamilyId });

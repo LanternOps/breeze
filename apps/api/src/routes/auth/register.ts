@@ -10,7 +10,8 @@ import {
   rateLimiter,
   getRedis,
   mintRefreshTokenFamily,
-  bindRefreshJtiToFamily
+  bindRefreshJtiToFamily,
+  getUserEpochs
 } from '../../services';
 import { ENABLE_REGISTRATION, ENABLE_2FA, registerSchema, registerPartnerSchema } from './schemas';
 import { isHosted } from '../../config/env';
@@ -245,6 +246,8 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
       // /login. Skipping it here would leave brand-new partners' tokens
       // outside the family-revocation envelope until their next manual login.
       const registerFamilyId = await mintRefreshTokenFamily(newUser.id);
+      const epochs = await getUserEpochs(newUser.id);
+      if (!epochs) throw new Error('user epochs unavailable at token mint');
       const tokens = await createTokenPair({
         sub: newUser.id,
         email: newUser.email,
@@ -252,7 +255,9 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
         orgId: result.orgId,
         partnerId: newPartner.id,
         scope: 'partner',
-        mfa: mfaSatisfied
+        mfa: mfaSatisfied,
+        aep: epochs.authEpoch,
+        mep: epochs.mfaEpoch
       }, { refreshFam: registerFamilyId });
 
       await bindRefreshJtiToFamily(tokens.refreshJti, registerFamilyId);

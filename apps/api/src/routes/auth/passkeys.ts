@@ -9,6 +9,7 @@ import {
   bindRefreshJtiToFamily,
   createTokenPair,
   getRedis,
+  getUserEpochs,
   mfaLimiter,
   mintRefreshTokenFamily,
   rateLimiter
@@ -360,6 +361,8 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
 
   const context = await resolveCurrentUserTokenContext(user.id);
   const familyId = await mintRefreshTokenFamily(user.id);
+  const epochs = await getUserEpochs(user.id);
+  if (!epochs) throw new Error('user epochs unavailable at token mint');
   const tokens = await createTokenPair({
     sub: user.id,
     email: user.email,
@@ -368,6 +371,8 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
     partnerId: context.partnerId,
     scope: context.scope,
     mfa: true,
+    aep: epochs.authEpoch,
+    mep: epochs.mfaEpoch,
     mdid: readMobileDeviceId(c) ?? undefined
   }, { refreshFam: familyId });
   await bindRefreshJtiToFamily(tokens.refreshJti, familyId);

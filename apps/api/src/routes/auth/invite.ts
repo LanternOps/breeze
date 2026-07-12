@@ -12,6 +12,7 @@ import {
   rateLimiter,
   mintRefreshTokenFamily,
   bindRefreshJtiToFamily,
+  getUserEpochs,
 } from '../../services';
 import { acceptInviteSchema, invitePreviewSchema } from './schemas';
 import {
@@ -199,6 +200,8 @@ inviteRoutes.post('/accept-invite', zValidator('json', acceptInviteSchema), asyn
     // Mint a fresh refresh-token family so invite-accept auto-login is
     // covered by the same reuse-detection envelope as a normal /login.
     const inviteFamilyId = await mintRefreshTokenFamily(user.id);
+    const epochs = await getUserEpochs(user.id);
+    if (!epochs) throw new Error('user epochs unavailable at token mint');
     const tokens = await createTokenPair({
       sub: user.id,
       email: user.email,
@@ -207,6 +210,8 @@ inviteRoutes.post('/accept-invite', zValidator('json', acceptInviteSchema), asyn
       partnerId: context.partnerId,
       scope: context.scope,
       mfa: false,
+      aep: epochs.authEpoch,
+      mep: epochs.mfaEpoch,
     }, { refreshFam: inviteFamilyId });
 
     await bindRefreshJtiToFamily(tokens.refreshJti, inviteFamilyId);

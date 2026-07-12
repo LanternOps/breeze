@@ -33,7 +33,7 @@ import {
   PROVIDER_PRESETS,
   type OIDCConfig
 } from '../services/sso';
-import { createTokenPair, createSession, mintRefreshTokenFamily, bindRefreshJtiToFamily, rateLimiter, getRedis } from '../services';
+import { createTokenPair, createSession, mintRefreshTokenFamily, bindRefreshJtiToFamily, getUserEpochs, rateLimiter, getRedis } from '../services';
 import { writeRouteAudit } from '../services/auditEvents';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { getTrustedClientIp } from '../services/clientIp';
@@ -1991,6 +1991,17 @@ ssoRoutes.get('/callback', async (c) => {
     // built by the axis branch above.
     const ip = getClientIP(c);
     const userAgent = c.req.header('user-agent') || 'unknown';
+
+    // Epochs are the DB-authoritative source for aep/mep — never trust caller
+    // input. Resolved here (after both membership branches, right before
+    // mint) so it applies uniformly to both the partner and org axes without
+    // duplicating the fetch into each branch.
+    const epochs = await getUserEpochs(user.id);
+    if (!epochs) {
+      clearStateCookie();
+      return c.redirect('/login?error=epoch_unavailable');
+    }
+    tokenPayload = { ...tokenPayload, aep: epochs.authEpoch, mep: epochs.mfaEpoch };
 
     // Mint a fresh refresh-token family for the SSO-completed session so
     // SSO logins get the same reuse-detection coverage as password/MFA

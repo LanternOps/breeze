@@ -80,6 +80,7 @@ vi.mock('../services', () => ({
   touchFamilyLastUsed: vi.fn().mockResolvedValue(undefined),
   mintRefreshTokenFamily: vi.fn().mockResolvedValue('family-passkey'),
   bindRefreshJtiToFamily: vi.fn().mockResolvedValue(undefined),
+  getUserEpochs: vi.fn().mockResolvedValue({ authEpoch: 1, mfaEpoch: 1 }),
   rateLimiter: vi.fn().mockResolvedValue({ allowed: true, remaining: 4, resetAt: new Date() }),
   loginLimiter: { limit: 5, windowSeconds: 300 },
   forgotPasswordLimiter: { limit: 3, windowSeconds: 3600 },

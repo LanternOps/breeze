@@ -16,6 +16,7 @@ import {
 import {
   bindRefreshJtiToFamily,
   createTokenPair,
+  getUserEpochs,
   mintRefreshTokenFamily,
   revokeAllUserTokens,
   revokeRefreshTokenJti,
@@ -173,6 +174,8 @@ cfAccessRedirectLoginRoutes.get('/cf-access-login', async (c) => {
   // other authenticated mint path (see services/refreshTokenFamily.ts and
   // the /login handler).
   const familyId = await mintRefreshTokenFamily(user.id);
+  const epochs = await getUserEpochs(user.id);
+  if (!epochs) throw new Error('user epochs unavailable at token mint');
 
   const tokens = await createTokenPair(
     {
@@ -183,6 +186,8 @@ cfAccessRedirectLoginRoutes.get('/cf-access-login', async (c) => {
       partnerId: context.partnerId,
       scope: context.scope,
       mfa: mfaSatisfied,
+      aep: epochs.authEpoch,
+      mep: epochs.mfaEpoch,
     },
     { refreshFam: familyId }
   );

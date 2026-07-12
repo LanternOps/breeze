@@ -44,6 +44,8 @@ vi.mock('../services', () => ({
   // token-mint path (login, mfa, register-partner, accept-invite, sso).
   mintRefreshTokenFamily: vi.fn().mockResolvedValue('family-id-mock'),
   bindRefreshJtiToFamily: vi.fn().mockResolvedValue(undefined),
+  getUserEpochs: vi.fn().mockResolvedValue({ authEpoch: 1, mfaEpoch: 1 }),
+  getRefreshFamily: vi.fn().mockResolvedValue({ revokedAt: null, absoluteExpiresAt: new Date(Date.now() + 86_400_000) }),
   rateLimiter: vi.fn().mockResolvedValue({ allowed: true, remaining: 4, resetAt: new Date() }),
   loginLimiter: { limit: 5, windowSeconds: 300 },
   forgotPasswordLimiter: { limit: 3, windowSeconds: 3600 },
