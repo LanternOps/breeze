@@ -7,6 +7,7 @@
  * Note: Type assertions are used here because these are integration tests
  * that will catch any actual type errors at runtime against a real database.
  */
+import { randomUUID } from 'crypto';
 import { getTestDb } from './setup';
 import { hashPassword } from '../../services/password';
 import { createAccessToken, type TokenPayload } from '../../services/jwt';
@@ -380,7 +381,14 @@ export async function setupTestEnvironment(
     orgId: scope === 'organization' ? organization.id : null,
     partnerId: scope !== 'system' ? partner.id : null,
     scope,
-    mfa: false
+    mfa: false,
+    // Seeded fixture users keep the DB default auth_epoch/mfa_epoch = 1
+    // (see users.ts), so the minted token matches the live row. sid must
+    // be non-empty — Task 8's authMiddleware rejects sid-less access
+    // tokens.
+    aep: 1,
+    mep: 1,
+    sid: randomUUID()
   };
   const token = await createAccessToken(tokenPayload);
 

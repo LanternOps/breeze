@@ -60,6 +60,9 @@ export interface TestTokenOptions {
   partnerId?: string | null;
   scope?: 'system' | 'partner' | 'organization';
   mfa?: boolean;
+  aep?: number;
+  mep?: number;
+  sid?: string;
 }
 
 export async function createTestToken(options: TestTokenOptions = {}): Promise<string> {
@@ -70,7 +73,12 @@ export async function createTestToken(options: TestTokenOptions = {}): Promise<s
     orgId: options.orgId ?? 'test-org-id',
     partnerId: options.partnerId ?? 'test-partner-id',
     scope: options.scope ?? 'organization',
-    mfa: options.mfa ?? false
+    mfa: options.mfa ?? false,
+    aep: options.aep ?? 1,
+    mep: options.mep ?? 1,
+    // Default sid: Task 8 rejects sid-less access tokens. `sid: ''` lets a
+    // test forge the missing-claim case (verifyToken strips empty strings).
+    sid: options.sid ?? 'test-session-id'
   };
   return createAccessToken(payload);
 }
