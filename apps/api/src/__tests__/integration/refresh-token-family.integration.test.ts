@@ -59,6 +59,14 @@ async function loginAndExtractCookies(
   email: string,
   password: string
 ): Promise<RefreshCookies> {
+  return (await loginAndExtractSession(app, email, password)).cookies;
+}
+
+async function loginAndExtractSession(
+  app: Hono,
+  email: string,
+  password: string
+): Promise<{ cookies: RefreshCookies; accessToken: string }> {
   const res = await app.request('/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -70,13 +78,14 @@ async function loginAndExtractCookies(
   if (!cookies) {
     throw new Error(`Failed to extract refresh/csrf cookies from login: ${setCookie}`);
   }
-  return cookies;
+  const body = await res.json() as { tokens: { accessToken: string } };
+  return { cookies, accessToken: body.tokens.accessToken };
 }
 
 async function refreshWithCookies(
   app: Hono,
   cookies: RefreshCookies
-): Promise<{ status: number; nextCookies: RefreshCookies | null }> {
+): Promise<{ status: number; nextCookies: RefreshCookies | null; accessToken: string | null }> {
   const res = await app.request('/auth/refresh', {
     method: 'POST',
     headers: {
@@ -89,7 +98,16 @@ async function refreshWithCookies(
 
   const setCookie = res.headers.get('set-cookie') ?? '';
   const nextCookies = res.status === 200 ? extractCookies(setCookie) : null;
-  return { status: res.status, nextCookies };
+  const body = res.status === 200
+    ? await res.json() as { tokens: { accessToken: string } }
+    : null;
+  return { status: res.status, nextCookies, accessToken: body?.tokens.accessToken ?? null };
+}
+
+async function requestCurrentUser(app: Hono, accessToken: string): Promise<Response> {
+  return app.request('/auth/me', {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
 }
 
 async function logoutWithSession(
@@ -414,7 +432,7 @@ describe('Durable logout/refresh race (Task 6)', () => {
 
     // A second login is a sibling family for the same user. Logout must not
     // globally revoke it while targeting the racing family above.
-    const siblingCookies = await loginAndExtractCookies(
+    const siblingSession = await loginAndExtractSession(
       app,
       'logout-race@example.com',
       'FamilyPass123!',
@@ -446,6 +464,7 @@ describe('Durable logout/refresh race (Task 6)', () => {
       refreshResult = await refreshWithCookies(app, originalCookies!);
       expect(refreshResult.status).toBe(200);
       expect(refreshResult.nextCookies).not.toBeNull();
+      expect(refreshResult.accessToken).toBeTruthy();
       expect(logoutSettled).toBe(false);
     });
 
@@ -468,7 +487,11 @@ describe('Durable logout/refresh race (Task 6)', () => {
     const descendantAfterCommit = await refreshWithCookies(app, refreshResult!.nextCookies!);
     expect(descendantAfterCommit.status).toBe(401);
 
-    const siblingAfterCommit = await refreshWithCookies(app, siblingCookies);
+    expect(await requestCurrentUser(app, loginBody.tokens.accessToken)).toMatchObject({ status: 401 });
+    expect(await requestCurrentUser(app, refreshResult!.accessToken!)).toMatchObject({ status: 401 });
+    expect(await requestCurrentUser(app, siblingSession.accessToken)).toMatchObject({ status: 200 });
+
+    const siblingAfterCommit = await refreshWithCookies(app, siblingSession.cookies);
     expect(siblingAfterCommit.status).toBe(200);
   });
 

@@ -10,7 +10,8 @@ const dbMocks = vi.hoisted(() => ({
   update: vi.fn(),
   set: vi.fn(),
   where: vi.fn(),
-  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn())
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
 }));
 
 // Mock the redis module before importing the module under test
@@ -23,7 +24,8 @@ vi.mock('../db', () => ({
     select: dbMocks.select,
     update: dbMocks.update
   },
-  withSystemDbAccessContext: dbMocks.withSystemDbAccessContext
+  withSystemDbAccessContext: dbMocks.withSystemDbAccessContext,
+  runOutsideDbContext: dbMocks.runOutsideDbContext,
 }));
 
 import { getRedis } from './redis';
@@ -36,7 +38,8 @@ import {
   revokeRefreshTokenJti,
   markRefreshTokenJtiRotated,
   wasRefreshTokenJtiRecentlyRotated,
-  isFamilyRevoked
+  isFamilyRevoked,
+  isAccessSessionFamilyActive,
 } from './tokenRevocation';
 
 const mockGetRedis = vi.mocked(getRedis);
@@ -61,6 +64,7 @@ function createMockRedis(overrides: Partial<Record<'get' | 'set' | 'setex' | 'mu
 
 describe('tokenRevocation', () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     dbMocks.selectedRows.length = 0;
@@ -72,6 +76,7 @@ describe('tokenRevocation', () => {
     dbMocks.set.mockReturnValue({ where: dbMocks.where });
     dbMocks.update.mockReturnValue({ set: dbMocks.set });
     dbMocks.withSystemDbAccessContext.mockImplementation(async (fn: () => Promise<unknown>) => fn());
+    dbMocks.runOutsideDbContext.mockImplementation((fn: () => unknown) => fn());
   });
 
   afterEach(() => {
@@ -321,6 +326,61 @@ describe('tokenRevocation', () => {
       }]);
 
       await expect(isFamilyRevoked('family-invalid-expiry')).resolves.toBe(true);
+    });
+  });
+
+  describe('isAccessSessionFamilyActive', () => {
+    const activeFamily = {
+      revokedAt: null,
+      absoluteExpiresAt: new Date(Date.now() + 60_000),
+    };
+
+    it('rejects a Redis-revoked family without trusting PostgreSQL to revive it', async () => {
+      const { redis } = createMockRedis({ get: vi.fn().mockResolvedValue('1') });
+      mockGetRedis.mockReturnValue(redis);
+
+      await expect(
+        isAccessSessionFamilyActive('family-revoked', 'user-1')
+      ).resolves.toBe(false);
+      expect(dbMocks.select).not.toHaveBeenCalled();
+    });
+
+    it('falls back to the active PostgreSQL row when Redis errors', async () => {
+      const { redis } = createMockRedis({
+        get: vi.fn().mockRejectedValue(new Error('redis unavailable')),
+      });
+      mockGetRedis.mockReturnValue(redis);
+      dbMocks.selectedRows.push([activeFamily]);
+
+      await expect(
+        isAccessSessionFamilyActive('family-active', 'user-1')
+      ).resolves.toBe(true);
+      expect(dbMocks.runOutsideDbContext).toHaveBeenCalledOnce();
+      expect(dbMocks.withSystemDbAccessContext).toHaveBeenCalledOnce();
+    });
+
+    it.each([
+      ['missing', []],
+      ['revoked', [{ ...activeFamily, revokedAt: new Date() }]],
+      ['absolutely expired', [{ ...activeFamily, absoluteExpiresAt: new Date(Date.now() - 1) }]],
+    ] as const)('rejects a %s PostgreSQL family', async (_case, rows) => {
+      const { redis } = createMockRedis();
+      mockGetRedis.mockReturnValue(redis);
+      dbMocks.selectedRows.push([...rows]);
+
+      await expect(
+        isAccessSessionFamilyActive('family-inactive', 'user-1')
+      ).resolves.toBe(false);
+    });
+
+    it('allows an independently active sibling family for the same user', async () => {
+      const { redis } = createMockRedis();
+      mockGetRedis.mockReturnValue(redis);
+      dbMocks.selectedRows.push([activeFamily]);
+
+      await expect(
+        isAccessSessionFamilyActive('family-sibling', 'user-1')
+      ).resolves.toBe(true);
     });
   });
 

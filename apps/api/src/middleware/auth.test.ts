@@ -20,7 +20,8 @@ vi.mock('../services/permissions', () => ({
 
 vi.mock('../services/tokenRevocation', () => ({
   isUserTokenRevoked: vi.fn().mockResolvedValue(false),
-  isTokenIssuedBeforePasswordChange: vi.fn(() => false)
+  isTokenIssuedBeforePasswordChange: vi.fn(() => false),
+  isAccessSessionFamilyActive: vi.fn().mockResolvedValue(true)
 }));
 
 vi.mock('../services/tenantStatus', () => ({
@@ -92,7 +93,11 @@ vi.mock('../db/schema', () => ({
 import { Hono } from 'hono';
 import { authMiddleware, requireScope, requirePermission, requireMfa, requireOrg, requirePartner, requireOrgAccess, resolveOrgAccess, AuthContext } from './auth';
 import { verifyToken } from '../services/jwt';
-import { isTokenIssuedBeforePasswordChange, isUserTokenRevoked } from '../services/tokenRevocation';
+import {
+  isAccessSessionFamilyActive,
+  isTokenIssuedBeforePasswordChange,
+  isUserTokenRevoked,
+} from '../services/tokenRevocation';
 import { db, withDbAccessContext } from '../db';
 import { getUserPermissions, hasPermission, canAccessOrg } from '../services/permissions';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
@@ -202,6 +207,7 @@ describe('authMiddleware', () => {
     vi.mocked(db.select).mockReset();
     vi.mocked(verifyToken).mockReset();
     vi.mocked(isUserTokenRevoked).mockResolvedValue(false);
+    vi.mocked(isAccessSessionFamilyActive).mockResolvedValue(true);
     vi.mocked(isTokenIssuedBeforePasswordChange).mockReturnValue(false);
     vi.mocked(assertActiveTenantContext).mockResolvedValue(undefined);
   });
@@ -307,6 +313,49 @@ describe('authMiddleware', () => {
     expect(res.status).toBe(401);
     expect(nextHandler).not.toHaveBeenCalled();
     expect(withDbAccessContext).not.toHaveBeenCalled();
+  });
+
+  it.each(['revoked', 'missing', 'absolutely expired'])(
+    'rejects an access token whose sid family is %s before request DB context or next',
+    async () => {
+      const { app, nextHandler } = buildTrackedAuthApp();
+      vi.mocked(verifyToken).mockResolvedValue(basePayload);
+      vi.mocked(isAccessSessionFamilyActive).mockResolvedValue(false);
+      mockUserSelect([activeUser]);
+
+      const res = await app.request('/test', {
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(401);
+      expect(isAccessSessionFamilyActive).toHaveBeenCalledWith(
+        basePayload.sid,
+        basePayload.sub,
+      );
+      expect(db.select).not.toHaveBeenCalled();
+      expect(nextHandler).not.toHaveBeenCalled();
+      expect(withDbAccessContext).not.toHaveBeenCalled();
+    },
+  );
+
+  it('accepts an active sibling family without reviving the revoked family', async () => {
+    const { app, nextHandler } = buildTrackedAuthApp();
+    const siblingPayload = { ...basePayload, sid: 'session-family-sibling' };
+    vi.mocked(verifyToken).mockResolvedValue(siblingPayload);
+    vi.mocked(isAccessSessionFamilyActive).mockResolvedValue(true);
+    mockUserSelect([activeUser]);
+
+    const res = await app.request('/test', {
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    expect(isAccessSessionFamilyActive).toHaveBeenCalledWith(
+      siblingPayload.sid,
+      siblingPayload.sub,
+    );
+    expect(nextHandler).toHaveBeenCalledOnce();
+    expect(withDbAccessContext).toHaveBeenCalledOnce();
   });
 
   it('rejects a system token when live platform-admin authority was removed', async () => {

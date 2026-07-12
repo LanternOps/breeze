@@ -2,7 +2,11 @@ import { Context, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { verifyToken, TokenPayload } from '../services/jwt';
 import { getUserPermissions, hasPermission, canAccessOrg, canAccessSite, UserPermissions } from '../services/permissions';
-import { isTokenIssuedBeforePasswordChange, isUserTokenRevoked } from '../services/tokenRevocation';
+import {
+  isAccessSessionFamilyActive,
+  isTokenIssuedBeforePasswordChange,
+  isUserTokenRevoked,
+} from '../services/tokenRevocation';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext, type DbAccessScope } from '../db';
 import { users, partnerUsers, organizationUsers, organizations, roles } from '../db/schema';
 import { and, eq, inArray, isNull, SQL } from 'drizzle-orm';
@@ -487,6 +491,10 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
   }
 
   if (await isUserTokenRevoked(payload.sub, payload.iat)) {
+    throw new HTTPException(401, { message: 'Invalid or expired token' });
+  }
+
+  if (!payload.sid || !(await isAccessSessionFamilyActive(payload.sid, payload.sub))) {
     throw new HTTPException(401, { message: 'Invalid or expired token' });
   }
 

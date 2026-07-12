@@ -1,4 +1,4 @@
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { getRedis } from './redis';
 import * as dbModule from '../db';
 import { refreshTokenFamilies } from '../db/schema/refreshTokenFamilies';
@@ -440,6 +440,58 @@ export async function isFamilyRevoked(familyId: string): Promise<boolean> {
       error
     );
     return true;
+  }
+}
+
+/**
+ * PostgreSQL-authoritative validity check for the access token's session
+ * family. Redis is only an early revoked-sentinel accelerator: a miss or cache
+ * error always falls through to an owner-scoped durable row read.
+ */
+export async function isAccessSessionFamilyActive(
+  familyId: string,
+  userId: string,
+): Promise<boolean> {
+  const redis = getRedis();
+  if (redis) {
+    try {
+      if (await redis.get(getRevokedFamilyKey(familyId))) return false;
+    } catch (error) {
+      console.warn(
+        '[token-revocation] Access-family Redis lookup failed — falling back to DB:',
+        error,
+      );
+    }
+  }
+
+  try {
+    const rows = await dbModule.runOutsideDbContext(() =>
+      dbModule.withSystemDbAccessContext(() =>
+        dbModule.db
+          .select({
+            revokedAt: refreshTokenFamilies.revokedAt,
+            absoluteExpiresAt: refreshTokenFamilies.absoluteExpiresAt,
+          })
+          .from(refreshTokenFamilies)
+          .where(and(
+            eq(refreshTokenFamilies.familyId, familyId),
+            eq(refreshTokenFamilies.userId, userId),
+          ))
+          .limit(1)
+      )
+    );
+    const row = rows[0];
+    if (!row || !(row.absoluteExpiresAt instanceof Date)) return false;
+    const absoluteExpiresAtMs = row.absoluteExpiresAt.getTime();
+    return row.revokedAt === null
+      && Number.isFinite(absoluteExpiresAtMs)
+      && absoluteExpiresAtMs > Date.now();
+  } catch (error) {
+    console.error(
+      '[token-revocation] Access-family DB lookup failed — failing closed:',
+      error,
+    );
+    return false;
   }
 }
 
