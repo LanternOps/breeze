@@ -1,0 +1,92 @@
+---
+title: Service & Process Monitoring
+description: Keep Windows services and processes running, alert on event-log activity and metric thresholds, and view per-device monitoring results.
+sidebar:
+  label: Service Monitoring
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+## Overview
+
+Service monitoring has two sides. You **define** what an agent should watch inside the **Monitoring** feature of a [configuration policy](/features/configuration-policies/), and you **read** the results on each device's **Monitoring** tab. The agent evaluates the policy on a fixed interval, reports the status of every watched service and process, and raises alerts when something stops, crosses a threshold, or matches an event-log rule.
+
+A single Monitoring feature covers three things:
+
+- **Service & process watches** — services and processes that must keep running, with optional auto-restart.
+- **Event log alerts** — rules that fire on Windows Event Log / macOS unified log / Linux journal entries.
+- **Metric & status alert rules** — CPU, RAM, disk, and network thresholds, offline detection, and other conditions.
+
+Because Monitoring is a configuration-policy feature, it can be owned by a single organization or made **partner-wide** to apply the same watches across every organization you manage. See [Configuration Policies](/features/configuration-policies/) for how ownership and the cascade work.
+
+## Define monitors in a configuration policy
+
+<Steps>
+
+1. **Open the policy's Monitoring tab.** In a configuration policy, select the **Monitoring** feature. Set the **Check interval** (how often the agent re-checks watches, 10–3600 seconds, default 60).
+
+2. **Add a service or process watch.** Choose the watch **Type** (`service` or `process`) and enter the **Name** — the service key (e.g. `Spooler`, `sshd`) or process name (e.g. `node`). The name field autocompletes from services previously reported by your fleet. Optionally set a friendly **Display name**.
+
+3. **Configure the alert behavior.** Pick an **Alert severity** (`critical`, `high`, `medium`, `low`, `info`), toggle **Alert on stop**, and set **Consecutive failures** (1–100, default 2) before an alert fires. For `process` watches you can also set a **CPU threshold** (%), **Memory threshold** (MB), and a **Threshold duration** (seconds) the breach must persist.
+
+4. **Optionally enable auto-restart.** Turn on **Auto-restart** to have the agent restart a stopped watch. Set **Max restart attempts** (0–50, default 3) and a **Cooldown** (seconds, default 300) between attempts.
+
+5. **Add event log alerts (optional).** Give the rule a name, a **Category** (`security`, `hardware`, `application`, `system`), and a **Minimum level** (`warning`, `error`, `critical` — matches that level and above). Optionally add **Source** and **Message** regex patterns, then a **Count threshold** within a **Time window** (minutes) that triggers the alert.
+
+6. **Add metric & status alert rules (optional).** Each rule has one or more conditions. Condition types include **Metric threshold** (`cpu`, `ram`, `disk`, `network` with a `gt`/`lt`/`gte`/`lte`/`eq`/`neq` operator and value), **Offline status**, **Bandwidth high**, **Disk I/O high**, **Network errors**, **Patch compliance**, **Certificate expiry**, and **Custom**. Set a **Cooldown** and optional **Auto-resolve**.
+
+7. **Save the feature.** The watches, event-log rules, and alert rules are stored on the policy and delivered to every device the policy resolves to.
+
+</Steps>
+
+<Aside type="tip">
+  You can also manage watches programmatically through the AI/MCP tools `manage_service_monitors` and `get_service_monitoring_status`.
+</Aside>
+
+<Aside type="note">
+  Auto-restart and process CPU/memory thresholds are the most common cause of unexpected alerts. Start with `Alert on stop` only, confirm the watch reports cleanly on a device, then layer in thresholds and restarts.
+</Aside>
+
+## See results on a device
+
+Open a device, then select the **Monitoring** tab (`#monitoring`). Breeze loads the latest per-watch summary reported by that device's agent and shows one row per watched service or process:
+
+| Column | Meaning |
+|---|---|
+| **Name** | The service key or process name being watched. |
+| **Type** | `service` or `process`. |
+| **Status** | `running`, `stopped`, `not_found`, or `error`. |
+| **CPU** | Most recent CPU usage for the watch (process watches). |
+| **Memory** | Most recent memory use in MB. |
+| **PID** | Process ID, when running. |
+| **Last checked** | Timestamp of the most recent agent report, in your timezone. |
+
+Watches that are **not running** are sorted to the top so problems are visible first. If the policy enabled auto-restart, a row shows an **Auto-restarted** or **Restart failed** badge next to its status. Use **Refresh** to re-fetch the latest summary.
+
+<Aside type="note">
+  The device tab reflects what the agent last reported for that device — it is read-only. To change what is watched, edit the Monitoring feature on the configuration policy assigned to the device.
+</Aside>
+
+## Troubleshooting
+
+### A device shows no monitoring rows
+The device has no watches assigned, or the agent has not reported yet. Confirm a configuration policy with a Monitoring feature resolves to the device, then wait for the next check interval and press **Refresh**.
+
+### A watch stays `not_found`
+`not_found` means the service key or process name doesn't exist on that device. Verify the exact name (Windows service keys are case-sensitive and differ from display names) and that the target OS actually runs that service.
+
+### Auto-restart isn't recovering a service
+Check that **Auto-restart** is enabled on the watch and that **Max restart attempts** hasn't been exhausted within the **Cooldown** window. A `Restart failed` badge means the agent attempted a restart but the service did not come back.
+
+### Alerts aren't firing
+For watches, confirm **Alert on stop** is on and the **Consecutive failures** count has been reached. For event-log rules, verify the category, minimum level, and that the **Count threshold** is met within the **Time window**. See [Alerts](/features/alerts/) for where triggered alerts appear.
+
+### Partner-wide policy edits are greyed out
+Partner-wide Monitoring policies can only be edited by partner-level users with access to every organization. Organization-scoped users see the inherited settings but cannot change them — see [Configuration Policies](/features/configuration-policies/).
+
+## Related
+
+- [Configuration Policies](/features/configuration-policies/)
+- [Alerts](/features/alerts/)
+- [Network Monitors](/features/network-monitors/)
+- [Devices](/features/devices/)

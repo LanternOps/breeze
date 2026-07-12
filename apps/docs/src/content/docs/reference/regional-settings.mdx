@@ -1,0 +1,56 @@
+---
+title: Regional Settings
+description: Partner-level localization defaults — timezone, date/time format, console language, and business hours — that cascade to new organizations and sites.
+sidebar:
+  order: 11
+  label: Regional Settings
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+The **Regional** tab in Partner Settings holds partner-level localization defaults: timezone, date and time format, console language, and business hours. These are the defaults **new organizations and sites inherit** when they are created under the partner, so setting them once establishes a consistent baseline across the tenant.
+
+Reach it at **Settings → Partner → Regional** (the tab is anchored at `#regional`). Changes are saved to the partner's `settings` JSONB via `PATCH /orgs/partners/me`, where the keys are merged rather than replaced. The timezone additionally populates the first-class `partners.timezone` column.
+
+---
+
+## Regional Settings
+
+| Setting | Options | Default | Notes |
+|---|---|---|---|
+| **Timezone** | A fixed list of 15 IANA zones — `UTC`, `America/New_York`, `America/Chicago`, `America/Denver`, `America/Los_Angeles`, `America/Phoenix`, `America/Anchorage`, `Pacific/Honolulu`, `Europe/London`, `Europe/Paris`, `Europe/Berlin`, `Asia/Tokyo`, `Asia/Shanghai`, `Asia/Singapore`, `Australia/Sydney` | `UTC` | The canonical timezone default for the partner. |
+| **Date Format** | `MM/DD/YYYY` (US), `DD/MM/YYYY` (International), `YYYY-MM-DD` (ISO) | `MM/DD/YYYY` | Controls how dates are rendered in the console. |
+| **Time Format** | 12-hour or 24-hour | 12-hour | Radio toggle. |
+| **Language** | **English** (`en`) or **Português (Brasil)** (`pt-BR`) | `en` | The console display language. These are the only two supported locales today. |
+
+<Aside type="note">
+  Brazilian Portuguese (`pt-BR`) is the one non-English locale currently shipped. Additional languages are a work in progress — the console falls back to English for any string not yet translated.
+</Aside>
+
+---
+
+## Business Hours
+
+Business hours define the partner's standard operating window for support and alerting. Choose one of four presets:
+
+| Preset | Meaning |
+|---|---|
+| **24/7** | Always available. |
+| **Business Hours** | Mon–Fri, 9am–5pm. (Default.) |
+| **Extended Hours** | Mon–Fri 7am–7pm, Sat 9am–1pm. |
+| **Custom** | Set your own per-day schedule. |
+
+Selecting **Custom** reveals a per-day editor for Monday through Sunday. Each day has an **Open** checkbox and, when open, a start and end time (`HH:MM`). The default custom schedule opens Mon–Fri 09:00–17:00 and marks Saturday and Sunday closed. Custom day schedules are stored under `businessHours.custom`; the presets store only `businessHours.preset`.
+
+---
+
+## How it cascades
+
+The Regional tab sets **partner defaults**. New organizations and sites created under the partner inherit these values as their starting point. Existing records are not retroactively rewritten when the partner defaults change — update those individually if needed. Sites also carry their own `timezone` field (defaulting to `UTC`) that can override the inherited value per location.
+
+---
+
+## Related
+
+- [Partner Management](/reference/partner-management/) — the partner record, self-registration, and the `settings` JSONB these values live in.
+- [Organizations & Sites](/reference/organizations-and-sites/) — the hierarchy that inherits these regional defaults, including per-site timezone.

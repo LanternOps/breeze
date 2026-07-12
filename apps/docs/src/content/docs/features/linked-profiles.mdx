@@ -1,0 +1,74 @@
+---
+title: Linked Profiles
+description: Link the multiple OS installs of one physical machine (multi-boot) so their device records are managed as related boot profiles.
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+A physical machine that dual-boots or multi-boots runs one Breeze agent per operating system, so the same hardware shows up as several separate device records — and only one can ever be online at a time. **Linked Profiles** lets you tie those records together as boot profiles of a single machine so they're managed as a related group.
+
+Linking is non-destructive: each profile keeps its own inventory, history, agent, and detail page. Grouping only changes how the records are presented and gives you one place to see every OS install on the machine.
+
+Reach it at **Device detail → Linked Profiles**.
+
+<Aside>
+Linking, unlinking, and dissolving a group require the `devices.write` (or `devices.delete` for dissolve) permission and pass an MFA check. Every change is audit-logged.
+</Aside>
+
+---
+
+## What the tab shows
+
+If the device is not part of a group, the tab explains that multi-boot machines run a separate agent per OS and points you to the **Link as multi-boot** bulk action on the device list.
+
+Once the device is in a group, the tab lists every member profile with:
+
+| Column | Description |
+|---|---|
+| **Profile** | Display name (or hostname), with the hostname beneath it. The current device is marked "This device". |
+| **OS** | Operating system type and version for that boot profile. |
+| **Status** | Online (green) or the profile's reported state. Only one profile is normally online at a time. |
+| **Agent** | The Breeze agent version running on that install. |
+| **Last seen** | Relative time since the profile last checked in. |
+
+A badge shows the profile count, and the group's name (or a generic "Linked boot profiles" heading if none was set).
+
+---
+
+## Linking profiles
+
+Profiles are linked from the **device list**, not the detail tab:
+
+<Steps>
+
+1. On the devices page, select **two or more** device records that belong to the same physical machine.
+
+2. Choose **Link as multi-boot** from the bulk actions menu.
+
+3. The devices are grouped. All must belong to the **same organization** and be currently unlinked — the API rejects the request otherwise.
+
+</Steps>
+
+A group holds between **2 and 10** profiles. On the device list, an online member renders as a normal row with its offline siblings shown as thin "expected offline" strips beneath it; an all-offline group is marked with a subtle left-edge bar.
+
+---
+
+## Unlinking and removing a link
+
+The Linked Profiles tab hosts two actions:
+
+- **Unlink this device** — removes just the current device from the group, leaving the other profiles linked.
+- **Remove link** — dissolves the entire group, unlinking every profile.
+
+If removing a profile would leave the group with only one member, Breeze automatically dissolves the group (a single-profile group is meaningless).
+
+<Aside type="note">
+Unlinking never deletes a device or its data. It only removes the association between boot profiles.
+</Aside>
+
+---
+
+## Related
+
+- [Devices](/features/devices/)
+- [Device Groups](/features/device-groups/)

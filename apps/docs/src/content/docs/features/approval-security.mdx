@@ -1,0 +1,76 @@
+---
+title: Approval Security
+description: Set how strongly a technician must prove who they are before approving a privileged action -- map each risk tier to a required Breeze Authenticator assurance level.
+sidebar:
+  label: "Approval Security"
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+**Approval Security** governs *how strongly an approver has to authenticate* before a sensitive or privileged action is allowed to proceed. When a PAM elevation or an AI tool action lands in the approval queue, Breeze already knows how risky it is -- it carries a **risk tier**. This tab lets you say, for each risk tier, the minimum **assurance level** the approver must clear on their **Breeze Authenticator** device before their "Approve" actually counts.
+
+The idea is step-up verification: a low-risk approval can be a quick tap, but signing off on a critical action should demand your strongest proof of identity. Approval Security is the policy that draws those lines.
+
+Reach it at **Settings → Organization → Approval Security**. The policy set here applies across your MSP -- it is the per-partner enforcement floor, not a per-device setting.
+
+<Aside type="note">
+  Approval Security sets the *assurance bar* for a decision. It does not decide *whether* an action needs approval in the first place -- that is [Privileged Access Management](/features/pam/) (the rule chain, the queue, and the auto-approve / require-approval verdicts). PAM decides an action needs a human; Approval Security decides how convincingly that human must authenticate.
+</Aside>
+
+## Risk tiers and assurance levels
+
+Every approvable action is classified into one of four **risk tiers**. Breeze ships a default **assurance floor** for each -- the minimum verification strength required out of the box:
+
+| Risk tier | Breeze default floor |
+|---|---|
+| **Low risk** | L1 |
+| **Medium risk** | L2 |
+| **High risk** | L3 |
+| **Critical risk** | L4 |
+
+The four **assurance levels** describe increasingly strong proof, performed on the approver's enrolled Authenticator device:
+
+| Level | What the approver must do |
+|---|---|
+| **L1 -- session tap** | A simple tap to confirm within an authenticated session. |
+| **L2 -- biometric** | A biometric check (Face / fingerprint). |
+| **L3 -- biometric + PIN** | Biometric plus a PIN. |
+| **L4 -- hardware key + PIN** | A hardware security key plus a PIN. |
+
+<Aside type="tip">
+  The policy is **raise-only**. For any tier you can require a *higher* assurance level than the Breeze default, but you can never drop below it -- the dropdown simply doesn't offer the weaker options, and the server re-validates the same rule. An override that would weaken the floor is ignored (fail-closed).
+</Aside>
+
+## Configuring approval assurance
+
+<Steps>
+
+1. Open **Settings → Organization → Approval Security**.
+
+2. For each **risk tier** (Low, Medium, High, Critical), pick the minimum **assurance level** you want to require from the dropdown. Only levels at or above the Breeze default for that tier are selectable.
+
+3. Optionally turn on **Require an enrolled approver device** to *enforce* the policy -- under-assured approvals (including approvals from a technician who hasn't enrolled an Authenticator device) are blocked rather than merely flagged.
+
+4. Optionally set an **Enforce from** date. This is the grace-window cutoff: before that date the policy is advisory, giving your team time to enroll their devices; on and after it, enforcement is live.
+
+5. Click **Save**.
+
+</Steps>
+
+## How it interacts with PAM and Breeze Authenticator
+
+When an approver acts on a request from any surface (the [Privileged Access](/features/pam/) console, the Helper desktop app, or the mobile app), Breeze looks up the request's risk tier, resolves the required assurance level from this policy, and demands that level of verification on the approver's **Breeze Authenticator** device before recording the decision.
+
+- **PAM elevations** -- UAC intercepts and Tech JIT admin requests are risk-tiered, so the assurance floor you set here is what an approver must clear to grant them.
+- **AI tool actions** -- privileged actions proposed by the Breeze AI agent or Helper carry a risk tier (for example T2 / T3) and are held for a human; the approver must meet the matching assurance level to sign off.
+
+Because an approval always requires a *separate* human identity from the requester, Approval Security is what makes "confirmed with MFA" concrete: it defines exactly how strong that confirmation has to be for the risk at hand.
+
+<Aside type="caution">
+  If **Require an enrolled approver device** is on and enforcement is live, a technician who has not enrolled a Breeze Authenticator device -- or who can only satisfy a level below the tier's floor -- cannot approve requests at that tier. Make sure your approvers are enrolled before the **Enforce from** date arrives.
+</Aside>
+
+## Related
+
+- [Privileged Access Management](/features/pam/) -- the rule chain, request queue, and elevation flows whose approvals this policy governs.
+- [Users & Roles](/reference/users-and-roles/) -- roles, permissions, and MFA for the technicians who act as approvers.

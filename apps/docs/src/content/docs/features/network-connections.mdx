@@ -1,0 +1,84 @@
+---
+title: Network Connections
+description: View a device's live network connections — local and remote address, port, protocol, state, and owning process — in a filterable, netstat-style table.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+The **Connections** tab on a device's detail page shows the active network connections reported by the Breeze agent for that machine — a netstat-style view of what the device is currently talking to. Each row is one socket: the local address and port, the remote address and port (for connected sockets), the transport protocol, the connection state, and the owning process name and PID.
+
+This is the fastest way to answer "what is this machine connected to right now?" — spotting an unexpected outbound connection to an unfamiliar remote address, confirming a service is listening on the port you expect, or identifying which process owns a suspicious socket during incident response.
+
+<Aside type="note">
+This tab is distinct from **Network Intelligence** and **network baselines**, which track what appears on a *subnet* over time. Connections is a per-device, point-in-time snapshot of that one machine's sockets.
+</Aside>
+
+Reach it at **Device detail → Connections**.
+
+---
+
+## Columns
+
+| Column | Description |
+|--------|-------------|
+| **Protocol** | Transport protocol: `TCP`, `TCP6`, `UDP`, or `UDP6`. TCP connections are badged blue, UDP green. |
+| **Local** | The device's own address and port for the socket, shown as `address:port` (e.g. `0.0.0.0:443`). |
+| **Remote** | The peer's `address:port`. Listening and unconnected sockets have no remote peer and show `-`. |
+| **State** | Socket state, e.g. `LISTEN`, `ESTABLISHED`, `TIME_WAIT`, `CLOSE_WAIT`. `ESTABLISHED`/`LISTEN` are badged green, `TIME_WAIT`/`CLOSE_WAIT` yellow, others neutral. UDP sockets typically have no state. |
+| **Process** | The name of the process that owns the socket, when the agent can resolve it. |
+| **PID** | The owning process ID. |
+
+---
+
+## Filtering and refresh
+
+The tab loads the current connection set for the device and provides three ways to narrow it:
+
+- **Search** — free-text match across protocol, local and remote address/port, state, process name, and PID. Type part of a remote IP, a port number, or a process name to filter instantly.
+- **Protocol** — dropdown populated from the protocols actually present on the device (`TCP`, `UDP`, etc.).
+- **State** — dropdown populated from the states actually present (`LISTEN`, `ESTABLISHED`, …).
+
+A count badge next to the title shows the visible rows — `filtered / total` when a filter is active, or just the total when it is not. **Clear** removes all active filters, and **Refresh** re-fetches the latest connection snapshot for the device.
+
+<Aside type="tip">
+The connection list reflects the most recent data the agent has reported, not a live query executed against the device at the moment you open the tab. Use **Refresh** after the agent has checked in to pull the newest snapshot. If a device is offline, the table shows the last set of connections it reported.
+</Aside>
+
+---
+
+## Common uses
+
+- **Spot unexpected outbound connections.** Filter by state `ESTABLISHED` and scan the remote addresses. An established connection from an unfamiliar process to an unknown external IP is a classic indicator worth investigating.
+- **Confirm a service is listening.** Filter by state `LISTEN` (or search the port number) to verify a server process is bound to the port and interface you expect.
+- **Attribute a socket to a process.** The Process and PID columns tie each connection back to the program that opened it, so you can identify what is responsible for traffic on a given port.
+- **Triage during incident response.** Combine search and state filters to quickly isolate the connections relevant to an alert or a suspected compromise.
+
+---
+
+## API
+
+The tab is backed by a single read endpoint:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/devices/:id/connections` | Return the current network connections for a device. Requires `organization`, `partner`, or `system` scope and the `devices:read` permission. |
+
+Connections are stored per device in the `device_connections` table (protocol, local/remote address and port, state, PID, process name) and are populated from data the agent collects on the endpoint.
+
+---
+
+## Troubleshooting
+
+**The table is empty.** The device may not have reported connections yet, or it may be offline. Confirm the agent is online and checking in, then use **Refresh**. Devices with no active sockets that the agent can enumerate will legitimately show an empty list.
+
+**Process or PID shows `-`.** The agent could not resolve the owning process for that socket (often due to permissions or a short-lived process). The connection itself is still valid; only the ownership metadata is missing.
+
+**A connection I expect isn't listed.** The view is a snapshot from the agent's last report. Short-lived connections may open and close between reports. Refresh after the agent's next check-in to see the current state.
+
+---
+
+## Related
+
+- [Network Intelligence](/features/network-intelligence/) — subnet baselines, change detection, and anomaly alerting
+- [Discovery](/features/discovery/) — finding devices on the network
+- [Devices](/features/devices/) — the device detail page and its other tabs

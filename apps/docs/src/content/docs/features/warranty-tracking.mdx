@@ -1,0 +1,55 @@
+---
+title: Warranty Tracking
+description: Configure warranty expiry alert thresholds so techs get warned before device warranties lapse.
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+The **Warranty** feature on a [configuration policy](/features/configuration-policies/) controls when Breeze raises an alert as a device's manufacturer warranty approaches expiry. You set two thresholds — a **warning** window and a **critical** window (both in days) — and Breeze evaluates each device's known warranty end date against them, opening an [alert](/features/alerts/) when the device falls inside a window.
+
+Warranty alerting is **opt-in**. A device with no assigned, active warranty policy is never alerted, even if Breeze knows its warranty date. You turn it on by adding a Warranty feature to a policy and assigning that policy to the devices you care about.
+
+## Where warranty dates come from
+
+Breeze stores one warranty record per device (`device_warranty`) with the manufacturer, serial number, coverage status, and start/end dates. A background worker refreshes this data on a rolling batch every 6 hours by looking the serial number up against the supported vendor providers (Dell, HP, Lenovo; Apple/AppleCare coverage is also recognized). The Warranty **tab does not set warranty dates** — it only configures the alert thresholds evaluated against whatever dates the sync has discovered. Devices whose warranty status is still `unknown`, or that have no end date, are skipped.
+
+<Aside type="note">
+Devices on an **active AppleCare subscription** are never alerted. The reported "end date" for a recurring subscription is the next renewal date, not a true expiry, so it perpetually rolls forward — Breeze treats it as covered and clears any stale expiry alert.
+</Aside>
+
+## Configure in a policy
+
+<Steps>
+
+1. Open **Configuration → Policies** and select (or create) a policy, then open its **Warranty** tab.
+
+2. Toggle **Enable warranty expiry alerts** on.
+
+3. Set the **Warning threshold (days)** — Breeze raises a `high`-severity alert once a device's warranty is this many days or fewer from expiring. Default `90` (range 1–365).
+
+4. Set the **Critical threshold (days)** — inside this closer window (and once expired) Breeze raises a `critical`-severity alert instead. Default `30` (range 1–365).
+
+5. **Save**, then assign the policy to the scope you want covered (partner, organization, site, device group, or device).
+
+</Steps>
+
+The settings are stored **inline** on the policy's Warranty feature link. Resolution follows the standard closest-wins hierarchy — a device-level policy overrides group, site, organization, and partner. A policy created **partner-wide (all organizations)** applies these thresholds across every organization you manage, so you can define one warranty standard for your whole fleet. See [Configuration Policies](/features/configuration-policies/) for ownership and assignment details.
+
+## What alerts fire
+
+Breeze picks a single severity per device based on days remaining until the warranty end date:
+
+| Condition | Severity | Alert |
+|---|---|---|
+| Warranty already expired (0 days or past) | `critical` | "Warranty expired: *device*" |
+| Within the **critical** threshold | `critical` | "Warranty expires in N days: *device*" |
+| Within the **warning** threshold | `high` | "Warranty expires in N days: *device*" |
+| Outside both thresholds | — | No alert (any existing one is auto-resolved) |
+
+Each alert carries the manufacturer, serial number, end date, and days remaining. Only one open warranty alert exists per device at a time — Breeze won't create a duplicate while one is active, acknowledged, or suppressed. When a device moves back outside the thresholds (or becomes an AppleCare subscription), Breeze **auto-resolves** the open alert. A warranty alert a user has **dismissed** stays dismissed for that end date and won't be recreated; if the warranty is later renewed to a new end date and approaches expiry again, alerting resumes.
+
+## Related
+
+- [Configuration Policies](/features/configuration-policies/) — how to create, own, and assign policies
+- [Alerts](/features/alerts/) — reviewing, acknowledging, and resolving the alerts this feature raises
+- [Devices](/features/devices/) — where a device's warranty status is shown

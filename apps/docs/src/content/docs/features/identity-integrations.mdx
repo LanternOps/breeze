@@ -1,0 +1,128 @@
+---
+title: Identity Integrations — Google Workspace & Microsoft 365
+description: Connect Google Workspace and Microsoft 365 (Entra) tenants on the Integrations → Identity tab so Breeze and its AI assistant can administer users and groups.
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+The **Identity** tab of the Breeze Integrations page is where you connect a customer's directory to Breeze. It has two sub-tabs — **Google Workspace** and **Microsoft 365** — and each one collects the credentials Breeze needs to sign in to the provider on the customer's behalf. Once a tenant is connected, Breeze verifies the credentials live, encrypts them at rest, and never returns them to the browser again. From that point on, technicians can look up users, review posture, and run identity actions through the in-app AI assistant.
+
+Open it at **Integrations → Identity** (`/integrations#identity`). The two sub-tabs deep-link to `/integrations#google` (Google Workspace) and `/integrations#m365` (Microsoft 365).
+
+<Aside type="note" title="This page is about *connecting* a tenant">
+  This page documents the connection step only — the credential fields and the connect/verify/disconnect flow. For what you can *do* once a tenant is connected (viewing identity posture, the full list of read and mutating AI actions, guided offboarding, and the approval gate), see the [Identity Console](/features/identity-console/). This page and the Identity Console describe the same two connectors from two angles: setup here, day-to-day use there.
+</Aside>
+
+<Aside type="caution" title="Off by default">
+  Both connectors are feature-flagged off by default. A host operator must enable `GOOGLE_WORKSPACE_ENABLED` (Google Workspace) and/or `M365_ENABLED` (Microsoft 365) on the API server before the sub-tab shows a connection form. While a flag is off, the sub-tab shows a calm "not enabled on this instance" message instead of the form, and the provider's AI actions are unavailable.
+</Aside>
+
+---
+
+## Connecting a tenant
+
+There is one connection per organization for each provider. Each sub-tab shows a **Connected / Not connected** badge, a collapsible "how to get the credentials" walkthrough, the connection form, and — once connected — a read-only details summary. Saving a new connection requires MFA verification, and Breeze verifies the credentials against the live provider before storing anything; the connection is only saved if that check succeeds.
+
+<Tabs>
+  <TabItem label="Google Workspace">
+
+Google Workspace lives on the sub-tab at `/integrations#google`. Breeze authenticates as a Google Cloud **service account** that uses **domain-wide delegation** to impersonate a super-admin in the customer's domain.
+
+### Credentials required
+
+| Field | Description |
+|---|---|
+| **Primary domain** | The customer's domain, e.g. `example.com` |
+| **Super-admin email (impersonated)** | A super-admin account in the domain that the service account impersonates |
+| **Service-account JSON key** | The full service-account JSON key file, pasted into a masked field |
+
+### Connect
+
+<Steps>
+1. Set your scope to the customer organization, then open **Integrations → Identity → Google Workspace**.
+2. In the **Google Cloud Console**, open **IAM & Admin → Service Accounts** and create (or pick) a service account.
+3. On that service account, open the **Keys** tab and choose **Add key → Create new key → JSON**. The JSON downloads once — that file is what you paste into Breeze. Note the service account's numeric **Client ID** (its unique ID); you will need it in the next step.
+4. Enable the APIs the identity tools use: **Admin SDK**, **Gmail**, **Calendar**, and **Enterprise License Manager**.
+5. In the **Google Admin Console**, go to **Security → Access and data control → API controls → Manage domain-wide delegation**. Add the service account's **Client ID** and authorize the exact OAuth scopes Breeze shows in the walkthrough (copy them straight from the card).
+6. Back in Breeze, enter the **Primary domain**, the **Super-admin email** to impersonate, and paste the **service-account JSON key**.
+7. Click **Save & Verify**. Breeze makes a live Directory API call to confirm the key works and that domain-wide delegation is correctly authorized, then stores the connection.
+</Steps>
+
+### Domain-wide delegation scopes
+
+The walkthrough card displays the exact comma-separated OAuth scope list to authorize. It covers directory user/group read and write, user security, aliases, mobile-device actions, Gmail settings (basic and sharing), Calendar ACLs, and Apps licensing — the scopes the Google identity tools actually call. Authorize the full list so every supported action works.
+
+  </TabItem>
+  <TabItem label="Microsoft 365">
+
+Microsoft 365 lives on the sub-tab at `/integrations#m365`. Breeze authenticates as an **Entra (Azure AD) app registration** using the client-credentials flow, so you create an app in the customer's tenant, grant it Microsoft Graph application permissions, and hand Breeze the tenant ID, client ID, and a client secret.
+
+### Credentials required
+
+| Field | Description |
+|---|---|
+| **Tenant ID** | The tenant's Directory (tenant) ID — a GUID; the `contoso.onmicrosoft.com` form is also accepted in the field |
+| **App (client) ID** | The Application (client) ID of the Entra app registration |
+| **Client secret** | The app's client secret value (not the secret ID), entered in a masked field |
+
+### Connect
+
+<Steps>
+1. Set your scope to the customer organization, then open **Integrations → Identity → Microsoft 365**.
+2. In the **Microsoft Entra admin center** (entra.microsoft.com) or the Azure portal, open **Microsoft Entra ID → App registrations** and pick an existing app or click **New registration**. Give it a name and choose "Accounts in this organizational directory only."
+3. On the app's **Overview** page, copy the **Directory (tenant) ID** and the **Application (client) ID** into the Breeze fields.
+4. Go to **Certificates & secrets → Client secrets → New client secret**. Set a description and expiry (24 months max), then copy the secret **Value** immediately — not the secret ID; it is shown only once.
+5. Under **API permissions**, add the Microsoft Graph **application** permissions listed below, then click **Grant admin consent**.
+6. Back in Breeze, enter the **Tenant ID**, **App (client) ID**, and the **client secret**.
+7. Click **Save & Verify**. Breeze acquires a token and makes a live Microsoft Graph call to confirm the credentials and admin consent are in place, then stores the connection.
+</Steps>
+
+### Microsoft Graph permissions required
+
+The connection card spells out which permissions back which capabilities:
+
+| Capability | Graph application permissions |
+|---|---|
+| **Reads** (user lookup, group memberships, sign-in activity) | `User.Read.All`, `Group.Read.All`, `AuditLog.Read.All` |
+| **Disable user / reset password** | additionally `User.ReadWrite.All` + `User-PasswordProfile.ReadWrite.All`, plus the **User Administrator** Entra role |
+
+Grant admin consent for these in the app registration before saving, or the live verification (and later actions) will fail.
+
+  </TabItem>
+</Tabs>
+
+<Aside type="tip">
+  Stored secrets are encrypted at rest and never returned to the browser. When you re-save an already-connected tenant you can leave the secret field blank to keep the stored key or secret — the field shows a "stored, encrypted" placeholder. Only the domain/admin (Google) or tenant/client IDs (Microsoft) are echoed back in the read-only details summary.
+</Aside>
+
+---
+
+## After connecting
+
+Once a sub-tab shows **Connected**, technicians work with the directory through the in-app AI assistant rather than through this Integrations page. Read-only lookups (user details, group memberships, security posture, Microsoft 365 sign-in activity) run automatically; anything that changes an account is gated behind a human approval step with a mandatory reason and a full audit trail. The two providers are **not** at parity — Google Workspace exposes a much broader mutating action set than Microsoft 365.
+
+For the complete list of what you can view and do — including guided offboarding, the security-drift report, and the read-vs-mutating tiers — see the [Identity Console](/features/identity-console/).
+
+---
+
+## Troubleshooting
+
+**The Google Workspace or Microsoft 365 sub-tab shows "not enabled on this instance."**
+The connector is feature-flagged off. Ask your host operator to enable `GOOGLE_WORKSPACE_ENABLED` or `M365_ENABLED` on the API server, then reload the page.
+
+**The connection fails to save with a credentials error.**
+Both providers verify credentials live before storing them. For Google Workspace, confirm the service-account JSON key is valid and that domain-wide delegation was authorized with the exact scopes shown on the card, using the service account's numeric Client ID. For Microsoft 365, confirm the tenant ID and client ID are correct, the client secret **Value** (not the secret ID) was copied and has not expired, and admin consent has been granted for the required Graph permissions.
+
+**Save is disabled.**
+A fresh connection requires all fields. For Google Workspace: primary domain, super-admin email, and the service-account key. For Microsoft 365: tenant ID, client ID, and client secret. When updating an existing connection, the secret field may be left blank to keep the stored value.
+
+**I connected a tenant but AI identity actions still do not work.**
+A verified connection is required *in addition to* the feature flag being on. Re-open the sub-tab and confirm the badge reads **Connected**. Also confirm the service account or app registration carries the write permissions and admin role required for the specific action (see the permissions tables above).
+
+---
+
+## Related
+
+- [Identity Console](/features/identity-console/) — viewing identity posture and running AI-assisted identity actions once a tenant is connected
+- [AI Assistant](/features/ai/) — how read and mutating actions, approvals, and the audit trail work
+- [Integrations](/features/integrations/) — the full Integrations page and its other tabs

@@ -1,0 +1,172 @@
+---
+title: Monitoring & Observability Integrations
+description: Publish Breeze metrics and route alerts to Prometheus, Grafana, PagerDuty, OpsGenie, and outbound webhooks from the Integrations → Monitoring tab.
+---
+
+import { Steps, Aside, Tabs, TabItem, Card } from '@astrojs/starlight/components';
+
+The **Monitoring** tab of the Integrations page connects Breeze to the observability and on-call tools your team already runs. From a single screen you can publish Breeze metrics to a **Prometheus** scrape endpoint, deep-link to **Grafana** dashboards, route critical alerts to **PagerDuty** and **OpsGenie**, forward monitoring events to any number of **outbound webhooks**, and choose exactly which **metrics** are exposed to external monitors.
+
+Open it from **Integrations → Monitoring** ([`/integrations#monitoring`](/integrations#monitoring)).
+
+<Aside type="caution" title="Not the internal Monitoring stack">
+  This page is about sending Breeze's telemetry and alerts *out* to your third-party tools. It is **not** the self-hosted observability stack that monitors the Breeze platform itself. If you are looking to stand up Prometheus, Grafana, Loki, and Alertmanager to watch the Breeze API/agents, see the [Observability Stack](/monitoring/stack/) instead — that's a different thing entirely.
+</Aside>
+
+<Aside title="Per-organization settings">
+  Monitoring integrations are configured **per organization**. Select a specific organization first — while the **All orgs** view is active there is no single org to load or save against, and the tab shows a prompt asking you to switch to one organization to view or edit its settings.
+</Aside>
+
+Each provider block has its own **enabled** toggle, a **Test connection** button that reports a live status badge (Not tested / Testing / Active / Failed), and a per-provider result message. Nothing is persisted until you click **Save settings** in the header — an **Unsaved changes** indicator appears while you have pending edits.
+
+---
+
+## Prometheus scrape endpoint
+
+Publish Breeze metrics so a Prometheus server can scrape them on a schedule you control.
+
+| Field | Description |
+|-------|-------------|
+| **Endpoint URL** | The base URL where the metrics are published (e.g. `https://prometheus.example.com`). |
+| **Metrics path** | The HTTP path the metrics are served on (default `/metrics`). |
+| **Scrape interval** | How often Prometheus should scrape, as a duration string (e.g. `30s`). |
+| **Scrape timeout** | How long a single scrape may take before it is abandoned (e.g. `10s`). |
+
+<Steps>
+1. In **Integrations → Monitoring**, find the **Prometheus** card and turn its toggle to **Enabled**.
+
+2. Set the **Endpoint URL** and **Metrics path** for where metrics should be published, then set the **Scrape interval** and **Scrape timeout** to match your Prometheus scrape config.
+
+3. Choose which metrics are exposed in the [Metric export](#metric-selection) panel — only selected metrics are surfaced to external monitors.
+
+4. Click **Test connection** to verify reachability. The status badge turns **Active** on success or **Failed** with a message on error.
+
+5. Click **Save settings** in the page header to persist the configuration.
+</Steps>
+
+<Aside type="tip">
+  The **Scrape interval** and **Scrape timeout** are plain duration strings — use the same format your Prometheus `scrape_configs` expect (`15s`, `30s`, `1m`, and so on).
+</Aside>
+
+---
+
+## Grafana
+
+Link your Grafana instance so Breeze can deep-link into the right dashboards.
+
+| Field | Description |
+|-------|-------------|
+| **Dashboard URL** | The base URL of your Grafana instance (e.g. `https://grafana.example.com`). |
+| **API key** | A Grafana API key/token used to authenticate. Stored as a secret field (masked input). |
+| **Organization ID** | The numeric Grafana org ID that owns the dashboards (Grafana's own org identifier, e.g. `1`). |
+
+Toggle the **Grafana** card **Enabled**, fill in the three fields, use **Test connection** to confirm the instance is reachable, and **Save settings**.
+
+<Aside>
+  The **Organization ID** here is Grafana's internal org number — it is unrelated to your Breeze organization. Leave it at `1` unless your Grafana setup uses multiple orgs.
+</Aside>
+
+---
+
+## PagerDuty
+
+Trigger on-call workflows from critical Breeze alerts.
+
+| Field | Description |
+|-------|-------------|
+| **Integration key** | The PagerDuty Events API integration (routing) key. Stored as a secret field (masked input). |
+| **Service ID** | The PagerDuty service the alerts should be attached to. |
+
+## OpsGenie
+
+Route incident responses to the right OpsGenie team.
+
+| Field | Description |
+|-------|-------------|
+| **API key** | The OpsGenie API key. Stored as a secret field (masked input). |
+| **Team** | The OpsGenie team that should receive the routed incidents. |
+
+### Wiring up PagerDuty or OpsGenie
+
+<Steps>
+1. In your PagerDuty or OpsGenie account, create an integration and copy its key — a PagerDuty **Events API integration key**, or an **OpsGenie API key**.
+
+2. In **Integrations → Monitoring**, toggle the **PagerDuty** or **OpsGenie** card to **Enabled** (both start disabled).
+
+3. Paste the key into **Integration key** (PagerDuty) or **API key** (OpsGenie), then add the **Service ID** (PagerDuty) or **Team** (OpsGenie) that should own the incidents.
+
+4. Click **Test connection** and confirm the badge reads **Active**.
+
+5. Click **Save settings** to persist.
+</Steps>
+
+<Aside type="tip">
+  The **Test connection** button is disabled while a provider is toggled off — enable the provider first, then test.
+</Aside>
+
+---
+
+## Outbound webhooks
+
+Forward monitoring events to any number of external HTTP endpoints — a Datadog relay, a CloudWatch bridge, or your own ingestion service. Each endpoint has:
+
+| Field | Description |
+|-------|-------------|
+| **Name** | A label for the endpoint (e.g. "Datadog relay"). |
+| **Endpoint URL** | The destination URL events are forwarded to. |
+| **Active** | A per-endpoint checkbox controlling whether this endpoint receives events. |
+
+Manage endpoints from the **Custom monitoring webhooks** card:
+
+- **Add an endpoint** — enter a **Name** and **Endpoint URL** in the row at the bottom of the card and click **Add endpoint**.
+- **Test one endpoint** — click **Test** on that endpoint's row to send it a probe; its own status badge reports the result.
+- **Test all** — the **Test all** button in the card header probes the whole set at once.
+- **Remove an endpoint** — click **Remove** on its row.
+- **Enable/disable the whole card** — the card's **Enabled** toggle gates all outbound webhook delivery for the org.
+
+<Aside>
+  These outbound monitoring webhooks are the lightweight per-org forwarders configured on this tab. They are separate from Breeze's full-featured, signed, retrying [event webhooks](/features/webhooks/), which offer HMAC signatures, delivery history, and automatic retries. Use event webhooks when you need guaranteed, verifiable delivery of specific event types.
+</Aside>
+
+---
+
+## Metric selection
+
+The **Metric export** panel controls which metric families are exposed to external monitors (including the Prometheus scrape endpoint above). Toggle the panel on with its **Enabled** switch, then check the metrics you want to publish. A counter at the bottom shows how many are selected.
+
+| Metric | What it covers |
+|--------|----------------|
+| **Device health** | Heartbeat, uptime, and connectivity |
+| **Performance** | CPU, memory, and disk utilization |
+| **Patch compliance** | Patch install rates and drift |
+| **Backup status** | Job success rates and restore points |
+| **Security posture** | Risk scores and posture checks |
+| **Automation runs** | Run counts, duration, and failures |
+| **Alerts & incidents** | Open alerts and escalations |
+
+<Aside>
+  Only the metrics you check are surfaced to external monitors. Unchecking a metric family stops it from being exported without affecting how Breeze collects or displays it internally.
+</Aside>
+
+---
+
+## Saving and testing
+
+- **Save settings** (header button) persists every provider block, the webhook endpoint list, and the metric selection together. An **Unsaved changes** note appears while edits are pending, and a confirmation banner shows once the save succeeds.
+- **Test connection** / **Test** / **Test all** send a live probe using the values currently in the form (including unsaved edits) and report success or a failure message per provider or per webhook endpoint.
+
+---
+
+## Related
+
+<Card title="Alerts & Rules" icon="warning">
+  Define the alert rules and severities that feed PagerDuty and OpsGenie routing. See [Alerts & Rules](/features/alerts/).
+</Card>
+
+<Card title="Webhooks" icon="puzzle">
+  Breeze's full signed, retrying event-webhook system with delivery history. See [Webhooks](/features/webhooks/).
+</Card>
+
+<Card title="Observability Stack" icon="setting">
+  The self-hosted Prometheus/Grafana/Loki/Alertmanager stack that monitors the Breeze platform itself — a different thing from this tab. See [Observability Stack](/monitoring/stack/).
+</Card>

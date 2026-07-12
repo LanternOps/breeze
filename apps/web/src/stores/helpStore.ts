@@ -64,7 +64,10 @@ export const useHelpStore = create<HelpState>((set) => ({
     if (isDocsUrl(url)) {
       set({ isOpen: true, docsUrl: url, label: 'Documentation' });
     } else {
-      const { url: resolved, label } = getDocsForPath(window.location.pathname);
+      const { url: resolved, label } = getDocsForPath(
+        window.location.pathname,
+        window.location.hash,
+      );
       set({ isOpen: true, docsUrl: rebaseDocsUrl(resolved), label });
     }
   },

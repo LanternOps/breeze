@@ -258,7 +258,8 @@
     "distributorIntegrationsPax8AndTDSYNNEXAreAvailable": "As integrações de distribuidores (Pax8 e TD SYNNEX) estão disponíveis apenas para contas de parceiros. ",
     "accountingIntegrationsAreAvailableToPartnerAccountsOnly": "As integrações contábeis estão disponíveis apenas para contas de parceiros. ",
     "theUniFiNetworkIntegrationIsAvailableToPartner": "A integração da rede UniFi está disponível apenas para contas de parceiros. ",
-    "psa": "PSA"
+    "psa": "PSA",
+    "viewNameDocumentation": "Ver documentação de {{name}}"
   },
   "linkSubscriptionPicker": {
     "couldNotLoadContractsForThisOrganizationClose": "Não foi possível carregar contratos para esta organização. Feche e tente novamente.",

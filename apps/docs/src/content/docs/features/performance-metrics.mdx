@@ -1,0 +1,93 @@
+---
+title: Performance Metrics
+description: Read per-device CPU, memory, disk, and network time-series graphs on the device Performance tab.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+The **Performance** tab on the device detail page charts a device's raw resource utilization over time — CPU, memory, disk, and network — as interactive time-series graphs. This is the live-and-historical telemetry view, distinct from the computed [reliability score](/features/reliability/): reliability rolls crashes, hangs, and uptime into a single 0–100 number, while Performance shows the underlying utilization values themselves so you can spot spikes, saturation, and trends.
+
+Open a device from the **Devices** list and select the **Performance** tab (the URL hash is `#performance`). A condensed copy of the same graphs also appears on the device **Overview** tab.
+
+<Aside>
+  Viewing performance metrics requires authentication with the `devices.read` permission. The endpoint is scoped to your organization — you only see metrics for devices you have access to.
+</Aside>
+
+---
+
+## What the graphs show
+
+The tab renders up to three stacked charts. The network and disk-activity charts appear only when the device has reported data for them.
+
+- **CPU / Memory / Disk usage** — a line chart with three series (CPU blue, Memory green, Disk purple) plotted as a percentage on a fixed 0–100% axis. This chart is always shown.
+- **Network Bandwidth** — an area chart of download (inbound) and upload (outbound) throughput. Appears only when the device has reported non-zero bandwidth.
+- **Disk Activity** — an area chart of read and write throughput (bytes/sec). Appears only when the device reports disk activity data.
+
+Below each chart, **latest** stat cards summarize the most recent sample: current CPU / Memory / Disk percentages, download and upload rates, and read/write throughput plus read/write operations per second.
+
+---
+
+## Time ranges
+
+Three range buttons in the chart header switch the window. Each range automatically selects an aggregation interval so the graph stays readable:
+
+| Range | Aggregation interval |
+|-------|----------------------|
+| **24h** | 5-minute buckets |
+| **7d** | 1-hour buckets |
+| **30d** | 1-day buckets |
+
+Recent, fine-grained ranges are drawn from raw per-minute samples; longer ranges are served from pre-computed hourly and daily rollups, so the 30-day view loads quickly without scanning every raw sample.
+
+---
+
+## How collection cadence affects the graphs
+
+The graphs are only as detailed as the samples the agent reports. Each point is an average over its bucket, so:
+
+- A device that has been **offline** or newly enrolled shows gaps or a short history — there is simply no data for those buckets.
+- Because points are **bucket averages**, a brief spike between samples can be smoothed out. Narrow the range to 24h for the finest resolution.
+- Percentages are clamped to the 0–100% axis; bandwidth and disk-activity axes auto-scale to the observed maximum.
+
+---
+
+## Process drill-down
+
+Click any point on any chart to open the **process drill-down** panel. It lists the top processes by CPU and memory at (or just before) the clicked timestamp, so you can attribute a spike to a specific process. Toggle **Live** in the panel to pull the device's current running processes on demand instead of the historical sample. If a device has never recorded a process sample, or the click predates its first sample, the panel explains why it is empty rather than showing nothing.
+
+---
+
+## Performance metrics vs. reliability score
+
+These two device views answer different questions:
+
+- **Performance metrics** (this tab) — *how hard is the device working right now, and over the last day/week/month?* Raw CPU, memory, disk, and network utilization as time series.
+- **[Reliability](/features/reliability/)** — *how stable is the device?* A weighted 0–100 score computed from crash events, hangs, service failures, hardware errors, and uptime.
+
+Use Performance to investigate a slowness or saturation complaint; use Reliability to judge whether a device is fundamentally unstable and needs attention.
+
+---
+
+## API reference
+
+The tab is backed by a single endpoint:
+
+```bash
+GET /api/v1/devices/:id/metrics?range=24h
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `range` | Convenience window: `1h`, `6h`, `24h`, `7d`, `30d`. Selects a matching interval automatically. |
+| `startDate` / `endDate` | Explicit ISO 8601 window (overrides `range`). |
+| `interval` | Aggregation bucket: `1m`, `5m`, `1h`, `1d`. Defaults to `5m`. |
+
+The response returns an array of points, each with `timestamp`, `cpu`, `ram`, `disk` (percentages), bandwidth in/out (bps), and disk read/write throughput and ops. The endpoint requires the `devices.read` permission and an `organization`, `partner`, or `system` scope.
+
+---
+
+## Related
+
+- [Device Reliability](/features/reliability/) — the computed stability score, complementary to these raw graphs.
+- [Boot & Startup Performance](/features/boot-performance/) — boot-time timings and startup-item impact.
+- [Devices](/features/devices/) — the device list and detail page these graphs live on.
