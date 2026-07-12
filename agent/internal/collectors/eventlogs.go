@@ -47,7 +47,11 @@ func NewEventLogCollector() *EventLogCollector {
 		maxEvents:       100,
 		categories:      []string{"security", "hardware", "application", "system"},
 		minimumLevel:    "info",
-		intervalMinutes: 5,
+		// 15m default (was 5m): each pass fans out subprocess work — on macOS a
+		// `log show` pass costs seconds of CPU even when it returns nothing
+		// (issue #2390) — and error-level events don't need 5-minute freshness.
+		// Server-configurable 1-60 via UpdateConfig.
+		intervalMinutes: 15,
 	}
 }
 

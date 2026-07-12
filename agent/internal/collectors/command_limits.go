@@ -98,6 +98,46 @@ func runCollectorLimitedOutput(timeout time.Duration, name string, args ...strin
 	return output, nil
 }
 
+// runCollectorBoundedOutput runs a command, streaming stdout through an
+// io.LimitReader so at most collectorCommandOutputLimit+1 bytes are ever
+// buffered. Unlike runCollectorLimitedOutput it does not silently truncate:
+// output exceeding the limit is an error (matching runCollectorOutput's
+// semantics but enforced BEFORE buffering, not post-hoc), and a non-zero exit
+// or read failure is surfaced. Use for structured output (e.g. JSON) where a
+// truncated payload would be garbage anyway.
+func runCollectorBoundedOutput(timeout time.Duration, name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, name, args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("%s pipe failed: %w", name, err)
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("%s start failed: %w", name, err)
+	}
+	// Read one byte past the limit so over-limit output is detectable without
+	// buffering it.
+	output, readErr := io.ReadAll(io.LimitReader(stdout, int64(collectorCommandOutputLimit)+1))
+	// Drain any remaining output so the process can exit and be reaped.
+	_, _ = io.Copy(io.Discard, stdout)
+	waitErr := cmd.Wait()
+	if ctx.Err() != nil {
+		return nil, fmt.Errorf("%s timed out: %w", name, ctx.Err())
+	}
+	if readErr != nil {
+		return nil, fmt.Errorf("%s read failed: %w", name, readErr)
+	}
+	if len(output) > collectorCommandOutputLimit {
+		return nil, fmt.Errorf("%s output too large", name)
+	}
+	if waitErr != nil {
+		return nil, fmt.Errorf("%s failed: %w", name, waitErr)
+	}
+	return output, nil
+}
+
 func newCollectorScanner(output []byte) *bufio.Scanner {
 	scanner := bufio.NewScanner(bytes.NewReader(output))
 	scanner.Buffer(make([]byte, 0, 64*1024), collectorScannerLimit)

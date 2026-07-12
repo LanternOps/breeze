@@ -37,7 +37,7 @@ func crashReportKind(name, bugType, procName string) string {
 //     downweights them relative to a kernel panic / BSOD, since an app crashing
 //     is app instability, not whole-device failure.
 //   - Generic com.apple.iokit.* error/fault chatter (cfplugin, appstore, …) is
-//     hard-tagged Category="hardware" by collectHardwareErrors; counting it
+//     hard-tagged Category="hardware" by the unified-log collector; counting it
 //     drowned scores in benign noise. Hardware now gates on a genuine fault
 //     signal (thermal / disk-I/O / memory / MCE), never on entry.Category.
 func classifyDarwinEventLogEntry(metrics *ReliabilityMetrics, entry EventLogEntry) {

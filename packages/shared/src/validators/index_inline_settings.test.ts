@@ -193,7 +193,8 @@ describe('eventLogInlineSettingsSchema', () => {
       expect(result.data.retentionDays).toBe(30);
       expect(result.data.maxEventsPerCycle).toBe(100);
       expect(result.data.minimumLevel).toBe('info');
-      expect(result.data.collectionIntervalMinutes).toBe(5);
+      // 15m default (was 5m) — issue #2390 subprocess-churn backoff.
+      expect(result.data.collectionIntervalMinutes).toBe(15);
       expect(result.data.rateLimitPerHour).toBe(12000);
       // The dead enableFullTextSearch / enableCorrelation toggles were removed (#1323).
       expect('enableFullTextSearch' in result.data).toBe(false);
