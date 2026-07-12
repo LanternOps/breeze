@@ -387,6 +387,76 @@ describe('authMiddleware', () => {
     expect(withDbAccessContext).not.toHaveBeenCalled();
   });
 
+  it.each([
+    [
+      'enrolled password-only',
+      { mfa: false, amr: ['password'] as const },
+      { required: true, allowedMethods: new Set(['totp', 'recovery_code'] as const), sources: ['role'] as Array<'role'> },
+    ],
+    [
+      'untrusted external',
+      { mfa: false, amr: ['sso'] as const },
+      { required: true, allowedMethods: new Set(['totp', 'recovery_code'] as const), sources: ['role'] as Array<'role'> },
+    ],
+    [
+      'now-disallowed local-factor',
+      { mfa: true, amr: ['password', 'sms'] as const },
+      { required: false, allowedMethods: new Set(['totp', 'recovery_code'] as const), sources: [] as Array<'role'> },
+    ],
+  ])(
+    'allows an authenticated %s session to reach logout but rejects a normal protected route',
+    async (_case, assurance, policy) => {
+      const logoutHandler = vi.fn((c: any) => c.json({
+        ok: true,
+        userId: c.get('auth').user.id,
+        scope: c.get('auth').scope,
+      }));
+      const protectedHandler = vi.fn((c: any) => c.json({ ok: true }));
+      const app = new Hono();
+      app.use(authMiddleware);
+      app.post('/api/v1/auth/logout', logoutHandler);
+      app.get('/api/v1/protected', protectedHandler);
+
+      const token = {
+        ...basePayload,
+        scope: 'system' as const,
+        partnerId: null,
+        orgId: null,
+        roleId: null,
+        ...assurance,
+      };
+      vi.mocked(verifyToken).mockResolvedValue(token);
+      vi.mocked(resolveEffectiveMfaPolicy).mockResolvedValue(policy);
+      vi.mocked(db.select).mockReturnValue(
+        selectWithLimit([{ ...activeUser, isPlatformAdmin: true, mfaEnabled: true }]) as any,
+      );
+
+      const logout = await app.request('/api/v1/auth/logout', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(logout.status).toBe(200);
+      expect(await logout.json()).toEqual({
+        ok: true,
+        userId: activeUser.id,
+        scope: 'system',
+      });
+      expect(isUserTokenRevoked).toHaveBeenCalledWith(token.sub, token.iat);
+      expect(isAccessSessionFamilyActive).toHaveBeenCalledWith(token.sid, token.sub);
+      expect(withDbAccessContext).toHaveBeenCalledOnce();
+      expect(logoutHandler).toHaveBeenCalledOnce();
+
+      const protectedResponse = await app.request('/api/v1/protected', {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(protectedResponse.status).toBe(403);
+      expect(protectedHandler).not.toHaveBeenCalled();
+      expect(withDbAccessContext).toHaveBeenCalledOnce();
+    },
+  );
+
   it.each(['sso', 'cf_access'] as const)(
     'accepts a trusted %s MFA assertion under required policy',
     async (method) => {

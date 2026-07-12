@@ -14,6 +14,15 @@ vi.mock('../services', () => ({
     expiresInSeconds: 900,
     familyId: 'family-id-mock'
   }),
+  getActiveRefreshTokenFamily: vi.fn().mockResolvedValue({
+    familyId: 'family-id-mock',
+    userId: 'user-123',
+    createdAt: new Date(),
+    absoluteExpiresAt: new Date(Date.now() + 60_000),
+    lastUsedAt: new Date(),
+    revokedAt: null,
+    revokedReason: null,
+  }),
   verifyToken: vi.fn(),
   generateMFASecret: vi.fn().mockReturnValue('MFASECRET123'),
   verifyMFAToken: vi.fn(),

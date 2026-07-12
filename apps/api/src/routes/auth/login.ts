@@ -4,6 +4,7 @@ import { eq } from 'drizzle-orm';
 import * as dbModule from '../../db';
 import { users } from '../../db/schema';
 import {
+  getActiveRefreshTokenFamily,
   issueUserSession,
   UserSessionFamilyInactiveError,
   verifyToken,
@@ -753,6 +754,22 @@ loginRoutes.post('/refresh', async (c) => {
   // path was retired in #917 L-1 (rejected above), so every token reaching here
   // carries a family and the Redis jti→family fallback is no longer needed.
   const familyId: string = payload.fam;
+
+  // PostgreSQL is authoritative for family ownership and lifecycle. Perform
+  // this owner-bound preflight before any reuse marker or old-JTI claim so an
+  // invalid family cannot burn the token or mint a replacement. The same
+  // check remains inside issueUserSession after the claim as a race backstop.
+  try {
+    const activeFamily = await getActiveRefreshTokenFamily(familyId, payload.sub);
+    if (!activeFamily) {
+      clearRefreshTokenCookie(c);
+      return c.json({ error: 'Invalid refresh token' }, 401);
+    }
+  } catch (error) {
+    console.error('[auth] Refresh family preflight failed closed:', error);
+    clearRefreshTokenCookie(c);
+    return c.json({ error: 'Invalid refresh token' }, 401);
+  }
 
   // Reuse detection: if this jti has already been revoked AND we have a
   // family id, this is a replay of an old (rotated) refresh token. Kill the

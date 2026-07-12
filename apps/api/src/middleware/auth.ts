@@ -139,7 +139,6 @@ function isMfaEnrollmentExemptPath(path: string): boolean {
   const rel = path.startsWith('/api/v1') ? path.slice('/api/v1'.length) : path;
 
   return new Set([
-    '/auth/logout',
     '/auth/mfa/setup',
     '/auth/mfa/enable',
     '/auth/mfa/sms/enable',
@@ -149,6 +148,11 @@ function isMfaEnrollmentExemptPath(path: string): boolean {
     '/auth/passkeys/register/options',
     '/auth/passkeys/register/verify',
   ]).has(rel);
+}
+
+function isLogoutAssuranceExemptPath(path: string): boolean {
+  const rel = path.startsWith('/api/v1') ? path.slice('/api/v1'.length) : path;
+  return rel === '/auth/logout';
 }
 
 /**
@@ -473,10 +477,16 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
     throw new HTTPException(401, { message: 'Invalid or expired token' });
   }
 
-  if (assuranceFailure === 'method_not_allowed') {
+  // Logout must remain available to an otherwise valid current session even
+  // after its live assurance becomes insufficient. Only the assurance denial
+  // is exempt: token verification, live authority/epochs, revocation, family
+  // ownership/lifecycle, tenant context, and request RLS still apply.
+  const logoutAssuranceExempt = isLogoutAssuranceExemptPath(c.req.path);
+
+  if (!logoutAssuranceExempt && assuranceFailure === 'method_not_allowed') {
     throw new HTTPException(403, { message: 'MFA method is no longer allowed' });
   }
-  if (assuranceFailure === 'mfa_required') {
+  if (!logoutAssuranceExempt && assuranceFailure === 'mfa_required') {
     // mfaEnabled is enrollment state only. It never proves assurance; that
     // comes exclusively from the verified AMR/mfa claims above.
     if (!user.mfaEnabled && !isMfaEnrollmentExemptPath(c.req.path)) {

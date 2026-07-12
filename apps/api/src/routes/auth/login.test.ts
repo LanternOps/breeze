@@ -30,6 +30,15 @@ vi.mock('../../services', () => ({
     expiresInSeconds: 900,
     familyId: 'family-id',
   })),
+  getActiveRefreshTokenFamily: vi.fn(async () => ({
+    familyId: 'family-42',
+    userId: 'user-1',
+    createdAt: new Date(),
+    absoluteExpiresAt: new Date(Date.now() + 60_000),
+    lastUsedAt: new Date(),
+    revokedAt: null,
+    revokedReason: null,
+  })),
   UserSessionFamilyInactiveError: class UserSessionFamilyInactiveError extends Error {
     constructor() {
       super('Inactive user session family');
@@ -194,6 +203,7 @@ vi.mock('../../services/mfaPolicy', () => ({
 import { loginRoutes } from './login';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
+  getActiveRefreshTokenFamily,
   issueUserSession,
   verifyToken,
   isRefreshTokenJtiRevoked,
@@ -865,7 +875,36 @@ describe('POST /refresh — hard-reject fam-less legacy tokens (#917 L-1)', () =
     expect(issueUserSession).not.toHaveBeenCalled();
   });
 
-  it('maps a durable family rejection after jti claim to the generic refresh 401', async () => {
+  it.each(['missing', 'wrong-owner', 'revoked', 'absolutely expired'])(
+    'rejects a %s durable family before marking or claiming the old jti',
+    async () => {
+      vi.mocked(verifyToken).mockResolvedValue({
+        sub: 'user-1',
+        email: 'admin@msp.com',
+        type: 'refresh',
+        jti: 'jti-invalid-family',
+        fam: 'family-42',
+        ae: 4,
+        me: 7,
+        mfa: false,
+        amr: ['password'],
+      } as any);
+      vi.mocked(getActiveRefreshTokenFamily).mockResolvedValueOnce(null);
+
+      const res = await postRefresh();
+
+      expect(res.status).toBe(401);
+      expect(await res.json()).toEqual({ error: 'Invalid refresh token' });
+      expect(getActiveRefreshTokenFamily).toHaveBeenCalledWith('family-42', 'user-1');
+      expect(clearRefreshTokenCookie).toHaveBeenCalled();
+      expect(markRefreshTokenJtiRotated).not.toHaveBeenCalled();
+      expect(revokeRefreshTokenJti).not.toHaveBeenCalled();
+      expect(issueUserSession).not.toHaveBeenCalled();
+      expect(setRefreshTokenCookie).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejects a family revoked concurrently after preflight as a post-claim race backstop', async () => {
     vi.mocked(verifyToken).mockResolvedValue({
       sub: 'user-1',
       email: 'admin@msp.com',
@@ -881,6 +920,7 @@ describe('POST /refresh — hard-reject fam-less legacy tokens (#917 L-1)', () =
 
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: 'Invalid refresh token' });
+    expect(getActiveRefreshTokenFamily).toHaveBeenCalledWith('family-42', 'user-1');
     expect(markRefreshTokenJtiRotated).toHaveBeenCalledWith('jti-inactive-family');
     expect(revokeRefreshTokenJti).toHaveBeenCalledWith('jti-inactive-family');
     expect(clearRefreshTokenCookie).toHaveBeenCalled();

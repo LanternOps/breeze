@@ -162,3 +162,84 @@ Token fixture compatibility updates:
 - Task 5 owns transactional epoch advancement and refresh-family revocation on factor/effective-policy mutations.
 - Task 6 owns recovery-code consumption. The AMR vocabulary supports `recovery_code`, but this task does not add consumption behavior.
 - API build retains the pre-existing tsup warning that `import.meta` is empty in CJS output from `src/db/seed.ts`; the build exits successfully.
+
+## Review Fix Loop
+
+### Findings reproduced (RED)
+
+The two Important review findings were reproduced before production edits:
+
+```text
+auth/login targeted review regressions
+FAIL — 8/8
+
+- enrolled password-only logout returned 403 instead of reaching the handler
+- untrusted external logout returned 403 instead of reaching the handler
+- now-disallowed local-factor logout returned 403 instead of reaching the handler
+- missing, wrong-owner, revoked, and absolutely expired families reached issuance (200)
+- the post-claim family rejection path had no preflight call
+```
+
+Root causes:
+
+- Logout was only part of the forced-enrollment exemption. Enrolled `mfa_required` and every `method_not_allowed` session were rejected even after token, live authority/epoch, revocation, and access-family checks passed.
+- Refresh checked family-id revocation before rotation, but did not bind the durable family owner there. Owner and full lifecycle validation occurred only inside `issueUserSession`, after the old JTI had been marked and claimed.
+
+### Fixes
+
+- Separated the exact `/auth/logout` assurance exemption from the narrow enrollment endpoint set.
+  - Logout skips only `mfa_required` / `method_not_allowed` rejection.
+  - Strict JWT verification, live user/tenant/membership/epoch checks, access revocation, access-family ownership/lifecycle validation, accessible tenant computation, auth-context construction, and request RLS dispatch still run.
+  - The enrollment exemption remains limited to the existing exact setup, enable, phone-verification, and passkey-registration paths; no prefix or sensitive-operation broadening was introduced.
+- Added a PostgreSQL-authoritative `getActiveRefreshTokenFamily(fam, sub)` preflight before refresh reuse markers or JTI claims.
+  - Missing, wrong-owner, revoked, absolutely expired, malformed-expiry, and database-error outcomes fail closed, clear the refresh cookie, and issue nothing.
+  - The Redis/durable family-revocation check remains defense in depth.
+  - `issueUserSession` retains its post-claim durable family recheck. A concurrent revocation after preflight may consume the pending JTI, but the request clears the cookie and mints/sets/touches nothing.
+- Updated both refresh route test harnesses with an active durable-family fixture.
+
+### GREEN and verification
+
+```text
+targeted logout + durable-family review regressions
+PASS — 8/8
+
+auth/login/userSession/tokenRevocation focused suites
+PASS — 4 files, 156/156
+
+exact Wave 1 regression gate
+PASS — 6 files, 271/271
+
+refresh-token-family.integration.test.ts authoritative rerun
+PASS — 1 file, 7/7 (170.25s)
+
+API TypeScript
+PASS
+
+API ESLint
+PASS
+
+API build
+PASS (existing import.meta/CJS warning only)
+
+git diff --check
+PASS
+```
+
+The first integration attempt completed five cases, then the shared `cleanupDatabase()` beforeEach hook timed out for two cases at 30 seconds. No test assertion failed. A clean exact rerun passed all seven cases and is the authoritative result.
+
+### Review-fix changed files
+
+- `apps/api/src/middleware/auth.ts`
+- `apps/api/src/middleware/auth.test.ts`
+- `apps/api/src/routes/auth/login.ts`
+- `apps/api/src/routes/auth/login.test.ts`
+- `apps/api/src/routes/auth.test.ts`
+- `.superpowers/sdd/wave2-task-2-report.md`
+
+### Review-fix self-review
+
+- Confirmed logout's exemption is exact-path and cannot bypass invalid, stale, revoked, wrong-owner, inactive-tenant, or inaccessible-tenant sessions.
+- Confirmed the normal protected route rejects each of the same three insufficient-assurance tokens that can reach logout.
+- Confirmed durable logout remains current-family scoped, clears cookies, and is covered by the real integration suite.
+- Confirmed every invalid preflight outcome occurs before `markRefreshTokenJtiRotated`, `revokeRefreshTokenJti`, `issueUserSession`, and `setRefreshTokenCookie`.
+- Confirmed concurrent family invalidation remains blocked by the issuance-time recheck after a successful preflight and JTI claim.
