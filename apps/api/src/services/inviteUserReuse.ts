@@ -20,6 +20,9 @@ export async function findExistingInviteUser(
     .limit(1);
 
   if (!existingUser) return { kind: 'none' as const, user: null };
+  if (existingUser.isPlatformAdmin) {
+    return { kind: 'blocked' as const, user: null };
+  }
 
   const isPasswordlessDisabledUser = existingUser.status === 'disabled' && existingUser.passwordHash === null;
   if (isPasswordlessDisabledUser) {

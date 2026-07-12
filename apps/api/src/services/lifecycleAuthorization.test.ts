@@ -18,7 +18,7 @@ const target = { id: 'org-1', partnerId: 'partner-1' };
 
 describe('authorizeOrganizationLifecycleWrite', () => {
   it('denies an organization actor after its exact live membership is removed', async () => {
-    const tx = transactionWithRows(new Map([
+    const tx = transactionWithRows(new Map<unknown, unknown[]>([
       [organizations, [target]],
       [organizationUsers, []],
     ]));
@@ -35,7 +35,7 @@ describe('authorizeOrganizationLifecycleWrite', () => {
     ['none', null],
     ['selected', ['org-2']],
   ] as const)('denies changed partner orgAccess=%s', async (orgAccess, orgIds) => {
-    const tx = transactionWithRows(new Map([
+    const tx = transactionWithRows(new Map<unknown, unknown[]>([
       [organizations, [target]],
       [partnerUsers, [{ id: 'membership-1', orgAccess, orgIds }]],
     ]));
@@ -52,7 +52,7 @@ describe('authorizeOrganizationLifecycleWrite', () => {
     ['all', null],
     ['selected', ['org-2', target.id]],
   ] as const)('allows live partner orgAccess=%s', async (orgAccess, orgIds) => {
-    const tx = transactionWithRows(new Map([
+    const tx = transactionWithRows(new Map<unknown, unknown[]>([
       [organizations, [target]],
       [partnerUsers, [{ id: 'membership-1', orgAccess, orgIds }]],
     ]));
@@ -69,7 +69,7 @@ describe('authorizeOrganizationLifecycleWrite', () => {
   });
 
   it('allows a live organization membership for the exact target', async () => {
-    const tx = transactionWithRows(new Map([
+    const tx = transactionWithRows(new Map<unknown, unknown[]>([
       [organizations, [target]],
       [organizationUsers, [{ id: 'membership-1' }]],
     ]));
@@ -86,11 +86,11 @@ describe('authorizeOrganizationLifecycleWrite', () => {
   });
 
   it('requires current active platform-admin authority for system actors', async () => {
-    const authorizedTx = transactionWithRows(new Map([
+    const authorizedTx = transactionWithRows(new Map<unknown, unknown[]>([
       [organizations, [target]],
       [users, [{ id: 'platform-admin' }]],
     ]));
-    const unauthorizedTx = transactionWithRows(new Map([
+    const unauthorizedTx = transactionWithRows(new Map<unknown, unknown[]>([
       [organizations, [target]],
       [users, []],
     ]));
@@ -111,7 +111,7 @@ describe('authorizeOrganizationLifecycleWrite', () => {
   });
 
   it('rejects a system actor carrying synthetic tenant fields without consulting admin authority', async () => {
-    const tx = transactionWithRows(new Map([
+    const tx = transactionWithRows(new Map<unknown, unknown[]>([
       [organizations, [target]],
       [users, [{ id: 'platform-admin' }]],
     ]));

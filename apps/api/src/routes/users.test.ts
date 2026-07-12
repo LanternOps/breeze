@@ -654,6 +654,77 @@ describe('user routes', () => {
       expect(revokeAllUserSessionFamiliesMock).not.toHaveBeenCalled();
       expect(sendInviteMock).not.toHaveBeenCalled();
     });
+
+    it('rejects a removed platform-admin tombstone generically without resurrecting privilege or side effects', async () => {
+      const platformAdminId = '99999999-9999-4999-8999-999999999999';
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => [{
+            id: '22222222-2222-2222-2222-222222222222',
+            scope: 'partner',
+            name: 'Admin',
+            isSystem: true,
+            partnerId: null,
+            orgId: null,
+          }]) })) })),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => [{ parentRoleId: null }]) })) })),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({ innerJoin: vi.fn(() => ({ where: vi.fn(async () => []) })) })),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => [{
+            id: platformAdminId,
+            partnerId: 'other-partner',
+            orgId: null,
+            email: 'platform-admin@example.com',
+            name: 'Platform Owner',
+            status: 'disabled',
+            passwordHash: null,
+            disabledReason: 'removed',
+            isPlatformAdmin: true,
+          }]) })) })),
+        } as any);
+      for (let i = 0; i < 5; i += 1) {
+        vi.mocked(db.select).mockReturnValueOnce({
+          from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => []) })) })),
+        } as any);
+      }
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn(async () => [{
+          id: platformAdminId,
+          email: 'platform-admin@example.com',
+          name: 'Attacker Controlled Name',
+          status: 'invited',
+          isPlatformAdmin: true,
+        }]) })) })),
+      } as any);
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn(() => ({ returning: vi.fn(async () => [{ id: 'membership-1' }]) })),
+      } as any);
+
+      const res = await app.request('/users/invite', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'platform-admin@example.com',
+          name: 'Attacker Controlled Name',
+          roleId: '22222222-2222-2222-2222-222222222222',
+          orgAccess: 'all',
+        }),
+      });
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: 'Unable to invite user' });
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+      expect(advanceUserSecurityStateMock).not.toHaveBeenCalled();
+      expect(revokeAllUserSessionFamiliesMock).not.toHaveBeenCalled();
+      expect(sendInviteMock).not.toHaveBeenCalled();
+      expect(clearPermissionCache).not.toHaveBeenCalled();
+    });
   });
 
   describe('POST /users/resend-invite', () => {

@@ -216,6 +216,7 @@ describe('transactional authentication lifecycle', () => {
       type: 'oidc',
       status: 'active',
     }).returning();
+    if (!provider) throw new Error('failed to seed lifecycle integration SSO provider');
 
     await getTestDb().update(users).set({
       status: 'disabled',
