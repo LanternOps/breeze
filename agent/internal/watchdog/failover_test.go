@@ -302,6 +302,151 @@ func TestShipLogsBatchesOverCap(t *testing.T) {
 	}
 }
 
+// TestJournalEntryToAPITranslation asserts the JournalEntry→apiLogEntry field
+// mapping directly (not just end-to-end through ShipLogs): event→message,
+// time→RFC3339 timestamp (in UTC), data→fields, fixed component="watchdog",
+// and normalizeLogLevel folding an unknown level to "info".
+func TestJournalEntryToAPITranslation(t *testing.T) {
+	t.Parallel()
+
+	// A non-UTC zone proves the translation normalizes to UTC.
+	loc := time.FixedZone("UTC+2", 2*60*60)
+	entryTime := time.Date(2026, 5, 1, 14, 30, 0, 0, loc)
+
+	entry := JournalEntry{
+		Time:  entryTime,
+		Level: "verbose", // unknown level → must fold to "info"
+		Event: "agent.crash",
+		Data:  map[string]any{"pid": 42},
+	}
+
+	got := journalEntryToAPI(entry)
+
+	if got.Component != "watchdog" {
+		t.Errorf("component = %q, want watchdog", got.Component)
+	}
+	if got.Message != "agent.crash" {
+		t.Errorf("message = %q, want agent.crash (from event)", got.Message)
+	}
+	if want := entryTime.UTC().Format(time.RFC3339); got.Timestamp != want {
+		t.Errorf("timestamp = %q, want %q (RFC3339 UTC)", got.Timestamp, want)
+	}
+	if got.Level != LevelInfo {
+		t.Errorf("level = %q, want %q (unknown level folds to info)", got.Level, LevelInfo)
+	}
+	if got.Fields == nil {
+		t.Fatal("fields = nil, want data carried into fields")
+	}
+	if got.Fields["pid"] != 42 {
+		t.Errorf("fields[pid] = %v, want 42", got.Fields["pid"])
+	}
+
+	// Every known level passes through unchanged.
+	for _, lvl := range []string{"debug", LevelInfo, LevelWarn, LevelError} {
+		if got := normalizeLogLevel(lvl); got != lvl {
+			t.Errorf("normalizeLogLevel(%q) = %q, want unchanged", lvl, got)
+		}
+	}
+}
+
+// TestJournalEntryToAPILimits covers the two size-guard branches: an oversized
+// fields object (>32KB) is dropped rather than shipped, and an over-length
+// message (>10000 chars) is truncated rather than allowed to 400 the batch.
+func TestJournalEntryToAPILimits(t *testing.T) {
+	t.Parallel()
+
+	t.Run("oversized fields dropped", func(t *testing.T) {
+		t.Parallel()
+		// Marshals to >shipLogsMaxFieldsBytes (32000), so fields must be dropped.
+		entry := JournalEntry{
+			Time:  time.Now(),
+			Level: LevelInfo,
+			Event: "big.data",
+			Data:  map[string]any{"blob": strings.Repeat("x", shipLogsMaxFieldsBytes+1000)},
+		}
+		got := journalEntryToAPI(entry)
+		if got.Fields != nil {
+			t.Errorf("fields = %v, want nil (oversized data dropped)", got.Fields)
+		}
+	})
+
+	t.Run("message truncated", func(t *testing.T) {
+		t.Parallel()
+		entry := JournalEntry{
+			Time:  time.Now(),
+			Level: LevelInfo,
+			Event: strings.Repeat("a", shipLogsMaxMessageLen+500),
+		}
+		got := journalEntryToAPI(entry)
+		if len(got.Message) != shipLogsMaxMessageLen {
+			t.Errorf("message len = %d, want %d (truncated)", len(got.Message), shipLogsMaxMessageLen)
+		}
+	})
+}
+
+// TestShipLogsSplitsOnByteCap verifies the BYTE cap (not the 200-entry count
+// cap) forces a batch split: a handful of near-maximal entries (~40KB each)
+// exceed shipLogsMaxBatchBytes long before the count cap, so ShipLogs must
+// emit multiple POSTs — each body under the API's 256KB bodyLimit (no 413).
+func TestShipLogsSplitsOnByteCap(t *testing.T) {
+	t.Parallel()
+
+	const apiBodyLimit = 256 * 1024
+
+	var batchSizes []int
+	var bodyBytes []int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		bodyBytes = append(bodyBytes, len(raw))
+		var body apiLogBatch
+		if err := json.Unmarshal(raw, &body); err != nil {
+			http.Error(w, "bad body", http.StatusBadRequest)
+			return
+		}
+		batchSizes = append(batchSizes, len(body.Logs))
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{}`)) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	// Each entry maxes message (10000) + fields (~31KB) ≈ 40KB translated, so a
+	// few entries blow past the 240KB byte cap while staying well under the
+	// 200-entry count cap.
+	const n = 14
+	entries := make([]JournalEntry, n)
+	for i := range entries {
+		entries[i] = JournalEntry{
+			Time:  time.Now().UTC(),
+			Level: LevelInfo,
+			Event: strings.Repeat("m", shipLogsMaxMessageLen),
+			Data:  map[string]any{"blob": strings.Repeat("d", shipLogsMaxFieldsBytes-100)},
+		}
+	}
+
+	client := NewFailoverClient(srv.URL, "device-logs", "tok", nil)
+	shipped, err := client.ShipLogs(entries)
+	if err != nil {
+		t.Fatalf("ShipLogs: %v", err)
+	}
+	if shipped != n {
+		t.Errorf("shipped = %d, want %d", shipped, n)
+	}
+	if len(batchSizes) < 2 {
+		t.Fatalf("got %d batch(es), want >=2 (byte cap must force a split)", len(batchSizes))
+	}
+	for i, size := range batchSizes {
+		// Prove the split was byte-driven, not count-driven.
+		if size >= shipLogsMaxBatchEntries {
+			t.Errorf("batch[%d] size = %d hit the count cap; split was not byte-driven", i, size)
+		}
+	}
+	for i, b := range bodyBytes {
+		if b > apiBodyLimit {
+			t.Errorf("batch[%d] body = %d bytes exceeds API bodyLimit %d (would 413)", i, b, apiBodyLimit)
+		}
+	}
+}
+
 // TestShipLogsPartialFailure verifies that when a later batch fails, ShipLogs
 // returns the count of entries from the batches that succeeded plus an error,
 // so the caller can report a partial (not falsely "completed") result.

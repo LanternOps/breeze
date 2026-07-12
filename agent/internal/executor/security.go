@@ -209,6 +209,16 @@ func SanitizeOutput(output string) string {
 		// separate keys are each redacted individually. (RE2 has no backreferences,
 		// so the header/footer algorithm tokens are matched independently.)
 		{regexp.MustCompile(`(?s)-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----.*?-----END (?:[A-Z0-9 ]+ )?PRIVATE KEY-----`), "[PRIVATE_KEY_REDACTED]"},
+		// Truncated private key fallback — a key cut off between header and footer
+		// (output caps, killed process) has a BEGIN line and a full base64 body but
+		// no END marker, so the complete-block rule above matches nothing and the
+		// body leaks verbatim. This rule strips a lone BEGIN header plus any
+		// immediately-following base64/whitespace body. It MUST run AFTER the
+		// complete-block rule: that pass replaces whole keys (END marker included)
+		// with the marker text first, so this fallback finds no remaining BEGIN
+		// header for a complete key and can only catch genuinely truncated ones.
+		// RE2 is linear (no catastrophic backtracking), so the greedy `*` is safe.
+		{regexp.MustCompile(`-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----[A-Za-z0-9+/=\s]*`), "[PRIVATE_KEY_REDACTED]"},
 		// Connection strings
 		{regexp.MustCompile(`(?i)(mongodb|mysql|postgresql|redis|amqp)://[^\s]+`), "$1://[CONNECTION_STRING_REDACTED]"},
 		// Bearer tokens

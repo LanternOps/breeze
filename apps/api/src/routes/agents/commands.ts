@@ -50,7 +50,7 @@ function buildStoredCommandResult(data: z.infer<typeof commandResultSchema>, std
     stdout: stdout != null ? redactSecretsFromOutput(stdout) : stdout,
     stderr: data.stderr != null ? redactSecretsFromOutput(data.stderr) : data.stderr,
     durationMs: data.durationMs,
-    error: data.error,
+    error: data.error != null ? redactSecretsFromOutput(data.error) : data.error,
   };
 }
 

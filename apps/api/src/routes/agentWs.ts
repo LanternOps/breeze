@@ -30,7 +30,7 @@ import { matchRoleScopedAgentTokenHash, suspendAgentToken, type AgentCredentialR
 import { AGENT_TOKEN_SUSPEND_REASON } from '../services/agentTokenSuspension';
 import { isAgentTenantActive } from '../services/tenantStatus';
 import { createAuditLogAsync } from '../services/auditService';
-import { ANONYMOUS_ACTOR_ID, writeAuditEvent } from '../services/auditEvents';
+import { ANONYMOUS_ACTOR_ID, writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvents';
 import { redactSecretsFromOutput } from '../services/secretRedaction';
 import { detectResultValidationFamily, validateCriticalCommandResult, DR_COMMAND_TYPES } from '../services/agentCommandResultValidation';
 import { updateRestoreJobByCommandId, updateRestoreJobFromResult } from '../services/restoreResultPersistence';
@@ -764,12 +764,12 @@ type AgentTokenValidation =
   | { ok: true; ctx: AgentDbContext }
   | { ok: false; reason: 'unauthorized' | 're_enrollment_required' };
 
-// Finding #8: WS command-result ingest has no Hono request context, but
-// writeAuditEvent only reads `x-forwarded-for` / `user-agent` off it for
-// ip/userAgent enrichment. A minimal header-less RequestLike lets the WS path
-// emit the same append-only audit as the REST path (client IP is simply absent
-// on the persistent socket, which is expected).
-const WS_AUDIT_REQUEST = { req: { header: () => undefined } };
+// Finding #8: WS command-result ingest has no Hono request context. The
+// header-less shim returns undefined for all client-IP/user-agent headers, so
+// client IP is simply absent on the WS audit path (expected on a persistent
+// socket). This lets the WS path emit the same append-only audit as the REST
+// path via the canonical snapshot-backed RequestLike helper.
+const WS_AUDIT_REQUEST = requestLikeFromSnapshot({});
 
 /**
  * Finding #3 (defense-in-depth): re-verify a live agent's device lifecycle

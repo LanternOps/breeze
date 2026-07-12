@@ -547,6 +547,14 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // mainAgentSilentSince null↔non-null transition. The main-agent branch only
     // ever CLEARS it (recovery); the watchdog branch owns the SET side. Audit
     // only the actual flip, reported as a boolean `mainAgentSilent`.
+    //
+    // NB: in practice this only ever records the CLEAR (silent→recovered) side.
+    // The SET side (main agent going silent) happens in the watchdog branch,
+    // which RETURNS EARLY above — before this audit block — so it never reaches
+    // here. That transition is intentionally NOT in audit_logs: it is durably
+    // covered by `publishEvent('device.main_agent_silent')` + an agent_logs row
+    // written in the watchdog branch. So the absence of a SET-side state_change
+    // audit is deliberate, not a coverage gap.
     if ('mainAgentSilentSince' in deviceUpdates) {
       const wasSet = (device.mainAgentSilentSince ?? null) !== null;
       const nowSet = (deviceUpdates.mainAgentSilentSince ?? null) !== null;

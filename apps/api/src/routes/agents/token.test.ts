@@ -58,7 +58,15 @@ import { tokenRoutes } from './token';
 // Default hash the mocked middleware reports as the current-token hash.
 const CURRENT_AGENT_TOKEN_HASH = 'current-agent-token-hash';
 
-function buildApp(opts?: { rotationRequired?: boolean; authTokenHash?: string }): Hono {
+function buildApp(opts?: {
+  rotationRequired?: boolean;
+  authTokenHash?: string;
+  // Force the middleware to set an agent context with NO authTokenHash, so the
+  // fail-closed `if (!authTokenHash) return 401` guard becomes reachable. The
+  // default `?? CURRENT_AGENT_TOKEN_HASH` fallback would otherwise always
+  // supply a truthy hash and mask that branch.
+  omitAuthTokenHash?: boolean;
+}): Hono {
   const app = new Hono();
   app.use('/agents/*', async (c, next) => {
     c.set('agent', {
@@ -67,7 +75,9 @@ function buildApp(opts?: { rotationRequired?: boolean; authTokenHash?: string })
       agentId: 'agent-123',
       siteId: 'site-1',
       role: 'agent',
-      authTokenHash: opts?.authTokenHash ?? CURRENT_AGENT_TOKEN_HASH,
+      authTokenHash: opts?.omitAuthTokenHash
+        ? undefined
+        : (opts?.authTokenHash ?? CURRENT_AGENT_TOKEN_HASH),
     });
     c.set('agentTokenRotationRequired', opts?.rotationRequired ?? false);
     await next();
@@ -232,6 +242,27 @@ describe('agent token rotation route', () => {
     });
 
     // No credential mint, no DB read/write, no audit — rejected before any work.
+    expect(generateApiKey).not.toHaveBeenCalled();
+    expect(db.select).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+    expect(writeAuditEvent).not.toHaveBeenCalled();
+  });
+
+  it('returns 401 and mints nothing when the authenticating token hash is absent', async () => {
+    // Fail-closed guard: without the middleware-supplied authTokenHash the
+    // compare-and-swap has nothing to bind to, so rotation must be refused
+    // BEFORE any credential mint, DB read/write, or audit — never run an
+    // UPDATE that isn't bound to the caller's token.
+    const response = await buildApp({ omitAuthTokenHash: true }).request(
+      '/agents/agent-123/rotate-token',
+      { method: 'POST' }
+    );
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toEqual({
+      error: 'Missing authenticated token binding',
+    });
+
     expect(generateApiKey).not.toHaveBeenCalled();
     expect(db.select).not.toHaveBeenCalled();
     expect(db.update).not.toHaveBeenCalled();

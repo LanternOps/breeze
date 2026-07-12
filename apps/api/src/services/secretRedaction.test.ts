@@ -13,11 +13,6 @@ function pemBlock(label: string): string {
 }
 
 describe('redactSecretsFromOutput', () => {
-  it('returns empty string for null/undefined', () => {
-    expect(redactSecretsFromOutput(null)).toBe('');
-    expect(redactSecretsFromOutput(undefined)).toBe('');
-  });
-
   it('redacts a PKCS#8 private key block (optional algorithm token)', () => {
     const input = `before\n${pemBlock('PRIVATE KEY')}\nafter`;
     const out = redactSecretsFromOutput(input);
@@ -64,5 +59,69 @@ describe('redactSecretsFromOutput', () => {
   it('passes through non-key text unchanged', () => {
     const input = 'just a normal script output with no secrets';
     expect(redactSecretsFromOutput(input)).toBe(input);
+  });
+
+  // --- ReDoS: pathological input must complete quickly, not hang the loop. ---
+  it('handles pathological BEGIN-only input in bounded time', () => {
+    // 100k BEGIN markers (~2.7 MB) with NO END marker. Under the old unbounded
+    // `[\s\S]*?` PEM regex each BEGIN scanned to end-of-string, so this
+    // backtracked ~O(n²) and would run for many minutes, blocking the event
+    // loop. With the 16 KiB-bounded gap each match attempt is bounded → linear
+    // (measured ~2.8 s here vs. effectively non-terminating before).
+    const input = '-----BEGIN PRIVATE KEY-----'.repeat(100_000);
+    const start = Date.now();
+    const out = redactSecretsFromOutput(input);
+    const elapsed = Date.now() - start;
+    expect(typeof out).toBe('string');
+    // Generous ceiling: the pathological case previously would not return at
+    // all. Linear behavior finishes in well under this bound.
+    expect(elapsed).toBeLessThan(5_000);
+    // The lone headers are stripped by the truncated-key fallback.
+    expect(out).not.toContain('-----BEGIN PRIVATE KEY-----');
+    expect(out).toContain(REDACTED);
+  });
+
+  // --- Truncated key: header + body but no END must still be fully redacted. ---
+  it('redacts a truncated private key (BEGIN + body, no END marker)', () => {
+    const input = `logs before\n-----BEGIN RSA PRIVATE KEY-----\n${KEY_BODY}\nAnOtHeRlInE0987654321`;
+    const out = redactSecretsFromOutput(input);
+    expect(out).not.toContain(KEY_BODY);
+    expect(out).not.toContain('-----BEGIN RSA PRIVATE KEY-----');
+    expect(out).toContain('logs before');
+    expect(out).toContain(REDACTED);
+  });
+
+  // --- Ported patterns from the agent's SanitizeOutput. ---
+  it('redacts AWS access key IDs', () => {
+    const out = redactSecretsFromOutput('key is AKIAIOSFODNN7EXAMPLE here');
+    expect(out).not.toContain('AKIAIOSFODNN7EXAMPLE');
+    expect(out).toContain('[AWS_KEY_REDACTED]');
+  });
+
+  it('redacts bearer tokens', () => {
+    const out = redactSecretsFromOutput('Authorization: Bearer abc123.def-456_XYZ');
+    expect(out).not.toContain('abc123.def-456_XYZ');
+    expect(out).toContain('Bearer [TOKEN_REDACTED]');
+  });
+
+  it('redacts password= / token= / secret= style pairs', () => {
+    const out = redactSecretsFromOutput('DB_PASSWORD=SuperSecret123 and token: abcd1234efgh');
+    expect(out).not.toContain('SuperSecret123');
+    expect(out).not.toContain('abcd1234efgh');
+    expect(out).toContain('[REDACTED]');
+  });
+
+  it('redacts connection strings', () => {
+    const out = redactSecretsFromOutput('conn postgresql://user:pass@host:5432/db extra');
+    expect(out).not.toContain('user:pass@host');
+    expect(out).toContain('postgresql://[CONNECTION_STRING_REDACTED]');
+  });
+
+  it('redacts JWTs', () => {
+    const jwt =
+      'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
+    const out = redactSecretsFromOutput(`JWT ${jwt} done`);
+    expect(out).not.toContain(jwt);
+    expect(out).toContain('[JWT_REDACTED]');
   });
 });

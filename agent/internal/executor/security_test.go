@@ -14,6 +14,10 @@ func TestSanitizeOutput_PrivateKeyRedaction(t *testing.T) {
 	openssh := "-----BEGIN OPENSSH PRIVATE KEY-----\n" + testKeyBody + "\n-----END OPENSSH PRIVATE KEY-----"
 	ec := "-----BEGIN EC PRIVATE KEY-----\n" + testKeyBody + "\n-----END EC PRIVATE KEY-----"
 	encrypted := "-----BEGIN ENCRYPTED PRIVATE KEY-----\n" + testKeyBody + "\n-----END ENCRYPTED PRIVATE KEY-----"
+	// A key truncated between header and footer: BEGIN + full base64 body but no
+	// END marker (output caps, killed process). The complete-block rule can't
+	// match it, so the fallback header+body rule must catch it.
+	truncated := "-----BEGIN PRIVATE KEY-----\n" + testKeyBody + "\nAnOtHeRlInE0987654321"
 
 	tests := []struct {
 		name  string
@@ -63,6 +67,16 @@ func TestSanitizeOutput_PrivateKeyRedaction(t *testing.T) {
 			wantAbsent:         []string{testKeyBody, "-----END RSA PRIVATE KEY-----", "-----END OPENSSH PRIVATE KEY-----"},
 			wantPresent:        []string{"middle text"},
 			wantRedactionCount: 2,
+		},
+		{
+			// A truncated key is cut off at the end of output, so the greedy
+			// fallback body match extends to end-of-string. Text BEFORE the BEGIN
+			// header is untouched; there is no trailing text to preserve.
+			name:               "truncated key (no END marker) still redacted",
+			input:              "before the key\n" + truncated,
+			wantAbsent:         []string{testKeyBody, "-----BEGIN PRIVATE KEY-----", "AnOtHeRlInE0987654321"},
+			wantPresent:        []string{"before the key"},
+			wantRedactionCount: 1,
 		},
 		{
 			name:               "non-key text passthrough",

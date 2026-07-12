@@ -355,8 +355,9 @@ func (c *FailoverClient) postLogBatch(url string, batch []apiLogEntry) error {
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
-	// Accept any 2xx: the /logs endpoint returns 200 (empty batch), 201 (all
-	// inserted), or 207 (partial insert) — all mean the batch was received.
+	// Accept any 2xx: the /logs endpoint returns 201 (all inserted) or 207
+	// (partial insert) — both mean the batch was received. (ShipLogs never
+	// POSTs an empty batch; it early-returns on zero entries.)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("failover: ship logs returned %d: %s", resp.StatusCode, string(respBody))
 	}
