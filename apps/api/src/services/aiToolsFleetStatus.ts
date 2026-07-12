@@ -13,7 +13,7 @@
  * (it's a Tier 1 read tool), so a pre-payment tenant can still see an empty
  * funnel snapshot. Task 6.2 of the MCP bootstrap plan.
  */
-import { and, eq, inArray, SQL } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { deploymentInvites } from '../db/schema/deploymentInvites';
 import { enrollmentKeys } from '../db/schema/orgs';
@@ -39,23 +39,37 @@ export interface InviteFunnel {
 const RECENT_ENROLLMENTS_LIMIT = 10;
 
 /**
- * Compute the invite funnel for a partner. Exported so route/integration
+ * Compute the invite funnel for a caller. Exported so route/integration
  * tests can assert behavior directly without going through the aiTools dispatch.
+ *
+ * MCP-OAUTH-06 axis separation: the scope predicate is chosen from the caller's
+ * own axis and NOT left to RLS alone.
+ *  - organization scope → filter by the caller's `org_id` (never partner-wide,
+ *    which would leak sibling-org invite counts to an org-scoped bearer).
+ *  - partner scope → aggregate by `partner_id` across the whole partner.
+ *  - anything else (system / missing axis) is rejected: fleet status is a
+ *    per-tenant bootstrap tool with no well-defined system-wide meaning.
  */
-export async function computeInviteFunnel(
-  partnerId: string,
-  auth?: AuthContext,
-): Promise<InviteFunnel> {
-  // SR5-18: the invite funnel is partner-keyed, but an org/site-scoped caller
-  // (org token still carries a partnerId) must NOT see partner-wide invite
-  // totals/clicks. Narrow by the actor's org axis, and — for a site-restricted
-  // caller — by the enrollment key's site (invites carry no site of their own;
-  // their enrollment key does). Invites on an org-wide key (site_id NULL) are
-  // fail-closed out for a site-restricted caller.
-  const inviteConditions: SQL[] = [eq(deploymentInvites.partnerId, partnerId)];
-  const inviteOrgCondition = auth?.orgCondition(deploymentInvites.orgId);
-  if (inviteOrgCondition) inviteConditions.push(inviteOrgCondition);
+export async function computeInviteFunnel(auth: AuthContext): Promise<InviteFunnel> {
+  let inviteScopeCondition;
+  if (auth.scope === 'organization') {
+    if (!auth.orgId) {
+      throw new Error('get_fleet_status: organization scope requires an org context');
+    }
+    inviteScopeCondition = eq(deploymentInvites.orgId, auth.orgId);
+  } else if (auth.scope === 'partner') {
+    if (!auth.partnerId) {
+      throw new Error('get_fleet_status: partner scope requires a partner context');
+    }
+    inviteScopeCondition = eq(deploymentInvites.partnerId, auth.partnerId);
+  } else {
+    throw new Error(`get_fleet_status: unsupported auth scope '${auth.scope}'`);
+  }
 
+  // SR5-18: a site-restricted caller must additionally be narrowed by the
+  // enrollment key's site (invites carry no site of their own; their
+  // enrollment key does). Invites on an org-wide key (site_id NULL) are
+  // fail-closed out for a site-restricted caller.
   const rawInvites = await db
     .select({
       id: deploymentInvites.id,
@@ -68,13 +82,13 @@ export async function computeInviteFunnel(
     })
     .from(deploymentInvites)
     .leftJoin(enrollmentKeys, eq(deploymentInvites.enrollmentKeyId, enrollmentKeys.id))
-    .where(and(...inviteConditions));
+    .where(inviteScopeCondition);
 
   // Site sub-axis (app-layer only; RLS does NOT enforce it). Drop invites whose
   // enrollment key is outside the caller's site allowlist so the top-of-funnel
   // totals/clicks reflect only site-visible invites. No-op for unrestricted
   // callers (canAccessSite absent).
-  const invites = auth?.canAccessSite
+  const invites = auth.canAccessSite
     ? rawInvites.filter((i) => auth.canAccessSite!(i.keySiteId))
     : rawInvites;
 
@@ -174,12 +188,9 @@ export function registerFleetStatusTools(aiTools: Map<string, AiTool>): void {
     },
     handler: async (_input: Record<string, unknown>, auth: AuthContext) => {
       try {
-        if (!auth.partnerId) {
-          return JSON.stringify({
-            error: 'get_fleet_status requires a partner-scoped API key',
-          });
-        }
-        const funnel = await computeInviteFunnel(auth.partnerId, auth);
+        // Scope validation (org vs partner axis, malformed rejection) lives in
+        // computeInviteFunnel so it holds for every caller — see MCP-OAUTH-06.
+        const funnel = await computeInviteFunnel(auth);
         return JSON.stringify({ invite_funnel: funnel });
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Internal error';

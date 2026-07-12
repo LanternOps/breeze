@@ -1391,24 +1391,44 @@ async function readOrgScopedResource(
 
 /**
  * Dual-axis read condition for a dual-ownership table (org XOR partner —
- * scripts, automations #2133). Partner-scope callers also see partner-wide
- * rows (org_id NULL) owned by their OWN partner; org tokens carry a partnerId
- * but never pass breeze_has_partner_access, so they get the org branch only
- * (the app layer must never be looser than RLS).
+ * scripts, automations #2133). The app-layer filter must MIRROR RLS, never be
+ * looser (leak) nor stricter (hide readable rows).
+ *
+ * Who may see partner-wide rows (org_id NULL) owned by their OWN partner:
+ *  - PARTNER-scope callers always: they carry a partner-axis allowlist and pass
+ *    RLS `breeze_has_partner_access(partner_id)`.
+ *  - ORG-scope callers: since MCP-OAUTH-06 they carry NO partner-axis allowlist
+ *    (accessiblePartnerIds: []), so `breeze_has_partner_access` FAILS for them.
+ *    Their only partner-wide visibility comes from the RLS catalog read branch
+ *    `org_id IS NULL AND partner_id = breeze_current_partner_id()`, which exists
+ *    on scripts/alert_templates/script_categories/script_tags (2026-06-13
+ *    migration) but NOT on automations. Hence the asymmetry:
+ *      • SCRIPTS (orgScopeCatalogRead: true) — org callers DO see partner-wide
+ *        rows; omitting the branch here would wrongly hide rows RLS permits
+ *        (mirrors REST routes/scripts.ts which OR-s the partner branch for org
+ *        scope).
+ *      • AUTOMATIONS (orgScopeCatalogRead: false) — automations has no catalog
+ *        read branch, so partner-wide rows are invisible to org callers at the
+ *        RLS layer; the app layer matches by withholding the branch (mirrors
+ *        REST routes/automations.ts which gates it to `scope === 'partner'`).
  */
-function dualAxisResourceCondition(
+export function dualAxisResourceCondition(
   auth: AuthContext,
   orgCondition: SQL | undefined,
   table: { orgId: PgColumn; partnerId: PgColumn },
+  options: { orgScopeCatalogRead: boolean },
 ): SQL | undefined {
   if (!orgCondition) return undefined; // system scope — no tenant filter
-  if (auth.scope === 'partner' && auth.partnerId) {
-    return or(
-      orgCondition,
-      and(isNull(table.orgId), eq(table.partnerId, auth.partnerId)),
-    ) as SQL;
-  }
-  return orgCondition;
+  if (!auth.partnerId) return orgCondition;
+
+  const partnerWideVisible =
+    auth.scope === 'partner' || options.orgScopeCatalogRead;
+  if (!partnerWideVisible) return orgCondition;
+
+  return or(
+    orgCondition,
+    and(isNull(table.orgId), eq(table.partnerId, auth.partnerId)),
+  ) as SQL;
 }
 
 async function handleResourcesRead(
@@ -1511,7 +1531,11 @@ async function handleResourcesRead(
         description: scripts.description,
         language: scripts.language,
         category: scripts.category
-      }, dualAxisResourceCondition(auth, orgCond(scripts.orgId), scripts), {
+      }, dualAxisResourceCondition(auth, orgCond(scripts.orgId), scripts, {
+        // scripts have the RLS catalog read branch — org-scope callers see
+        // their own partner-wide scripts.
+        orgScopeCatalogRead: true,
+      }), {
         extraConditions: [isNull(scripts.deletedAt)],
         limit: 200
       });
@@ -1525,7 +1549,11 @@ async function handleResourcesRead(
         description: automations.description,
         enabled: automations.enabled,
         trigger: automations.trigger
-      }, dualAxisResourceCondition(auth, orgCond(automations.orgId), automations), { limit: 200 });
+      }, dualAxisResourceCondition(auth, orgCond(automations.orgId), automations, {
+        // automations have NO catalog read branch — org-scope callers do NOT
+        // see partner-wide automations (aligns with routes/automations.ts).
+        orgScopeCatalogRead: false,
+      }), { limit: 200 });
     }
 
     // Handle dynamic resource URIs: breeze://devices/{id}

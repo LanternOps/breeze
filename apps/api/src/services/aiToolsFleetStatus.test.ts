@@ -8,6 +8,7 @@ vi.mock('../db/schema/deploymentInvites', () => ({
   deploymentInvites: {
     id: 'di.id',
     partnerId: 'di.partner_id',
+    orgId: 'di.org_id',
     invitedEmail: 'di.invited_email',
     status: 'di.status',
     clickedAt: 'di.clicked_at',
@@ -42,22 +43,43 @@ vi.mock('drizzle-orm', () => ({
 
 import { computeInviteFunnel } from './aiToolsFleetStatus';
 import { db } from '../db';
+import type { AuthContext } from '../middleware/auth';
 
 const PARTNER_ID = '22222222-2222-2222-2222-222222222222';
+const ORG_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+
+// Captured WHERE predicate passed to the first select() (the invites query).
+let capturedInviteWhere: unknown;
 
 function mockSelectQueue(results: unknown[][]): void {
   const queue = [...results];
+  capturedInviteWhere = undefined;
+  let call = 0;
   vi.mocked(db.select).mockImplementation(() => {
+    const idx = call++;
     const result = queue.shift() ?? [];
     const chain: any = {
       from: vi.fn().mockReturnThis(),
       // The invites query now joins enrollment_keys for the site sub-axis.
       leftJoin: vi.fn().mockReturnThis(),
-      where: vi.fn().mockReturnValue(Promise.resolve(result)),
+      where: vi.fn((predicate: unknown) => {
+        // The first select() is the deployment_invites query — capture its
+        // scope predicate so tests can assert org- vs partner-axis filtering.
+        if (idx === 0) capturedInviteWhere = predicate;
+        return Promise.resolve(result);
+      }),
     };
     return chain as any;
   });
 }
+
+/** Minimal AuthContext — computeInviteFunnel only reads scope/orgId/partnerId/canAccessSite. */
+function auth(partial: Partial<AuthContext>): AuthContext {
+  return partial as AuthContext;
+}
+
+const partnerAuth = auth({ scope: 'partner', partnerId: PARTNER_ID, orgId: null });
+const orgAuth = auth({ scope: 'organization', partnerId: PARTNER_ID, orgId: ORG_A });
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -67,7 +89,7 @@ describe('computeInviteFunnel', () => {
   it('returns zeros and empty array when no invites exist', async () => {
     mockSelectQueue([[]]); // one select call (invites), no device lookup needed
 
-    const out = await computeInviteFunnel(PARTNER_ID);
+    const out = await computeInviteFunnel(partnerAuth);
 
     expect(out).toEqual({
       total_invited: 0,
@@ -77,6 +99,46 @@ describe('computeInviteFunnel', () => {
       devices_pending: 0,
       recent_enrollments: [],
     });
+  });
+
+  it('partner scope filters deployment_invites by partner_id', async () => {
+    mockSelectQueue([[]]);
+
+    await computeInviteFunnel(partnerAuth);
+
+    // partner-axis aggregation across the whole partner.
+    expect(capturedInviteWhere).toEqual({ _op: 'eq', a: 'di.partner_id', b: PARTNER_ID });
+  });
+
+  it('organization scope filters deployment_invites by org_id (sibling-org isolation)', async () => {
+    mockSelectQueue([[]]);
+
+    await computeInviteFunnel(orgAuth);
+
+    // MCP-OAUTH-06: an org-scoped caller must aggregate only its OWN org's
+    // invites — never the partner-wide set that would leak sibling-org counts.
+    expect(capturedInviteWhere).toEqual({ _op: 'eq', a: 'di.org_id', b: ORG_A });
+  });
+
+  it('rejects organization scope with no org context (malformed)', async () => {
+    mockSelectQueue([[]]);
+    await expect(
+      computeInviteFunnel(auth({ scope: 'organization', partnerId: PARTNER_ID, orgId: null })),
+    ).rejects.toThrow(/organization scope requires/i);
+  });
+
+  it('rejects partner scope with no partner context (malformed)', async () => {
+    mockSelectQueue([[]]);
+    await expect(
+      computeInviteFunnel(auth({ scope: 'partner', partnerId: null, orgId: null })),
+    ).rejects.toThrow(/partner scope requires/i);
+  });
+
+  it('rejects an ambiguous/unsupported scope (does not rely on RLS alone)', async () => {
+    mockSelectQueue([[]]);
+    await expect(
+      computeInviteFunnel(auth({ scope: 'system', partnerId: PARTNER_ID, orgId: null })),
+    ).rejects.toThrow(/scope/i);
   });
 
   it('counts clicked, enrolled, and online devices correctly', async () => {
@@ -129,7 +191,7 @@ describe('computeInviteFunnel', () => {
 
     mockSelectQueue([invites, deviceRows]);
 
-    const out = await computeInviteFunnel(PARTNER_ID);
+    const out = await computeInviteFunnel(partnerAuth);
 
     expect(out.total_invited).toBe(4);
     // 3 clicked (two enrolled rows have clickedAt + the explicitly clicked one)
@@ -163,7 +225,7 @@ describe('computeInviteFunnel', () => {
     // deviceRows empty — device was deleted after invite matched
     mockSelectQueue([invites, []]);
 
-    const out = await computeInviteFunnel(PARTNER_ID);
+    const out = await computeInviteFunnel(partnerAuth);
 
     expect(out.total_invited).toBe(1);
     expect(out.devices_enrolled).toBe(1);

@@ -410,12 +410,17 @@ describe('bearerTokenAuthMiddleware', () => {
       createdBy: userId,
     });
     expect(c.get('apiKeyOrgId')).toBe(orgId);
+    // MCP-OAUTH-06: an org-scoped bearer must NOT carry a partner-axis
+    // allowlist. accessiblePartnerIds is [] so breeze_has_partner_access()
+    // fails for it — no broad partner-wide visibility. currentPartnerId is
+    // retained so the read-only catalog branch (scripts/alert_templates/…)
+    // still resolves the caller's own partner-owned rows.
     expect(withDbAccessContext).toHaveBeenCalledWith(
       {
         scope: 'organization',
         orgId,
         accessibleOrgIds: [orgId],
-        accessiblePartnerIds: [partnerId],
+        accessiblePartnerIds: [],
         userId,
         currentPartnerId: partnerId,
       },
