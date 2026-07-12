@@ -4,6 +4,23 @@ vi.mock('../services/jwt', () => ({
   verifyToken: vi.fn(),
 }));
 
+vi.mock('../services/partnerActivation', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/partnerActivation')>();
+  return {
+    ...actual,
+    activatePendingPartnerAndInvalidateSessions: vi.fn().mockResolvedValue({
+      activated: true,
+      userIds: ['user-1'],
+    }),
+  };
+});
+
+vi.mock('../services/authLifecycle', () => ({
+  withAuthLifecycleSystemTransaction: vi.fn(
+    async (fn: (tx: unknown) => Promise<unknown>) => fn({ scope: 'system-tx' }),
+  ),
+}));
+
 const limitMock = vi.fn();
 const updateWhereMock = vi.fn().mockResolvedValue(undefined);
 const updateSetMock = vi.fn((_values: Record<string, unknown>) => ({ where: updateWhereMock }));
@@ -39,6 +56,7 @@ vi.mock('../db/schema', () => ({
 import { Hono } from 'hono';
 import { partnerGuard } from './partnerGuard';
 import { verifyToken } from '../services/jwt';
+import { activatePendingPartnerAndInvalidateSessions } from '../services/partnerActivation';
 
 function makeApp() {
   const app = new Hono();
@@ -126,7 +144,7 @@ describe('partnerGuard — activation reconciliation (#718)', () => {
     updateWhereMock.mockResolvedValue(undefined);
   });
 
-  it('reconciles a stranded pending partner (email verified + payment attached) to active and lets the request through', async () => {
+  it('reconciles a stranded pending partner atomically and rejects the now-stale token', async () => {
     vi.mocked(verifyToken).mockResolvedValueOnce({ partnerId: 'p-1' } as never);
     limitMock.mockResolvedValueOnce([
       {
@@ -140,11 +158,12 @@ describe('partnerGuard — activation reconciliation (#718)', () => {
     const res = await makeApp().request('/protected', {
       headers: { Authorization: 'Bearer partner-token' },
     });
-    expect(res.status).toBe(200);
-    // The activation UPDATE must have been issued.
-    expect(updateMock).toHaveBeenCalledOnce();
-    const setArg = updateSetMock.mock.calls[0]![0]! as Record<string, unknown>;
-    expect(setArg.status).toBe('active');
+    expect(res.status).toBe(401);
+    expect(await res.json()).toMatchObject({ code: 'SESSION_STALE' });
+    expect(activatePendingPartnerAndInvalidateSessions).toHaveBeenCalledWith(
+      { scope: 'system-tx' },
+      'p-1',
+    );
   });
 
   it('does NOT reconcile a pending partner with email verified but NO payment attached', async () => {
@@ -215,7 +234,8 @@ describe('partnerGuard — activation reconciliation (#718)', () => {
         deletedAt: null,
       },
     ]);
-    updateWhereMock.mockRejectedValueOnce(new Error('write failed'));
+    vi.mocked(activatePendingPartnerAndInvalidateSessions)
+      .mockRejectedValueOnce(new Error('write failed'));
     const res = await makeApp().request('/protected', {
       headers: { Authorization: 'Bearer partner-token' },
     });

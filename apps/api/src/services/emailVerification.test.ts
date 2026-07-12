@@ -42,12 +42,24 @@ vi.mock('../db/schema', () => ({
   },
 }));
 
+vi.mock('./partnerActivation', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./partnerActivation')>();
+  return {
+    ...actual,
+    activatePendingPartnerAndInvalidateSessions: vi.fn().mockResolvedValue({
+      activated: true,
+      userIds: ['u-1'],
+    }),
+  };
+});
+
 import { db } from '../db';
 import {
   consumeVerificationToken,
   generateVerificationToken,
   invalidateOpenTokens,
 } from './emailVerification';
+import { activatePendingPartnerAndInvalidateSessions } from './partnerActivation';
 
 function chainSelect(rows: unknown[]) {
   return {
@@ -105,7 +117,13 @@ describe('generateVerificationToken', () => {
 });
 
 describe('consumeVerificationToken', () => {
-  beforeEach(() => vi.resetAllMocks());
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(activatePendingPartnerAndInvalidateSessions).mockResolvedValue({
+      activated: true,
+      userIds: ['u-1'],
+    });
+  });
 
   it('returns invalid when token row is not found', async () => {
     vi.mocked(db.select).mockReturnValue(chainSelect([]) as any);
@@ -213,17 +231,14 @@ describe('consumeVerificationToken', () => {
 
     const tokenUpdate = chainUpdateReturning([{ id: 'evt-1' }]);
     const userUpdate = chainUpdateNoReturning();
-    // On the auto-activate path the partner write splits in two: first the
-    // email_verified_at stamp, then activatePartnerRow flips status + clears
-    // the inactive banner (shared with partnerGuard).
+    // On the auto-activate path the email stamp and lifecycle activation run
+    // in the same database transaction.
     const partnerEmailUpdate = chainUpdateNoReturning();
-    const partnerActivateUpdate = chainUpdateNoReturning();
 
     vi.mocked(db.update)
       .mockReturnValueOnce(tokenUpdate as any)
       .mockReturnValueOnce(userUpdate as any)
-      .mockReturnValueOnce(partnerEmailUpdate as any)
-      .mockReturnValueOnce(partnerActivateUpdate as any);
+      .mockReturnValueOnce(partnerEmailUpdate as any);
 
     const result = await consumeVerificationToken('rawtoken');
 
@@ -235,9 +250,11 @@ describe('consumeVerificationToken', () => {
     const emailSetCall = (partnerEmailUpdate.set as any).mock.calls[0][0];
     expect(emailSetCall).toHaveProperty('emailVerifiedAt');
 
-    const activateSetCall = (partnerActivateUpdate.set as any).mock.calls[0][0];
-    expect(activateSetCall.status).toBe('active');
-    expect(activateSetCall).toHaveProperty('settings');
+    expect(activatePendingPartnerAndInvalidateSessions).toHaveBeenCalledWith(
+      db,
+      'p-1',
+      expect.any(Date),
+    );
   });
 
   it('returns superseded when supersededAt is set on the row (resend invalidated this link)', async () => {

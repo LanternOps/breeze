@@ -1,6 +1,11 @@
-import { sql } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import type { db } from '../db';
-import { partners } from '../db/schema';
+import { organizationUsers, organizations, partners, partnerUsers } from '../db/schema';
+import {
+  advanceUserSecurityState,
+  revokeAllUserSessionFamilies,
+  type AuthLifecycleTransaction,
+} from './authLifecycle';
 
 /**
  * Partner activation reconciliation (issue #718).
@@ -77,7 +82,7 @@ export function shouldActivatePendingPartner(partner: ReconcilablePartner): bool
  * a system-scoped handle). The caller owns the RLS scope; this helper only
  * issues the UPDATE.
  *
- * Returns the number of rows updated. The UPDATE is guarded by
+ * Returns whether this caller won the activation. The UPDATE is guarded by
  * `status = 'pending'` so a concurrent reconciliation (e.g. verify-then-pay
  * racing the billing webhook) is idempotent — the loser updates 0 rows and
  * does not clobber an already-active partner.
@@ -86,8 +91,8 @@ export async function activatePartnerRow(
   tx: Pick<typeof db, 'update'>,
   partnerId: string,
   now: Date = new Date(),
-): Promise<void> {
-  await tx
+): Promise<boolean> {
+  const activated = await tx
     .update(partners)
     .set({
       status: 'active' as const,
@@ -103,5 +108,55 @@ export async function activatePartnerRow(
       )`,
       updatedAt: now,
     })
-    .where(sql`${partners.id} = ${partnerId} AND ${partners.status} = 'pending'`);
+    .where(sql`${partners.id} = ${partnerId} AND ${partners.status} = 'pending'`)
+    .returning({ id: partners.id });
+  return activated.length > 0;
+}
+
+export interface PartnerActivationResult {
+  activated: boolean;
+  userIds: string[];
+}
+
+/**
+ * Activate one pending partner and invalidate every session that was minted
+ * while that tenant was inactive. The caller must supply the active system
+ * transaction so the status flip, auth-epoch advances, and durable family
+ * revocations commit or roll back together.
+ */
+export async function activatePendingPartnerAndInvalidateSessions(
+  tx: AuthLifecycleTransaction,
+  partnerId: string,
+  now: Date = new Date(),
+): Promise<PartnerActivationResult> {
+  if (!(await activatePartnerRow(tx, partnerId, now))) {
+    return { activated: false, userIds: [] };
+  }
+
+  const orgRows = await tx
+    .select({ id: organizations.id })
+    .from(organizations)
+    .where(eq(organizations.partnerId, partnerId));
+  const orgIds = orgRows.map((row) => row.id);
+  const partnerMemberships = await tx
+    .select({ userId: partnerUsers.userId })
+    .from(partnerUsers)
+    .where(eq(partnerUsers.partnerId, partnerId));
+  const orgMemberships = orgIds.length === 0
+    ? []
+    : await tx
+      .select({ userId: organizationUsers.userId })
+      .from(organizationUsers)
+      .where(inArray(organizationUsers.orgId, orgIds));
+  const userIds = [...new Set([
+    ...partnerMemberships.map((row) => row.userId),
+    ...orgMemberships.map((row) => row.userId),
+  ])];
+
+  for (const userId of userIds) {
+    await advanceUserSecurityState(tx, userId);
+    await revokeAllUserSessionFamilies(tx, userId, 'partner-activated');
+  }
+
+  return { activated: true, userIds };
 }

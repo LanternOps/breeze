@@ -23,6 +23,7 @@ import {
 } from '../../services/authLifecycle';
 import { neutralizeUserIfOrphaned } from '../../services/userMembershipLifecycle';
 import { invalidatePartnerUsersInTransaction } from '../../services/tenantLifecycle';
+import { activatePendingPartnerAndInvalidateSessions } from '../../services/partnerActivation';
 import { findExistingInviteUser } from '../../services/inviteUserReuse';
 import {
   authorizeOrganizationLifecycleWrite,
@@ -178,6 +179,52 @@ describe('transactional authentication lifecycle', () => {
     expect(row?.authEpoch).toBe(3);
     expect(families).toHaveLength(2);
     expect(families.every((family) => family.revokedAt !== null)).toBe(true);
+  });
+
+  it('atomically activates a pending partner, advances member epochs, and revokes families', async () => {
+    const partner = await createPartner();
+    const user = await createUser({ partnerId: partner.id, withMembership: true });
+    const familyId = '10000000-0000-4000-8000-000000000007';
+    await getTestDb().update(partners).set({ status: 'pending' }).where(eq(partners.id, partner.id));
+    await insertFamily(user.id, familyId);
+
+    const result = await withAuthLifecycleSystemTransaction((tx) =>
+      activatePendingPartnerAndInvalidateSessions(tx, partner.id)
+    );
+
+    expect(result).toEqual({ activated: true, userIds: [user.id] });
+    const [partnerAfter] = await getTestDb().select().from(partners).where(eq(partners.id, partner.id));
+    const [userAfter] = await getTestDb().select().from(users).where(eq(users.id, user.id));
+    const [familyAfter] = await getTestDb()
+      .select()
+      .from(refreshTokenFamilies)
+      .where(eq(refreshTokenFamilies.familyId, familyId));
+    expect(partnerAfter?.status).toBe('active');
+    expect(userAfter?.authEpoch).toBe(2);
+    expect(familyAfter?.revokedReason).toBe('partner-activated');
+  });
+
+  it('rolls back pending activation, epoch advance, and family revocation together', async () => {
+    const partner = await createPartner();
+    const user = await createUser({ partnerId: partner.id, withMembership: true });
+    const familyId = '10000000-0000-4000-8000-000000000008';
+    await getTestDb().update(partners).set({ status: 'pending' }).where(eq(partners.id, partner.id));
+    await insertFamily(user.id, familyId);
+
+    await expect(withAuthLifecycleSystemTransaction(async (tx) => {
+      await activatePendingPartnerAndInvalidateSessions(tx, partner.id);
+      await tx.execute(sql`select 1 / 0`);
+    })).rejects.toThrow();
+
+    const [partnerAfter] = await getTestDb().select().from(partners).where(eq(partners.id, partner.id));
+    const [userAfter] = await getTestDb().select().from(users).where(eq(users.id, user.id));
+    const [familyAfter] = await getTestDb()
+      .select()
+      .from(refreshTokenFamilies)
+      .where(eq(refreshTokenFamilies.familyId, familyId));
+    expect(partnerAfter?.status).toBe('pending');
+    expect(userAfter?.authEpoch).toBe(1);
+    expect(familyAfter?.revokedAt).toBeNull();
   });
 
   it('blocks cross-partner active-user invite reuse without lifecycle or membership side effects', async () => {

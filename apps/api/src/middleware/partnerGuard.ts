@@ -3,7 +3,11 @@ import { eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { partners } from '../db/schema';
 import { verifyToken } from '../services/jwt';
-import { shouldActivatePendingPartner, activatePartnerRow } from '../services/partnerActivation';
+import {
+  activatePendingPartnerAndInvalidateSessions,
+  shouldActivatePendingPartner,
+} from '../services/partnerActivation';
+import { withAuthLifecycleSystemTransaction } from '../services/authLifecycle';
 
 export async function partnerGuard(c: Context, next: Next) {
   const authHeader = c.req.header('Authorization');
@@ -76,9 +80,16 @@ export async function partnerGuard(c: Context, next: Next) {
     // `pending` (suspended/churned/soft-deleted are never resurrected here).
     if (shouldActivatePendingPartner(partner)) {
       try {
-        await withSystemDbAccessContext(() => activatePartnerRow(db, partnerId!));
-        console.warn(`[PartnerGuard] reconciled stranded pending partner ${partnerId} → active (#718)`);
-        return next();
+        const activation = await withAuthLifecycleSystemTransaction((tx) =>
+          activatePendingPartnerAndInvalidateSessions(tx, partnerId!)
+        );
+        if (activation.activated) {
+          console.warn(`[PartnerGuard] reconciled stranded pending partner ${partnerId} → active (#718)`);
+          return c.json({
+            error: 'Session state changed; sign in again',
+            code: 'SESSION_STALE',
+          }, 401);
+        }
       } catch (err) {
         // Reconciliation is best-effort: if the activation write fails we fall
         // through to the normal inactive response rather than leaking through.

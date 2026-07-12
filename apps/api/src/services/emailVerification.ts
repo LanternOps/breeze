@@ -3,7 +3,10 @@ import { createHash } from 'crypto';
 import { nanoid } from 'nanoid';
 import { db, withSystemDbAccessContext } from '../db';
 import { emailVerificationTokens, partners, users } from '../db/schema';
-import { shouldActivatePendingPartner, activatePartnerRow } from './partnerActivation';
+import {
+  activatePendingPartnerAndInvalidateSessions,
+  shouldActivatePendingPartner,
+} from './partnerActivation';
 
 const TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -142,24 +145,24 @@ export async function consumeVerificationToken(rawToken: string): Promise<Consum
           paymentMethodAttachedAt: partnerBefore.paymentMethodAttachedAt,
         });
 
-      // Always stamp email_verified_at. When both preconditions are met,
-      // activatePartnerRow additionally flips status and clears the inactive
-      // banner (shared with partnerGuard so the two paths can't drift).
+      // Always stamp email_verified_at. When both preconditions are met, the
+      // activation helper flips status and invalidates pre-activation sessions
+      // inside this same transaction.
       await tx
         .update(partners)
         .set({ emailVerifiedAt: now, updatedAt: now })
         .where(eq(partners.id, row.partnerId));
 
-      if (shouldAutoActivate) {
-        await activatePartnerRow(tx, row.partnerId, now);
-      }
+      const activation = shouldAutoActivate
+        ? await activatePendingPartnerAndInvalidateSessions(tx, row.partnerId, now)
+        : { activated: false };
 
       return {
         ok: true as const,
         partnerId: row.partnerId,
         userId: row.userId,
         email: row.email,
-        autoActivated: shouldAutoActivate,
+        autoActivated: activation.activated,
       };
     })
   );
