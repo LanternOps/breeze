@@ -18,29 +18,39 @@ vi.mock('../db', () => ({
 }));
 
 import {
+  authorizePartnerMfaPolicyWrite,
   resolveEffectiveMfaPolicy,
   validateOrganizationMfaPolicySettingsWrite,
   validatePartnerMfaPolicySettingsWrite,
   MfaPolicyConfigurationError,
   MfaPolicyResolutionError,
 } from './mfaPolicy';
+import * as mfaPolicyModule from './mfaPolicy';
 
 type Scope = 'system' | 'partner' | 'organization';
 
 function makeTx(rowQueue: unknown[][]) {
   const whereCalls: unknown[] = [];
-  const select = vi.fn(() => ({
-    from: vi.fn(() => ({
-      where: vi.fn((condition: unknown) => {
+  const events: string[] = [];
+  const select = vi.fn(() => {
+    const chain: Record<string, ReturnType<typeof vi.fn>> = {};
+    chain.from = vi.fn(() => chain);
+    chain.innerJoin = vi.fn(() => chain);
+    chain.where = vi.fn((condition: unknown) => {
+        events.push('select');
         whereCalls.push(condition);
         const rows = rowQueue.shift() ?? [];
         const result = Promise.resolve(rows) as Promise<unknown[]> & { limit: ReturnType<typeof vi.fn> };
         result.limit = vi.fn(async () => rows);
         return result;
-      }),
-    })),
-  }));
-  return { tx: { select } as any, whereCalls, select };
+      });
+    return chain;
+  });
+  const execute = vi.fn(async () => {
+    events.push('lock');
+    return [];
+  });
+  return { tx: { select, execute } as any, whereCalls, select, execute, events };
 }
 
 const activeUser = {
@@ -86,13 +96,35 @@ function organizationRows(overrides: {
   membership?: Record<string, unknown> | null;
   role?: Record<string, unknown> | null;
 } = {}) {
-  return [
-    overrides.user === null ? [] : [{ ...activeUser, ...overrides.user }],
-    overrides.partner === null ? [] : [{ ...activePartner, ...overrides.partner }],
-    overrides.org === null ? [] : [{ ...activeOrg, ...overrides.org }],
-    overrides.membership === null ? [] : [{ ...orgMembership, ...overrides.membership }],
-    overrides.role === null ? [] : [{ ...orgRole, ...overrides.role }],
-  ];
+  if (Object.values(overrides).some((value) => value === null)) return [[]];
+  const user = { ...activeUser, ...overrides.user };
+  const partner = { ...activePartner, ...overrides.partner };
+  const org = { ...activeOrg, ...overrides.org };
+  const membership = { ...orgMembership, ...overrides.membership };
+  const role = { isSystem: false, ...orgRole, ...overrides.role };
+  return [[{
+    userId: user.id,
+    userPartnerId: user.partnerId,
+    userStatus: user.status,
+    partnerId: partner.id,
+    partnerStatus: partner.status,
+    partnerDeletedAt: partner.deletedAt,
+    partnerSettings: partner.settings,
+    organizationId: org.id,
+    organizationPartnerId: org.partnerId,
+    organizationStatus: org.status,
+    organizationDeletedAt: org.deletedAt,
+    organizationSettings: org.settings,
+    membershipUserId: membership.userId,
+    membershipOrgId: membership.orgId,
+    membershipRoleId: membership.roleId,
+    roleId: role.id,
+    rolePartnerId: role.partnerId,
+    roleOrgId: role.orgId,
+    roleScope: role.scope,
+    roleIsSystem: role.isSystem,
+    roleForceMfa: role.forceMfa,
+  }]];
 }
 
 function partnerRows(overrides: {
@@ -101,12 +133,29 @@ function partnerRows(overrides: {
   membership?: Record<string, unknown> | null;
   role?: Record<string, unknown> | null;
 } = {}) {
-  return [
-    overrides.user === null ? [] : [{ ...activeUser, orgId: null, ...overrides.user }],
-    overrides.partner === null ? [] : [{ ...activePartner, ...overrides.partner }],
-    overrides.membership === null ? [] : [{ ...partnerMembership, ...overrides.membership }],
-    overrides.role === null ? [] : [{ ...partnerRole, ...overrides.role }],
-  ];
+  if (Object.values(overrides).some((value) => value === null)) return [[]];
+  const user = { ...activeUser, orgId: null, ...overrides.user };
+  const partner = { ...activePartner, ...overrides.partner };
+  const membership = { ...partnerMembership, ...overrides.membership };
+  const role = { isSystem: false, ...partnerRole, ...overrides.role };
+  return [[{
+    userId: user.id,
+    userPartnerId: user.partnerId,
+    userStatus: user.status,
+    partnerId: partner.id,
+    partnerStatus: partner.status,
+    partnerDeletedAt: partner.deletedAt,
+    partnerSettings: partner.settings,
+    membershipUserId: membership.userId,
+    membershipPartnerId: membership.partnerId,
+    membershipRoleId: membership.roleId,
+    roleId: role.id,
+    rolePartnerId: role.partnerId,
+    roleOrgId: role.orgId,
+    roleScope: role.scope,
+    roleIsSystem: role.isSystem,
+    roleForceMfa: role.forceMfa,
+  }]];
 }
 
 async function resolveOrganization(overrides: Parameters<typeof organizationRows>[0] = {}) {
@@ -216,6 +265,17 @@ describe('resolveEffectiveMfaPolicy', () => {
     })).rejects.toBeInstanceOf(MfaPolicyResolutionError);
   });
 
+  it.each([
+    'corrupt-settings',
+    17,
+    ['security'],
+    { security: 'corrupt-security' },
+    { security: ['totp'] },
+  ])('fails closed on malformed stored partner containers: %j', async (settings) => {
+    await expect(resolvePartner({ partner: { settings } }))
+      .rejects.toBeInstanceOf(MfaPolicyResolutionError);
+  });
+
   it('resolves partner scope without applying an organization level', async () => {
     const result = await resolvePartner({
       partner: {
@@ -232,8 +292,58 @@ describe('resolveEffectiveMfaPolicy', () => {
     });
   });
 
+  it('accepts the seeded global Partner Admin role shape for partner membership', async () => {
+    const result = await resolvePartner({
+      role: {
+        isSystem: true,
+        partnerId: null,
+        orgId: null,
+        scope: 'partner',
+        forceMfa: true,
+      },
+    });
+
+    expect(result.required).toBe(true);
+    expect(result.sources).toContain('role');
+  });
+
+  it('accepts the seeded global Org Admin role shape for organization membership', async () => {
+    const result = await resolveOrganization({
+      role: {
+        isSystem: true,
+        partnerId: null,
+        orgId: null,
+        scope: 'organization',
+        forceMfa: true,
+      },
+    });
+
+    expect(result.required).toBe(true);
+    expect(result.sources).toContain('role');
+  });
+
+  it('rejects an isSystem tenant role that carries tenant axes', async () => {
+    await expect(resolvePartner({
+      role: { isSystem: true, partnerId: 'partner-1', orgId: null },
+    })).rejects.toBeInstanceOf(MfaPolicyResolutionError);
+    await expect(resolveOrganization({
+      role: { isSystem: true, partnerId: null, orgId: 'org-1' },
+    })).rejects.toBeInstanceOf(MfaPolicyResolutionError);
+  });
+
+  it('rejects a global system/platform role in tenant scope', async () => {
+    await expect(resolvePartner({
+      role: { isSystem: true, partnerId: null, orgId: null, scope: 'system' },
+    })).rejects.toBeInstanceOf(MfaPolicyResolutionError);
+    await expect(resolveOrganization({
+      role: { isSystem: true, partnerId: null, orgId: null, scope: 'system' },
+    })).rejects.toBeInstanceOf(MfaPolicyResolutionError);
+  });
+
   it('resolves an active system user without tenant policy levels', async () => {
-    const { tx } = makeTx([[{ ...activeUser, isPlatformAdmin: true }]]);
+    const { tx } = makeTx([[
+      { userId: 'user-1', userStatus: 'active', isPlatformAdmin: true },
+    ]]);
 
     const result = await resolveEffectiveMfaPolicy({
       userId: 'user-1',
@@ -252,7 +362,9 @@ describe('resolveEffectiveMfaPolicy', () => {
   });
 
   it('rejects system scope when live platform-admin state was removed', async () => {
-    const { tx } = makeTx([[{ ...activeUser, isPlatformAdmin: false }]]);
+    const { tx } = makeTx([[
+      { userId: 'user-1', userStatus: 'active', isPlatformAdmin: false },
+    ]]);
 
     await expect(resolveEffectiveMfaPolicy({
       userId: 'user-1',
@@ -266,13 +378,16 @@ describe('resolveEffectiveMfaPolicy', () => {
 
   it('applies an exact system role requirement and rejects a mismatched role axis', async () => {
     const systemRole = {
-      id: 'system-role',
-      partnerId: null,
-      orgId: null,
-      scope: 'system',
-      forceMfa: true,
+      userId: 'user-1',
+      userStatus: 'active',
+      isPlatformAdmin: true,
+      roleId: 'system-role',
+      rolePartnerId: null,
+      roleOrgId: null,
+      roleScope: 'system',
+      roleForceMfa: true,
     };
-    const { tx } = makeTx([[{ ...activeUser, isPlatformAdmin: true }], [systemRole]]);
+    const { tx } = makeTx([[systemRole]]);
 
     await expect(resolveEffectiveMfaPolicy({
       userId: 'user-1',
@@ -283,10 +398,7 @@ describe('resolveEffectiveMfaPolicy', () => {
       tx,
     })).resolves.toMatchObject({ required: true, sources: ['role'] });
 
-    const mismatch = makeTx([
-      [{ ...activeUser, isPlatformAdmin: true }],
-      [{ ...systemRole, partnerId: 'partner-1' }],
-    ]);
+    const mismatch = makeTx([[{ ...systemRole, rolePartnerId: 'partner-1' }]]);
     await expect(resolveEffectiveMfaPolicy({
       userId: 'user-1',
       roleId: 'system-role',
@@ -345,6 +457,19 @@ describe('resolveEffectiveMfaPolicy', () => {
     expect(contextState.events).toEqual([]);
   });
 
+  it.each([
+    ['partner', partnerRows(), {
+      userId: 'user-1', roleId: 'role-1', partnerId: 'partner-1', orgId: null, scope: 'partner' as const,
+    }],
+    ['organization', organizationRows(), {
+      userId: 'user-1', roleId: 'role-1', partnerId: 'partner-1', orgId: 'org-1', scope: 'organization' as const,
+    }],
+  ] as const)('uses one bounded scope query for %s resolution', async (_scope, rows, input) => {
+    const { tx, select } = makeTx([...rows]);
+    await resolveEffectiveMfaPolicy({ ...input, tx });
+    expect(select).toHaveBeenCalledTimes(1);
+  });
+
   it('escapes any caller context before opening the system read context when tx is absent', async () => {
     const { tx } = makeTx(partnerRows());
     contextState.dbSelect.mockImplementation(tx.select);
@@ -369,26 +494,41 @@ describe('MFA policy settings writes', () => {
 
   it('rejects an organization allowlist with no primary-factor overlap with its partner', async () => {
     const { tx } = makeTx([
-      [{ id: 'org-1', partnerId: 'partner-1' }],
       [{ id: 'partner-1', settings: { security: { allowedMethods: { totp: true } } } }],
     ]);
 
     await expect(validateOrganizationMfaPolicySettingsWrite({
       tx,
       orgId: 'org-1',
+      partnerId: 'partner-1',
       settings: { security: { allowedMethods: { sms: true } } },
     })).rejects.toBeInstanceOf(MfaPolicyConfigurationError);
   });
 
+  it('takes the partner-key transaction lock before organization counterpart reads', async () => {
+    const { tx, events } = makeTx([
+      [{ id: 'partner-1', settings: { security: { allowedMethods: { totp: true } } } }],
+    ]);
+
+    await validateOrganizationMfaPolicySettingsWrite({
+      tx,
+      orgId: 'org-1',
+      partnerId: 'partner-1',
+      settings: { security: { allowedMethods: { totp: true } } },
+    });
+
+    expect(events[0]).toBe('lock');
+  });
+
   it('allows an organization allowlist with at least one partner-approved primary factor', async () => {
     const { tx } = makeTx([
-      [{ id: 'org-1', partnerId: 'partner-1' }],
       [{ id: 'partner-1', settings: { security: { allowedMethods: { totp: true, passkey: true } } } }],
     ]);
 
     await expect(validateOrganizationMfaPolicySettingsWrite({
       tx,
       orgId: 'org-1',
+      partnerId: 'partner-1',
       settings: { security: { allowedMethods: { passkey: true } } },
     })).resolves.toBeUndefined();
   });
@@ -406,6 +546,18 @@ describe('MFA policy settings writes', () => {
     })).rejects.toBeInstanceOf(MfaPolicyConfigurationError);
   });
 
+  it('takes the partner-key transaction lock before partner counterpart reads', async () => {
+    const { tx, events } = makeTx([[]]);
+
+    await validatePartnerMfaPolicySettingsWrite({
+      tx,
+      partnerId: 'partner-1',
+      settings: { security: { allowedMethods: { totp: true } } },
+    });
+
+    expect(events).toEqual(['lock', 'select']);
+  });
+
   it('does not query counterpart policy when the write does not specify an allowlist', async () => {
     const { tx, select } = makeTx([]);
 
@@ -416,5 +568,49 @@ describe('MFA policy settings writes', () => {
     });
 
     expect(select).not.toHaveBeenCalled();
+  });
+
+  it('exposes a true outside-to-system transaction wrapper for policy writes', () => {
+    const wrapper = (mfaPolicyModule as Record<string, unknown>).withMfaPolicySystemTransaction;
+    expect(wrapper).toEqual(expect.any(Function));
+  });
+
+  it('authorizes only an exact live partner membership and tenant axis', async () => {
+    const exact = makeTx([[
+      {
+        membershipUserId: 'user-1',
+        membershipPartnerId: 'partner-1',
+        userId: 'user-1',
+        userPartnerId: 'partner-1',
+        userStatus: 'active',
+        partnerId: 'partner-1',
+        partnerStatus: 'active',
+        partnerDeletedAt: null,
+      },
+    ]]);
+    await expect(authorizePartnerMfaPolicyWrite(exact.tx, {
+      userId: 'user-1', partnerId: 'partner-1',
+    })).resolves.toBe(true);
+
+    const removed = makeTx([[]]);
+    await expect(authorizePartnerMfaPolicyWrite(removed.tx, {
+      userId: 'user-1', partnerId: 'partner-1',
+    })).resolves.toBe(false);
+
+    const mismatched = makeTx([[
+      {
+        membershipUserId: 'user-1',
+        membershipPartnerId: 'partner-2',
+        userId: 'user-1',
+        userPartnerId: 'partner-1',
+        userStatus: 'active',
+        partnerId: 'partner-2',
+        partnerStatus: 'active',
+        partnerDeletedAt: null,
+      },
+    ]]);
+    await expect(authorizePartnerMfaPolicyWrite(mismatched.tx, {
+      userId: 'user-1', partnerId: 'partner-1',
+    })).resolves.toBe(false);
   });
 });

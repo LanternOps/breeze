@@ -16,6 +16,9 @@ const mfaPolicyMocks = vi.hoisted(() => ({
   ConfigurationError: class MfaPolicyConfigurationError extends Error {},
   validatePartnerWrite: vi.fn(),
   validateOrganizationWrite: vi.fn(),
+  authorizePartnerWrite: vi.fn(),
+  lockPartner: vi.fn(),
+  withSystemTransaction: vi.fn(),
 }));
 
 vi.mock('../services', () => ({}));
@@ -71,6 +74,9 @@ vi.mock('../services/mfaPolicy', () => ({
   MfaPolicyConfigurationError: mfaPolicyMocks.ConfigurationError,
   validatePartnerMfaPolicySettingsWrite: mfaPolicyMocks.validatePartnerWrite,
   validateOrganizationMfaPolicySettingsWrite: mfaPolicyMocks.validateOrganizationWrite,
+  authorizePartnerMfaPolicyWrite: mfaPolicyMocks.authorizePartnerWrite,
+  lockMfaPolicyPartner: mfaPolicyMocks.lockPartner,
+  withMfaPolicySystemTransaction: mfaPolicyMocks.withSystemTransaction,
 }));
 
 vi.mock('../db', () => ({
@@ -261,6 +267,10 @@ describe('org routes', () => {
       authorized: true,
       targetPartnerId: 'partner-123',
     });
+    mfaPolicyMocks.authorizePartnerWrite.mockResolvedValue(true);
+    mfaPolicyMocks.withSystemTransaction.mockImplementation(
+      async (fn: (tx: unknown) => Promise<unknown>) => fn(db as any),
+    );
   });
 
   describe('GET /orgs/partners', () => {
@@ -802,6 +812,20 @@ describe('org routes', () => {
         expect(res.status).toBe(200);
         expect(getCaptured().settings.security.allowedMethods).toEqual({ passkey: true });
         expect(getCaptured().settings.security).not.toHaveProperty('allowedMfaMethods');
+      });
+
+      it('runs system partner MFA validation and write in the MFA system transaction', async () => {
+        mockCurrentPartnerSelect({});
+        mockUpdateCapture();
+
+        const res = await patchPartner({ settings: { security: { requireMfa: true } } });
+
+        expect(res.status).toBe(200);
+        expect(mfaPolicyMocks.withSystemTransaction).toHaveBeenCalledTimes(1);
+        expect(mfaPolicyMocks.validatePartnerWrite).toHaveBeenCalledWith(expect.objectContaining({
+          tx: db,
+          partnerId: 'partner-1',
+        }));
       });
     });
 
@@ -1512,6 +1536,31 @@ describe('org routes', () => {
 
       expect(res.status).toBe(400);
       expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('validates and writes organization MFA policy in the lifecycle system transaction using the authorized partner', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'org-1', partnerId: 'partner-123' }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { security: { allowedMethods: { totp: true } } } }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(tenantLifecycleTxMocks.withSystemTransaction).toHaveBeenCalledTimes(1);
+      expect(mfaPolicyMocks.validateOrganizationWrite).toHaveBeenCalledWith(expect.objectContaining({
+        tx: db,
+        orgId: 'org-1',
+        partnerId: 'partner-123',
+      }));
     });
 
     it('canonicalizes the legacy alias before the organization settings write', async () => {
@@ -2730,6 +2779,88 @@ describe('org routes', () => {
   });
 
   describe('PATCH /orgs/partners/me', () => {
+    function mockPartnerSelfWrite(currentSettings: Record<string, unknown> = {}) {
+      const currentPartner = { id: 'partner-123', name: 'Acme MSP', settings: currentSettings };
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+            limit: vi.fn().mockResolvedValue([currentPartner]),
+          }),
+        }),
+      } as any);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockImplementation((update: Record<string, unknown>) => ({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ ...currentPartner, ...update }]),
+          }),
+        })),
+      } as any);
+    }
+
+    it('uses a true system transaction for live authorization, validation, and the MFA write', async () => {
+      setAuthContext({
+        scope: 'partner',
+        partnerId: 'partner-123',
+        accessibleOrgIds: [],
+      });
+      mockPartnerSelfWrite();
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { security: { requireMfa: true } } }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(mfaPolicyMocks.withSystemTransaction).toHaveBeenCalledTimes(1);
+      expect(mfaPolicyMocks.authorizePartnerWrite).toHaveBeenCalledWith(db, {
+        userId: 'user-123',
+        partnerId: 'partner-123',
+      });
+      expect(mfaPolicyMocks.validatePartnerWrite).toHaveBeenCalledWith(expect.objectContaining({
+        tx: db,
+        partnerId: 'partner-123',
+      }));
+    });
+
+    it('does not let selected-org request RLS hide an incompatible child policy', async () => {
+      setAuthContext({
+        scope: 'partner',
+        partnerId: 'partner-123',
+        accessibleOrgIds: ['org-selected'],
+      });
+      mockPartnerSelfWrite();
+      mfaPolicyMocks.validatePartnerWrite.mockRejectedValueOnce(
+        new mfaPolicyMocks.ConfigurationError('MFA allowed methods must overlap with every organization policy'),
+      );
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { security: { allowedMethods: { totp: true } } } }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(mfaPolicyMocks.withSystemTransaction).toHaveBeenCalledTimes(1);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects a stale partner token after its live membership is removed or mismatched', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mfaPolicyMocks.authorizePartnerWrite.mockResolvedValueOnce(false);
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { security: { requireMfa: true } } }),
+      });
+
+      expect(res.status).toBe(404);
+      expect(mfaPolicyMocks.validatePartnerWrite).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
     it('accepts pt-BR as the partner default language', async () => {
       setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
       const currentPartner = { id: 'partner-123', name: 'Acme MSP', settings: {} };
@@ -2807,6 +2938,13 @@ describe('org routes', () => {
     // fetched). Default db.select resolves [] → no matching agent_versions row.
     it('rejects an unknown watchdog version pin on the partner defaults with 400', async () => {
       setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      } as any);
       const res = await app.request('/orgs/partners/me', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },

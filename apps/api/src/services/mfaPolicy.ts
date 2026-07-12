@@ -1,7 +1,9 @@
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import {
   getExplicitMfaAllowedMethods,
+  getExplicitMfaRequirement,
   hasMfaAllowedMethodsInput,
+  hasMfaPolicyInput,
   MFA_PRIMARY_METHODS,
   type MfaMethod,
   type MfaPrimaryMethod,
@@ -70,15 +72,13 @@ function assertScopeAxes(input: ResolveEffectiveMfaPolicyInput): void {
 }
 
 function requireMfaFromSettings(settings: unknown): boolean {
-  if (settings === null || typeof settings !== 'object' || Array.isArray(settings)) return false;
-  const security = (settings as Record<string, unknown>).security;
-  if (security === null || typeof security !== 'object' || Array.isArray(security)) return false;
-  const securityRecord = security as Record<string, unknown>;
-  if (!Object.hasOwn(securityRecord, 'requireMfa')) return false;
-  if (typeof securityRecord.requireMfa !== 'boolean') {
-    throw new MfaPolicyConfigurationError('Stored MFA requirement is invalid');
+  try {
+    return getExplicitMfaRequirement(settings) === true;
+  } catch (error) {
+    throw new MfaPolicyConfigurationError(
+      error instanceof Error ? error.message : 'Stored MFA requirement is invalid',
+    );
   }
-  return securityRecord.requireMfa;
 }
 
 function intersectPrimaryMethods(
@@ -117,197 +117,187 @@ async function resolveWithTx(
   tx: AuthLifecycleTransaction,
   input: ResolveEffectiveMfaPolicyInput,
 ): Promise<EffectiveMfaPolicy> {
-  const [user] = await tx
-    .select({
-      id: users.id,
-      partnerId: users.partnerId,
-      orgId: users.orgId,
-      status: users.status,
-      isPlatformAdmin: users.isPlatformAdmin,
-    })
-    .from(users)
-    .where(eq(users.id, input.userId))
-    .limit(1);
-
-  if (!user || user.id !== input.userId || user.status !== 'active') {
-    throw new MfaPolicyResolutionError('User is missing or inactive');
-  }
-
   let roleForceMfa = false;
   let partnerSettings: unknown;
   let organizationSettings: unknown;
 
   if (input.scope === 'system') {
-    if (user.isPlatformAdmin !== true) {
+    const [row] = input.roleId
+      ? await tx
+        .select({
+          userId: users.id,
+          userStatus: users.status,
+          isPlatformAdmin: users.isPlatformAdmin,
+          roleId: roles.id,
+          rolePartnerId: roles.partnerId,
+          roleOrgId: roles.orgId,
+          roleScope: roles.scope,
+          roleForceMfa: roles.forceMfa,
+        })
+        .from(users)
+        .innerJoin(roles, eq(roles.id, input.roleId))
+        .where(and(
+          eq(users.id, input.userId),
+          eq(users.status, 'active'),
+        ))
+        .limit(1)
+      : await tx
+        .select({
+          userId: users.id,
+          userStatus: users.status,
+          isPlatformAdmin: users.isPlatformAdmin,
+        })
+        .from(users)
+        .where(and(eq(users.id, input.userId), eq(users.status, 'active')))
+        .limit(1);
+    if (!row || row.userId !== input.userId || row.userStatus !== 'active') {
+      throw new MfaPolicyResolutionError('User is missing or inactive');
+    }
+    if (row.isPlatformAdmin !== true) {
       throw new MfaPolicyResolutionError('System user is not a current platform administrator');
     }
     if (input.roleId) {
-      const [role] = await tx
-        .select({
-          id: roles.id,
-          partnerId: roles.partnerId,
-          orgId: roles.orgId,
-          scope: roles.scope,
-          forceMfa: roles.forceMfa,
-        })
-        .from(roles)
-        .where(and(
-          eq(roles.id, input.roleId),
-          eq(roles.scope, 'system'),
-          isNull(roles.partnerId),
-          isNull(roles.orgId),
-        ))
-        .limit(1);
-      if (!role
-        || role.id !== input.roleId
-        || role.scope !== 'system'
-        || role.partnerId !== null
-        || role.orgId !== null) {
+      const roleRow = row as typeof row & {
+        roleId: string;
+        rolePartnerId: string | null;
+        roleOrgId: string | null;
+        roleScope: string;
+        roleForceMfa: boolean;
+      };
+      if (roleRow.roleId !== input.roleId
+        || roleRow.roleScope !== 'system'
+        || roleRow.rolePartnerId !== null
+        || roleRow.roleOrgId !== null) {
         throw new MfaPolicyResolutionError('System role is missing or mismatched');
       }
-      roleForceMfa = role.forceMfa === true;
+      roleForceMfa = roleRow.roleForceMfa === true;
     }
-  } else {
-    if (user.partnerId !== input.partnerId) {
-      throw new MfaPolicyResolutionError('User partner axis does not match');
-    }
-
-    const [partner] = await tx
+  } else if (input.scope === 'partner') {
+    const [row] = await tx
       .select({
-        id: partners.id,
-        status: partners.status,
-        deletedAt: partners.deletedAt,
-        settings: partners.settings,
+        userId: users.id,
+        userPartnerId: users.partnerId,
+        userStatus: users.status,
+        partnerId: partners.id,
+        partnerStatus: partners.status,
+        partnerDeletedAt: partners.deletedAt,
+        partnerSettings: partners.settings,
+        membershipUserId: partnerUsers.userId,
+        membershipPartnerId: partnerUsers.partnerId,
+        membershipRoleId: partnerUsers.roleId,
+        roleId: roles.id,
+        rolePartnerId: roles.partnerId,
+        roleOrgId: roles.orgId,
+        roleScope: roles.scope,
+        roleIsSystem: roles.isSystem,
+        roleForceMfa: roles.forceMfa,
       })
-      .from(partners)
+      .from(partnerUsers)
+      .innerJoin(users, eq(users.id, partnerUsers.userId))
+      .innerJoin(partners, eq(partners.id, partnerUsers.partnerId))
+      .innerJoin(roles, eq(roles.id, partnerUsers.roleId))
       .where(and(
+        eq(partnerUsers.userId, input.userId),
+        eq(partnerUsers.partnerId, input.partnerId!),
+        eq(partnerUsers.roleId, input.roleId!),
+        eq(users.status, 'active'),
         eq(partners.id, input.partnerId!),
         eq(partners.status, 'active'),
         isNull(partners.deletedAt),
       ))
       .limit(1);
-    if (!partner
-      || partner.id !== input.partnerId
-      || partner.status !== 'active'
-      || partner.deletedAt !== null) {
-      throw new MfaPolicyResolutionError('Partner is missing or inactive');
+    const customRole = row?.roleIsSystem !== true
+      && row?.rolePartnerId === input.partnerId
+      && row?.roleOrgId === null;
+    const globalSeededRole = row?.roleIsSystem === true
+      && row?.rolePartnerId === null
+      && row?.roleOrgId === null;
+    if (!row
+      || row.userId !== input.userId
+      || row.userPartnerId !== input.partnerId
+      || row.userStatus !== 'active'
+      || row.partnerId !== input.partnerId
+      || row.partnerStatus !== 'active'
+      || row.partnerDeletedAt !== null
+      || row.membershipUserId !== input.userId
+      || row.membershipPartnerId !== input.partnerId
+      || row.membershipRoleId !== input.roleId
+      || row.roleId !== input.roleId
+      || row.roleScope !== 'partner'
+      || (!customRole && !globalSeededRole)) {
+      throw new MfaPolicyResolutionError('Partner policy axes are missing or mismatched');
     }
-    partnerSettings = partner.settings;
-
-    if (input.scope === 'partner') {
-      const [membership] = await tx
-        .select({
-          userId: partnerUsers.userId,
-          partnerId: partnerUsers.partnerId,
-          roleId: partnerUsers.roleId,
-        })
-        .from(partnerUsers)
-        .where(and(
-          eq(partnerUsers.userId, input.userId),
-          eq(partnerUsers.partnerId, input.partnerId!),
-          eq(partnerUsers.roleId, input.roleId!),
-        ))
-        .limit(1);
-      if (!membership
-        || membership.userId !== input.userId
-        || membership.partnerId !== input.partnerId
-        || membership.roleId !== input.roleId) {
-        throw new MfaPolicyResolutionError('Partner membership is missing or mismatched');
-      }
-
-      const [role] = await tx
-        .select({
-          id: roles.id,
-          partnerId: roles.partnerId,
-          orgId: roles.orgId,
-          scope: roles.scope,
-          forceMfa: roles.forceMfa,
-        })
-        .from(roles)
-        .where(and(
-          eq(roles.id, input.roleId!),
-          eq(roles.scope, 'partner'),
-          eq(roles.partnerId, input.partnerId!),
-          isNull(roles.orgId),
-        ))
-        .limit(1);
-      if (!role
-        || role.id !== input.roleId
-        || role.scope !== 'partner'
-        || role.partnerId !== input.partnerId
-        || role.orgId !== null) {
-        throw new MfaPolicyResolutionError('Partner role is missing or mismatched');
-      }
-      roleForceMfa = role.forceMfa === true;
-    } else {
-      const [organization] = await tx
-        .select({
-          id: organizations.id,
-          partnerId: organizations.partnerId,
-          status: organizations.status,
-          deletedAt: organizations.deletedAt,
-          settings: organizations.settings,
-        })
-        .from(organizations)
-        .where(and(
-          eq(organizations.id, input.orgId!),
-          eq(organizations.partnerId, input.partnerId!),
-          isNull(organizations.deletedAt),
-        ))
-        .limit(1);
-      if (!organization
-        || organization.id !== input.orgId
-        || organization.partnerId !== input.partnerId
-        || !['active', 'trial'].includes(organization.status)
-        || organization.deletedAt !== null) {
-        throw new MfaPolicyResolutionError('Organization is missing or inactive');
-      }
-      organizationSettings = organization.settings;
-
-      const [membership] = await tx
-        .select({
-          userId: organizationUsers.userId,
-          orgId: organizationUsers.orgId,
-          roleId: organizationUsers.roleId,
-        })
-        .from(organizationUsers)
-        .where(and(
-          eq(organizationUsers.userId, input.userId),
-          eq(organizationUsers.orgId, input.orgId!),
-          eq(organizationUsers.roleId, input.roleId!),
-        ))
-        .limit(1);
-      if (!membership
-        || membership.userId !== input.userId
-        || membership.orgId !== input.orgId
-        || membership.roleId !== input.roleId) {
-        throw new MfaPolicyResolutionError('Organization membership is missing or mismatched');
-      }
-
-      const [role] = await tx
-        .select({
-          id: roles.id,
-          partnerId: roles.partnerId,
-          orgId: roles.orgId,
-          scope: roles.scope,
-          forceMfa: roles.forceMfa,
-        })
-        .from(roles)
-        .where(and(
-          eq(roles.id, input.roleId!),
-          eq(roles.scope, 'organization'),
-          eq(roles.orgId, input.orgId!),
-        ))
-        .limit(1);
-      if (!role
-        || role.id !== input.roleId
-        || role.scope !== 'organization'
-        || role.orgId !== input.orgId
-        || (role.partnerId !== null && role.partnerId !== input.partnerId)) {
-        throw new MfaPolicyResolutionError('Organization role is missing or mismatched');
-      }
-      roleForceMfa = role.forceMfa === true;
+    roleForceMfa = row.roleForceMfa === true;
+    partnerSettings = row.partnerSettings;
+  } else {
+    const [row] = await tx
+      .select({
+        userId: users.id,
+        userPartnerId: users.partnerId,
+        userStatus: users.status,
+        partnerId: partners.id,
+        partnerStatus: partners.status,
+        partnerDeletedAt: partners.deletedAt,
+        partnerSettings: partners.settings,
+        organizationId: organizations.id,
+        organizationPartnerId: organizations.partnerId,
+        organizationStatus: organizations.status,
+        organizationDeletedAt: organizations.deletedAt,
+        organizationSettings: organizations.settings,
+        membershipUserId: organizationUsers.userId,
+        membershipOrgId: organizationUsers.orgId,
+        membershipRoleId: organizationUsers.roleId,
+        roleId: roles.id,
+        rolePartnerId: roles.partnerId,
+        roleOrgId: roles.orgId,
+        roleScope: roles.scope,
+        roleIsSystem: roles.isSystem,
+        roleForceMfa: roles.forceMfa,
+      })
+      .from(organizationUsers)
+      .innerJoin(users, eq(users.id, organizationUsers.userId))
+      .innerJoin(organizations, eq(organizations.id, organizationUsers.orgId))
+      .innerJoin(partners, eq(partners.id, organizations.partnerId))
+      .innerJoin(roles, eq(roles.id, organizationUsers.roleId))
+      .where(and(
+        eq(organizationUsers.userId, input.userId),
+        eq(organizationUsers.orgId, input.orgId!),
+        eq(organizationUsers.roleId, input.roleId!),
+        eq(users.status, 'active'),
+        eq(organizations.partnerId, input.partnerId!),
+        isNull(organizations.deletedAt),
+        eq(partners.status, 'active'),
+        isNull(partners.deletedAt),
+      ))
+      .limit(1);
+    const customRole = row?.roleIsSystem !== true
+      && row?.roleOrgId === input.orgId
+      && (row?.rolePartnerId === null || row?.rolePartnerId === input.partnerId);
+    const globalSeededRole = row?.roleIsSystem === true
+      && row?.rolePartnerId === null
+      && row?.roleOrgId === null;
+    if (!row
+      || row.userId !== input.userId
+      || row.userPartnerId !== input.partnerId
+      || row.userStatus !== 'active'
+      || row.partnerId !== input.partnerId
+      || row.partnerStatus !== 'active'
+      || row.partnerDeletedAt !== null
+      || row.organizationId !== input.orgId
+      || row.organizationPartnerId !== input.partnerId
+      || !['active', 'trial'].includes(row.organizationStatus)
+      || row.organizationDeletedAt !== null
+      || row.membershipUserId !== input.userId
+      || row.membershipOrgId !== input.orgId
+      || row.membershipRoleId !== input.roleId
+      || row.roleId !== input.roleId
+      || row.roleScope !== 'organization'
+      || (!customRole && !globalSeededRole)) {
+      throw new MfaPolicyResolutionError('Organization policy axes are missing or mismatched');
     }
+    roleForceMfa = row.roleForceMfa === true;
+    partnerSettings = row.partnerSettings;
+    organizationSettings = row.organizationSettings;
   }
 
   try {
@@ -353,35 +343,76 @@ function assertCompatible(
   intersectPrimaryMethods([first, second]);
 }
 
+export function withMfaPolicySystemTransaction<T>(
+  fn: (tx: AuthLifecycleTransaction) => Promise<T>,
+): Promise<T> {
+  return runOutsideDbContext(() =>
+    withSystemDbAccessContext(() => fn(db as unknown as AuthLifecycleTransaction))
+  );
+}
+
+export async function lockMfaPolicyPartner(
+  tx: AuthLifecycleTransaction,
+  partnerId: string,
+): Promise<void> {
+  await tx.execute(
+    sql`select pg_advisory_xact_lock(hashtext('mfa-policy'), hashtext(${partnerId}))`,
+  );
+}
+
+export async function authorizePartnerMfaPolicyWrite(
+  tx: AuthLifecycleTransaction,
+  input: { userId: string; partnerId: string },
+): Promise<boolean> {
+  const [row] = await tx
+    .select({
+      membershipUserId: partnerUsers.userId,
+      membershipPartnerId: partnerUsers.partnerId,
+      userId: users.id,
+      userPartnerId: users.partnerId,
+      userStatus: users.status,
+      partnerId: partners.id,
+      partnerStatus: partners.status,
+      partnerDeletedAt: partners.deletedAt,
+    })
+    .from(partnerUsers)
+    .innerJoin(users, eq(users.id, partnerUsers.userId))
+    .innerJoin(partners, eq(partners.id, partnerUsers.partnerId))
+    .where(and(
+      eq(partnerUsers.userId, input.userId),
+      eq(partnerUsers.partnerId, input.partnerId),
+      eq(users.partnerId, input.partnerId),
+      eq(users.status, 'active'),
+      eq(partners.status, 'active'),
+      isNull(partners.deletedAt),
+    ))
+    .limit(1);
+  return row?.membershipUserId === input.userId
+    && row.membershipPartnerId === input.partnerId
+    && row.userId === input.userId
+    && row.userPartnerId === input.partnerId
+    && row.userStatus === 'active'
+    && row.partnerId === input.partnerId
+    && row.partnerStatus === 'active'
+    && row.partnerDeletedAt === null;
+}
+
 export async function validateOrganizationMfaPolicySettingsWrite(input: {
   tx: AuthLifecycleTransaction;
   orgId?: string;
-  partnerId?: string;
+  partnerId: string;
   settings: unknown;
 }): Promise<void> {
+  if (!hasMfaPolicyInput(input.settings)) return;
+  await lockMfaPolicyPartner(input.tx, input.partnerId);
   if (!hasMfaAllowedMethodsInput(input.settings)) return;
   const incoming = readAllowedMethods(input.settings);
-  let partnerId = input.partnerId;
-  if (!partnerId) {
-    if (!input.orgId) {
-      throw new MfaPolicyConfigurationError('Organization or partner axis is required');
-    }
-    const [organization] = await input.tx
-      .select({ id: organizations.id, partnerId: organizations.partnerId })
-      .from(organizations)
-      .where(eq(organizations.id, input.orgId))
-      .limit(1);
-    if (!organization || organization.id !== input.orgId) {
-      throw new MfaPolicyConfigurationError('Organization not found for MFA policy write');
-    }
-    partnerId = organization.partnerId;
-  }
   const [partner] = await input.tx
     .select({ id: partners.id, settings: partners.settings })
     .from(partners)
-    .where(eq(partners.id, partnerId))
+    .where(and(eq(partners.id, input.partnerId), isNull(partners.deletedAt)))
     .limit(1);
-  if (!partner || partner.id !== partnerId) {
+  if (!partner || partner.id !== input.partnerId) {
     throw new MfaPolicyConfigurationError('Partner not found for MFA policy write');
   }
   assertCompatible(incoming, readAllowedMethods(partner.settings));
@@ -392,6 +423,8 @@ export async function validatePartnerMfaPolicySettingsWrite(input: {
   partnerId: string;
   settings: unknown;
 }): Promise<void> {
+  if (!hasMfaPolicyInput(input.settings)) return;
+  await lockMfaPolicyPartner(input.tx, input.partnerId);
   if (!hasMfaAllowedMethodsInput(input.settings)) return;
   const incoming = readAllowedMethods(input.settings);
   const orgRows = await input.tx

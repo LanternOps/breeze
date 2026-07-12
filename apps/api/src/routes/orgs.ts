@@ -32,7 +32,7 @@ import { escapeLike } from '../utils/sql';
 import {
   agentVersionPinsSchema,
   canonicalizeTimezone,
-  hasMfaAllowedMethodsInput,
+  hasMfaPolicyInput,
   isAllowedLauncherScheme,
   isValidIanaTimezone,
   isValidMaintenanceWindow,
@@ -52,9 +52,12 @@ import { registerOrgPortalSettingsRoutes } from './orgPortalSettings';
 import { registerOrgPortalUsersRoutes } from './orgPortalUsers';
 import { registerOrgTicketSettingsRoutes } from './orgTicketSettings';
 import {
+  authorizePartnerMfaPolicyWrite,
+  lockMfaPolicyPartner,
   MfaPolicyConfigurationError,
   validateOrganizationMfaPolicySettingsWrite,
   validatePartnerMfaPolicySettingsWrite,
+  withMfaPolicySystemTransaction,
 } from '../services/mfaPolicy';
 
 export const orgRoutes = new Hono();
@@ -628,15 +631,31 @@ orgRoutes.patch(
     return c.json({ error: pinError }, 400);
   }
 
+  const partnerId = auth.partnerId as string;
+  const isMfaPolicyWrite = body.settings !== undefined && hasMfaPolicyInput(body.settings);
+  const performWrite = async (writeDb: typeof db) => {
+    if (isMfaPolicyWrite) {
+      const authorized = await authorizePartnerMfaPolicyWrite(writeDb as any, {
+        userId: auth.user.id,
+        partnerId,
+      });
+      if (!authorized) {
+        return { response: c.json({ error: 'Partner not found' }, 404) } as const;
+      }
+      // The current settings read, all compatibility reads, and the write must
+      // observe one partner-key serialization order.
+      await lockMfaPolicyPartner(writeDb as any, partnerId);
+    }
+
   // Get current partner to merge settings
-  const [current] = await db
+  const [current] = await writeDb
     .select()
     .from(partners)
-    .where(and(eq(partners.id, auth.partnerId as string), isNull(partners.deletedAt)))
+    .where(and(eq(partners.id, partnerId), isNull(partners.deletedAt)))
     .limit(1);
 
   if (!current) {
-    return c.json({ error: 'Partner not found' }, 404);
+    return { response: c.json({ error: 'Partner not found' }, 404) } as const;
   }
 
   // Merge settings (top-level shallow merge, except `security` and `ticketing` below)
@@ -669,19 +688,12 @@ orgRoutes.patch(
     };
   }
 
-  if (body.settings && hasMfaAllowedMethodsInput(body.settings)) {
-    try {
-      await validatePartnerMfaPolicySettingsWrite({
-        tx: db as any,
-        partnerId: auth.partnerId as string,
-        settings: newSettings,
-      });
-    } catch (error) {
-      if (error instanceof MfaPolicyConfigurationError) {
-        return c.json({ error: error.message }, 400);
-      }
-      throw error;
-    }
+  if (isMfaPolicyWrite) {
+    await validatePartnerMfaPolicySettingsWrite({
+      tx: writeDb as any,
+      partnerId,
+      settings: newSettings,
+    });
   }
 
   // Tenant-isolation guard: defaultTriageOrgId is stored verbatim, but the
@@ -691,13 +703,13 @@ orgRoutes.patch(
   // request RLS context, so the partner_id equality is the security boundary).
   const triageOrgId = body.settings?.ticketing?.inbound?.defaultTriageOrgId;
   if (typeof triageOrgId === 'string') {
-    const [orgOk] = await db
+    const [orgOk] = await writeDb
       .select({ id: organizations.id })
       .from(organizations)
-      .where(and(eq(organizations.id, triageOrgId), eq(organizations.partnerId, auth.partnerId as string)))
+      .where(and(eq(organizations.id, triageOrgId), eq(organizations.partnerId, partnerId)))
       .limit(1);
     if (!orgOk) {
-      return c.json({ error: 'defaultTriageOrgId must reference an organization in your partner' }, 400);
+      return { response: c.json({ error: 'defaultTriageOrgId must reference an organization in your partner' }, 400) } as const;
     }
   }
 
@@ -708,14 +720,14 @@ orgRoutes.patch(
   const nextAllowlist = ((newSettings.security as Record<string, unknown>)?.ipAllowlist) as string[] | undefined;
   const turningOn = (!prevAllowlist || prevAllowlist.length === 0) && Array.isArray(nextAllowlist) && nextAllowlist.length > 0;
   if (turningOn && getTrustedClientIpOrUndefined(c) === undefined) {
-    return c.json(
+    return { response: c.json(
       {
         code: 'proxy_trust_required',
         error:
           'Configure proxy trust (TRUST_PROXY_HEADERS + TRUSTED_PROXY_CIDRS) before enabling the IP allowlist, so the API can see real client IPs.',
       },
       400,
-    );
+    ) } as const;
   }
 
   // Encrypt secret-bearing fields (e.g. remoteAccessProviders[*].password)
@@ -734,19 +746,19 @@ orgRoutes.patch(
     } else {
       const candidate = body.inboundLocalPart.toLowerCase();
       if (RESERVED_INBOUND_LOCAL_PARTS.has(candidate)) {
-        return c.json({ error: 'That inbound address is reserved' }, 422);
+        return { response: c.json({ error: 'That inbound address is reserved' }, 422) } as const;
       }
-      const clash = await db
+      const clash = await writeDb
         .select({ id: partners.id })
         .from(partners)
         .where(and(
           or(eq(partners.inboundLocalPart, candidate), eq(partners.slug, candidate)),
-          ne(partners.id, auth.partnerId as string),
+          ne(partners.id, partnerId),
           isNull(partners.deletedAt)
         ))
         .limit(1);
       if (clash[0]) {
-        return c.json({ error: 'That inbound address is already taken' }, 409);
+        return { response: c.json({ error: 'That inbound address is already taken' }, 409) } as const;
       }
       updateData.inboundLocalPart = candidate;
     }
@@ -764,15 +776,32 @@ orgRoutes.patch(
     }
   }
 
-  const [partner] = await db
+  const [partner] = await writeDb
     .update(partners)
     .set(updateData)
-    .where(and(eq(partners.id, auth.partnerId as string), isNull(partners.deletedAt)))
+    .where(and(eq(partners.id, partnerId), isNull(partners.deletedAt)))
     .returning();
 
   if (!partner) {
-    return c.json({ error: 'Partner not found' }, 404);
+    return { response: c.json({ error: 'Partner not found' }, 404) } as const;
   }
+
+  return { partner } as const;
+  };
+
+  let writeResult;
+  try {
+    writeResult = isMfaPolicyWrite
+      ? await withMfaPolicySystemTransaction((tx) => performWrite(tx as unknown as typeof db))
+      : await performWrite(db);
+  } catch (error) {
+    if (error instanceof MfaPolicyConfigurationError) {
+      return c.json({ error: error.message }, 400);
+    }
+    throw error;
+  }
+  if ('response' in writeResult) return writeResult.response;
+  const { partner } = writeResult;
 
   // Invalidate the OAuth scope-policy cache so a change to
   // `settings.oauth_scope_policy.mcp_allowed_scopes` takes effect on the
@@ -848,21 +877,7 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
   }
 
   if (updates.settings !== undefined) {
-    // Wholesale settings write: keep an active security.ipAllowlist unless the
-    // caller explicitly clears it (see preserveIpAllowlistOnOmit).
     if (updates.settings && typeof updates.settings === 'object' && !Array.isArray(updates.settings)) {
-      const [currentPartner] = await db
-        .select()
-        .from(partners)
-        .where(and(eq(partners.id, id), isNull(partners.deletedAt)))
-        .limit(1);
-      if (currentPartner) {
-        updates.settings = preserveIpAllowlistOnOmit(
-          currentPartner.settings,
-          updates.settings as Record<string, unknown>,
-        );
-      }
-
       // Keep the first-class `partners.timezone` column in sync with the
       // settings.timezone JSONB key on this system-scoped wholesale write — the
       // same mirroring PATCH /partners/me does (issue #1318). Without this, a
@@ -892,18 +907,35 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
         updates.timezone = canonicalTz;
       }
     }
-    // Encrypt secret-bearing fields in partners.settings before writing.
-    updates.settings = encryptColumnValueForWrite('partners', 'settings', updates.settings);
   }
 
   let lifecycleSnapshot: PartnerLifecycleSnapshot | undefined;
   const updatePartner = async (tx: typeof db) => {
-    if (data.settings && hasMfaAllowedMethodsInput(data.settings)) {
+    if (data.settings && hasMfaPolicyInput(data.settings)) {
       await validatePartnerMfaPolicySettingsWrite({
         tx: tx as any,
         partnerId: id,
         settings: data.settings,
       });
+    }
+    if (updates.settings !== undefined) {
+      // Policy writes reach this read only after taking the partner-key lock,
+      // so the preserved sibling fields and the resulting write share the same
+      // serialized transaction state.
+      if (updates.settings && typeof updates.settings === 'object' && !Array.isArray(updates.settings)) {
+        const [currentPartner] = await tx
+          .select()
+          .from(partners)
+          .where(and(eq(partners.id, id), isNull(partners.deletedAt)))
+          .limit(1);
+        if (currentPartner) {
+          updates.settings = preserveIpAllowlistOnOmit(
+            currentPartner.settings,
+            updates.settings as Record<string, unknown>,
+          );
+        }
+      }
+      updates.settings = encryptColumnValueForWrite('partners', 'settings', updates.settings);
     }
     const [before] = data.status === undefined
       ? []
@@ -928,9 +960,11 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
   };
   let partner;
   try {
-    partner = data.status === undefined
-      ? await updatePartner(db)
-      : await withAuthLifecycleSystemTransaction((tx) => updatePartner(tx as unknown as typeof db));
+    partner = data.settings && hasMfaPolicyInput(data.settings)
+      ? await withMfaPolicySystemTransaction((tx) => updatePartner(tx as unknown as typeof db))
+      : data.status === undefined
+        ? await updatePartner(db)
+        : await withAuthLifecycleSystemTransaction((tx) => updatePartner(tx as unknown as typeof db));
   } catch (error) {
     if (error instanceof MfaPolicyConfigurationError) {
       return c.json({ error: error.message }, 400);
@@ -1280,7 +1314,14 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
   try {
     [organization] = await runOutsideDbContext(() =>
       withSystemDbAccessContext(async () => {
-        if (data.settings && hasMfaAllowedMethodsInput(data.settings)) {
+        if (auth.scope === 'partner' && data.settings && hasMfaPolicyInput(data.settings)) {
+          const authorized = await authorizePartnerMfaPolicyWrite(db as any, {
+            userId: auth.user.id,
+            partnerId: targetPartnerId!,
+          });
+          if (!authorized) return [];
+        }
+        if (data.settings && hasMfaPolicyInput(data.settings)) {
           await validateOrganizationMfaPolicySettingsWrite({
             tx: db as any,
             partnerId: targetPartnerId!,
@@ -1295,6 +1336,10 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
       return c.json({ error: error.message }, 400);
     }
     throw error;
+  }
+
+  if (!organization) {
+    return c.json({ error: 'Partner not found' }, 404);
   }
 
   writeRouteAudit(c, {
@@ -1456,10 +1501,11 @@ const updateOrgHandler = [requireScope('organization', 'partner', 'system'), req
     );
     if (!authorization.authorized) return undefined;
 
-    if (data.settings && hasMfaAllowedMethodsInput(data.settings)) {
+    if (data.settings && hasMfaPolicyInput(data.settings)) {
       await validateOrganizationMfaPolicySettingsWrite({
         tx: tx as any,
         orgId: id,
+        partnerId: authorization.targetPartnerId,
         settings: data.settings,
       });
     }

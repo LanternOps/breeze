@@ -61,10 +61,44 @@ function settingsSecurity(settings: unknown): Record<string, unknown> | undefine
   return security as Record<string, unknown>;
 }
 
+function storedSettingsSecurity(settings: unknown): Record<string, unknown> | undefined {
+  if (settings === undefined || settings === null) return undefined;
+  if (typeof settings !== 'object' || Array.isArray(settings)) {
+    throw new Error('Stored MFA settings container is corrupt');
+  }
+  const settingsRecord = settings as Record<string, unknown>;
+  if (!Object.hasOwn(settingsRecord, 'security') || settingsRecord.security === null) {
+    return undefined;
+  }
+  if (typeof settingsRecord.security !== 'object' || Array.isArray(settingsRecord.security)) {
+    throw new Error('Stored MFA security container is corrupt');
+  }
+  return settingsRecord.security as Record<string, unknown>;
+}
+
 export function hasMfaAllowedMethodsInput(settings: unknown): boolean {
   const security = settingsSecurity(settings);
   return security !== undefined
     && (Object.hasOwn(security, 'allowedMethods') || Object.hasOwn(security, 'allowedMfaMethods'));
+}
+
+export function hasMfaPolicyInput(settings: unknown): boolean {
+  const security = settingsSecurity(settings);
+  return security !== undefined
+    && (
+      Object.hasOwn(security, 'requireMfa')
+      || Object.hasOwn(security, 'allowedMethods')
+      || Object.hasOwn(security, 'allowedMfaMethods')
+    );
+}
+
+export function getExplicitMfaRequirement(settings: unknown): boolean | undefined {
+  const security = storedSettingsSecurity(settings);
+  if (!security || !Object.hasOwn(security, 'requireMfa')) return undefined;
+  if (typeof security.requireMfa !== 'boolean') {
+    throw new Error('Stored MFA requirement is invalid');
+  }
+  return security.requireMfa;
 }
 
 /**
@@ -75,7 +109,7 @@ export function hasMfaAllowedMethodsInput(settings: unknown): boolean {
 export function getExplicitMfaAllowedMethods(
   settings: unknown,
 ): ReadonlySet<MfaPrimaryMethod> | undefined {
-  const security = settingsSecurity(settings);
+  const security = storedSettingsSecurity(settings);
   if (!security) return undefined;
 
   const hasCanonical = Object.hasOwn(security, 'allowedMethods');

@@ -80,4 +80,31 @@ describe('mfa policy settings validators', () => {
     expect(() => getExplicitMfaAllowedMethods({ security: { allowedMethods: {} } })).toThrow();
     expect(() => getExplicitMfaAllowedMethods({ security: { allowedMethods: ['totp'] } })).toThrow();
   });
+
+  it.each([
+    'corrupt',
+    42,
+    ['settings'],
+    { security: 'corrupt' },
+    { security: 42 },
+    { security: ['totp'] },
+  ])('fails closed for a malformed stored settings container: %j', (settings) => {
+    expect(() => getExplicitMfaAllowedMethods(settings)).toThrow(/corrupt|invalid/i);
+  });
+
+  it.each([
+    { security: { allowedMethods: 'totp' } },
+    { security: { allowedMethods: 42 } },
+    { security: { allowedMfaMethods: ['sms'] } },
+    { security: { allowedMfaMethods: false } },
+  ])('fails closed for a malformed canonical or legacy leaf: %j', (settings) => {
+    expect(() => getExplicitMfaAllowedMethods(settings)).toThrow(/invalid/i);
+  });
+
+  it('still treats absent or null settings as unspecified', () => {
+    expect(getExplicitMfaAllowedMethods(undefined)).toBeUndefined();
+    expect(getExplicitMfaAllowedMethods(null)).toBeUndefined();
+    expect(getExplicitMfaAllowedMethods({})).toBeUndefined();
+    expect(getExplicitMfaAllowedMethods({ security: null })).toBeUndefined();
+  });
 });
