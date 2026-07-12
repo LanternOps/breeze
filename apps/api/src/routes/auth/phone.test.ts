@@ -120,6 +120,8 @@ vi.mock('./helpers', () => ({
 import { phoneRoutes } from './phone';
 import { db } from '../../db';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
+import { getTwilioService } from '../../services/twilio';
+import { writeAuthAudit } from './helpers';
 
 function selectChain(rows: unknown[]) {
   return {
@@ -191,6 +193,85 @@ describe('phone routes', () => {
       const body = await res.json();
       expect(body.success).toBe(true);
       expect(db.update).toHaveBeenCalled();
+    });
+  });
+
+  describe('POST /auth/phone/confirm', () => {
+    // Task 7 regression guard (SR2-19): invalidation is REPLACEMENT-ONLY.
+    // It must fire when the caller already has an ACTIVE SMS factor
+    // (mfaEnabled && mfaMethod === 'sms'), and must NOT fire during initial
+    // SMS enrollment (no active SMS factor yet) — firing there would sign
+    // the user out mid-enrollment before they ever reach /mfa/sms/enable.
+    function mockCurrentFactorRow(row: { mfaEnabled: boolean; mfaMethod: string | null }) {
+      vi.mocked(db.select).mockReturnValue(selectChain([row]) as any);
+    }
+
+    function mockValidCode() {
+      vi.mocked(getTwilioService).mockReturnValue({
+        sendVerificationCode: vi.fn(),
+        checkVerificationCode: vi.fn().mockResolvedValue({ valid: true, serviceError: false }),
+      } as any);
+    }
+
+    function confirmRequest() {
+      return app.request('/auth/phone/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phoneNumber: '+15555550100',
+          code: '123456',
+          currentPassword: 'correct-password',
+        }),
+      });
+    }
+
+    it('invalidates MFA assurance when replacing an already-active SMS factor', async () => {
+      mockCurrentFactorRow({ mfaEnabled: true, mfaMethod: 'sms' });
+      mockValidCode();
+
+      const res = await confirmRequest();
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.success).toBe(true);
+      expect(body.message).toBe('Phone number verified');
+
+      // Routes through invalidateMfaAssuranceAfterFactorChange, which folds
+      // its write into db.transaction rather than a bare db.update.
+      expect(db.transaction).toHaveBeenCalled();
+
+      expect(writeAuthAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'auth.phone.verify.confirmed',
+          details: expect.objectContaining({ smsFactorReplacement: true }),
+        })
+      );
+    });
+
+    it('does NOT invalidate MFA assurance during initial SMS enrollment (no active SMS factor)', async () => {
+      mockCurrentFactorRow({ mfaEnabled: false, mfaMethod: null });
+      mockValidCode();
+
+      const res = await confirmRequest();
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.success).toBe(true);
+      expect(body.message).toBe('Phone number verified');
+
+      // Must NOT route through the invalidation transaction — that would
+      // sign the user out mid-enrollment before /mfa/sms/enable ever runs.
+      expect(db.transaction).not.toHaveBeenCalled();
+      expect(db.update).toHaveBeenCalled();
+
+      expect(writeAuthAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'auth.phone.verify.confirmed',
+          details: expect.not.objectContaining({ smsFactorReplacement: true }),
+        })
+      );
     });
   });
 });
