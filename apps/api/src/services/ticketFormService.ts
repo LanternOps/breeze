@@ -148,8 +148,9 @@ export async function getTicketFormForOrg(
  *
  * The validation read is an OWNERSHIP check only — `partner_id = partnerId`,
  * with no org-status filter — and runs under a system context (#2357). A
- * request context can't do this read: `breeze_has_org_access` only covers
- * active/trial, non-soft-deleted orgs, so once an allowlisted org became
+ * request context can't do this read: `breeze_has_org_access` evaluates the
+ * token's accessible-org set, which auth.ts builds filtered to active/trial,
+ * non-soft-deleted orgs — so once an allowlisted org became
  * suspended/churned/soft-deleted, EVERY subsequent save of the form (the web
  * builder re-sends visibleOrgIds on each save, even a rename) 400ed with a
  * misleading cross-partner error. Owned-but-inactive and owned-but-soft-
@@ -203,9 +204,10 @@ export async function syncTicketFormOrgLinks(formId: string, orgIds: string[] | 
   // review Critical). Running on the ambient transaction lets the write see
   // the same-transaction parent.
   //
-  // Only partner-scoped tokens with orgAccess='all' reach this code path (POST
-  // partner-wide + PUT partner-wide, both behind canManagePartnerWidePolicies),
-  // so the ambient context is a partner context whose accessiblePartnerIds
+  // Partner-scoped tokens with orgAccess='all' are what reaches this code path
+  // in practice (POST partner-wide + PUT partner-wide, both behind
+  // canManagePartnerWidePolicies — which system scope would also clear), so
+  // the ambient context is a partner context whose accessiblePartnerIds
   // covers the owning partner — which clears the link WITH CHECK
   // (breeze_has_partner_access on the parent's partner_id). RLS stays fully
   // enforced on the write; it is simply satisfied by the caller's own partner

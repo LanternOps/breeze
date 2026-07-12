@@ -5,18 +5,20 @@
  * withDbAccessContext transaction (C1, uncommitted), then syncs the org
  * allowlist. If syncTicketFormOrgLinks escapes to a FRESH system transaction
  * on another pooled connection (C2), C2's READ COMMITTED snapshot cannot see
- * C1's uncommitted parent, so the non-deferrable FK
- * `ticket_form_org_links.form_id -> ticket_forms(id)` fails with 23503 and the
- * whole request 500s. This suite mirrors that exact route seam: it inserts a
+ * C1's uncommitted parent, so the link policy's WITH CHECK `EXISTS (...
+ * ticket_forms ...)` rejects the row (42501; were the policy absent, the
+ * non-deferrable FK `ticket_form_org_links.form_id -> ticket_forms(id)`
+ * would fail with 23503 at end of statement) and the whole request 500s. This suite mirrors that exact route seam: it inserts a
  * partner-wide parent inside a partner-scoped request context and then — STILL
  * inside that context — calls syncTicketFormOrgLinks with a non-empty
  * allowlist. It must land parent + links together, committed atomically.
  *
- * Only partner-scoped tokens with orgAccess='all' reach this path (POST
- * partner-wide + canManagePartnerWidePolicies gate), so the ambient context is
- * always a partner context whose accessiblePartnerIds covers the owning
- * partner — which is what makes the link WITH CHECK
- * (breeze_has_partner_access on the parent) pass on the ambient connection.
+ * Partner-scoped tokens with orgAccess='all' are what reaches this path in
+ * practice (POST partner-wide + canManagePartnerWidePolicies gate — which
+ * system scope would also clear), so the ambient context is a partner context
+ * whose accessiblePartnerIds covers the owning partner — which is what makes
+ * the link WITH CHECK (breeze_has_partner_access on the parent) pass on the
+ * ambient connection.
  *
  * The org-belongs-to-partner validation read, by contrast, runs under a
  * SYSTEM context (#2357): a request context's accessibleOrgIds only covers
@@ -24,7 +26,8 @@
  * connection made every save of a form that allowlisted a later-suspended/
  * churned/soft-deleted org fail with a false cross-partner 400. This suite
  * also pins the #2357 contract: owned-but-inactive and owned-but-soft-deleted
- * orgs are accepted; unknown and cross-partner ids still 400.
+ * orgs are accepted; cross-partner ids still 400 (unknown-id rejection is
+ * pinned in the unit suite, ticketFormService.test.ts).
  */
 import './setup';
 import { afterEach, describe, expect, it } from 'vitest';
