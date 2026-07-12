@@ -927,14 +927,15 @@ export default function UnifiIntegration() {
             className="ml-auto inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs text-emerald-700"
             data-testid="unifi-status-connected"
           >
-            <CheckCircle2 className="h-3.5 w-3.5" /> {t("common:states.active")}
+            <CheckCircle2 className="h-3.5 w-3.5" />{" "}
+            {t("unifiIntegration.connected")}
           </span>
         ) : (
           <span
             className="ml-auto inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-600"
             data-testid="unifi-status-disconnected"
           >
-            <Unplug className="h-3.5 w-3.5" /> {t("common:states.inactive")}
+            <Unplug className="h-3.5 w-3.5" /> {t("unifiIntegration.notConnected")}
           </span>
         )}
       </div>
