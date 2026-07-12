@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { HTTPException } from 'hono/http-exception';
 
 vi.mock('../../db', () => ({
   db: {
@@ -68,7 +69,7 @@ vi.mock('../../services/auditService', () => ({
 
 vi.mock('../../services/authLifecycle', () => ({
   withAuthLifecycleSystemTransaction: vi.fn(async (fn: (tx: object) => Promise<unknown>) => fn({})),
-  revokeUserSessionFamily: vi.fn(async () => 1),
+  revokeUserSessionFamilyForLogout: vi.fn(async () => ({ status: 'revoked' })),
 }));
 
 vi.mock('../../services/anomalyMetrics', () => ({
@@ -126,7 +127,10 @@ vi.mock('./helpers', () => ({
   getClientIP: vi.fn(() => '203.0.113.10'),
   getClientRateLimitKey: vi.fn(() => 'test-client'),
   setRefreshTokenCookie: vi.fn(),
-  clearRefreshTokenCookie: vi.fn(),
+  clearRefreshTokenCookie: vi.fn((c: { header: (name: string, value: string, options: { append: boolean }) => void }) => {
+    c.header('Set-Cookie', 'breeze_refresh_token=; Path=/api/v1/auth; HttpOnly; SameSite=Strict; Max-Age=0', { append: true });
+    c.header('Set-Cookie', 'breeze_csrf_token=; Path=/api/v1/auth; SameSite=Strict; Max-Age=0', { append: true });
+  }),
   resolveRefreshToken: vi.fn(() => null),
   validateCookieCsrfRequest: vi.fn(() => null),
   toPublicTokens: vi.fn((tokens: { accessToken: string; expiresInSeconds: number }) => ({
@@ -195,7 +199,7 @@ import {
 import { enforceIpAllowlist } from '../../services/ipAllowlist';
 import { createAuditLogAsync } from '../../services/auditService';
 import {
-  revokeUserSessionFamily,
+  revokeUserSessionFamilyForLogout,
   withAuthLifecycleSystemTransaction,
 } from '../../services/authLifecycle';
 import { recordFailedLogin } from '../../services/anomalyMetrics';
@@ -252,7 +256,7 @@ describe('POST /logout — durable current-family revocation', () => {
     process.env.E2E_MODE = 'true';
     vi.mocked(resolveRefreshToken).mockReturnValue(null);
     vi.mocked(verifyToken).mockResolvedValue(null);
-    vi.mocked(revokeUserSessionFamily).mockResolvedValue(1);
+    vi.mocked(revokeUserSessionFamilyForLogout).mockResolvedValue({ status: 'revoked' });
     vi.mocked(cacheRefreshTokenFamilyRevocation).mockResolvedValue(undefined);
     vi.mocked(revokeRefreshTokenJti).mockResolvedValue(true);
   });
@@ -267,7 +271,7 @@ describe('POST /logout — durable current-family revocation', () => {
       cleanupFailures: [],
     });
     expect(withAuthLifecycleSystemTransaction).toHaveBeenCalledTimes(1);
-    expect(revokeUserSessionFamily).toHaveBeenCalledWith(
+    expect(revokeUserSessionFamilyForLogout).toHaveBeenCalledWith(
       expect.anything(),
       'user-1',
       'family-access',
@@ -275,6 +279,45 @@ describe('POST /logout — durable current-family revocation', () => {
     );
     expect(cacheRefreshTokenFamilyRevocation).toHaveBeenCalledWith('family-access');
     expect(revokeAllUserTokens).not.toHaveBeenCalled();
+    expect(clearRefreshTokenCookie).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats an owned already-revoked family as idempotent durable success', async () => {
+    vi.mocked(revokeUserSessionFamilyForLogout).mockResolvedValueOnce({ status: 'already_revoked' });
+
+    const res = await postLogout();
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      success: true,
+      cleanupStatus: 'complete',
+      cleanupFailures: [],
+    });
+    expect(cacheRefreshTokenFamilyRevocation).toHaveBeenCalledWith('family-access');
+    expect(createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
+      result: 'success',
+      details: expect.objectContaining({ durableOutcome: 'already_revoked' }),
+    }));
+  });
+
+  it('denies a missing or wrong-owner family without cache/JTI cleanup or a success audit', async () => {
+    vi.mocked(revokeUserSessionFamilyForLogout).mockResolvedValueOnce({ status: 'not_found' });
+
+    const res = await postLogout();
+
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Invalid session' });
+    expect(cacheRefreshTokenFamilyRevocation).not.toHaveBeenCalled();
+    expect(revokeRefreshTokenJti).not.toHaveBeenCalled();
+    expect(createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'user.logout',
+      result: 'denied',
+      details: expect.objectContaining({ reason: 'session_family_not_found' }),
+    }));
+    expect(createAuditLogAsync).not.toHaveBeenCalledWith(expect.objectContaining({
+      action: 'user.logout',
+      result: 'success',
+    }));
     expect(clearRefreshTokenCookie).toHaveBeenCalledTimes(1);
   });
 
@@ -299,7 +342,7 @@ describe('POST /logout — durable current-family revocation', () => {
 
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: 'Invalid session' });
-    expect(revokeUserSessionFamily).not.toHaveBeenCalled();
+    expect(revokeUserSessionFamilyForLogout).not.toHaveBeenCalled();
     expect(cacheRefreshTokenFamilyRevocation).not.toHaveBeenCalled();
     expect(revokeRefreshTokenJti).not.toHaveBeenCalled();
     expect(clearRefreshTokenCookie).toHaveBeenCalledTimes(1);
@@ -343,7 +386,7 @@ describe('POST /logout — durable current-family revocation', () => {
       cleanupStatus: 'partial',
       cleanupFailures: ['refresh-family-cache'],
     });
-    expect(revokeUserSessionFamily).toHaveBeenCalledTimes(1);
+    expect(revokeUserSessionFamilyForLogout).toHaveBeenCalledTimes(1);
     expect(clearRefreshTokenCookie).toHaveBeenCalledTimes(1);
     expect(createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
       action: 'user.logout',
@@ -353,6 +396,73 @@ describe('POST /logout — durable current-family revocation', () => {
         cleanupFailures: ['refresh-family-cache'],
       }),
     }));
+  });
+
+  it('cleans a matching cookie JTI independently and reports a JTI-only failure as partial', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(resolveRefreshToken).mockReturnValue('refresh-token');
+    vi.mocked(verifyToken).mockResolvedValue({
+      sub: 'user-1',
+      email: 'admin@msp.com',
+      type: 'refresh',
+      jti: 'refresh-jti',
+      fam: 'family-access',
+      ae: 4,
+      me: 7,
+      mfa: false,
+      scope: 'partner',
+      partnerId: 'partner-1',
+      orgId: null,
+      roleId: 'role-1',
+    });
+    vi.mocked(revokeRefreshTokenJti).mockRejectedValueOnce(new Error('jti cache unavailable'));
+
+    const res = await postLogout();
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      success: true,
+      cleanupStatus: 'partial',
+      cleanupFailures: ['refresh-token-jti'],
+    });
+    expect(cacheRefreshTokenFamilyRevocation).toHaveBeenCalledWith('family-access');
+    expect(revokeRefreshTokenJti).toHaveBeenCalledWith('refresh-jti');
+    expect(createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
+      result: 'success',
+      details: expect.objectContaining({
+        cleanupStatus: 'partial',
+        cleanupFailures: ['refresh-token-jti'],
+      }),
+    }));
+  });
+});
+
+describe('POST /logout — pre-auth cookie clearing', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it.each([
+    ['missing authorization', 401, 'Missing or invalid authorization header'],
+    ['invalid token', 401, 'Invalid or expired token'],
+    ['expired token', 401, 'Invalid or expired token'],
+    ['revoked token', 401, 'Invalid or expired token'],
+    ['wrong token type', 401, 'Invalid token type'],
+    ['inactive tenant', 403, 'Tenant is not active'],
+  ])('clears both auth cookies when auth rejects a %s response', async (_case, status, message) => {
+    const { authMiddleware } = await import('../../middleware/auth');
+    vi.mocked(authMiddleware).mockImplementationOnce((() => {
+      throw new HTTPException(status as 401 | 403, { message });
+    }) as never);
+
+    const res = await postLogout();
+
+    expect(res.status).toBe(status);
+    expect(await res.text()).toBe(message);
+    const setCookie = res.headers.get('set-cookie') ?? '';
+    expect(setCookie).toContain('breeze_refresh_token=;');
+    expect(setCookie).toContain('breeze_csrf_token=;');
+    expect(setCookie.match(/Max-Age=0/g)).toHaveLength(2);
   });
 });
 

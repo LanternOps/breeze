@@ -62,6 +62,19 @@ vi.mock('../services', () => ({
   }))
 }));
 
+vi.mock('../services/authLifecycle', () => ({
+  withAuthLifecycleSystemTransaction: vi.fn(async (fn: (tx: object) => Promise<unknown>) => fn({})),
+  advanceUserSecurityState: vi.fn(async () => ({
+    id: 'user-123',
+    authEpoch: 2,
+    mfaEpoch: 1,
+    emailEpoch: 1,
+    passwordResetEpoch: 2,
+  })),
+  revokeAllUserSessionFamilies: vi.fn(async () => 1),
+  revokeUserSessionFamilyForLogout: vi.fn(async () => ({ status: 'revoked' })),
+}));
+
 const sendAccountLockedMock = vi.fn().mockResolvedValue(undefined);
 vi.mock('../services/email', () => ({
   getEmailService: vi.fn(() => ({
@@ -165,7 +178,28 @@ vi.mock('../services/passwordResetEligibility', () => ({
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
-      user: { id: 'user-123', email: 'test@example.com' }
+      user: {
+        id: 'user-123',
+        email: 'test@example.com',
+        name: 'Test User',
+        isPlatformAdmin: false,
+      },
+      token: {
+        sub: 'user-123',
+        email: 'test@example.com',
+        type: 'access',
+        sid: 'family-current',
+        ae: 1,
+        me: 1,
+        mfa: false,
+        scope: 'partner',
+        partnerId: 'partner-1',
+        orgId: null,
+        roleId: 'role-1',
+      },
+      partnerId: 'partner-1',
+      orgId: null,
+      scope: 'partner',
     });
     return next();
   }),
@@ -207,6 +241,7 @@ import {
   getPasswordResetEligibilityForUser,
 } from '../services/passwordResetEligibility';
 import { db } from '../db';
+import { revokeUserSessionFamilyForLogout } from '../services/authLifecycle';
 
 describe('auth routes', () => {
   let app: Hono;
@@ -243,6 +278,7 @@ describe('auth routes', () => {
     vi.mocked(isAccountLocked).mockResolvedValue(false);
     vi.mocked(recordAccountFailure).mockResolvedValue({ count: 1, locked: false, newlyLocked: false });
     vi.mocked(clearAccountFailures).mockResolvedValue(undefined);
+    vi.mocked(revokeUserSessionFamilyForLogout).mockResolvedValue({ status: 'revoked' });
     sendAccountLockedMock.mockClear();
     app = new Hono();
     app.route('/auth', authRoutes);
@@ -2223,7 +2259,14 @@ describe('auth routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
-      expect(revokeAllUserTokens).toHaveBeenCalledWith('user-123');
+      expect(revokeUserSessionFamilyForLogout).toHaveBeenCalledWith(
+        expect.anything(),
+        'user-123',
+        'family-current',
+        'logout',
+      );
+      expect(revokeAllUserTokens).not.toHaveBeenCalled();
+      expect(body).toMatchObject({ cleanupStatus: 'complete', cleanupFailures: [] });
     });
   });
 

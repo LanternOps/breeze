@@ -1,4 +1,4 @@
-import { Hono, type Context } from 'hono';
+import { Hono, type Context, type Next } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { eq } from 'drizzle-orm';
 import * as dbModule from '../../db';
@@ -58,7 +58,7 @@ import { captureException } from '../../services/sentry';
 import { cfAccessLoginMiddleware } from '../../middleware/cfAccessLogin';
 import { dbWriteExpectingRows } from '../../db/dbWriteExpectingRows';
 import {
-  revokeUserSessionFamily,
+  revokeUserSessionFamilyForLogout,
   withAuthLifecycleSystemTransaction,
 } from '../../services/authLifecycle';
 import { runPostCommitCleanup } from '../../services/postCommitCleanup';
@@ -181,6 +181,11 @@ async function recordAccountFailureAndMaybeNotify(
 }
 
 export const loginRoutes = new Hono();
+
+async function clearLogoutCookiesBeforeAuth(c: Context, next: Next): Promise<void> {
+  clearRefreshTokenCookie(c);
+  await next();
+}
 
 // Login. cfAccessLoginMiddleware runs first; on a valid Cloudflare Access JWT
 // it short-circuits with a minted session. On any failure (trust disabled,
@@ -549,11 +554,8 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
 });
 
 // Logout
-loginRoutes.post('/logout', authMiddleware, async (c) => {
+loginRoutes.post('/logout', clearLogoutCookiesBeforeAuth, authMiddleware, async (c) => {
   const auth = c.get('auth');
-  // The browser must discard its refresh credential regardless of durable or
-  // cache availability. Set the clearing headers before any branch can return.
-  clearRefreshTokenCookie(c);
 
   const accessFamilyId = auth.token.sid;
   if (!accessFamilyId) {
@@ -606,10 +608,28 @@ loginRoutes.post('/logout', authMiddleware, async (c) => {
     }
   }
 
+  let durableOutcome: 'revoked' | 'already_revoked';
   try {
-    await withAuthLifecycleSystemTransaction((tx) =>
-      revokeUserSessionFamily(tx, auth.user.id, familyId, 'logout')
+    const outcome = await withAuthLifecycleSystemTransaction((tx) =>
+      revokeUserSessionFamilyForLogout(tx, auth.user.id, familyId, 'logout')
     );
+    if (outcome.status === 'not_found') {
+      createAuditLogAsync({
+        orgId: auth.orgId ?? undefined,
+        actorId: auth.user.id,
+        actorEmail: auth.user.email,
+        action: 'user.logout',
+        resourceType: 'user',
+        resourceId: auth.user.id,
+        resourceName: auth.user.name,
+        details: { reason: 'session_family_not_found' },
+        ipAddress: getClientIP(c),
+        userAgent: c.req.header('user-agent'),
+        result: 'denied',
+      });
+      return c.json({ error: 'Invalid session' }, 401);
+    }
+    durableOutcome = outcome.status;
   } catch (error) {
     console.error('[auth] Durable session-family revocation failed during logout:', error);
     createAuditLogAsync({
@@ -653,6 +673,7 @@ loginRoutes.post('/logout', authMiddleware, async (c) => {
     resourceName: auth.user.name,
     details: {
       familyId,
+      durableOutcome,
       cleanupStatus: cleanup.cleanupStatus,
       cleanupFailures: cleanup.cleanupFailures,
     },

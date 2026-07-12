@@ -102,3 +102,49 @@ export async function revokeUserSessionFamily(
 
   return revoked.length;
 }
+
+export type LogoutSessionFamilyRevocationOutcome =
+  | { status: 'revoked' }
+  | { status: 'already_revoked' }
+  | { status: 'not_found' };
+
+/**
+ * Durably revoke one logout family and classify a zero-row conditional update
+ * without creating an ownership oracle.
+ *
+ * The follow-up read stays inside the caller's transaction. PostgreSQL makes a
+ * concurrent UPDATE wait and then re-evaluate its predicate, so a racer that
+ * observes zero rows can re-read the now-committed `revoked_at` and return an
+ * idempotent success. Missing and wrong-owner rows deliberately share one
+ * result. An owned row that somehow remains active is an invariant failure,
+ * never a successful logout.
+ */
+export async function revokeUserSessionFamilyForLogout(
+  tx: AuthLifecycleTransaction,
+  userId: string,
+  familyId: string,
+  reason: string,
+): Promise<LogoutSessionFamilyRevocationOutcome> {
+  const revokedCount = await revokeUserSessionFamily(tx, userId, familyId, reason);
+  if (revokedCount > 0) {
+    return { status: 'revoked' };
+  }
+
+  const [family] = await tx
+    .select({ revokedAt: refreshTokenFamilies.revokedAt })
+    .from(refreshTokenFamilies)
+    .where(and(
+      eq(refreshTokenFamilies.familyId, familyId),
+      eq(refreshTokenFamilies.userId, userId),
+    ))
+    .limit(1);
+
+  if (!family) {
+    return { status: 'not_found' };
+  }
+  if (family.revokedAt !== null) {
+    return { status: 'already_revoked' };
+  }
+
+  throw new Error(`Logout family ${familyId} remained active after conditional revocation`);
+}

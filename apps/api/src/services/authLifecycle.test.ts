@@ -2,12 +2,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const dbState = vi.hoisted(() => ({
   returningQueue: [] as unknown[][],
+  selectQueue: [] as unknown[][],
   updateCalls: [] as Array<{
     table: unknown;
     values: Record<string, unknown>;
     where: unknown;
   }>,
   failureQueue: [] as Array<Error | null>,
+  selectCalls: [] as Array<{ fields: unknown; table: unknown; where: unknown }>,
 }));
 
 const contextState = vi.hoisted(() => ({
@@ -72,6 +74,7 @@ import {
   advanceUserSecurityState,
   revokeAllUserSessionFamilies,
   revokeUserSessionFamily,
+  revokeUserSessionFamilyForLogout,
   type AuthLifecycleTransaction,
 } from './authLifecycle';
 import * as authLifecycle from './authLifecycle';
@@ -92,14 +95,26 @@ function makeTx(): AuthLifecycleTransaction {
         }),
       }),
     })),
+    select: vi.fn((fields: unknown) => ({
+      from: (table: unknown) => ({
+        where: (where: unknown) => ({
+          limit: async () => {
+            dbState.selectCalls.push({ fields, table, where });
+            return dbState.selectQueue.shift() ?? [];
+          },
+        }),
+      }),
+    })),
   } as unknown as AuthLifecycleTransaction;
 }
 
 describe('authLifecycle transaction primitives', () => {
   beforeEach(() => {
     dbState.returningQueue.length = 0;
+    dbState.selectQueue.length = 0;
     dbState.updateCalls.length = 0;
     dbState.failureQueue.length = 0;
+    dbState.selectCalls.length = 0;
     contextState.scope = 'actor';
     contextState.observations.length = 0;
   });
@@ -240,6 +255,71 @@ describe('authLifecycle transaction primitives', () => {
         { isNull: 'refreshTokenFamilies.revokedAt' },
       ],
     });
+  });
+
+  it('classifies an owned active family as newly revoked without a follow-up read', async () => {
+    dbState.returningQueue.push([{ familyId: 'family-1' }]);
+
+    const outcome = await revokeUserSessionFamilyForLogout(
+      makeTx(),
+      'user-1',
+      'family-1',
+      'logout',
+    );
+
+    expect(outcome).toEqual({ status: 'revoked' });
+    expect(dbState.selectCalls).toEqual([]);
+  });
+
+  it('classifies a zero-row conditional update by re-reading an owned revoked family', async () => {
+    const revokedAt = new Date('2026-07-12T00:00:00.000Z');
+    dbState.returningQueue.push([]);
+    dbState.selectQueue.push([{ revokedAt }]);
+
+    const outcome = await revokeUserSessionFamilyForLogout(
+      makeTx(),
+      'user-1',
+      'family-1',
+      'logout',
+    );
+
+    expect(outcome).toEqual({ status: 'already_revoked' });
+    expect(dbState.selectCalls[0]).toEqual({
+      fields: { revokedAt: 'refreshTokenFamilies.revokedAt' },
+      table: refreshTokenFamilies,
+      where: {
+        and: [
+          { eq: ['refreshTokenFamilies.familyId', 'family-1'] },
+          { eq: ['refreshTokenFamilies.userId', 'user-1'] },
+        ],
+      },
+    });
+  });
+
+  it('classifies a zero-row conditional update with no owned row as not found', async () => {
+    dbState.returningQueue.push([]);
+    dbState.selectQueue.push([]);
+
+    const outcome = await revokeUserSessionFamilyForLogout(
+      makeTx(),
+      'user-1',
+      'family-owned-by-another-user',
+      'logout',
+    );
+
+    expect(outcome).toEqual({ status: 'not_found' });
+  });
+
+  it('throws instead of misclassifying an active row after a zero-row update', async () => {
+    dbState.returningQueue.push([]);
+    dbState.selectQueue.push([{ revokedAt: null }]);
+
+    await expect(revokeUserSessionFamilyForLogout(
+      makeTx(),
+      'user-1',
+      'family-1',
+      'logout',
+    )).rejects.toThrow('remained active');
   });
 
   it.each([

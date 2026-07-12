@@ -16,11 +16,15 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { generate, generateSecret } from 'otplib';
 import { authRoutes } from '../../routes/auth';
 import { encryptMfaTotpSecret } from '../../services/mfaSecretCrypto';
 import { verifyToken } from '../../services/jwt';
+import {
+  revokeUserSessionFamilyForLogout,
+  withAuthLifecycleSystemTransaction,
+} from '../../services/authLifecycle';
 import { refreshTokenFamilies, users } from '../../db/schema';
 import { createPartner, createUser } from './db-utils';
 import { getTestDb } from './setup';
@@ -100,6 +104,24 @@ async function logoutWithSession(
       Cookie: `${cookies.refreshCookieValue}; ${cookies.csrfCookieValue}`,
     },
   });
+}
+
+async function waitForBlockedFamilyRevocation(): Promise<void> {
+  const db = getTestDb();
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const rows = await db.execute(sql`
+      SELECT count(*)::int AS blocked_count
+      FROM pg_stat_activity
+      WHERE datname = current_database()
+        AND wait_event_type = 'Lock'
+        AND position('refresh_token_families' in lower(query)) > 0
+    `) as unknown as Array<{ blocked_count: number }>;
+    if (Number(rows[0]?.blocked_count ?? 0) > 0) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error('Logout never reached the blocked refresh-token-family revocation update');
 }
 
 describe('Refresh-Token Family Revocation (Task 7)', () => {
@@ -398,15 +420,40 @@ describe('Durable logout/refresh race (Task 6)', () => {
       'FamilyPass123!',
     );
 
-    const [refreshResult, logoutResult] = await Promise.all([
-      refreshWithCookies(app, originalCookies!),
-      logoutWithSession(app, loginBody.tokens.accessToken, originalCookies!),
-    ]);
+    const db = getTestDb();
+    let logoutSettled = false;
+    let logoutPromise: Promise<Response> | undefined;
+    let refreshResult: Awaited<ReturnType<typeof refreshWithCookies>> | undefined;
+
+    // Hold a row lock so logout's conditional UPDATE cannot commit. Start the
+    // logout first, then prove /refresh can mint a descendant while that
+    // request remains blocked. Releasing this transaction is the observed
+    // revocation-commit boundary for all assertions below.
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`
+        SELECT family_id
+        FROM refresh_token_families
+        WHERE family_id = ${accessPayload!.sid}::uuid
+        FOR UPDATE
+      `);
+
+      logoutPromise = logoutWithSession(app, loginBody.tokens.accessToken, originalCookies!);
+      void logoutPromise.finally(() => {
+        logoutSettled = true;
+      });
+      await waitForBlockedFamilyRevocation();
+
+      refreshResult = await refreshWithCookies(app, originalCookies!);
+      expect(refreshResult.status).toBe(200);
+      expect(refreshResult.nextCookies).not.toBeNull();
+      expect(logoutSettled).toBe(false);
+    });
+
+    const logoutResult = await logoutPromise!;
 
     expect(logoutResult.status).toBe(200);
-    expect([200, 401]).toContain(refreshResult.status);
+    expect(logoutSettled).toBe(true);
 
-    const db = getTestDb();
     const familyRows = await db.select().from(refreshTokenFamilies);
     expect(familyRows).toHaveLength(2);
     const currentFamily = familyRows.find((row) => row.familyId === accessPayload?.sid);
@@ -418,12 +465,39 @@ describe('Durable logout/refresh race (Task 6)', () => {
     const originalAfterCommit = await refreshWithCookies(app, originalCookies!);
     expect(originalAfterCommit.status).toBe(401);
 
-    if (refreshResult.nextCookies) {
-      const descendantAfterCommit = await refreshWithCookies(app, refreshResult.nextCookies);
-      expect(descendantAfterCommit.status).toBe(401);
-    }
+    const descendantAfterCommit = await refreshWithCookies(app, refreshResult!.nextCookies!);
+    expect(descendantAfterCommit.status).toBe(401);
 
     const siblingAfterCommit = await refreshWithCookies(app, siblingCookies);
     expect(siblingAfterCommit.status).toBe(200);
+  });
+
+  it('classifies concurrent revocation of one owned family as revoked plus already revoked', async () => {
+    const user = await createUser({
+      partnerId: testPartnerId,
+      withMembership: true,
+      email: 'logout-idempotent@example.com',
+      password: 'FamilyPass123!',
+    });
+    const familyId = '60000000-0000-4000-8000-000000000006';
+    await getTestDb().insert(refreshTokenFamilies).values({
+      familyId,
+      userId: user.id,
+      absoluteExpiresAt: new Date(Date.now() + 86_400_000),
+    });
+
+    const outcomes = await Promise.all([
+      withAuthLifecycleSystemTransaction((tx) =>
+        revokeUserSessionFamilyForLogout(tx, user.id, familyId, 'logout')
+      ),
+      withAuthLifecycleSystemTransaction((tx) =>
+        revokeUserSessionFamilyForLogout(tx, user.id, familyId, 'logout')
+      ),
+    ]);
+
+    expect(outcomes.map((outcome) => outcome.status).sort()).toEqual([
+      'already_revoked',
+      'revoked',
+    ]);
   });
 });
