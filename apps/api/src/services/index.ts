@@ -17,4 +17,5 @@ export * from './auditService';
 export * from './tokenRevocation';
 export * from './refreshTokenFamily';
 export * from './userSession';
+export * from './authLifecycle';
 export * from './clientIp';

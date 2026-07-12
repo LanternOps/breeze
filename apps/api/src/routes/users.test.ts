@@ -46,6 +46,8 @@ const {
   hasSatisfiedMfaMock,
   captureExceptionMock,
   getEmailServiceMock
+  ,advanceUserSecurityStateMock
+  ,revokeAllUserSessionFamiliesMock
 } = vi.hoisted(() => ({
   sendInviteMock: vi.fn().mockResolvedValue(undefined),
   sendEmailChangedMock: vi.fn().mockResolvedValue(undefined),
@@ -59,7 +61,9 @@ const {
   // Default: org does NOT enforce SSO.
   isPasswordAuthDisabledBySsoMock: vi.fn().mockResolvedValue(false),
   // Default: MFA is considered satisfied. Tests override to false.
-  hasSatisfiedMfaMock: vi.fn().mockReturnValue(true)
+  hasSatisfiedMfaMock: vi.fn().mockReturnValue(true),
+  advanceUserSecurityStateMock: vi.fn(async () => ({ id: 'user', authEpoch: 2 })),
+  revokeAllUserSessionFamiliesMock: vi.fn(async () => 1)
 }));
 
 vi.mock('../services/permissions', () => ({
@@ -171,6 +175,12 @@ vi.mock('../middleware/auth', () => ({
   requirePermission: vi.fn(() => (c: any, next: any) => next()),
   requireMfa: vi.fn(() => (_c: any, next: any) => next()),
   hasSatisfiedMfa: hasSatisfiedMfaMock
+  ,dbAccessContextFromAuth: vi.fn(() => ({ scope: 'partner' }))
+}));
+
+vi.mock('../services/authLifecycle', () => ({
+  advanceUserSecurityState: advanceUserSecurityStateMock,
+  revokeAllUserSessionFamilies: revokeAllUserSessionFamiliesMock,
 }));
 
 vi.mock('./auth/ssoPolicy', () => ({
@@ -259,6 +269,10 @@ describe('user routes', () => {
     requireCurrentPasswordStepUpMock.mockResolvedValue(null);
     isPasswordAuthDisabledBySsoMock.mockResolvedValue(false);
     hasSatisfiedMfaMock.mockReturnValue(true);
+    advanceUserSecurityStateMock.mockReset();
+    advanceUserSecurityStateMock.mockResolvedValue({ id: 'user', authEpoch: 2 });
+    revokeAllUserSessionFamiliesMock.mockReset();
+    revokeAllUserSessionFamiliesMock.mockResolvedValue(1);
     sendEmailChangedMock.mockResolvedValue(undefined);
     // Default: email service is configured. Tests override to null to exercise
     // the "not configured" warning path.
@@ -408,9 +422,10 @@ describe('user routes', () => {
           })
         });
 
-      vi.mocked(db.transaction).mockImplementation(async (fn) => {
-        return fn({ select: txSelect, insert: txInsert } as any);
-      });
+      vi.mocked(db.select)
+        .mockReturnValueOnce(txSelect() as any)
+        .mockReturnValueOnce(txSelect() as any);
+      vi.mocked(db.insert).mockImplementation((table) => txInsert(table) as any);
 
       const res = await app.request('/users/invite', {
         method: 'POST',
@@ -446,6 +461,71 @@ describe('user routes', () => {
       expect(res.status).toBe(400);
       const body = await res.json();
       expect(body.error).toContain('orgIds');
+    });
+
+    it('advances security state and revokes families when a disabled tombstone is re-invited', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => [{
+            id: '22222222-2222-2222-2222-222222222222',
+            scope: 'partner',
+            name: 'Admin',
+            isSystem: true,
+            partnerId: null,
+            orgId: null,
+          }]) })) })),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => [{ parentRoleId: null }]) })) })),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({ innerJoin: vi.fn(() => ({ where: vi.fn(async () => []) })) })),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => [{
+            id: '11111111-1111-1111-1111-111111111111',
+            email: 'returning@example.com',
+            name: 'Old Name',
+            status: 'disabled',
+            passwordHash: null,
+          }]) })) })),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => []) })) })),
+        } as any);
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn(async () => [{
+          id: '11111111-1111-1111-1111-111111111111',
+          email: 'returning@example.com',
+          name: 'Returning User',
+          status: 'invited',
+        }]) })) })),
+      } as any);
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn(() => ({ returning: vi.fn(async () => [{ id: 'link-1' }]) })),
+      } as any);
+
+      const res = await app.request('/users/invite', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'returning@example.com',
+          name: 'Returning User',
+          roleId: '22222222-2222-2222-2222-222222222222',
+          orgAccess: 'all',
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(advanceUserSecurityStateMock).toHaveBeenCalledWith(
+        expect.anything(),
+        '11111111-1111-1111-1111-111111111111',
+      );
+      expect(revokeAllUserSessionFamiliesMock).toHaveBeenCalledWith(
+        expect.anything(),
+        '11111111-1111-1111-1111-111111111111',
+        'user-reinvited',
+      );
     });
   });
 
@@ -1182,6 +1262,16 @@ describe('user routes', () => {
       });
 
       expect(res.status).toBe(200);
+      expect(advanceUserSecurityStateMock).toHaveBeenCalledWith(
+        expect.anything(),
+        'user-123',
+        { auth: true, email: true },
+      );
+      expect(revokeAllUserSessionFamiliesMock).toHaveBeenCalledWith(
+        expect.anything(),
+        'user-123',
+        'email-changed',
+      );
       expect(requireCurrentPasswordStepUpMock).toHaveBeenCalledWith(
         expect.anything(),
         'user-123',
@@ -1559,6 +1649,15 @@ describe('user routes', () => {
       const body = await res.json();
       expect(body.success).toBe(true);
       expect(clearPermissionCache).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
+      expect(advanceUserSecurityStateMock).toHaveBeenCalledWith(
+        expect.anything(),
+        '11111111-1111-1111-1111-111111111111',
+      );
+      expect(revokeAllUserSessionFamiliesMock).toHaveBeenCalledWith(
+        expect.anything(),
+        '11111111-1111-1111-1111-111111111111',
+        'role-changed',
+      );
     });
 
     it('rejects self role assignment', async () => {
@@ -1652,6 +1751,15 @@ describe('user routes', () => {
       // removed user's refresh token can't keep minting access tokens.
       expect(revokeUserAccess).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
       expect(clearPermissionCache).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
+      expect(advanceUserSecurityStateMock).toHaveBeenCalledWith(
+        expect.anything(),
+        '11111111-1111-1111-1111-111111111111',
+      );
+      expect(revokeAllUserSessionFamiliesMock).toHaveBeenCalledWith(
+        expect.anything(),
+        '11111111-1111-1111-1111-111111111111',
+        'membership-removed',
+      );
     });
 
     it('does not revoke JWTs when no row was deleted (404)', async () => {
@@ -1838,6 +1946,15 @@ describe('user routes', () => {
       expect(res.status).toBe(200);
       expect(teardownMock).toHaveBeenCalledTimes(1);
       expect(teardownMock).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
+      expect(advanceUserSecurityStateMock).toHaveBeenCalledWith(
+        expect.anything(),
+        '11111111-1111-1111-1111-111111111111',
+      );
+      expect(revokeAllUserSessionFamiliesMock).toHaveBeenCalledWith(
+        expect.anything(),
+        '11111111-1111-1111-1111-111111111111',
+        'status-changed',
+      );
     });
 
     it('returns 503 when teardown reports the failure sentinel', async () => {
@@ -1905,6 +2022,27 @@ describe('user routes', () => {
 
       expect(res.status).toBe(200);
       expect(teardownMock).not.toHaveBeenCalled();
+      expect(advanceUserSecurityStateMock).toHaveBeenCalledWith(
+        expect.anything(),
+        '11111111-1111-1111-1111-111111111111',
+      );
+      expect(revokeAllUserSessionFamiliesMock).toHaveBeenCalledWith(
+        expect.anything(),
+        '11111111-1111-1111-1111-111111111111',
+        'status-changed',
+      );
+    });
+
+    it('returns 500 and skips post-commit cleanup when durable family revocation fails', async () => {
+      revokeAllUserSessionFamiliesMock.mockRejectedValueOnce(new Error('postgres unavailable'));
+      seedPatch('active', 'disabled');
+
+      const res = await patchStatus('disabled');
+
+      expect(res.status).toBe(500);
+      expect(teardownMock).not.toHaveBeenCalled();
+      expect(revokeAllUserTokens).not.toHaveBeenCalled();
+      expect(clearPermissionCache).not.toHaveBeenCalled();
     });
   });
 

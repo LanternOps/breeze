@@ -23,6 +23,11 @@ import {
   inviteRedisKey,
   inviteUserRedisKey,
 } from './helpers';
+import {
+  advanceUserSecurityState,
+  revokeAllUserSessionFamilies,
+  type AuthLifecycleTransaction,
+} from '../../services/authLifecycle';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
@@ -147,8 +152,8 @@ inviteRoutes.post('/accept-invite', zValidator('json', acceptInviteSchema), asyn
     // /self context. Without the system-scope wrap, this silently
     // matches zero rows and returns success — the invitee's account
     // never gets activated. Same fix as reset-password (see password.ts).
-    await withSystemDbAccessContext(async () =>
-      db
+    await withSystemDbAccessContext(async () => {
+      const [updated] = await db
         .update(users)
         .set({
           passwordHash,
@@ -157,7 +162,14 @@ inviteRoutes.post('/accept-invite', zValidator('json', acceptInviteSchema), asyn
           updatedAt: new Date(),
         })
         .where(eq(users.id, userId))
-    );
+        .returning({ id: users.id });
+      if (!updated) {
+        throw new Error(`Failed to activate invited user ${userId}`);
+      }
+      const tx = db as unknown as AuthLifecycleTransaction;
+      await advanceUserSecurityState(tx, userId);
+      await revokeAllUserSessionFamilies(tx, userId, 'invite-accepted');
+    });
 
     // Clean up invite tokens (single-use)
     await redis.del(inviteRedisKey(tokenHash)).catch((err: unknown) => {

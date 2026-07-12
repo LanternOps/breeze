@@ -6,9 +6,9 @@ import { z } from 'zod';
 import { and, eq, or } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import { nanoid } from 'nanoid';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../db';
 import { users, partnerUsers, organizationUsers, roles, organizations, partners, permissions, rolePermissions } from '../db/schema';
-import { authMiddleware, hasSatisfiedMfa, requireMfa, requirePermission } from '../middleware/auth';
+import { authMiddleware, dbAccessContextFromAuth, hasSatisfiedMfa, requireMfa, requirePermission } from '../middleware/auth';
 import {
   MAX_AVATAR_SIZE_BYTES,
   deleteAvatar,
@@ -37,6 +37,11 @@ import { isPasswordAuthDisabledBySso } from './auth/ssoPolicy';
 import { revokeUserAccess } from '../services/userSuspension';
 import { terminateUserRemoteSessions, TEARDOWN_FAILED } from '../services/remoteSessionTeardown';
 import { revokeAllUserTokens } from '../services/tokenRevocation';
+import {
+  advanceUserSecurityState,
+  revokeAllUserSessionFamilies,
+  type AuthLifecycleTransaction,
+} from '../services/authLifecycle';
 
 export const userRoutes = new Hono();
 
@@ -689,19 +694,33 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
     return c.json({ error: 'No valid updates provided' }, 400);
   }
 
-  const [updated] = await db
-    .update(users)
-    .set(updates)
-    .where(eq(users.id, auth.user.id))
-    .returning({
-      id: users.id,
-      email: users.email,
-      name: users.name,
-      avatarUrl: users.avatarUrl,
-      status: users.status,
-      mfaEnabled: users.mfaEnabled,
-      preferences: users.preferences
-    });
+  const updateProfile = async () => {
+    const [result] = await db
+      .update(users)
+      .set(updates)
+      .where(eq(users.id, auth.user.id))
+      .returning({
+        id: users.id,
+        email: users.email,
+        name: users.name,
+        avatarUrl: users.avatarUrl,
+        status: users.status,
+        mfaEnabled: users.mfaEnabled,
+        preferences: users.preferences
+      });
+    if (result && previousEmail !== undefined) {
+      const tx = db as unknown as AuthLifecycleTransaction;
+      await advanceUserSecurityState(tx, auth.user.id, { auth: true, email: true });
+      await revokeAllUserSessionFamilies(tx, auth.user.id, 'email-changed');
+    }
+    return result;
+  };
+
+  const updated = previousEmail === undefined
+    ? await updateProfile()
+    : await runOutsideDbContext(() =>
+      withDbAccessContext(dbAccessContextFromAuth(auth), updateProfile)
+    );
 
   if (!updated) {
     return c.json({ error: 'Failed to update profile' }, 500);
@@ -732,6 +751,14 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
   // Dedicated email-change audit + security notification to the OLD address.
   // Only fires on a genuine, step-up-cleared email change (previousEmail set).
   if (previousEmail !== undefined) {
+    await clearPermissionCache(updated.id);
+    await revokeAllUserTokens(updated.id).catch((err) => {
+      console.error('[users] token revoke failed after email change:', err);
+    });
+    await revokeUserAccess(updated.id).catch((err) => {
+      console.error('[users] oauth revoke failed after email change:', err);
+    });
+
     createAuditLogAsync({
       orgId: auditOrgId,
       actorId: auth.user.id,
@@ -1132,7 +1159,9 @@ userRoutes.post(
 
     const normalizedEmail = data.email.toLowerCase();
 
-    const result = await db.transaction(async (tx) => {
+    const result = await runOutsideDbContext(() =>
+      withDbAccessContext(dbAccessContextFromAuth(auth), async () => {
+      const tx = db;
       const [existingUser] = await tx
         .select()
         .from(users)
@@ -1208,6 +1237,13 @@ userRoutes.post(
         throw new HTTPException(500, { message: 'Failed to create user' });
       }
 
+      const invalidateExistingUserForReinvite = async () => {
+        if (!existingUser) return;
+        const authTx = tx as unknown as AuthLifecycleTransaction;
+        await advanceUserSecurityState(authTx, user!.id);
+        await revokeAllUserSessionFamilies(authTx, user!.id, 'user-reinvited');
+      };
+
       if (scopeContext.scope === 'partner') {
         const [existingLink] = await tx
           .select({ id: partnerUsers.id })
@@ -1233,6 +1269,8 @@ userRoutes.post(
           })
           .returning();
 
+        await invalidateExistingUserForReinvite();
+
         return { user, linkCreated: true, link };
       }
 
@@ -1257,8 +1295,11 @@ userRoutes.post(
         })
         .returning();
 
+      await invalidateExistingUserForReinvite();
+
       return { user, linkCreated: true, link };
-    });
+      })
+    );
 
     if (!result.linkCreated) {
       return c.json({ error: 'User already exists in this scope' }, 409);
@@ -1394,20 +1435,30 @@ userRoutes.patch(
       updates.disabledReason = null;
     }
 
-    const [updated] = await db
-      .update(users)
-      .set(updates)
-      .where(eq(users.id, userId))
-      .returning({
-        id: users.id,
-        email: users.email,
-        name: users.name,
-        status: users.status
-      });
-
-    if (!updated) {
-      return c.json({ error: 'Failed to update user' }, 500);
-    }
+    const securityStateChanged = data.status !== undefined && data.status !== record.status;
+    const updated = await runOutsideDbContext(() =>
+      withDbAccessContext(dbAccessContextFromAuth(auth), async () => {
+        const [result] = await db
+          .update(users)
+          .set(updates)
+          .where(eq(users.id, userId))
+          .returning({
+            id: users.id,
+            email: users.email,
+            name: users.name,
+            status: users.status
+          });
+        if (!result) {
+          throw new Error(`Failed to update user ${userId}`);
+        }
+        if (securityStateChanged) {
+          const tx = db as unknown as AuthLifecycleTransaction;
+          await advanceUserSecurityState(tx, userId);
+          await revokeAllUserSessionFamilies(tx, userId, 'status-changed');
+        }
+        return result;
+      })
+    );
 
     // Suspension hook: when status transitions from active → disabled we must
     // revoke every outstanding OAuth artifact (refresh tokens, grant cache
@@ -1450,6 +1501,11 @@ userRoutes.patch(
       }
     }
     await clearPermissionCache(updated.id);
+    if (securityStateChanged) {
+      await revokeAllUserTokens(updated.id).catch((err) => {
+        console.error('[users] token revoke failed after status change:', err);
+      });
+    }
 
     writeUserAudit(c, auth, scopeContext, {
       action: becameInactive ? 'user.suspended' : 'user.update',
@@ -1559,6 +1615,9 @@ async function removeMembershipForScope(
         return { deleted: false };
       }
 
+      const tx = db as unknown as AuthLifecycleTransaction;
+      await advanceUserSecurityState(tx, userId);
+      await revokeAllUserSessionFamilies(tx, userId, 'membership-removed');
       await neutralizeUserIfOrphaned(userId);
       return { deleted: true };
     })
@@ -1654,11 +1713,20 @@ userRoutes.post(
     }
 
     if (scopeContext.scope === 'partner') {
-      const updated = await db
-        .update(partnerUsers)
-        .set({ roleId })
-        .where(and(eq(partnerUsers.partnerId, scopeContext.partnerId), eq(partnerUsers.userId, userId)))
-        .returning({ id: partnerUsers.id });
+      const updated = await runOutsideDbContext(() =>
+        withDbAccessContext(dbAccessContextFromAuth(auth), async () => {
+          const rows = await db
+            .update(partnerUsers)
+            .set({ roleId })
+            .where(and(eq(partnerUsers.partnerId, scopeContext.partnerId), eq(partnerUsers.userId, userId)))
+            .returning({ id: partnerUsers.id });
+          if (rows.length === 0) return rows;
+          const tx = db as unknown as AuthLifecycleTransaction;
+          await advanceUserSecurityState(tx, userId);
+          await revokeAllUserSessionFamilies(tx, userId, 'role-changed');
+          return rows;
+        })
+      );
 
       if (updated.length === 0) {
         return c.json({ error: 'User not found' }, 404);
@@ -1674,15 +1742,30 @@ userRoutes.post(
         }
       });
       await clearPermissionCache(userId);
+      await revokeAllUserTokens(userId).catch((err) => {
+        console.error('[users] token revoke failed after role change:', err);
+      });
+      await revokeUserAccess(userId).catch((err) => {
+        console.error('[users] oauth revoke failed after role change:', err);
+      });
 
       return c.json({ success: true });
     }
 
-    const updated = await db
-      .update(organizationUsers)
-      .set({ roleId })
-      .where(and(eq(organizationUsers.orgId, scopeContext.orgId), eq(organizationUsers.userId, userId)))
-      .returning({ id: organizationUsers.id });
+    const updated = await runOutsideDbContext(() =>
+      withDbAccessContext(dbAccessContextFromAuth(auth), async () => {
+        const rows = await db
+          .update(organizationUsers)
+          .set({ roleId })
+          .where(and(eq(organizationUsers.orgId, scopeContext.orgId), eq(organizationUsers.userId, userId)))
+          .returning({ id: organizationUsers.id });
+        if (rows.length === 0) return rows;
+        const tx = db as unknown as AuthLifecycleTransaction;
+        await advanceUserSecurityState(tx, userId);
+        await revokeAllUserSessionFamilies(tx, userId, 'role-changed');
+        return rows;
+      })
+    );
 
     if (updated.length === 0) {
       return c.json({ error: 'User not found' }, 404);
@@ -1698,6 +1781,12 @@ userRoutes.post(
       }
     });
     await clearPermissionCache(userId);
+    await revokeAllUserTokens(userId).catch((err) => {
+      console.error('[users] token revoke failed after role change:', err);
+    });
+    await revokeUserAccess(userId).catch((err) => {
+      console.error('[users] oauth revoke failed after role change:', err);
+    });
 
     return c.json({ success: true });
   }

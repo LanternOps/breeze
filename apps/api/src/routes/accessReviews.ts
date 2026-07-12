@@ -3,7 +3,7 @@ import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, eq, inArray } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
-import { db } from '../db';
+import { db, runOutsideDbContext, withDbAccessContext } from '../db';
 import {
   accessReviews,
   accessReviewItems,
@@ -15,11 +15,16 @@ import {
   organizationUsers,
   organizations
 } from '../db/schema';
-import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
+import { authMiddleware, dbAccessContextFromAuth, requireMfa, requirePermission } from '../middleware/auth';
 import { clearPermissionCache, PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
 import { revokeAllUserTokens } from '../services/tokenRevocation';
 import { revokeUserAccess } from '../services/userSuspension';
+import {
+  advanceUserSecurityState,
+  revokeAllUserSessionFamilies,
+  type AuthLifecycleTransaction,
+} from '../services/authLifecycle';
 
 export const accessReviewRoutes = new Hono();
 
@@ -459,28 +464,40 @@ accessReviewRoutes.post(
 
     const revokedUserIds = revokedItems.map((item) => item.userId);
 
-    const result = await db.transaction(async (tx) => {
+    const result = await runOutsideDbContext(() =>
+      withDbAccessContext(dbAccessContextFromAuth(auth), async () => {
+      const tx = db;
+      let deletedMemberships: Array<{ userId: string }> = [];
       // Apply revocations - remove users from the scope
       if (revokedUserIds.length > 0) {
         if (scopeContext.scope === 'partner') {
-          await tx
+          deletedMemberships = await tx
             .delete(partnerUsers)
             .where(
               and(
                 eq(partnerUsers.partnerId, scopeContext.partnerId),
                 inArray(partnerUsers.userId, revokedUserIds)
               )
-            );
+            )
+            .returning({ userId: partnerUsers.userId });
         } else {
-          await tx
+          deletedMemberships = await tx
             .delete(organizationUsers)
             .where(
               and(
                 eq(organizationUsers.orgId, scopeContext.orgId),
                 inArray(organizationUsers.userId, revokedUserIds)
               )
-            );
+            )
+            .returning({ userId: organizationUsers.userId });
         }
+      }
+
+      const deletedUserIds = [...new Set(deletedMemberships.map((row) => row.userId))];
+      const authTx = tx as unknown as AuthLifecycleTransaction;
+      for (const userId of deletedUserIds) {
+        await advanceUserSecurityState(authTx, userId);
+        await revokeAllUserSessionFamilies(authTx, userId, 'access-review-revoked');
       }
 
       // Mark review as completed
@@ -504,11 +521,13 @@ accessReviewRoutes.post(
 
       return {
         review: updatedReview,
-        revokedCount: revokedItems.length
+        revokedCount: deletedMemberships.length,
+        revokedUserIds: deletedUserIds,
       };
-    });
+      })
+    );
 
-    const uniqueRevokedUserIds = [...new Set(revokedUserIds)];
+    const uniqueRevokedUserIds = result.revokedUserIds;
     await Promise.all(uniqueRevokedUserIds.map((userId) => clearPermissionCache(userId)));
 
     // Task 14: revoke each removed user's JWTs in Redis so their existing

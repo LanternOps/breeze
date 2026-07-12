@@ -6,15 +6,13 @@ import { revokeAllUserOauthArtifacts, type UserOauthRevocationResult } from '../
  * tokens held by MCP clients, connected apps, etc. stop working immediately
  * rather than surviving until natural JWT expiry.
  *
- * Dashboard sessions: dashboard auth uses short-lived JWTs only (no
- * server-side refresh-token store). The `users.status = 'active'` check in
- * `middleware/auth.ts` blocks new dashboard requests on the next hit. No
- * extra revocation step is needed for dashboard JWTs today.
- * TODO: if/when a dashboard refresh-token table is added, also revoke here.
+ * This is post-commit cleanup only. Callers must first advance the user's
+ * durable auth epoch and revoke refresh-token families in the same transaction
+ * as the status/membership/role mutation. OAuth or cache failure here cannot
+ * restore those PostgreSQL-invalidated credentials.
  *
- * Reactivation (status flipping back to `active`) must NOT call this — a
- * re-activated user starts fresh and must re-authenticate anyway because
- * every old grant is already marked revoked in Redis.
+ * Reactivation may call this idempotently when the caller wants to clear any
+ * artifacts created before the transition; it never owns the transaction.
  */
 export async function revokeUserAccess(userId: string): Promise<UserOauthRevocationResult> {
   return revokeAllUserOauthArtifacts(userId);

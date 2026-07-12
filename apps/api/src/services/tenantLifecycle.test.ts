@@ -27,6 +27,14 @@ vi.mock('../oauth/grantRevocation', () => ({
 
 vi.mock('./permissions', () => ({ clearPermissionCache: vi.fn(async () => undefined) }));
 vi.mock('./tokenRevocation', () => ({ revokeAllUserTokens: vi.fn(async () => undefined) }));
+const lifecycleMocks = vi.hoisted(() => ({
+  advance: vi.fn(async () => ({ id: 'user', authEpoch: 2 })),
+  revokeFamilies: vi.fn(async () => 1),
+}));
+vi.mock('./authLifecycle', () => ({
+  advanceUserSecurityState: lifecycleMocks.advance,
+  revokeAllUserSessionFamilies: lifecycleMocks.revokeFamilies,
+}));
 vi.mock('./tenantStatus', () => ({ invalidateAgentTenantCache: vi.fn(async () => undefined) }));
 
 vi.mock('drizzle-orm', () => ({
@@ -96,6 +104,8 @@ describe('tenantLifecycle — agent fleet severance', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     setupUpdate();
+    lifecycleMocks.advance.mockResolvedValue({ id: 'user', authEpoch: 2 });
+    lifecycleMocks.revokeFamilies.mockResolvedValue(1);
   });
 
   it('revokeOrganizationTenantAccess suspends agent tokens (reason-tagged) and invalidates enrollment keys', async () => {
@@ -120,6 +130,12 @@ describe('tenantLifecycle — agent fleet severance', () => {
     expect(invalidateAgentTenantCache).toHaveBeenCalledWith(['org-1']);
     expect(result.agentTokensSuspended).toBe(2);
     expect(result.enrollmentKeysInvalidated).toBe(1);
+    expect(lifecycleMocks.advance).toHaveBeenCalledWith(expect.anything(), 'u1');
+    expect(lifecycleMocks.revokeFamilies).toHaveBeenCalledWith(
+      expect.anything(),
+      'u1',
+      'organization-suspended',
+    );
   });
 
   it('revokePartnerTenantAccess severs agents across every org under the partner', async () => {
@@ -134,6 +150,20 @@ describe('tenantLifecycle — agent fleet severance', () => {
     expect(tables).toContain(enrollmentKeys);
     expect(result.agentTokensSuspended).toBe(2);
     expect(result.enrollmentKeysInvalidated).toBe(1);
+    expect(lifecycleMocks.advance).toHaveBeenCalledWith(expect.anything(), 'pu1');
+    expect(lifecycleMocks.advance).toHaveBeenCalledWith(expect.anything(), 'ou1');
+    expect(lifecycleMocks.revokeFamilies).toHaveBeenCalledWith(
+      expect.anything(),
+      'pu1',
+      'partner-suspended',
+    );
+  });
+
+  it('propagates durable family revocation failure before Redis/OAuth cleanup', async () => {
+    queueSelect([{ userId: 'u1' }]);
+    lifecycleMocks.revokeFamilies.mockRejectedValueOnce(new Error('postgres unavailable'));
+
+    await expect(revokeOrganizationTenantAccess('org-1')).rejects.toThrow('postgres unavailable');
   });
 
   it('revokePartnerTenantAccess with no orgs does not touch devices or enrollment keys', async () => {

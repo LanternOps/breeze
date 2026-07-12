@@ -23,6 +23,11 @@ const txMockState = vi.hoisted(() => ({
   deletes: [] as Array<{ table: string }>,
 }));
 
+const lifecycleMocks = vi.hoisted(() => ({
+  advance: vi.fn(async () => ({ id: 'user', authEpoch: 2 })),
+  revokeFamilies: vi.fn(async () => 1),
+}));
+
 function makeTx() {
   // The suspend route's call sequence (from abuse.ts):
   //   1. select(partner).from(partners).where(...).limit(1)        → partner row
@@ -161,6 +166,11 @@ vi.mock('../../services/tokenRevocation', () => ({
   revokeAllUserTokens: vi.fn(async () => undefined),
 }));
 
+vi.mock('../../services/authLifecycle', () => ({
+  advanceUserSecurityState: lifecycleMocks.advance,
+  revokeAllUserSessionFamilies: lifecycleMocks.revokeFamilies,
+}));
+
 vi.mock('../../services/remoteSessionTeardown', () => ({
   terminateUserRemoteSessions: vi.fn(async () => 0),
   TEARDOWN_FAILED: -1,
@@ -266,6 +276,10 @@ function resetState() {
     updates: [],
     deletes: [],
   });
+  lifecycleMocks.advance.mockReset();
+  lifecycleMocks.advance.mockResolvedValue({ id: 'user', authEpoch: 2 });
+  lifecycleMocks.revokeFamilies.mockReset();
+  lifecycleMocks.revokeFamilies.mockResolvedValue(1);
 }
 
 describe('admin/abuse — auth gate', () => {
@@ -469,6 +483,13 @@ describe('admin/abuse — suspend mutation behavior', () => {
     expect(revokeAllUserTokens).toHaveBeenCalledTimes(2);
     expect(revokeAllUserTokens).toHaveBeenCalledWith('u-1');
     expect(revokeAllUserTokens).toHaveBeenCalledWith('u-2');
+    expect(lifecycleMocks.advance).toHaveBeenCalledWith(expect.anything(), 'u-1');
+    expect(lifecycleMocks.advance).toHaveBeenCalledWith(expect.anything(), 'u-2');
+    expect(lifecycleMocks.revokeFamilies).toHaveBeenCalledWith(
+      expect.anything(),
+      'u-1',
+      'partner-suspended',
+    );
 
     // Audit log written with the right action + details.
     expect(createAuditLog).toHaveBeenCalledTimes(1);
@@ -506,6 +527,22 @@ describe('admin/abuse — suspend mutation behavior', () => {
     const revokedIds = vi.mocked(revokeAllUserTokens).mock.calls.map((call) => call[0]);
     expect(revokedIds).not.toContain('admin-1');
     expect(revokedIds).toContain('u-2');
+  });
+
+  it('fails suspension and skips post-commit cleanup when durable family revocation fails', async () => {
+    lifecycleMocks.revokeFamilies.mockRejectedValueOnce(new Error('postgres unavailable'));
+    const app = buildApp(platformAdminAuth);
+
+    const res = await app.request('/admin/partners/partner-1/suspend-for-abuse', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ confirmEmail: 'admin@breeze.test', reason: 'durable revocation rollback test' }),
+    });
+
+    expect(res.status).toBe(500);
+    expect(revokeAllUserTokens).not.toHaveBeenCalled();
+    expect(revokeAllPartnerOauthArtifacts).not.toHaveBeenCalled();
+    expect(terminateUserRemoteSessions).not.toHaveBeenCalled();
   });
 
   it('returns 500 with tokenRevocationFailed when Redis revocation throws (does NOT silently 200)', async () => {
@@ -733,6 +770,12 @@ describe('admin/abuse — remote session teardown on suspend', () => {
     });
     expect(res.status).toBe(200);
     expect(teardownMock).not.toHaveBeenCalled();
+    expect(lifecycleMocks.advance).toHaveBeenCalledWith(expect.anything(), 'u-1');
+    expect(lifecycleMocks.revokeFamilies).toHaveBeenCalledWith(
+      expect.anything(),
+      'u-1',
+      'partner-reactivated',
+    );
   });
 });
 

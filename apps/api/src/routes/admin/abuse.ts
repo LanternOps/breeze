@@ -21,6 +21,10 @@ import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { captureException } from '../../services/sentry';
 import { requireMfa } from '../../middleware/auth';
 import type { Database } from '../../db';
+import {
+  advanceUserSecurityState,
+  revokeAllUserSessionFamilies,
+} from '../../services/authLifecycle';
 
 export const abuseRoutes = new Hono();
 
@@ -203,14 +207,20 @@ abuseRoutes.post(
           apiKeyCount = apiKeyResult.length;
         }
 
+        const affectedUserIds = partnerUserRows
+          .filter((u) => !(u.isPlatformAdmin && u.id === callerId))
+          .map((u) => u.id);
+        for (const userId of affectedUserIds) {
+          await advanceUserSecurityState(tx, userId);
+          await revokeAllUserSessionFamilies(tx, userId, 'partner-suspended');
+        }
+
         return {
           notFound: false as const,
           deviceCount,
           userCount,
           apiKeyCount,
-          affectedUserIds: partnerUserRows
-            .filter((u) => !(u.isPlatformAdmin && u.id === callerId))
-            .map((u) => u.id),
+          affectedUserIds,
         };
       });
     });
@@ -409,6 +419,10 @@ abuseRoutes.post(
         // Only restore users THIS suspension disabled — not users disabled for
         // compromise / off-boarding / manual admin action (#917 L-5).
         const reEnabled = await reEnableSuspensionDisabledUsers(tx, partnerId);
+        for (const user of reEnabled) {
+          await advanceUserSecurityState(tx, user.id);
+          await revokeAllUserSessionFamilies(tx, user.id, 'partner-reactivated');
+        }
 
         return { notFound: false as const, status: newStatus, userCount: reEnabled.length };
       });
@@ -481,4 +495,3 @@ abuseRoutes.post(
     });
   }
 );
-

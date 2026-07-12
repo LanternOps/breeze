@@ -107,6 +107,7 @@ vi.mock('../db', () => ({
     }))
   },
   withSystemDbAccessContext: vi.fn(async <T>(fn: () => Promise<T>) => fn()),
+  withDbAccessContext: vi.fn(async <T>(_context: unknown, fn: () => Promise<T>) => fn()),
   runOutsideDbContext: vi.fn((fn: () => any) => fn())
 }));
 
@@ -168,6 +169,7 @@ vi.mock('../middleware/auth', () => ({
     });
     return next();
   }),
+  dbAccessContextFromAuth: vi.fn(() => ({ scope: 'partner' })),
   requireMfa: vi.fn(() => (_c: any, next: any) => next()),
   requirePermission: vi.fn(() => (_c: any, next: any) => next())
 }));

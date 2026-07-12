@@ -1,6 +1,14 @@
 import { sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { users } from '../db/schema';
+import {
+  advanceUserSecurityState,
+  revokeAllUserSessionFamilies,
+  type AuthLifecycleTransaction,
+} from './authLifecycle';
+import { clearPermissionCache } from './permissions';
+import { revokeAllUserTokens } from './tokenRevocation';
+import { revokeAllUserOauthArtifacts } from '../oauth/grantRevocation';
 
 /**
  * Idempotent bootstrap that promotes users listed in BREEZE_PLATFORM_ADMINS
@@ -27,8 +35,26 @@ export async function bootstrapPlatformAdmins(): Promise<void> {
         sql`lower(${users.email}) = ANY(${emails}::text[]) AND ${users.isPlatformAdmin} = false`
       )
       .returning({ id: users.id, email: users.email });
+    const tx = db as unknown as AuthLifecycleTransaction;
+    for (const user of result) {
+      await advanceUserSecurityState(tx, user.id);
+      await revokeAllUserSessionFamilies(tx, user.id, 'platform-admin-changed');
+    }
     return result;
   });
+
+  await Promise.all(promoted.map(async (user) => {
+    const cleanup = await Promise.allSettled([
+      revokeAllUserTokens(user.id),
+      clearPermissionCache(user.id),
+      revokeAllUserOauthArtifacts(user.id),
+    ]);
+    for (const result of cleanup) {
+      if (result.status === 'rejected') {
+        console.error('[platform-admin-bootstrap] post-commit credential cleanup failed', result.reason);
+      }
+    }
+  }));
 
   console.log(
     `[platform-admin-bootstrap] Configured ${emails.length} email(s); promoted ${promoted.length} user(s)`

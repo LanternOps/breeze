@@ -6,6 +6,11 @@ import { AGENT_TOKEN_SUSPEND_REASON } from './agentTokenSuspension';
 import { clearPermissionCache } from './permissions';
 import { invalidateAgentTenantCache } from './tenantStatus';
 import { revokeAllUserTokens } from './tokenRevocation';
+import {
+  advanceUserSecurityState,
+  revokeAllUserSessionFamilies,
+  type AuthLifecycleTransaction,
+} from './authLifecycle';
 
 export interface TenantRevocationResult {
   apiKeysRevoked: number;
@@ -123,35 +128,51 @@ async function revokeUsers(userIds: string[]): Promise<number> {
   return uniqueUserIds.length;
 }
 
+async function revokeUsersDurably(userIds: string[], reason: string): Promise<string[]> {
+  const uniqueUserIds = [...new Set(userIds)];
+  const tx = db as unknown as AuthLifecycleTransaction;
+  for (const userId of uniqueUserIds) {
+    await advanceUserSecurityState(tx, userId);
+    await revokeAllUserSessionFamilies(tx, userId, reason);
+  }
+  return uniqueUserIds;
+}
+
 export async function revokeOrganizationTenantAccess(orgId: string): Promise<TenantRevocationResult> {
-  return runOutsideDbContext(() =>
+  const userIds = await runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
       const orgUsers = await db
         .select({ userId: organizationUsers.userId })
         .from(organizationUsers)
         .where(eq(organizationUsers.orgId, orgId));
-
-      const [apiKeysRevoked, userSessionsRevoked, oauth, agentSeverance] = await Promise.all([
-        revokeApiKeysForOrgIds([orgId]),
-        revokeUsers(orgUsers.map((row) => row.userId)),
-        revokeAllOrgOauthArtifacts(orgId),
-        severAgentCredentialsForOrgIds([orgId]),
-      ]);
-
-      return {
-        apiKeysRevoked,
-        userSessionsRevoked,
-        oauthGrantsRevoked: oauth.grantsRevoked,
-        oauthRefreshTokensRevoked: oauth.refreshTokensRevoked,
-        agentTokensSuspended: agentSeverance.agentTokensSuspended,
-        enrollmentKeysInvalidated: agentSeverance.enrollmentKeysInvalidated,
-      };
+      return revokeUsersDurably(
+        orgUsers.map((row) => row.userId),
+        'organization-suspended',
+      );
     })
   );
+  const [apiKeysRevoked, agentSeverance] = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() => Promise.all([
+        revokeApiKeysForOrgIds([orgId]),
+        severAgentCredentialsForOrgIds([orgId]),
+      ]))
+  );
+  const [userSessionsRevoked, oauth] = await Promise.all([
+    revokeUsers(userIds),
+    revokeAllOrgOauthArtifacts(orgId),
+  ]);
+  return {
+    apiKeysRevoked,
+    userSessionsRevoked,
+    oauthGrantsRevoked: oauth.grantsRevoked,
+    oauthRefreshTokensRevoked: oauth.refreshTokensRevoked,
+    agentTokensSuspended: agentSeverance.agentTokensSuspended,
+    enrollmentKeysInvalidated: agentSeverance.enrollmentKeysInvalidated,
+  };
 }
 
 export async function revokePartnerTenantAccess(partnerId: string): Promise<TenantRevocationResult> {
-  return runOutsideDbContext(() =>
+  const { orgIds, userIds } = await runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
       const orgRows = await db
         .select({ id: organizations.id })
@@ -171,26 +192,31 @@ export async function revokePartnerTenantAccess(partnerId: string): Promise<Tena
           .from(organizationUsers)
           .where(inArray(organizationUsers.orgId, orgIds));
 
-      const [apiKeysRevoked, userSessionsRevoked, oauth, agentSeverance] = await Promise.all([
-        revokeApiKeysForOrgIds(orgIds),
-        revokeUsers([
+      const userIds = await revokeUsersDurably([
           ...partnerMemberships.map((row) => row.userId),
           ...orgMemberships.map((row) => row.userId),
-        ]),
-        revokeAllPartnerOauthArtifacts(partnerId),
-        severAgentCredentialsForOrgIds(orgIds),
-      ]);
-
-      return {
-        apiKeysRevoked,
-        userSessionsRevoked,
-        oauthGrantsRevoked: oauth.grantsRevoked,
-        oauthRefreshTokensRevoked: oauth.refreshTokensRevoked,
-        agentTokensSuspended: agentSeverance.agentTokensSuspended,
-        enrollmentKeysInvalidated: agentSeverance.enrollmentKeysInvalidated,
-      };
+        ], 'partner-suspended');
+      return { orgIds, userIds };
     })
   );
+  const [apiKeysRevoked, agentSeverance] = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() => Promise.all([
+      revokeApiKeysForOrgIds(orgIds),
+      severAgentCredentialsForOrgIds(orgIds),
+    ]))
+  );
+  const [userSessionsRevoked, oauth] = await Promise.all([
+    revokeUsers(userIds),
+    revokeAllPartnerOauthArtifacts(partnerId),
+  ]);
+  return {
+    apiKeysRevoked,
+    userSessionsRevoked,
+    oauthGrantsRevoked: oauth.grantsRevoked,
+    oauthRefreshTokensRevoked: oauth.refreshTokensRevoked,
+    agentTokensSuspended: agentSeverance.agentTokensSuspended,
+    enrollmentKeysInvalidated: agentSeverance.enrollmentKeysInvalidated,
+  };
 }
 
 /**

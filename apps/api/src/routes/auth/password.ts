@@ -11,11 +11,10 @@ import {
   forgotPasswordLimiter,
   getRedis,
   invalidateAllUserSessions,
-  revokeAllRefreshTokenFamiliesForUser,
   revokeAllUserTokens
 } from '../../services';
 import { getEmailService } from '../../services/email';
-import { authMiddleware } from '../../middleware/auth';
+import { authMiddleware, dbAccessContextFromAuth } from '../../middleware/auth';
 import {
   getPasswordResetEligibility,
   getPasswordResetEligibilityForUser,
@@ -32,8 +31,13 @@ import {
 } from './helpers';
 import { assertPasswordAuthAllowedBySso, SsoPasswordAuthRequiredError } from './ssoPolicy';
 import { revokeAllUserOauthArtifacts } from '../../oauth/grantRevocation';
+import {
+  advanceUserSecurityState,
+  revokeAllUserSessionFamilies,
+  type AuthLifecycleTransaction,
+} from '../../services/authLifecycle';
 
-const { db, withSystemDbAccessContext } = dbModule;
+const { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } = dbModule;
 
 export const passwordRoutes = new Hono();
 
@@ -222,8 +226,8 @@ passwordRoutes.post('/reset-password', zValidator('json', resetPasswordSchema), 
   // password never changes, the next login fails, and we ship a broken
   // reset flow. Wrap so RLS is bypassed for this trusted token-gated
   // path. Same fix needed in accept-invite (see invite.ts).
-  await withSystemDbAccessContext(async () =>
-    db
+  await withSystemDbAccessContext(async () => {
+    const [updated] = await db
       .update(users)
       .set({
         passwordHash,
@@ -231,7 +235,14 @@ passwordRoutes.post('/reset-password', zValidator('json', resetPasswordSchema), 
         updatedAt: new Date()
       })
       .where(eq(users.id, userId))
-  );
+      .returning({ id: users.id });
+    if (!updated) {
+      throw new Error(`Failed to update password for user ${userId}`);
+    }
+    const tx = db as unknown as AuthLifecycleTransaction;
+    await advanceUserSecurityState(tx, userId, { auth: true, passwordReset: true });
+    await revokeAllUserSessionFamilies(tx, userId, 'password-reset');
+  });
 
   // Invalidate all sessions — best-effort; password is already changed above.
   await invalidateAllUserSessions(userId);
@@ -241,9 +252,6 @@ passwordRoutes.post('/reset-password', zValidator('json', resetPasswordSchema), 
   // (e.g. a Redis blip), which is the exact window this revoke closes.
   await revokeAllUserTokens(userId).catch((error) =>
     console.error('[auth] Failed to revoke JWTs after password reset:', error),
-  );
-  await revokeAllRefreshTokenFamiliesForUser(userId, 'password-reset').catch((error) =>
-    console.error('[auth] Failed to revoke refresh-token families after password reset:', error),
   );
   await revokeAllUserOauthArtifacts(userId).catch((error) =>
     console.error('[auth] Failed to revoke OAuth artifacts after password reset:', error),
@@ -304,14 +312,25 @@ passwordRoutes.post('/change-password', authMiddleware, zValidator('json', chang
   }
 
   const passwordHash = await hashPassword(newPassword);
-  await db
-    .update(users)
-    .set({
-      passwordHash,
-      passwordChangedAt: new Date(),
-      updatedAt: new Date()
+  await runOutsideDbContext(() =>
+    withDbAccessContext(dbAccessContextFromAuth(auth), async () => {
+      const [updated] = await db
+        .update(users)
+        .set({
+          passwordHash,
+          passwordChangedAt: new Date(),
+          updatedAt: new Date()
+        })
+        .where(eq(users.id, auth.user.id))
+        .returning({ id: users.id });
+      if (!updated) {
+        throw new Error(`Failed to update password for user ${auth.user.id}`);
+      }
+      const tx = db as unknown as AuthLifecycleTransaction;
+      await advanceUserSecurityState(tx, auth.user.id);
+      await revokeAllUserSessionFamilies(tx, auth.user.id, 'password-change');
     })
-    .where(eq(users.id, auth.user.id));
+  );
 
   await invalidateAllUserSessions(auth.user.id);
   // Decouple the revokes so each runs and fails independently. The OAuth
@@ -320,9 +339,6 @@ passwordRoutes.post('/change-password', authMiddleware, zValidator('json', chang
   // failure (e.g. a Redis blip), which is the exact window this revoke closes.
   await revokeAllUserTokens(auth.user.id).catch((error) =>
     console.error('[auth] Failed to revoke JWTs after password change:', error),
-  );
-  await revokeAllRefreshTokenFamiliesForUser(auth.user.id, 'password-change').catch((error) =>
-    console.error('[auth] Failed to revoke refresh-token families after password change:', error),
   );
   await revokeCurrentRefreshTokenJti(c, auth.user.id).catch((error) =>
     console.error('[auth] Failed to revoke current refresh token after password change:', error),

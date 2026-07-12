@@ -9,6 +9,11 @@ const updateMocks = vi.hoisted(() => {
   };
 });
 
+const lifecycleMocks = vi.hoisted(() => ({
+  advance: vi.fn(async () => ({ id: 'u1', authEpoch: 2 })),
+  revokeFamilies: vi.fn(async () => 1),
+}));
+
 vi.mock('../db', () => ({
   db: {
     update: vi.fn(() => ({
@@ -37,6 +42,17 @@ vi.mock('../db/schema', () => ({
     email: 'users.email',
     isPlatformAdmin: 'users.isPlatformAdmin',
   },
+}));
+
+vi.mock('./authLifecycle', () => ({
+  advanceUserSecurityState: lifecycleMocks.advance,
+  revokeAllUserSessionFamilies: lifecycleMocks.revokeFamilies,
+}));
+
+vi.mock('./permissions', () => ({ clearPermissionCache: vi.fn(async () => undefined) }));
+vi.mock('./tokenRevocation', () => ({ revokeAllUserTokens: vi.fn(async () => undefined) }));
+vi.mock('../oauth/grantRevocation', () => ({
+  revokeAllUserOauthArtifacts: vi.fn(async () => ({ grantsRevoked: 0, refreshTokensRevoked: 0 })),
 }));
 
 import { bootstrapPlatformAdmins, parseAdminEmails } from './platformAdminBootstrap';
@@ -70,6 +86,10 @@ describe('bootstrapPlatformAdmins', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     updateMocks.returningResult = [];
+    lifecycleMocks.advance.mockReset();
+    lifecycleMocks.advance.mockResolvedValue({ id: 'u1', authEpoch: 2 });
+    lifecycleMocks.revokeFamilies.mockReset();
+    lifecycleMocks.revokeFamilies.mockResolvedValue(1);
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
   });
@@ -108,6 +128,12 @@ describe('bootstrapPlatformAdmins', () => {
 
     expect(db.update).toHaveBeenCalledTimes(1);
     expect(updateMocks.setSpy).toHaveBeenCalledWith({ isPlatformAdmin: true });
+    expect(lifecycleMocks.advance).toHaveBeenCalledWith(expect.anything(), 'u1');
+    expect(lifecycleMocks.revokeFamilies).toHaveBeenCalledWith(
+      expect.anything(),
+      'u1',
+      'platform-admin-changed',
+    );
     expect(logSpy).toHaveBeenCalledWith(
       expect.stringContaining('promoted 1 user')
     );
@@ -152,5 +178,13 @@ describe('bootstrapPlatformAdmins', () => {
     // observable assertion: bootstrap was invoked and produced a single update
     // (parsing handled normalization or it would skip the call).
     expect(db.update).toHaveBeenCalledTimes(1);
+  });
+
+  it('propagates durable revocation failure so the promotion transaction rolls back', async () => {
+    process.env.BREEZE_PLATFORM_ADMINS = 'admin@example.com';
+    updateMocks.returningResult = [{ id: 'u1', email: 'admin@example.com' }];
+    lifecycleMocks.revokeFamilies.mockRejectedValueOnce(new Error('postgres unavailable'));
+
+    await expect(bootstrapPlatformAdmins()).rejects.toThrow('postgres unavailable');
   });
 });

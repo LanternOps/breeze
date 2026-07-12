@@ -37,6 +37,7 @@ vi.mock('../db', () => ({
     transaction: vi.fn()
   },
   runOutsideDbContext: vi.fn((fn: () => any) => fn()),
+  withDbAccessContext: vi.fn(async (_context: unknown, fn: () => any) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn())
 }));
 
@@ -63,7 +64,8 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   requirePermission: vi.fn(() => (c: any, next: any) => next()),
-  requireMfa: vi.fn(() => (c: any, next: any) => next())
+  requireMfa: vi.fn(() => (c: any, next: any) => next()),
+  dbAccessContextFromAuth: vi.fn(() => ({ scope: 'partner' }))
 }));
 
 vi.mock('../services/tokenRevocation', () => ({
@@ -78,6 +80,16 @@ vi.mock('../services/userSuspension', () => ({
   })
 }));
 
+const lifecycleMocks = vi.hoisted(() => ({
+  advance: vi.fn(async () => ({ id: 'user', authEpoch: 2 })),
+  revokeFamilies: vi.fn(async () => 1),
+}));
+
+vi.mock('../services/authLifecycle', () => ({
+  advanceUserSecurityState: lifecycleMocks.advance,
+  revokeAllUserSessionFamilies: lifecycleMocks.revokeFamilies,
+}));
+
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
 import { clearPermissionCache } from '../services/permissions';
@@ -89,6 +101,8 @@ describe('access review routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    lifecycleMocks.advance.mockResolvedValue({ id: 'user', authEpoch: 2 });
+    lifecycleMocks.revokeFamilies.mockResolvedValue(1);
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', {
         scope: 'partner',
@@ -409,7 +423,9 @@ describe('access review routes', () => {
         } as any);
 
       const txDelete = vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue(undefined)
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ userId: 'user-1' }, { userId: 'user-2' }])
+        })
       });
       const txUpdate = vi.fn().mockReturnValue({
         set: vi.fn().mockReturnValue({
@@ -418,9 +434,8 @@ describe('access review routes', () => {
           })
         })
       });
-      vi.mocked(db.transaction).mockImplementation(async (fn) => {
-        return fn({ delete: txDelete, update: txUpdate } as any);
-      });
+      vi.mocked(db.delete).mockImplementation(txDelete as any);
+      vi.mocked(db.update).mockImplementation(txUpdate as any);
 
       const res = await app.request('/access-reviews/review-1/complete', {
         method: 'POST',
@@ -444,6 +459,47 @@ describe('access review routes', () => {
       expect(revokeUserAccess).toHaveBeenCalledWith('user-1');
       expect(revokeUserAccess).toHaveBeenCalledWith('user-2');
       expect(revokeUserAccess).toHaveBeenCalledTimes(2);
+      expect(lifecycleMocks.advance).toHaveBeenCalledWith(expect.anything(), 'user-1');
+      expect(lifecycleMocks.advance).toHaveBeenCalledWith(expect.anything(), 'user-2');
+      expect(lifecycleMocks.revokeFamilies).toHaveBeenCalledWith(
+        expect.anything(),
+        'user-1',
+        'access-review-revoked',
+      );
+      expect(lifecycleMocks.revokeFamilies).toHaveBeenCalledWith(
+        expect.anything(),
+        'user-2',
+        'access-review-revoked',
+      );
+    });
+
+    it('fails completion and skips post-commit cleanup when durable revocation fails', async () => {
+      lifecycleMocks.revokeFamilies.mockRejectedValueOnce(new Error('postgres unavailable'));
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => [{ id: 'review-1', status: 'in_progress' }]) })) })),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => []) })) })),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn(() => ({ where: vi.fn(async () => [{ userId: 'user-1' }]) })),
+        } as any);
+      vi.mocked(db.delete).mockReturnValue({
+        where: vi.fn(() => ({ returning: vi.fn(async () => [{ userId: 'user-1' }]) })),
+      } as any);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn(() => ({ where: vi.fn(() => ({
+          returning: vi.fn(async () => [{ id: 'review-1', status: 'completed', completedAt: new Date() }]),
+        })) })),
+      } as any);
+
+      const res = await app.request('/access-reviews/review-1/complete', { method: 'POST' });
+
+      expect(res.status).toBe(500);
+      expect(clearPermissionCache).not.toHaveBeenCalled();
+      expect(revokeAllUserTokens).not.toHaveBeenCalled();
+      expect(revokeUserAccess).not.toHaveBeenCalled();
     });
 
     it('still completes the review when token revocation fails (best-effort)', async () => {
@@ -478,7 +534,9 @@ describe('access review routes', () => {
         } as any);
 
       const txDelete = vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue(undefined)
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ userId: 'user-1' }])
+        })
       });
       const txUpdate = vi.fn().mockReturnValue({
         set: vi.fn().mockReturnValue({
@@ -487,9 +545,8 @@ describe('access review routes', () => {
           })
         })
       });
-      vi.mocked(db.transaction).mockImplementation(async (fn) => {
-        return fn({ delete: txDelete, update: txUpdate } as any);
-      });
+      vi.mocked(db.delete).mockImplementation(txDelete as any);
+      vi.mocked(db.update).mockImplementation(txUpdate as any);
 
       const res = await app.request('/access-reviews/review-1/complete', {
         method: 'POST',
@@ -543,7 +600,9 @@ describe('access review routes', () => {
         } as any);
 
       const txDelete = vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue(undefined)
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ userId: 'user-1' }, { userId: 'user-2' }])
+        })
       });
       const txUpdate = vi.fn().mockReturnValue({
         set: vi.fn().mockReturnValue({
@@ -552,9 +611,8 @@ describe('access review routes', () => {
           })
         })
       });
-      vi.mocked(db.transaction).mockImplementation(async (fn) => {
-        return fn({ delete: txDelete, update: txUpdate } as any);
-      });
+      vi.mocked(db.delete).mockImplementation(txDelete as any);
+      vi.mocked(db.update).mockImplementation(txUpdate as any);
 
       const res = await app.request('/access-reviews/review-1/complete', {
         method: 'POST',
