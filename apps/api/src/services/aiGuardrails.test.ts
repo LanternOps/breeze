@@ -52,7 +52,7 @@ vi.mock('./redis', () => ({
   getRedis: vi.fn(),
 }));
 
-import { checkGuardrails, checkToolPermission } from './aiGuardrails';
+import { checkGuardrails, checkToolPermission, checkPermissionRequirement } from './aiGuardrails';
 import { getUserPermissions, hasPermission } from './permissions';
 
 // ─── Tier escalation for fleet tools ────────────────────────────────────
@@ -242,6 +242,57 @@ describe('checkGuardrails — fleet approval descriptions', () => {
   it('includes automation name in create description', () => {
     const result = checkGuardrails('manage_automations', { action: 'create', name: 'Auto-restart' });
     expect(result.description).toContain('Auto-restart');
+  });
+});
+
+// ─── checkPermissionRequirement (MCP-OAUTH-03 extracted core) ──────────
+
+describe('checkPermissionRequirement — extracted core reused by checkToolPermission and resources/read', () => {
+  const baseAuth = {
+    user: { id: 'user-1' },
+    token: { roleId: 'viewer', scope: 'organization' },
+    orgId: 'org-1',
+    partnerId: null,
+  } as any;
+
+  beforeEach(() => {
+    vi.mocked(getUserPermissions).mockReset();
+    vi.mocked(hasPermission).mockReset();
+  });
+
+  it('allows (returns null) when !auth.token — helper-session short-circuit preserved', async () => {
+    const helperAuth = { ...baseAuth, token: undefined } as any;
+    const result = await checkPermissionRequirement(helperAuth, { resource: 'devices', action: 'read' });
+    expect(result).toBeNull();
+    expect(getUserPermissions).not.toHaveBeenCalled();
+  });
+
+  it('allows (returns null) when auth.token.roleId === null — helper-session short-circuit preserved', async () => {
+    const helperAuth = { ...baseAuth, token: { roleId: null, scope: 'organization' } } as any;
+    const result = await checkPermissionRequirement(helperAuth, { resource: 'devices', action: 'read' });
+    expect(result).toBeNull();
+    expect(getUserPermissions).not.toHaveBeenCalled();
+  });
+
+  it('denies with "no role assigned" when getUserPermissions resolves null', async () => {
+    vi.mocked(getUserPermissions).mockResolvedValue(null);
+    const result = await checkPermissionRequirement(baseAuth, { resource: 'devices', action: 'read' });
+    expect(result).toBe('Insufficient permissions: no role assigned');
+  });
+
+  it('denies with the resource.action message when hasPermission returns false', async () => {
+    vi.mocked(getUserPermissions).mockResolvedValue({ roleId: 'viewer' } as any);
+    vi.mocked(hasPermission).mockReturnValue(false);
+    const result = await checkPermissionRequirement(baseAuth, { resource: 'devices', action: 'read' });
+    expect(result).toBe('Insufficient permissions: requires devices.read');
+  });
+
+  it('allows (returns null) when hasPermission returns true', async () => {
+    vi.mocked(getUserPermissions).mockResolvedValue({ roleId: 'viewer' } as any);
+    vi.mocked(hasPermission).mockReturnValue(true);
+    const result = await checkPermissionRequirement(baseAuth, { resource: 'devices', action: 'read' });
+    expect(result).toBeNull();
+    expect(hasPermission).toHaveBeenCalledWith(expect.anything(), 'devices', 'read');
   });
 });
 

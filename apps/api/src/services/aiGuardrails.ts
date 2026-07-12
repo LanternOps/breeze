@@ -699,6 +699,46 @@ export function checkGuardrails(
 }
 
 /**
+ * Core role-resolution + permission-check primitive shared by checkToolPermission
+ * (tools/call) and any other MCP dispatch path that needs to authorize a single
+ * explicit `{ resource, action }` requirement — e.g. resources/read's
+ * MCP_RESOURCE_PERMISSIONS map (MCP-OAUTH-03). Returns null if allowed, or a
+ * denial reason string if not.
+ *
+ * Preserves the same fail-open short-circuits checkToolPermission has always
+ * had: helper sessions carry a synthetic auth with no roleId, and tool/resource
+ * access for those callers is governed elsewhere (the helper whitelist), not
+ * user RBAC.
+ */
+export async function checkPermissionRequirement(
+  auth: AuthContext,
+  requirement: { resource: string; action: string }
+): Promise<string | null> {
+  if (!auth.token) {
+    console.warn(
+      `[aiGuardrails] checkPermissionRequirement called without auth.token for ${requirement.resource}.${requirement.action}`
+    );
+    return null;
+  }
+  if (auth.token.roleId === null) return null;
+
+  const userPerms = await getUserPermissions(auth.user.id, {
+    partnerId: auth.partnerId || undefined,
+    orgId: auth.orgId || undefined,
+  });
+
+  if (!userPerms) {
+    return 'Insufficient permissions: no role assigned';
+  }
+
+  if (!hasPermission(userPerms, requirement.resource, requirement.action)) {
+    return `Insufficient permissions: requires ${requirement.resource}.${requirement.action}`;
+  }
+
+  return null;
+}
+
+/**
  * Check RBAC permissions for a tool invocation.
  * Returns null if allowed, or an error message if denied.
  */
@@ -709,8 +749,6 @@ export async function checkToolPermission(
 ): Promise<string | null> {
   // Helper sessions use a synthetic auth with no roleId — tool access is
   // governed by the helper whitelist (helperToolFilter), not user RBAC.
-  // Helper sessions use a synthetic auth with no roleId — tool access is
-  // governed by the helper whitelist, not user RBAC.
   if (!auth.token) {
     console.warn(`[aiGuardrails] checkToolPermission called without auth.token for tool ${toolName}`);
     return null;
@@ -744,23 +782,12 @@ export async function checkToolPermission(
     return `Missing required "action" argument for tool "${toolName}"`;
   }
 
-  const userPerms = await getUserPermissions(auth.user.id, {
-    partnerId: auth.partnerId || undefined,
-    orgId: auth.orgId || undefined,
-  });
-
-  if (!userPerms) {
-    return 'Insufficient permissions: no role assigned';
-  }
-
-  if (!hasPermission(userPerms, required.resource, required.action)) {
-    return `Insufficient permissions: requires ${required.resource}.${required.action}`;
-  }
+  const denial = await checkPermissionRequirement(auth, required);
+  if (denial) return denial;
 
   for (const extraPermission of TOOL_EXTRA_PERMISSIONS[toolName] ?? []) {
-    if (!hasPermission(userPerms, extraPermission.resource, extraPermission.action)) {
-      return `Insufficient permissions: requires ${extraPermission.resource}.${extraPermission.action}`;
-    }
+    const extraDenial = await checkPermissionRequirement(auth, extraPermission);
+    if (extraDenial) return extraDenial;
   }
 
   return null;

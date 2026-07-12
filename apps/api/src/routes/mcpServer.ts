@@ -25,7 +25,7 @@ import { MCP_OAUTH_ENABLED, OAUTH_ISSUER } from '../config/env';
 import { apiKeyAuthMiddleware, requireApiKeyScope } from '../middleware/apiKeyAuth';
 import { bearerTokenAuthMiddleware, resolvePartnerAccessibleOrgIds } from '../middleware/bearerTokenAuth';
 import { getToolDefinitions, executeTool, getToolTier } from '../services/aiTools';
-import { checkGuardrails, checkToolPermission, checkToolRateLimit } from '../services/aiGuardrails';
+import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirement } from '../services/aiGuardrails';
 import { db } from '../db';
 import { devices, alerts, scripts, automations, partners, organizations } from '../db/schema';
 import { eq, and, asc, desc, inArray, isNull, or, getTableColumns, type SQL } from 'drizzle-orm';
@@ -1316,6 +1316,28 @@ export function handlePromptsGet(id: string | number, params: Record<string, unk
 // ============================================
 
 /**
+ * MCP-OAUTH-03: fail-closed resource RBAC. `resources/read` previously
+ * enforced MCP auth + general scope + tenant RLS filtering, but never mapped
+ * the requested resource URI to a product permission the way `tools/call`
+ * does via checkToolPermission — so a role missing e.g. `devices.read` could
+ * still read device/alert/script/automation data through resources/read.
+ * This ordered pattern list is the fail-closed authorization boundary:
+ * handleResourcesRead consults it BEFORE any site resolution or DB query.
+ * Unknown URI families (no pattern match) are denied.
+ */
+const MCP_RESOURCE_PERMISSIONS: Array<{ pattern: RegExp; permission: { resource: string; action: 'read' } }> = [
+  { pattern: /^breeze:\/\/devices$/, permission: { resource: 'devices', action: 'read' } },
+  { pattern: /^breeze:\/\/devices\/[0-9a-f-]+$/, permission: { resource: 'devices', action: 'read' } },
+  { pattern: /^breeze:\/\/alerts$/, permission: { resource: 'alerts', action: 'read' } },
+  { pattern: /^breeze:\/\/scripts$/, permission: { resource: 'scripts', action: 'read' } },
+  { pattern: /^breeze:\/\/automations$/, permission: { resource: 'automations', action: 'read' } },
+];
+
+function findMcpResourcePermission(uri: string): { resource: string; action: 'read' } | null {
+  return MCP_RESOURCE_PERMISSIONS.find((entry) => entry.pattern.test(uri))?.permission ?? null;
+}
+
+/**
  * SR-008: explicit ALLOW-LIST of `devices` columns safe to serialize into the
  * `breeze://devices/{id}` MCP resource. An allow-list (not a deny-list) is
  * deliberate — any column added to the schema in future is excluded by
@@ -1397,6 +1419,24 @@ async function handleResourcesRead(
   const uri = params.uri as string;
   if (!uri) {
     return jsonRpcError(id, -32602, 'Missing required parameter: uri');
+  }
+
+  // MCP-OAUTH-03: authorize the URI before any site resolution or DB query.
+  // OAuth consent and tenant RLS only prove membership, not that the
+  // caller's role includes the resource's read permission — that's this
+  // check's job, and it must fail closed (unknown URI families denied).
+  const requiredPermission = findMcpResourcePermission(uri);
+  if (!requiredPermission) {
+    return jsonRpcError(id, -32602, `Unknown resource URI: ${uri}`);
+  }
+  try {
+    const permError = await checkPermissionRequirement(auth, requiredPermission);
+    if (permError) {
+      return jsonRpcError(id, -32603, permError);
+    }
+  } catch (err) {
+    console.error('[MCP] Permission check failed for resource:', uri, err);
+    return jsonRpcError(id, -32000, 'Unable to verify permissions');
   }
 
   const orgCond = auth.orgCondition;
