@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import './setup';
 import { getTestDb } from './setup';
 import {
@@ -35,6 +35,23 @@ function deferred() {
   let resolve!: () => void;
   const promise = new Promise<void>((done) => { resolve = done; });
   return { promise, resolve };
+}
+
+async function waitForBlockedRefreshFamilyInsert(): Promise<void> {
+  const tdb = getTestDb();
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const rows = await tdb.execute(sql`
+      SELECT count(*)::int AS blocked_count
+      FROM pg_stat_activity
+      WHERE datname = current_database()
+        AND usename = 'breeze_app'
+        AND wait_event_type = 'Lock'
+        AND position('insert into "refresh_token_families"' in lower(query)) > 0
+    `) as unknown as Array<{ blocked_count: number }>;
+    if (Number(rows[0]?.blocked_count ?? 0) > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error('Pending issuance never reached the blocked refresh-family insert');
 }
 
 async function seedPartnerMfaUser() {
@@ -237,18 +254,38 @@ describe('MFA assurance mutation atomicity against real PostgreSQL', () => {
     })).rejects.toBeInstanceOf(PendingMfaInvalidError);
   });
 
-  it('revokes the issued family when session issuance wins before policy mutation', async () => {
+  it('revokes the issued family when overlapping session issuance wins before policy mutation', async () => {
     const seeded = await seedPartnerMfaUser();
     const pending = await pendingFor(seeded);
-    const issued = await issueVerifiedPendingMfaSession({
+    const tdb = getTestDb();
+
+    const tableLocked = deferred();
+    const releaseTable = deferred();
+    const blocker = tdb.transaction(async (tx) => {
+      await tx.execute(sql`LOCK TABLE refresh_token_families IN ACCESS EXCLUSIVE MODE`);
+      tableLocked.resolve();
+      await releaseTable.promise;
+    });
+    await tableLocked.promise;
+
+    const issuance = issueVerifiedPendingMfaSession({
       ...pending,
       verifiedMethod: 'totp',
     });
-
-    await getTestDb().transaction((tx) => invalidateMfaPolicyAssurance(tx, {
+    // The blocked INSERT proves issuance already holds partner/user/factor
+    // assurance locks before the effective-policy invalidation starts.
+    await waitForBlockedRefreshFamilyInsert();
+    const policyMutation = tdb.transaction((tx) => invalidateMfaPolicyAssurance(tx, {
       partnerId: seeded.partner.id,
       reason: 'partner-mfa-policy-changed',
     }));
+
+    releaseTable.resolve();
+    await blocker;
+    const timeout = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('policy issuance-first overlap deadlocked')), 5_000);
+    });
+    const [issued] = await Promise.race([Promise.all([issuance, policyMutation]), timeout]);
 
     await expect(getActiveRefreshTokenFamily(issued.tokens.familyId, seeded.user.id))
       .resolves.toBeNull();

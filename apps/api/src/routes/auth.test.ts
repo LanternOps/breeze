@@ -20,6 +20,9 @@ const mfaMutationState = vi.hoisted(() => ({
   activePasskeyCount: 0,
   auditWrites: [] as Record<string, unknown>[],
   twilioResult: { valid: true } as { valid: boolean; serviceError?: boolean },
+  lockedMutationActive: false,
+  twilioObservedLockActive: null as boolean | null,
+  twilioAfterCheck: null as (() => void) | null,
 }));
 
 // Mock all services
@@ -148,7 +151,13 @@ vi.mock('../services/mfaAssuranceMutation', () => ({
   MfaAssuranceMutationStaleError: class MfaAssuranceMutationStaleError extends Error {},
   runLockedMfaMutation: vi.fn(async (_input: unknown, mutate: (tx: unknown, locked: unknown) => Promise<unknown>) => {
     const { db } = await import('../db');
-    const result = await mutate(db, { user: mfaMutationState.user, activePasskeyCount: mfaMutationState.activePasskeyCount });
+    mfaMutationState.lockedMutationActive = true;
+    let result;
+    try {
+      result = await mutate(db, { user: mfaMutationState.user, activePasskeyCount: mfaMutationState.activePasskeyCount });
+    } finally {
+      mfaMutationState.lockedMutationActive = false;
+    }
     return { result, securityState: { id: 'user-123', mfaEpoch: 2 }, revokedFamilyCount: 1 };
   }),
   cleanupMfaAssuranceUsers: vi.fn(async (_userIds: string[], extra: Array<{ name: string; run: () => Promise<unknown> }> = []) => {
@@ -183,7 +192,11 @@ vi.mock('../services/email', () => ({
 vi.mock('../services/twilio', () => ({
   getTwilioService: vi.fn(() => ({
     sendVerificationCode: vi.fn().mockResolvedValue({ success: true }),
-    checkVerificationCode: vi.fn(async () => mfaMutationState.twilioResult)
+    checkVerificationCode: vi.fn(async () => {
+      mfaMutationState.twilioObservedLockActive = mfaMutationState.lockedMutationActive;
+      mfaMutationState.twilioAfterCheck?.();
+      return mfaMutationState.twilioResult;
+    })
   }))
 }));
 
@@ -377,6 +390,16 @@ function installRedisStore(options: { failDelete?: boolean } = {}) {
   return { store, redis };
 }
 
+function mockPasswordAndMfaDisableSnapshot() {
+  vi.mocked(db.select)
+    .mockReturnValueOnce({
+      from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash' }]) })) })),
+    } as any)
+    .mockReturnValueOnce({
+      from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([mfaMutationState.user]) })) })),
+    } as any);
+}
+
 describe('auth routes', () => {
   let app: Hono;
   const originalLegacyInvitePreviewPath = process.env.AUTH_LEGACY_INVITE_PREVIEW_PATH;
@@ -394,6 +417,9 @@ describe('auth routes', () => {
     mfaMutationState.activePasskeyCount = 0;
     mfaMutationState.auditWrites = [];
     mfaMutationState.twilioResult = { valid: true };
+    mfaMutationState.lockedMutationActive = false;
+    mfaMutationState.twilioObservedLockActive = null;
+    mfaMutationState.twilioAfterCheck = null;
     // clearAllMocks clears call history but NOT a mockReturnValue base, so a
     // base set inside one test would otherwise bleed into the next. Reset
     // db.select to an empty-resolving default each test (mirrors sso.test.ts).
@@ -2789,18 +2815,7 @@ describe('auth routes', () => {
 
     it('POST /auth/mfa/disable invalidates the current browser after disabling SMS MFA', async () => {
       vi.mocked(verifyPassword).mockResolvedValue(true);
-      vi.mocked(db.select)
-        .mockReturnValueOnce({
-          from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash' }]) })) })),
-        } as any)
-        .mockReturnValueOnce({
-          from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([{
-            mfaSecret: null,
-            mfaEnabled: true,
-            mfaMethod: 'sms',
-            phoneNumber: '+14155551234',
-          }]) })) })),
-        } as any);
+      mockPasswordAndMfaDisableSnapshot();
 
       const res = await app.request('/auth/mfa/disable', {
         method: 'POST',
@@ -2809,15 +2824,33 @@ describe('auth routes', () => {
       });
 
       expect(res.status).toBe(200);
+      expect(mfaMutationState.twilioObservedLockActive).toBe(false);
       expect(await res.json()).toMatchObject({ success: true, reauthenticate: true });
+    });
+
+    it('rejects SMS disable when the verified phone snapshot changes before the shared lock', async () => {
+      vi.mocked(verifyPassword).mockResolvedValue(true);
+      mockPasswordAndMfaDisableSnapshot();
+      mfaMutationState.twilioAfterCheck = () => {
+        mfaMutationState.user = { ...mfaMutationState.user, phoneNumber: '+14155550999' };
+      };
+
+      const res = await app.request('/auth/mfa/disable', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: '123456', currentPassword: 'OldStrongPass123' }),
+      });
+
+      expect(res.status).toBe(401);
+      expect(await res.json()).toMatchObject({ error: expect.stringMatching(/state changed/i) });
+      expect(mfaMutationState.twilioObservedLockActive).toBe(false);
+      expect(db.update).not.toHaveBeenCalled();
     });
 
     it('audits a redacted SMS failure when MFA disable confirmation is invalid', async () => {
       mfaMutationState.twilioResult = { valid: false };
       vi.mocked(verifyPassword).mockResolvedValue(true);
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash' }]) })) })),
-      } as any);
+      mockPasswordAndMfaDisableSnapshot();
 
       const res = await app.request('/auth/mfa/disable', {
         method: 'POST',
@@ -2844,9 +2877,7 @@ describe('auth routes', () => {
       };
       vi.mocked(consumeMFAToken).mockResolvedValueOnce(false);
       vi.mocked(verifyPassword).mockResolvedValue(true);
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash' }]) })) })),
-      } as any);
+      mockPasswordAndMfaDisableSnapshot();
 
       const res = await app.request('/auth/mfa/disable', {
         method: 'POST',
@@ -2872,9 +2903,7 @@ describe('auth routes', () => {
         phoneVerified: false,
       };
       vi.mocked(verifyPassword).mockResolvedValue(true);
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash' }]) })) })),
-      } as any);
+      mockPasswordAndMfaDisableSnapshot();
 
       const res = await app.request('/auth/mfa/disable', {
         method: 'POST',

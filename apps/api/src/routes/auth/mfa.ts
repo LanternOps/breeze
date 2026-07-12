@@ -528,6 +528,51 @@ mfaRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaDisableSche
 
   let currentMethod: string = 'totp';
   try {
+    const [proofSnapshot] = await withSystemDbAccessContext(() => db
+      .select({
+        status: users.status,
+        authEpoch: users.authEpoch,
+        mfaEpoch: users.mfaEpoch,
+        mfaEnabled: users.mfaEnabled,
+        mfaMethod: users.mfaMethod,
+        phoneNumber: users.phoneNumber,
+        phoneVerified: users.phoneVerified,
+      })
+      .from(users)
+      .where(eq(users.id, auth.user.id))
+      .limit(1));
+    if (!proofSnapshot
+      || proofSnapshot.status !== 'active'
+      || proofSnapshot.authEpoch !== auth.token.ae
+      || proofSnapshot.mfaEpoch !== auth.token.me) {
+      throw new MfaAssuranceMutationStaleError();
+    }
+
+    let verifiedSmsPhone: string | null = null;
+    if (proofSnapshot.mfaEnabled && proofSnapshot.mfaMethod === 'sms') {
+      const twilio = getTwilioService();
+      if (!twilio) throw new MfaMutationRouteError(501, 'SMS service not configured');
+      if (!proofSnapshot.phoneVerified || !proofSnapshot.phoneNumber) {
+        throw new MfaMutationRouteError(400, 'No verified phone number configured');
+      }
+      const result = await twilio.checkVerificationCode(proofSnapshot.phoneNumber, code);
+      if (result.serviceError) {
+        throw new MfaMutationRouteError(502, 'SMS verification service temporarily unavailable. Please try again.');
+      }
+      if (!result.valid) {
+        await auditMfaMutationFailure(c, auth, {
+          action: 'auth.mfa.disable.failed',
+          reason: 'invalid_sms_code',
+          details: { method: 'sms' },
+        });
+        throw new MfaMutationRouteError(401, 'Invalid verification code');
+      }
+      // This request-local proof cannot be replayed by a client. The locked
+      // transaction below accepts it only if the exact phone/factor snapshot
+      // and token epochs are still live.
+      verifiedSmsPhone = proofSnapshot.phoneNumber;
+    }
+
     await runLockedMfaMutation(
       lockedMutationInput(auth, 'mfa-disabled'),
       async (tx, locked) => {
@@ -546,20 +591,13 @@ mfaRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaDisableSche
         if (!user.mfaEnabled) throw new MfaMutationRouteError(400, 'MFA is not enabled');
         currentMethod = user.mfaMethod || 'totp';
         if (currentMethod === 'sms') {
-          const twilio = getTwilioService();
-          if (!twilio) throw new MfaMutationRouteError(501, 'SMS service not configured');
-          if (!user.phoneNumber) throw new MfaMutationRouteError(400, 'No phone number configured');
-          const result = await twilio.checkVerificationCode(user.phoneNumber, code);
-          if (result.serviceError) throw new MfaMutationRouteError(502, 'SMS verification service temporarily unavailable. Please try again.');
-          if (!result.valid) {
-            await auditMfaMutationFailure(c, auth, {
-              action: 'auth.mfa.disable.failed',
-              reason: 'invalid_sms_code',
-              details: { method: 'sms' },
-            });
-            throw new MfaMutationRouteError(401, 'Invalid verification code');
+          if (!verifiedSmsPhone
+            || !user.phoneVerified
+            || user.phoneNumber !== verifiedSmsPhone) {
+            throw new MfaAssuranceMutationStaleError();
           }
         } else {
+          if (verifiedSmsPhone !== null) throw new MfaAssuranceMutationStaleError();
           const decryptedMfaSecret = decryptMfaSecret(user.mfaSecret);
           if (!decryptedMfaSecret) throw new MfaMutationRouteError(400, 'Invalid MFA configuration');
           if (!await consumeMFAToken(decryptedMfaSecret, code, auth.user.id)) {
