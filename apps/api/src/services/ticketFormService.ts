@@ -6,7 +6,7 @@ import {
   type TicketFormField,
   type TicketPriority
 } from '@breeze/shared';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { organizations, ticketFormOrgLinks, ticketForms } from '../db/schema';
 
 export type TicketFormRow = typeof ticketForms.$inferSelect;
@@ -147,33 +147,55 @@ export async function getTicketFormForOrg(
  * before any write so a cross-partner id can never sneak in as a link.
  */
 export async function syncTicketFormOrgLinks(formId: string, orgIds: string[] | null, partnerId: string): Promise<void> {
-  return runOutsideDbContext(() =>
-    withSystemDbAccessContext(async () => {
-      if (orgIds === null) {
-        await db.delete(ticketFormOrgLinks).where(eq(ticketFormOrgLinks.formId, formId));
-        return;
-      }
-      const dedupedIds = Array.from(new Set(orgIds));
-      if (dedupedIds.length > 0) {
-        const orgRows = await db
-          .select({ id: organizations.id, partnerId: organizations.partnerId })
-          .from(organizations)
-          .where(inArray(organizations.id, dedupedIds))
-          .limit(500);
-        const partnerIdById = new Map(orgRows.map((r) => [r.id, r.partnerId]));
-        const allBelongToPartner = dedupedIds.every((id) => partnerIdById.get(id) === partnerId);
-        if (!allBelongToPartner) {
-          throw new TicketFormError('visibleOrgIds must reference organizations of the owning partner', 400);
-        }
-      }
-      // Replace semantics: delete-all then bulk insert, inside the same
-      // system-context transaction as the validation read above.
+  const sync = async () => {
+    if (orgIds === null) {
       await db.delete(ticketFormOrgLinks).where(eq(ticketFormOrgLinks.formId, formId));
-      if (dedupedIds.length > 0) {
-        await db.insert(ticketFormOrgLinks).values(dedupedIds.map((orgId) => ({ formId, orgId })));
+      return;
+    }
+    const dedupedIds = Array.from(new Set(orgIds));
+    if (dedupedIds.length > 0) {
+      const orgRows = await db
+        .select({ id: organizations.id, partnerId: organizations.partnerId })
+        .from(organizations)
+        .where(inArray(organizations.id, dedupedIds))
+        .limit(500);
+      const partnerIdById = new Map(orgRows.map((r) => [r.id, r.partnerId]));
+      const allBelongToPartner = dedupedIds.every((id) => partnerIdById.get(id) === partnerId);
+      if (!allBelongToPartner) {
+        throw new TicketFormError('visibleOrgIds must reference organizations of the owning partner', 400);
       }
-    })
-  );
+    }
+    // Replace semantics: delete-all then bulk insert, in ONE transaction with
+    // the validation read above.
+    await db.delete(ticketFormOrgLinks).where(eq(ticketFormOrgLinks.formId, formId));
+    if (dedupedIds.length > 0) {
+      await db.insert(ticketFormOrgLinks).values(dedupedIds.map((orgId) => ({ formId, orgId })));
+    }
+  };
+
+  // The link write MUST share the caller's ambient request transaction when one
+  // exists. On POST /ticket-forms the parent ticket_forms row is inserted
+  // uncommitted on the request transaction (C1); escaping to a FRESH system
+  // transaction on another pooled connection (C2) means C2's READ COMMITTED
+  // snapshot cannot see that parent, so the link policy's WITH CHECK
+  // `EXISTS (... ticket_forms ...)` finds no parent row and the insert is
+  // rejected (42501) — the create 500s (whole-branch review Critical). Running
+  // on the ambient transaction lets the write see the same-transaction parent.
+  //
+  // Only partner-scoped tokens with orgAccess='all' reach this code path (POST
+  // partner-wide + PUT partner-wide, both behind canManagePartnerWidePolicies),
+  // so the ambient context is a partner context whose accessiblePartnerIds
+  // covers the owning partner and whose accessibleOrgIds covers every org under
+  // it. That clears BOTH the link WITH CHECK (breeze_has_partner_access on the
+  // parent's partner_id) and the org-belongs-to-partner validation read
+  // (breeze_has_org_access on organizations) — RLS stays fully enforced, it is
+  // simply satisfied by the caller's own partner scope rather than a system
+  // escalation. When there is NO ambient context (defensive; no current caller
+  // reaches here contextless) fall back to a fresh system context.
+  if (getCurrentDbAccessContext()) {
+    return sync();
+  }
+  return runOutsideDbContext(() => withSystemDbAccessContext(sync));
 }
 
 /**

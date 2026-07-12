@@ -9,6 +9,10 @@ const { dbSelectMock, insertValuesMock, deleteWhereMock } = vi.hoisted(() => ({
 vi.mock('../db', () => ({
   runOutsideDbContext: (fn: () => unknown) => fn(),
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
+  // syncTicketFormOrgLinks runs on the ambient request transaction when one
+  // exists (the FK-seam fix); a truthy context makes it use `db` directly,
+  // which is the mocked query builder these tests assert against.
+  getCurrentDbAccessContext: () => ({ scope: 'partner' }),
   db: {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
