@@ -34,7 +34,7 @@ import { OrgApprovalSecurityTab } from './OrgApprovalSecurityTab';
 import OrgEventLogSettings from './OrgEventLogSettings';
 import OrgRemoteAccessSettings from './OrgRemoteAccessSettings';
 import { useOrgStore } from '../../stores/orgStore';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, ReauthenticationRequiredError } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '@/lib/runAction';
 import { formatDate, formatTime as formatUserTime } from '@/lib/dateTimeFormat';
@@ -349,6 +349,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
         lastSavedAt: formatTime(new Date())
       });
     } catch (err) {
+      if (err instanceof ReauthenticationRequiredError) return;
       // runAction already toasts non-401 ActionErrors; only surface unexpected errors.
       if (!(err instanceof ActionError)) {
         setError(err instanceof Error ? err.message : t('orgSettingsPage.errors.saveSettings'));

@@ -93,4 +93,23 @@ describe('withLogoutReset', () => {
       expect(after.aiChat.messages).toEqual([]);
     }
   });
+
+  it.each(['alerts/fetch', 'approvals/hydrate', 'ai/session'])(
+    'ignores a deferred %s fulfillment from the previous session generation',
+    (prefix) => {
+      const payloadReducer = (state: string[] = [], action: { type: string; payload?: string }) =>
+        action.type === `${prefix}/fulfilled` ? [...state, action.payload ?? 'leak'] : state;
+      const guarded = withLogoutReset(payloadReducer);
+      const requestId = `${prefix}-request`;
+      let state = guarded(undefined, { type: `${prefix}/pending`, meta: { requestId } } as any);
+      state = guarded(state, { type: 'auth/requireReauthentication' });
+      state = guarded(state, { type: 'auth/setCredentials' });
+
+      const after = guarded(state, {
+        type: `${prefix}/fulfilled`, payload: 'account-a-data', meta: { requestId },
+      } as any);
+
+      expect(after).toEqual([]);
+    },
+  );
 });

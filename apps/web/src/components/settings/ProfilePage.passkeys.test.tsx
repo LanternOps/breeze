@@ -6,6 +6,8 @@ const { fetchWithAuthMock, createPasskeyCredentialMock } = vi.hoisted(() => ({
   createPasskeyCredentialMock: vi.fn(),
 }));
 
+const mfaSettingsProps = vi.hoisted(() => vi.fn());
+
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: fetchWithAuthMock,
   createPasskeyCredential: createPasskeyCredentialMock,
@@ -35,6 +37,13 @@ vi.mock('./ConnectSsoCard', () => ({
   default: () => null,
 }));
 
+vi.mock('./MFASettings', () => ({
+  default: (props: unknown) => {
+    mfaSettingsProps(props);
+    return null;
+  },
+}));
+
 import ProfilePage from './ProfilePage';
 import { apiCreateMfaStepUpGrant } from '../../stores/auth';
 
@@ -51,6 +60,16 @@ describe('ProfilePage passkey management', () => {
     vi.clearAllMocks();
     globalThis.URL.createObjectURL = vi.fn(() => 'blob:fake');
     globalThis.URL.revokeObjectURL = vi.fn();
+  });
+
+  it('wires the projected active MFA method into MFA settings', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ passkeys: [] }));
+    render(<ProfilePage initialUser={{
+      id: 'user-1', name: 'Casey Admin', email: 'casey@example.com', mfaEnabled: true, mfaMethod: 'sms',
+    }} />);
+
+    await waitFor(() => expect(mfaSettingsProps).toHaveBeenCalled());
+    expect(mfaSettingsProps.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ mfaMethod: 'sms' }));
   });
 
   it('starts passkey registration with currentPassword and verifies the browser credential', async () => {

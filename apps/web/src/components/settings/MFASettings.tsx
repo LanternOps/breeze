@@ -567,7 +567,7 @@ export default function MFASettings({
         </div>
 
         {/* SMS codes row — only visible if org allows SMS */}
-        {smsAllowed && (
+        {(smsAllowed || currentMethod === 'sms') && (
           <div className="flex items-center justify-between rounded-md border bg-muted/30 p-4">
             <div className="space-y-1">
               <div className="flex items-center gap-2">

@@ -65,6 +65,7 @@ describe('auth store passkey MFA helpers', () => {
       mfaRequired: true,
       tempToken: 'temp-passkey',
       mfaMethod: 'passkey',
+      allowedMethods: ['passkey', 'recovery_code'],
       // #2153: normalized to false when the login body omits the flag.
       passkeyAvailable: false,
       phoneLast4: undefined,

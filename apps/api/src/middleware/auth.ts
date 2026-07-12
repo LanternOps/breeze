@@ -506,7 +506,12 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
       });
 
       return c.json(
-        { error: 'mfa_enrollment_required', enrollUrl: '/auth/mfa/setup' },
+        {
+          error: 'mfa_enrollment_required',
+          enrollUrl: '/auth/mfa/setup',
+          allowedMethods: (['totp', 'sms', 'passkey'] as const)
+            .filter((method) => effectiveMfaPolicy.allowedMethods.has(method)),
+        },
         428
       );
     }

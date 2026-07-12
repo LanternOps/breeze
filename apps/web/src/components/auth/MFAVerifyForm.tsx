@@ -160,7 +160,7 @@ export default function MFAVerifyForm({
           aria-pressed={selectedMethod === method}
           className={`rounded-md border px-3 py-2 text-sm ${selectedMethod === method ? 'bg-primary text-primary-foreground' : 'bg-background'}`}
         >
-          {t(`mfaVerify.methods.${method}`, {
+          {t(/* i18n-dynamic */ `mfaVerify.methods.${method}`, {
             defaultValue: method === 'totp' ? 'Authenticator app' : method === 'sms' ? 'Text message' : method === 'passkey' ? 'Passkey' : 'Recovery code',
           })}
         </button>

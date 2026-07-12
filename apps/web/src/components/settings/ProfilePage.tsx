@@ -10,7 +10,7 @@ import ConnectSsoCard from './ConnectSsoCard';
 import MFASettings from './MFASettings';
 import ApproverDevicesSection from './ApproverDevicesSection';
 import ThemingSettings from './ThemingSettings';
-import { apiCreateMfaStepUpGrant, createPasskeyCredential, fetchWithAuth, useAuthStore } from '../../stores/auth';
+import { apiCreateMfaStepUpGrant, createPasskeyCredential, fetchWithAuth, ReauthenticationRequiredError, useAuthStore } from '../../stores/auth';
 import type { MfaStepUpMethod, PasskeyRegistrationOptions, UserPreferences } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { useAvatarBlobUrl } from '@/lib/avatarBlobCache';
@@ -357,6 +357,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
 
       setPasswordSuccess(t('profilePage.passwordChangedSuccessfully'));
     } catch (error) {
+      if (error instanceof ReauthenticationRequiredError) return;
       setPasswordError(error instanceof Error ? error.message : t('profilePage.failedToChangePassword'));
     } finally {
       setIsChangingPassword(false);
@@ -386,6 +387,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       setQrCodeDataUrl(data.qrCodeDataUrl);
       return true;
     } catch (error) {
+      if (error instanceof ReauthenticationRequiredError) return false;
       setMfaError(error instanceof Error ? error.message : t('profilePage.failedToStartMFASetup'));
       return false;
     } finally {
@@ -416,6 +418,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       setMfaSuccess(t('profilePage.multiFactorAuthenticationEnabledSuccessfully'));
       setQrCodeDataUrl(undefined);
     } catch (error) {
+      if (error instanceof ReauthenticationRequiredError) return;
       setMfaError(error instanceof Error ? error.message : t('profilePage.failedToEnableMFA'));
     } finally {
       setMfaLoading(false);
@@ -443,6 +446,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       setRecoveryCodes(undefined);
       setMfaSuccess(t('profilePage.multiFactorAuthenticationDisabled'));
     } catch (error) {
+      if (error instanceof ReauthenticationRequiredError) return;
       setMfaError(error instanceof Error ? error.message : t('profilePage.failedToDisableMFA'));
     } finally {
       setMfaLoading(false);
@@ -468,6 +472,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       setRecoveryCodes(data.recoveryCodes);
       setMfaSuccess(t('profilePage.newRecoveryCodesGenerated'));
     } catch (error) {
+      if (error instanceof ReauthenticationRequiredError) return;
       setMfaError(error instanceof Error ? error.message : t('profilePage.failedToGenerateRecoveryCodes'));
     } finally {
       setMfaLoading(false);
@@ -527,6 +532,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       setPasskeySuccess(t('profilePage.passkeyAdded'));
       await loadPasskeys();
     } catch (error) {
+      if (error instanceof ReauthenticationRequiredError) return;
       if (error instanceof Error && error.name === 'NotAllowedError') {
         setPasskeyError(t('profilePage.passkeySetupWasCanceledOrTimedOut'));
       } else {
@@ -587,6 +593,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       setPasskeyPassword('');
       setPasskeySuccess(t('profilePage.passkeyDeleted'));
     } catch (error) {
+      if (error instanceof ReauthenticationRequiredError) return;
       setPasskeyError(error instanceof Error ? error.message : t('profilePage.failedToDeletePasskey'));
     } finally {
       setMutatingPasskeyId(null);
@@ -766,6 +773,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       {/* MFA Settings */}
       <MFASettings
         enabled={user?.mfaEnabled ?? false}
+        mfaMethod={user?.mfaMethod}
         qrCodeDataUrl={qrCodeDataUrl}
         recoveryCodes={recoveryCodes}
         onRequestSetup={handleMfaRequestSetup}

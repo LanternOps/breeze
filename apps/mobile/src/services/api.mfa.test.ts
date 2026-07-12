@@ -4,7 +4,14 @@ vi.mock('expo-secure-store', () => ({ getItemAsync: vi.fn().mockResolvedValue(nu
 vi.mock('./serverConfig', () => ({ getServerUrl: vi.fn().mockResolvedValue('https://example.invalid') }));
 vi.mock('./installationId', () => ({ getOrCreateInstallationId: vi.fn().mockResolvedValue('device-1') }));
 
-import { login, onReauthenticationRequired, verifyMfa } from './api';
+import {
+  captureSessionGeneration,
+  getAlerts,
+  isCurrentSessionGeneration,
+  login,
+  onReauthenticationRequired,
+  verifyMfa,
+} from './api';
 
 const response = (payload: unknown) => ({
   ok: true,
@@ -32,6 +39,22 @@ describe('mobile MFA contracts', () => {
         phoneLast4: null,
       },
     });
+  });
+
+  it.each([
+    [[], ['totp', 'recovery_code']],
+    [[null, 'bogus'], ['totp', 'recovery_code']],
+    [['sms', 'sms', 'bogus'], ['sms']],
+  ])('normalizes malformed or empty allowedMethods %#', async (allowedMethods, expected) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({
+      mfaRequired: true,
+      tempToken: 'temp-1',
+      mfaMethod: 'totp',
+      allowedMethods,
+    })));
+
+    const result = await login('user@example.com', 'password');
+    expect(result.kind === 'mfaRequired' ? result.challenge.allowedMethods : null).toEqual(expected);
   });
 
   it('normalizes and submits recovery codes with a method-safe body', async () => {
@@ -68,4 +91,24 @@ describe('mobile MFA contracts', () => {
       off();
     },
   );
+
+  it('rejects an older deferred request after terminal reauthentication advances the session generation', async () => {
+    const hydrationGeneration = captureSessionGeneration();
+    let resolveAlerts!: (value: Response) => void;
+    const alertsResponse = new Promise<Response>((resolve) => { resolveAlerts = resolve; });
+    const fetchMock = vi.fn()
+      .mockReturnValueOnce(alertsResponse)
+      .mockResolvedValueOnce(response({ reauthenticate: true }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const pendingAlerts = getAlerts();
+    while (fetchMock.mock.calls.length < 1) await Promise.resolve();
+    await expect(verifyMfa('123456', 'temp-1', 'totp')).rejects.toMatchObject({
+      code: 'reauthentication_required',
+    });
+    expect(isCurrentSessionGeneration(hydrationGeneration)).toBe(false);
+    resolveAlerts(response([]));
+
+    await expect(pendingAlerts).rejects.toMatchObject({ code: 'session_generation_stale' });
+  });
 });

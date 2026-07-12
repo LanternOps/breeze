@@ -15,6 +15,20 @@ type DeviceBlockedListener = (reason: string | null) => void;
 const deviceBlockedListeners = new Set<DeviceBlockedListener>();
 type ReauthenticationListener = (reason: 'security-settings-changed') => void;
 const reauthenticationListeners = new Set<ReauthenticationListener>();
+let sessionGeneration = 0;
+
+/**
+ * Capture the current local session boundary before starting non-API async
+ * work (for example SecureStore hydration during app startup). Callers must
+ * re-check the value before committing the result to authenticated state.
+ */
+export function captureSessionGeneration(): number {
+  return sessionGeneration;
+}
+
+export function isCurrentSessionGeneration(generation: number): boolean {
+  return generation === sessionGeneration;
+}
 
 /**
  * Subscribe to the global "this device just got blocked" signal. The first
@@ -111,6 +125,15 @@ export interface LoginResponse {
 
 export type MfaMethod = 'totp' | 'sms' | 'passkey' | 'recovery_code';
 export type MfaCodeMethod = Exclude<MfaMethod, 'passkey'>;
+
+function normalizeAllowedMfaMethods(value: unknown, primary: MfaMethod): MfaMethod[] {
+  const valid = Array.isArray(value)
+    ? value.filter((method): method is MfaMethod =>
+        method === 'totp' || method === 'sms' || method === 'passkey' || method === 'recovery_code')
+    : [];
+  if (valid.length > 0) return [...new Set(valid)];
+  return [...new Set<MfaMethod>([primary, 'recovery_code'])];
+}
 
 export interface MfaChallenge {
   tempToken: string;
@@ -212,6 +235,7 @@ async function requestWithPrefix<T>(
   prefix: string,
   options: RequestInit = {}
 ): Promise<T> {
+  const requestGeneration = sessionGeneration;
   const token = await getToken();
   const method = (options.method ?? 'GET').toUpperCase();
 
@@ -248,6 +272,14 @@ async function requestWithPrefix<T>(
     credentials: 'include',
   });
 
+  if (requestGeneration !== sessionGeneration) {
+    throw {
+      message: 'This request belongs to an expired session.',
+      code: 'session_generation_stale',
+      statusCode: 401,
+    } as ApiError;
+  }
+
   if (!response.ok) {
     const body = await response.json().catch(() => ({} as Record<string, unknown>));
     const code = typeof body.code === 'string' ? body.code : undefined;
@@ -274,6 +306,7 @@ async function requestWithPrefix<T>(
 
   const parsed = JSON.parse(text) as T & { reauthenticate?: unknown };
   if (parsed && typeof parsed === 'object' && parsed.reauthenticate === true) {
+    sessionGeneration += 1;
     notifyReauthenticationRequired();
     throw {
       message: 'Your security settings changed. Sign in again to continue.',
@@ -355,9 +388,7 @@ export async function login(email: string, password: string): Promise<LoginResul
       challenge: {
         tempToken: response.tempToken,
         mfaMethod: response.mfaMethod,
-        allowedMethods: response.allowedMethods?.length
-          ? response.allowedMethods
-          : [...new Set<MfaMethod>([response.mfaMethod, 'recovery_code'])],
+        allowedMethods: normalizeAllowedMfaMethods(response.allowedMethods, response.mfaMethod),
         phoneLast4: response.phoneLast4 ?? null,
       },
     };
@@ -368,6 +399,7 @@ export async function login(email: string, password: string): Promise<LoginResul
     throw { message: response.error || 'Invalid login response' } as ApiError;
   }
 
+  sessionGeneration += 1;
   return { kind: 'success', token, user: response.user };
 }
 
@@ -388,6 +420,7 @@ export async function verifyMfa(code: string, tempToken: string, method: MfaCode
     throw { message: response.error || 'Invalid MFA response' } as ApiError;
   }
 
+  sessionGeneration += 1;
   return { token, user: response.user };
 }
 

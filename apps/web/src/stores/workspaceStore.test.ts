@@ -33,6 +33,7 @@ vi.mock('../components/shared/Toast', () => ({
 import { showToast } from '../components/shared/Toast';
 import { fetchWithAuth } from './auth';
 import { useWorkspaceStore, type TabState } from './workspaceStore';
+import { runSessionTeardown } from './sessionTeardown';
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 const showToastMock = vi.mocked(showToast);
@@ -89,6 +90,21 @@ describe('workspace store ticket actions', () => {
       activeTabId: 'tab-1',
       _readers: new Map(),
     });
+  });
+
+  it('cancels streams and clears all in-memory tabs during terminal session teardown', () => {
+    const cancel = vi.fn().mockResolvedValue(undefined);
+    useWorkspaceStore.setState({
+      tabs: [tab({ isStreaming: true })],
+      activeTabId: 'tab-1',
+      _readers: new Map([['session-1', { cancel } as unknown as ReadableStreamDefaultReader<Uint8Array>]]),
+    });
+
+    runSessionTeardown();
+
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(useWorkspaceStore.getState()).toMatchObject({ tabs: [], activeTabId: null });
+    expect(useWorkspaceStore.getState()._readers.size).toBe(0);
   });
 
   it('draftTicketFromChat throws the extracted API message on failure', async () => {

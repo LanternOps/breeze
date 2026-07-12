@@ -36,6 +36,25 @@ export const LOGOUT_ACTION_TYPES: ReadonlySet<string> = new Set([
  * the real store (whose auth slice pulls in expo-secure-store).
  */
 export function withLogoutReset<S>(appReducer: Reducer<S>): Reducer<S> {
-  return (state: S | undefined, action: UnknownAction) =>
-    appReducer(LOGOUT_ACTION_TYPES.has(action.type) ? undefined : state, action);
+  let generation = 0;
+  const requestGenerations = new Map<string, number>();
+
+  return (state: S | undefined, action: UnknownAction) => {
+    if (LOGOUT_ACTION_TYPES.has(action.type)) {
+      generation += 1;
+      return appReducer(undefined, action);
+    }
+
+    const meta = (action as UnknownAction & { meta?: { requestId?: unknown } }).meta;
+    const requestId = typeof meta?.requestId === 'string' ? meta.requestId : undefined;
+    if (requestId && action.type.endsWith('/pending')) {
+      requestGenerations.set(requestId, generation);
+    } else if (requestId && (action.type.endsWith('/fulfilled') || action.type.endsWith('/rejected'))) {
+      const startedAt = requestGenerations.get(requestId);
+      requestGenerations.delete(requestId);
+      if (startedAt !== undefined && startedAt !== generation) return state as S;
+    }
+
+    return appReducer(state, action);
+  };
 }

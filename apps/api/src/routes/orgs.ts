@@ -840,6 +840,7 @@ orgRoutes.patch(
     ...partner,
     cleanupStatus: mfaCleanup.cleanupStatus,
     cleanupFailures: mfaCleanup.cleanupFailures,
+    reauthenticate: policyInvalidation.userIds.includes(auth.user.id),
   });
 });
 
@@ -1043,7 +1044,12 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
     }
   });
 
-  return c.json({ ...partner, cleanupStatus, cleanupFailures });
+  return c.json({
+    ...partner,
+    cleanupStatus,
+    cleanupFailures,
+    reauthenticate: mfaPolicyInvalidation.userIds.includes(auth.user.id),
+  });
 });
 
 orgRoutes.delete('/partners/:id', requireScope('system'), requireOrgWrite, requireMfa(), async (c) => {
@@ -1622,7 +1628,12 @@ const updateOrgHandler = [requireScope('organization', 'partner', 'system'), req
     }
   });
 
-  return c.json({ ...organization, cleanupStatus, cleanupFailures });
+  return c.json({
+    ...organization,
+    cleanupStatus,
+    cleanupFailures,
+    reauthenticate: mfaPolicyInvalidation.userIds.includes(auth.user.id),
+  });
 }] as const;
 
 orgRoutes.patch('/organizations/:id', ...updateOrgHandler);

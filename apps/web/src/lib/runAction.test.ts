@@ -4,6 +4,7 @@ const showToast = vi.fn();
 vi.mock('../components/shared/Toast', () => ({ showToast: (a: unknown) => showToast(a) }));
 
 import { runAction, ActionError } from './runAction';
+import { ReauthenticationRequiredError } from '../stores/auth';
 
 function res(body: unknown, status = 200): Response {
   return new Response(body === undefined ? '' : JSON.stringify(body), {
@@ -14,6 +15,13 @@ function res(body: unknown, status = 200): Response {
 beforeEach(() => showToast.mockReset());
 
 describe('runAction', () => {
+  it('propagates terminal reauthentication without showing a failure toast', async () => {
+    await expect(runAction({
+      request: async () => { throw new ReauthenticationRequiredError(); },
+      errorFallback: 'failed',
+    })).rejects.toBeInstanceOf(ReauthenticationRequiredError);
+    expect(showToast).not.toHaveBeenCalled();
+  });
   it('returns parsed data and toasts success EXACTLY ONCE when successMessage given', async () => {
     // Regression guard for #1301 ("duplicate success toasts on runAction").
     // The ×2 toast reported there was an Astro/Vite dev-server render

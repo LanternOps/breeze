@@ -839,6 +839,7 @@ describe('org routes', () => {
         const res = await patchPartner({ settings: { security: { requireMfa: true } } });
 
         expect(res.status).toBe(200);
+        expect(await res.json()).toMatchObject({ reauthenticate: false });
         expect(mfaPolicyMocks.withSystemTransaction).toHaveBeenCalledTimes(1);
       expect(mfaPolicyMocks.validatePartnerWrite).toHaveBeenCalledWith(expect.objectContaining({
         tx: db,
@@ -1562,6 +1563,7 @@ describe('org routes', () => {
 
     it('validates and writes organization MFA policy in the lifecycle system transaction using the authorized partner', async () => {
       setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mfaInvalidationMocks.invalidatePolicy.mockResolvedValueOnce({ userIds: ['user-123'], revokedFamilyCount: 1 });
       vi.mocked(db.update).mockReturnValue({
         set: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
@@ -1577,6 +1579,7 @@ describe('org routes', () => {
       });
 
       expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ reauthenticate: true });
       expect(tenantLifecycleTxMocks.withSystemTransaction).toHaveBeenCalledTimes(1);
       expect(mfaPolicyMocks.validateOrganizationWrite).toHaveBeenCalledWith(expect.objectContaining({
         tx: db,
@@ -2854,6 +2857,28 @@ describe('org routes', () => {
         reason: 'partner-mfa-policy-changed',
       });
     });
+
+    it.each(['complete', 'partial'] as const)(
+      'requires the initiating partner member to reauthenticate after a policy change (%s cleanup)',
+      async (cleanupStatus) => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123', accessibleOrgIds: [] });
+        mockPartnerSelfWrite();
+        mfaInvalidationMocks.invalidatePolicy.mockResolvedValueOnce({ userIds: ['user-123'], revokedFamilyCount: 1 });
+        mfaInvalidationMocks.cleanupUsers.mockResolvedValueOnce({
+          cleanupStatus,
+          cleanupFailures: cleanupStatus === 'partial' ? ['redis'] : [],
+          failures: [],
+        });
+
+        const res = await app.request('/orgs/partners/me', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ settings: { security: { requireMfa: true } } }),
+        });
+
+        expect(await res.json()).toMatchObject({ reauthenticate: true, cleanupStatus });
+      },
+    );
 
     it('does not let selected-org request RLS hide an incompatible child policy', async () => {
       setAuthContext({

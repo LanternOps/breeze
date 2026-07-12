@@ -9,6 +9,7 @@ import {
   type RegistrationResponseJSON
 } from '@simplewebauthn/browser';
 import { extractApiError } from '@/lib/apiError';
+import { runSessionTeardown } from './sessionTeardown';
 import {
   applyAppearancePreferences,
   applyResolvedLocalePreferences,
@@ -504,6 +505,13 @@ export class AuthSessionExpiredError extends Error {
   }
 }
 
+export class ReauthenticationRequiredError extends Error {
+  constructor() {
+    super('Security settings changed; reauthentication required');
+    this.name = 'ReauthenticationRequiredError';
+  }
+}
+
 export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): Promise<Response> {
   // Auto-inject orgId from the org store so partner/system users always scope API calls
   let url = rawUrl;
@@ -637,6 +645,13 @@ export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): 
       const cloned = response.clone();
       const body = await cloned.json();
       if (body?.error === 'mfa_enrollment_required') {
+        const methods = Array.isArray(body.allowedMethods)
+          ? body.allowedMethods.filter((method: unknown) => method === 'totp' || method === 'sms' || method === 'passkey')
+          : [];
+        // Replace, rather than merge with, the previous denial. An empty list
+        // is meaningful (no enrollable method survives the effective policy)
+        // and must fail closed instead of reviving stale enrollment options.
+        try { sessionStorage.setItem('breeze-mfa-enrollment-methods', JSON.stringify(methods)); } catch { /* navigate anyway */ }
         const path = window.location.pathname;
         if (path !== '/auth/mfa/setup') {
           window.location.href = '/auth/mfa/setup#required';
@@ -652,17 +667,24 @@ export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): 
   // authoritative session boundary, including when post-commit cleanup was
   // only partial: durable credentials are already invalid and local state must
   // not remain on an authenticated screen.
+  let requiresReauthentication = false;
   if (response.ok && typeof response.clone === 'function') {
     try {
       const body = await response.clone().json() as { reauthenticate?: unknown };
       if (body?.reauthenticate === true) {
-        clearLocalAuthSession();
-        if (typeof window !== 'undefined') {
-          window.location.href = '/login#security-settings-changed';
-        }
+        requiresReauthentication = true;
       }
     } catch {
       // Non-JSON successful responses have no reauthentication contract.
+    }
+  }
+
+  if (requiresReauthentication) {
+    clearLocalAuthSession();
+    try {
+      if (typeof window !== 'undefined') window.location.href = '/login#security-settings-changed';
+    } finally {
+      throw new ReauthenticationRequiredError();
     }
   }
 
@@ -677,16 +699,21 @@ export function normalizeRecoveryCode(value: string): string {
   return compact.length > 4 ? `${compact.slice(0, 4)}-${compact.slice(4)}` : compact;
 }
 
-export function clearLocalAuthSession(): void {
+export function clearLocalAuthSession(
+  persistentStorage: Pick<Storage, 'removeItem'> = localStorage,
+  transientStorage: Pick<Storage, 'removeItem'> = sessionStorage,
+): void {
   useAuthStore.getState().logout();
-  for (const key of ['breeze-auth', 'breeze-org', 'breeze-ai-chat']) {
+  runSessionTeardown();
+  for (const key of ['breeze-auth', 'breeze-org', 'breeze-ai-chat', 'breeze-workspace']) {
     try {
-      localStorage.removeItem(key);
+      persistentStorage.removeItem(key);
     } catch {
       // Attempt every store even if one removal fails. The in-memory session
       // is already gone and the server has durably revoked refresh families.
     }
   }
+  try { transientStorage.removeItem('breeze-mfa-enrollment-methods'); } catch { /* terminal teardown continues */ }
 }
 
 type ApiAuthSuccess = {

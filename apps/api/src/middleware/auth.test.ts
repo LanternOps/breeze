@@ -801,8 +801,35 @@ describe('authMiddleware', () => {
     const body = await res.json();
     expect(body).toEqual({
       error: 'mfa_enrollment_required',
-      enrollUrl: '/auth/mfa/setup'
+      enrollUrl: '/auth/mfa/setup',
+      allowedMethods: ['totp', 'sms', 'passkey'],
     });
+  });
+
+  it.each([
+    ['organization SMS-only policy', ['sms', 'recovery_code'], ['organization'], ['sms']],
+    ['partner passkey-only policy', ['passkey', 'recovery_code'], ['partner'], ['passkey']],
+  ] as const)('returns strict enrollment methods for %s', async (_label, allowed, sources, expected) => {
+    const app = new Hono();
+    app.use(authMiddleware);
+    app.post('/api/v1/partner/me', (c) => c.json({ ok: true }));
+    vi.mocked(verifyToken).mockResolvedValue({ ...basePayload, scope: 'partner', orgId: null });
+    vi.mocked(resolveEffectiveMfaPolicy).mockResolvedValue({
+      required: true,
+      allowedMethods: new Set(allowed),
+      sources: [...sources],
+    });
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWithLimit([unenrolledUser]) as any)
+      .mockReturnValueOnce(selectWithLimit([unenrolledUser]) as any);
+
+    const res = await app.request('/api/v1/partner/me', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(428);
+    expect(await res.json()).toMatchObject({ allowedMethods: expected });
   });
 
   it('allows an unenrolled required-policy user to reach the exact MFA setup path', async () => {

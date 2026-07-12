@@ -3616,7 +3616,7 @@ tests never exercised the real browser payloads** — worth a validator/UI-contr
 ## Wave 2 MFA client contracts — 2026-07-12
 
 **Branch:** `fix/core-mfa-policy-assurance`
-**Commit:** `bed3ecacd` (implementation pending commit)
+**Implementation:** `22d883aae` plus the Task 7 review-fix follow-up on this branch
 **Tested by:** Codex
 **Result:** PARTIAL
 
@@ -3629,8 +3629,9 @@ tests never exercised the real browser payloads** — worth a validator/UI-contr
 
 ### Evidence
 
-- Narrow web: 7 files / 69 tests passed; mobile: 25 files / 198 passed, 3 skipped.
-- Focused Wave 2 API: 9 files / 378 tests passed; users route: 82 passed.
+- Review-fix web: 9 files / 83 tests passed; full web: 437 files / 3,390 tests passed after correcting two test/translation-contract expectations found by the first full run.
+- Mobile: 26 files / 206 passed, 3 skipped; mobile and web typechecks passed.
+- Focused Wave 2 API: 10 files / 540 tests passed.
 - Fresh branch database: all 389 migration files matched the ledger; RLS contract: 50 passed.
 - Real recovery concurrency: 1 passed, 4 skipped; exactly one concurrent token response.
 - API and web builds passed; web/mobile typechecks, targeted API/web lint, locale JSON parsing, and `git diff --check` passed.

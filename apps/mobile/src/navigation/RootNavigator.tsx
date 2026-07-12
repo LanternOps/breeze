@@ -6,7 +6,13 @@ import * as Sentry from '@sentry/react-native';
 import { useAppSelector, useAppDispatch } from '../store';
 import { setCredentials, logout, logoutAsync, requireReauthentication } from '../store/authSlice';
 import { getStoredToken, getStoredUser, clearAuthData, SecureWipeError } from '../services/auth';
-import { getCurrentUser, onDeviceBlocked, onReauthenticationRequired } from '../services/api';
+import {
+  captureSessionGeneration,
+  getCurrentUser,
+  isCurrentSessionGeneration,
+  onDeviceBlocked,
+  onReauthenticationRequired,
+} from '../services/api';
 import { spacing, type } from '../theme';
 import { identify as analyticsIdentify, reset as analyticsReset } from '../lib/analytics';
 import {
@@ -20,6 +26,7 @@ import { ApprovalGate } from './ApprovalGate';
 import { OnboardingScreen } from '../screens/onboarding/OnboardingScreen';
 import { Spinner } from '../components/Spinner';
 import { palette } from '../theme';
+import { runReauthenticationTeardown } from './reauthenticationTeardown';
 
 /**
  * Clear local auth state, tolerating a partial secure-wipe failure.
@@ -66,9 +73,11 @@ export function RootNavigator() {
     // The server already committed epoch/family invalidation. Attempt every
     // local wipe, but always leave authenticated navigation even when the
     // secure store reports a partial cleanup failure.
-    void clearAuthDataTolerant()
-      .catch(() => undefined)
-      .finally(() => { dispatch(requireReauthentication()); });
+    void runReauthenticationTeardown(
+      clearAuthDataTolerant,
+      () => { dispatch(requireReauthentication()); },
+      (error) => Sentry.captureException(error, { tags: { area: 'auth-teardown-nav' } }),
+    );
   }), [dispatch]);
   // null while we're still reading the persisted flag. Defaults to "completed"
   // (true) on read errors so a corrupted AsyncStorage never traps users.
@@ -100,12 +109,14 @@ export function RootNavigator() {
 
   useEffect(() => {
     async function checkAuth() {
+      const hydrationGeneration = captureSessionGeneration();
       try {
         const [storedToken, storedUser, onboardingDone] = await Promise.all([
           getStoredToken(),
           getStoredUser(),
           getOnboardingCompleted(),
         ]);
+        if (!isCurrentSessionGeneration(hydrationGeneration)) return;
         setHasOnboarded(onboardingDone);
 
         if (!storedToken || !storedUser) {
@@ -121,6 +132,7 @@ export function RootNavigator() {
 
         try {
           const fresh = await getCurrentUser();
+          if (!isCurrentSessionGeneration(hydrationGeneration)) return;
           // Refresh the cached user with whatever the server returned
           // (name / email / role may have changed since last login).
           dispatch(setCredentials({ token: storedToken, user: fresh }));

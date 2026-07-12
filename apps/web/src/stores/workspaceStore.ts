@@ -5,6 +5,7 @@ import { fetchWithAuth } from './auth';
 import { extractApiError } from '@/lib/apiError';
 import { runAction } from '@/lib/runAction';
 import { showToast } from '../components/shared/Toast';
+import { registerSessionTeardown } from './sessionTeardown';
 import {
   processStreamEvent,
   mapMessagesFromApi,
@@ -613,3 +614,9 @@ export const useWorkspaceStore = create<WorkspaceState>()(
     }
   )
 );
+
+registerSessionTeardown(() => {
+  const state = useWorkspaceStore.getState();
+  state.cleanupAllStreams();
+  useWorkspaceStore.setState({ tabs: [], activeTabId: null, _readers: new Map() });
+});

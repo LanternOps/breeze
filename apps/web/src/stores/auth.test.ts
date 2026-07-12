@@ -3,12 +3,15 @@ import type { Tokens, User } from './auth';
 import { applyResolvedLocalePreferences } from '@/lib/appearance';
 import {
   apiAcceptInvite,
+  apiCreateMfaStepUpGrant,
   apiLogin,
   apiLogout,
   apiPreviewInvite,
   apiResetPassword,
   apiVerifyMFA,
   AuthSessionExpiredError,
+  clearLocalAuthSession,
+  ReauthenticationRequiredError,
   fetchAndApplyPreferences,
   fetchWithAuth,
   resolveApiOrigin,
@@ -16,6 +19,7 @@ import {
   useAuthStore,
   waitForPendingRefresh
 } from './auth';
+import { registerSessionTeardown } from './sessionTeardown';
 
 // fetchAndApplyPreferences (auth.ts) is the only call site for these two exports
 // (verified via grep on auth.ts) — mocking the whole appearance module is safe
@@ -321,6 +325,51 @@ describe('auth store fetchWithAuth', () => {
     expect(useAuthStore.getState().tokens).toBeNull();
   });
 
+  it('preserves strict enrollment methods across the forced-enrollment navigation', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    sessionStorage.removeItem('breeze-mfa-enrollment-methods');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse({
+      error: 'mfa_enrollment_required', allowedMethods: ['sms'],
+    }, false, 428)));
+    const originalLocation = window.location;
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...originalLocation, pathname: '/settings', set href(_value: string) {}, get href() { return ''; } },
+    });
+
+    try { await fetchWithAuth('/orgs/partners/me', { method: 'PATCH' }); }
+    finally { Object.defineProperty(window, 'location', { configurable: true, value: originalLocation }); }
+
+    expect(JSON.parse(sessionStorage.getItem('breeze-mfa-enrollment-methods') ?? 'null')).toEqual(['sms']);
+  });
+
+  it('replaces stale enrollment methods when the strict 428 set is empty', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    sessionStorage.setItem('breeze-mfa-enrollment-methods', JSON.stringify(['totp']));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse({
+      error: 'mfa_enrollment_required', allowedMethods: [],
+    }, false, 428)));
+    const originalLocation = window.location;
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...originalLocation, pathname: '/settings', set href(_value: string) {}, get href() { return ''; } },
+    });
+
+    try { await fetchWithAuth('/orgs/partners/me', { method: 'PATCH' }); }
+    finally { Object.defineProperty(window, 'location', { configurable: true, value: originalLocation }); }
+
+    expect(JSON.parse(sessionStorage.getItem('breeze-mfa-enrollment-methods') ?? 'null')).toEqual([]);
+  });
+
+  it('leaves the original response body readable on a normal success path', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse({ success: true, value: 7 })));
+
+    const result = await fetchWithAuth('/devices');
+
+    expect(await result.json()).toEqual({ success: true, value: 7 });
+  });
+
   // Regression (0.83.1 forced-MFA enrollment hotfix): when the store is
   // authenticated but holds no in-memory access token (always true on the
   // forced-MFA page after a full-page nav) and the cookie-backed refresh
@@ -418,6 +467,33 @@ describe('auth store fetchWithAuth', () => {
     expect(useAuthStore.getState().tokens?.accessToken).toBe(refreshedTokens.accessToken);
     expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/api/v1/auth/refresh'))).toHaveLength(1);
   });
+
+  it('keeps reauthentication terminal after a 401 refresh retry even when redirect assignment fails', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const refreshedTokens = { accessToken: 'access-new', expiresInSeconds: 3600 };
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(makeResponse({ error: 'unauthorized' }, false, 401))
+      .mockResolvedValueOnce(makeResponse({ tokens: refreshedTokens }))
+      .mockResolvedValueOnce(makeResponse({ reauthenticate: true })));
+    const originalLocation = window.location;
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: {
+        ...originalLocation,
+        pathname: '/settings/profile',
+        set href(_value: string) { throw new Error('navigation unavailable'); },
+        get href() { return ''; },
+      },
+    });
+
+    try {
+      await expect(fetchWithAuth('/auth/mfa/disable', { method: 'POST' }))
+        .rejects.toBeInstanceOf(ReauthenticationRequiredError);
+    } finally {
+      Object.defineProperty(window, 'location', { configurable: true, value: originalLocation });
+    }
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+  });
 });
 
 describe('auth API helpers', () => {
@@ -514,12 +590,41 @@ describe('auth API helpers', () => {
     });
   });
 
+  it('does not persist or log a raw recovery code', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse({ error: 'invalid' }, false, 401)));
+
+    await apiVerifyMFA('raw1code', 'temp-recovery', 'recovery_code');
+
+    expect(JSON.stringify({ local: { ...localStorage }, session: { ...sessionStorage } })).not.toContain('raw1code');
+    expect(log).not.toHaveBeenCalled();
+    expect(info).not.toHaveBeenCalled();
+    log.mockRestore();
+    info.mockRestore();
+  });
+
+  it('binds both step-up calls to passkey.register and never retries a rejected proof', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(makeResponse({ challengeId: 'challenge-1' }))
+      .mockResolvedValueOnce(makeResponse({ code: 'mfa_step_up_replayed' }, false, 409));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await apiCreateMfaStepUpGrant('passkey.register', 'totp', '123456');
+
+    expect(result).toMatchObject({ success: false });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({ purpose: 'passkey.register', method: 'totp' });
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toEqual({ purpose: 'passkey.register', method: 'totp', code: '123456' });
+  });
+
   it.each(['complete', 'partial'] as const)(
     'clears all local auth state and redirects when a factor mutation requires reauthentication (%s cleanup)',
     async (cleanupStatus) => {
       useAuthStore.getState().login(baseUser, baseTokens);
       localStorage.setItem('breeze-org', 'org-state');
       localStorage.setItem('breeze-ai-chat', 'chat-state');
+      localStorage.setItem('breeze-workspace', 'workspace-state');
       const response = makeResponse({ success: true, reauthenticate: true, cleanupStatus });
       vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response));
       const hrefSetter = vi.fn();
@@ -535,7 +640,8 @@ describe('auth API helpers', () => {
       });
 
       try {
-        await fetchWithAuth('/auth/mfa/recovery-codes', { method: 'POST', body: '{}' });
+        await expect(fetchWithAuth('/auth/mfa/recovery-codes', { method: 'POST', body: '{}' }))
+          .rejects.toBeInstanceOf(ReauthenticationRequiredError);
       } finally {
         Object.defineProperty(window, 'location', { configurable: true, value: originalLocation });
       }
@@ -550,9 +656,34 @@ describe('auth API helpers', () => {
       expect(localStorage.getItem('breeze-auth')).toBeNull();
       expect(localStorage.getItem('breeze-org')).toBeNull();
       expect(localStorage.getItem('breeze-ai-chat')).toBeNull();
+      expect(localStorage.getItem('breeze-workspace')).toBeNull();
       expect(hrefSetter).toHaveBeenCalledWith('/login#security-settings-changed');
     },
   );
+
+  it('runs every teardown callback and storage removal when one removal throws', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const cleanupA = vi.fn();
+    const cleanupB = vi.fn();
+    const unregisterA = registerSessionTeardown(cleanupA);
+    const unregisterB = registerSessionTeardown(cleanupB);
+    const removed: string[] = [];
+    const storage = { removeItem: (key: string) => {
+      removed.push(key);
+      if (key === 'breeze-org') throw new Error('storage unavailable');
+    } };
+
+    try {
+      clearLocalAuthSession(storage, storage);
+      expect(cleanupA).toHaveBeenCalledOnce();
+      expect(cleanupB).toHaveBeenCalledOnce();
+      expect(removed).toContain('breeze-workspace');
+      expect(removed).toContain('breeze-mfa-enrollment-methods');
+    } finally {
+      unregisterA();
+      unregisterB();
+    }
+  });
 
   it('apiLogout clears state even when logout network call fails', async () => {
     useAuthStore.getState().login(baseUser, baseTokens);

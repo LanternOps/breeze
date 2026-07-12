@@ -1,5 +1,6 @@
 import { showToast } from '../components/shared/Toast';
 import { extractApiError, isApiFailure } from './apiError';
+import { ReauthenticationRequiredError } from '../stores/auth';
 
 export class ActionError extends Error {
   code?: string;
@@ -25,7 +26,8 @@ export async function runAction<T = unknown>(opts: RunActionOptions<T>): Promise
   let response: Response;
   try {
     response = await opts.request();
-  } catch {
+  } catch (error) {
+    if (error instanceof ReauthenticationRequiredError) throw error;
     showToast({ message: opts.errorFallback, type: 'error' });
     throw new ActionError(opts.errorFallback, 0);
   }

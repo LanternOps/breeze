@@ -144,7 +144,7 @@ export default function PartnerSecurityTab({ data, onChange, status, statusUnava
               })}
               className="h-4 w-4 rounded border"
             />
-            <span>{t(`partnerSecurity.methods.${method}`, {
+            <span>{t(/* i18n-dynamic */ `partnerSecurity.methods.${method}`, {
               defaultValue: method === 'totp' ? 'Authenticator app' : method === 'sms' ? 'Text message' : 'Passkeys',
             })}</span>
           </label>

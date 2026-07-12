@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 import TicketingSettingsTabs from './TicketingSettingsTabs';
 import SettingsSectionNav from './SettingsSectionNav';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, ReauthenticationRequiredError } from '../../stores/auth';
 import { getJwtClaims } from '../../lib/authScope';
 import { useOrgStore } from '../../stores/orgStore';
 import PartnerSecurityTab, { currentIpCovered } from './PartnerSecurityTab';
@@ -434,6 +434,7 @@ export default function PartnerSettingsPage() {
       // The just-sent values are now the persisted state.
       setBaseline(currentSnapshot);
     } catch (err) {
+      if (err instanceof ReauthenticationRequiredError) return;
       if (err instanceof ActionError && err.status === 401) return;
       if (!(err instanceof ActionError)) {
         setError(err instanceof Error ? err.message : t('partnerSettingsPage.saveFailed'));
