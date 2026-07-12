@@ -16,6 +16,7 @@ vi.mock('../../stores/auth', () => ({
   apiVerifyPasskeyMFA: apiVerifyPasskeyMFAMock,
   apiSendSmsMfaCode: vi.fn(),
   fetchAndApplyPreferences: vi.fn(),
+  normalizeRecoveryCode: (value: string) => value,
   // LoginForm's useRegistrationGate loads /config via fetchWithAuth.
   fetchWithAuth: vi.fn(async () => new Response('{}', { status: 200 })),
 }));

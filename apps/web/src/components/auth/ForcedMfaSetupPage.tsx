@@ -27,8 +27,7 @@ export default function ForcedMfaSetupPage() {
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const params = new URLSearchParams(window.location.search);
-    setForced(params.get('forced') === '1');
+    setForced(window.location.hash === '#required');
   }, []);
 
   // This page renders under AuthLayout (no AuthGuard/DashboardWrapper), and it

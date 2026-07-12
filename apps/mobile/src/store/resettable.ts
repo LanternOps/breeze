@@ -21,6 +21,7 @@ export const LOGOUT_ACTION_TYPES: ReadonlySet<string> = new Set([
   'auth/logout',
   'auth/logout/fulfilled',
   'auth/logout/rejected',
+  'auth/requireReauthentication',
 ]);
 
 /**

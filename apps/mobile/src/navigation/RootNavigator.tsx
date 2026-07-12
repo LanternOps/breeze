@@ -4,9 +4,9 @@ import { Alert, Pressable, Text, View } from 'react-native';
 import * as Sentry from '@sentry/react-native';
 
 import { useAppSelector, useAppDispatch } from '../store';
-import { setCredentials, logout, logoutAsync } from '../store/authSlice';
+import { setCredentials, logout, logoutAsync, requireReauthentication } from '../store/authSlice';
 import { getStoredToken, getStoredUser, clearAuthData, SecureWipeError } from '../services/auth';
-import { getCurrentUser, onDeviceBlocked } from '../services/api';
+import { getCurrentUser, onDeviceBlocked, onReauthenticationRequired } from '../services/api';
 import { spacing, type } from '../theme';
 import { identify as analyticsIdentify, reset as analyticsReset } from '../lib/analytics';
 import {
@@ -61,6 +61,15 @@ export function RootNavigator() {
     });
     return off;
   }, [dispatch]);
+
+  useEffect(() => onReauthenticationRequired(() => {
+    // The server already committed epoch/family invalidation. Attempt every
+    // local wipe, but always leave authenticated navigation even when the
+    // secure store reports a partial cleanup failure.
+    void clearAuthDataTolerant()
+      .catch(() => undefined)
+      .finally(() => { dispatch(requireReauthentication()); });
+  }), [dispatch]);
   // null while we're still reading the persisted flag. Defaults to "completed"
   // (true) on read errors so a corrupted AsyncStorage never traps users.
   const [hasOnboarded, setHasOnboarded] = useState<boolean | null>(null);

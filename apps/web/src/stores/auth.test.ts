@@ -31,7 +31,8 @@ const makeResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Res
   ({
     ok,
     status,
-    json: vi.fn().mockResolvedValue(payload)
+    json: vi.fn().mockResolvedValue(payload),
+    clone: vi.fn(() => makeResponse(payload, ok, status)),
   }) as unknown as Response;
 
 const baseUser: User = {
@@ -452,6 +453,7 @@ describe('auth API helpers', () => {
       mfaRequired: true,
       tempToken: 'temp-1',
       mfaMethod: 'sms',
+      allowedMethods: ['sms', 'recovery_code'],
       // #2153: response now always reports whether a passkey alternate exists;
       // a login body without the flag normalizes to false.
       passkeyAvailable: false,
@@ -497,6 +499,60 @@ describe('auth API helpers', () => {
 
     expect(result).toEqual({ success: true, user: { ...baseUser, requiresSetup: false }, tokens, requiresSetup: false });
   });
+
+  it('normalizes recovery codes and sends only the recovery-code payload', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse({ error: 'invalid' }, false, 401));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await apiVerifyMFA('ab12cd34', 'temp-recovery', 'recovery_code');
+
+    const [, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(String(options.body))).toEqual({
+      code: 'AB12-CD34',
+      tempToken: 'temp-recovery',
+      method: 'recovery_code',
+    });
+  });
+
+  it.each(['complete', 'partial'] as const)(
+    'clears all local auth state and redirects when a factor mutation requires reauthentication (%s cleanup)',
+    async (cleanupStatus) => {
+      useAuthStore.getState().login(baseUser, baseTokens);
+      localStorage.setItem('breeze-org', 'org-state');
+      localStorage.setItem('breeze-ai-chat', 'chat-state');
+      const response = makeResponse({ success: true, reauthenticate: true, cleanupStatus });
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response));
+      const hrefSetter = vi.fn();
+      const originalLocation = window.location;
+      Object.defineProperty(window, 'location', {
+        configurable: true,
+        value: {
+          ...originalLocation,
+          pathname: '/settings/profile',
+          get href() { return ''; },
+          set href(value: string) { hrefSetter(value); },
+        },
+      });
+
+      try {
+        await fetchWithAuth('/auth/mfa/recovery-codes', { method: 'POST', body: '{}' });
+      } finally {
+        Object.defineProperty(window, 'location', { configurable: true, value: originalLocation });
+      }
+
+      expect(useAuthStore.getState()).toMatchObject({
+        user: null,
+        tokens: null,
+        isAuthenticated: false,
+        mfaPending: false,
+        mfaTempToken: null,
+      });
+      expect(localStorage.getItem('breeze-auth')).toBeNull();
+      expect(localStorage.getItem('breeze-org')).toBeNull();
+      expect(localStorage.getItem('breeze-ai-chat')).toBeNull();
+      expect(hrefSetter).toHaveBeenCalledWith('/login#security-settings-changed');
+    },
+  );
 
   it('apiLogout clears state even when logout network call fails', async () => {
     useAuthStore.getState().login(baseUser, baseTokens);

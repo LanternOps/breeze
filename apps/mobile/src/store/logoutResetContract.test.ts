@@ -19,7 +19,7 @@ vi.mock('@sentry/react-native', () => ({
 }));
 
 import { LOGOUT_ACTION_TYPES } from './resettable';
-import { logout, logoutAsync } from './authSlice';
+import { logout, logoutAsync, requireReauthentication } from './authSlice';
 
 describe('LOGOUT_ACTION_TYPES <-> authSlice contract', () => {
   it('covers exactly the terminal sign-out action types authSlice emits', () => {
@@ -29,6 +29,7 @@ describe('LOGOUT_ACTION_TYPES <-> authSlice contract', () => {
       logout.type, // synchronous reducer
       logoutAsync.fulfilled.type, // API logout succeeded
       logoutAsync.rejected.type, // API logout failed, but user/token nulled anyway
+      requireReauthentication.type, // factor mutation invalidated the current session
     ].sort();
 
     expect([...LOGOUT_ACTION_TYPES].sort()).toEqual(terminalSignOutTypes);

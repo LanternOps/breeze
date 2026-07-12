@@ -12,6 +12,10 @@ vi.mock('../../stores/auth', () => ({
   apiVerifyPasskeyMFA: vi.fn(),
   apiSendSmsMfaCode: vi.fn(),
   fetchAndApplyPreferences: vi.fn(),
+  normalizeRecoveryCode: (value: string) => {
+    const compact = value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+    return compact.length > 4 ? `${compact.slice(0, 4)}-${compact.slice(4)}` : compact;
+  },
   // LoginForm's useRegistrationGate loads /config via fetchWithAuth; answer
   // "registration disabled" so the password form renders unchanged.
   fetchWithAuth: vi.fn(async () => new Response('{}', { status: 200 })),
@@ -316,5 +320,27 @@ describe('LoginPage navigation after MFA verify', () => {
 
     await waitFor(() => expect(navigateTo).toHaveBeenCalled());
     expect(navigateTo).toHaveBeenCalledWith('/');
+  });
+
+  it('submits a selected recovery code with the recovery method', async () => {
+    render(<LoginPage next="/" />);
+    vi.mocked(apiLogin).mockResolvedValueOnce({
+      success: true,
+      mfaRequired: true,
+      tempToken: 'temp-recovery',
+      mfaMethod: 'totp',
+      allowedMethods: ['totp', 'recovery_code'],
+    });
+    await fillAndSubmit();
+    fireEvent.click(await screen.findByTestId('mfa-method-recovery_code'));
+    fireEvent.change(screen.getByTestId('mfa-recovery-code'), { target: { value: 'ab12cd34' } });
+    vi.mocked(apiVerifyMFA).mockResolvedValueOnce(baseLoginSuccess);
+    fireEvent.click(screen.getByTestId('mfa-submit'));
+
+    await waitFor(() => expect(apiVerifyMFA).toHaveBeenCalledWith(
+      'AB12-CD34',
+      'temp-recovery',
+      'recovery_code',
+    ));
   });
 });

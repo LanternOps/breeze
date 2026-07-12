@@ -38,6 +38,7 @@ export interface User {
   email: string;
   name: string;
   mfaEnabled: boolean;
+  mfaMethod?: 'totp' | 'sms' | 'passkey' | null;
   avatarUrl?: string;
   requiresSetup?: boolean;
   // True only for platform operators. Gates platform-admin-only nav (e.g.
@@ -638,7 +639,7 @@ export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): 
       if (body?.error === 'mfa_enrollment_required') {
         const path = window.location.pathname;
         if (path !== '/auth/mfa/setup') {
-          window.location.href = '/auth/mfa/setup?forced=1';
+          window.location.href = '/auth/mfa/setup#required';
         }
       }
     } catch {
@@ -646,10 +647,47 @@ export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): 
     }
   }
 
+  // Factor mutations advance the user's MFA epoch and revoke every refresh
+  // family before returning. Treat the server's explicit signal as the
+  // authoritative session boundary, including when post-commit cleanup was
+  // only partial: durable credentials are already invalid and local state must
+  // not remain on an authenticated screen.
+  if (response.ok && typeof response.clone === 'function') {
+    try {
+      const body = await response.clone().json() as { reauthenticate?: unknown };
+      if (body?.reauthenticate === true) {
+        clearLocalAuthSession();
+        if (typeof window !== 'undefined') {
+          window.location.href = '/login#security-settings-changed';
+        }
+      }
+    } catch {
+      // Non-JSON successful responses have no reauthentication contract.
+    }
+  }
+
   return response;
 }
 
-export type MfaMethod = 'totp' | 'sms' | 'passkey';
+export type MfaMethod = 'totp' | 'sms' | 'passkey' | 'recovery_code';
+export type MfaCodeMethod = Exclude<MfaMethod, 'passkey'>;
+
+export function normalizeRecoveryCode(value: string): string {
+  const compact = value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+  return compact.length > 4 ? `${compact.slice(0, 4)}-${compact.slice(4)}` : compact;
+}
+
+export function clearLocalAuthSession(): void {
+  useAuthStore.getState().logout();
+  for (const key of ['breeze-auth', 'breeze-org', 'breeze-ai-chat']) {
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      // Attempt every store even if one removal fails. The in-memory session
+      // is already gone and the server has durably revoked refresh families.
+    }
+  }
+}
 
 type ApiAuthSuccess = {
   success: boolean;
@@ -681,6 +719,7 @@ export async function apiLogin(email: string, password: string): Promise<{
   mfaRequired?: boolean;
   tempToken?: string;
   mfaMethod?: MfaMethod;
+  allowedMethods?: MfaMethod[];
   passkeyAvailable?: boolean;
   phoneLast4?: string;
   user?: User;
@@ -703,11 +742,24 @@ export async function apiLogin(email: string, password: string): Promise<{
     }
 
     if (data.mfaRequired) {
+      const primaryMethod: MfaMethod = data.mfaMethod || 'totp';
+      const serverMethods: MfaMethod[] = Array.isArray(data.allowedMethods)
+        ? data.allowedMethods.filter((method: unknown): method is MfaMethod =>
+            method === 'totp' || method === 'sms' || method === 'passkey' || method === 'recovery_code')
+        : [];
+      const allowedMethods: MfaMethod[] = serverMethods.length > 0
+        ? [...new Set(serverMethods)]
+        : [...new Set<MfaMethod>([
+            primaryMethod,
+            ...(data.passkeyAvailable === true ? ['passkey' as const] : []),
+            'recovery_code',
+          ])];
       return {
         success: true,
         mfaRequired: true,
         tempToken: data.tempToken,
-        mfaMethod: data.mfaMethod || 'totp',
+        mfaMethod: primaryMethod,
+        allowedMethods,
         // #2153: whether a passkey can be used as an alternate factor for this
         // login even when the primary method is totp/sms.
         passkeyAvailable: data.passkeyAvailable === true,
@@ -728,13 +780,16 @@ export async function apiLogin(email: string, password: string): Promise<{
   }
 }
 
-export async function apiVerifyMFA(code: string, tempToken: string, method?: MfaMethod): Promise<ApiAuthSuccess> {
+export async function apiVerifyMFA(code: string, tempToken: string, method: MfaCodeMethod = 'totp'): Promise<ApiAuthSuccess> {
   try {
+    const payload = method === 'recovery_code'
+      ? { code: normalizeRecoveryCode(code), tempToken, method }
+      : { code, tempToken, method };
     const response = await fetch(buildApiUrl('/auth/mfa/verify'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify({ code, tempToken, method })
+      body: JSON.stringify(payload)
     });
 
     const data = await response.json();
@@ -752,6 +807,48 @@ export async function apiVerifyMFA(code: string, tempToken: string, method?: Mfa
       requiresSetup: !!data.requiresSetup
     };
   } catch {
+    return { success: false, error: 'Network error' };
+  }
+}
+
+export type MfaStepUpPurpose = 'passkey.register' | 'totp.replace' | 'sms.replace' | 'email.change';
+export type MfaStepUpMethod = 'totp' | 'sms' | 'passkey';
+
+export async function apiCreateMfaStepUpGrant(
+  purpose: MfaStepUpPurpose,
+  method: MfaStepUpMethod,
+  code?: string,
+): Promise<{ success: boolean; grant?: string; error?: string }> {
+  try {
+    const optionsResponse = await fetchWithAuth('/auth/mfa/step-up/options', {
+      method: 'POST',
+      body: JSON.stringify({ purpose, method }),
+    });
+    const optionsData = await optionsResponse.json().catch(() => ({}));
+    if (!optionsResponse.ok) {
+      return { success: false, error: extractApiError(optionsData, 'Failed to start MFA verification') };
+    }
+
+    const proof = method === 'passkey'
+      ? {
+          purpose,
+          method,
+          credential: await getPasskeyCredential(optionsData.options ?? optionsData.optionsJSON),
+        }
+      : { purpose, method, code: code ?? '' };
+    const verifyResponse = await fetchWithAuth('/auth/mfa/step-up/verify', {
+      method: 'POST',
+      body: JSON.stringify(proof),
+    });
+    const verifyData = await verifyResponse.json().catch(() => ({}));
+    if (!verifyResponse.ok || typeof verifyData.grant !== 'string') {
+      return { success: false, error: extractApiError(verifyData, 'MFA verification failed') };
+    }
+    return { success: true, grant: verifyData.grant };
+  } catch (error) {
+    if (error instanceof Error && error.name === 'NotAllowedError') {
+      return { success: false, error: 'Passkey verification was canceled or timed out' };
+    }
     return { success: false, error: 'Network error' };
   }
 }

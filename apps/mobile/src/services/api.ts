@@ -13,6 +13,8 @@ export const DEVICE_BLOCKED_CODE = 'device_blocked';
 
 type DeviceBlockedListener = (reason: string | null) => void;
 const deviceBlockedListeners = new Set<DeviceBlockedListener>();
+type ReauthenticationListener = (reason: 'security-settings-changed') => void;
+const reauthenticationListeners = new Set<ReauthenticationListener>();
 
 /**
  * Subscribe to the global "this device just got blocked" signal. The first
@@ -24,6 +26,21 @@ export function onDeviceBlocked(listener: DeviceBlockedListener): () => void {
   return () => {
     deviceBlockedListeners.delete(listener);
   };
+}
+
+export function onReauthenticationRequired(listener: ReauthenticationListener): () => void {
+  reauthenticationListeners.add(listener);
+  return () => { reauthenticationListeners.delete(listener); };
+}
+
+function notifyReauthenticationRequired(): void {
+  for (const listener of reauthenticationListeners) {
+    try {
+      listener('security-settings-changed');
+    } catch (err) {
+      console.error('[api] reauthentication listener threw', err);
+    }
+  }
 }
 
 function notifyDeviceBlocked(reason: string | null): void {
@@ -92,12 +109,14 @@ export interface LoginResponse {
   user: User;
 }
 
-export type MfaMethod = 'totp' | 'sms';
+export type MfaMethod = 'totp' | 'sms' | 'passkey' | 'recovery_code';
+export type MfaCodeMethod = Exclude<MfaMethod, 'passkey'>;
 
 export interface MfaChallenge {
   tempToken: string;
   mfaMethod: MfaMethod;
   phoneLast4: string | null;
+  allowedMethods: MfaMethod[];
 }
 
 export type LoginResult =
@@ -132,6 +151,7 @@ interface LoginPayload {
   tempToken?: string;
   mfaMethod?: MfaMethod;
   phoneLast4?: string | null;
+  allowedMethods?: MfaMethod[];
   error?: string;
 }
 
@@ -252,7 +272,16 @@ async function requestWithPrefix<T>(
     return {} as T;
   }
 
-  return JSON.parse(text);
+  const parsed = JSON.parse(text) as T & { reauthenticate?: unknown };
+  if (parsed && typeof parsed === 'object' && parsed.reauthenticate === true) {
+    notifyReauthenticationRequired();
+    throw {
+      message: 'Your security settings changed. Sign in again to continue.',
+      code: 'reauthentication_required',
+      statusCode: 401,
+    } as ApiError;
+  }
+  return parsed;
 }
 
 async function request<T>(
@@ -326,6 +355,9 @@ export async function login(email: string, password: string): Promise<LoginResul
       challenge: {
         tempToken: response.tempToken,
         mfaMethod: response.mfaMethod,
+        allowedMethods: response.allowedMethods?.length
+          ? response.allowedMethods
+          : [...new Set<MfaMethod>([response.mfaMethod, 'recovery_code'])],
         phoneLast4: response.phoneLast4 ?? null,
       },
     };
@@ -339,10 +371,16 @@ export async function login(email: string, password: string): Promise<LoginResul
   return { kind: 'success', token, user: response.user };
 }
 
-export async function verifyMfa(code: string, tempToken: string): Promise<LoginResponse> {
+export async function verifyMfa(code: string, tempToken: string, method: MfaCodeMethod = 'totp'): Promise<LoginResponse> {
+  const normalizedCode = method === 'recovery_code'
+    ? (() => {
+        const compact = code.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+        return compact.length > 4 ? `${compact.slice(0, 4)}-${compact.slice(4)}` : compact;
+      })()
+    : code;
   const response = await requestWithPrefix<LoginPayload>('/auth/mfa/verify', API_CORE_PREFIX, {
     method: 'POST',
-    body: JSON.stringify({ code, tempToken }),
+    body: JSON.stringify({ code: normalizedCode, tempToken, method }),
   });
 
   const token = response.tokens?.accessToken || response.accessToken;

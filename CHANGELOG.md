@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 - Authentication sessions now use database-backed lifecycle state. Upgrading intentionally requires every user to sign in again. New session families have a fixed 30-day absolute lifetime that refresh cannot extend, and offboarding, membership or role changes, account or tenant status changes, and logout invalidate affected sessions immediately.
+- MFA sign-in now supports single-use recovery codes on web and mobile, policy screens use the canonical authenticator/SMS/passkey allowlist, and factor changes immediately clear local sessions and require a fresh sign-in even when post-commit cleanup is only partially available.
 
 ## [0.67.1] - 2026-05-26
 

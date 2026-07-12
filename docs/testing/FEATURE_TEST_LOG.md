@@ -3612,3 +3612,31 @@ tests never exercised the real browser payloads** — worth a validator/UI-contr
 - The live walkthrough also exposed and fixed a stored-locale hydration race that could render pt-BR before English SSR islands hydrated.
 - Final read-only code review found no unresolved Critical or Important issues after runtime, enforcement, formatter, and copy-quality remediation.
 - Brazilian Portuguese copy remains machine-drafted and should receive native-speaker review before production rollout.
+
+## Wave 2 MFA client contracts — 2026-07-12
+
+**Branch:** `fix/core-mfa-policy-assurance`
+**Commit:** `bed3ecacd` (implementation pending commit)
+**Tested by:** Codex
+**Result:** PARTIAL
+
+### What was tested
+
+- [x] Web: recovery-code selection and normalization, allowed-method rendering, canonical policy controls, existing-factor passkey step-up, and complete/partial reauthentication teardown.
+- [x] Mobile: recovery-code challenge payloads, method selection/formatting, secure local teardown signal, Redux reset, and sign-in notice.
+- [x] API/local database: focused Wave 2 suite, `/users/me` step-up contract, builds, fresh-database migration drift, RLS coverage, and the real PostgreSQL/Redis one-winner recovery race.
+- [ ] Live UI/API smoke: unavailable because the worktree has no configured `E2E_BASE_URL`, `E2E_API_URL`, `E2E_ADMIN_EMAIL`, or `E2E_ADMIN_PASSWORD`, and its compose stack has no running API/web/Postgres/Redis services.
+
+### Evidence
+
+- Narrow web: 7 files / 69 tests passed; mobile: 25 files / 198 passed, 3 skipped.
+- Focused Wave 2 API: 9 files / 378 tests passed; users route: 82 passed.
+- Fresh branch database: all 389 migration files matched the ledger; RLS contract: 50 passed.
+- Real recovery concurrency: 1 passed, 4 skipped; exactly one concurrent token response.
+- API and web builds passed; web/mobile typechecks, targeted API/web lint, locale JSON parsing, and `git diff --check` passed.
+
+### Issues Found
+
+- The shared `breeze_test` database belongs to a newer checkout and contains five ledger entries absent from this exact branch, so migration/RLS/recovery gates were rerun against isolated local test databases migrated from this branch.
+- A full five-case recovery integration run under Node 26 and the shared Redis service was unstable (three failures, including a cleanup deadlock). The required one-winner race was rerun and passed under supported Node 22 with isolated PostgreSQL and Redis.
+- Browser/API E2E remains blocked by the exact environment gap above; no production or external state was mutated.

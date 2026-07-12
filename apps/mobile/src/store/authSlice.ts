@@ -6,6 +6,7 @@ import {
   logout as apiLogout,
   verifyMfa as apiVerifyMfa,
   type MfaChallenge,
+  type MfaCodeMethod,
   type User,
 } from '../services/api';
 import { storeToken, storeUser, clearAuthData } from '../services/auth';
@@ -18,6 +19,7 @@ interface AuthState {
   isLoading: boolean;
   error: string | null;
   mfaChallenge: MfaChallenge | null;
+  securityNotice: string | null;
   pushRegistration: PushRegistrationStatus;
   pushRegistrationReason: string | null;
 }
@@ -28,6 +30,7 @@ const initialState: AuthState = {
   isLoading: false,
   error: null,
   mfaChallenge: null,
+  securityNotice: null,
   pushRegistration: 'idle',
   pushRegistrationReason: null,
 };
@@ -55,9 +58,9 @@ export const loginAsync = createAsyncThunk(
 
 export const verifyMfaAsync = createAsyncThunk(
   'auth/verifyMfa',
-  async ({ code, tempToken }: { code: string; tempToken: string }, { rejectWithValue }) => {
+  async ({ code, tempToken, method }: { code: string; tempToken: string; method: MfaCodeMethod }, { rejectWithValue }) => {
     try {
-      const response = await apiVerifyMfa(code, tempToken);
+      const response = await apiVerifyMfa(code, tempToken, method);
       await storeToken(response.token);
       await storeUser(response.user);
       return response;
@@ -125,6 +128,15 @@ const authSlice = createSlice({
     },
     clearError: (state) => {
       state.error = null;
+      state.securityNotice = null;
+    },
+    requireReauthentication: (state) => {
+      state.user = null;
+      state.token = null;
+      state.isLoading = false;
+      state.error = null;
+      state.mfaChallenge = null;
+      state.securityNotice = 'Your security settings changed. Sign in again to continue.';
     },
     clearMfaChallenge: (state) => {
       state.mfaChallenge = null;
@@ -204,6 +216,7 @@ export const {
   logout,
   clearError,
   clearMfaChallenge,
+  requireReauthentication,
   setLoading,
   setPushRegistration,
 } = authSlice.actions;

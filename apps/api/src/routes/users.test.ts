@@ -779,6 +779,26 @@ describe('user routes', () => {
       });
     });
 
+    it('returns the configured MFA method so protected client mutations can request the right step-up', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'user-123', email: 'admin@example.com', name: 'Admin', avatarUrl: null,
+              status: 'active', mfaEnabled: true, mfaMethod: 'totp', isPlatformAdmin: false,
+              createdAt: new Date(), lastLoginAt: new Date(), setupCompletedAt: new Date(),
+              passwordChangedAt: new Date(), preferences: {},
+            }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/users/me', { headers: { Authorization: 'Bearer token' } });
+      expect(res.status).toBe(200);
+      expect(Object.hasOwn(vi.mocked(db.select).mock.calls[0]![0] as object, 'mfaMethod')).toBe(true);
+      expect(await res.json()).toMatchObject({ mfaEnabled: true, mfaMethod: 'totp' });
+    });
+
     // The web sidebar gates platform-admin-only nav (account-deletion-requests)
     // and skips its badge fetch off this flag; if it ever stops being returned,
     // that fetch starts 403-spamming the console for every ordinary user again.

@@ -14,6 +14,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAppDispatch, useAppSelector } from '../../store';
 import { clearMfaChallenge, verifyMfaAsync } from '../../store/authSlice';
 import { sendMfaSms } from '../../services/api';
+import type { MfaCodeMethod } from '../../services/api';
+import { normalizeMfaChallengeCode } from './mfaChallengeContract';
 import { useApprovalTheme, palette, radii, spacing, type } from '../../theme';
 import { Spinner } from '../../components/Spinner';
 import { haptic } from '../../lib/motion';
@@ -26,12 +28,25 @@ export function MfaChallengeScreen() {
   const { isLoading, error, mfaChallenge } = useAppSelector((state) => state.auth);
 
   const [code, setCode] = useState('');
+  const [selectedMethod, setSelectedMethod] = useState<MfaCodeMethod>('totp');
   const [smsSent, setSmsSent] = useState(false);
   const [smsError, setSmsError] = useState<string | null>(null);
   const [cooldown, setCooldown] = useState(0);
   const inputRef = useRef<TextInput>(null);
 
-  const isSms = mfaChallenge?.mfaMethod === 'sms';
+  const availableCodeMethods = (mfaChallenge?.allowedMethods ?? [])
+    .filter((method): method is MfaCodeMethod => method !== 'passkey');
+  const isSms = selectedMethod === 'sms';
+  const isRecovery = selectedMethod === 'recovery_code';
+
+  useEffect(() => {
+    if (!mfaChallenge) return;
+    const primary = mfaChallenge.mfaMethod === 'passkey'
+      ? availableCodeMethods[0] ?? 'recovery_code'
+      : mfaChallenge.mfaMethod;
+    setSelectedMethod(primary);
+    setCode('');
+  }, [mfaChallenge?.tempToken]);
 
   useEffect(() => {
     if (!isSms || !mfaChallenge?.tempToken || smsSent) return;
@@ -60,14 +75,13 @@ export function MfaChallengeScreen() {
   }
 
   function handleChangeCode(value: string) {
-    const digits = value.replace(/\D/g, '').slice(0, 6);
-    setCode(digits);
+    setCode(normalizeMfaChallengeCode(value, selectedMethod));
   }
 
   async function handleVerify() {
-    if (!mfaChallenge || code.length !== 6) return;
+    if (!mfaChallenge || code.length !== (isRecovery ? 9 : 6)) return;
     haptic.tap();
-    dispatch(verifyMfaAsync({ code, tempToken: mfaChallenge.tempToken }));
+    dispatch(verifyMfaAsync({ code, tempToken: mfaChallenge.tempToken, method: selectedMethod }));
   }
 
   async function handleResend() {
@@ -89,8 +103,10 @@ export function MfaChallengeScreen() {
     dispatch(clearMfaChallenge());
   }
 
-  const canSubmit = code.length === 6 && !isLoading;
-  const subtitle = isSms
+  const canSubmit = code.length === (isRecovery ? 9 : 6) && !isLoading;
+  const subtitle = isRecovery
+    ? 'Enter one of your single-use recovery codes.'
+    : isSms
     ? mfaChallenge.phoneLast4
       ? `We sent a 6-digit code to the phone ending in ${mfaChallenge.phoneLast4}.`
       : 'We sent a 6-digit code to your phone.'
@@ -133,8 +149,28 @@ export function MfaChallengeScreen() {
               { backgroundColor: theme.bg1, borderColor: theme.border },
             ]}
           >
+            {availableCodeMethods.length > 1 ? (
+              <View style={styles.methodRow}>
+                {availableCodeMethods.map(method => (
+                  <Pressable
+                    key={method}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: selectedMethod === method }}
+                    onPress={() => {
+                      setSelectedMethod(method);
+                      setCode('');
+                    }}
+                    style={[styles.methodButton, { backgroundColor: selectedMethod === method ? theme.brand : theme.bg2 }]}
+                  >
+                    <Text style={[type.meta, { color: theme.textHi }]}>
+                      {method === 'totp' ? 'Authenticator' : method === 'sms' ? 'Text message' : 'Recovery code'}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : null}
             <Text style={[type.metaCaps, { color: theme.textLo }]}>
-              VERIFICATION CODE
+              {isRecovery ? 'RECOVERY CODE' : 'VERIFICATION CODE'}
             </Text>
             <View
               style={[
@@ -146,11 +182,12 @@ export function MfaChallengeScreen() {
                 ref={inputRef}
                 value={code}
                 onChangeText={handleChangeCode}
-                keyboardType="number-pad"
-                autoComplete="one-time-code"
-                textContentType="oneTimeCode"
-                maxLength={6}
-                placeholder="123456"
+                keyboardType={isRecovery ? 'default' : 'number-pad'}
+                autoComplete={isRecovery ? 'off' : 'one-time-code'}
+                textContentType={isRecovery ? 'none' : 'oneTimeCode'}
+                autoCapitalize={isRecovery ? 'characters' : 'none'}
+                maxLength={isRecovery ? 9 : 6}
+                placeholder={isRecovery ? 'XXXX-XXXX' : '123456'}
                 placeholderTextColor={theme.textLo}
                 onSubmitEditing={handleVerify}
                 returnKeyType="go"
@@ -162,7 +199,7 @@ export function MfaChallengeScreen() {
                     minHeight: 48,
                     flex: 1,
                     fontSize: 22,
-                    letterSpacing: 6,
+                    letterSpacing: isRecovery ? 3 : 6,
                     textAlign: 'center',
                   },
                 ]}
@@ -281,6 +318,8 @@ const styles = StyleSheet.create({
     borderRadius: radii.md,
     marginTop: spacing[2],
   },
+  methodRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing[2], marginBottom: spacing[4] },
+  methodButton: { borderRadius: radii.md, paddingHorizontal: spacing[3], paddingVertical: spacing[2] },
   errorBlock: {
     marginTop: spacing[4],
     padding: spacing[3],

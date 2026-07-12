@@ -10,8 +10,8 @@ import ConnectSsoCard from './ConnectSsoCard';
 import MFASettings from './MFASettings';
 import ApproverDevicesSection from './ApproverDevicesSection';
 import ThemingSettings from './ThemingSettings';
-import { createPasskeyCredential, fetchWithAuth, useAuthStore } from '../../stores/auth';
-import type { PasskeyRegistrationOptions, UserPreferences } from '../../stores/auth';
+import { apiCreateMfaStepUpGrant, createPasskeyCredential, fetchWithAuth, useAuthStore } from '../../stores/auth';
+import type { MfaStepUpMethod, PasskeyRegistrationOptions, UserPreferences } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { useAvatarBlobUrl } from '@/lib/avatarBlobCache';
 import { formatNumber } from '@/lib/i18n/format';
@@ -28,6 +28,7 @@ type User = {
   email: string;
   avatarUrl?: string;
   mfaEnabled?: boolean;
+  mfaMethod?: MfaStepUpMethod | null;
   preferences?: UserPreferences;
 };
 
@@ -74,6 +75,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   const [passkeys, setPasskeys] = useState<PasskeySummary[]>([]);
   const [passkeyName, setPasskeyName] = useState('');
   const [passkeyPassword, setPasskeyPassword] = useState('');
+  const [passkeyMfaCode, setPasskeyMfaCode] = useState('');
   const [passkeyError, setPasskeyError] = useState<string | undefined>();
   const [passkeySuccess, setPasskeySuccess] = useState<string | undefined>();
   const [isLoadingPasskeys, setIsLoadingPasskeys] = useState(false);
@@ -473,15 +475,25 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   };
 
   const handleAddPasskey = async () => {
-    if (!passkeyPassword || isAddingPasskey) return;
+    const existingMethod = user?.mfaMethod;
+    const requiresCode = existingMethod === 'totp' || existingMethod === 'sms';
+    if (isAddingPasskey || (!existingMethod && !passkeyPassword) || (requiresCode && passkeyMfaCode.length !== 6)) return;
     setPasskeyError(undefined);
     setPasskeySuccess(undefined);
     try {
       setIsAddingPasskey(true);
       const label = passkeyName.trim() || 'Passkey';
+      let mfaGrant: string | undefined;
+      if (existingMethod) {
+        const stepUp = await apiCreateMfaStepUpGrant('passkey.register', existingMethod, passkeyMfaCode);
+        if (!stepUp.success || !stepUp.grant) {
+          throw new Error(stepUp.error ?? t('profilePage.failedToVerifyExistingMfa', { defaultValue: 'Failed to verify your existing MFA factor' }));
+        }
+        mfaGrant = stepUp.grant;
+      }
       const optionsResponse = await fetchWithAuth('/auth/passkeys/register/options', {
         method: 'POST',
-        body: JSON.stringify({ currentPassword: passkeyPassword, name: label })
+        body: JSON.stringify(mfaGrant ? { mfaGrant, name: label } : { currentPassword: passkeyPassword, name: label })
       });
 
       const optionsData = await optionsResponse.json().catch(() => ({}));
@@ -495,7 +507,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       const credential = await createPasskeyCredential(optionsJSON);
       const verifyResponse = await fetchWithAuth('/auth/passkeys/register/verify', {
         method: 'POST',
-        body: JSON.stringify({ name: label, credential })
+        body: JSON.stringify({ name: label, credential, ...(mfaGrant ? { mfaGrant } : {}) })
       });
 
       const verifyData = await verifyResponse.json().catch(() => ({}));
@@ -508,6 +520,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       setUser(prev => (prev ? { ...prev, mfaEnabled: true } : null));
       setPasskeyName('');
       setPasskeyPassword('');
+      setPasskeyMfaCode('');
       if (Array.isArray(verifyData.recoveryCodes)) {
         setRecoveryCodes(verifyData.recoveryCodes);
       }
@@ -876,6 +889,23 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
             />
           </div>
           <div className="space-y-2">
+            {user?.mfaMethod ? (
+              <>
+                <label className="text-sm font-medium" htmlFor="passkey-mfa-code">
+                  {t('profilePage.existingMfaCode', { defaultValue: 'Existing MFA code' })}
+                </label>
+                <input
+                  id="passkey-mfa-code"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  value={passkeyMfaCode}
+                  onChange={event => setPasskeyMfaCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
+                  className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                  disabled={isAddingPasskey || user.mfaMethod === 'passkey'}
+                  placeholder={user.mfaMethod === 'passkey' ? t('profilePage.passkeyPrompt', { defaultValue: 'Your passkey will be requested' }) : '123456'}
+                />
+              </>
+            ) : <>
             <label className="text-sm font-medium" htmlFor="passkey-password">
               {t('profilePage.currentPassword')}</label>
             <input
@@ -887,11 +917,14 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
               className="h-10 w-full rounded-md border bg-background px-3 text-sm"
               disabled={isAddingPasskey}
             />
+            </>}
           </div>
           <button
             type="button"
             onClick={handleAddPasskey}
-            disabled={isAddingPasskey || !passkeyPassword}
+            disabled={isAddingPasskey || (user?.mfaMethod
+              ? user.mfaMethod !== 'passkey' && passkeyMfaCode.length !== 6
+              : !passkeyPassword)}
             className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {isAddingPasskey ? t('profilePage.adding') : t('profilePage.addPasskey')}

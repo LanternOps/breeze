@@ -242,6 +242,13 @@
     "sessionTimeout": "Tempo limite da sessão (minutos)",
     "maxSessions": "Máximo de sessões simultâneas",
     "requireMfa": "Exigir MFA para todos os usuários",
+    "allowedMethods": "Métodos MFA permitidos",
+    "allowedMethodsHelp": "Usuários obrigados a cadastrar MFA devem usar pelo menos um método ativado.",
+    "methods": {
+      "totp": "Aplicativo autenticador",
+      "sms": "Mensagem de texto",
+      "passkey": "Chaves de acesso"
+    },
     "ipAllowlist": "Lista de IPs permitidos",
     "inactiveWarning": "Lista de permissões configurada, mas <strong>inativa</strong> — a API não está vendo os IPs reais dos clientes. Configure a confiança no proxy (<first>TRUST_PROXY_HEADERS</first> + <second>TRUSTED_PROXY_CIDRS</second>) para aplicá-la.",
     "statusUnavailable": "Não foi possível verificar o status da lista de permissões. O servidor ainda aplica qualquer lista salva — confira se o seu IP está coberto antes de salvar.",
@@ -1510,6 +1517,9 @@
     "changePassword": "Alterar a senha",
     "updateYourPasswordToKeepYourAccountSecure": "Atualize sua senha para manter sua conta segura.",
     "currentPassword": "Senha atual",
+    "existingMfaCode": "Código MFA existente",
+    "passkeyPrompt": "Sua chave de acesso será solicitada",
+    "failedToVerifyExistingMfa": "Falha ao verificar seu fator MFA existente",
     "enterYourCurrentPassword": "Digite sua senha atual",
     "newPassword": "Nova senha",
     "createANewPassword": "Crie uma nova senha",
@@ -2195,7 +2205,8 @@
       "requireAll": "Exigir MFA para todos os usuários",
       "allowedMethods": "Métodos permitidos",
       "totp": "Aplicativo autenticador (TOTP)",
-      "sms": "Códigos SMS"
+      "sms": "Códigos SMS",
+      "passkey": "Chave de acesso"
     },
     "sessions": {
       "title": "Configurações de sessão",

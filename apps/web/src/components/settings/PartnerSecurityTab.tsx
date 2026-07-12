@@ -127,6 +127,30 @@ export default function PartnerSecurityTab({ data, onChange, status, statusUnava
         </div>
       </div>
 
+      <div className="space-y-3 rounded-md border p-4">
+        <div>
+          <p className="text-sm font-medium">{t('partnerSecurity.allowedMethods', { defaultValue: 'Allowed MFA methods' })}</p>
+          <p className="text-xs text-muted-foreground">
+            {t('partnerSecurity.allowedMethodsHelp', { defaultValue: 'Users required to enroll MFA must use at least one enabled method.' })}
+          </p>
+        </div>
+        {(['totp', 'sms', 'passkey'] as const).map(method => (
+          <label key={method} className="flex items-center gap-3 text-sm">
+            <input
+              type="checkbox"
+              checked={data.allowedMethods?.[method] === true}
+              onChange={e => set({
+                allowedMethods: { ...data.allowedMethods, [method]: e.target.checked },
+              })}
+              className="h-4 w-4 rounded border"
+            />
+            <span>{t(`partnerSecurity.methods.${method}`, {
+              defaultValue: method === 'totp' ? 'Authenticator app' : method === 'sms' ? 'Text message' : 'Passkeys',
+            })}</span>
+          </label>
+        ))}
+      </div>
+
       <div className="space-y-2">
         <label className="text-sm font-medium">{t('partnerSecurity.ipAllowlist')}</label>
 

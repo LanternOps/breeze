@@ -10,7 +10,7 @@ type SecurityData = {
   complexity?: string;
   expirationDays?: number;
   requireMfa?: boolean;
-  allowedMethods?: { totp: boolean; sms: boolean };
+  allowedMethods?: { totp?: boolean; sms?: boolean; passkey?: boolean };
   sessionTimeout?: number;
   maxSessions?: number;
   ipAllowlist?: string;
@@ -34,7 +34,7 @@ const defaultSecurity: SecurityData = {
   complexity: 'standard',
   expirationDays: 90,
   requireMfa: true,
-  allowedMethods: { totp: true, sms: false },
+  allowedMethods: { totp: true, sms: false, passkey: true },
   sessionTimeout: 60,
   maxSessions: 3,
   ipAllowlist: ''
@@ -49,7 +49,11 @@ export default function OrgSecuritySettings({ security, mtls, onDirty, onSave, l
   const [complexity, setComplexity] = useState(initialData.complexity || 'standard');
   const [expirationDays, setExpirationDays] = useState(initialData.expirationDays || 90);
   const [requireMfa, setRequireMfa] = useState(initialData.requireMfa ?? true);
-  const [allowedMethods, setAllowedMethods] = useState(initialData.allowedMethods || { totp: true, sms: false });
+  const [allowedMethods, setAllowedMethods] = useState({
+    totp: initialData.allowedMethods?.totp ?? true,
+    sms: initialData.allowedMethods?.sms ?? false,
+    passkey: initialData.allowedMethods?.passkey ?? true,
+  });
   const [sessionTimeout, setSessionTimeout] = useState(initialData.sessionTimeout || 60);
   const [maxSessions, setMaxSessions] = useState(initialData.maxSessions || 3);
   const [ipAllowlist, setIpAllowlist] = useState(initialData.ipAllowlist || '');
@@ -228,6 +232,18 @@ export default function OrgSecuritySettings({ security, mtls, onDirty, onSave, l
                 checked={allowedMethods.totp}
                 onChange={event => {
                   setAllowedMethods(prev => ({ ...prev, totp: event.target.checked }));
+                  markDirty();
+                }}
+                className="h-4 w-4"
+              />
+            </label>
+            <label className="flex items-center justify-between gap-4 text-sm">
+              <span>{t('orgSecuritySettings.mfa.passkey', { defaultValue: 'Passkey' })}</span>
+              <input
+                type="checkbox"
+                checked={allowedMethods.passkey}
+                onChange={event => {
+                  setAllowedMethods(prev => ({ ...prev, passkey: event.target.checked }));
                   markDirty();
                 }}
                 className="h-4 w-4"

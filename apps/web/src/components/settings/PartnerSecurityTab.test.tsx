@@ -1,5 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
 import { parseAllowlistInput, currentIpCovered } from './PartnerSecurityTab';
+import PartnerSecurityTab from './PartnerSecurityTab';
 
 describe('parseAllowlistInput', () => {
   it('splits lines, trims, and drops blanks', () => {
@@ -9,6 +11,19 @@ describe('parseAllowlistInput', () => {
   it('returns an empty array for empty input', () => {
     expect(parseAllowlistInput('')).toEqual([]);
     expect(parseAllowlistInput('\n  \n')).toEqual([]);
+  });
+});
+
+describe('partner MFA policy', () => {
+  it('writes the canonical passkey allowlist and required-enrollment policy', () => {
+    const onChange = vi.fn();
+    render(<PartnerSecurityTab data={{ requireMfa: true, allowedMethods: { totp: true } }} onChange={onChange} />);
+
+    fireEvent.click(screen.getByLabelText('Passkeys'));
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
+      requireMfa: true,
+      allowedMethods: { totp: true, passkey: true },
+    }));
   });
 });
 

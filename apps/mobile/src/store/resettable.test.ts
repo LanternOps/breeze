@@ -62,11 +62,12 @@ describe('withLogoutReset', () => {
     expect(after.aiChat.messages).toHaveLength(1);
   });
 
-  it('covers exactly the three terminal sign-out action types', () => {
+  it('covers exactly the terminal sign-out action types', () => {
     expect([...LOGOUT_ACTION_TYPES].sort()).toEqual([
       'auth/logout',
       'auth/logout/fulfilled',
       'auth/logout/rejected',
+      'auth/requireReauthentication',
     ]);
   });
 

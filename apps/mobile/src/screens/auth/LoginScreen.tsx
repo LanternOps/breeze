@@ -80,7 +80,7 @@ function FingerprintGlyph({ color }: { color: string }) {
 export function LoginScreen({ navigation }: Props) {
   const theme = useApprovalTheme('dark');
   const dispatch = useAppDispatch();
-  const { isLoading, error } = useAppSelector((state) => state.auth);
+  const { isLoading, error, securityNotice } = useAppSelector((state) => state.auth);
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -150,6 +150,12 @@ export function LoginScreen({ navigation }: Props) {
             ]}
           >
             <Text style={[type.title, { color: theme.textHi }]}>Sign in</Text>
+
+            {securityNotice ? (
+              <View style={[styles.errorBlock, { backgroundColor: theme.bg2, borderColor: theme.brand }]}>
+                <Text style={[type.meta, { color: theme.textHi }]}>{securityNotice}</Text>
+              </View>
+            ) : null}
 
             <View style={{ marginTop: spacing[4] }}>
               <Text style={[type.metaCaps, { color: theme.textLo }]}>EMAIL</Text>

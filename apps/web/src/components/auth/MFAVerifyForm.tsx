@@ -1,17 +1,18 @@
 import type { ClipboardEvent, FormEvent, KeyboardEvent } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { MfaMethod } from '../../stores/auth';
+import { normalizeRecoveryCode, type MfaCodeMethod, type MfaMethod } from '../../stores/auth';
 
 const DIGIT_COUNT = 6;
 
 type MFAVerifyFormProps = {
-  onSubmit?: (code: string) => void | Promise<void>;
+  onSubmit?: (code: string, method: MfaCodeMethod) => void | Promise<void>;
   onPasskeyVerify?: () => void | Promise<void>;
   errorMessage?: string;
   submitLabel?: string;
   loading?: boolean;
   mfaMethod?: MfaMethod;
+  allowedMethods?: MfaMethod[];
   /**
    * #2153: true when the account has a passkey registered as an ALTERNATE
    * second factor while the primary method is totp/sms. Surfaces a "use a
@@ -31,6 +32,7 @@ export default function MFAVerifyForm({
   submitLabel,
   loading,
   mfaMethod = 'totp',
+  allowedMethods,
   passkeyAvailable = false,
   phoneLast4,
   onSendSmsCode,
@@ -39,17 +41,36 @@ export default function MFAVerifyForm({
 }: MFAVerifyFormProps) {
   const { t } = useTranslation('auth');
   const [digits, setDigits] = useState<string[]>(Array(DIGIT_COUNT).fill(''));
+  const [recoveryCode, setRecoveryCode] = useState('');
+  const [selectedMethod, setSelectedMethod] = useState<MfaMethod>(mfaMethod);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [resendCooldown, setResendCooldown] = useState(0);
   const inputRefs = useRef<Array<HTMLInputElement | null>>([]);
 
   const isLoading = useMemo(() => loading ?? isSubmitting, [loading, isSubmitting]);
-  const code = digits.join('');
-  const isSms = mfaMethod === 'sms';
-  const isPasskey = mfaMethod === 'passkey';
+  const methods = useMemo(() => {
+    const fallback: MfaMethod[] = [mfaMethod, ...(passkeyAvailable ? ['passkey' as const] : []), 'recovery_code'];
+    return [...new Set(allowedMethods?.length ? allowedMethods : fallback)];
+  }, [allowedMethods, mfaMethod, passkeyAvailable]);
+  const code = selectedMethod === 'recovery_code' ? recoveryCode : digits.join('');
+  const isRecovery = selectedMethod === 'recovery_code';
+  const isSms = selectedMethod === 'sms';
+  const isPasskey = selectedMethod === 'passkey';
   // #2153: offer the passkey as an alternate factor when the primary method is
   // the code-based totp/sms flow but the account also has a passkey.
-  const showPasskeyAlternate = !isPasskey && passkeyAvailable && Boolean(onPasskeyVerify);
+  const showPasskeyAlternate = !isPasskey && methods.includes('passkey') && Boolean(onPasskeyVerify);
+
+  useEffect(() => {
+    setSelectedMethod(mfaMethod);
+    setRecoveryCode('');
+    setDigits(Array(DIGIT_COUNT).fill(''));
+  }, [mfaMethod]);
+
+  const selectMethod = (method: MfaMethod) => {
+    setSelectedMethod(method);
+    setRecoveryCode('');
+    setDigits(Array(DIGIT_COUNT).fill(''));
+  };
 
   // Resend cooldown timer
   useEffect(() => {
@@ -100,12 +121,13 @@ export default function MFAVerifyForm({
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (isLoading || code.length !== DIGIT_COUNT) {
+    const validLength = isRecovery ? code.length === 9 : code.length === DIGIT_COUNT;
+    if (isLoading || isPasskey || !validLength) {
       return;
     }
     try {
       setIsSubmitting(true);
-      await onSubmit?.(code);
+      await onSubmit?.(code, selectedMethod as MfaCodeMethod);
     } finally {
       setIsSubmitting(false);
     }
@@ -127,9 +149,29 @@ export default function MFAVerifyForm({
     }
   };
 
+  const methodPicker = methods.length > 1 ? (
+    <div className="flex flex-wrap gap-2" aria-label={t('mfaVerify.methods.label', { defaultValue: 'Verification method' })}>
+      {methods.map(method => (
+        <button
+          key={method}
+          type="button"
+          data-testid={`mfa-method-${method}`}
+          onClick={() => selectMethod(method)}
+          aria-pressed={selectedMethod === method}
+          className={`rounded-md border px-3 py-2 text-sm ${selectedMethod === method ? 'bg-primary text-primary-foreground' : 'bg-background'}`}
+        >
+          {t(`mfaVerify.methods.${method}`, {
+            defaultValue: method === 'totp' ? 'Authenticator app' : method === 'sms' ? 'Text message' : method === 'passkey' ? 'Passkey' : 'Recovery code',
+          })}
+        </button>
+      ))}
+    </div>
+  ) : null;
+
   if (isPasskey) {
     return (
       <div className="space-y-6">
+        {methodPicker}
         <div className="space-y-2">
           <h2 className="text-lg font-semibold">{t('mfaVerify.passkey.title', { defaultValue: 'Use your passkey' })}</h2>
           <p className="text-sm text-muted-foreground">
@@ -161,10 +203,13 @@ export default function MFAVerifyForm({
       onSubmit={handleSubmit}
       className="space-y-6"
     >
+      {methodPicker}
       <div className="space-y-2">
         <h2 className="text-lg font-semibold">{t('mfaVerify.code.title', { defaultValue: 'Enter your verification code' })}</h2>
         <p className="text-sm text-muted-foreground">
-          {isSms
+          {isRecovery
+            ? t('mfaVerify.recovery.description', { defaultValue: 'Enter one of your single-use recovery codes.' })
+            : isSms
             ? smsSent
               ? t('mfaVerify.sms.sentDescription', {
                   defaultValue: `Enter the 6-digit code sent to your phone ending in ${phoneLast4 || '****'}.`,
@@ -194,8 +239,24 @@ export default function MFAVerifyForm({
       {(!isSms || smsSent) && (
         <>
           <div className="space-y-2">
-            <label className="text-sm font-medium">{t('fields.verificationCode', { defaultValue: 'Verification code' })}</label>
-            <div className="flex items-center gap-2">
+            <label className="text-sm font-medium">
+              {isRecovery
+                ? t('fields.recoveryCode', { defaultValue: 'Recovery code' })
+                : t('fields.verificationCode', { defaultValue: 'Verification code' })}
+            </label>
+            {isRecovery ? (
+              <input
+                data-testid="mfa-recovery-code"
+                value={recoveryCode}
+                onChange={event => setRecoveryCode(normalizeRecoveryCode(event.target.value))}
+                autoComplete="off"
+                autoCapitalize="characters"
+                maxLength={9}
+                disabled={isLoading}
+                className="h-11 w-full rounded-md border bg-background px-3 font-mono uppercase tracking-widest"
+                placeholder="XXXX-XXXX"
+              />
+            ) : <div className="flex items-center gap-2">
               {digits.map((digit, index) => (
                 <input
                   key={`mfa-verify-digit-${index}`}
@@ -215,8 +276,8 @@ export default function MFAVerifyForm({
                   disabled={isLoading}
                 />
               ))}
-            </div>
-            <p className="text-xs text-muted-foreground">
+            </div>}
+            {!isRecovery && <p className="text-xs text-muted-foreground">
               {isSms
                 ? t('mfaVerify.sms.recoveryHelp', {
                     defaultValue: 'If you lose access to your phone, use a recovery code.',
@@ -224,7 +285,7 @@ export default function MFAVerifyForm({
                 : t('mfaVerify.totp.recoveryHelp', {
                     defaultValue: 'If you lose access to your device, use a recovery code.',
                   })}
-            </p>
+            </p>}
           </div>
 
           {isSms && (
@@ -257,7 +318,7 @@ export default function MFAVerifyForm({
         <button
           type="submit"
           data-testid="mfa-submit"
-          disabled={isLoading || code.length !== DIGIT_COUNT}
+          disabled={isLoading || (isRecovery ? code.length !== 9 : code.length !== DIGIT_COUNT)}
           className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
         >
           {isLoading ? t('common.verifying', { defaultValue: 'Verifying...' }) : submitLabel ?? t('mfaVerify.submit', { defaultValue: 'Verify' })}

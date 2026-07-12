@@ -242,6 +242,13 @@
     "sessionTimeout": "Session Timeout (minutes)",
     "maxSessions": "Max Concurrent Sessions",
     "requireMfa": "Require MFA for all users",
+    "allowedMethods": "Allowed MFA methods",
+    "allowedMethodsHelp": "Users required to enroll MFA must use at least one enabled method.",
+    "methods": {
+      "totp": "Authenticator app",
+      "sms": "Text message",
+      "passkey": "Passkeys"
+    },
     "ipAllowlist": "IP Allowlist",
     "inactiveWarning": "Allowlist configured but <strong>inactive</strong> — the API isn’t seeing real client IPs. Configure proxy trust (<first>TRUST_PROXY_HEADERS</first> + <second>TRUSTED_PROXY_CIDRS</second>) for it to take effect.",
     "statusUnavailable": "Couldn’t verify allowlist status. The server still enforces any saved allowlist — double-check your own IP is covered before saving.",
@@ -1510,6 +1517,9 @@
     "changePassword": "Change password",
     "updateYourPasswordToKeepYourAccountSecure": "Update your password to keep your account secure.",
     "currentPassword": "Current password",
+    "existingMfaCode": "Existing MFA code",
+    "passkeyPrompt": "Your passkey will be requested",
+    "failedToVerifyExistingMfa": "Failed to verify your existing MFA factor",
     "enterYourCurrentPassword": "Enter your current password",
     "newPassword": "New password",
     "createANewPassword": "Create a new password",
@@ -2195,7 +2205,8 @@
       "requireAll": "Require MFA for all users",
       "allowedMethods": "Allowed methods",
       "totp": "Authenticator app (TOTP)",
-      "sms": "SMS codes"
+      "sms": "SMS codes",
+      "passkey": "Passkey"
     },
     "sessions": {
       "title": "Session settings",

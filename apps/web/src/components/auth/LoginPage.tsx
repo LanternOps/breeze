@@ -57,6 +57,13 @@ function getSsoLoginNotice(t: ReturnType<typeof useTranslation<'auth'>>['t']): s
   return error ? ssoLoginErrorCopy[error] : undefined;
 }
 
+function getSecuritySettingsNotice(t: ReturnType<typeof useTranslation<'auth'>>['t']): string | undefined {
+  if (typeof window === 'undefined' || window.location.hash !== '#security-settings-changed') return undefined;
+  return t('login.notices.securitySettingsChanged', {
+    defaultValue: 'Your security settings changed. Sign in again to continue.',
+  });
+}
+
 function shouldSkipCfAccessRedirect(): boolean {
   if (typeof window === 'undefined') return true;
   const params = new URLSearchParams(window.location.search);
@@ -102,10 +109,12 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
   const [error, setError] = useState<string>();
   const registrationNotice = getRegistrationDisabledNotice(t);
   const ssoLoginNotice = getSsoLoginNotice(t);
+  const securitySettingsNotice = getSecuritySettingsNotice(t);
   const [loading, setLoading] = useState(false);
   const [mfaRequired, setMfaRequired] = useState(false);
   const [tempToken, setTempToken] = useState<string>();
   const [mfaMethod, setMfaMethod] = useState<MfaMethod>('totp');
+  const [allowedMfaMethods, setAllowedMfaMethods] = useState<MfaMethod[]>(['totp', 'recovery_code']);
   const [passkeyAvailable, setPasskeyAvailable] = useState(false);
   const [phoneLast4, setPhoneLast4] = useState<string>();
   const [smsSending, setSmsSending] = useState(false);
@@ -189,6 +198,11 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
       setMfaRequired(true);
       setTempToken(result.tempToken);
       setMfaMethod(result.mfaMethod || 'totp');
+      setAllowedMfaMethods(result.allowedMethods ?? [
+        result.mfaMethod || 'totp',
+        ...(result.passkeyAvailable ? ['passkey' as const] : []),
+        'recovery_code',
+      ]);
       setPasskeyAvailable(result.passkeyAvailable === true);
       setPhoneLast4(result.phoneLast4);
       setSmsSent(false);
@@ -207,13 +221,13 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
     setLoading(false);
   };
 
-  const handleMfaVerify = async (code: string) => {
+  const handleMfaVerify = async (code: string, method: 'totp' | 'sms' | 'recovery_code') => {
     if (!tempToken) return;
 
     setLoading(true);
     setError(undefined);
 
-    const result = await apiVerifyMFA(code, tempToken, mfaMethod);
+    const result = await apiVerifyMFA(code, tempToken, method);
 
     if (!result.success) {
       setError(result.error);
@@ -292,6 +306,7 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
           errorMessage={error}
           loading={loading}
           mfaMethod={mfaMethod}
+          allowedMethods={allowedMfaMethods}
           passkeyAvailable={passkeyAvailable}
           phoneLast4={phoneLast4}
           onSendSmsCode={handleSendSmsCode}
@@ -320,6 +335,11 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
           className="mb-6 rounded-md border border-yellow-300 bg-yellow-50 px-4 py-3 text-sm text-yellow-800 dark:border-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-200"
         >
           {ssoLoginNotice}
+        </div>
+      )}
+      {securitySettingsNotice && (
+        <div role="status" className="mb-6 rounded-md border border-blue-300 bg-blue-50 px-4 py-3 text-sm text-blue-800 dark:border-blue-700 dark:bg-blue-900/30 dark:text-blue-200">
+          {securitySettingsNotice}
         </div>
       )}
       {partnerSso && (
