@@ -61,7 +61,9 @@ vi.mock('../db/schema', () => ({
     status: 'status',
     passwordChangedAt: 'passwordChangedAt',
     mfaEnabled: 'mfaEnabled',
-    isPlatformAdmin: 'isPlatformAdmin'
+    isPlatformAdmin: 'isPlatformAdmin',
+    authEpoch: 'authEpoch',
+    mfaEpoch: 'mfaEpoch'
   },
   partnerUsers: {
     userId: 'partnerUsers.userId',
@@ -102,7 +104,13 @@ const basePayload = {
   scope: 'organization' as const,
   type: 'access' as const,
   mfa: false,
-  iat: 1_700_000_000
+  iat: 1_700_000_000,
+  // Epoch/session claims (core-auth hardening PR 1, Task 8). Default to a
+  // valid, matching epoch so pre-existing tests below don't trip the new
+  // epoch gate; auth.epoch.test.ts covers the gate's rejection branches.
+  aep: 1,
+  mep: 1,
+  sid: 'sess-123'
 };
 
 const activeUser = {
@@ -114,7 +122,11 @@ const activeUser = {
   // Default to enrolled so existing tests don't pick up the new role-MFA
   // gate; the gate-specific tests below override this explicitly.
   mfaEnabled: true,
-  isPlatformAdmin: false
+  isPlatformAdmin: false,
+  // Matches basePayload's aep/mep so the new epoch gate (Task 8) doesn't
+  // reject these pre-existing tests.
+  authEpoch: 1,
+  mfaEpoch: 1
 };
 
 // User who hasn't enrolled MFA yet — used by force_mfa gate tests.

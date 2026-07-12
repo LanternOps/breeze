@@ -396,7 +396,9 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
         status: users.status,
         passwordChangedAt: users.passwordChangedAt,
         mfaEnabled: users.mfaEnabled,
-        isPlatformAdmin: users.isPlatformAdmin
+        isPlatformAdmin: users.isPlatformAdmin,
+        authEpoch: users.authEpoch,
+        mfaEpoch: users.mfaEpoch
       })
       .from(users)
       .where(eq(users.id, payload.sub))
@@ -409,6 +411,30 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
 
   if (user.status !== 'active') {
     throw new HTTPException(403, { message: 'Account is not active' });
+  }
+
+  // Epoch gate (core-auth hardening PR 1). Scoped to the user-JWT path — this
+  // middleware only ever runs on aud='breeze-api' access tokens (agent/helper/
+  // portal/viewer/MCP-bearer paths use separate verifiers and never reach here).
+  // A token missing any epoch/session claim predates the rollout: reject it
+  // (deliberate global sign-out). A stale aep/mep means a security-state change
+  // happened after the token was minted: reject.
+  if (
+    typeof payload.aep !== 'number' ||
+    typeof payload.mep !== 'number' ||
+    !payload.sid
+  ) {
+    throw new HTTPException(401, { message: 'Invalid or expired token' });
+  }
+  if (payload.aep !== user.authEpoch || payload.mep !== user.mfaEpoch) {
+    throw new HTTPException(401, { message: 'Invalid or expired token' });
+  }
+
+  // Live system binding: scope='system' is only legitimate for a current
+  // platform admin. A demoted admin's signed scope claim must not survive an
+  // out-of-band is_platform_admin=false (SR2-02).
+  if (payload.scope === 'system' && user.isPlatformAdmin !== true) {
+    throw new HTTPException(403, { message: 'Insufficient permissions' });
   }
 
   if (isTokenIssuedBeforePasswordChange(payload.iat, user.passwordChangedAt)) {
@@ -470,6 +496,19 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
     payload.orgId,
     user.id
   );
+
+  // REQUIRED live partner-membership binding (spec invariant 4). An empty org
+  // allowlist is NOT sufficient denial for a partner token: partner-axis RLS
+  // policies key on the token's partnerId claim (breeze_has_partner_access),
+  // so a partner user whose partner_users row was removed OUT-OF-BAND (no
+  // auth_epoch advance) could still read partner-axis tables with orgIds=[].
+  // computeAccessibleOrgIds already queried partner_users — partnerOrgAccess
+  // is null for a partner-scope token ⇔ no live membership row (an existing
+  // row with org_access='none' yields 'none', not null). Zero extra queries.
+  if (payload.scope === 'partner' && partnerOrgAccess === null) {
+    throw new HTTPException(401, { message: 'Invalid or expired token' });
+  }
+
   // Create helper functions
   const orgCondition = (orgIdColumn: PgColumn): SQL | undefined => {
     if (accessibleOrgIds === null) {
