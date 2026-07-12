@@ -18,9 +18,15 @@
  * its own surrounding logic (db wrapping, audit trail, etc).
  */
 import { randomUUID } from 'crypto';
+import { eq } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { refreshTokenFamilies } from '../db/schema/refreshTokenFamilies';
 import { rememberJtiFamily } from './tokenRevocation';
+
+function absoluteTtlDays(): number {
+  const raw = Number.parseInt(process.env.REFRESH_FAMILY_ABSOLUTE_TTL_DAYS ?? '', 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 30;
+}
 
 /**
  * Mints a fresh refresh-token family for a user and persists the audit row
@@ -38,10 +44,12 @@ import { rememberJtiFamily } from './tokenRevocation';
  */
 export async function mintRefreshTokenFamily(userId: string): Promise<string> {
   const familyId = randomUUID();
+  const absoluteExpiresAt = new Date(Date.now() + absoluteTtlDays() * 24 * 60 * 60 * 1000);
   await dbModule.withSystemDbAccessContext(async () => {
     await dbModule.db.insert(refreshTokenFamilies).values({
       familyId,
       userId,
+      absoluteExpiresAt,
     });
   });
   return familyId;
@@ -55,4 +63,24 @@ export async function mintRefreshTokenFamily(userId: string): Promise<string> {
  */
 export async function bindRefreshJtiToFamily(jti: string, familyId: string): Promise<void> {
   await rememberJtiFamily(jti, familyId);
+}
+
+/**
+ * Fetch a family's revocation + absolute-expiry state for the /refresh gate.
+ * System-scoped: /refresh runs pre-request-context. Returns null when no row.
+ */
+export async function getRefreshFamily(
+  familyId: string,
+): Promise<{ revokedAt: Date | null; absoluteExpiresAt: Date } | null> {
+  return dbModule.withSystemDbAccessContext(async () => {
+    const rows = await dbModule.db
+      .select({
+        revokedAt: refreshTokenFamilies.revokedAt,
+        absoluteExpiresAt: refreshTokenFamilies.absoluteExpiresAt,
+      })
+      .from(refreshTokenFamilies)
+      .where(eq(refreshTokenFamilies.familyId, familyId))
+      .limit(1);
+    return rows[0] ?? null;
+  });
 }
