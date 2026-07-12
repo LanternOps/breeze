@@ -71,3 +71,4 @@ it('mapAsset preserves a manual typeSource', () => {
   const mapped = mapAsset({ id: 'a5', assetType: 'server', typeSource: 'manual' } as any);
   expect(mapped.typeSource).toBe('manual');
 });
+import '@/lib/i18n';

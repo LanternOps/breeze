@@ -1,3 +1,5 @@
+import '@/lib/i18n';
+import { useTranslation } from 'react-i18next';
 import { useState, useEffect, useCallback } from 'react';
 import RoleManager, {
   type Role,
@@ -23,6 +25,7 @@ type RoleUser = {
 };
 
 export default function RolesPage() {
+  const { t } = useTranslation('settings');
   const [roles, setRoles] = useState<Role[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -51,12 +54,12 @@ export default function RolesPage() {
           setForbidden(true);
           return;
         }
-        throw new Error('Failed to fetch roles');
+        throw new Error(t('rolesPage.failedToFetchRoles'));
       }
       const data = await response.json();
       setRoles(data.data ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('rolesPage.anErrorOccurred'));
     } finally {
       setLoading(false);
     }
@@ -66,7 +69,7 @@ export default function RolesPage() {
     try {
       const response = await fetchWithAuth(`/roles/${roleId}`);
       if (!response.ok) {
-        throw new Error('Failed to fetch role details');
+        throw new Error(t('rolesPage.failedToFetchRoleDetails'));
       }
       const data = await response.json();
       // Shape validation (#822 issue #2): if the role-detail endpoint ever
@@ -76,14 +79,14 @@ export default function RolesPage() {
       // `permissions: []` over a real role — data loss. Treat any shape
       // mismatch as a load error rather than silently dropping the cells.
       if (!data || typeof data !== 'object') {
-        throw new Error('Role detail response is not an object');
+        throw new Error(t('rolesPage.roleDetailResponseIsNotAnObject'));
       }
       if (!Array.isArray(data.permissions)) {
-        throw new Error('Role detail response is missing the `permissions` array');
+        throw new Error(t('rolesPage.roleDetailResponseIsMissingThePermissionsArray'));
       }
       return data as Role;
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('rolesPage.anErrorOccurred'));
       return null;
     }
   }, []);
@@ -93,12 +96,12 @@ export default function RolesPage() {
       setLoadingUsers(true);
       const response = await fetchWithAuth(`/roles/${roleId}/users`);
       if (!response.ok) {
-        throw new Error('Failed to fetch role users');
+        throw new Error(t('rolesPage.failedToFetchRoleUsers'));
       }
       const data = await response.json();
       setRoleUsers(data.data ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('rolesPage.anErrorOccurred'));
       setRoleUsers([]);
     } finally {
       setLoadingUsers(false);
@@ -197,8 +200,8 @@ export default function RolesPage() {
           method: 'POST',
           body: JSON.stringify(data)
         }),
-        errorFallback: 'Failed to create role',
-        successMessage: `Role "${data.name}" created`,
+        errorFallback: t('rolesPage.failedToCreateRole'),
+        successMessage: t('rolesPage.roleCreated', { name: data.name }),
         onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
       await fetchRoles();
@@ -208,7 +211,7 @@ export default function RolesPage() {
         if (err.status === 401) return;
         setError(err.message);
       } else {
-        setError(err instanceof Error ? err.message : 'An error occurred');
+        setError(err instanceof Error ? err.message : t('rolesPage.anErrorOccurred'));
       }
     } finally {
       setSubmitting(false);
@@ -230,8 +233,8 @@ export default function RolesPage() {
           method: 'PATCH',
           body: JSON.stringify(data)
         }),
-        errorFallback: 'Failed to update role',
-        successMessage: `Role "${data.name}" updated`,
+        errorFallback: t('rolesPage.failedToUpdateRole'),
+        successMessage: t('rolesPage.roleUpdated', { name: data.name }),
         onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
       await fetchRoles();
@@ -241,7 +244,7 @@ export default function RolesPage() {
         if (err.status === 401) return;
         setError(err.message);
       } else {
-        setError(err instanceof Error ? err.message : 'An error occurred');
+        setError(err instanceof Error ? err.message : t('rolesPage.anErrorOccurred'));
       }
     } finally {
       setSubmitting(false);
@@ -264,7 +267,7 @@ export default function RolesPage() {
           method: 'POST',
           body: JSON.stringify({ name: data.name })
         }),
-        errorFallback: 'Failed to clone role',
+        errorFallback: t('rolesPage.failedToCloneRole'),
         onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
 
@@ -297,12 +300,12 @@ export default function RolesPage() {
               parentRoleId: data.parentRoleId
             })
           }),
-          errorFallback: 'Role cloned, but applying the edited permissions failed. Edit the new role to retry.',
+          errorFallback: t('rolesPage.roleClonedButApplyingTheEditedPermissionsFailedEditTheNe'),
           onUnauthorized: () => void navigateTo('/login', { replace: true })
         });
       }
 
-      showToast({ message: `Role "${data.name}" cloned`, type: 'success' });
+      showToast({ message: t('rolesPage.roleCloned', { name: data.name }), type: 'success' });
       await fetchRoles();
       handleCloseModal();
     } catch (err) {
@@ -310,7 +313,7 @@ export default function RolesPage() {
         if (err.status === 401) return;
         setError(err.message);
       } else {
-        setError(err instanceof Error ? err.message : 'An error occurred');
+        setError(err instanceof Error ? err.message : t('rolesPage.anErrorOccurred'));
       }
     } finally {
       setSubmitting(false);
@@ -327,8 +330,8 @@ export default function RolesPage() {
         request: () => fetchWithAuth(`/roles/${selectedRole.id}`, {
           method: 'DELETE'
         }),
-        errorFallback: 'Failed to delete role',
-        successMessage: `Role "${deletedName}" deleted`,
+        errorFallback: t('rolesPage.failedToDeleteRole'),
+        successMessage: t('rolesPage.roleDeleted', { name: deletedName }),
         onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
       await fetchRoles();
@@ -338,7 +341,7 @@ export default function RolesPage() {
         if (err.status === 401) return;
         setError(err.message);
       } else {
-        setError(err instanceof Error ? err.message : 'An error occurred');
+        setError(err instanceof Error ? err.message : t('rolesPage.anErrorOccurred'));
       }
     } finally {
       setSubmitting(false);
@@ -350,7 +353,7 @@ export default function RolesPage() {
       <div className="flex items-center justify-center py-12">
         <div className="text-center">
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading roles...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('rolesPage.loadingRoles')}</p>
         </div>
       </div>
     );
@@ -369,8 +372,7 @@ export default function RolesPage() {
           onClick={fetchRoles}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Try again
-        </button>
+          {t('rolesPage.tryAgain')}</button>
       </div>
     );
   }
@@ -378,10 +380,9 @@ export default function RolesPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">Roles</h1>
+        <h1 className="text-xl font-semibold tracking-tight">{t('rolesPage.roles')}</h1>
         <p className="text-muted-foreground">
-          Manage user roles and permissions. System roles cannot be modified.
-        </p>
+          {t('rolesPage.manageUserRolesAndPermissionsSystemRolesCannotBeModified')}</p>
       </div>
 
       {error && (

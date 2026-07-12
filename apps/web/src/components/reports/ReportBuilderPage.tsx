@@ -5,6 +5,7 @@ import ReportPreview from './ReportPreview';
 import type { ReportType } from './ReportsList';
 import { exportReport, getBrowserTimezone } from './reportExport';
 import { fetchWithAuth } from '../../stores/auth';
+import { useTranslation } from 'react-i18next';
 
 type ReportData = {
   type: ReportType;
@@ -18,6 +19,7 @@ type ReportBuilderPageProps = {
 };
 
 export default function ReportBuilderPage({ timezone }: ReportBuilderPageProps = {}) {
+  const { t } = useTranslation('reports');
   const effectiveTimezone = timezone || getBrowserTimezone();
   const [previewData, setPreviewData] = useState<ReportData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -40,17 +42,17 @@ export default function ReportBuilderPage({ timezone }: ReportBuilderPageProps =
       });
 
       if (!response.ok) {
-        throw new Error('Failed to generate report preview');
+        throw new Error(t('reports.reportBuilderPage.errors.generateReportPreview'));
       }
 
       const data = await response.json();
       setPreviewData(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to generate preview');
+      setError(err instanceof Error ? err.message : t('reports.reportBuilderPage.errors.generatePreview'));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   const handleSubmit = useCallback(async (values: ReportBuilderFormValues) => {
     // For ad-hoc mode, generate and show the result
@@ -64,9 +66,9 @@ export default function ReportBuilderPage({ timezone }: ReportBuilderPageProps =
       const rows = (previewData.data as { rows?: unknown[] })?.rows ?? [];
       await exportReport(rows, { format, reportType: previewData.type, timezone: effectiveTimezone });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Export failed. Please try again.');
+      setError(err instanceof Error ? err.message : t('reports.reportBuilderPage.errors.exportFailed'));
     }
-  }, [previewData, effectiveTimezone]);
+  }, [previewData, effectiveTimezone, t]);
 
   return (
     <div className="space-y-6">
@@ -79,9 +81,9 @@ export default function ReportBuilderPage({ timezone }: ReportBuilderPageProps =
           <ArrowLeft className="h-4 w-4" />
         </a>
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Ad-hoc Report Builder</h1>
+          <h1 className="text-xl font-semibold tracking-tight">{t('reports.reportBuilderPage.title')}</h1>
           <p className="text-muted-foreground">
-            Generate a one-time report without saving it.
+            {t('reports.reportBuilderPage.description')}
           </p>
         </div>
       </div>
@@ -91,7 +93,7 @@ export default function ReportBuilderPage({ timezone }: ReportBuilderPageProps =
         <div className="rounded-lg border bg-card p-6 shadow-xs">
           <div className="flex items-center gap-2 mb-6">
             <FileText className="h-5 w-5 text-muted-foreground" />
-            <h2 className="text-lg font-semibold">Report Configuration</h2>
+            <h2 className="text-lg font-semibold">{t('reports.reportBuilderPage.configurationTitle')}</h2>
           </div>
 
           <ReportBuilder

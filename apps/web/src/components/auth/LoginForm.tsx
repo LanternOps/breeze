@@ -1,15 +1,14 @@
 import { useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useRegistrationGate } from '../../stores/featuresStore';
 
-const loginSchema = z.object({
-  email: z.string().email('Enter a valid email address'),
-  password: z.string().min(8, 'Password must be at least 8 characters')
-});
-
-type LoginFormValues = z.infer<typeof loginSchema>;
+type LoginFormValues = {
+  email: string;
+  password: string;
+};
 
 type LoginFormProps = {
   onSubmit?: (values: LoginFormValues) => void | Promise<void>;
@@ -21,9 +20,18 @@ type LoginFormProps = {
 export default function LoginForm({
   onSubmit,
   errorMessage,
-  submitLabel = 'Sign in',
+  submitLabel,
   loading
 }: LoginFormProps) {
+  const { t } = useTranslation('auth');
+  const loginSchema = useMemo(
+    () =>
+      z.object({
+        email: z.string().email(t('validation.email', { defaultValue: 'Enter a valid email address' })),
+        password: z.string().min(8, t('validation.passwordMin', { defaultValue: 'Password must be at least 8 characters' })),
+      }),
+    [t],
+  );
   const {
     register,
     handleSubmit,
@@ -52,13 +60,13 @@ export default function LoginForm({
     >
       <div className="space-y-2">
         <label htmlFor="email" className="text-sm font-medium">
-          Email
+          {t('fields.email', { defaultValue: 'Email' })}
         </label>
         <input
           id="email"
           type="email"
           autoComplete="email"
-          placeholder="you@company.com"
+          placeholder={t('placeholders.email', { defaultValue: 'you@company.com' })}
           data-testid="login-email-input"
           className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           {...register('email')}
@@ -71,17 +79,17 @@ export default function LoginForm({
       <div className="space-y-2">
         <div className="flex items-center justify-between">
           <label htmlFor="password" className="text-sm font-medium">
-            Password
+            {t('fields.password', { defaultValue: 'Password' })}
           </label>
           <a href="/forgot-password" className="text-sm text-primary hover:underline">
-            Forgot password?
+            {t('login.forgotPassword', { defaultValue: 'Forgot password?' })}
           </a>
         </div>
         <input
           id="password"
           type="password"
           autoComplete="current-password"
-          placeholder="Enter your password"
+          placeholder={t('placeholders.currentPassword', { defaultValue: 'Enter your password' })}
           data-testid="login-password-input"
           className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           {...register('password')}
@@ -106,15 +114,15 @@ export default function LoginForm({
         data-testid="login-submit"
         className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
       >
-        {isLoading ? 'Signing in...' : submitLabel}
+        {isLoading ? t('login.signingIn', { defaultValue: 'Signing in...' }) : submitLabel ?? t('common.signIn', { defaultValue: 'Sign in' })}
       </button>
 
       {registrationEnabled && (
         <div className="space-y-2 text-center text-sm text-muted-foreground">
           <p>
-            New here?{' '}
+            {t('login.newHere', { defaultValue: 'New here?' })}{' '}
             <a href="/register-partner" className="font-medium text-primary hover:underline">
-              Register your MSP
+              {t('login.registerMsp', { defaultValue: 'Register your MSP' })}
             </a>
           </p>
         </div>

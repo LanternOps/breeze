@@ -84,12 +84,8 @@ export * from './refreshTokenFamilies';
 export * from './tickets';
 export * from './ticketConfig';
 export * from './ticketResponseTemplates';
-export {
-  ticketMailboxConnections,
-  ticketMailboxTenantOwnerships,
-  ticketMailboxConsentSessions,
-} from './ticketMailbox';
-export type { TicketMailboxConsentPhase } from './ticketMailbox';
+export * from './ticketForms';
+export * from './ticketMailbox';
 export * from './catalog';
 export * from './timeTracking';
 export * from './invoices';
@@ -106,3 +102,4 @@ export * from './onedriveHelper';
 export * from './vulnerabilityManagement';
 export * from './partnerLoginBranding';
 export * from './recoveryKeys';
+export * from './abuseSignals';

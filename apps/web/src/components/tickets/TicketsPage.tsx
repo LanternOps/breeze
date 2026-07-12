@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import '@/lib/i18n';
+import { useTranslation } from 'react-i18next';
 import { Plus } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
@@ -14,35 +16,58 @@ import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { usePermissions } from '../../lib/permissions';
 import { useQueueKeyboard } from './useQueueKeyboard';
 import { type TicketPriority, type TicketStatus, type TicketSummary } from './ticketConfig';
-import { fetchTicketConfig, priorityLabel, statusLabel, type TicketConfig } from '../../lib/ticketConfigApi';
+import { fetchTicketConfig, type TicketConfig } from '../../lib/ticketConfigApi';
 
 // Aggregate outcome of a POST /tickets/bulk call.
 interface BulkResult { updated: number; skipped: number; failed: number; total: number; skippedReasons?: Record<string, number> }
 
+type TFunction = ReturnType<typeof useTranslation>['t'];
+
 // Human-readable labels for bulk-skip reason codes returned by POST /tickets/bulk.
-const SKIP_REASON_LABELS: Record<string, string> = {
-  OUT_OF_SCOPE: 'out of your scope',
-  INVALID_TRANSITION: 'invalid status change',
-  ASSIGNEE_NOT_FOUND: 'assignee not found',
-  ASSIGNEE_WRONG_PARTNER: 'assignee belongs to another partner',
-  CONCURRENT_MODIFICATION: 'modified by someone else',
-  TICKET_PARTNER_UNRESOLVABLE: 'ticket partner unresolvable',
-  OTHER: 'other errors'
-};
+function skipReasonLabel(code: string, t: TFunction): string {
+  const labels: Record<string, string> = {
+    OUT_OF_SCOPE: t('ticketsPage.bulk.reason.outOfScope'),
+    INVALID_TRANSITION: t('ticketsPage.bulk.reason.invalidTransition'),
+    ASSIGNEE_NOT_FOUND: t('ticketsPage.bulk.reason.assigneeNotFound'),
+    ASSIGNEE_WRONG_PARTNER: t('ticketsPage.bulk.reason.assigneeWrongPartner'),
+    CONCURRENT_MODIFICATION: t('ticketsPage.bulk.reason.concurrentModification'),
+    TICKET_PARTNER_UNRESOLVABLE: t('ticketsPage.bulk.reason.ticketPartnerUnresolvable'),
+    OTHER: t('ticketsPage.bulk.reason.other'),
+  };
+  return labels[code] ?? code.toLowerCase().replace(/_/g, ' ');
+}
+
+function translatedPriorityLabel(config: TicketConfig | null, priority: TicketPriority, t: TFunction): string {
+  return config?.priorities[priority]?.label ?? t(/* i18n-dynamic */ `ticketsPage.priority.${priority}`);
+}
+
+function translatedStatusLabel(config: TicketConfig | null, status: TicketStatus, t: TFunction): string {
+  const systemRow = config?.statuses.find((s) => s.coreStatus === status && s.isSystem);
+  return systemRow?.name ?? t(/* i18n-dynamic */ `ticketsPage.status.${status}`);
+}
 
 // Shared toast for a POST /tickets/bulk aggregate result. `verb` is the past-
 // tense action word ('updated' for status/assign, 'deleted' for delete) so the
 // message reads naturally. Failures are reported distinctly from skips: "skipped"
 // implies pre-validation, "failed" means the write itself errored.
-function showBulkOutcomeToast(result: BulkResult, verb: string): void {
+function showBulkOutcomeToast(result: BulkResult, verb: string, t: TFunction): void {
   const { updated, skipped, failed, skippedReasons } = result;
   if (skipped + failed > 0) {
     const reasons = Object.entries(skippedReasons ?? {})
-      .map(([code, n]) => `${n} ${SKIP_REASON_LABELS[code] ?? code.toLowerCase().replace(/_/g, ' ')}`)
+      .map(([code, n]) => t('ticketsPage.bulk.reasonCount', { count: n, reason: skipReasonLabel(code, t) }))
       .join(', ');
-    showToast({ type: 'warning', message: `${updated} ${verb}, ${skipped} skipped${failed ? `, ${failed} failed` : ''}${reasons ? ` — ${reasons}` : ''}` });
+    showToast({
+      type: 'warning',
+      message: t('ticketsPage.bulk.partialToast', {
+        updated,
+        verb,
+        skipped,
+        failedSuffix: failed ? t('ticketsPage.bulk.failedSuffix', { failed }) : '',
+        reasonsSuffix: reasons ? t('ticketsPage.bulk.reasonsSuffix', { reasons }) : '',
+      }),
+    });
   } else {
-    showToast({ type: 'success', message: `${updated} ${verb}` });
+    showToast({ type: 'success', message: t('ticketsPage.bulk.successToast', { updated, verb }) });
   }
 }
 
@@ -54,11 +79,11 @@ function showBulkOutcomeToast(result: BulkResult, verb: string): void {
 type Tab = 'mine' | 'unassigned' | 'open' | 'breaching' | 'closed' | 'review' | 'archived';
 type TicketSort = 'triage' | 'newest' | 'oldest' | 'due';
 
-const SORT_OPTIONS: Array<{ value: TicketSort; label: string }> = [
-  { value: 'triage', label: 'Triage order' },
-  { value: 'newest', label: 'Newest first' },
-  { value: 'oldest', label: 'Oldest first' },
-  { value: 'due', label: 'Due date' }
+const SORT_OPTIONS: Array<{ value: TicketSort; labelKey: string }> = [
+  { value: 'triage', labelKey: 'triage' },
+  { value: 'newest', labelKey: 'newest' },
+  { value: 'oldest', labelKey: 'oldest' },
+  { value: 'due', labelKey: 'due' }
 ];
 
 const isTicketSort = (value: string): value is TicketSort =>
@@ -70,12 +95,12 @@ const PRIORITY_ORDER: TicketPriority[] = ['low', 'normal', 'high', 'urgent'];
 // resolution note, so it stays a per-ticket action (workbench).
 const BULK_STATUSES: TicketStatus[] = ['new', 'open', 'pending', 'on_hold', 'closed'];
 
-const TABS: Array<{ id: Tab; label: string }> = [
-  { id: 'mine', label: 'My tickets' },
-  { id: 'unassigned', label: 'Unassigned' },
-  { id: 'open', label: 'All open' },
-  { id: 'breaching', label: 'Breaching soon' },
-  { id: 'closed', label: 'Closed' }
+const TABS: Array<{ id: Tab; labelKey: string }> = [
+  { id: 'mine', labelKey: 'mine' },
+  { id: 'unassigned', labelKey: 'unassigned' },
+  { id: 'open', labelKey: 'open' },
+  { id: 'breaching', labelKey: 'breaching' },
+  { id: 'closed', labelKey: 'closed' }
 ];
 
 function tabQuery(tab: Exclude<Tab, 'review' | 'archived'>): string {
@@ -118,6 +143,7 @@ function hashFor(selection: string | null, sort: TicketSort): string {
 }
 
 export default function TicketsPage() {
+  const { t } = useTranslation('tickets');
   // Re-read per render to hide the org filter for org-scoped users. On a cold
   // page load the memory-only access token may not exist yet, so this can read
   // null scope before token bootstrap — the options effect below re-reads the
@@ -242,18 +268,18 @@ export default function TicketsPage() {
       const res = await fetchWithAuth(`/tickets?${params.toString()}`);
       if (!res.ok) {
         if (res.status === 401) { void navigateTo(loginPathWithNext(), { replace: true }); return; }
-        throw new Error('Tickets failed to load.');
+        throw new Error(t('ticketsPage.loadFailed'));
       }
       const body = await res.json();
       if (seq !== fetchSeq.current) return;
       setTickets(body.data ?? []);
     } catch (e) {
       if (seq !== fetchSeq.current) return;
-      setError(e instanceof Error ? e.message : 'Tickets failed to load.');
+      setError(e instanceof Error ? e.message : t('ticketsPage.loadFailed'));
     } finally {
       if (seq === fetchSeq.current) setLoading(false);
     }
-  }, [tab, debouncedSearch, orgFilter, priorityFilter, categoryFilter, assigneeFilter, sort]);
+  }, [tab, debouncedSearch, orgFilter, priorityFilter, categoryFilter, assigneeFilter, sort, t]);
 
   const fetchStats = useCallback(async () => {
     try {
@@ -386,23 +412,23 @@ export default function TicketsPage() {
     const me = useAuthStore.getState().user;
     const userId = me?.id;
     if (!userId) {
-      showToast({ type: 'error', message: 'Assign failed. Retry.' });
+      showToast({ type: 'error', message: t('ticketsPage.assignFailed') });
       return;
     }
     try {
       await runAction({
         request: () => fetchWithAuth(`/tickets/${selected.id}/assign`, { method: 'POST', body: JSON.stringify({ assigneeId: userId }) }),
-        errorFallback: 'Assign failed. Retry.',
-        successMessage: 'Assigned to you',
+        errorFallback: t('ticketsPage.assignFailed'),
+        successMessage: t('ticketsPage.assignedToYou'),
         onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
       });
       patchTicketRow(selected.id, { assignedTo: userId, assigneeName: me?.name ?? me?.email ?? null });
       scheduleReconcile();
     } catch (err) {
       // ActionError is already toasted by runAction; surface anything else too.
-      if (!(err instanceof ActionError)) showToast({ type: 'error', message: 'Assign failed. Retry.' });
+      if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('ticketsPage.assignFailed') });
     }
-  }, [selected, patchTicketRow, scheduleReconcile]);
+  }, [selected, patchTicketRow, scheduleReconcile, t]);
 
   const toggleBulkSelect = useCallback((id: string) => {
     setBulkSelectedIds((prev) => {
@@ -428,19 +454,19 @@ export default function TicketsPage() {
     try {
       const result = await runAction<{ data: BulkResult }>({
         request: () => fetchWithAuth('/tickets/bulk', { method: 'POST', body: JSON.stringify(body) }),
-        errorFallback: 'Bulk update failed. Retry.',
+        errorFallback: t('ticketsPage.bulk.updateFailed'),
         onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
       });
-      showBulkOutcomeToast(result.data, 'updated');
+      showBulkOutcomeToast(result.data, t('ticketsPage.bulk.updatedPast'), t);
       clearBulkSelection();
       setPaneRefresh((t) => t + 1);
       void fetchTickets();
       void fetchStats();
     } catch (err) {
       // ActionError is already toasted by runAction; surface anything else too.
-      if (!(err instanceof ActionError)) showToast({ type: 'error', message: 'Bulk update failed. Retry.' });
+      if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('ticketsPage.bulk.updateFailed') });
     }
-  }, [bulkSelectedIds, bulkAssignee, bulkStatus, clearBulkSelection, fetchTickets, fetchStats]);
+  }, [bulkSelectedIds, bulkAssignee, bulkStatus, clearBulkSelection, fetchTickets, fetchStats, t]);
 
   // Bulk soft-delete (tickets:manage). Confirm-gated by the ConfirmDialog below;
   // this runs on confirm. Same aggregate-result toast + refresh as applyBulk.
@@ -451,18 +477,18 @@ export default function TicketsPage() {
     try {
       const result = await runAction<{ data: BulkResult }>({
         request: () => fetchWithAuth('/tickets/bulk', { method: 'POST', body: JSON.stringify({ ticketIds, action: 'delete' }) }),
-        errorFallback: 'Bulk delete failed. Retry.',
+        errorFallback: t('ticketsPage.bulk.deleteFailed'),
         onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
       });
-      showBulkOutcomeToast(result.data, 'deleted');
+      showBulkOutcomeToast(result.data, t('ticketsPage.bulk.deletedPast'), t);
       clearBulkSelection();
       setPaneRefresh((t) => t + 1);
       void fetchTickets();
       void fetchStats();
     } catch (err) {
-      if (!(err instanceof ActionError)) showToast({ type: 'error', message: 'Bulk delete failed. Retry.' });
+      if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('ticketsPage.bulk.deleteFailed') });
     }
-  }, [bulkSelectedIds, clearBulkSelection, fetchTickets, fetchStats]);
+  }, [bulkSelectedIds, clearBulkSelection, fetchTickets, fetchStats, t]);
 
   // Restore a soft-deleted ticket from the archived queue (tickets:manage).
   const restoreTicket = useCallback(async (id: string) => {
@@ -470,18 +496,18 @@ export default function TicketsPage() {
     try {
       await runAction({
         request: () => fetchWithAuth(`/tickets/${id}/restore`, { method: 'POST' }),
-        errorFallback: 'Restore failed. Retry.',
-        successMessage: 'Ticket restored',
+        errorFallback: t('ticketsPage.restoreFailed'),
+        successMessage: t('ticketsPage.ticketRestored'),
         onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
       });
       void fetchTickets();
       void fetchStats();
     } catch (err) {
-      if (!(err instanceof ActionError)) showToast({ type: 'error', message: 'Restore failed. Retry.' });
+      if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('ticketsPage.restoreFailed') });
     } finally {
       setRestoringIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
     }
-  }, [fetchTickets, fetchStats]);
+  }, [fetchTickets, fetchStats, t]);
 
   const focusComposer = useCallback((internal: boolean) => {
     const tabBtn = document.querySelector<HTMLButtonElement>(
@@ -528,30 +554,30 @@ export default function TicketsPage() {
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="tickets-page">
       <div className="mb-3 flex items-center justify-between">
-        <h1 className="text-xl font-semibold" data-testid="tickets-heading">Tickets</h1>
+        <h1 className="text-xl font-semibold" data-testid="tickets-heading">{t('ticketsPage.title')}</h1>
         <a
           href="/tickets/new"
           className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white hover:bg-primary/90"
           data-testid="tickets-create-button"
         >
-          <Plus className="h-4 w-4" /> Create ticket
+          <Plus className="h-4 w-4" /> {t('ticketsPage.createTicket')}
         </a>
       </div>
 
       <div className="mb-3 flex items-center gap-1 border-b">
-        {TABS.map((t) => (
+        {TABS.map((tabItem) => (
           <button
-            key={t.id}
+            key={tabItem.id}
             type="button"
-            onClick={() => setTab(t.id)}
-            data-testid={`tickets-tab-${t.id}`}
+            onClick={() => setTab(tabItem.id)}
+            data-testid={`tickets-tab-${tabItem.id}`}
             className={cn(
               'border-b-2 px-3 py-2 text-sm font-medium -mb-px',
-              tab === t.id ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'
+              tab === tabItem.id ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'
             )}
           >
-            {t.label}
-            {tabCount(t.id) !== null && <span className="ml-1.5 text-xs text-muted-foreground">{tabCount(t.id)}</span>}
+            {t(/* i18n-dynamic */ `ticketsPage.tabs.${tabItem.labelKey}`)}
+            {tabCount(tabItem.id) !== null && <span className="ml-1.5 text-xs text-muted-foreground">{tabCount(tabItem.id)}</span>}
           </button>
         ))}
         {reviewAvailable && (
@@ -564,7 +590,7 @@ export default function TicketsPage() {
               tab === 'review' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'
             )}
           >
-            Review queue
+            {t('ticketsPage.reviewQueue')}
             {tabCount('review') !== null && (
               <span className="ml-1.5 rounded-full bg-amber-500/20 px-1.5 text-xs font-semibold text-amber-800 dark:bg-amber-500/30 dark:text-amber-200" data-testid="tickets-tab-review-badge">
                 {tabCount('review')}
@@ -584,14 +610,14 @@ export default function TicketsPage() {
               tab === 'archived' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'
             )}
           >
-            Archived
+            {t('ticketsPage.archived')}
           </button>
         )}
         <input
           type="search"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search tickets"
+          placeholder={t('ticketsPage.searchPlaceholder')}
           data-testid="tickets-search-input"
           className="ml-auto mb-1 w-56 rounded-md border bg-background px-2.5 py-1.5 text-sm"
         />
@@ -603,11 +629,11 @@ export default function TicketsPage() {
           <select
             value={orgFilter}
             onChange={(e) => setOrgFilter(e.target.value)}
-            aria-label="Filter by organization"
+            aria-label={t('ticketsPage.filterByOrganization')}
             data-testid="tickets-filter-org"
             className={filterSelectClass(!!orgFilter)}
           >
-            <option value="">All organizations</option>
+            <option value="">{t('ticketsPage.allOrganizations')}</option>
             {orgs.map((o) => (
               <option key={o.id} value={o.id}>{o.name}</option>
             ))}
@@ -616,23 +642,23 @@ export default function TicketsPage() {
         <select
           value={priorityFilter}
           onChange={(e) => setPriorityFilter(e.target.value)}
-          aria-label="Filter by priority"
+          aria-label={t('ticketsPage.filterByPriority')}
           data-testid="tickets-filter-priority"
           className={filterSelectClass(!!priorityFilter)}
         >
-          <option value="">All priorities</option>
+          <option value="">{t('ticketsPage.allPriorities')}</option>
           {PRIORITY_ORDER.map((p) => (
-            <option key={p} value={p}>{priorityLabel(config, p)}</option>
+            <option key={p} value={p}>{translatedPriorityLabel(config, p, t)}</option>
           ))}
         </select>
         <select
           value={categoryFilter}
           onChange={(e) => setCategoryFilter(e.target.value)}
-          aria-label="Filter by category"
+          aria-label={t('ticketsPage.filterByCategory')}
           data-testid="tickets-filter-category"
           className={filterSelectClass(!!categoryFilter)}
         >
-          <option value="">All categories</option>
+          <option value="">{t('ticketsPage.allCategories')}</option>
           {categories.map((cat) => (
             <option key={cat.id} value={cat.id}>{cat.name}</option>
           ))}
@@ -642,12 +668,12 @@ export default function TicketsPage() {
             value={assigneeFilter}
             onChange={(e) => setAssigneeFilter(e.target.value)}
             disabled={assigneeLocked}
-            title={assigneeLocked ? 'Tab already filters by assignee' : undefined}
-            aria-label="Filter by assignee"
+            title={assigneeLocked ? t('ticketsPage.assigneeLockedTitle') : undefined}
+            aria-label={t('ticketsPage.filterByAssignee')}
             data-testid="tickets-filter-assignee"
             className={filterSelectClass(!!assigneeFilter)}
           >
-            <option value="">All assignees</option>
+            <option value="">{t('ticketsPage.allAssignees')}</option>
             {assignees.map((u) => (
               <option key={u.id} value={u.id}>{u.name || u.email}</option>
             ))}
@@ -661,12 +687,12 @@ export default function TicketsPage() {
             setSort(value);
             writeHash(selectedNumber, value);
           }}
-          aria-label="Sort tickets"
+          aria-label={t('ticketsPage.sortTickets')}
           data-testid="ticket-sort"
           className={filterSelectClass(sort !== 'triage')}
         >
           {SORT_OPTIONS.map((o) => (
-            <option key={o.value} value={o.value}>{o.label}</option>
+            <option key={o.value} value={o.value}>{t(/* i18n-dynamic */ `ticketsPage.sort.${o.labelKey}`)}</option>
           ))}
         </select>
       </div>
@@ -682,7 +708,7 @@ export default function TicketsPage() {
             <div className="flex h-full items-center justify-center" data-testid="tickets-archived-error">
               <div className="text-center">
                 <p className="text-sm text-muted-foreground">{error}</p>
-                <button type="button" onClick={() => void fetchTickets()} className="mt-2 rounded-md border px-3 py-1.5 text-sm hover:bg-muted">Retry</button>
+                <button type="button" onClick={() => void fetchTickets()} className="mt-2 rounded-md border px-3 py-1.5 text-sm hover:bg-muted">{t('common:actions.retry')}</button>
               </div>
             </div>
           ) : (
@@ -697,20 +723,20 @@ export default function TicketsPage() {
         </div>
       ) : trueEmpty ? (
         <div className="flex flex-1 flex-col items-center justify-center text-center" data-testid="tickets-empty">
-          <h2 className="text-base font-medium">No tickets yet</h2>
+          <h2 className="text-base font-medium">{t('ticketsPage.empty.title')}</h2>
           <p className="mt-1 max-w-md text-sm text-muted-foreground">
-            Tickets arrive from the customer portal, from alert rules, and from technicians. Create the first one, or wire an alert rule to open tickets automatically.
+            {t('ticketsPage.empty.description')}
           </p>
           <div className="mt-3 flex gap-2">
-            <a href="/tickets/new" className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white hover:bg-primary/90" data-testid="tickets-empty-create">Create ticket</a>
-            <a href="/settings/partner#ticketing" className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted" data-testid="tickets-empty-settings">Ticketing settings</a>
+            <a href="/tickets/new" className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white hover:bg-primary/90" data-testid="tickets-empty-create">{t('ticketsPage.createTicket')}</a>
+            <a href="/settings/partner#ticketing" className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted" data-testid="tickets-empty-settings">{t('ticketsPage.ticketingSettings')}</a>
           </div>
         </div>
       ) : error ? (
         <div className="flex flex-1 items-center justify-center" data-testid="tickets-error">
           <div className="text-center">
             <p className="text-sm text-muted-foreground">{error}</p>
-            <button type="button" onClick={() => void fetchTickets()} className="mt-2 rounded-md border px-3 py-1.5 text-sm hover:bg-muted" data-testid="tickets-error-retry">Retry</button>
+            <button type="button" onClick={() => void fetchTickets()} className="mt-2 rounded-md border px-3 py-1.5 text-sm hover:bg-muted" data-testid="tickets-error-retry">{t('common:actions.retry')}</button>
           </div>
         </div>
       ) : (
@@ -723,7 +749,7 @@ export default function TicketsPage() {
                 data-testid="tickets-select-all-header"
                 className="text-xs text-muted-foreground hover:text-foreground hover:underline"
               >
-                Select all
+                {t('ticketsPage.selectAll')}
               </button>
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto">
@@ -746,7 +772,7 @@ export default function TicketsPage() {
                 data-testid="tickets-bulk-bar"
               >
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-sm font-medium tabular-nums">{bulkSelectedIds.size} selected</span>
+                  <span className="text-sm font-medium tabular-nums">{t('ticketsPage.selectedCount', { count: bulkSelectedIds.size })}</span>
                   <button
                     type="button"
                     // Union, not replace: cross-tab selections off-view must survive.
@@ -754,17 +780,17 @@ export default function TicketsPage() {
                     data-testid="tickets-bulk-select-all"
                     className="text-sm text-primary hover:underline"
                   >
-                    Select all
+                    {t('ticketsPage.selectAll')}
                   </button>
                   <select
                     value={bulkAssignee}
                     onChange={(e) => { setBulkAssignee(e.target.value); if (e.target.value) setBulkStatus(''); }}
-                    aria-label="Bulk assign to"
+                    aria-label={t('ticketsPage.bulk.assignToAria')}
                     data-testid="tickets-bulk-assignee"
                     className="h-8 max-w-[150px] rounded-md border bg-background px-2 py-1 text-sm leading-tight"
                   >
-                    <option value="">Assign to…</option>
-                    <option value="unassign">Unassign</option>
+                    <option value="">{t('ticketsPage.bulk.assignTo')}</option>
+                    <option value="unassign">{t('ticketsPage.bulk.unassign')}</option>
                     {(assignees ?? []).map((u) => (
                       <option key={u.id} value={u.id}>{u.name || u.email}</option>
                     ))}
@@ -772,13 +798,13 @@ export default function TicketsPage() {
                   <select
                     value={bulkStatus}
                     onChange={(e) => { setBulkStatus(e.target.value); if (e.target.value) setBulkAssignee(''); }}
-                    aria-label="Bulk set status"
+                    aria-label={t('ticketsPage.bulk.setStatusAria')}
                     data-testid="tickets-bulk-status"
                     className="h-8 max-w-[130px] rounded-md border bg-background px-2 py-1 text-sm leading-tight"
                   >
-                    <option value="">Set status…</option>
+                    <option value="">{t('ticketsPage.bulk.setStatus')}</option>
                     {BULK_STATUSES.map((s) => (
-                      <option key={s} value={s}>{statusLabel(config, s)}</option>
+                      <option key={s} value={s}>{translatedStatusLabel(config, s, t)}</option>
                     ))}
                   </select>
                   <button
@@ -788,7 +814,7 @@ export default function TicketsPage() {
                     data-testid="tickets-bulk-apply"
                     className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    Apply
+                    {t('common:actions.apply')}
                   </button>
                   {canManage && (
                     <button
@@ -797,7 +823,7 @@ export default function TicketsPage() {
                       data-testid="tickets-bulk-delete"
                       className="rounded-md border border-destructive/40 px-3 py-1.5 text-sm font-medium text-destructive hover:bg-destructive/10"
                     >
-                      Delete
+                      {t('common:actions.delete')}
                     </button>
                   )}
                   <button
@@ -806,7 +832,7 @@ export default function TicketsPage() {
                     data-testid="tickets-bulk-clear"
                     className="ml-auto rounded-md border px-2.5 py-1.5 text-sm hover:bg-muted"
                   >
-                    Clear
+                    {t('ticketsPage.clearSelection')}
                   </button>
                 </div>
               </div>
@@ -817,7 +843,7 @@ export default function TicketsPage() {
               <TicketWorkbench ticketId={selected.id} resolveRequestToken={resolveToken} refreshToken={paneRefresh} assignees={assignees} categories={categories} onTicketPatched={patchTicketRow} onChanged={scheduleReconcile} />
             ) : (
               <div className="flex h-full items-center justify-center text-sm text-muted-foreground" data-testid="tickets-no-selection">
-                <p>Select a ticket. Use j/k to move, Enter to expand.</p>
+                <p>{t('ticketsPage.noSelection')}</p>
               </div>
             )}
           </div>
@@ -828,9 +854,9 @@ export default function TicketsPage() {
         open={bulkDeleteOpen}
         onClose={() => setBulkDeleteOpen(false)}
         onConfirm={() => void applyBulkDelete()}
-        title={`Delete ${bulkSelectedIds.size} ticket${bulkSelectedIds.size === 1 ? '' : 's'}?`}
-        message="This hides them from all queues; an admin can restore them from Archived."
-        confirmLabel="Delete tickets"
+        title={t('ticketsPage.bulkDeleteDialog.title', { count: bulkSelectedIds.size })}
+        message={t('ticketsPage.bulkDeleteDialog.message')}
+        confirmLabel={t('ticketsPage.bulkDeleteDialog.confirm')}
         confirmTestId="tickets-bulk-delete-confirm"
       />
     </div>

@@ -1,5 +1,13 @@
-import { useMemo, useState } from 'react';
-import { ChevronDown, ChevronRight, Wrench, CheckCircle, XCircle, Loader2 } from 'lucide-react';
+import { useMemo, useState } from "react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Wrench,
+  CheckCircle,
+  XCircle,
+  Loader2,
+} from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 interface AiToolCallCardProps {
   toolName: string;
@@ -12,14 +20,22 @@ interface AiToolCallCardProps {
 const MAX_PREVIEW_CHARS = 20_000;
 
 function stringifyForPreview(value: unknown): string {
-  const raw = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
-  if (!raw) return '';
+  const raw =
+    typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  if (!raw) return "";
   if (raw.length <= MAX_PREVIEW_CHARS) return raw;
   const omitted = raw.length - MAX_PREVIEW_CHARS;
   return `${raw.slice(0, MAX_PREVIEW_CHARS)}\n...[truncated ${omitted} chars]`;
 }
 
-export default function AiToolCallCard({ toolName, input, output, isError, isExecuting }: AiToolCallCardProps) {
+export default function AiToolCallCard({
+  toolName,
+  input,
+  output,
+  isError,
+  isExecuting,
+}: AiToolCallCardProps) {
+  const { t } = useTranslation("ai");
   const [expanded, setExpanded] = useState(false);
   const inputPreview = useMemo(() => stringifyForPreview(input), [input]);
   const outputPreview = useMemo(() => stringifyForPreview(output), [output]);
@@ -32,7 +48,8 @@ export default function AiToolCallCard({ toolName, input, output, isError, isExe
         ? () => <CheckCircle className="h-3.5 w-3.5 text-green-400" />
         : () => <Wrench className="h-3.5 w-3.5 text-gray-400" />;
 
-  const formatToolName = (name: string) => name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  const formatToolName = (name: string) =>
+    name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 
   return (
     <div className="my-1 rounded-md border border-gray-200 bg-gray-50/50 dark:border-gray-700 dark:bg-gray-800/50">
@@ -46,15 +63,21 @@ export default function AiToolCallCard({ toolName, input, output, isError, isExe
           <ChevronRight className="h-3 w-3 text-gray-500" />
         )}
         <StatusIcon />
-        <span className="font-medium text-gray-700 dark:text-gray-300">{formatToolName(toolName)}</span>
-        {isExecuting && <span className="text-gray-500">Running...</span>}
+        <span className="font-medium text-gray-700 dark:text-gray-300">
+          {formatToolName(toolName)}
+        </span>
+        {isExecuting && (
+          <span className="text-gray-500">{t("aiToolCallCard.running")}</span>
+        )}
       </button>
 
       {expanded && (
         <div className="border-t border-gray-200 px-3 py-2 text-xs dark:border-gray-700">
           {input && (
             <div className="mb-2">
-              <span className="font-medium text-gray-500 dark:text-gray-400">Input:</span>
+              <span className="font-medium text-gray-500 dark:text-gray-400">
+                {t("aiToolCallCard.input")}
+              </span>
               <pre className="mt-1 max-h-32 overflow-auto rounded bg-gray-100 p-2 text-gray-700 dark:bg-gray-900 dark:text-gray-300">
                 {inputPreview}
               </pre>
@@ -62,8 +85,12 @@ export default function AiToolCallCard({ toolName, input, output, isError, isExe
           )}
           {output !== undefined && (
             <div>
-              <span className={`font-medium ${isError ? 'text-red-400' : 'text-gray-500 dark:text-gray-400'}`}>
-                {isError ? 'Error:' : 'Output:'}
+              <span
+                className={`font-medium ${isError ? "text-red-400" : "text-gray-500 dark:text-gray-400"}`}
+              >
+                {isError
+                  ? t("aiToolCallCard.error")
+                  : t("aiToolCallCard.output")}
               </span>
               <pre className="mt-1 max-h-40 overflow-auto rounded bg-gray-100 p-2 text-gray-700 dark:bg-gray-900 dark:text-gray-300">
                 {outputPreview}

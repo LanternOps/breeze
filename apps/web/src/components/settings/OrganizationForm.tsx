@@ -1,4 +1,6 @@
 import { useMemo, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -13,19 +15,19 @@ export function slugifyOrganizationName(name: string): string {
     .slice(0, 100);
 }
 
-const organizationSchema = z
+const createOrganizationSchema = (t: (key: string) => string) => z
   .object({
-    name: z.string().min(1, 'Organization name is required'),
+    name: z.string().min(1, t('organizationForm.validation.nameRequired')),
     slug: z
       .string()
-      .min(2, 'Slug is required')
-      .regex(/^[a-z0-9-]+$/, 'Use lowercase letters, numbers, and hyphens only'),
+      .min(2, t('organizationForm.validation.slugRequired'))
+      .regex(/^[a-z0-9-]+$/, t('organizationForm.validation.slugFormat')),
     type: z.enum(['customer', 'internal']),
     status: z.enum(['active', 'trial', 'suspended', 'churned']),
     maxDevices: z.coerce
-      .number({ error: 'Enter a max device limit' })
-      .int('Max devices must be a whole number')
-      .min(1, 'Max devices must be at least 1'),
+      .number({ error: t('organizationForm.validation.maxDevicesRequired') })
+      .int(t('organizationForm.validation.maxDevicesInteger'))
+      .min(1, t('organizationForm.validation.maxDevicesMin')),
     contractStart: z.string().optional(),
     contractEnd: z.string().optional()
   })
@@ -38,12 +40,12 @@ const organizationSchema = z
       return new Date(values.contractEnd) >= new Date(values.contractStart);
     },
     {
-      message: 'Contract end must be on or after start date',
+      message: t('organizationForm.validation.contractEndAfterStart'),
       path: ['contractEnd']
     }
   );
 
-type OrganizationFormValues = z.infer<typeof organizationSchema>;
+type OrganizationFormValues = z.infer<ReturnType<typeof createOrganizationSchema>>;
 
 type OrganizationFormProps = {
   onSubmit?: (values: OrganizationFormValues) => void | Promise<void>;
@@ -54,24 +56,26 @@ type OrganizationFormProps = {
 };
 
 const typeOptions = [
-  { value: 'customer', label: 'Customer' },
-  { value: 'internal', label: 'Internal' }
+  { value: 'customer', labelKey: 'organizationForm.type.customer' },
+  { value: 'internal', labelKey: 'organizationForm.type.internal' }
 ];
 
 const statusOptions = [
-  { value: 'active', label: 'Active' },
-  { value: 'trial', label: 'Trial' },
-  { value: 'suspended', label: 'Suspended' },
-  { value: 'churned', label: 'Churned' }
+  { value: 'active', labelKey: 'organizationForm.status.active' },
+  { value: 'trial', labelKey: 'organizationForm.status.trial' },
+  { value: 'suspended', labelKey: 'organizationForm.status.suspended' },
+  { value: 'churned', labelKey: 'organizationForm.status.churned' }
 ];
 
 export default function OrganizationForm({
   onSubmit,
   onCancel,
   defaultValues,
-  submitLabel = 'Save organization',
+  submitLabel,
   loading
 }: OrganizationFormProps) {
+  const { t } = useTranslation('settings');
+  const organizationSchema = useMemo(() => createOrganizationSchema(t), [t]);
   const {
     register,
     handleSubmit,
@@ -92,6 +96,7 @@ export default function OrganizationForm({
   });
 
   const isLoading = useMemo(() => loading ?? isSubmitting, [loading, isSubmitting]);
+  const resolvedSubmitLabel = submitLabel ?? t('organizationForm.actions.save');
 
   // Keep the slug linked to the name until the user manually edits the slug.
   // If the form was seeded with an existing slug (edit mode), treat it as
@@ -111,11 +116,11 @@ export default function OrganizationForm({
       <div className="grid gap-6 md:grid-cols-2">
         <div className="space-y-2">
           <label htmlFor="organization-name" className="text-sm font-medium">
-            Organization name
+            {t('organizationForm.fields.name')}
           </label>
           <input
             id="organization-name"
-            placeholder="Acme Corp"
+            placeholder={t('organizationForm.placeholders.name')}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...nameField}
             onChange={event => {
@@ -132,11 +137,11 @@ export default function OrganizationForm({
 
         <div className="space-y-2">
           <label htmlFor="organization-slug" className="text-sm font-medium">
-            Slug
+            {t('organizationForm.fields.slug')}
           </label>
           <input
             id="organization-slug"
-            placeholder="acme-corp"
+            placeholder={t('organizationForm.placeholders.slug')}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...slugField}
             onChange={event => {
@@ -150,7 +155,7 @@ export default function OrganizationForm({
 
         <div className="space-y-2">
           <label htmlFor="organization-type" className="text-sm font-medium">
-            Organization type
+            {t('organizationForm.fields.type')}
           </label>
           <select
             id="organization-type"
@@ -159,7 +164,7 @@ export default function OrganizationForm({
           >
             {typeOptions.map(option => (
               <option key={option.value} value={option.value}>
-                {option.label}
+                {t(/* i18n-dynamic */ option.labelKey)}
               </option>
             ))}
           </select>
@@ -168,7 +173,7 @@ export default function OrganizationForm({
 
         <div className="space-y-2">
           <label htmlFor="organization-status" className="text-sm font-medium">
-            Status
+            {t('common:labels.status')}
           </label>
           <select
             id="organization-status"
@@ -177,7 +182,7 @@ export default function OrganizationForm({
           >
             {statusOptions.map(option => (
               <option key={option.value} value={option.value}>
-                {option.label}
+                {t(/* i18n-dynamic */ option.labelKey)}
               </option>
             ))}
           </select>
@@ -186,7 +191,7 @@ export default function OrganizationForm({
 
         <div className="space-y-2">
           <label htmlFor="max-devices" className="text-sm font-medium">
-            Max devices
+            {t('organizationForm.fields.maxDevices')}
           </label>
           <input
             id="max-devices"
@@ -202,7 +207,7 @@ export default function OrganizationForm({
 
         <div className="space-y-2">
           <label htmlFor="contract-start" className="text-sm font-medium">
-            Contract start
+            {t('organizationForm.fields.contractStart')}
           </label>
           <input
             id="contract-start"
@@ -214,7 +219,7 @@ export default function OrganizationForm({
 
         <div className="space-y-2">
           <label htmlFor="contract-end" className="text-sm font-medium">
-            Contract end
+            {t('organizationForm.fields.contractEnd')}
           </label>
           <input
             id="contract-end"
@@ -234,14 +239,14 @@ export default function OrganizationForm({
           onClick={onCancel}
           className="h-11 w-full rounded-md border bg-background text-sm font-medium text-foreground transition hover:bg-muted sm:w-auto sm:px-6"
         >
-          Cancel
+          {t('common:actions.cancel')}
         </button>
         <button
           type="submit"
           disabled={isLoading}
           className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto sm:px-6"
         >
-          {isLoading ? 'Saving...' : submitLabel}
+          {isLoading ? t('common:states.saving') : resolvedSubmitLabel}
         </button>
       </div>
     </form>

@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useState } from 'react';
 import { AlertTriangle, ArrowLeft, CheckCircle2, Loader2, ShieldAlert } from 'lucide-react';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
+import { useTranslation } from 'react-i18next';
 
 interface PendingRequest {
   requestId: string;
@@ -31,6 +32,7 @@ function formatDate(input: string): string {
 }
 
 export default function AccountDeletionPage() {
+  const { t } = useTranslation('common');
   const user = useAuthStore((s) => s.user);
 
   const [loadingExisting, setLoadingExisting] = useState(true);
@@ -58,7 +60,7 @@ export default function AccountDeletionPage() {
             // Auth expired — AuthOverlay will handle the redirect.
             return;
           }
-          setPendingError('Unable to load your account status. Please refresh.');
+          setPendingError(t('account.deletion.errors.load'));
           return;
         }
         const data = (await res.json()) as { pending: PendingRequest | null };
@@ -66,7 +68,7 @@ export default function AccountDeletionPage() {
       })
       .catch(() => {
         if (cancelled) return;
-        setPendingError('Unable to load your account status. Please refresh.');
+        setPendingError(t('account.deletion.errors.load'));
       })
       .finally(() => {
         if (!cancelled) setLoadingExisting(false);
@@ -74,7 +76,7 @@ export default function AccountDeletionPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [t]);
 
   const canSubmit = useMemo(() => {
     if (submitState.kind === 'submitting') return false;
@@ -99,7 +101,7 @@ export default function AccountDeletionPage() {
       });
 
       if (!res.ok) {
-        let message = 'We could not submit your request. Please try again.';
+        let message = t('account.deletion.errors.submit');
         try {
           const data = (await res.json()) as { error?: string };
           if (data?.error) message = data.error;
@@ -118,7 +120,7 @@ export default function AccountDeletionPage() {
       setConfirmation('');
       setReason('');
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Network error. Please try again.';
+      const message = err instanceof Error ? err.message : t('account.errors.network');
       setSubmitState({ kind: 'error', message });
     }
   }
@@ -133,7 +135,7 @@ export default function AccountDeletionPage() {
         body: JSON.stringify({ status: 'cancelled' }),
       });
       if (!res.ok) {
-        let message = 'We could not cancel your request. Please try again.';
+        let message = t('account.deletion.errors.cancel');
         try {
           const data = (await res.json()) as { error?: string };
           if (data?.error) message = data.error;
@@ -146,7 +148,7 @@ export default function AccountDeletionPage() {
       setPending(null);
       setSubmitState({ kind: 'idle' });
     } catch (err) {
-      setPendingError(err instanceof Error ? err.message : 'Network error. Please try again.');
+      setPendingError(err instanceof Error ? err.message : t('account.errors.network'));
     } finally {
       setCancellingId(null);
     }
@@ -168,12 +170,11 @@ export default function AccountDeletionPage() {
           className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
         >
           <ArrowLeft className="h-4 w-4" />
-          Back to settings
+          {t('account.backToSettings')}
         </a>
-        <h1 className="text-2xl font-semibold tracking-tight">Delete your account</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">{t('account.deletion.title')}</h1>
         <p className="text-sm text-muted-foreground">
-          Submitting a deletion request notifies an administrator on your organization. Your account
-          will be processed and removed within 30 days. You can cancel any time before then.
+          {t('account.deletion.description')}
         </p>
       </div>
 
@@ -191,11 +192,11 @@ export default function AccountDeletionPage() {
           aria-describedby={submitState.kind === 'error' ? formErrId : undefined}
         >
           <section className="space-y-2 rounded-md border bg-muted/40 p-4 text-sm">
-            <p className="font-medium text-foreground">Signed in as</p>
+            <p className="font-medium text-foreground">{t('account.signedInAs')}</p>
             <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-muted-foreground">
-              <dt>Name</dt>
+              <dt>{t('labels.name')}</dt>
               <dd className="text-foreground">{user?.name ?? '—'}</dd>
-              <dt>Email</dt>
+              <dt>{t('account.email')}</dt>
               <dd className="text-foreground">{user?.email ?? '—'}</dd>
             </dl>
           </section>
@@ -206,17 +207,16 @@ export default function AccountDeletionPage() {
           >
             <AlertTriangle className="mt-0.5 h-5 w-5 flex-none text-destructive" aria-hidden />
             <div className="space-y-1">
-              <p className="font-medium text-destructive">This is a request, not an immediate deletion.</p>
+              <p className="font-medium text-destructive">{t('account.deletion.warningTitle')}</p>
               <p className="text-muted-foreground">
-                Once submitted, an admin from your organization is notified by email. Your account
-                will be processed within 30 days. You can sign in and cancel any time before then.
+                {t('account.deletion.warningDescription')}
               </p>
             </div>
           </div>
 
           <div className="space-y-2">
             <label htmlFor={passwordId} className="text-sm font-medium">
-              Confirm your password
+              {t('account.deletion.confirmPassword')}
             </label>
             <input
               id={passwordId}
@@ -231,7 +231,7 @@ export default function AccountDeletionPage() {
 
           <div className="space-y-2">
             <label htmlFor={confirmId} className="text-sm font-medium">
-              Type <span className="font-mono text-destructive">DELETE</span> to confirm
+              {t('account.deletion.typePrefix')} <span className="font-mono text-destructive">DELETE</span> {t('account.deletion.typeSuffix')}
             </label>
             <input
               id={confirmId}
@@ -248,7 +248,7 @@ export default function AccountDeletionPage() {
 
           <div className="space-y-2">
             <label htmlFor={reasonId} className="text-sm font-medium">
-              Reason (optional)
+              {t('account.deletion.reason')}
             </label>
             <textarea
               id={reasonId}
@@ -256,7 +256,7 @@ export default function AccountDeletionPage() {
               value={reason}
               onChange={(e) => setReason(e.target.value)}
               maxLength={2000}
-              placeholder="Help us improve — what made you decide to leave?"
+              placeholder={t('account.deletion.reasonPlaceholder')}
               className="w-full rounded-md border bg-background p-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
           </div>
@@ -277,7 +277,7 @@ export default function AccountDeletionPage() {
               href="/settings"
               className="inline-flex h-10 items-center justify-center rounded-md border px-4 text-sm font-medium hover:bg-muted"
             >
-              Cancel
+              {t('actions.cancel')}
             </a>
             <button
               type="submit"
@@ -285,7 +285,7 @@ export default function AccountDeletionPage() {
               aria-busy={submitState.kind === 'submitting' || undefined}
               className="inline-flex h-10 items-center justify-center rounded-md bg-destructive px-4 text-sm font-medium text-destructive-foreground transition hover:bg-destructive/90 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {submitState.kind === 'submitting' ? 'Submitting…' : 'Request account deletion'}
+              {submitState.kind === 'submitting' ? t('account.deletion.submitting') : t('account.deletion.submit')}
             </button>
           </div>
         </form>
@@ -305,25 +305,26 @@ function PendingState({
   cancelling: boolean;
   error: string | null;
 }) {
+  const { t } = useTranslation('common');
   return (
     <div className="space-y-4 rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex gap-3">
         <CheckCircle2 className="h-6 w-6 flex-none text-primary" aria-hidden />
         <div className="space-y-1">
-          <h2 className="text-lg font-semibold">Deletion request received</h2>
+          <h2 className="text-lg font-semibold">{t('account.deletion.received')}</h2>
           <p className="text-sm text-muted-foreground">
-            We've notified an administrator on your organization. Your account will be processed by{' '}
+            {t('account.deletion.processedByPrefix')}{' '}
             <strong className="text-foreground">{formatDate(request.processBy)}</strong>.
           </p>
         </div>
       </div>
 
       <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-md border bg-muted/40 p-4 text-sm">
-        <dt className="text-muted-foreground">Reference</dt>
+        <dt className="text-muted-foreground">{t('account.deletion.reference')}</dt>
         <dd className="font-mono text-foreground">{request.requestId}</dd>
-        <dt className="text-muted-foreground">Submitted</dt>
+        <dt className="text-muted-foreground">{t('account.deletion.submitted')}</dt>
         <dd className="text-foreground">{formatDate(request.requestedAt)}</dd>
-        <dt className="text-muted-foreground">Processes by</dt>
+        <dt className="text-muted-foreground">{t('account.deletion.processesBy')}</dt>
         <dd className="text-foreground">{formatDate(request.processBy)}</dd>
       </dl>
 
@@ -341,7 +342,7 @@ function PendingState({
           href="/"
           className="inline-flex h-10 items-center justify-center rounded-md border px-4 text-sm font-medium hover:bg-muted"
         >
-          Return to dashboard
+          {t('account.returnDashboard')}
         </a>
         <button
           type="button"
@@ -349,7 +350,7 @@ function PendingState({
           disabled={cancelling}
           className="inline-flex h-10 items-center justify-center rounded-md border border-destructive/40 px-4 text-sm font-medium text-destructive transition hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          {cancelling ? 'Cancelling…' : 'Cancel deletion request'}
+          {cancelling ? t('account.deletion.cancelling') : t('account.deletion.cancelRequest')}
         </button>
       </div>
     </div>

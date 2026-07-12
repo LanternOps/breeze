@@ -1,4 +1,6 @@
 import { ChevronDown, ChevronUp, ChevronsUpDown } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import '../../../lib/i18n';
 
 /**
  * Shared sortable table header for the billing surfaces (quotes / invoices /
@@ -32,10 +34,14 @@ export function SortableTh<K extends string>({
   align = 'left',
   testId,
 }: SortableThProps<K>) {
+  const { t } = useTranslation('billing');
   const active = activeSort === sortKey;
   const ariaLabel = active
-    ? `Sort by ${label}, ${direction === 'asc' ? 'ascending' : 'descending'}`
-    : `Sort by ${label}`;
+    ? t('shared.sortableTh.sortByWithDirection', {
+        label,
+        direction: direction === 'asc' ? t('shared.sortableTh.ascending') : t('shared.sortableTh.descending'),
+      })
+    : t('shared.sortableTh.sortBy', { label });
   const thClass = align === 'right' ? 'px-3 py-3 text-right font-medium' : 'px-3 py-3 font-medium';
   const buttonClass =
     align === 'right'

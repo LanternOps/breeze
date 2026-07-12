@@ -1,7 +1,10 @@
 // apps/web/src/components/billing/quotes/DistributorLookup.tsx
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '../../../lib/i18n';
 import { ecExpressLookup, sellPriceDefault, type EcProduct } from '../../../lib/api/distributors';
 import { computeMarginBreakdown, formatMarginSummary } from '../../settings/marginMath';
+import { formatNumber } from '@/lib/i18n/format';
 
 function toMoney(value: string): number | null {
   if (!value.trim()) return null;
@@ -16,6 +19,7 @@ interface DistributorLookupProps {
 }
 
 export default function DistributorLookup({ blockId, busy, onImportAdd }: DistributorLookupProps) {
+  const { t } = useTranslation('billing');
   const [query, setQuery] = useState('');
   const [products, setProducts] = useState<EcProduct[]>([]);
   const [prices, setPrices] = useState<Record<string, string>>({});
@@ -31,7 +35,7 @@ export default function DistributorLookup({ blockId, busy, onImportAdd }: Distri
       const res = await ecExpressLookup(q);
       if (!res.ok) {
         const body = (await res.json().catch(() => null)) as { error?: string } | null;
-        setError(body?.error ?? 'Lookup failed.');
+        setError(body?.error ?? t('quotes.distributorLookup.lookupFailed'));
         setProducts([]);
         return;
       }
@@ -40,7 +44,7 @@ export default function DistributorLookup({ blockId, busy, onImportAdd }: Distri
       setProducts(results);
       setPrices(Object.fromEntries(results.map((p) => [p.synnexSku, sellPriceDefault(p)])));
     } catch {
-      setError('Lookup failed.');
+      setError(t('quotes.distributorLookup.lookupFailed'));
       setProducts([]);
     } finally {
       setSearching(false);
@@ -53,7 +57,7 @@ export default function DistributorLookup({ blockId, busy, onImportAdd }: Distri
         <input
           type="text"
           value={query}
-          placeholder="SYNNEX SKU or mfg part #"
+          placeholder={t('quotes.distributorLookup.placeholder')}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void search(); } }}
           data-testid={`quote-distributor-search-${blockId}`}
@@ -66,7 +70,7 @@ export default function DistributorLookup({ blockId, busy, onImportAdd }: Distri
           data-testid={`quote-distributor-search-btn-${blockId}`}
           className="inline-flex h-9 items-center rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
         >
-          {searching ? 'Searching…' : 'Search'}
+          {searching ? t('quotes.distributorLookup.searching') : t('common:actions.search')}
         </button>
       </div>
 
@@ -82,13 +86,13 @@ export default function DistributorLookup({ blockId, busy, onImportAdd }: Distri
           <div key={p.synnexSku} data-testid={`quote-distributor-result-${p.synnexSku}`} className="rounded-md border bg-background/40 p-3 text-sm">
             <div className="font-medium">{p.name}</div>
             <div className="text-xs text-muted-foreground">
-              SKU {p.synnexSku}{p.status ? ` · ${p.status}` : ''}
-              {p.cost != null ? ` · cost ${p.currency ?? 'USD'} ${p.cost.toFixed(2)}` : ''}
-              {p.msrp != null ? ` · MSRP ${p.msrp.toFixed(2)}` : ''}
-              {p.totalQty != null ? ` · ${p.totalQty} avail` : ''}
+              {t('quotes.distributorLookup.sku', { sku: p.synnexSku })}{p.status ? ` · ${p.status}` : ''}
+              {p.cost != null ? ` · ${t('quotes.distributorLookup.cost', { currency: p.currency ?? 'USD', amount: formatNumber(p.cost, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) })}` : ''}
+              {p.msrp != null ? ` · ${t('quotes.distributorLookup.msrp', { amount: formatNumber(p.msrp, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) })}` : ''}
+              {p.totalQty != null ? ` · ${t('quotes.distributorLookup.available', { count: p.totalQty })}` : ''}
             </div>
             <div className="mt-2 flex items-center gap-2">
-              <label className="text-xs text-muted-foreground">Sell price</label>
+              <label className="text-xs text-muted-foreground">{t('quotes.distributorLookup.sellPrice')}</label>
               <input
                 type="number" min="0" step="0.01"
                 value={priceVal}
@@ -103,7 +107,7 @@ export default function DistributorLookup({ blockId, busy, onImportAdd }: Distri
                 data-testid={`quote-distributor-add-${p.synnexSku}`}
                 className="inline-flex h-9 items-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
               >
-                Import &amp; add
+                {t('quotes.distributorLookup.importAndAdd')}
               </button>
             </div>
             {margin && (

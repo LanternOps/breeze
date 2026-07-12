@@ -107,6 +107,11 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       LOG_JSON: ${LOG_JSON:-true}
       METRICS_SCRAPE_TOKEN: ${METRICS_SCRAPE_TOKEN:-}
+      # Platform-operator abuse alerts (all optional; unset = feature disabled)
+      OPS_ALERT_WEBHOOK_URL: ${OPS_ALERT_WEBHOOK_URL:-}
+      OPS_ALERT_EMAIL: ${OPS_ALERT_EMAIL:-}
+      OPS_ALERT_LABEL: ${OPS_ALERT_LABEL:-}
+      ABUSE_SIGNAL_OVERRIDES: ${ABUSE_SIGNAL_OVERRIDES:-}
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
       SENTRY_RELEASE: ${SENTRY_RELEASE:-}

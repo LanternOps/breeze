@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react';
+import '../../lib/i18n';
 import { describe, expect, it } from 'vitest';
 
 import AccessDenied from './AccessDenied';

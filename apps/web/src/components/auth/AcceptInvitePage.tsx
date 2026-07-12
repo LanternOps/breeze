@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import ResetPasswordForm from './ResetPasswordForm';
 import StatusIcon from './StatusIcon';
 import {
@@ -23,6 +24,7 @@ interface InvitePreview {
 }
 
 export default function AcceptInvitePage() {
+  const { t } = useTranslation('auth');
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(false);
   const [tokenState, setTokenState] = useState<TokenState>({ phase: 'loading' });
@@ -60,7 +62,7 @@ export default function AcceptInvitePage() {
 
   const handleSubmit = async (values: { password: string }) => {
     if (tokenState.phase !== 'present') {
-      setError('Invalid or missing invite token');
+      setError(t('acceptInvite.errors.missingToken', { defaultValue: 'Invalid or missing invite token' }));
       return;
     }
 
@@ -71,7 +73,7 @@ export default function AcceptInvitePage() {
       const result = await apiAcceptInvite(tokenState.token, values.password);
 
       if (!result.success) {
-        setError(result.error || 'Failed to accept invite');
+        setError(result.error || t('acceptInvite.errors.acceptFailed', { defaultValue: 'Failed to accept invite' }));
         return;
       }
 
@@ -93,8 +95,8 @@ export default function AcceptInvitePage() {
     return (
       <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs" aria-busy="true">
         <div className="space-y-2 text-center">
-          <StatusIcon variant="pending" label="Loading" />
-          <h2 className="text-lg font-semibold">Loading…</h2>
+          <StatusIcon variant="pending" label={t('common.loadingLabel', { defaultValue: 'Loading' })} />
+          <h2 className="text-lg font-semibold">{t('common.loadingEllipsis', { defaultValue: 'Loading…' })}</h2>
         </div>
       </div>
     );
@@ -105,17 +107,19 @@ export default function AcceptInvitePage() {
       <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
         <div className="space-y-2 text-center">
           <StatusIcon variant="error" />
-          <h2 className="text-lg font-semibold">This link doesn't work</h2>
+          <h2 className="text-lg font-semibold">{t('acceptInvite.invalid.title', { defaultValue: "This link doesn't work" })}</h2>
           <p className="text-sm text-muted-foreground">
-            The invite link is invalid or has expired. Ask your administrator to send a new
-            invitation.
+            {t('acceptInvite.invalid.description', {
+              defaultValue:
+                'The invite link is invalid or has expired. Ask your administrator to send a new invitation.',
+            })}
           </p>
         </div>
         <a
           href="/login"
           className="flex h-11 w-full items-center justify-center rounded-md border text-sm font-medium transition hover:bg-muted"
         >
-          Back to sign in
+          {t('common.backToSignIn', { defaultValue: 'Back to sign in' })}
         </a>
       </div>
     );
@@ -129,12 +133,23 @@ export default function AcceptInvitePage() {
       {(target || preview?.email) && (
         <div className="space-y-1 text-center">
           <h2 className="text-lg font-semibold">
-            {greetingName ? `Hi ${greetingName}, ` : ''}
-            {target ? `you're invited to ${target}` : "you're invited to Breeze"}
+            {greetingName
+              ? t('acceptInvite.greetingWithName', { defaultValue: `Hi ${greetingName}, `, name: greetingName })
+              : ''}
+            {target
+              ? t('acceptInvite.invitedToTarget', {
+                  defaultValue: `you're invited to ${target}`,
+                  target,
+                })
+              : t('acceptInvite.invitedToBreeze', { defaultValue: "you're invited to Breeze" })}
           </h2>
           {preview?.email && (
             <p className="text-sm text-muted-foreground">
-              Set a password to finish creating your <strong>{preview.email}</strong> account.
+              {t('acceptInvite.finishAccountPrefix', {
+                defaultValue: 'Set a password to finish creating your ',
+              })}
+              <strong>{preview.email}</strong>
+              {t('acceptInvite.finishAccountSuffix', { defaultValue: ' account.' })}
             </p>
           )}
         </div>
@@ -143,7 +158,7 @@ export default function AcceptInvitePage() {
         onSubmit={handleSubmit}
         errorMessage={error}
         loading={loading}
-        submitLabel="Set password & sign in"
+        submitLabel={t('acceptInvite.setPasswordAndSignIn', { defaultValue: 'Set password & sign in' })}
       />
     </div>
   );

@@ -1,4 +1,5 @@
 import { ChevronRight } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 interface BreadcrumbItem {
   label: string;
@@ -10,10 +11,11 @@ interface BreadcrumbsProps {
 }
 
 export default function Breadcrumbs({ items }: BreadcrumbsProps) {
+  const { t } = useTranslation('common');
   if (items.length <= 1) return null;
 
   return (
-    <nav aria-label="Breadcrumb" className="mb-4">
+    <nav aria-label={t('layout.breadcrumb')} className="mb-4">
       <ol className="flex items-center gap-1 text-sm text-muted-foreground">
         {items.map((item, index) => (
           <li key={index} className="flex items-center gap-1">

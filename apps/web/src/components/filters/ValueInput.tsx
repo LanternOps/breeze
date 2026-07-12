@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react';
 import { X, Plus } from 'lucide-react';
 import type { FilterFieldDefinition, FilterOperator, FilterValue } from '@breeze/shared';
+import { useTranslation } from 'react-i18next';
 
 interface ValueInputProps {
   value: FilterValue;
@@ -17,12 +18,13 @@ export function ValueInput({
   operator,
   className = ''
 }: ValueInputProps) {
+  const { t } = useTranslation('common');
   // Operators that don't need a value input
   const noValueOperators: FilterOperator[] = ['isNull', 'isNotNull', 'isEmpty', 'isNotEmpty'];
   if (noValueOperators.includes(operator)) {
     return (
       <div className="flex items-center py-2 text-sm text-muted-foreground italic">
-        No value needed
+        {t('filters.value.noValue')}
       </div>
     );
   }
@@ -89,8 +91,8 @@ export function ValueInput({
         onChange={(e) => onChange(e.target.value === 'true')}
         className={`w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring ${className}`}
       >
-        <option value="true">Yes</option>
-        <option value="false">No</option>
+        <option value="true">{t('labels.yes')}</option>
+        <option value="false">{t('labels.no')}</option>
       </select>
     );
   }
@@ -104,7 +106,7 @@ export function ValueInput({
         value={typeof value === 'number' ? value : ''}
         onChange={(e) => onChange(e.target.valueAsNumber || 0)}
         className={`w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring ${className}`}
-        placeholder="Enter a number"
+        placeholder={t('filters.value.enterNumber')}
       />
     );
   }
@@ -136,7 +138,7 @@ export function ValueInput({
       value={typeof value === 'string' ? value : ''}
       onChange={(e) => onChange(e.target.value)}
       className={`w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring ${className}`}
-      placeholder={getPlaceholder(field, operator)}
+      placeholder={getPlaceholder(field, operator, t)}
     />
   );
 }
@@ -154,6 +156,7 @@ function DurationInput({
   onChange: (value: FilterValue) => void;
   className?: string;
 }) {
+  const { t } = useTranslation('common');
   const safeValue = value && typeof value === 'object' && 'amount' in value
     ? value
     : { amount: 7, unit: 'days' as DurationUnit };
@@ -182,11 +185,11 @@ function DurationInput({
         onChange={(e) => handleUnitChange(e.target.value)}
         className="rounded-md border bg-background px-2 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
       >
-        <option value="minutes">minutes</option>
-        <option value="hours">hours</option>
-        <option value="days">days</option>
-        <option value="weeks">weeks</option>
-        <option value="months">months</option>
+        <option value="minutes">{t('filters.value.units.minutes')}</option>
+        <option value="hours">{t('filters.value.units.hours')}</option>
+        <option value="days">{t('filters.value.units.days')}</option>
+        <option value="weeks">{t('filters.value.units.weeks')}</option>
+        <option value="months">{t('filters.value.units.months')}</option>
       </select>
     </div>
   );
@@ -201,6 +204,7 @@ function DateRangeInput({
   onChange: (value: FilterValue) => void;
   className?: string;
 }) {
+  const { t } = useTranslation('common');
   const safeValue = value && typeof value === 'object' && 'from' in value
     ? value
     : { from: new Date(), to: new Date() };
@@ -221,7 +225,7 @@ function DateRangeInput({
         onChange={(e) => onChange({ ...safeValue, from: new Date(e.target.value) })}
         className="rounded-md border bg-background px-2 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
       />
-      <span className="text-sm text-muted-foreground">to</span>
+      <span className="text-sm text-muted-foreground">{t('filters.value.to')}</span>
       <input
         type="date"
         value={toStr}
@@ -243,6 +247,7 @@ function MultiValueInput({
   enumValues?: string[];
   className?: string;
 }) {
+  const { t } = useTranslation('common');
   const [inputValue, setInputValue] = useState('');
 
   const addValue = (newValue: string) => {
@@ -323,7 +328,7 @@ function MultiValueInput({
           onChange={(e) => setInputValue(e.target.value)}
           onKeyDown={handleKeyDown}
           onBlur={() => inputValue && addValue(inputValue)}
-          placeholder={value.length === 0 ? 'Type and press Enter' : ''}
+          placeholder={value.length === 0 ? t('filters.value.typeAndEnter') : ''}
           className="flex-1 min-w-[100px] h-7 bg-transparent px-2 text-sm outline-hidden"
         />
       </div>
@@ -341,23 +346,23 @@ function formatEnumValue(value: string): string {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-function getPlaceholder(field: FilterFieldDefinition | undefined, operator: FilterOperator): string {
+function getPlaceholder(field: FilterFieldDefinition | undefined, operator: FilterOperator, t: (key: string) => string): string {
   if (operator === 'matches') {
-    return 'Regular expression';
+    return t('filters.value.regex');
   }
   if (field?.key.includes('ip')) {
-    return 'e.g., 192.168.1.';
+    return t('filters.value.ipExample');
   }
   if (field?.key.includes('mac')) {
-    return 'e.g., AA:BB:CC';
+    return t('filters.value.macExample');
   }
   if (field?.key === 'hostname') {
-    return 'e.g., srv-web-01';
+    return t('filters.value.hostnameExample');
   }
   if (field?.key === 'software.installed' || field?.key === 'software.notInstalled') {
-    return 'e.g., Chrome';
+    return t('filters.value.softwareExample');
   }
-  return 'Enter value';
+  return t('filters.value.enterValue');
 }
 
 export default ValueInput;

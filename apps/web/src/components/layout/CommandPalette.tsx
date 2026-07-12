@@ -14,6 +14,7 @@ import {
   type LucideIcon
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useTranslation } from 'react-i18next';
 import { navigateTo } from '@/lib/navigation';
 import { fetchWithAuth } from '../../stores/auth';
 
@@ -232,6 +233,7 @@ const buildResultHref = (result: SearchResult): string => {
 };
 
 export default function CommandPalette() {
+  const { t } = useTranslation('common');
   const [open, setOpen] = useState(false);
   const [modifierLabel, setModifierLabel] = useState('');
   const [query, setQuery] = useState('');
@@ -540,7 +542,7 @@ export default function CommandPalette() {
         type="button"
         onClick={() => setOpen(true)}
         className="flex h-9 w-9 items-center justify-center rounded-md border bg-background text-muted-foreground hover:bg-muted/40 focus:outline-hidden focus:ring-2 focus:ring-ring xl:hidden"
-        aria-label="Search"
+        aria-label={t('actions.search')}
       >
         <Search className="h-4 w-4 shrink-0" />
       </button>
@@ -548,10 +550,10 @@ export default function CommandPalette() {
         type="button"
         onClick={() => setOpen(true)}
         className="hidden h-9 w-full min-w-0 items-center gap-2 rounded-md border bg-background px-3 text-sm text-muted-foreground hover:bg-muted/40 focus:outline-hidden focus:ring-2 focus:ring-ring xl:flex"
-        aria-label="Search"
+        aria-label={t('actions.search')}
       >
         <Search className="h-4 w-4 shrink-0" />
-        <span className="min-w-0 flex-1 truncate whitespace-nowrap text-left">Search devices, scripts, alerts, users, settings</span>
+        <span className="min-w-0 flex-1 truncate whitespace-nowrap text-left">{t('layout.search.prompt')}</span>
         <span className="shrink-0 rounded border bg-muted px-1.5 py-0.5 text-[10px] font-semibold uppercase text-muted-foreground">
           {modifierLabel ? `${modifierLabel}+K` : 'K'}
         </span>
@@ -575,7 +577,7 @@ export default function CommandPalette() {
                 type="search"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search devices, scripts, alerts, users, settings..."
+                placeholder={t('layout.search.placeholder')}
                 className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-hidden"
               />
               <span className="rounded border px-2 py-0.5 text-[10px] font-semibold uppercase text-muted-foreground">
@@ -587,7 +589,7 @@ export default function CommandPalette() {
               {isLoading && (
                 <div className="flex items-center gap-2 px-4 py-3 text-sm text-muted-foreground">
                   <Loader2 className="h-4 w-4 animate-spin" />
-                  Searching...
+                  {t('layout.search.searching')}
                 </div>
               )}
 
@@ -599,7 +601,7 @@ export default function CommandPalette() {
 
               {!isLoading && sections.length === 0 && !showResults && (
                 <div className="px-4 py-6 text-sm text-muted-foreground">
-                  Start typing to search across devices, scripts, alerts, users, and settings.
+                  {t('layout.search.startTyping')}
                 </div>
               )}
 
@@ -608,7 +610,7 @@ export default function CommandPalette() {
                   <div key={section.id} className="border-t first:border-t-0">
                     <div className="flex items-center gap-2 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                       <section.icon className="h-4 w-4" />
-                      {section.label}
+                      {t(/* i18n-dynamic */ `layout.search.sections.${section.id}`, { defaultValue: section.label })}
                     </div>
                     <div className="space-y-1 px-2 pb-2">
                       {section.items.map((item) => {
@@ -659,14 +661,14 @@ export default function CommandPalette() {
 
               {showResults && !isLoading && results.length === 0 && !errorMessage && (
                 <div className="px-4 py-6 text-sm text-muted-foreground">
-                  No results found. Try a different query.
+                  {t('layout.search.noResults')}
                 </div>
               )}
             </div>
 
             <div className="flex items-center justify-between border-t px-4 py-2 text-xs text-muted-foreground">
-              <span>Use arrows to navigate, Enter to open</span>
-              <span>Esc to close</span>
+              <span>{t('layout.search.navigationHint')}</span>
+              <span>{t('layout.search.closeHint')}</span>
             </div>
           </div>
         </div>

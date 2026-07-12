@@ -1,25 +1,18 @@
 import { useMemo } from 'react';
 import { useForm } from 'react-hook-form';
+import { useTranslation } from 'react-i18next';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 
-const resetRequestSchema = z.object({
-  email: z.string().email('Enter a valid email address')
-});
+type ResetRequestValues = {
+  email: string;
+};
 
-const resetConfirmSchema = z
-  .object({
-    code: z.string().min(6, 'Enter the 6 digit reset code'),
-    password: z.string().min(8, 'Password must be at least 8 characters'),
-    confirmPassword: z.string().min(8, 'Password must be at least 8 characters')
-  })
-  .refine(values => values.password === values.confirmPassword, {
-    message: 'Passwords do not match',
-    path: ['confirmPassword']
-  });
-
-type ResetRequestValues = z.infer<typeof resetRequestSchema>;
-type ResetConfirmValues = z.infer<typeof resetConfirmSchema>;
+type ResetConfirmValues = {
+  code: string;
+  password: string;
+  confirmPassword: string;
+};
 
 type PasswordResetFormProps = {
   mode?: 'request' | 'confirm';
@@ -35,6 +28,14 @@ function RequestForm({
   submitLabel,
   loading
 }: Omit<PasswordResetFormProps, 'mode'>) {
+  const { t } = useTranslation('portal');
+  const resetRequestSchema = useMemo(
+    () =>
+      z.object({
+        email: z.string().email(t('passwordReset.validation.email'))
+      }),
+    [t]
+  );
   const {
     register,
     handleSubmit,
@@ -55,13 +56,13 @@ function RequestForm({
     >
       <div className="space-y-2">
         <label htmlFor="email" className="text-sm font-medium">
-          Email
+          {t('passwordReset.email')}
         </label>
         <input
           id="email"
           type="email"
           autoComplete="email"
-          placeholder="you@company.com"
+          placeholder={t('passwordReset.emailPlaceholder')}
           className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           {...register('email')}
         />
@@ -81,13 +82,15 @@ function RequestForm({
         disabled={isLoading}
         className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
       >
-        {isLoading ? 'Sending reset email...' : submitLabel ?? 'Send reset link'}
+        {isLoading
+          ? t('passwordReset.request.sending')
+          : submitLabel ?? t('passwordReset.request.submit')}
       </button>
 
       <p className="text-center text-sm text-muted-foreground">
-        Remembered your password?{' '}
+        {t('passwordReset.rememberedPassword')}{' '}
         <a href="/portal/login" className="font-medium text-primary hover:underline">
-          Sign in
+          {t('passwordReset.signIn')}
         </a>
       </p>
     </form>
@@ -100,6 +103,21 @@ function ConfirmForm({
   submitLabel,
   loading
 }: Omit<PasswordResetFormProps, 'mode'>) {
+  const { t } = useTranslation('portal');
+  const resetConfirmSchema = useMemo(
+    () =>
+      z
+        .object({
+          code: z.string().min(6, t('passwordReset.validation.code')),
+          password: z.string().min(8, t('passwordReset.validation.passwordLength')),
+          confirmPassword: z.string().min(8, t('passwordReset.validation.passwordLength'))
+        })
+        .refine(values => values.password === values.confirmPassword, {
+          message: t('passwordReset.validation.passwordsMatch'),
+          path: ['confirmPassword']
+        }),
+    [t]
+  );
   const {
     register,
     handleSubmit,
@@ -120,14 +138,14 @@ function ConfirmForm({
     >
       <div className="space-y-2">
         <label htmlFor="code" className="text-sm font-medium">
-          Reset code
+          {t('passwordReset.confirm.code')}
         </label>
         <input
           id="code"
           type="text"
           inputMode="numeric"
           autoComplete="one-time-code"
-          placeholder="123456"
+          placeholder={t('passwordReset.confirm.codePlaceholder')}
           className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           {...register('code')}
         />
@@ -137,13 +155,13 @@ function ConfirmForm({
       </div>
       <div className="space-y-2">
         <label htmlFor="password" className="text-sm font-medium">
-          New password
+          {t('passwordReset.confirm.newPassword')}
         </label>
         <input
           id="password"
           type="password"
           autoComplete="new-password"
-          placeholder="Enter a new password"
+          placeholder={t('passwordReset.confirm.newPasswordPlaceholder')}
           className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           {...register('password')}
         />
@@ -153,13 +171,13 @@ function ConfirmForm({
       </div>
       <div className="space-y-2">
         <label htmlFor="confirmPassword" className="text-sm font-medium">
-          Confirm password
+          {t('passwordReset.confirm.confirmPassword')}
         </label>
         <input
           id="confirmPassword"
           type="password"
           autoComplete="new-password"
-          placeholder="Re-enter your new password"
+          placeholder={t('passwordReset.confirm.confirmPasswordPlaceholder')}
           className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           {...register('confirmPassword')}
         />
@@ -181,13 +199,15 @@ function ConfirmForm({
         disabled={isLoading}
         className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
       >
-        {isLoading ? 'Resetting password...' : submitLabel ?? 'Reset password'}
+        {isLoading
+          ? t('passwordReset.confirm.resetting')
+          : submitLabel ?? t('passwordReset.confirm.submit')}
       </button>
 
       <p className="text-center text-sm text-muted-foreground">
-        Remembered your password?{' '}
+        {t('passwordReset.rememberedPassword')}{' '}
         <a href="/portal/login" className="font-medium text-primary hover:underline">
-          Sign in
+          {t('passwordReset.signIn')}
         </a>
       </p>
     </form>

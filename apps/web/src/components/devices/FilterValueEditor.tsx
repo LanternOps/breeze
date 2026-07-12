@@ -14,6 +14,7 @@
 // `software.notInstalled` and softwareOptions are provided, render a
 // multi-select chip list with All/Any combinator.
 import { useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import type {
   FilterCondition,
   FilterFieldDefinition,
@@ -66,6 +67,7 @@ function isSiteField(key: string): boolean { return key === 'siteId'; }
 export function FilterValueEditor({
   field, condition, onChange, orgs, sites, softwareOptions, softwareOptionCounts, onSoftwareSearch
 }: FilterValueEditorProps) {
+  const { t } = useTranslation('devices');
   const op = condition.operator;
 
   // If the chosen field doesn't support the current operator (e.g. when
@@ -91,7 +93,7 @@ export function FilterValueEditor({
   if (isOrgField(field.key) && orgs) {
     return (
       <NamedMultiSelect
-        label="Organizations"
+        label={t('filterValueEditor.organizations')}
         options={orgs}
         condition={condition}
         onChange={onChange}
@@ -102,7 +104,7 @@ export function FilterValueEditor({
   if (isSiteField(field.key) && sites) {
     return (
       <NamedMultiSelect
-        label="Sites"
+        label={t('filterValueEditor.sites')}
         options={sites}
         condition={condition}
         onChange={onChange}
@@ -127,7 +129,7 @@ export function FilterValueEditor({
 
   return (
     <div className="flex flex-col gap-2">
-      <label className="text-xs font-medium text-muted-foreground">Operator</label>
+      <label className="text-xs font-medium text-muted-foreground">{t('filterValueEditor.operator')}</label>
       <select
         data-testid="filter-operator-select"
         value={op}
@@ -141,7 +143,7 @@ export function FilterValueEditor({
 
       {!NO_VALUE_OPERATORS.includes(op) && (
         <>
-          <label className="text-xs font-medium text-muted-foreground">Value</label>
+          <label className="text-xs font-medium text-muted-foreground">{t('filterValueEditor.value')}</label>
           <ValueInput field={field} operator={op} value={condition.value} onChange={setValue} />
         </>
       )}
@@ -160,6 +162,7 @@ interface NamedMultiSelectProps {
   testId: string;
 }
 function NamedMultiSelect({ label, options, condition, onChange, testId }: NamedMultiSelectProps) {
+  const { t } = useTranslation('devices');
   const [q, setQ] = useState('');
   const selected: string[] = Array.isArray(condition.value)
     ? (condition.value as string[])
@@ -184,7 +187,7 @@ function NamedMultiSelect({ label, options, condition, onChange, testId }: Named
           type="text"
           value={q}
           onChange={e => setQ(e.target.value)}
-          placeholder={`Search ${label.toLowerCase()}…`}
+          placeholder={t('filterValueEditor.searchNamed', { label: label.toLowerCase() })}
           className="flex-1 bg-transparent text-xs outline-hidden"
           data-testid={`${testId}-search`}
         />
@@ -197,7 +200,7 @@ function NamedMultiSelect({ label, options, condition, onChange, testId }: Named
               <button
                 type="button"
                 onClick={() => toggle(id)}
-                aria-label={`Remove ${byId.get(id) ?? id}`}
+                aria-label={t('filterValueEditor.removeNamed', { name: byId.get(id) ?? id })}
                 data-testid={`${testId}-remove-${id}`}
               >
                 <X className="h-3 w-3" />
@@ -208,7 +211,7 @@ function NamedMultiSelect({ label, options, condition, onChange, testId }: Named
       )}
       <ul className="max-h-44 overflow-y-auto rounded border">
         {filtered.length === 0 && (
-          <li className="px-2 py-1 text-xs text-muted-foreground">No matches</li>
+          <li className="px-2 py-1 text-xs text-muted-foreground">{t('filterValueEditor.noMatches')}</li>
         )}
         {filtered.map(o => (
           <li key={o.id}>
@@ -244,6 +247,7 @@ interface SoftwareMultiSelectProps {
   onSearch?: (q: string) => void;
 }
 function SoftwareMultiSelect({ field, condition, onChange, options, optionCounts, onSearch }: SoftwareMultiSelectProps) {
+  const { t } = useTranslation('devices');
   const [q, setQ] = useState('');
   const selected: string[] = Array.isArray(condition.value)
     ? (condition.value as string[])
@@ -275,13 +279,13 @@ function SoftwareMultiSelect({ field, condition, onChange, options, optionCounts
             data-testid="filter-software-all"
             onClick={() => setCombinator('all')}
             className={`px-2 py-0.5 ${combinator === 'all' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}
-          >All</button>
+          >{t('common:labels.all')}</button>
           <button
             type="button"
             data-testid="filter-software-any"
             onClick={() => setCombinator('any')}
             className={`px-2 py-0.5 ${combinator === 'any' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}
-          >Any</button>
+          >{t('filterValueEditor.any')}</button>
         </div>
       </div>
       {selected.length > 0 && (
@@ -292,7 +296,7 @@ function SoftwareMultiSelect({ field, condition, onChange, options, optionCounts
               <button
                 type="button"
                 onClick={() => toggle(n)}
-                aria-label={`Remove ${n}`}
+                aria-label={t('filterValueEditor.removeSoftware', { name: n })}
                 data-testid={`filter-software-remove-${n}`}
               >
                 <X className="h-3 w-3" />
@@ -312,7 +316,7 @@ function SoftwareMultiSelect({ field, condition, onChange, options, optionCounts
             const op: FilterOperator = condition.operator === 'hasAll' ? 'hasAll' : 'hasAny';
             onChange({ ...condition, operator: op, value: parts });
           }}
-          placeholder="comma-separated app names"
+          placeholder={t('filterValueEditor.csvPlaceholder')}
           className="rounded border bg-background px-2 py-1 text-sm"
         />
       ) : (
@@ -323,14 +327,14 @@ function SoftwareMultiSelect({ field, condition, onChange, options, optionCounts
               type="text"
               value={q}
               onChange={e => { setQ(e.target.value); onSearch?.(e.target.value); }}
-              placeholder="Search software…"
+              placeholder={t('filterValueEditor.searchSoftware')}
               data-testid="filter-software-search"
               className="flex-1 bg-transparent text-xs outline-hidden"
             />
           </div>
           <ul className="max-h-40 overflow-y-auto rounded border">
             {filtered.length === 0 && (
-              <li className="px-2 py-1 text-xs text-muted-foreground">No matches</li>
+              <li className="px-2 py-1 text-xs text-muted-foreground">{t('filterValueEditor.noMatches')}</li>
             )}
             {filtered.map(name => {
               const count = optionCounts?.[name];

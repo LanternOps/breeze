@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Activity, RefreshCw } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
+import { formatNumber, formatPercent } from '@/lib/i18n/format';
 
 type WatchResult = {
   id: string;
@@ -29,10 +31,10 @@ const STATUS_STYLES: Record<string, string> = {
 };
 
 const STATUS_LABELS: Record<string, string> = {
-  running: 'Running',
-  stopped: 'Stopped',
-  not_found: 'Not found',
-  error: 'Error',
+  running: 'status.running',
+  stopped: 'status.stopped',
+  not_found: 'status.notFound',
+  error: 'status.error',
 };
 
 function formatTimestamp(value: string, timezone?: string): string {
@@ -42,6 +44,7 @@ function formatTimestamp(value: string, timezone?: string): string {
 }
 
 export default function DeviceMonitoringTab({ deviceId, timezone }: DeviceMonitoringTabProps) {
+  const { t } = useTranslation('devices');
   const [results, setResults] = useState<WatchResult[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -85,7 +88,7 @@ export default function DeviceMonitoringTab({ deviceId, timezone }: DeviceMonito
       >
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="mt-3 text-sm text-muted-foreground">Loading monitoring results...</p>
+          <p className="mt-3 text-sm text-muted-foreground">{t('deviceMonitoringTab.loading')}</p>
         </div>
       </div>
     );
@@ -103,7 +106,7 @@ export default function DeviceMonitoringTab({ deviceId, timezone }: DeviceMonito
           onClick={fetchResults}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Retry
+          {t('common:actions.retry')}
         </button>
       </div>
     );
@@ -114,7 +117,7 @@ export default function DeviceMonitoringTab({ deviceId, timezone }: DeviceMonito
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Activity className="h-4 w-4 text-muted-foreground" />
-          <h3 className="text-lg font-semibold">Service &amp; Process Monitoring</h3>
+          <h3 className="text-lg font-semibold">{t('deviceMonitoringTab.title')}</h3>
           <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">{rows.length}</span>
         </div>
         <button
@@ -123,11 +126,11 @@ export default function DeviceMonitoringTab({ deviceId, timezone }: DeviceMonito
           className="flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
         >
           <RefreshCw className="h-3.5 w-3.5" />
-          Refresh
+          {t('common:actions.refresh')}
         </button>
       </div>
       <p className="mt-1 text-sm text-muted-foreground">
-        Latest result for each service/process watch configured by an assigned Configuration Policy.
+        {t('deviceMonitoringTab.description')}
       </p>
 
       <div className="mt-4 overflow-hidden rounded-md border">
@@ -135,13 +138,13 @@ export default function DeviceMonitoringTab({ deviceId, timezone }: DeviceMonito
           <table className="min-w-full divide-y">
             <thead className="bg-muted/40 sticky top-0">
               <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                <th className="px-4 py-3">Name</th>
-                <th className="px-4 py-3">Type</th>
-                <th className="px-4 py-3">Status</th>
-                <th className="px-4 py-3">CPU</th>
-                <th className="px-4 py-3">Memory</th>
-                <th className="px-4 py-3">PID</th>
-                <th className="px-4 py-3">Last Checked</th>
+                <th className="px-4 py-3">{t('deviceMonitoringTab.table.name')}</th>
+                <th className="px-4 py-3">{t('deviceMonitoringTab.table.type')}</th>
+                <th className="px-4 py-3">{t('deviceMonitoringTab.table.status')}</th>
+                <th className="px-4 py-3">{t('deviceMonitoringTab.table.cpu')}</th>
+                <th className="px-4 py-3">{t('deviceMonitoringTab.table.memory')}</th>
+                <th className="px-4 py-3">{t('deviceMonitoringTab.table.pid')}</th>
+                <th className="px-4 py-3">{t('deviceMonitoringTab.table.lastChecked')}</th>
               </tr>
             </thead>
             <tbody className="divide-y">
@@ -152,8 +155,7 @@ export default function DeviceMonitoringTab({ deviceId, timezone }: DeviceMonito
                     data-testid="device-monitoring-empty"
                     className="px-4 py-6 text-center text-sm text-muted-foreground"
                   >
-                    No monitoring results reported. Assign a Configuration Policy with service/process
-                    watches to this device, or wait for the next check interval.
+                    {t('deviceMonitoringTab.empty')}
                   </td>
                 </tr>
               ) : (
@@ -167,19 +169,21 @@ export default function DeviceMonitoringTab({ deviceId, timezone }: DeviceMonito
                           STATUS_STYLES[row.status] ?? 'bg-muted text-muted-foreground border-border'
                         }`}
                       >
-                        {STATUS_LABELS[row.status] ?? row.status}
+                        {STATUS_LABELS[row.status] ? t(/* i18n-dynamic */ `deviceMonitoringTab.${STATUS_LABELS[row.status]}`) : row.status}
                       </span>
                       {row.autoRestartAttempted ? (
                         <span className="ml-2 text-xs text-muted-foreground">
-                          {row.autoRestartSucceeded ? 'auto-restarted' : 'restart failed'}
+                          {row.autoRestartSucceeded
+                            ? t('deviceMonitoringTab.autoRestarted')
+                            : t('deviceMonitoringTab.restartFailed')}
                         </span>
                       ) : null}
                     </td>
                     <td className="px-4 py-3 tabular-nums text-muted-foreground">
-                      {typeof row.cpuPercent === 'number' ? `${row.cpuPercent.toFixed(1)}%` : '—'}
+                      {typeof row.cpuPercent === 'number' ? formatPercent(row.cpuPercent / 100, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : '—'}
                     </td>
                     <td className="px-4 py-3 tabular-nums text-muted-foreground">
-                      {typeof row.memoryMb === 'number' ? `${row.memoryMb.toFixed(0)} MB` : '—'}
+                      {typeof row.memoryMb === 'number' ? `${formatNumber(row.memoryMb, { maximumFractionDigits: 0 })} MB` : '—'}
                     </td>
                     <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{row.pid ?? '—'}</td>
                     <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">

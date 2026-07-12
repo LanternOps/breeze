@@ -1,24 +1,22 @@
-import { useState, useMemo } from 'react';
-import { ChevronDown, ChevronRight, Clock, Search } from 'lucide-react';
-import { formatToolName } from '../../lib/utils';
-import { RATE_LIMIT_CONFIGS, groupByCategory } from './tierConfig';
-import type { ToolCategory, RateLimitConfig } from './tierConfig';
-
+import { useTranslation } from "react-i18next";
+import "@/lib/i18n";
+import { useState, useMemo } from "react";
+import { ChevronDown, ChevronRight, Clock, Search } from "lucide-react";
+import { formatToolName } from "../../lib/utils";
+import { RATE_LIMIT_CONFIGS, groupByCategory } from "./tierConfig";
+import type { ToolCategory, RateLimitConfig } from "./tierConfig";
 const TIER_BADGE: Record<number, string> = {
-  1: 'bg-green-500/15 text-green-700 border-green-500/30',
-  2: 'bg-blue-500/15 text-blue-700 border-blue-500/30',
-  3: 'bg-amber-500/15 text-amber-700 border-amber-500/30',
+  1: "bg-green-500/15 text-green-700 border-green-500/30",
+  2: "bg-blue-500/15 text-blue-700 border-blue-500/30",
+  3: "bg-amber-500/15 text-amber-700 border-amber-500/30",
 };
-
 export function RateLimitStatus() {
-  const [search, setSearch] = useState('');
+  const { t } = useTranslation("security");
+  const [search, setSearch] = useState("");
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
-
   const toggle = (key: string) =>
     setCollapsed((prev) => ({ ...prev, [key]: !prev[key] }));
-
   const q = search.toLowerCase().trim();
-
   const filtered = useMemo(() => {
     if (!q) return RATE_LIMIT_CONFIGS;
     return RATE_LIMIT_CONFIGS.filter(
@@ -28,16 +26,16 @@ export function RateLimitStatus() {
         cfg.category.toLowerCase().includes(q),
     );
   }, [q]);
-
   const groups = useMemo(() => groupByCategory(filtered), [filtered]);
-
   return (
     <div>
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3">
-          <h2 className="text-lg font-semibold">Rate Limit Configuration</h2>
+          <h2 className="text-lg font-semibold">
+            {t("aiRiskRateLimitStatus.rateLimitConfiguration")}
+          </h2>
           <span className="text-xs text-muted-foreground">
-            {filtered.length} rule{filtered.length !== 1 ? 's' : ''}
+            {t("aiRiskRateLimitStatus.ruleCount", { count: filtered.length })}
           </span>
         </div>
         <div className="relative">
@@ -46,7 +44,7 @@ export function RateLimitStatus() {
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Filter rate limits..."
+            placeholder={t("aiRiskRateLimitStatus.filterRateLimits")}
             className="h-8 w-56 rounded-lg border bg-card pl-8 pr-3 text-xs focus:outline-hidden focus:ring-1 focus:ring-primary"
           />
         </div>
@@ -54,14 +52,13 @@ export function RateLimitStatus() {
 
       {groups.length === 0 ? (
         <div className="rounded-lg border bg-card p-6 text-center text-sm text-muted-foreground shadow-xs">
-          No rate limits match your search.
+          {t("aiRiskRateLimitStatus.noRateLimitsMatchYourSearch")}
         </div>
       ) : (
         <div className="rounded-lg border bg-card shadow-xs overflow-hidden">
           {groups.map((group) => {
             const key = `rl-${group.category}`;
             const isCollapsed = collapsed[key] ?? false;
-
             return (
               <RateLimitCategoryGroup
                 key={key}
@@ -77,7 +74,6 @@ export function RateLimitStatus() {
     </div>
   );
 }
-
 function RateLimitCategoryGroup({
   category,
   configs,
@@ -89,6 +85,7 @@ function RateLimitCategoryGroup({
   isCollapsed: boolean;
   onToggle: () => void;
 }) {
+  const { t } = useTranslation("security");
   return (
     <div className="border-b last:border-b-0">
       <button
@@ -111,11 +108,15 @@ function RateLimitCategoryGroup({
           <table className="w-full text-xs">
             <thead>
               <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                <th className="pb-1.5 pl-6">Tool</th>
-                <th className="pb-1.5">Limit</th>
-                <th className="pb-1.5">Window</th>
-                <th className="pb-1.5">Tier</th>
-                <th className="pb-1.5">Permission</th>
+                <th className="pb-1.5 pl-6">
+                  {t("aiRiskRateLimitStatus.tool")}
+                </th>
+                <th className="pb-1.5">{t("aiRiskRateLimitStatus.limit")}</th>
+                <th className="pb-1.5">{t("aiRiskRateLimitStatus.window")}</th>
+                <th className="pb-1.5">{t("aiRiskRateLimitStatus.tier")}</th>
+                <th className="pb-1.5">
+                  {t("aiRiskRateLimitStatus.permission")}
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -124,7 +125,6 @@ function RateLimitCategoryGroup({
                   cfg.windowSeconds >= 60
                     ? `${cfg.windowSeconds / 60} min`
                     : `${cfg.windowSeconds}s`;
-
                 return (
                   <tr
                     key={cfg.toolName}
@@ -136,15 +136,20 @@ function RateLimitCategoryGroup({
                     <td className="py-2">
                       <span className="inline-flex items-center gap-1">
                         <Clock className="h-3 w-3 text-muted-foreground" />
-                        {cfg.limit} req
+                        {t("aiRiskRateLimitStatus.requestCount", {
+                          count: cfg.limit,
+                        })}
                       </span>
                     </td>
-                    <td className="py-2 text-muted-foreground">{windowLabel}</td>
+                    <td className="py-2 text-muted-foreground">
+                      {windowLabel}
+                    </td>
                     <td className="py-2">
                       <span
                         className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${TIER_BADGE[cfg.tier]}`}
                       >
-                        T{cfg.tier}
+                        {t("aiRiskRateLimitStatus.t")}
+                        {cfg.tier}
                       </span>
                     </td>
                     <td className="py-2 font-mono text-muted-foreground">

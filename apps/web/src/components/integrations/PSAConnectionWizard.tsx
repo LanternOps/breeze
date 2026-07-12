@@ -1,4 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
+import "@/lib/i18n";
 import {
   ArrowLeft,
   ArrowRight,
@@ -7,61 +9,91 @@ import {
   Server,
   Settings2,
   ShieldCheck,
-  Wand2
-} from 'lucide-react';
+  Wand2,
+} from "lucide-react";
 
 type StepId = 1 | 2 | 3 | 4 | 5;
 
 type Provider = {
   id: string;
   name: string;
-  description: string;
-  focus: string;
+  descriptionKey: string;
+  focusKey: string;
 };
 
 const providers: Provider[] = [
   {
-    id: 'connectwise',
-    name: 'ConnectWise',
-    description: 'Sync service boards, companies, and configurations.',
-    focus: 'Service desk and project operations'
+    id: "connectwise",
+    name: "ConnectWise",
+    descriptionKey: "syncServiceBoardsCompaniesAndConfigurations",
+    focusKey: "serviceDeskAndProjectOperations",
   },
   {
-    id: 'autotask',
-    name: 'Datto Autotask',
-    description: 'Sync tickets, contracts, and time entries.',
-    focus: 'Billing and contract automation'
+    id: "autotask",
+    name: "Datto Autotask",
+    descriptionKey: "syncTicketsContractsAndTimeEntries",
+    focusKey: "billingAndContractAutomation",
   },
   {
-    id: 'halo',
-    name: 'HaloPSA',
-    description: 'Link assets and SLAs into your workflows.',
-    focus: 'Modern PSA and ITSM'
+    id: "halo",
+    name: "HaloPSA",
+    descriptionKey: "linkAssetsAndSLAsIntoYourWorkflows",
+    focusKey: "modernPSAAndITSM",
   },
   {
-    id: 'bms',
-    name: 'Kaseya BMS',
-    description: 'Bridge projects and service level agreements.',
-    focus: 'Customer lifecycle visibility'
-  }
+    id: "bms",
+    name: "Kaseya BMS",
+    descriptionKey: "bridgeProjectsAndServiceLevelAgreements",
+    focusKey: "customerLifecycleVisibility",
+  },
 ];
 
-const steps = [
-  { id: 1, label: 'Provider' },
-  { id: 2, label: 'Credentials' },
-  { id: 3, label: 'Test' },
-  { id: 4, label: 'Sync options' },
-  { id: 5, label: 'Mapping' }
-] as const;
-
 export default function PSAConnectionWizard() {
+  const { t } = useTranslation("integrations");
+  const providerDescriptions = {
+    syncServiceBoardsCompaniesAndConfigurations: t(
+      "psaConnectionWizard.syncServiceBoardsCompaniesAndConfigurations",
+    ),
+    syncTicketsContractsAndTimeEntries: t(
+      "psaConnectionWizard.syncTicketsContractsAndTimeEntries",
+    ),
+    linkAssetsAndSLAsIntoYourWorkflows: t(
+      "psaConnectionWizard.linkAssetsAndSLAsIntoYourWorkflows",
+    ),
+    bridgeProjectsAndServiceLevelAgreements: t(
+      "psaConnectionWizard.bridgeProjectsAndServiceLevelAgreements",
+    ),
+  };
+  const providerFocus = {
+    serviceDeskAndProjectOperations: t(
+      "psaConnectionWizard.serviceDeskAndProjectOperations",
+    ),
+    billingAndContractAutomation: t(
+      "psaConnectionWizard.billingAndContractAutomation",
+    ),
+    modernPSAAndITSM: t("psaConnectionWizard.modernPSAAndITSM"),
+    customerLifecycleVisibility: t(
+      "psaConnectionWizard.customerLifecycleVisibility",
+    ),
+  };
+  const steps = [
+    { id: 1, label: t("psaConnectionWizard.provider") },
+    { id: 2, label: t("psaConnectionWizard.credentials") },
+    { id: 3, label: t("psaConnectionWizard.test") },
+    { id: 4, label: t("psaConnectionWizard.syncOptions") },
+    { id: 5, label: t("psaConnectionWizard.mapping") },
+  ] as const;
   const [step, setStep] = useState<StepId>(1);
-  const [selectedProvider, setSelectedProvider] = useState<Provider>(providers[0]);
-  const [apiUrl, setApiUrl] = useState('https://api.connectwise.com/v1');
-  const [apiKey, setApiKey] = useState('cw_key_live_123');
-  const [clientId, setClientId] = useState('cw-client-001');
-  const [region, setRegion] = useState('US');
-  const [testStatus, setTestStatus] = useState<'idle' | 'success' | 'error'>('idle');
+  const [selectedProvider, setSelectedProvider] = useState<Provider>(
+    providers[0],
+  );
+  const [apiUrl, setApiUrl] = useState("https://api.connectwise.com/v1");
+  const [apiKey, setApiKey] = useState("cw_key_live_123");
+  const [clientId, setClientId] = useState("cw-client-001");
+  const [region, setRegion] = useState("US");
+  const [testStatus, setTestStatus] = useState<"idle" | "success" | "error">(
+    "idle",
+  );
   const [syncTickets, setSyncTickets] = useState(true);
   const [syncAssets, setSyncAssets] = useState(true);
   const [syncTimeEntries, setSyncTimeEntries] = useState(false);
@@ -70,35 +102,39 @@ export default function PSAConnectionWizard() {
   const canNext = useMemo(() => {
     if (step === 1) return !!selectedProvider;
     if (step === 2) return apiUrl.length > 4 && apiKey.length > 4;
-    if (step === 3) return testStatus === 'success';
+    if (step === 3) return testStatus === "success";
     return true;
   }, [apiKey, apiUrl, selectedProvider, step, testStatus]);
 
-  const goNext = () => setStep(prev => (prev < 5 ? ((prev + 1) as StepId) : prev));
-  const goBack = () => setStep(prev => (prev > 1 ? ((prev - 1) as StepId) : prev));
+  const goNext = () =>
+    setStep((prev) => (prev < 5 ? ((prev + 1) as StepId) : prev));
+  const goBack = () =>
+    setStep((prev) => (prev > 1 ? ((prev - 1) as StepId) : prev));
 
   const handleTestConnection = () => {
-    const success = apiKey.startsWith('cw') || apiKey.startsWith('auto');
-    setTestStatus(success ? 'success' : 'error');
+    const success = apiKey.startsWith("cw") || apiKey.startsWith("auto");
+    setTestStatus(success ? "success" : "error");
   };
 
   return (
     <div className="rounded-xl border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div>
-          <h2 className="text-lg font-semibold">PSA connection wizard</h2>
+          <h2 className="text-lg font-semibold">
+            {t("psaConnectionWizard.psaConnectionWizard")}
+          </h2>
           <p className="text-sm text-muted-foreground">
-            Complete the steps to sync tickets, assets, and workflows.
+            {t("psaConnectionWizard.completeTheStepsToSyncTicketsAssetsAnd")}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          {steps.map(item => (
+          {steps.map((item) => (
             <span
               key={item.id}
               className={`rounded-full border px-3 py-1 text-xs ${
                 step === item.id
-                  ? 'border-primary bg-primary/10 text-primary'
-                  : 'border-border bg-background text-muted-foreground'
+                  ? "border-primary bg-primary/10 text-primary"
+                  : "border-border bg-background text-muted-foreground"
               }`}
             >
               {item.id}. {item.label}
@@ -112,23 +148,35 @@ export default function PSAConnectionWizard() {
           <div>
             <div className="flex items-center gap-3 text-sm font-semibold text-muted-foreground">
               <ShieldCheck className="h-4 w-4 text-primary" />
-              Select PSA provider
+              {t("psaConnectionWizard.selectPSAProvider")}
             </div>
             <div className="mt-4 grid gap-4 md:grid-cols-2">
-              {providers.map(provider => (
+              {providers.map((provider) => (
                 <button
                   key={provider.id}
                   type="button"
                   onClick={() => setSelectedProvider(provider)}
                   className={`rounded-lg border p-4 text-left transition ${
                     selectedProvider.id === provider.id
-                      ? 'border-primary bg-primary/5'
-                      : 'border-border hover:border-primary/40'
+                      ? "border-primary bg-primary/5"
+                      : "border-border hover:border-primary/40"
                   }`}
                 >
                   <h3 className="text-base font-semibold">{provider.name}</h3>
-                  <p className="text-sm text-muted-foreground">{provider.description}</p>
-                  <p className="mt-2 text-xs text-muted-foreground">{provider.focus}</p>
+                  <p className="text-sm text-muted-foreground">
+                    {
+                      providerDescriptions[
+                        provider.descriptionKey as keyof typeof providerDescriptions
+                      ]
+                    }
+                  </p>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    {
+                      providerFocus[
+                        provider.focusKey as keyof typeof providerFocus
+                      ]
+                    }
+                  </p>
                 </button>
               ))}
             </div>
@@ -139,46 +187,58 @@ export default function PSAConnectionWizard() {
           <div className="space-y-4">
             <div className="flex items-center gap-3 text-sm font-semibold text-muted-foreground">
               <KeyRound className="h-4 w-4 text-primary" />
-              Enter credentials
+              {t("psaConnectionWizard.enterCredentials")}
             </div>
             <div className="grid gap-4 md:grid-cols-2">
               <div>
-                <label className="text-sm font-medium">API URL</label>
+                <label className="text-sm font-medium">
+                  {t("psaConnectionWizard.apiURL")}
+                </label>
                 <input
                   type="url"
                   value={apiUrl}
-                  onChange={event => setApiUrl(event.target.value)}
+                  onChange={(event) => setApiUrl(event.target.value)}
                   className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
               </div>
               <div>
-                <label className="text-sm font-medium">API key</label>
+                <label className="text-sm font-medium">
+                  {t("psaConnectionWizard.apiKey")}
+                </label>
                 <input
                   type="password"
                   value={apiKey}
-                  onChange={event => setApiKey(event.target.value)}
+                  onChange={(event) => setApiKey(event.target.value)}
                   className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
               </div>
               <div>
-                <label className="text-sm font-medium">Client ID</label>
+                <label className="text-sm font-medium">
+                  {t("psaConnectionWizard.clientID")}
+                </label>
                 <input
                   type="text"
                   value={clientId}
-                  onChange={event => setClientId(event.target.value)}
+                  onChange={(event) => setClientId(event.target.value)}
                   className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
               </div>
               <div>
-                <label className="text-sm font-medium">Region</label>
+                <label className="text-sm font-medium">
+                  {t("psaConnectionWizard.region")}
+                </label>
                 <select
                   value={region}
-                  onChange={event => setRegion(event.target.value)}
+                  onChange={(event) => setRegion(event.target.value)}
                   className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 >
-                  <option value="US">United States</option>
-                  <option value="EU">Europe</option>
-                  <option value="APAC">APAC</option>
+                  <option value="US">
+                    {t("psaConnectionWizard.unitedStates")}
+                  </option>
+                  <option value="EU">{t("psaConnectionWizard.europe")}</option>
+                  <option value="APAC">
+                    {t("psaConnectionWizard.asiaPacific")}
+                  </option>
                 </select>
               </div>
             </div>
@@ -189,12 +249,14 @@ export default function PSAConnectionWizard() {
           <div className="space-y-4">
             <div className="flex items-center gap-3 text-sm font-semibold text-muted-foreground">
               <Server className="h-4 w-4 text-primary" />
-              Test connection
+              {t("psaConnectionWizard.testConnection")}
             </div>
             <div className="rounded-lg border bg-muted/30 p-4 text-sm">
-              <p className="font-medium">Provider</p>
+              <p className="font-medium">{t("psaConnectionWizard.provider")}</p>
               <p className="text-muted-foreground">{selectedProvider.name}</p>
-              <p className="mt-3 font-medium">Endpoint</p>
+              <p className="mt-3 font-medium">
+                {t("psaConnectionWizard.endpoint")}
+              </p>
               <p className="text-muted-foreground">{apiUrl}</p>
             </div>
             <button
@@ -203,19 +265,19 @@ export default function PSAConnectionWizard() {
               className="inline-flex h-10 items-center justify-center gap-2 rounded-md border px-4 text-sm font-medium hover:bg-muted"
             >
               <Wand2 className="h-4 w-4" />
-              Run test
+              {t("psaConnectionWizard.runTest")}
             </button>
-            {testStatus !== 'idle' && (
+            {testStatus !== "idle" && (
               <div
                 className={`rounded-lg border px-4 py-3 text-sm ${
-                  testStatus === 'success'
-                    ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                    : 'border-rose-200 bg-rose-50 text-rose-700'
+                  testStatus === "success"
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                    : "border-rose-200 bg-rose-50 text-rose-700"
                 }`}
               >
-                {testStatus === 'success'
-                  ? 'Connection successful. Permissions validated.'
-                  : 'Connection failed. Verify the API key and URL.'}
+                {testStatus === "success"
+                  ? t("psaConnectionWizard.connectionSuccessful")
+                  : "Connection failed. Verify the API key and URL."}
               </div>
             )}
           </div>
@@ -225,42 +287,46 @@ export default function PSAConnectionWizard() {
           <div className="space-y-4">
             <div className="flex items-center gap-3 text-sm font-semibold text-muted-foreground">
               <Settings2 className="h-4 w-4 text-primary" />
-              Configure sync options
+              {t("psaConnectionWizard.configureSyncOptions")}
             </div>
             <div className="grid gap-3 md:grid-cols-2">
               <label className="flex items-center justify-between rounded-lg border bg-background p-4 text-sm">
-                <span>Sync tickets and status updates</span>
+                <span>
+                  {t("psaConnectionWizard.syncTicketsAndStatusUpdates")}
+                </span>
                 <input
                   type="checkbox"
                   checked={syncTickets}
-                  onChange={event => setSyncTickets(event.target.checked)}
+                  onChange={(event) => setSyncTickets(event.target.checked)}
                   className="h-4 w-4 rounded border-muted text-primary focus:ring-primary"
                 />
               </label>
               <label className="flex items-center justify-between rounded-lg border bg-background p-4 text-sm">
-                <span>Sync assets and configurations</span>
+                <span>
+                  {t("psaConnectionWizard.syncAssetsAndConfigurations")}
+                </span>
                 <input
                   type="checkbox"
                   checked={syncAssets}
-                  onChange={event => setSyncAssets(event.target.checked)}
+                  onChange={(event) => setSyncAssets(event.target.checked)}
                   className="h-4 w-4 rounded border-muted text-primary focus:ring-primary"
                 />
               </label>
               <label className="flex items-center justify-between rounded-lg border bg-background p-4 text-sm">
-                <span>Sync time entries</span>
+                <span>{t("psaConnectionWizard.syncTimeEntries")}</span>
                 <input
                   type="checkbox"
                   checked={syncTimeEntries}
-                  onChange={event => setSyncTimeEntries(event.target.checked)}
+                  onChange={(event) => setSyncTimeEntries(event.target.checked)}
                   className="h-4 w-4 rounded border-muted text-primary focus:ring-primary"
                 />
               </label>
               <label className="flex items-center justify-between rounded-lg border bg-background p-4 text-sm">
-                <span>Sync contacts and orgs</span>
+                <span>{t("psaConnectionWizard.syncContactsAndOrgs")}</span>
                 <input
                   type="checkbox"
                   checked={syncContacts}
-                  onChange={event => setSyncContacts(event.target.checked)}
+                  onChange={(event) => setSyncContacts(event.target.checked)}
                   className="h-4 w-4 rounded border-muted text-primary focus:ring-primary"
                 />
               </label>
@@ -272,37 +338,61 @@ export default function PSAConnectionWizard() {
           <div className="space-y-4">
             <div className="flex items-center gap-3 text-sm font-semibold text-muted-foreground">
               <CheckCircle2 className="h-4 w-4 text-primary" />
-              Field mapping preview
+              {t("psaConnectionWizard.fieldMappingPreview")}
             </div>
             <div className="overflow-x-auto rounded-lg border">
               <table className="min-w-full divide-y text-sm">
                 <thead className="bg-muted/40 text-xs uppercase text-muted-foreground">
                   <tr>
-                    <th className="px-4 py-3 text-left font-semibold">Breeze field</th>
-                    <th className="px-4 py-3 text-left font-semibold">PSA field</th>
-                    <th className="px-4 py-3 text-left font-semibold">Default</th>
+                    <th className="px-4 py-3 text-left font-semibold">
+                      {t("psaConnectionWizard.breezeField")}
+                    </th>
+                    <th className="px-4 py-3 text-left font-semibold">
+                      {t("psaConnectionWizard.psaField")}
+                    </th>
+                    <th className="px-4 py-3 text-left font-semibold">
+                      {t("psaConnectionWizard.default")}
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
                   <tr>
-                    <td className="px-4 py-3">Account name</td>
-                    <td className="px-4 py-3">{selectedProvider.name} Company</td>
+                    <td className="px-4 py-3">
+                      {t("psaConnectionWizard.accountName")}
+                    </td>
+                    <td className="px-4 py-3">
+                      {selectedProvider.name} {t("psaConnectionWizard.company")}
+                    </td>
                     <td className="px-4 py-3 text-muted-foreground">-</td>
                   </tr>
                   <tr>
-                    <td className="px-4 py-3">Ticket priority</td>
-                    <td className="px-4 py-3">Priority</td>
+                    <td className="px-4 py-3">
+                      {t("psaConnectionWizard.ticketPriority")}
+                    </td>
+                    <td className="px-4 py-3">
+                      {t("psaConnectionWizard.priority")}
+                    </td>
                     <td className="px-4 py-3 text-muted-foreground">P3</td>
                   </tr>
                   <tr>
-                    <td className="px-4 py-3">Assigned team</td>
-                    <td className="px-4 py-3">Service board</td>
+                    <td className="px-4 py-3">
+                      {t("psaConnectionWizard.assignedTeam")}
+                    </td>
+                    <td className="px-4 py-3">
+                      {t("psaConnectionWizard.serviceBoard")}
+                    </td>
                     <td className="px-4 py-3 text-muted-foreground">NOC</td>
                   </tr>
                   <tr>
-                    <td className="px-4 py-3">Asset type</td>
-                    <td className="px-4 py-3">Configuration type</td>
-                    <td className="px-4 py-3 text-muted-foreground">Endpoint</td>
+                    <td className="px-4 py-3">
+                      {t("psaConnectionWizard.assetType")}
+                    </td>
+                    <td className="px-4 py-3">
+                      {t("psaConnectionWizard.configurationType")}
+                    </td>
+                    <td className="px-4 py-3 text-muted-foreground">
+                      {t("psaConnectionWizard.endpoint")}
+                    </td>
                   </tr>
                 </tbody>
               </table>
@@ -319,7 +409,7 @@ export default function PSAConnectionWizard() {
           className="inline-flex h-10 items-center justify-center gap-2 rounded-md border px-4 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-60"
         >
           <ArrowLeft className="h-4 w-4" />
-          Back
+          {t("psaConnectionWizard.back")}
         </button>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
           {step < 5 ? (
@@ -329,7 +419,7 @@ export default function PSAConnectionWizard() {
               disabled={!canNext}
               className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              Continue
+              {t("psaConnectionWizard.continue")}
               <ArrowRight className="h-4 w-4" />
             </button>
           ) : (
@@ -337,7 +427,7 @@ export default function PSAConnectionWizard() {
               type="button"
               className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
             >
-              Save connection
+              {t("psaConnectionWizard.saveConnection")}
             </button>
           )}
         </div>

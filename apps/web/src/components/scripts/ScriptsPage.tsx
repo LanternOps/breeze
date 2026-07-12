@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { extractApiError } from '@/lib/apiError';
 import { Plus, Download, Search, X, Loader2, Check, FileCode, ArrowRight } from 'lucide-react';
 import ScriptList, { type Script, type ScriptLanguage, type OSType } from './ScriptList';
@@ -30,6 +31,7 @@ type SystemScript = {
 };
 
 export default function ScriptsPage() {
+  const { t } = useTranslation('scripts');
   const [scripts, setScripts] = useState<ScriptWithDetails[]>([]);
   const [devices, setDevices] = useState<Device[]>([]);
   const [sites, setSites] = useState<Site[]>([]);
@@ -58,16 +60,16 @@ export default function ScriptsPage() {
           void navigateTo('/login', { replace: true });
           return;
         }
-        throw new Error('Failed to fetch scripts');
+        throw new Error(t('scriptsPage.errors.fetch'));
       }
       const data = await response.json();
       setScripts(data.data ?? data.scripts ?? (Array.isArray(data) ? data : []));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('scriptsPage.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   const fetchDevices = useCallback(async () => {
     try {
@@ -180,7 +182,7 @@ export default function ScriptsPage() {
     };
 
     if (!response.ok) {
-      throw new Error(extractApiError(data, 'Failed to execute script'));
+      throw new Error(extractApiError(data, t('scriptsPage.errors.execute')));
     }
 
     const candidateTimestamps = [
@@ -226,11 +228,11 @@ export default function ScriptsPage() {
     let cancelled = false;
     showToast({
       type: 'undo',
-      message: `Deleting "${scriptToDelete.name}"...`,
+      message: t('scriptsPage.toast.deleting', { name: scriptToDelete.name }),
       duration: 5000,
       onUndo: () => {
         cancelled = true;
-        showToast({ type: 'success', message: 'Script deletion cancelled', duration: 2000 });
+        showToast({ type: 'success', message: t('scriptsPage.toast.deleteCancelled'), duration: 2000 });
       }
     });
 
@@ -242,13 +244,13 @@ export default function ScriptsPage() {
         });
 
         if (!response.ok) {
-          throw new Error('Failed to delete script');
+          throw new Error(t('scriptsPage.errors.delete'));
         }
 
-        showToast({ type: 'success', message: `"${scriptToDelete.name}" deleted` });
+        showToast({ type: 'success', message: t('scriptsPage.toast.deleted', { name: scriptToDelete.name }) });
         await fetchScripts();
       } catch (err) {
-        showToast({ type: 'error', message: err instanceof Error ? err.message : 'Failed to delete script. Please try again.' });
+        showToast({ type: 'error', message: err instanceof Error ? err.message : t('scriptsPage.errors.deleteTryAgain') });
       }
     }, 5000);
   };
@@ -283,9 +285,9 @@ export default function ScriptsPage() {
       if (!response.ok) {
         const data = await response.json();
         if (response.status === 409) {
-          setError(`"${systemScript.name}" is already in your library`);
+          setError(t('scriptsPage.errors.alreadyInLibrary', { name: systemScript.name }));
         } else {
-          throw new Error(extractApiError(data, 'Failed to import script'));
+          throw new Error(extractApiError(data, t('scriptsPage.errors.import')));
         }
         return;
       }
@@ -294,7 +296,7 @@ export default function ScriptsPage() {
       // Remove imported script from the list so it's clear it was added
       setSystemScripts(prev => prev.filter(s => s.id !== systemScript.id));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to import script');
+      setError(err instanceof Error ? err.message : t('scriptsPage.errors.import'));
     } finally {
       setImportingId(null);
     }
@@ -324,7 +326,7 @@ export default function ScriptsPage() {
       <div className="flex items-center justify-center py-12">
         <div className="text-center">
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading scripts...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('scriptsPage.loading')}</p>
         </div>
       </div>
     );
@@ -339,7 +341,7 @@ export default function ScriptsPage() {
           onClick={fetchScripts}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
         >
-          Try again
+          {t('common:actions.retry')}
         </button>
       </div>
     );
@@ -349,9 +351,9 @@ export default function ScriptsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Script Library</h1>
+          <h1 className="text-xl font-semibold tracking-tight">{t('scriptsPage.title')}</h1>
           <PageScopeIndicator pathname={typeof window !== 'undefined' ? window.location.pathname : '/scripts'} orgName={currentOrg?.name} />
-          <p className="text-muted-foreground">Manage and execute scripts across your devices.</p>
+          <p className="text-muted-foreground">{t('scriptsPage.description')}</p>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -360,14 +362,14 @@ export default function ScriptsPage() {
             className="inline-flex h-10 items-center justify-center gap-2 rounded-md border px-4 text-sm font-medium transition hover:bg-muted"
           >
             <Download className="h-4 w-4" />
-            Import from Library
+            {t('scriptsPage.actions.importFromLibrary')}
           </button>
           <a
             href="/scripts/new"
             className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:bg-primary/90"
           >
             <Plus className="h-4 w-4" />
-            New Script
+            {t('scriptsPage.actions.newScript')}
           </a>
         </div>
       </div>
@@ -383,12 +385,12 @@ export default function ScriptsPage() {
           <div className="rounded-full bg-primary/10 p-4 mb-4">
             <FileCode className="h-8 w-8 text-primary" />
           </div>
-          <h2 className="text-lg font-semibold text-foreground mb-1">No scripts yet</h2>
+          <h2 className="text-lg font-semibold text-foreground mb-1">{t('scriptsPage.empty.title')}</h2>
           <p className="text-sm text-muted-foreground max-w-md mb-6">
-            Create your first script to automate tasks across your fleet.
+            {t('scriptsPage.empty.description')}
           </p>
           <a href="/scripts/new" className="inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors">
-            Create script
+            {t('scriptsPage.actions.createScript')}
             <ArrowRight className="h-4 w-4" />
           </a>
         </div>
@@ -427,10 +429,11 @@ export default function ScriptsPage() {
       {modalMode === 'delete' && selectedScript && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
           <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
-            <h2 className="text-lg font-semibold">Delete Script</h2>
+            <h2 className="text-lg font-semibold">{t('scriptsPage.deleteDialog.title')}</h2>
             <p className="mt-2 text-sm text-muted-foreground">
-              Are you sure you want to delete <span className="font-medium">{selectedScript.name}</span>?
-              This action cannot be undone.
+              {t('scriptsPage.deleteDialog.confirmPrefix')}{' '}
+              <span className="font-medium">{selectedScript.name}</span>?{' '}
+              {t('scriptsPage.deleteDialog.confirmSuffix')}
             </p>
             <div className="mt-6 flex justify-end gap-3">
               <button
@@ -438,7 +441,7 @@ export default function ScriptsPage() {
                 onClick={handleCloseModal}
                 className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
               >
-                Cancel
+                {t('common:actions.cancel')}
               </button>
               <button
                 type="button"
@@ -446,7 +449,7 @@ export default function ScriptsPage() {
                 disabled={submitting}
                 className="inline-flex h-10 items-center justify-center rounded-md bg-destructive px-4 text-sm font-medium text-destructive-foreground transition hover:bg-destructive/90 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {submitting ? 'Deleting...' : 'Delete'}
+                {submitting ? t('scriptsPage.actions.deleting') : t('common:actions.delete')}
               </button>
             </div>
           </div>
@@ -459,8 +462,8 @@ export default function ScriptsPage() {
           <div className="w-full max-w-2xl max-h-[80vh] overflow-hidden rounded-lg border bg-card shadow-lg flex flex-col">
             <div className="flex items-center justify-between border-b px-6 py-4">
               <div>
-                <h2 className="text-lg font-semibold">System Script Library</h2>
-                <p className="text-sm text-muted-foreground">Import scripts into your organization</p>
+                <h2 className="text-lg font-semibold">{t('scriptsPage.library.title')}</h2>
+                <p className="text-sm text-muted-foreground">{t('scriptsPage.library.description')}</p>
               </div>
               <button
                 type="button"
@@ -477,7 +480,7 @@ export default function ScriptsPage() {
                   <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                   <input
                     type="search"
-                    placeholder="Search system scripts..."
+                    placeholder={t('scriptsPage.library.searchPlaceholder')}
                     value={libraryQuery}
                     onChange={e => setLibraryQuery(e.target.value)}
                     className="h-9 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
@@ -489,7 +492,7 @@ export default function ScriptsPage() {
                     onChange={e => setLibraryCategoryFilter(e.target.value)}
                     className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   >
-                    <option value="all">All Categories</option>
+                    <option value="all">{t('scriptList.filters.allCategories')}</option>
                     {libraryCategories.map(cat => (
                       <option key={cat} value={cat}>{cat}</option>
                     ))}
@@ -505,7 +508,7 @@ export default function ScriptsPage() {
                 </div>
               ) : filteredSystemScripts.length === 0 ? (
                 <div className="py-12 text-center text-sm text-muted-foreground">
-                  {systemScripts.length === 0 ? 'No system scripts available' : 'No scripts match your search'}
+                  {systemScripts.length === 0 ? t('scriptsPage.library.empty') : t('scriptsPage.library.noMatches')}
                 </div>
               ) : (
                 <div className="space-y-2">
@@ -543,7 +546,7 @@ export default function ScriptsPage() {
                         {alreadyImported ? (
                           <span className="inline-flex items-center gap-1 text-xs text-muted-foreground shrink-0">
                             <Check className="h-4 w-4" />
-                            Imported
+                            {t('scriptsPage.library.imported')}
                           </span>
                         ) : (
                           <button
@@ -557,7 +560,7 @@ export default function ScriptsPage() {
                             ) : (
                               <Download className="h-3 w-3" />
                             )}
-                            Import
+                            {t('scriptsPage.library.import')}
                           </button>
                         )}
                       </div>
@@ -569,14 +572,14 @@ export default function ScriptsPage() {
 
             <div className="flex items-center justify-between border-t px-6 py-4">
               <p className="text-sm text-muted-foreground">
-                {filteredSystemScripts.length} script(s) available
+                {t('scriptsPage.library.availableCount', { count: filteredSystemScripts.length })}
               </p>
               <button
                 type="button"
                 onClick={handleCloseModal}
                 className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
               >
-                Done
+                {t('common:actions.done')}
               </button>
             </div>
           </div>

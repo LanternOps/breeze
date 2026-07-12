@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from "react";
 import {
   Bell,
   Boxes,
@@ -19,12 +19,14 @@ import {
   Wrench,
   Zap,
   type LucideIcon,
-} from 'lucide-react';
+} from "lucide-react";
 
-import type { ConfigFeatureType } from '@breeze/shared';
+import type { ConfigFeatureType } from "@breeze/shared";
 
-import { friendlyFetchError } from '../../lib/utils';
-import { fetchWithAuth } from '../../stores/auth';
+import { friendlyFetchError } from "../../lib/utils";
+import { fetchWithAuth } from "../../stores/auth";
+import { useTranslation } from "react-i18next";
+import "../../lib/i18n";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -40,10 +42,22 @@ import { fetchWithAuth } from '../../stores/auth';
 //
 // FeatureType is sourced FROM this tuple (not a parallel literal) so the runtime
 // exclusion list and the compile-time Exclude can't drift from each other.
-export const EFFECTIVE_CONFIG_EXCLUDED_FEATURE_TYPES = ['remote_access', 'pam'] as const;
-type FeatureType = Exclude<ConfigFeatureType, typeof EFFECTIVE_CONFIG_EXCLUDED_FEATURE_TYPES[number]>;
+export const EFFECTIVE_CONFIG_EXCLUDED_FEATURE_TYPES = [
+  "remote_access",
+  "pam",
+] as const;
+type FeatureType = Exclude<
+  ConfigFeatureType,
+  (typeof EFFECTIVE_CONFIG_EXCLUDED_FEATURE_TYPES)[number]
+>;
 
-type AssignmentLevel = 'partner' | 'organization' | 'site' | 'device_group' | 'device' | 'default';
+type AssignmentLevel =
+  | "partner"
+  | "organization"
+  | "site"
+  | "device_group"
+  | "device"
+  | "default";
 
 type ResolvedFeature = {
   featureType: FeatureType;
@@ -92,22 +106,22 @@ type EffectiveConfiguration = {
 // compile until it is accounted for, and featureParity.test.ts asserts the
 // exclusion set stays honest. (#2004)
 const FEATURE_META: Record<FeatureType, { label: string; Icon: LucideIcon }> = {
-  patch:              { label: 'Patch Management',    Icon: PackageCheck },
-  alert_rule:         { label: 'Alert Rules',         Icon: Bell },
-  automation:         { label: 'Automation',          Icon: Zap },
-  maintenance:        { label: 'Maintenance Windows', Icon: Wrench },
-  compliance:         { label: 'Compliance',          Icon: ClipboardCheck },
-  security:           { label: 'Security',            Icon: Shield },
-  backup:             { label: 'Backup',              Icon: HardDrive },
-  monitoring:         { label: 'Monitoring',          Icon: Activity },
-  warranty:           { label: 'Warranty',            Icon: ShieldCheck },
-  software_policy:    { label: 'Software Policy',     Icon: Boxes },
-  sensitive_data:     { label: 'Data Discovery',      Icon: FileSearch },
-  peripheral_control: { label: 'Peripheral Control',  Icon: Usb },
-  event_log:          { label: 'Event Logs',          Icon: ScrollText },
-  helper:             { label: 'Breeze Assist',       Icon: LifeBuoy },
-  onedrive_helper:    { label: 'OneDrive Helper',     Icon: Cloud },
-  vulnerability:      { label: 'Vulnerability Scanning', Icon: ShieldAlert },
+  patch: { label: "Patch Management", Icon: PackageCheck },
+  alert_rule: { label: "Alert Rules", Icon: Bell },
+  automation: { label: "Automation", Icon: Zap },
+  maintenance: { label: "Maintenance Windows", Icon: Wrench },
+  compliance: { label: "Compliance", Icon: ClipboardCheck },
+  security: { label: "Security", Icon: Shield },
+  backup: { label: "Backup", Icon: HardDrive },
+  monitoring: { label: "Monitoring", Icon: Activity },
+  warranty: { label: "Warranty", Icon: ShieldCheck },
+  software_policy: { label: "Software Policy", Icon: Boxes },
+  sensitive_data: { label: "Data Discovery", Icon: FileSearch },
+  peripheral_control: { label: "Peripheral Control", Icon: Usb },
+  event_log: { label: "Event Logs", Icon: ScrollText },
+  helper: { label: "Breeze Assist", Icon: LifeBuoy },
+  onedrive_helper: { label: "OneDrive Helper", Icon: Cloud },
+  vulnerability: { label: "Vulnerability Scanning", Icon: ShieldAlert },
 };
 
 // Display order = FEATURE_META insertion order. Derived (not hand-listed) so the
@@ -116,12 +130,12 @@ const FEATURE_META: Record<FeatureType, { label: string; Icon: LucideIcon }> = {
 export const ALL_FEATURE_TYPES = Object.keys(FEATURE_META) as FeatureType[];
 
 const LEVEL_LABELS: Record<AssignmentLevel, string> = {
-  partner: 'Partner',
-  organization: 'Organization',
-  site: 'Site',
-  device_group: 'Device Group',
-  device: 'Device',
-  default: 'Breeze Defaults',
+  partner: "Partner",
+  organization: "Organization",
+  site: "Site",
+  device_group: "Device Group",
+  device: "Device",
+  default: "Breeze Defaults",
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -133,16 +147,18 @@ function summarizeSettings(settings: Record<string, unknown> | null): string[] {
     if (value === null || value === undefined) continue;
     // Format key from camelCase/snake_case to readable
     const label = key
-      .replace(/_/g, ' ')
-      .replace(/([A-Z])/g, ' $1')
-      .replace(/^\s/, '')
+      .replace(/_/g, " ")
+      .replace(/([A-Z])/g, " $1")
+      .replace(/^\s/, "")
       .toLowerCase();
-    if (typeof value === 'boolean') {
-      items.push(`${label}: ${value ? 'yes' : 'no'}`);
-    } else if (typeof value === 'string' || typeof value === 'number') {
+    if (typeof value === "boolean") {
+      items.push(`${label}: ${value ? "yes" : "no"}`);
+    } else if (typeof value === "string" || typeof value === "number") {
       items.push(`${label}: ${value}`);
     } else if (Array.isArray(value)) {
-      items.push(`${label}: ${value.length} item${value.length !== 1 ? 's' : ''}`);
+      items.push(
+        `${label}: ${value.length} item${value.length !== 1 ? "s" : ""}`,
+      );
     }
     if (items.length >= 4) break; // limit to 4 summary lines
   }
@@ -155,7 +171,10 @@ type DeviceEffectiveConfigTabProps = {
   deviceId: string;
 };
 
-export default function DeviceEffectiveConfigTab({ deviceId }: DeviceEffectiveConfigTabProps) {
+export default function DeviceEffectiveConfigTab({
+  deviceId,
+}: DeviceEffectiveConfigTabProps) {
+  const { t } = useTranslation("devices");
   const [data, setData] = useState<EffectiveConfiguration | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -164,7 +183,9 @@ export default function DeviceEffectiveConfigTab({ deviceId }: DeviceEffectiveCo
     setLoading(true);
     setError(undefined);
     try {
-      const response = await fetchWithAuth(`/configuration-policies/effective/${deviceId}`);
+      const response = await fetchWithAuth(
+        `/configuration-policies/effective/${deviceId}`,
+      );
       if (!response.ok) {
         throw new Error(`${response.status} ${response.statusText}`);
       }
@@ -187,7 +208,9 @@ export default function DeviceEffectiveConfigTab({ deviceId }: DeviceEffectiveCo
       <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-xs">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="mt-3 text-sm text-muted-foreground">Loading effective configuration...</p>
+          <p className="mt-3 text-sm text-muted-foreground">
+            {t("deviceEffectiveConfigTab.loadingEffectiveConfiguration")}
+          </p>
         </div>
       </div>
     );
@@ -204,7 +227,7 @@ export default function DeviceEffectiveConfigTab({ deviceId }: DeviceEffectiveCo
           onClick={fetchEffectiveConfig}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Retry
+          {t("deviceEffectiveConfigTab.retry")}{" "}
         </button>
       </div>
     );
@@ -213,28 +236,31 @@ export default function DeviceEffectiveConfigTab({ deviceId }: DeviceEffectiveCo
   // ── Empty state ────────────────────────────────────────────────────
 
   const hasRealFeatures = data
-    ? Object.values(data.features).some((f) => f.sourceLevel !== 'default')
+    ? Object.values(data.features).some((f) => f.sourceLevel !== "default")
     : false;
   if (!data || !hasRealFeatures) {
     return (
       <div className="rounded-lg border bg-card p-8 text-center shadow-xs">
         <Layers className="mx-auto h-10 w-10 text-muted-foreground/50" />
-        <h3 className="mt-4 font-semibold">No Configuration Policies</h3>
+        <h3 className="mt-4 font-semibold">
+          {t("deviceEffectiveConfigTab.noConfigurationPolicies")}
+        </h3>
         <p className="mt-1 text-sm text-muted-foreground">
-          No configuration policies are currently assigned to this device.
-          Assign policies through the Configuration Policies page.
+          {t(
+            "deviceEffectiveConfigTab.noConfigurationPoliciesAreCurrentlyAssigned",
+          )}{" "}
         </p>
         <a
           href="/configuration-policies"
           className="mt-4 inline-block rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Go to Config Policies
+          {t("deviceEffectiveConfigTab.goToConfigPolicies")}{" "}
         </a>
         <a
           href="/configuration-policies/defaults"
           className="mt-2 inline-block text-sm font-medium text-primary hover:underline"
         >
-          View Breeze Defaults
+          {t("deviceEffectiveConfigTab.viewBreezeDefaults")}{" "}
         </a>
       </div>
     );
@@ -246,24 +272,35 @@ export default function DeviceEffectiveConfigTab({ deviceId }: DeviceEffectiveCo
   // assigned policy and has no policy page to link to. Its feature types instead
   // collapse into the "Not enforced — using Breeze Defaults" strip, and the
   // dedicated /configuration-policies/defaults page covers them in full.
-  const assignedChain = inheritanceChain.filter((e) => e.level !== 'default');
+  const assignedChain = inheritanceChain.filter((e) => e.level !== "default");
   const configuredTypes = ALL_FEATURE_TYPES.filter((ft) => features[ft]);
   // Split enforced (a real assigned policy wins) from baseline fall-through.
   // Every type in ALL_FEATURE_TYPES is "not enforced when unassigned", so a
   // 'default' source unambiguously means baseline here (see the constant's note).
-  const enforcedTypes = configuredTypes.filter((ft) => features[ft]!.sourceLevel !== 'default');
-  const baselineTypes = configuredTypes.filter((ft) => features[ft]!.sourceLevel === 'default');
+  const enforcedTypes = configuredTypes.filter(
+    (ft) => features[ft]!.sourceLevel !== "default",
+  );
+  const baselineTypes = configuredTypes.filter(
+    (ft) => features[ft]!.sourceLevel === "default",
+  );
 
   return (
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h3 className="text-lg font-semibold">Effective Configuration</h3>
+          <h3 className="text-lg font-semibold">
+            {t("deviceEffectiveConfigTab.effectiveConfiguration")}
+          </h3>
           <p className="text-sm text-muted-foreground">
-            Resolved configuration from {assignedChain.length} assigned{' '}
-            {assignedChain.length === 1 ? 'policy' : 'policies'} ·{' '}
-            {enforcedTypes.length} enforced feature{enforcedTypes.length !== 1 ? 's' : ''}
+            {t("deviceEffectiveConfigTab.resolvedConfigurationFrom")}{" "}
+            {assignedChain.length} {t("deviceEffectiveConfigTab.assigned")}{" "}
+            {assignedChain.length === 1
+              ? t("deviceEffectiveConfigTab.policy")
+              : t("deviceEffectiveConfigTab.policies")}{" "}
+            · {enforcedTypes.length}{" "}
+            {t("deviceEffectiveConfigTab.enforcedFeature")}
+            {enforcedTypes.length !== 1 ? t("deviceEffectiveConfigTab.s") : ""}
           </p>
         </div>
         <button
@@ -272,7 +309,7 @@ export default function DeviceEffectiveConfigTab({ deviceId }: DeviceEffectiveCo
           className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted"
         >
           <RefreshCw className="h-3.5 w-3.5" />
-          Refresh
+          {t("deviceEffectiveConfigTab.refresh")}{" "}
         </button>
       </div>
 
@@ -293,8 +330,10 @@ export default function DeviceEffectiveConfigTab({ deviceId }: DeviceEffectiveCo
                   <div className="min-w-0 flex-1">
                     <h4 className="font-semibold">{label}</h4>
                     <p className="mt-0.5 text-xs text-muted-foreground">
-                      From: <span className="font-medium text-foreground">{feature.sourcePolicyName}</span>
-                      {' '}
+                      {t("deviceEffectiveConfigTab.from")}{" "}
+                      <span className="font-medium text-foreground">
+                        {feature.sourcePolicyName}
+                      </span>{" "}
                       <span className="inline-flex items-center rounded-full border bg-muted/50 px-1.5 py-0.5 text-xs text-muted-foreground">
                         {LEVEL_LABELS[feature.sourceLevel]}
                       </span>
@@ -307,7 +346,9 @@ export default function DeviceEffectiveConfigTab({ deviceId }: DeviceEffectiveCo
                   <div className="mt-3 rounded-md border bg-muted/30 px-3 py-2">
                     <ul className="space-y-0.5 text-xs text-muted-foreground">
                       {settings.map((s) => (
-                        <li key={s} className="capitalize">{s}</li>
+                        <li key={s} className="capitalize">
+                          {s}
+                        </li>
                       ))}
                     </ul>
                   </div>
@@ -316,8 +357,10 @@ export default function DeviceEffectiveConfigTab({ deviceId }: DeviceEffectiveCo
                 {/* Feature policy reference */}
                 {feature.featurePolicyId && (
                   <p className="mt-2 text-xs text-muted-foreground">
-                    Linked policy:{' '}
-                    <span className="font-mono text-xs">{feature.featurePolicyId.slice(0, 8)}...</span>
+                    {t("deviceEffectiveConfigTab.linkedPolicy")}{" "}
+                    <span className="font-mono text-xs">
+                      {feature.featurePolicyId.slice(0, 8)}...
+                    </span>
                   </p>
                 )}
               </div>
@@ -331,8 +374,12 @@ export default function DeviceEffectiveConfigTab({ deviceId }: DeviceEffectiveCo
       {baselineTypes.length > 0 && (
         <div className="rounded-lg border bg-card p-5 shadow-xs">
           <div className="flex items-center gap-2">
-            <h4 className="text-sm font-semibold text-muted-foreground">Not enforced</h4>
-            <span className="text-xs text-muted-foreground">— using Breeze Defaults</span>
+            <h4 className="text-sm font-semibold text-muted-foreground">
+              {t("deviceEffectiveConfigTab.notEnforced")}
+            </h4>
+            <span className="text-xs text-muted-foreground">
+              {t("deviceEffectiveConfigTab.usingBreezeDefaults")}
+            </span>
           </div>
           <div className="mt-3 flex flex-wrap gap-2">
             {baselineTypes.map((ft) => {
@@ -355,25 +402,41 @@ export default function DeviceEffectiveConfigTab({ deviceId }: DeviceEffectiveCo
           "Breeze Defaults" node is excluded; see assignedChain above). */}
       {assignedChain.length > 0 && (
         <div className="rounded-lg border bg-card p-6 shadow-xs">
-          <h4 className="font-semibold mb-3">Inheritance Chain</h4>
+          <h4 className="font-semibold mb-3">
+            {t("deviceEffectiveConfigTab.inheritanceChain")}
+          </h4>
           <p className="text-xs text-muted-foreground mb-4">
-            Policies are resolved using closest-wins priority. More specific assignments (device level)
-            override broader ones (organization level).
+            {t(
+              "deviceEffectiveConfigTab.policiesAreResolvedUsingClosestWins",
+            )}{" "}
           </p>
           <div className="overflow-hidden rounded-md border">
             <table className="min-w-full divide-y">
               <thead className="bg-muted/40">
                 <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  <th className="px-4 py-3">Priority</th>
-                  <th className="px-4 py-3">Level</th>
-                  <th className="px-4 py-3">Policy</th>
-                  <th className="px-4 py-3">Features</th>
+                  <th className="px-4 py-3">
+                    {t("deviceEffectiveConfigTab.priority")}
+                  </th>
+                  <th className="px-4 py-3">
+                    {t("deviceEffectiveConfigTab.level")}
+                  </th>
+                  <th className="px-4 py-3">
+                    {t("deviceEffectiveConfigTab.policy2")}
+                  </th>
+                  <th className="px-4 py-3">
+                    {t("deviceEffectiveConfigTab.features")}
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y">
                 {assignedChain.map((entry) => (
-                  <tr key={`${entry.policyId}-${entry.level}-${entry.targetId}`} className="text-sm">
-                    <td className="px-4 py-3 text-muted-foreground">{entry.priority}</td>
+                  <tr
+                    key={`${entry.policyId}-${entry.level}-${entry.targetId}`}
+                    className="text-sm"
+                  >
+                    <td className="px-4 py-3 text-muted-foreground">
+                      {entry.priority}
+                    </td>
                     <td className="px-4 py-3">
                       <span className="inline-flex items-center rounded-full border bg-muted/50 px-2.5 py-1 text-xs font-medium capitalize">
                         {LEVEL_LABELS[entry.level]}

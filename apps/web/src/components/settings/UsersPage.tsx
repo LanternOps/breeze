@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 import UserList, { type User } from './UserList';
 import UserInviteForm, { type RoleOption } from './UserInviteForm';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
@@ -24,6 +26,7 @@ type Toast = {
 };
 
 export default function UsersPage() {
+  const { t } = useTranslation('settings');
   const currentUser = useAuthStore((s) => s.user);
   const organizations = useOrgStore((s) => s.organizations);
   const [users, setUsers] = useState<User[]>([]);
@@ -44,7 +47,7 @@ export default function UsersPage() {
 
   const dismissToast = useCallback((id: string) => {
     setToasts(prev => prev.filter(t => t.id !== id));
-  }, []);
+  }, [t]);
 
   const fetchUsers = useCallback(async () => {
     try {
@@ -61,7 +64,7 @@ export default function UsersPage() {
           setForbidden(true);
           return;
         }
-        throw new Error('Failed to fetch users');
+        throw new Error(t('usersPage.errors.fetchUsers'));
       }
       const data = await response.json();
       const rows = (data.data ?? []).map((u: Record<string, unknown>) => ({
@@ -72,11 +75,11 @@ export default function UsersPage() {
         status: (u.status as string) || 'pending',
         lastLogin: u.lastLoginAt
           ? new Date(u.lastLoginAt as string).toLocaleDateString()
-          : 'Never',
+          : t('usersPage.never'),
       }));
       setUsers(rows);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('usersPage.errors.generic'));
     } finally {
       setLoading(false);
     }
@@ -128,7 +131,7 @@ export default function UsersPage() {
 
       if (!response.ok) {
         const body = await response.json().catch(() => null);
-        throw new Error(body?.error || 'Failed to resend invitation');
+        throw new Error(body?.error || t('usersPage.errors.resendInvite'));
       }
 
       const body = await response.json().catch(() => null);
@@ -136,14 +139,14 @@ export default function UsersPage() {
       if (body?.inviteEmailSent === false) {
         addToast(
           'warning',
-          `Invite resent for ${user.email} but the email could not be sent. Copy the invite link to share manually.`,
+          t('usersPage.toasts.resendManual', { email: user.email }),
           body.inviteUrl
         );
       } else {
-        addToast('success', `Invitation resent to ${user.email}`);
+        addToast('success', t('usersPage.toasts.resent', { email: user.email }));
       }
     } catch (err) {
-      addToast('error', err instanceof Error ? err.message : 'Failed to resend invitation');
+      addToast('error', err instanceof Error ? err.message : t('usersPage.errors.resendInvite'));
     }
   };
 
@@ -179,7 +182,7 @@ export default function UsersPage() {
 
       if (!response.ok) {
         const body = await response.json().catch(() => null);
-        throw new Error(body?.error || 'Failed to send invitation');
+        throw new Error(body?.error || t('usersPage.errors.sendInvite'));
       }
 
       const body = await response.json().catch(() => null);
@@ -190,14 +193,14 @@ export default function UsersPage() {
       if (body?.inviteEmailSent === false) {
         addToast(
           'warning',
-          `Invite created for ${values.email} but the email could not be sent. Copy the invite link to share manually.`,
+          t('usersPage.toasts.inviteManual', { email: values.email }),
           body.inviteUrl
         );
       } else {
-        addToast('success', `Invitation sent to ${values.email}`);
+        addToast('success', t('usersPage.toasts.inviteSent', { email: values.email }));
       }
     } catch (err) {
-      addToast('error', err instanceof Error ? err.message : 'Failed to send invitation');
+      addToast('error', err instanceof Error ? err.message : t('usersPage.errors.sendInvite'));
     } finally {
       setSubmitting(false);
     }
@@ -214,7 +217,7 @@ export default function UsersPage() {
         body: JSON.stringify({ name: values.name })
       });
       if (!patchRes.ok) {
-        throw new Error('Failed to update user');
+        throw new Error(t('usersPage.errors.updateUser'));
       }
 
       // Role lives on partner_users / organization_users; the dedicated
@@ -229,14 +232,14 @@ export default function UsersPage() {
           body: JSON.stringify({ roleId: values.roleId })
         });
         if (!roleRes.ok) {
-          throw new Error('Failed to update role');
+          throw new Error(t('usersPage.errors.updateRole'));
         }
       }
 
       await fetchUsers();
       handleCloseModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('usersPage.errors.generic'));
     } finally {
       setSubmitting(false);
     }
@@ -252,13 +255,13 @@ export default function UsersPage() {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to remove user');
+        throw new Error(t('usersPage.errors.removeUser'));
       }
 
       await fetchUsers();
       handleCloseModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('usersPage.errors.generic'));
     } finally {
       setSubmitting(false);
     }
@@ -269,14 +272,14 @@ export default function UsersPage() {
       <div className="flex items-center justify-center py-12">
         <div className="text-center">
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading users...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('usersPage.loading')}</p>
         </div>
       </div>
     );
   }
 
   if (forbidden) {
-    return <AccessDenied message="You don't have permission to view users." />;
+    return <AccessDenied message={t('usersPage.accessDenied')} />;
   }
 
   if (error && users.length === 0) {
@@ -288,7 +291,7 @@ export default function UsersPage() {
           onClick={fetchUsers}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Try again
+          {t('usersPage.actions.tryAgain')}
         </button>
       </div>
     );
@@ -297,8 +300,8 @@ export default function UsersPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">Users</h1>
-        <p className="text-muted-foreground">Manage user access, roles, and permissions.</p>
+        <h1 className="text-xl font-semibold tracking-tight">{t('usersPage.title')}</h1>
+        <p className="text-muted-foreground">{t('usersPage.description')}</p>
       </div>
 
       {error && (
@@ -326,8 +329,8 @@ export default function UsersPage() {
           onSubmit={handleInviteSubmit}
           onCancel={handleCloseModal}
           loading={submitting}
-          title="Invite User"
-          description="Send an invitation to a new user with the appropriate role."
+          title={t('usersPage.invite.title')}
+          description={t('usersPage.invite.description')}
         />
       )}
 
@@ -336,9 +339,9 @@ export default function UsersPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
           <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-xs">
             <div className="space-y-1">
-              <h2 className="text-lg font-semibold">Edit User</h2>
+              <h2 className="text-lg font-semibold">{t('usersPage.edit.title')}</h2>
               <p className="text-sm text-muted-foreground">
-                Update role and permissions for {selectedUser.name}.
+                {t('usersPage.edit.description', { name: selectedUser.name })}
               </p>
             </div>
 
@@ -356,7 +359,7 @@ export default function UsersPage() {
             >
               <div className="space-y-2">
                 <label htmlFor="edit-email" className="text-sm font-medium">
-                  Email
+                  {t('usersPage.fields.email')}
                 </label>
                 <input
                   id="edit-email"
@@ -369,7 +372,7 @@ export default function UsersPage() {
 
               <div className="space-y-2">
                 <label htmlFor="edit-role" className="text-sm font-medium">
-                  Role
+                  {t('usersPage.fields.role')}
                 </label>
                 <select
                   id="edit-role"
@@ -391,14 +394,14 @@ export default function UsersPage() {
                   onClick={handleCloseModal}
                   className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
                 >
-                  Cancel
+                  {t('common:actions.cancel')}
                 </button>
                 <button
                   type="submit"
                   disabled={submitting}
                   className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {submitting ? 'Saving...' : 'Save changes'}
+                  {submitting ? t('common:states.saving') : t('usersPage.actions.saveChanges')}
                 </button>
               </div>
             </form>
@@ -410,10 +413,10 @@ export default function UsersPage() {
       {modalMode === 'remove' && selectedUser && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
           <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
-            <h2 className="text-lg font-semibold">Remove User</h2>
+            <h2 className="text-lg font-semibold">{t('usersPage.remove.title')}</h2>
             <p className="mt-2 text-sm text-muted-foreground">
-              Are you sure you want to remove <span className="font-medium">{selectedUser.name}</span> ({selectedUser.email})?
-              They will lose access immediately.
+              {t('usersPage.remove.messagePrefix')} <span className="font-medium">{selectedUser.name}</span> ({selectedUser.email})?
+              {t('usersPage.remove.messageSuffix')}
             </p>
             <div className="mt-6 flex justify-end gap-3">
               <button
@@ -421,7 +424,7 @@ export default function UsersPage() {
                 onClick={handleCloseModal}
                 className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
               >
-                Cancel
+                {t('common:actions.cancel')}
               </button>
               <button
                 type="button"
@@ -429,7 +432,7 @@ export default function UsersPage() {
                 disabled={submitting}
                 className="inline-flex h-10 items-center justify-center rounded-md bg-destructive px-4 text-sm font-medium text-destructive-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {submitting ? 'Removing...' : 'Remove'}
+                {submitting ? t('usersPage.actions.removing') : t('common:actions.remove')}
               </button>
             </div>
           </div>
@@ -458,7 +461,7 @@ export default function UsersPage() {
                     ? 'text-yellow-700 dark:text-yellow-300'
                     : 'text-current'
                 }`}
-                aria-label="Dismiss"
+                aria-label={t('common:shared.toast.dismiss')}
               >
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
                   <path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" />
@@ -480,13 +483,16 @@ export default function UsersPage() {
                       try {
                         await navigator.clipboard.writeText(toast.inviteUrl!);
                         const btn = document.getElementById(`copy-btn-${toast.id}`);
-                        if (btn) { btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = 'Copy link'; }, 2000); }
+                        if (btn) {
+                          btn.textContent = t('usersPage.toasts.copied');
+                          setTimeout(() => { btn.textContent = t('usersPage.toasts.copyLink'); }, 2000);
+                        }
                       } catch { /* clipboard not available */ }
                     }}
                     id={`copy-btn-${toast.id}`}
                     className="shrink-0 rounded bg-yellow-600 px-2 py-1 text-xs font-medium text-white transition hover:bg-yellow-700"
                   >
-                    Copy link
+                    {t('usersPage.toasts.copyLink')}
                   </button>
                 </div>
               )}

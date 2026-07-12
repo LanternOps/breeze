@@ -1,0 +1,469 @@
+{
+  "slaChip": {
+    "pausedLeft": "Paused · {{relative}} left",
+    "left": "{{relative}} left",
+    "breached": "Breached"
+  },
+  "slaTimers": {
+    "title": "SLA",
+    "firstResponse": "First response",
+    "resolution": "Resolution",
+    "state": {
+      "met": "Met",
+      "notMet": "Not met",
+      "breached": "Breached",
+      "pausedLeft": "Paused · {{relative}} left",
+      "left": "{{relative}} left"
+    },
+    "clockPaused": "Clock paused while the ticket is {{status}}.",
+    "status": {
+      "onHold": "on hold",
+      "pending": "pending"
+    }
+  },
+  "cannedResponsePicker": {
+    "button": "Canned response"
+  },
+  "deviceTicketsTab": {
+    "loading": "Loading tickets...",
+    "loadFailed": "Tickets failed to load.",
+    "empty": "No tickets for this device.",
+    "status": {
+      "new": "New",
+      "open": "Open",
+      "pending": "Pending",
+      "on_hold": "On hold",
+      "resolved": "Resolved",
+      "closed": "Closed"
+    },
+    "priority": {
+      "urgent": "Urgent",
+      "high": "High",
+      "normal": "Normal",
+      "low": "Low"
+    }
+  },
+  "ticketQueueList": {
+    "empty": "No tickets match.",
+    "clearFilters": "Clear filters",
+    "ariaLabel": "Ticket queue",
+    "selectTicket": "Select {{ticket}}",
+    "timeAgo": {
+      "minutes": "{{count}}m ago",
+      "minutes_one": "{{count}}m ago",
+      "minutes_other": "{{count}}m ago",
+      "hours": "{{count}}h ago",
+      "hours_one": "{{count}}h ago",
+      "hours_other": "{{count}}h ago",
+      "days": "{{count}}d ago",
+      "days_one": "{{count}}d ago",
+      "days_other": "{{count}}d ago"
+    },
+    "status": {
+      "new": "New",
+      "open": "Open",
+      "pending": "Pending",
+      "on_hold": "On hold",
+      "resolved": "Resolved",
+      "closed": "Closed"
+    },
+    "priority": {
+      "urgent": "Urgent",
+      "high": "High",
+      "normal": "Normal",
+      "low": "Low"
+    }
+  },
+  "ticketArchivedList": {
+    "emptyTitle": "No archived tickets.",
+    "emptyDescription": "Deleted tickets land here. Restore one to return it to the live queues.",
+    "ariaLabel": "Archived tickets",
+    "deleted": "deleted {{relative}}",
+    "restore": "Restore",
+    "restoring": "Restoring…",
+    "timeAgo": {
+      "minutes": "{{count}}m ago",
+      "minutes_one": "{{count}}m ago",
+      "minutes_other": "{{count}}m ago",
+      "hours": "{{count}}h ago",
+      "hours_one": "{{count}}h ago",
+      "hours_other": "{{count}}h ago",
+      "days": "{{count}}d ago",
+      "days_one": "{{count}}d ago",
+      "days_other": "{{count}}d ago"
+    },
+    "status": {
+      "new": "New",
+      "open": "Open",
+      "pending": "Pending",
+      "on_hold": "On hold",
+      "resolved": "Resolved",
+      "closed": "Closed"
+    },
+    "priority": {
+      "urgent": "Urgent",
+      "high": "High",
+      "normal": "Normal",
+      "low": "Low"
+    }
+  },
+  "ticketComposer": {
+    "reply": "Reply",
+    "internalNote": "Internal note",
+    "internalBanner": "Internal: not visible to requester",
+    "replyPlaceholder": "Reply to {{requester}}…",
+    "requesterFallback": "requester",
+    "internalPlaceholder": "Add an internal note…",
+    "sending": "Sending",
+    "sendReply": "Send reply",
+    "addInternalNote": "Add internal note"
+  },
+  "ticketFeed": {
+    "empty": "No activity yet.",
+    "commentDeleted": "{{author}} — deleted",
+    "commentFallback": "A comment",
+    "requester": "Requester",
+    "technician": "Technician",
+    "internal": "Internal",
+    "edited": "edited",
+    "system": {
+      "systemAuthor": "System",
+      "technicianAuthor": "Technician",
+      "statusChanged": "{{author}} changed status: {{from}} to {{to}}",
+      "assigned": "{{author}} assigned this ticket",
+      "unassigned": "{{author}} unassigned this ticket",
+      "loggedTime": "{{author}} logged time",
+      "systemEvent": "System event",
+      "collapsed": "{{count}} changes. Show",
+      "collapsed_one": "{{count}} change. Show",
+      "collapsed_other": "{{count}} changes. Show"
+    },
+    "status": {
+      "new": "New",
+      "open": "Open",
+      "pending": "Pending",
+      "on_hold": "On hold",
+      "resolved": "Resolved",
+      "closed": "Closed"
+    },
+    "deleteDialog": {
+      "title": "Delete comment",
+      "message": "Are you sure you want to delete this comment? This action cannot be undone."
+    }
+  },
+  "ticketPartsCard": {
+    "title": "Parts",
+    "empty": "No parts.",
+    "nonBillableSuffix": " · non-billable",
+    "marginTitle": "Margin",
+    "deletePrompt": "Delete?",
+    "addPart": "Add part",
+    "fromCatalogPrefix": "From catalog:",
+    "unlink": "Unlink",
+    "catalogPlaceholder": "Add from catalog (optional)",
+    "quantity": "Quantity",
+    "unitPrice": "Unit price",
+    "costPlaceholder": "Cost (optional)",
+    "cost": "Cost",
+    "billable": "Billable",
+    "update": "Update",
+    "toast": {
+      "updateFailed": "Failed to update part",
+      "updated": "Part updated",
+      "addFailed": "Failed to add part",
+      "added": "Part added",
+      "updateFailedSentence": "Failed to update part.",
+      "addFailedSentence": "Failed to add part.",
+      "deleteFailed": "Failed to delete part",
+      "deleted": "Part deleted",
+      "deleteFailedSentence": "Failed to delete part."
+    }
+  },
+  "ticketTimeBilling": {
+    "title": "Time & Billing",
+    "totalTime": "Total time",
+    "billable": "Billable",
+    "timeAmount": "Time amount",
+    "partsCount": "Parts ({{count}})",
+    "partsCount_one": "Parts ({{count}})",
+    "partsCount_other": "Parts ({{count}})",
+    "starting": "Starting…",
+    "startTimer": "Start timer",
+    "logTime": "Log time",
+    "minutes": "Minutes",
+    "descriptionPlaceholder": "Description (optional)",
+    "techFallback": "Tech",
+    "running": "running",
+    "toast": {
+      "startTimerFailed": "Failed to start timer.",
+      "logFailed": "Failed to log time",
+      "logged": "Time logged",
+      "logFailedSentence": "Failed to log time."
+    }
+  },
+  "inboundReviewQueue": {
+    "title": "Review queue",
+    "description": "Quarantined (unknown sender) and failed inbound emails. Convert to a ticket or dismiss.",
+    "loading": "Loading.",
+    "loadFailed": "Review queue failed to load.",
+    "adminsOnly": "The review queue is available to admins only.",
+    "empty": "Nothing to review.",
+    "unknownSender": "(unknown sender)",
+    "noSubject": "(no subject)",
+    "selectOrganization": "Select organization…",
+    "createTicket": "Create ticket",
+    "convertToTicket": "Convert to ticket",
+    "dismiss": "Dismiss",
+    "prev": "Prev",
+    "pageOf": "Page {{page}} of {{totalPages}}",
+    "pickOrgFirst": "Pick an organization first.",
+    "convertFailed": "Convert to ticket failed. Retry.",
+    "ticketCreated": "Ticket created from email",
+    "dismissFailed": "Dismiss failed. Retry.",
+    "dismissed": "Inbound email dismissed",
+    "parseStatus": {
+      "quarantined": "quarantined",
+      "failed": "failed"
+    },
+    "friendly": {
+      "orgNotAccessible": "That organization is not available under your partner.",
+      "rowNotFound": "That inbound email is no longer available.",
+      "rowAlreadyResolved": "That inbound email was already handled. Refreshing the list.",
+      "noSender": "This email has no usable sender address, so it cannot become a ticket. Dismiss it or follow up out-of-band."
+    }
+  },
+  "createTicketPage": {
+    "title": "Create ticket",
+    "orgsLoadFailed": "Organizations failed to load.",
+    "selectOrganization": "Select organization",
+    "subject": "Subject",
+    "requesterOptional": "Requester (optional)",
+    "defaultYou": "Default (you)",
+    "someoneElse": "Someone else…",
+    "requesterName": "Requester name",
+    "emailOptional": "Email (optional)",
+    "requesterEmail": "Requester email",
+    "deviceOptional": "Device (optional)",
+    "category": "Category",
+    "priority": "Priority",
+    "creating": "Creating",
+    "createTicket": "Create ticket",
+    "creationFailed": "Ticket creation failed. Retry.",
+    "createdToast": "Ticket {{number}} created",
+    "priorityOptions": {
+      "low": "Low",
+      "normal": "Normal",
+      "high": "High",
+      "urgent": "Urgent"
+    }
+  },
+  "ticketsPage": {
+    "title": "Tickets",
+    "createTicket": "Create ticket",
+    "reviewQueue": "Review queue",
+    "archived": "Archived",
+    "searchPlaceholder": "Search tickets",
+    "filterByOrganization": "Filter by organization",
+    "allOrganizations": "All organizations",
+    "filterByPriority": "Filter by priority",
+    "allPriorities": "All priorities",
+    "filterByCategory": "Filter by category",
+    "allCategories": "All categories",
+    "assigneeLockedTitle": "Tab already filters by assignee",
+    "filterByAssignee": "Filter by assignee",
+    "allAssignees": "All assignees",
+    "sortTickets": "Sort tickets",
+    "loadFailed": "Tickets failed to load.",
+    "selectAll": "Select all",
+    "selectedCount": "{{count}} selected",
+    "selectedCount_one": "{{count}} selected",
+    "selectedCount_other": "{{count}} selected",
+    "clearSelection": "Clear",
+    "noSelection": "Select a ticket. Use j/k to move, Enter to expand.",
+    "ticketingSettings": "Ticketing settings",
+    "assignFailed": "Assign failed. Retry.",
+    "assignedToYou": "Assigned to you",
+    "restoreFailed": "Restore failed. Retry.",
+    "ticketRestored": "Ticket restored",
+    "tabs": {
+      "mine": "My tickets",
+      "unassigned": "Unassigned",
+      "open": "All open",
+      "breaching": "Breaching soon",
+      "closed": "Closed"
+    },
+    "sort": {
+      "triage": "Triage order",
+      "newest": "Newest first",
+      "oldest": "Oldest first",
+      "due": "Due date"
+    },
+    "priority": {
+      "urgent": "Urgent",
+      "high": "High",
+      "normal": "Normal",
+      "low": "Low"
+    },
+    "status": {
+      "new": "New",
+      "open": "Open",
+      "pending": "Pending",
+      "on_hold": "On hold",
+      "resolved": "Resolved",
+      "closed": "Closed"
+    },
+    "empty": {
+      "title": "No tickets yet",
+      "description": "Tickets arrive from the customer portal, from alert rules, and from technicians. Create the first one, or wire an alert rule to open tickets automatically."
+    },
+    "bulk": {
+      "assignToAria": "Bulk assign to",
+      "assignTo": "Assign to…",
+      "unassign": "Unassign",
+      "setStatusAria": "Bulk set status",
+      "setStatus": "Set status…",
+      "updateFailed": "Bulk update failed. Retry.",
+      "deleteFailed": "Bulk delete failed. Retry.",
+      "updatedPast": "updated",
+      "deletedPast": "deleted",
+      "reasonCount": "{{count}} {{reason}}",
+      "reasonCount_one": "{{count}} {{reason}}",
+      "reasonCount_other": "{{count}} {{reason}}",
+      "partialToast": "{{updated}} {{verb}}, {{skipped}} skipped{{failedSuffix}}{{reasonsSuffix}}",
+      "successToast": "{{updated}} {{verb}}",
+      "failedSuffix": ", {{failed}} failed",
+      "reasonsSuffix": " — {{reasons}}",
+      "reason": {
+        "outOfScope": "out of your scope",
+        "invalidTransition": "invalid status change",
+        "assigneeNotFound": "assignee not found",
+        "assigneeWrongPartner": "assignee belongs to another partner",
+        "concurrentModification": "modified by someone else",
+        "ticketPartnerUnresolvable": "ticket partner unresolvable",
+        "other": "other errors"
+      }
+    },
+    "bulkDeleteDialog": {
+      "title": "Delete {{count}} ticket?",
+      "title_one": "Delete {{count}} ticket?",
+      "title_other": "Delete {{count}} tickets?",
+      "message": "This hides them from all queues; an admin can restore them from Archived.",
+      "confirm": "Delete tickets"
+    }
+  },
+  "ticketWorkbench": {
+    "notFound": "Ticket not found. It may have been deleted, or you may not have access to it.",
+    "loadFailed": "Ticket failed to load.",
+    "backToQueue": "Back to queue",
+    "ticketSubject": "Ticket subject",
+    "openFullPage": "Open full page",
+    "priorityLabel": "Priority",
+    "categoryLabel": "Category",
+    "noCategory": "No category",
+    "currentCategory": "Current category",
+    "assignee": "Assignee",
+    "unassigned": "Unassigned",
+    "mspStaff": "MSP staff",
+    "assigneeValue": "Assignee: {{assignee}} ✕",
+    "source": "Source",
+    "dueDate": "Due date",
+    "waitingOn": "Waiting on",
+    "resolution": "Resolution",
+    "linkedAlerts": "Linked alerts",
+    "status": {
+      "new": "New",
+      "open": "Open",
+      "pending": "Pending",
+      "on_hold": "On hold",
+      "resolved": "Resolved",
+      "closed": "Closed"
+    },
+    "priority": {
+      "urgent": "Urgent",
+      "high": "High",
+      "normal": "Normal",
+      "low": "Low"
+    },
+    "tags": {
+      "label": "Tags",
+      "removeTag": "Remove tag {{tag}}",
+      "addTag": "Add tag…",
+      "addTagAria": "Add tag"
+    },
+    "invoice": {
+      "create": "Create invoice",
+      "creating": "Creating…",
+      "createFailed": "Could not create an invoice from this ticket.",
+      "created": "Draft invoice created"
+    },
+    "move": {
+      "open": "Move to another org…",
+      "label": "Move to organization",
+      "selectOrganization": "Select organization…",
+      "confirm": "Move",
+      "failed": "Move failed. Retry."
+    },
+    "triage": {
+      "title": "Suggested triage",
+      "checking": "Checking ticket signals…",
+      "priority": "Priority: {{priority}}",
+      "category": "Category: {{category}}",
+      "confidence": "{{percent}}% confidence",
+      "notRight": "Not right",
+      "applying": "Applying…",
+      "suggestedCategory": "Suggested category",
+      "applyFailed": "Could not apply ticket triage suggestion.",
+      "applied": "Ticket triage suggestion applied",
+      "feedbackFailed": "Could not save ticket triage feedback.",
+      "feedbackSaved": "Ticket triage feedback saved"
+    },
+    "resolve": {
+      "noteLabel": "Resolution note (visible to requester)",
+      "submit": "Resolve ticket"
+    },
+    "pending": {
+      "reasonLabel": "What are you waiting on? (optional)",
+      "setPending": "Set pending",
+      "putOnHold": "Put on hold"
+    },
+    "description": {
+      "empty": "No description.",
+      "add": "Add description"
+    },
+    "requester": {
+      "label": "Requester",
+      "someoneElse": "Someone else…",
+      "nameAria": "Requester name",
+      "emailPlaceholder": "Email (optional)",
+      "emailAria": "Requester email"
+    },
+    "device": {
+      "none": "No device",
+      "unlink": "Unlink"
+    },
+    "toast": {
+      "statusUpdated": "Status updated",
+      "statusUpdateFailed": "Status update failed. Retry.",
+      "ticketResolved": "Ticket resolved",
+      "resolveFailed": "Resolve failed. Retry.",
+      "replyFailed": "Reply failed. Retry.",
+      "updateFailed": "Update failed. Retry.",
+      "commentEditFailed": "Comment edit failed. Retry.",
+      "commentDeleteFailed": "Comment delete failed. Retry.",
+      "priorityUpdateFailed": "Priority update failed. Retry.",
+      "categoryUpdateFailed": "Category update failed. Retry.",
+      "assigned": "Assigned",
+      "unassigned": "Unassigned",
+      "assignFailed": "Assign failed. Retry."
+    },
+    "delete": {
+      "failed": "Delete failed. Retry.",
+      "deleted": "Ticket deleted"
+    },
+    "deleteDialog": {
+      "title": "Delete this ticket?",
+      "message": "This hides the ticket from all queues. An admin can restore it from the Archived queue.",
+      "confirm": "Delete ticket"
+    }
+  }
+}

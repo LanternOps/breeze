@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Eye, EyeOff, Loader2 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { fetchWithAuth, apiLogin, useAuthStore } from '../../stores/auth';
 import { extractApiError } from '@/lib/apiError';
 
@@ -8,6 +9,7 @@ interface AccountSetupStepProps {
 }
 
 export default function AccountSetupStep({ onNext }: AccountSetupStepProps) {
+  const { t } = useTranslation('auth');
   const [email, setEmail] = useState('');
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -25,19 +27,19 @@ export default function AccountSetupStep({ onNext }: AccountSetupStepProps) {
     setSuccess(undefined);
 
     if (newPassword && newPassword !== confirmPassword) {
-      setError('Passwords do not match');
+      setError(t('setup.account.errors.passwordsDoNotMatch'));
       return;
     }
 
     if (newPassword && newPassword.length < 8) {
-      setError('Password must be at least 8 characters');
+      setError(t('setup.account.errors.passwordLength'));
       return;
     }
 
     // Changing the email now requires a step-up: the API re-verifies the
     // current password on the email change (account-takeover protection).
     if (email && email !== user?.email && !currentPassword) {
-      setError('Enter your current password to change your email address');
+      setError(t('setup.account.errors.currentPasswordRequiredForEmail'));
       return;
     }
 
@@ -52,7 +54,7 @@ export default function AccountSetupStep({ onNext }: AccountSetupStepProps) {
         });
         if (!emailRes.ok) {
           const data = await emailRes.json().catch(() => null);
-          setError(extractApiError(data, 'Failed to update email'));
+          setError(extractApiError(data, t('setup.account.errors.updateEmailFailed')));
           setLoading(false);
           return;
         }
@@ -68,7 +70,7 @@ export default function AccountSetupStep({ onNext }: AccountSetupStepProps) {
         });
         if (!pwRes.ok) {
           const data = await pwRes.json().catch(() => null);
-          setError(extractApiError(data, 'Failed to change password'));
+          setError(extractApiError(data, t('setup.account.errors.changePasswordFailed')));
           setLoading(false);
           return;
         }
@@ -79,16 +81,16 @@ export default function AccountSetupStep({ onNext }: AccountSetupStepProps) {
         if (loginResult.success && loginResult.user && loginResult.tokens) {
           useAuthStore.getState().login(loginResult.user, loginResult.tokens);
         } else {
-          setError('Password changed but re-login failed. Please log in again.');
+          setError(t('setup.account.errors.reloginFailed'));
           setLoading(false);
           return;
         }
       }
 
-      setSuccess('Account updated successfully');
+      setSuccess(t('setup.account.success'));
       setTimeout(() => onNext(), 600);
     } catch {
-      setError('An unexpected error occurred');
+      setError(t('setup.common.unexpectedError'));
     } finally {
       setLoading(false);
     }
@@ -103,74 +105,74 @@ export default function AccountSetupStep({ onNext }: AccountSetupStepProps) {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-lg font-semibold">Secure Your Account</h2>
+        <h2 className="text-lg font-semibold">{t('setup.account.title')}</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Change the default admin email and password. You can skip this step and update them later in Settings.
+          {t('setup.account.description')}
         </p>
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-4">
         <div>
           <label htmlFor="setup-email" className="block text-sm font-medium">
-            Email Address
+            {t('setup.account.emailAddress')}
           </label>
           <input
             id="setup-email"
             type="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            placeholder={user?.email || 'admin@breeze.local'}
+            placeholder={user?.email || t('setup.account.emailPlaceholder')}
             className="mt-1 block w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-xs placeholder:text-muted-foreground focus:border-primary focus:outline-hidden focus:ring-1 focus:ring-primary"
           />
           {email && email !== user?.email && (
             <p className="mt-1 text-xs text-muted-foreground">
-              Changing your email requires your current password below.
+              {t('setup.account.currentPasswordHint')}
             </p>
           )}
         </div>
 
         <div className="border-t pt-4">
-          <p className="mb-3 text-sm font-medium">Change Password</p>
+          <p className="mb-3 text-sm font-medium">{t('setup.account.changePassword')}</p>
 
           <div className="space-y-3">
             <div>
               <label htmlFor="setup-current-pw" className="block text-sm text-muted-foreground">
-                Current Password
+                {t('setup.account.currentPassword')}
               </label>
               <input
                 id="setup-current-pw"
                 type={showPasswords ? 'text' : 'password'}
                 value={currentPassword}
                 onChange={(e) => setCurrentPassword(e.target.value)}
-                placeholder="Enter current password"
+                placeholder={t('setup.account.currentPasswordPlaceholder')}
                 className="mt-1 block w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-xs placeholder:text-muted-foreground focus:border-primary focus:outline-hidden focus:ring-1 focus:ring-primary"
               />
             </div>
 
             <div>
               <label htmlFor="setup-new-pw" className="block text-sm text-muted-foreground">
-                New Password
+                {t('setup.account.newPassword')}
               </label>
               <input
                 id="setup-new-pw"
                 type={showPasswords ? 'text' : 'password'}
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
-                placeholder="Enter new password"
+                placeholder={t('setup.account.newPasswordPlaceholder')}
                 className="mt-1 block w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-xs placeholder:text-muted-foreground focus:border-primary focus:outline-hidden focus:ring-1 focus:ring-primary"
               />
             </div>
 
             <div>
               <label htmlFor="setup-confirm-pw" className="block text-sm text-muted-foreground">
-                Confirm New Password
+                {t('setup.account.confirmNewPassword')}
               </label>
               <input
                 id="setup-confirm-pw"
                 type={showPasswords ? 'text' : 'password'}
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
-                placeholder="Confirm new password"
+                placeholder={t('setup.account.confirmNewPasswordPlaceholder')}
                 className="mt-1 block w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-xs placeholder:text-muted-foreground focus:border-primary focus:outline-hidden focus:ring-1 focus:ring-primary"
               />
             </div>
@@ -181,14 +183,14 @@ export default function AccountSetupStep({ onNext }: AccountSetupStepProps) {
               className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
             >
               {showPasswords ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-              {showPasswords ? 'Hide' : 'Show'} passwords
+              {showPasswords ? t('setup.account.hidePasswords') : t('setup.account.showPasswords')}
             </button>
           </div>
         </div>
 
         {partialPassword && (
           <div className="rounded-md border border-yellow-500/50 bg-yellow-500/10 px-3 py-2 text-sm text-yellow-700 dark:text-yellow-400">
-            Both current and new password are required to change your password.
+            {t('setup.account.partialPasswordWarning')}
           </div>
         )}
 
@@ -210,7 +212,7 @@ export default function AccountSetupStep({ onNext }: AccountSetupStepProps) {
             onClick={onNext}
             className="rounded-md px-4 py-2 text-sm font-medium text-muted-foreground hover:text-foreground"
           >
-            Skip
+            {t('setup.common.skip')}
           </button>
           <button
             type="submit"
@@ -218,7 +220,7 @@ export default function AccountSetupStep({ onNext }: AccountSetupStepProps) {
             className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-xs hover:bg-primary/90 disabled:opacity-50"
           >
             {loading && <Loader2 className="h-4 w-4 animate-spin" />}
-            Save & Continue
+            {t('setup.common.saveAndContinue')}
           </button>
         </div>
       </form>

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { ShieldOff, LogOut, Rocket } from 'lucide-react';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 
@@ -16,18 +17,25 @@ function isSafeUrl(url: string): boolean {
   } catch { return false; }
 }
 
-const DEFAULT_MESSAGES: Record<string, string> = {
-  pending: 'Your account is being set up. Please check back shortly.',
-  suspended: 'Your account has been suspended. Please contact your administrator.',
-  churned: 'Your account is no longer active. Please contact support.',
-};
-
 export default function AccountInactiveScreen() {
+  const { t } = useTranslation('auth');
   const [info, setInfo] = useState<StatusInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const logout = useAuthStore((s) => s.logout);
 
   useEffect(() => {
+    const defaultMessages: Record<string, string> = {
+      pending: t('accountInactive.defaultMessages.pending', {
+        defaultValue: 'Your account is being set up. Please check back shortly.',
+      }),
+      suspended: t('accountInactive.defaultMessages.suspended', {
+        defaultValue: 'Your account has been suspended. Please contact your administrator.',
+      }),
+      churned: t('accountInactive.defaultMessages.churned', {
+        defaultValue: 'Your account is no longer active. Please contact support.',
+      }),
+    };
+
     fetchWithAuth('/partner/me')
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
@@ -37,7 +45,7 @@ export default function AccountInactiveScreen() {
         }
         setInfo({
           status: data.status,
-          message: data.statusMessage ?? DEFAULT_MESSAGES[data.status] ?? 'Your account is not active.',
+          message: data.statusMessage ?? defaultMessages[data.status] ?? t('accountInactive.defaultMessages.generic', { defaultValue: 'Your account is not active.' }),
           actionUrl: data.statusActionUrl,
           actionLabel: data.statusActionLabel,
         });
@@ -45,13 +53,13 @@ export default function AccountInactiveScreen() {
       .catch(() => {
         setInfo({
           status: 'unknown',
-          message: 'Unable to load account status. Please try again later.',
+          message: t('accountInactive.defaultMessages.loadFailed', { defaultValue: 'Unable to load account status. Please try again later.' }),
           actionUrl: null,
           actionLabel: null,
         });
       })
       .finally(() => setLoading(false));
-  }, []);
+  }, [t]);
 
   const handleLogout = () => {
     logout();
@@ -77,7 +85,9 @@ export default function AccountInactiveScreen() {
 
         <div className="space-y-2">
           <h1 className="text-2xl font-semibold tracking-tight">
-            {info?.status === 'pending' ? 'Almost There!' : 'Account Inactive'}
+            {info?.status === 'pending'
+              ? t('accountInactive.pendingTitle', { defaultValue: 'Almost There!' })
+              : t('accountInactive.title', { defaultValue: 'Account Inactive' })}
           </h1>
           <p className="text-muted-foreground">{info?.message}</p>
         </div>
@@ -88,7 +98,7 @@ export default function AccountInactiveScreen() {
               href={info.actionUrl}
               className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-xs hover:bg-primary/90"
             >
-              {info.actionLabel ?? 'Take Action'}
+              {info.actionLabel ?? t('accountInactive.takeAction', { defaultValue: 'Take Action' })}
             </a>
           )}
           <button
@@ -96,7 +106,7 @@ export default function AccountInactiveScreen() {
             className="inline-flex items-center justify-center gap-2 rounded-md border px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
           >
             <LogOut className="h-4 w-4" />
-            Sign Out
+            {t('common.signOut', { defaultValue: 'Sign Out' })}
           </button>
         </div>
       </div>

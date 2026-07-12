@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 import {
   Brain,
   CheckCircle,
@@ -14,6 +16,7 @@ import {
   ThumbsUp,
   XCircle
 } from 'lucide-react';
+import { formatNumber } from '@/lib/i18n/format';
 import { cn } from '@/lib/utils';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { fetchWithAuth } from '../../stores/auth';
@@ -108,7 +111,7 @@ function formatPercent(value: number | undefined) {
 
 function formatScore(value: number | undefined) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return '0.00';
-  return value.toFixed(2);
+  return formatNumber(value, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 function formatDateTime(value: string | undefined) {
@@ -268,6 +271,7 @@ function evidenceMetadataDetails(item: RcaEvidenceItem) {
 }
 
 function EvidenceLinks({ evidenceIds, timeline }: { evidenceIds: string[]; timeline: RcaEvidenceItem[] }) {
+  const { t } = useTranslation('alerts');
   const linkedItems = evidenceIds
     .map((id) => timeline.find((item) => item.id === id))
     .filter((item): item is RcaEvidenceItem => Boolean(item));
@@ -276,13 +280,13 @@ function EvidenceLinks({ evidenceIds, timeline }: { evidenceIds: string[]; timel
 
   return (
     <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1.5 text-xs">
-      <span className="text-muted-foreground">Evidence</span>
+      <span className="text-muted-foreground">{t('correlatedAlertGroups.evidence')}</span>
       {linkedItems.map((item) => (
         <a
           key={item.id}
           href={`#${evidenceDomId(item.id)}`}
           className="inline-flex max-w-full items-center gap-1 rounded-md border bg-background px-2 py-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
-          aria-label={`Open evidence ${item.title}`}
+          aria-label={t('correlatedAlertGroups.openEvidence', { title: item.title })}
         >
           <FileText className="h-3 w-3 shrink-0" />
           <span className="truncate">{item.title}</span>
@@ -333,6 +337,7 @@ function buildRcaTicketNote(group: AlertGroup, rca: RcaResult) {
 }
 
 export default function CorrelatedAlertGroups() {
+  const { t } = useTranslation('alerts');
   const mlFlags = useMlFeatureFlags();
   const [groups, setGroups] = useState<AlertGroup[]>([]);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
@@ -419,13 +424,13 @@ export default function CorrelatedAlertGroups() {
     try {
       await runAction({
         request: () => fetchWithAuth(`/alerts/correlations/${group.id}/acknowledge`, { method: 'POST' }),
-        errorFallback: 'Failed to acknowledge alert group',
-        successMessage: 'Alert group acknowledged',
+        errorFallback: t('correlatedAlertGroups.actions.acknowledgeFailed'),
+        successMessage: t('correlatedAlertGroups.actions.acknowledged'),
         onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
       await fetchGroups();
     } catch (err) {
-      handleActionError(err, 'Failed to acknowledge alert group');
+      handleActionError(err, t('correlatedAlertGroups.actions.acknowledgeFailed'));
     } finally {
       setBusyGroupId(null);
     }
@@ -436,13 +441,13 @@ export default function CorrelatedAlertGroups() {
     try {
       await runAction({
         request: () => fetchWithAuth(`/alerts/correlations/${group.id}/resolve`, { method: 'POST' }),
-        errorFallback: 'Failed to resolve alert group',
-        successMessage: 'Alert group resolved',
+        errorFallback: t('correlatedAlertGroups.actions.resolveFailed'),
+        successMessage: t('correlatedAlertGroups.actions.resolved'),
         onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
       await fetchGroups();
     } catch (err) {
-      handleActionError(err, 'Failed to resolve alert group');
+      handleActionError(err, t('correlatedAlertGroups.actions.resolveFailed'));
     } finally {
       setBusyGroupId(null);
     }
@@ -458,18 +463,18 @@ export default function CorrelatedAlertGroups() {
           method: 'POST',
           body: JSON.stringify({ windowHours: 6, maxEvidenceItems: 30 })
         }),
-        errorFallback: 'Failed to explain incident',
+        errorFallback: t('correlatedAlertGroups.actions.explainFailed'),
         onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
       const rca = result.data ?? result.rca;
       if (!rca) {
-        showToast({ message: 'RCA response was empty', type: 'error' });
+        showToast({ message: t('correlatedAlertGroups.actions.emptyRca'), type: 'error' });
         return;
       }
       setRcaByGroup((prev) => ({ ...prev, [group.id]: rca }));
       setExpandedGroups((prev) => new Set(prev).add(group.id));
     } catch (err) {
-      handleActionError(err, 'Failed to explain incident');
+      handleActionError(err, t('correlatedAlertGroups.actions.explainFailed'));
     } finally {
       setLoadingRcaGroupId(null);
     }
@@ -493,12 +498,12 @@ export default function CorrelatedAlertGroups() {
             }
           })
         }),
-        errorFallback: 'Failed to record RCA feedback',
-        successMessage: 'RCA feedback recorded',
+        errorFallback: t('correlatedAlertGroups.actions.rcaFeedbackFailed'),
+        successMessage: t('correlatedAlertGroups.actions.rcaFeedbackRecorded'),
         onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
     } catch (err) {
-      handleActionError(err, 'Failed to record RCA feedback');
+      handleActionError(err, t('correlatedAlertGroups.actions.rcaFeedbackFailed'));
     }
   };
 
@@ -522,12 +527,14 @@ export default function CorrelatedAlertGroups() {
             }
           })
         }),
-        errorFallback: 'Failed to record correlation feedback',
-        successMessage: isSplit ? 'Marked group as incorrect' : 'Dismissed correlation group',
+        errorFallback: t('correlatedAlertGroups.actions.correlationFeedbackFailed'),
+        successMessage: isSplit
+          ? t('correlatedAlertGroups.actions.markedIncorrect')
+          : t('correlatedAlertGroups.actions.dismissed'),
         onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
     } catch (err) {
-      handleActionError(err, 'Failed to record correlation feedback');
+      handleActionError(err, t('correlatedAlertGroups.actions.correlationFeedbackFailed'));
     } finally {
       setBusyGroupId(null);
     }
@@ -548,9 +555,9 @@ export default function CorrelatedAlertGroups() {
       <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex min-h-48 flex-col items-center justify-center gap-2 text-center text-muted-foreground">
           <Brain className="h-8 w-8" />
-          <h2 className="text-base font-semibold text-foreground">Alert correlation disabled</h2>
+          <h2 className="text-base font-semibold text-foreground">{t('correlatedAlertGroups.alertCorrelationDisabled')}</h2>
           <p className="max-w-md text-sm">
-            Correlated alert groups are hidden because alert correlation is disabled for this organization.
+            {t('correlatedAlertGroups.correlatedAlertGroupsAreHiddenBecauseAlert')}
           </p>
         </div>
       </div>
@@ -568,7 +575,7 @@ export default function CorrelatedAlertGroups() {
             className="inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium hover:bg-muted"
           >
             <RefreshCw className="h-4 w-4" />
-            Retry
+            {t('correlatedAlertGroups.retry')}
           </button>
         </div>
       </div>
@@ -581,19 +588,19 @@ export default function CorrelatedAlertGroups() {
     <div className="space-y-5">
       <div className="grid gap-3 sm:grid-cols-4">
         <div className="rounded-md border bg-card px-4 py-3">
-          <p className="text-xs text-muted-foreground">Incidents</p>
+          <p className="text-xs text-muted-foreground">{t('correlatedAlertGroups.incidents')}</p>
           <p className="mt-1 text-xl font-semibold">{summary.incidentCount}</p>
         </div>
         <div className="rounded-md border bg-card px-4 py-3">
-          <p className="text-xs text-muted-foreground">Grouped alerts</p>
+          <p className="text-xs text-muted-foreground">{t('correlatedAlertGroups.groupedAlerts')}</p>
           <p className="mt-1 text-xl font-semibold">{summary.memberCount}</p>
         </div>
         <div className="rounded-md border bg-card px-4 py-3">
-          <p className="text-xs text-muted-foreground">Inbox reduction</p>
+          <p className="text-xs text-muted-foreground">{t('correlatedAlertGroups.inboxReduction')}</p>
           <p className="mt-1 text-xl font-semibold">{summary.suppressedAlerts}</p>
         </div>
         <div className="rounded-md border bg-card px-4 py-3">
-          <p className="text-xs text-muted-foreground">Avg noise cut</p>
+          <p className="text-xs text-muted-foreground">{t('correlatedAlertGroups.avgNoiseCut')}</p>
           <p className="mt-1 text-xl font-semibold">{formatPercent(summary.avgReduction)}</p>
         </div>
       </div>
@@ -601,8 +608,8 @@ export default function CorrelatedAlertGroups() {
       <div className="rounded-lg border bg-card shadow-xs">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b px-6 py-4">
           <div>
-            <h2 className="text-lg font-semibold">Correlated Alert Groups</h2>
-            <p className="text-sm text-muted-foreground">Cluster alerts by likely incident and shared evidence.</p>
+            <h2 className="text-lg font-semibold">{t('correlatedAlertGroups.correlatedAlertGroups')}</h2>
+            <p className="text-sm text-muted-foreground">{t('correlatedAlertGroups.clusterAlertsByLikelyIncidentAndShared')}</p>
           </div>
           <button
             type="button"
@@ -610,14 +617,14 @@ export default function CorrelatedAlertGroups() {
             className="inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium hover:bg-muted"
           >
             <RefreshCw className="h-4 w-4" />
-            Refresh
+            {t('correlatedAlertGroups.refresh')}
           </button>
         </div>
 
         <div className="divide-y">
           {groups.length === 0 ? (
             <div className="py-12 text-center text-muted-foreground">
-              No correlated alert groups found.
+              {t('correlatedAlertGroups.noCorrelatedAlertGroupsFound')}
             </div>
           ) : (
             groups.map(group => {
@@ -647,7 +654,7 @@ export default function CorrelatedAlertGroups() {
                               severityStyles[group.rootCause.severity]
                             )}
                           >
-                            {group.rootCause.severity}
+                            {t(/* i18n-dynamic */ `correlatedAlertGroups.severity.${group.rootCause.severity}`)}
                           </span>
                           {group.status && (
                             <span
@@ -656,13 +663,13 @@ export default function CorrelatedAlertGroups() {
                                 statusStyles[group.status] ?? 'bg-muted text-muted-foreground border-border'
                               )}
                             >
-                              {group.status}
+                              {t(/* i18n-dynamic */ `correlatedAlertGroups.status.${group.status}`)}
                             </span>
                           )}
                           <span>{group.rootCause.device}</span>
-                          <span>{group.relatedCount} related</span>
-                          <span>score {formatScore(group.correlationScore)}</span>
-                          <span>{formatPercent(group.noiseReductionPercent)} noise cut</span>
+                          <span>{group.relatedCount} {t('correlatedAlertGroups.related')}</span>
+                          <span>{t('correlatedAlertGroups.score')} {formatScore(group.correlationScore)}</span>
+                          <span>{formatPercent(group.noiseReductionPercent)} {t('correlatedAlertGroups.noiseCut')}</span>
                         </div>
                       </div>
                     </button>
@@ -672,11 +679,11 @@ export default function CorrelatedAlertGroups() {
                         type="button"
                         onClick={() => void handleExplainGroup(group)}
                         disabled={isBusy || isExplaining || rcaDisabled}
-                        title={rcaDisabled ? 'RCA is disabled for this organization' : undefined}
+                        title={rcaDisabled ? t('correlatedAlertGroups.rcaDisabledForOrganization') : undefined}
                         className="inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs font-medium hover:bg-muted disabled:opacity-50"
                       >
                         {isExplaining ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Brain className="h-3.5 w-3.5" />}
-                        {rcaDisabled ? 'RCA disabled' : 'Explain incident'}
+                        {rcaDisabled ? t('correlatedAlertGroups.rcaDisabled') : t('correlatedAlertGroups.explainIncident')}
                       </button>
                       <button
                         type="button"
@@ -685,7 +692,7 @@ export default function CorrelatedAlertGroups() {
                         className="inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs font-medium hover:bg-muted disabled:opacity-50"
                       >
                         {isBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle className="h-3.5 w-3.5" />}
-                        Acknowledge group
+                        {t('correlatedAlertGroups.acknowledgeGroup')}
                       </button>
                       <button
                         type="button"
@@ -694,7 +701,7 @@ export default function CorrelatedAlertGroups() {
                         className="inline-flex h-8 items-center gap-2 rounded-md border border-destructive/40 px-3 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
                       >
                         {isBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <XCircle className="h-3.5 w-3.5" />}
-                        Resolve group
+                        {t('correlatedAlertGroups.resolveGroup')}
                       </button>
                       <button
                         type="button"
@@ -703,7 +710,7 @@ export default function CorrelatedAlertGroups() {
                         className="inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs font-medium hover:bg-muted disabled:opacity-50"
                       >
                         {isBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ThumbsDown className="h-3.5 w-3.5" />}
-                        Mark wrong group
+                        {t('correlatedAlertGroups.markWrongGroup')}
                       </button>
                       <button
                         type="button"
@@ -712,7 +719,7 @@ export default function CorrelatedAlertGroups() {
                         className="inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs font-medium hover:bg-muted disabled:opacity-50"
                       >
                         {isBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <XCircle className="h-3.5 w-3.5" />}
-                        Dismiss grouping
+                        {t('correlatedAlertGroups.dismissGrouping')}
                       </button>
                     </div>
                   </div>
@@ -723,15 +730,15 @@ export default function CorrelatedAlertGroups() {
                         <div className="space-y-3">
                           <div className="grid gap-2 sm:grid-cols-3">
                             <div className="rounded-md border bg-background px-3 py-2">
-                              <p className="text-xs text-muted-foreground">First seen</p>
+                              <p className="text-xs text-muted-foreground">{t('correlatedAlertGroups.firstSeen')}</p>
                               <p className="text-sm font-medium">{formatDateTime(group.firstSeenAt ?? group.rootCause.triggeredAt)}</p>
                             </div>
                             <div className="rounded-md border bg-background px-3 py-2">
-                              <p className="text-xs text-muted-foreground">Last seen</p>
+                              <p className="text-xs text-muted-foreground">{t('correlatedAlertGroups.lastSeen')}</p>
                               <p className="text-sm font-medium">{formatDateTime(group.lastSeenAt)}</p>
                             </div>
                             <div className="rounded-md border bg-background px-3 py-2">
-                              <p className="text-xs text-muted-foreground">Members</p>
+                              <p className="text-xs text-muted-foreground">{t('correlatedAlertGroups.members')}</p>
                               <p className="text-sm font-medium">{group.memberCount ?? group.alerts.length}</p>
                             </div>
                           </div>
@@ -756,7 +763,7 @@ export default function CorrelatedAlertGroups() {
                                       severityStyles[alert.severity]
                                     )}
                                   >
-                                    {alert.severity}
+                                    {t(/* i18n-dynamic */ `correlatedAlertGroups.severity.${alert.severity}`)}
                                   </span>
                                   <span
                                     className={cn(
@@ -764,7 +771,7 @@ export default function CorrelatedAlertGroups() {
                                       statusStyles[alert.status] ?? 'bg-muted text-muted-foreground border-border'
                                     )}
                                   >
-                                    {alert.status}
+                                    {t(/* i18n-dynamic */ `correlatedAlertGroups.status.${alert.status}`)}
                                   </span>
                                 </div>
                               </div>
@@ -775,8 +782,8 @@ export default function CorrelatedAlertGroups() {
                         <div className="rounded-md border bg-background">
                           <div className="flex items-center justify-between gap-3 border-b px-4 py-3">
                             <div>
-                              <h3 className="text-sm font-semibold">Incident RCA</h3>
-                              <p className="text-xs text-muted-foreground">Evidence is gathered on demand.</p>
+                              <h3 className="text-sm font-semibold">{t('correlatedAlertGroups.incidentRca')}</h3>
+                              <p className="text-xs text-muted-foreground">{t('correlatedAlertGroups.evidenceIsGatheredOnDemand')}</p>
                             </div>
                             {groupRca && (
                               <div className="flex items-center gap-1">
@@ -784,7 +791,7 @@ export default function CorrelatedAlertGroups() {
                                   type="button"
                                   onClick={() => void sendRcaFeedback(group, 'rca.helpful')}
                                   className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
-                                  aria-label="Mark RCA helpful"
+                                  aria-label={t('correlatedAlertGroups.markRcaHelpful')}
                                 >
                                   <ThumbsUp className="h-4 w-4" />
                                 </button>
@@ -792,7 +799,7 @@ export default function CorrelatedAlertGroups() {
                                   type="button"
                                   onClick={() => void sendRcaFeedback(group, 'rca.not_helpful')}
                                   className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
-                                  aria-label="Mark RCA not helpful"
+                                  aria-label={t('correlatedAlertGroups.markRcaNotHelpful')}
                                 >
                                   <ThumbsDown className="h-4 w-4" />
                                 </button>
@@ -807,25 +814,25 @@ export default function CorrelatedAlertGroups() {
                                 type="button"
                                 onClick={() => void handleExplainGroup(group)}
                                 disabled={isExplaining || rcaDisabled}
-                                title={rcaDisabled ? 'RCA is disabled for this organization' : undefined}
+                                title={rcaDisabled ? t('correlatedAlertGroups.rcaDisabledForOrganization') : undefined}
                                 className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
                               >
                                 {isExplaining ? <Loader2 className="h-4 w-4 animate-spin" /> : <Brain className="h-4 w-4" />}
-                                {rcaDisabled ? 'RCA disabled' : 'Explain incident'}
+                                {rcaDisabled ? t('correlatedAlertGroups.rcaDisabled') : t('correlatedAlertGroups.explainIncident')}
                               </button>
                             </div>
                           ) : (
                             <div className="space-y-4 p-4">
                               <div className="space-y-2">
                                 {groupRca.rootCauseCandidates.length === 0 ? (
-                                  <p className="text-sm text-muted-foreground">No likely cause candidates were found.</p>
+                                  <p className="text-sm text-muted-foreground">{t('correlatedAlertGroups.noLikelyCauseCandidatesWereFound')}</p>
                                 ) : (
                                   groupRca.rootCauseCandidates.map((candidate, index) => (
                                     <div key={`${candidate.summary}-${index}`} className="rounded-md border bg-muted/20 px-3 py-2">
                                       <div className="flex items-center justify-between gap-3">
-                                        <p className="text-sm font-medium">Candidate {index + 1}</p>
+                                        <p className="text-sm font-medium">{t('correlatedAlertGroups.candidate')} {index + 1}</p>
                                         <span className="rounded-full border bg-background px-2 py-0.5 text-xs">
-                                          {formatPercent(candidate.confidence * 100)} confidence
+                                          {formatPercent(candidate.confidence * 100)} {t('correlatedAlertGroups.confidence')}
                                         </span>
                                       </div>
                                       <p className="mt-1 text-sm text-muted-foreground">{candidate.summary}</p>
@@ -839,7 +846,7 @@ export default function CorrelatedAlertGroups() {
                                 <div>
                                   <div className="mb-2 flex items-center gap-2 text-sm font-medium">
                                     <FileText className="h-4 w-4" />
-                                    Suggested next steps
+                                    {t('correlatedAlertGroups.suggestedNextSteps')}
                                   </div>
                                   <div className="space-y-2">
                                     {groupRca.suggestedNextSteps.map((step) => (
@@ -847,7 +854,7 @@ export default function CorrelatedAlertGroups() {
                                         <div className="flex flex-wrap items-center justify-between gap-2">
                                           <p className="text-sm font-medium">{step.title}</p>
                                           <span className="rounded-full border bg-background px-2 py-0.5 chart-legend-xs capitalize text-muted-foreground">
-                                            {step.riskTier} risk
+                                            {step.riskTier} {t('correlatedAlertGroups.risk')}
                                           </span>
                                         </div>
                                         <p className="mt-1 text-xs text-muted-foreground">{step.rationale}</p>
@@ -861,7 +868,7 @@ export default function CorrelatedAlertGroups() {
                               <div>
                                 <div className="mb-2 flex items-center gap-2 text-sm font-medium">
                                   <Clock className="h-4 w-4" />
-                                  Evidence timeline
+                                  {t('correlatedAlertGroups.evidenceTimeline')}
                                 </div>
                                 <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
                                   {groupRca.timeline.map((item) => {
@@ -893,7 +900,7 @@ export default function CorrelatedAlertGroups() {
 
                               {groupRca.gaps.length > 0 && (
                                 <div className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2">
-                                  <p className="text-sm font-medium">Evidence gaps</p>
+                                  <p className="text-sm font-medium">{t('correlatedAlertGroups.evidenceGaps')}</p>
                                   <ul className="mt-1 space-y-1 text-xs text-muted-foreground">
                                     {groupRca.gaps.map((gap) => <li key={gap}>{gap}</li>)}
                                   </ul>
@@ -913,7 +920,7 @@ export default function CorrelatedAlertGroups() {
                                 className="inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium hover:bg-muted"
                               >
                                 <FileText className="h-4 w-4" />
-                                Create ticket from RCA
+                                {t('correlatedAlertGroups.createTicketFromRca')}
                               </button>
                               <button
                                 type="button"
@@ -921,7 +928,7 @@ export default function CorrelatedAlertGroups() {
                                 className="inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium hover:bg-muted"
                               >
                                 <Pencil className="h-4 w-4" />
-                                Mark edited
+                                {t('correlatedAlertGroups.markEdited')}
                               </button>
                             </div>
                           )}

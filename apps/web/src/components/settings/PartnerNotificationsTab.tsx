@@ -1,13 +1,14 @@
 import type { InheritableNotificationSettings } from '@breeze/shared';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 
 type Props = {
   data: InheritableNotificationSettings;
   onChange: (data: InheritableNotificationSettings) => void;
 };
 
-const PLACEHOLDER = 'Not set — orgs configure individually';
-
 export default function PartnerNotificationsTab({ data, onChange }: Props) {
+  const { t } = useTranslation('settings');
   const set = (patch: Partial<InheritableNotificationSettings>) =>
     onChange({ ...data, ...patch });
 
@@ -15,23 +16,23 @@ export default function PartnerNotificationsTab({ data, onChange }: Props) {
     <div className="space-y-6">
       <div className="grid gap-6 sm:grid-cols-2">
         <div className="space-y-2">
-          <label className="text-sm font-medium">From Address</label>
+          <label className="text-sm font-medium">{t('partnerNotifications.fromAddress')}</label>
           <input
             type="email"
             value={data.fromAddress ?? ''}
             onChange={e => set({ fromAddress: e.target.value || undefined })}
-            placeholder={PLACEHOLDER}
+            placeholder={t('partnerNotifications.notSet')}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm"
           />
         </div>
 
         <div className="space-y-2">
-          <label className="text-sm font-medium">Reply-To Address</label>
+          <label className="text-sm font-medium">{t('partnerNotifications.replyTo')}</label>
           <input
             type="email"
             value={data.replyTo ?? ''}
             onChange={e => set({ replyTo: e.target.value || undefined })}
-            placeholder={PLACEHOLDER}
+            placeholder={t('partnerNotifications.notSet')}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm"
           />
         </div>
@@ -46,52 +47,52 @@ export default function PartnerNotificationsTab({ data, onChange }: Props) {
             onChange={e => set({ useCustomSmtp: e.target.checked })}
             className="h-4 w-4 rounded border"
           />
-          <label className="text-sm font-medium">Use Custom SMTP Server</label>
+          <label className="text-sm font-medium">{t('partnerNotifications.useCustomSmtp')}</label>
         </div>
 
         {data.useCustomSmtp && (
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">
-              <label className="text-sm font-medium">SMTP Host</label>
+              <label className="text-sm font-medium">{t('partnerNotifications.smtpHost')}</label>
               <input
                 type="text"
                 value={data.smtpHost ?? ''}
                 onChange={e => set({ smtpHost: e.target.value || undefined })}
-                placeholder="smtp.example.com"
+                placeholder={t('partnerNotifications.smtpHostPlaceholder')}
                 className="h-10 w-full rounded-md border bg-background px-3 text-sm"
               />
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">SMTP Port</label>
+              <label className="text-sm font-medium">{t('partnerNotifications.smtpPort')}</label>
               <input
                 type="number"
                 value={data.smtpPort ?? ''}
                 onChange={e => set({ smtpPort: e.target.value ? Number(e.target.value) : undefined })}
-                placeholder="587"
+                placeholder={t('partnerNotifications.smtpPortPlaceholder')}
                 className="h-10 w-full rounded-md border bg-background px-3 text-sm"
               />
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">SMTP Username</label>
+              <label className="text-sm font-medium">{t('partnerNotifications.smtpUsername')}</label>
               <input
                 type="text"
                 value={data.smtpUsername ?? ''}
                 onChange={e => set({ smtpUsername: e.target.value || undefined })}
-                placeholder={PLACEHOLDER}
+                placeholder={t('partnerNotifications.notSet')}
                 className="h-10 w-full rounded-md border bg-background px-3 text-sm"
               />
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">Encryption</label>
+              <label className="text-sm font-medium">{t('partnerNotifications.encryption')}</label>
               <select
                 value={data.smtpEncryption ?? ''}
                 onChange={e => set({ smtpEncryption: (e.target.value || undefined) as InheritableNotificationSettings['smtpEncryption'] })}
                 className="h-10 w-full rounded-md border bg-background px-3 text-sm"
               >
-                <option value="">{PLACEHOLDER}</option>
+                <option value="">{t('partnerNotifications.notSet')}</option>
                 <option value="tls">TLS</option>
                 <option value="ssl">SSL</option>
-                <option value="none">None</option>
+                <option value="none">{t('common:labels.none')}</option>
               </select>
             </div>
           </div>
@@ -100,25 +101,25 @@ export default function PartnerNotificationsTab({ data, onChange }: Props) {
 
       {/* Slack */}
       <div className="space-y-4 rounded-lg border bg-muted/40 p-4">
-        <p className="text-sm font-medium">Slack Integration</p>
+        <p className="text-sm font-medium">{t('partnerNotifications.slackIntegration')}</p>
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="space-y-2">
-            <label className="text-sm font-medium">Slack Webhook URL</label>
+            <label className="text-sm font-medium">{t('partnerNotifications.slackWebhook')}</label>
             <input
               type="url"
               value={data.slackWebhookUrl ?? ''}
               onChange={e => set({ slackWebhookUrl: e.target.value || undefined })}
-              placeholder={PLACEHOLDER}
+              placeholder={t('partnerNotifications.notSet')}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm"
             />
           </div>
           <div className="space-y-2">
-            <label className="text-sm font-medium">Slack Channel</label>
+            <label className="text-sm font-medium">{t('partnerNotifications.slackChannel')}</label>
             <input
               type="text"
               value={data.slackChannel ?? ''}
               onChange={e => set({ slackChannel: e.target.value || undefined })}
-              placeholder="#alerts"
+              placeholder={t('partnerNotifications.slackChannelPlaceholder')}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm"
             />
           </div>
@@ -128,50 +129,50 @@ export default function PartnerNotificationsTab({ data, onChange }: Props) {
       {/* Pushover defaults */}
       <div className="space-y-4 rounded-lg border bg-muted/40 p-4">
         <div>
-          <p className="text-sm font-medium">Pushover Defaults</p>
+          <p className="text-sm font-medium">{t('partnerNotifications.pushoverDefaults')}</p>
           <p className="text-xs text-muted-foreground">
-            Inherited by any per-org Pushover channel that leaves the matching field blank.
+            {t('partnerNotifications.pushoverDescription')}
           </p>
         </div>
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="space-y-2">
-            <label className="text-sm font-medium">Application Token</label>
+            <label className="text-sm font-medium">{t('partnerNotifications.applicationToken')}</label>
             <input
               type="password"
               autoComplete="new-password"
               value={data.pushoverAppToken ?? ''}
               maxLength={30}
               onChange={e => set({ pushoverAppToken: e.target.value || undefined })}
-              placeholder={PLACEHOLDER}
+              placeholder={t('partnerNotifications.notSet')}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm"
             />
           </div>
           <div className="space-y-2">
-            <label className="text-sm font-medium">Default User or Group Key</label>
+            <label className="text-sm font-medium">{t('partnerNotifications.defaultUserKey')}</label>
             <input
               type="text"
               autoComplete="off"
               value={data.pushoverDefaultUser ?? ''}
               maxLength={30}
               onChange={e => set({ pushoverDefaultUser: e.target.value || undefined })}
-              placeholder={PLACEHOLDER}
+              placeholder={t('partnerNotifications.notSet')}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm"
             />
           </div>
         </div>
         <div className="grid gap-4 sm:grid-cols-3">
           <div className="space-y-2">
-            <label className="text-sm font-medium">Default Sound</label>
+            <label className="text-sm font-medium">{t('partnerNotifications.defaultSound')}</label>
             <input
               type="text"
               value={data.pushoverDefaultSound ?? ''}
               onChange={e => set({ pushoverDefaultSound: e.target.value || undefined })}
-              placeholder="pushover"
+              placeholder={t('partnerNotifications.soundPlaceholder')}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm"
             />
           </div>
           <div className="space-y-2 sm:col-span-2">
-            <label className="text-sm font-medium">Default Priority</label>
+            <label className="text-sm font-medium">{t('partnerNotifications.defaultPriority')}</label>
             <select
               value={data.pushoverDefaultPriority ?? ''}
               onChange={e =>
@@ -184,12 +185,12 @@ export default function PartnerNotificationsTab({ data, onChange }: Props) {
               }
               className="h-10 w-full rounded-md border bg-background px-3 text-sm"
             >
-              <option value="">{PLACEHOLDER}</option>
-              <option value={-2}>Lowest</option>
-              <option value={-1}>Low</option>
-              <option value={0}>Normal</option>
-              <option value={1}>High</option>
-              <option value={2}>Emergency</option>
+              <option value="">{t('partnerNotifications.notSet')}</option>
+              <option value={-2}>{t('partnerNotifications.priorities.lowest')}</option>
+              <option value={-1}>{t('partnerNotifications.priorities.low')}</option>
+              <option value={0}>{t('partnerNotifications.priorities.normal')}</option>
+              <option value={1}>{t('partnerNotifications.priorities.high')}</option>
+              <option value={2}>{t('partnerNotifications.priorities.emergency')}</option>
             </select>
           </div>
         </div>

@@ -1,3 +1,5 @@
+import '@/lib/i18n';
+import { useTranslation } from 'react-i18next';
 import type { ClipboardEvent, KeyboardEvent } from 'react';
 import { useMemo, useRef, useState } from 'react';
 import type { MfaMethod } from '../../stores/auth';
@@ -52,6 +54,7 @@ export default function MFASettings({
   successMessage,
   loading
 }: MFASettingsProps) {
+  const { t } = useTranslation('settings');
   const [view, setView] = useState<MFAView>('status');
   const [digits, setDigits] = useState<string[]>(Array(DIGIT_COUNT).fill(''));
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -221,7 +224,7 @@ export default function MFASettings({
 
   const handleRegenerateCodes = async () => {
     if (!recoveryPassword) {
-      setLocalError('Current password is required');
+      setLocalError(t('mFASettings.currentPasswordIsRequired'));
       return;
     }
 
@@ -252,7 +255,7 @@ export default function MFASettings({
       setLocalError(result.error);
     } else {
       setPhoneCodeSent(true);
-      setLocalSuccess('Verification code sent');
+      setLocalSuccess(t('mFASettings.verificationCodeSent'));
     }
     setIsSubmitting(false);
   };
@@ -267,7 +270,7 @@ export default function MFASettings({
     } else {
       setLocalPhoneVerified(true);
       setLocalPhoneLast4(phoneInput.slice(-4));
-      setLocalSuccess('Phone number verified');
+      setLocalSuccess(t('mFASettings.phoneNumberVerified'));
       setView('status');
       resetPhoneDigits();
       setPhoneInput('');
@@ -286,7 +289,7 @@ export default function MFASettings({
       setLocalError(result.error);
     } else {
       setSmsRecoveryCodes(result.recoveryCodes);
-      setLocalSuccess('SMS MFA enabled');
+      setLocalSuccess(t('mFASettings.sMSMFAEnabled'));
       setView('recovery');
       setShowCodes(true);
       setCurrentPassword('');
@@ -362,14 +365,13 @@ export default function MFASettings({
     return (
       <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
         <div className="space-y-1">
-          <h2 className="text-lg font-semibold">Verify your phone number</h2>
+          <h2 className="text-lg font-semibold">{t('mFASettings.verifyYourPhoneNumber')}</h2>
           <p className="text-sm text-muted-foreground">
-            Enter your phone number in E.164 format to receive a verification code.
-          </p>
+            {t('mFASettings.enterYourPhoneNumberInE164FormatToReceiveAVerificationCo')}</p>
         </div>
 
         <div className="space-y-2">
-          <label className="text-sm font-medium">Phone number</label>
+          <label className="text-sm font-medium">{t('mFASettings.phoneNumber')}</label>
           <input
             type="tel"
             value={phoneInput}
@@ -382,8 +384,7 @@ export default function MFASettings({
 
         <div className="space-y-2">
           <label className="text-sm font-medium" htmlFor="mfa-phone-password">
-            Current password
-          </label>
+            {t('mFASettings.currentPassword')}</label>
           <input
             id="mfa-phone-password"
             type="password"
@@ -402,17 +403,16 @@ export default function MFASettings({
             disabled={isLoading || !phoneInput || !currentPassword}
             className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {isLoading ? 'Sending...' : 'Send code'}
+            {isLoading ? t('mFASettings.sending') : t('mFASettings.sendCode')}
           </button>
         )}
 
         {phoneCodeSent && (
           <div className="space-y-2">
-            <label className="text-sm font-medium">Verification code</label>
+            <label className="text-sm font-medium">{t('mFASettings.verificationCode')}</label>
             {renderPhoneDigitInputs()}
             <p className="text-xs text-muted-foreground">
-              Enter the 6-digit code sent to your phone.
-            </p>
+              {t('mFASettings.enterThe6DigitCodeSentToYourPhone')}</p>
           </div>
         )}
 
@@ -433,8 +433,7 @@ export default function MFASettings({
             }}
             className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
           >
-            Cancel
-          </button>
+            {t('mFASettings.cancel')}</button>
           {phoneCodeSent && (
             <button
               type="button"
@@ -442,7 +441,7 @@ export default function MFASettings({
               disabled={isLoading || phoneCode.length !== DIGIT_COUNT || !currentPassword}
               className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {isLoading ? 'Verifying...' : 'Verify phone'}
+              {isLoading ? t('mFASettings.verifying') : t('mFASettings.verifyPhone')}
             </button>
           )}
         </div>
@@ -455,27 +454,24 @@ export default function MFASettings({
     return (
       <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
         <div className="space-y-1">
-          <h2 className="text-lg font-semibold">Enable SMS MFA</h2>
+          <h2 className="text-lg font-semibold">{t('mFASettings.enableSMSMFA')}</h2>
           <p className="text-sm text-muted-foreground">
-            Enable SMS-based multi-factor authentication for your account.
-          </p>
+            {t('mFASettings.enableSMSBasedMultiFactorAuthenticationForYourAccount')}</p>
         </div>
 
         <div className="rounded-md border bg-muted/30 p-4 text-sm">
           <p>
-            SMS codes will be sent to your verified phone number ending in{' '}
+            {t('mFASettings.sMSCodesWillBeSentToYourVerifiedPhoneNumberEndingIn')}{' '}
             <span className="font-mono font-medium">{localPhoneLast4 || phoneLast4 || '****'}</span>.
           </p>
         </div>
 
         <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-600">
-          SMS MFA is less secure than an authenticator app due to SIM swapping risks. We recommend TOTP when possible.
-        </div>
+          {t('mFASettings.sMSMFAIsLessSecureThanAnAuthenticatorAppDueToSIMSwapping')}</div>
 
         <div className="space-y-2">
           <label className="text-sm font-medium" htmlFor="mfa-sms-password">
-            Current password
-          </label>
+            {t('mFASettings.currentPassword')}</label>
           <input
             id="mfa-sms-password"
             type="password"
@@ -499,15 +495,14 @@ export default function MFASettings({
             }}
             className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
           >
-            Cancel
-          </button>
+            {t('mFASettings.cancel')}</button>
           <button
             type="button"
             onClick={handleEnableSms}
             disabled={isLoading || !currentPassword}
             className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {isLoading ? 'Enabling...' : 'Enable SMS MFA'}
+            {isLoading ? t('mFASettings.enabling') : t('mFASettings.enableSMSMFA')}
           </button>
         </div>
       </div>
@@ -519,31 +514,28 @@ export default function MFASettings({
     return (
       <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
         <div className="space-y-1">
-          <h2 className="text-lg font-semibold">Multi-factor authentication</h2>
+          <h2 className="text-lg font-semibold">{t('mFASettings.multiFactorAuthentication')}</h2>
           <p className="text-sm text-muted-foreground">
-            Add an extra layer of security to your account.
-          </p>
+            {t('mFASettings.addAnExtraLayerOfSecurityToYourAccount')}</p>
         </div>
 
         {/* Authenticator app row */}
         <div className="flex items-center justify-between rounded-md border bg-muted/30 p-4">
           <div className="space-y-1">
             <div className="flex items-center gap-2">
-              <span className="text-sm font-medium">Authenticator app</span>
+              <span className="text-sm font-medium">{t('mFASettings.authenticatorApp')}</span>
               {currentMethod === 'totp' ? (
                 <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-600">
-                  Enabled
-                </span>
+                  {t('mFASettings.enabled')}</span>
               ) : (
                 <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
-                  Disabled
-                </span>
+                  {t('mFASettings.disabled')}</span>
               )}
             </div>
             <p className="text-xs text-muted-foreground">
               {currentMethod === 'totp'
-                ? 'Your account is protected with an authenticator app.'
-                : 'Use an authenticator app to generate verification codes. (Recommended)'}
+                ? t('mFASettings.yourAccountIsProtectedWithAnAuthenticatorApp')
+                : t('mFASettings.useAnAuthenticatorAppToGenerateVerificationCodesRecommen')}
             </p>
           </div>
           {currentMethod === 'totp' ? (
@@ -557,8 +549,7 @@ export default function MFASettings({
               }}
               className="h-9 rounded-md border border-destructive/40 px-3 text-sm font-medium text-destructive transition hover:bg-destructive/10"
             >
-              Disable
-            </button>
+              {t('mFASettings.disable')}</button>
           ) : !enabled ? (
             <button
               type="button"
@@ -571,8 +562,7 @@ export default function MFASettings({
               disabled={isLoading}
               className="h-9 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              Enable
-            </button>
+              {t('mFASettings.enable')}</button>
           ) : null}
         </div>
 
@@ -581,26 +571,24 @@ export default function MFASettings({
           <div className="flex items-center justify-between rounded-md border bg-muted/30 p-4">
             <div className="space-y-1">
               <div className="flex items-center gap-2">
-                <span className="text-sm font-medium">SMS codes</span>
+                <span className="text-sm font-medium">{t('mFASettings.sMSCodes')}</span>
                 {currentMethod === 'sms' ? (
                   <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-600">
-                    Enabled
-                  </span>
+                    {t('mFASettings.enabled')}</span>
                 ) : (
                   <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
-                    Disabled
-                  </span>
+                    {t('mFASettings.disabled')}</span>
                 )}
                 {localPhoneVerified && localPhoneLast4 && currentMethod !== 'sms' && (
                   <span className="text-xs text-muted-foreground">
-                    (phone verified: ...{localPhoneLast4})
+                    {t('mFASettings.phoneVerified')}{localPhoneLast4})
                   </span>
                 )}
               </div>
               <p className="text-xs text-muted-foreground">
                 {currentMethod === 'sms'
-                  ? `SMS codes sent to phone ending in ${localPhoneLast4 || phoneLast4 || '****'}.`
-                  : 'Receive verification codes via SMS as a backup.'}
+                  ? t('mFASettings.smsSentToPhone', { last4: localPhoneLast4 || phoneLast4 || '****' })
+                  : t('mFASettings.receiveVerificationCodesViaSMSAsABackup')}
               </p>
             </div>
             {currentMethod === 'sms' ? (
@@ -614,8 +602,7 @@ export default function MFASettings({
                 }}
                 className="h-9 rounded-md border border-destructive/40 px-3 text-sm font-medium text-destructive transition hover:bg-destructive/10"
               >
-                Disable
-              </button>
+                {t('mFASettings.disable')}</button>
             ) : !enabled ? (
               <button
                 type="button"
@@ -633,7 +620,7 @@ export default function MFASettings({
                 disabled={isLoading}
                 className="h-9 rounded-md border px-3 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {localPhoneVerified ? 'Enable' : 'Verify phone'}
+                {localPhoneVerified ? t('mFASettings.enable') : t('mFASettings.verifyPhone')}
               </button>
             ) : null}
           </div>
@@ -642,10 +629,9 @@ export default function MFASettings({
         {enabled && (
           <div className="flex items-center justify-between rounded-md border bg-muted/30 p-4">
             <div className="space-y-1">
-              <span className="text-sm font-medium">Recovery codes</span>
+              <span className="text-sm font-medium">{t('mFASettings.recoveryCodes')}</span>
               <p className="text-xs text-muted-foreground">
-                Use these codes to access your account if you lose your authenticator.
-              </p>
+                {t('mFASettings.useTheseCodesToAccessYourAccountIfYouLoseYourAuthenticat')}</p>
             </div>
             <button
               type="button"
@@ -657,8 +643,7 @@ export default function MFASettings({
               }}
               className="h-9 rounded-md border px-3 text-sm font-medium text-muted-foreground transition hover:text-foreground"
             >
-              View codes
-            </button>
+              {t('mFASettings.viewCodes')}</button>
           </div>
         )}
 
@@ -675,16 +660,14 @@ export default function MFASettings({
     return (
       <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
         <div className="space-y-1">
-          <h2 className="text-lg font-semibold">Confirm your password</h2>
+          <h2 className="text-lg font-semibold">{t('mFASettings.confirmYourPassword')}</h2>
           <p className="text-sm text-muted-foreground">
-            Re-enter your account password to start setting up an authenticator app.
-          </p>
+            {t('mFASettings.reEnterYourAccountPasswordToStartSettingUpAnAuthenticato')}</p>
         </div>
 
         <div className="space-y-2">
           <label className="text-sm font-medium" htmlFor="mfa-confirm-password">
-            Current password
-          </label>
+            {t('mFASettings.currentPassword')}</label>
           <input
             id="mfa-confirm-password"
             type="password"
@@ -714,15 +697,14 @@ export default function MFASettings({
             }}
             className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
           >
-            Cancel
-          </button>
+            {t('mFASettings.cancel')}</button>
           <button
             type="button"
             onClick={handleConfirmPasswordSetup}
             disabled={isLoading || isSubmitting || !currentPassword}
             className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {isLoading ? 'Verifying...' : 'Continue'}
+            {isLoading ? t('mFASettings.verifying') : t('mFASettings.continue')}
           </button>
         </div>
       </div>
@@ -734,31 +716,28 @@ export default function MFASettings({
     return (
       <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
         <div className="space-y-3">
-          <h2 className="text-lg font-semibold">Set up authenticator</h2>
+          <h2 className="text-lg font-semibold">{t('mFASettings.setUpAuthenticator')}</h2>
           <p className="text-sm text-muted-foreground">
-            Scan this QR code with your authenticator app, then enter the 6-digit code.
-          </p>
+            {t('mFASettings.scanThisQRCodeWithYourAuthenticatorAppThenEnterThe6Digit')}</p>
           <div className="flex items-center justify-center rounded-md border bg-muted p-4">
             {qrCodeDataUrl ? (
               <img
                 src={qrCodeDataUrl}
-                alt="Authenticator QR code"
+                alt={t('mFASettings.authenticatorQRCode')}
                 className="h-48 w-48"
               />
             ) : (
               <div className="flex h-48 w-48 items-center justify-center text-sm text-muted-foreground">
-                QR code unavailable
-              </div>
+                {t('mFASettings.qRCodeUnavailable')}</div>
             )}
           </div>
         </div>
 
         <div className="space-y-2">
-          <label className="text-sm font-medium">Verification code</label>
+          <label className="text-sm font-medium">{t('mFASettings.verificationCode')}</label>
           {renderDigitInputs()}
           <p className="text-xs text-muted-foreground">
-            Enter the 6-digit code generated by your authenticator app.
-          </p>
+            {t('mFASettings.enterThe6DigitCodeGeneratedByYourAuthenticatorApp')}</p>
         </div>
 
         {renderError()}
@@ -772,15 +751,14 @@ export default function MFASettings({
             }}
             className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
           >
-            Cancel
-          </button>
+            {t('mFASettings.cancel')}</button>
           <button
             type="button"
             onClick={handleEnableSubmit}
             disabled={isLoading || code.length !== DIGIT_COUNT}
             className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {isLoading ? 'Verifying...' : 'Verify and enable'}
+            {isLoading ? t('mFASettings.verifying') : t('mFASettings.verifyAndEnable')}
           </button>
         </div>
       </div>
@@ -792,28 +770,27 @@ export default function MFASettings({
     return (
       <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
         <div className="space-y-1">
-          <h2 className="text-lg font-semibold">Disable MFA</h2>
+          <h2 className="text-lg font-semibold">{t('mFASettings.disableMFA')}</h2>
           <p className="text-sm text-muted-foreground">
             {currentMethod === 'sms'
-              ? 'Enter a verification code sent to your phone to disable MFA.'
-              : 'Enter a verification code to disable multi-factor authentication.'}
+              ? t('mFASettings.enterAVerificationCodeSentToYourPhoneToDisableMFA')
+              : t('mFASettings.enterAVerificationCodeToDisableMultiFactorAuthentication')}
           </p>
         </div>
 
         <div className="space-y-2">
-          <label className="text-sm font-medium">Verification code</label>
+          <label className="text-sm font-medium">{t('mFASettings.verificationCode')}</label>
           {renderDigitInputs()}
           <p className="text-xs text-muted-foreground">
             {currentMethod === 'sms'
-              ? 'Enter the 6-digit code sent to your phone.'
-              : 'Enter the 6-digit code from your authenticator app.'}
+              ? t('mFASettings.enterThe6DigitCodeSentToYourPhone')
+              : t('mFASettings.enterThe6DigitCodeFromYourAuthenticatorApp')}
           </p>
         </div>
 
         <div className="space-y-2">
           <label className="text-sm font-medium" htmlFor="mfa-disable-password">
-            Current password
-          </label>
+            {t('mFASettings.currentPassword')}</label>
           <input
             id="mfa-disable-password"
             type="password"
@@ -824,8 +801,7 @@ export default function MFASettings({
             disabled={isLoading}
           />
           <p className="text-xs text-muted-foreground">
-            Re-enter your account password to confirm this change.
-          </p>
+            {t('mFASettings.reEnterYourAccountPasswordToConfirmThisChange')}</p>
         </div>
 
         {renderError()}
@@ -840,15 +816,14 @@ export default function MFASettings({
             }}
             className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
           >
-            Cancel
-          </button>
+            {t('mFASettings.cancel')}</button>
           <button
             type="button"
             onClick={handleDisableSubmit}
             disabled={isLoading || code.length !== DIGIT_COUNT || !disablePassword}
             className="inline-flex h-10 items-center justify-center rounded-md border border-destructive/40 bg-destructive/10 px-4 text-sm font-medium text-destructive transition hover:bg-destructive/20 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {isLoading ? 'Disabling...' : 'Disable MFA'}
+            {isLoading ? t('mFASettings.disabling') : t('mFASettings.disableMFA')}
           </button>
         </div>
       </div>
@@ -861,11 +836,9 @@ export default function MFASettings({
     return (
       <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
         <div className="space-y-1">
-          <h2 className="text-lg font-semibold">Recovery codes</h2>
+          <h2 className="text-lg font-semibold">{t('mFASettings.recoveryCodes')}</h2>
           <p className="text-sm text-muted-foreground">
-            Save these codes in a safe place. You can use them to access your account if you lose
-            your authenticator device.
-          </p>
+            {t('mFASettings.saveTheseCodesInASafePlaceYouCanUseThemToAccessYourAccou')}</p>
         </div>
 
         {showCodes && displayCodes?.length ? (
@@ -891,24 +864,19 @@ export default function MFASettings({
                 <path d="M7 3.5A1.5 1.5 0 018.5 2h3.879a1.5 1.5 0 011.06.44l3.122 3.12A1.5 1.5 0 0117 6.622V12.5a1.5 1.5 0 01-1.5 1.5h-1v-3.379a3 3 0 00-.879-2.121L10.5 5.379A3 3 0 008.379 4.5H7v-1z" />
                 <path d="M4.5 6A1.5 1.5 0 003 7.5v9A1.5 1.5 0 004.5 18h7a1.5 1.5 0 001.5-1.5v-5.879a1.5 1.5 0 00-.44-1.06L9.44 6.439A1.5 1.5 0 008.378 6H4.5z" />
               </svg>
-              Copy codes
-            </button>
+              {t('mFASettings.copyCodes')}</button>
           </div>
         ) : (
           <div className="rounded-md border bg-muted/30 p-4 text-center text-sm text-muted-foreground">
-            Click the button below to view or generate new recovery codes.
-          </div>
+            {t('mFASettings.clickTheButtonBelowToViewOrGenerateNewRecoveryCodes')}</div>
         )}
 
         <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-600">
-          Each code can only be used once. Generating new codes will invalidate any previously
-          generated codes.
-        </div>
+          {t('mFASettings.eachCodeCanOnlyBeUsedOnceGeneratingNewCodesWillInvalidat')}</div>
 
         <div className="space-y-2">
           <label className="text-sm font-medium" htmlFor="mfa-recovery-password">
-            Current password
-          </label>
+            {t('mFASettings.currentPassword')}</label>
           <input
             id="mfa-recovery-password"
             type="password"
@@ -932,8 +900,7 @@ export default function MFASettings({
             }}
             className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
           >
-            Back
-          </button>
+            {t('mFASettings.back')}</button>
           <button
             type="button"
             onClick={handleRegenerateCodes}
@@ -941,10 +908,10 @@ export default function MFASettings({
             className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {isLoading
-              ? 'Generating...'
+              ? t('mFASettings.generating')
               : showCodes
-                ? 'Regenerate codes'
-                : 'Show recovery codes'}
+                ? t('mFASettings.regenerateCodes')
+                : t('mFASettings.showRecoveryCodes')}
           </button>
         </div>
       </div>

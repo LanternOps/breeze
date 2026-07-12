@@ -1,5 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useForm, useFieldArray, Controller } from 'react-hook-form';
+import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import {
@@ -21,70 +23,74 @@ import type { TriggerType } from './AutomationList';
 import type { DeploymentTargetConfig } from '@breeze/shared';
 import { DeviceTargetSelector } from '../filters/DeviceTargetSelector';
 
+type ScriptsT = TFunction<'scripts'>;
+
 // Cron expression helper
-function describeCron(cron: string): string {
+function describeCron(cron: string, t: ScriptsT): string {
   const parts = cron.trim().split(/\s+/);
-  if (parts.length !== 5) return 'Invalid cron expression';
+  if (parts.length !== 5) return t('automationForm.cron.invalid');
 
   const [minute, hour, dayOfMonth, month, dayOfWeek] = parts;
 
   // Common patterns
-  if (cron === '0 * * * *') return 'Every hour at minute 0';
-  if (cron === '*/5 * * * *') return 'Every 5 minutes';
-  if (cron === '*/15 * * * *') return 'Every 15 minutes';
-  if (cron === '*/30 * * * *') return 'Every 30 minutes';
-  if (cron === '0 0 * * *') return 'Every day at midnight';
-  if (cron === '0 9 * * *') return 'Every day at 9:00 AM';
-  if (cron === '0 9 * * 1-5') return 'Weekdays at 9:00 AM';
-  if (cron === '0 0 * * 0') return 'Every Sunday at midnight';
-  if (cron === '0 0 1 * *') return 'First day of every month at midnight';
+  if (cron === '0 * * * *') return t('automationForm.cron.everyHourAtMinuteZero');
+  if (cron === '*/5 * * * *') return t('automationForm.cron.everyFiveMinutes');
+  if (cron === '*/15 * * * *') return t('automationForm.cron.everyFifteenMinutes');
+  if (cron === '*/30 * * * *') return t('automationForm.cron.everyThirtyMinutes');
+  if (cron === '0 0 * * *') return t('automationForm.cron.everyDayAtMidnight');
+  if (cron === '0 9 * * *') return t('automationForm.cron.everyDayAtNine');
+  if (cron === '0 9 * * 1-5') return t('automationForm.cron.weekdaysAtNine');
+  if (cron === '0 0 * * 0') return t('automationForm.cron.everySundayAtMidnight');
+  if (cron === '0 0 1 * *') return t('automationForm.cron.firstDayEveryMonth');
 
   // Simple descriptions
-  if (minute === '*' && hour === '*') return 'Every minute';
-  if (minute?.startsWith('*/') && hour === '*') return `Every ${minute.slice(2)} minutes`;
-  if (hour === '*' && minute !== '*') return `Every hour at minute ${minute}`;
+  if (minute === '*' && hour === '*') return t('automationForm.cron.everyMinute');
+  if (minute?.startsWith('*/') && hour === '*') return t('automationForm.cron.everyNMinutes', { count: Number(minute.slice(2)) });
+  if (hour === '*' && minute !== '*') return t('automationForm.cron.everyHourAtMinute', { minute });
 
   return `${minute} ${hour} ${dayOfMonth} ${month} ${dayOfWeek}`;
 }
 
-const conditionSchema = z.object({
-  type: z.enum(['site', 'group', 'os', 'tag']),
-  operator: z.enum(['is', 'is_not', 'contains', 'not_contains']),
-  value: z.string().min(1, 'Value is required')
-});
+const createAutomationSchema = (t: ScriptsT) => {
+  const conditionSchema = z.object({
+    type: z.enum(['site', 'group', 'os', 'tag']),
+    operator: z.enum(['is', 'is_not', 'contains', 'not_contains']),
+    value: z.string().min(1, t('automationForm.validation.valueRequired'))
+  });
 
-const actionSchema = z.object({
-  type: z.enum(['run_script', 'send_notification', 'create_alert', 'execute_command', 'deploy_software']),
-  scriptId: z.string().optional(),
-  notificationChannelId: z.string().optional(),
-  alertSeverity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
-  alertMessage: z.string().optional(),
-  command: z.string().optional(),
-  catalogId: z.string().optional()
-});
+  const actionSchema = z.object({
+    type: z.enum(['run_script', 'send_notification', 'create_alert', 'execute_command', 'deploy_software']),
+    scriptId: z.string().optional(),
+    notificationChannelId: z.string().optional(),
+    alertSeverity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
+    alertMessage: z.string().optional(),
+    command: z.string().optional(),
+    catalogId: z.string().optional()
+  });
 
-const automationSchema = z.object({
-  name: z.string().min(1, 'Automation name is required'),
-  // Ownership axis (#2133, mirrors software/PolicyForm): 'partner' =
-  // partner-wide / all-orgs automation. Only surfaced on create for
-  // partner-scope users (showOwnerScope); the server derives the partner
-  // from the caller's own token.
-  ownerScope: z.enum(['organization', 'partner']).optional(),
-  description: z.string().optional(),
-  triggerType: z.enum(['schedule', 'event', 'webhook', 'manual']),
-  cronExpression: z.string().optional(),
-  eventType: z.string().optional(),
-  webhookSecret: z.string().optional(),
-  conditions: z.array(conditionSchema).optional(),
-  targetConfig: z.custom<DeploymentTargetConfig>().optional(),
-  actions: z.array(actionSchema).min(1, 'At least one action is required'),
-  onFailure: z.enum(['stop', 'continue', 'notify']),
-  notifyOnFailureChannelId: z.string().optional()
-});
+  return z.object({
+    name: z.string().min(1, t('automationForm.validation.nameRequired')),
+    // Ownership axis (#2133, mirrors software/PolicyForm): 'partner' =
+    // partner-wide / all-orgs automation. Only surfaced on create for
+    // partner-scope users (showOwnerScope); the server derives the partner
+    // from the caller's own token.
+    ownerScope: z.enum(['organization', 'partner']).optional(),
+    description: z.string().optional(),
+    triggerType: z.enum(['schedule', 'event', 'webhook', 'manual']),
+    cronExpression: z.string().optional(),
+    eventType: z.string().optional(),
+    webhookSecret: z.string().optional(),
+    conditions: z.array(conditionSchema).optional(),
+    targetConfig: z.custom<DeploymentTargetConfig>().optional(),
+    actions: z.array(actionSchema).min(1, t('automationForm.validation.actionRequired')),
+    onFailure: z.enum(['stop', 'continue', 'notify']),
+    notifyOnFailureChannelId: z.string().optional()
+  });
+};
 
-export type AutomationFormValues = z.infer<typeof automationSchema>;
-export type ConditionFormValues = z.infer<typeof conditionSchema>;
-export type ActionFormValues = z.infer<typeof actionSchema>;
+export type AutomationFormValues = z.infer<ReturnType<typeof createAutomationSchema>>;
+export type ConditionFormValues = NonNullable<AutomationFormValues['conditions']>[number];
+export type ActionFormValues = AutomationFormValues['actions'][number];
 
 type Site = { id: string; name: string };
 type Group = { id: string; name: string };
@@ -108,83 +114,83 @@ type AutomationFormProps = {
   showOwnerScope?: boolean;
 };
 
-const triggerTypeOptions: { value: TriggerType; label: string; description: string; icon: typeof Clock }[] = [
+const getTriggerTypeOptions = (t: ScriptsT): { value: TriggerType; label: string; description: string; icon: typeof Clock }[] => [
   {
     value: 'schedule',
-    label: 'Schedule',
-    description: 'Run on a cron schedule',
+    label: t('automationForm.triggerTypes.schedule.label'),
+    description: t('automationForm.triggerTypes.schedule.description'),
     icon: Clock
   },
   {
     value: 'event',
-    label: 'Event',
-    description: 'Run when an event occurs',
+    label: t('automationForm.triggerTypes.event.label'),
+    description: t('automationForm.triggerTypes.event.description'),
     icon: Zap
   },
   {
     value: 'webhook',
-    label: 'Webhook',
-    description: 'Run via HTTP webhook',
+    label: t('automationForm.triggerTypes.webhook.label'),
+    description: t('automationForm.triggerTypes.webhook.description'),
     icon: Webhook
   },
   {
     value: 'manual',
-    label: 'Manual',
-    description: 'Run manually only',
+    label: t('automationForm.triggerTypes.manual.label'),
+    description: t('automationForm.triggerTypes.manual.description'),
     icon: Hand
   }
 ];
 
-const eventTypeOptions = [
-  { value: 'device.online', label: 'Device Online' },
-  { value: 'device.offline', label: 'Device Offline' },
-  { value: 'alert.triggered', label: 'Alert Triggered' },
-  { value: 'alert.resolved', label: 'Alert Resolved' },
-  { value: 'script.completed', label: 'Script Completed' },
-  { value: 'script.failed', label: 'Script Failed' },
-  { value: 'policy.violation', label: 'Policy Violation' },
-  { value: 'huntress.incident_created', label: 'Huntress Incident Created' },
-  { value: 'huntress.incident_updated', label: 'Huntress Incident Updated' },
-  { value: 'huntress.agent_offline', label: 'Huntress Agent Offline' },
-  { value: 's1.threat_detected', label: 'SentinelOne Threat Detected' },
-  { value: 's1.device_isolated', label: 'SentinelOne Device Isolated' },
-  { value: 's1.threat_action_completed', label: 'SentinelOne Threat Action Completed' }
+const getEventTypeOptions = (t: ScriptsT) => [
+  { value: 'device.online', label: t('automationForm.eventTypes.deviceOnline') },
+  { value: 'device.offline', label: t('automationForm.eventTypes.deviceOffline') },
+  { value: 'alert.triggered', label: t('automationForm.eventTypes.alertTriggered') },
+  { value: 'alert.resolved', label: t('automationForm.eventTypes.alertResolved') },
+  { value: 'script.completed', label: t('automationForm.eventTypes.scriptCompleted') },
+  { value: 'script.failed', label: t('automationForm.eventTypes.scriptFailed') },
+  { value: 'policy.violation', label: t('automationForm.eventTypes.policyViolation') },
+  { value: 'huntress.incident_created', label: t('automationForm.eventTypes.huntressIncidentCreated') },
+  { value: 'huntress.incident_updated', label: t('automationForm.eventTypes.huntressIncidentUpdated') },
+  { value: 'huntress.agent_offline', label: t('automationForm.eventTypes.huntressAgentOffline') },
+  { value: 's1.threat_detected', label: t('automationForm.eventTypes.sentinelOneThreatDetected') },
+  { value: 's1.device_isolated', label: t('automationForm.eventTypes.sentinelOneDeviceIsolated') },
+  { value: 's1.threat_action_completed', label: t('automationForm.eventTypes.sentinelOneThreatActionCompleted') }
 ];
 
-const conditionTypeOptions = [
-  { value: 'site', label: 'Site' },
-  { value: 'group', label: 'Group' },
-  { value: 'os', label: 'Operating System' },
-  { value: 'tag', label: 'Tag' }
+const getConditionTypeOptions = (t: ScriptsT) => [
+  { value: 'site', label: t('common:labels.site') },
+  { value: 'group', label: t('automationForm.conditionTypes.group') },
+  { value: 'os', label: t('automationForm.conditionTypes.operatingSystem') },
+  { value: 'tag', label: t('automationForm.conditionTypes.tag') }
 ];
 
-const operatorOptions = [
-  { value: 'is', label: 'Is' },
-  { value: 'is_not', label: 'Is not' },
-  { value: 'contains', label: 'Contains' },
-  { value: 'not_contains', label: 'Does not contain' }
+const getOperatorOptions = (t: ScriptsT) => [
+  { value: 'is', label: t('automationForm.operators.is') },
+  { value: 'is_not', label: t('automationForm.operators.isNot') },
+  { value: 'contains', label: t('automationForm.operators.contains') },
+  { value: 'not_contains', label: t('automationForm.operators.doesNotContain') }
 ];
 
-const actionTypeOptions = [
-  { value: 'run_script', label: 'Run Script' },
-  { value: 'send_notification', label: 'Send Notification' },
-  { value: 'create_alert', label: 'Create Alert' },
-  { value: 'execute_command', label: 'Execute Command' },
-  { value: 'deploy_software', label: 'Deploy Software' }
+const getActionTypeOptions = (t: ScriptsT) => [
+  { value: 'run_script', label: t('automationForm.actionTypes.runScript') },
+  { value: 'send_notification', label: t('automationForm.actionTypes.sendNotification') },
+  { value: 'create_alert', label: t('automationForm.actionTypes.createAlert') },
+  { value: 'execute_command', label: t('automationForm.actionTypes.executeCommand') },
+  { value: 'deploy_software', label: t('automationForm.actionTypes.deploySoftware') }
 ];
 
-const severityOptions = [
-  { value: 'critical', label: 'Critical' },
-  { value: 'high', label: 'High' },
-  { value: 'medium', label: 'Medium' },
-  { value: 'low', label: 'Low' },
-  { value: 'info', label: 'Info' }
+const getSeverityOptions = (t: ScriptsT) => [
+  { value: 'critical', label: t('automationForm.severity.critical') },
+  { value: 'high', label: t('automationForm.severity.high') },
+  { value: 'medium', label: t('automationForm.severity.medium') },
+  { value: 'low', label: t('automationForm.severity.low') },
+  { value: 'info', label: t('automationForm.severity.info') }
 ];
 
-const onFailureOptions = [
-  { value: 'stop', label: 'Stop Execution', description: 'Stop all remaining actions' },
-  { value: 'continue', label: 'Continue', description: 'Continue with remaining actions' },
-  { value: 'notify', label: 'Notify & Continue', description: 'Send notification and continue' }
+const getOnFailureOptions = (t: ScriptsT) => [
+  { value: 'stop', label: t('automationForm.failure.stop.label'), description: t('automationForm.failure.stop.description') },
+  { value: 'continue', label: t('automationForm.failure.continue.label'), description: t('automationForm.failure.continue.description') },
+  { value: 'notify', label: t('automationForm.failure.notify.label'), description: t('automationForm.failure.notify.description') }
 ];
 
 export default function AutomationForm({
@@ -192,7 +198,7 @@ export default function AutomationForm({
   onCancel,
   defaultValues,
   webhookUrl,
-  submitLabel = 'Save automation',
+  submitLabel,
   loading,
   sites = [],
   groups = [],
@@ -201,6 +207,7 @@ export default function AutomationForm({
   softwareCatalog = [],
   showOwnerScope = false
 }: AutomationFormProps) {
+  const { t } = useTranslation('scripts');
   const [conditionsExpanded, setConditionsExpanded] = useState(true);
   const [conditionMode, setConditionMode] = useState<'simple' | 'advanced'>(
     defaultValues?.targetConfig ? 'advanced' : 'simple'
@@ -208,6 +215,16 @@ export default function AutomationForm({
   const [automationTargetConfig, setAutomationTargetConfig] = useState<DeploymentTargetConfig>(
     defaultValues?.targetConfig ?? { type: 'all' }
   );
+
+  const automationSchema = useMemo(() => createAutomationSchema(t), [t]);
+  const triggerTypeOptions = useMemo(() => getTriggerTypeOptions(t), [t]);
+  const eventTypeOptions = useMemo(() => getEventTypeOptions(t), [t]);
+  const conditionTypeOptions = useMemo(() => getConditionTypeOptions(t), [t]);
+  const operatorOptions = useMemo(() => getOperatorOptions(t), [t]);
+  const actionTypeOptions = useMemo(() => getActionTypeOptions(t), [t]);
+  const severityOptions = useMemo(() => getSeverityOptions(t), [t]);
+  const onFailureOptions = useMemo(() => getOnFailureOptions(t), [t]);
+  const resolvedSubmitLabel = submitLabel ?? t('automationForm.actions.saveAutomation');
 
   const {
     register,
@@ -259,8 +276,8 @@ export default function AutomationForm({
 
   const cronDescription = useMemo(() => {
     if (!watchCronExpression) return '';
-    return describeCron(watchCronExpression);
-  }, [watchCronExpression]);
+    return describeCron(watchCronExpression, t);
+  }, [t, watchCronExpression]);
 
   const copyWebhookUrl = () => {
     if (webhookUrl) {
@@ -282,7 +299,9 @@ export default function AutomationForm({
       {/* Ownership scope — partner-scope creators only (#2133) */}
       {showOwnerScope && (
         <fieldset className="space-y-2 rounded-md border p-4" data-testid="automation-owner">
-          <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">Scope</legend>
+          <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
+            {t('automationForm.scope.title')}
+          </legend>
           <label className="flex items-center gap-2 text-sm">
             <input
               type="radio"
@@ -290,7 +309,8 @@ export default function AutomationForm({
               {...register('ownerScope')}
               data-testid="automation-owner-partner"
             />
-            All organizations <span className="text-muted-foreground">(partner-wide automation)</span>
+            {t('automationForm.scope.allOrganizations')}{' '}
+            <span className="text-muted-foreground">{t('automationForm.scope.partnerWide')}</span>
           </label>
           <label className="flex items-center gap-2 text-sm">
             <input
@@ -299,7 +319,7 @@ export default function AutomationForm({
               {...register('ownerScope')}
               data-testid="automation-owner-org"
             />
-            This organization only
+            {t('automationForm.scope.organizationOnly')}
           </label>
         </fieldset>
       )}
@@ -308,11 +328,11 @@ export default function AutomationForm({
       <div className="grid gap-6 md:grid-cols-2">
         <div className="space-y-2">
           <label htmlFor="automation-name" className="text-sm font-medium">
-            Automation name
+            {t('automationForm.fields.name')}
           </label>
           <input
             id="automation-name"
-            placeholder="Daily maintenance check"
+            placeholder={t('automationForm.placeholders.name')}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('name')}
           />
@@ -321,11 +341,11 @@ export default function AutomationForm({
 
         <div className="space-y-2 md:col-span-2">
           <label htmlFor="automation-description" className="text-sm font-medium">
-            Description
+            {t('common:labels.description')}
           </label>
           <textarea
             id="automation-description"
-            placeholder="Describe what this automation does..."
+            placeholder={t('automationForm.placeholders.description')}
             rows={2}
             className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring resize-none"
             {...register('description')}
@@ -335,7 +355,7 @@ export default function AutomationForm({
 
       {/* Trigger Builder */}
       <div className="rounded-md border bg-muted/20 p-4">
-        <h3 className="text-sm font-semibold mb-4">Trigger</h3>
+        <h3 className="text-sm font-semibold mb-4">{t('automationForm.sections.trigger')}</h3>
         <div className="space-y-4">
           <Controller
             name="triggerType"
@@ -373,7 +393,7 @@ export default function AutomationForm({
             <div className="mt-4 space-y-3 rounded-md border bg-background p-4">
               <div className="space-y-2">
                 <label htmlFor="cron-expression" className="text-sm font-medium">
-                  Cron Expression
+                  {t('automationForm.fields.cronExpression')}
                 </label>
                 <input
                   id="cron-expression"
@@ -386,41 +406,41 @@ export default function AutomationForm({
                 )}
               </div>
               <div className="flex flex-wrap gap-2">
-                <span className="text-xs text-muted-foreground">Quick presets:</span>
+                <span className="text-xs text-muted-foreground">{t('automationForm.cron.quickPresets')}</span>
                 <button
                   type="button"
                   onClick={() => setValue('cronExpression', '*/15 * * * *')}
                   className="rounded border px-2 py-0.5 text-xs hover:bg-muted"
                 >
-                  Every 15 min
+                  {t('automationForm.cron.presets.everyFifteenMin')}
                 </button>
                 <button
                   type="button"
                   onClick={() => setValue('cronExpression', '0 * * * *')}
                   className="rounded border px-2 py-0.5 text-xs hover:bg-muted"
                 >
-                  Every hour
+                  {t('automationForm.cron.presets.everyHour')}
                 </button>
                 <button
                   type="button"
                   onClick={() => setValue('cronExpression', '0 9 * * *')}
                   className="rounded border px-2 py-0.5 text-xs hover:bg-muted"
                 >
-                  Daily 9 AM
+                  {t('automationForm.cron.presets.dailyNine')}
                 </button>
                 <button
                   type="button"
                   onClick={() => setValue('cronExpression', '0 9 * * 1-5')}
                   className="rounded border px-2 py-0.5 text-xs hover:bg-muted"
                 >
-                  Weekdays 9 AM
+                  {t('automationForm.cron.presets.weekdaysNine')}
                 </button>
                 <button
                   type="button"
                   onClick={() => setValue('cronExpression', '0 0 * * 0')}
                   className="rounded border px-2 py-0.5 text-xs hover:bg-muted"
                 >
-                  Weekly Sunday
+                  {t('automationForm.cron.presets.weeklySunday')}
                 </button>
               </div>
             </div>
@@ -430,7 +450,7 @@ export default function AutomationForm({
           {watchTriggerType === 'event' && (
             <div className="mt-4 space-y-2 rounded-md border bg-background p-4">
               <label htmlFor="event-type" className="text-sm font-medium">
-                Event Type
+                {t('automationForm.fields.eventType')}
               </label>
               <select
                 id="event-type"
@@ -449,7 +469,7 @@ export default function AutomationForm({
           {/* Webhook Config */}
           {watchTriggerType === 'webhook' && (
             <div className="mt-4 space-y-2 rounded-md border bg-background p-4">
-              <label className="text-sm font-medium">Webhook URL</label>
+              <label className="text-sm font-medium">{t('automationForm.fields.webhookUrl')}</label>
               {webhookUrl ? (
                 <div className="flex items-center gap-2">
                   <input
@@ -462,31 +482,31 @@ export default function AutomationForm({
                     type="button"
                     onClick={copyWebhookUrl}
                     className="flex h-10 w-10 items-center justify-center rounded-md border hover:bg-muted"
-                    title="Copy URL"
+                    title={t('automationForm.actions.copyUrl')}
                   >
                     <Copy className="h-4 w-4" />
                   </button>
                 </div>
               ) : (
                 <p className="text-sm text-muted-foreground">
-                  A webhook URL will be generated after saving.
+                  {t('automationForm.webhook.generatedAfterSaving')}
                 </p>
               )}
               <div className="space-y-2 pt-1">
                 <label htmlFor="webhook-secret" className="text-sm font-medium">
-                  Webhook Secret (optional)
+                  {t('automationForm.fields.webhookSecret')}
                 </label>
                 <input
                   id="webhook-secret"
                   type="text"
-                  placeholder="Leave blank to auto-generate"
+                  placeholder={t('automationForm.placeholders.webhookSecret')}
                   className="h-10 w-full rounded-md border bg-background px-3 text-sm font-mono focus:outline-hidden focus:ring-2 focus:ring-ring"
                   {...register('webhookSecret')}
                 />
               </div>
               <p className="flex items-center gap-1 text-xs text-muted-foreground">
                 <HelpCircle className="h-3 w-3" />
-                Send a POST request to this URL to trigger the automation
+                {t('automationForm.webhook.postHint')}
               </p>
             </div>
           )}
@@ -495,7 +515,7 @@ export default function AutomationForm({
           {watchTriggerType === 'manual' && (
             <div className="mt-4 rounded-md border bg-background p-4">
               <p className="text-sm text-muted-foreground">
-                This automation will only run when triggered manually from the UI or API.
+                {t('automationForm.manual.hint')}
               </p>
             </div>
           )}
@@ -510,8 +530,8 @@ export default function AutomationForm({
           className="flex w-full items-center justify-between"
         >
           <div>
-            <h3 className="text-sm font-semibold">Device Targeting (Optional)</h3>
-            <p className="text-xs text-muted-foreground">Filter which devices this automation applies to</p>
+            <h3 className="text-sm font-semibold">{t('automationForm.sections.deviceTargeting')}</h3>
+            <p className="text-xs text-muted-foreground">{t('automationForm.sections.deviceTargetingDescription')}</p>
           </div>
           {conditionsExpanded ? (
             <ChevronUp className="h-5 w-5 text-muted-foreground" />
@@ -523,7 +543,7 @@ export default function AutomationForm({
         {conditionsExpanded && (
           <div className="mt-4 space-y-4">
             <div className="flex items-center gap-2 mb-3">
-              <span className="text-xs font-medium text-muted-foreground">Mode:</span>
+              <span className="text-xs font-medium text-muted-foreground">{t('automationForm.fields.mode')}</span>
               <div className="flex rounded-md border">
                 <button
                   type="button"
@@ -533,7 +553,7 @@ export default function AutomationForm({
                     conditionMode === 'simple' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
                   )}
                 >
-                  Simple
+                  {t('automationForm.modes.simple')}
                 </button>
                 <button
                   type="button"
@@ -544,7 +564,7 @@ export default function AutomationForm({
                   )}
                 >
                   <Filter className="h-3 w-3 inline mr-1" />
-                  Advanced
+                  {t('automationForm.modes.advanced')}
                 </button>
               </div>
             </div>
@@ -575,7 +595,7 @@ export default function AutomationForm({
                       ))}
                     </select>
                     <input
-                      placeholder="Value"
+                      placeholder={t('automationForm.placeholders.value')}
                       className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                       {...register(`conditions.${index}.value`)}
                     />
@@ -595,7 +615,7 @@ export default function AutomationForm({
                   className="inline-flex items-center gap-1 rounded-md border border-dashed px-3 py-2 text-sm text-muted-foreground hover:bg-muted"
                 >
                   <Plus className="h-4 w-4" />
-                  Add Condition
+                  {t('automationForm.actions.addCondition')}
                 </button>
               </div>
             ) : (
@@ -614,8 +634,8 @@ export default function AutomationForm({
       <div className="space-y-4">
         <div className="flex items-center justify-between">
           <div>
-            <h3 className="text-sm font-semibold">Actions</h3>
-            <p className="text-xs text-muted-foreground">Define what happens when this automation runs</p>
+            <h3 className="text-sm font-semibold">{t('automationForm.sections.actions')}</h3>
+            <p className="text-xs text-muted-foreground">{t('automationForm.sections.actionsDescription')}</p>
           </div>
           <button
             type="button"
@@ -623,7 +643,7 @@ export default function AutomationForm({
             className="inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted"
           >
             <Plus className="h-4 w-4" />
-            Add Action
+            {t('automationForm.actions.addAction')}
           </button>
         </div>
 
@@ -655,12 +675,12 @@ export default function AutomationForm({
 
                     {watchActions?.[index]?.type === 'run_script' && (
                       <div className="space-y-2">
-                        <label className="text-xs font-medium text-muted-foreground">Script</label>
+                        <label className="text-xs font-medium text-muted-foreground">{t('automationForm.fields.script')}</label>
                         <select
                           className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                           {...register(`actions.${index}.scriptId`)}
                         >
-                          <option value="">Select a script...</option>
+                          <option value="">{t('automationForm.placeholders.selectScript')}</option>
                           {scripts.map(script => (
                             <option key={script.id} value={script.id}>
                               {script.name}
@@ -673,13 +693,13 @@ export default function AutomationForm({
                     {watchActions?.[index]?.type === 'send_notification' && (
                       <div className="space-y-2">
                         <label className="text-xs font-medium text-muted-foreground">
-                          Notification Channel
+                          {t('automationForm.fields.notificationChannel')}
                         </label>
                         <select
                           className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                           {...register(`actions.${index}.notificationChannelId`)}
                         >
-                          <option value="">Select a channel...</option>
+                          <option value="">{t('automationForm.placeholders.selectChannel')}</option>
                           {notificationChannels.map(channel => (
                             <option key={channel.id} value={channel.id}>
                               {channel.name} ({channel.type})
@@ -692,7 +712,7 @@ export default function AutomationForm({
                     {watchActions?.[index]?.type === 'create_alert' && (
                       <div className="grid gap-3 sm:grid-cols-2">
                         <div className="space-y-2">
-                          <label className="text-xs font-medium text-muted-foreground">Severity</label>
+                          <label className="text-xs font-medium text-muted-foreground">{t('automationForm.fields.severity')}</label>
                           <select
                             className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                             {...register(`actions.${index}.alertSeverity`)}
@@ -705,9 +725,9 @@ export default function AutomationForm({
                           </select>
                         </div>
                         <div className="space-y-2">
-                          <label className="text-xs font-medium text-muted-foreground">Message</label>
+                          <label className="text-xs font-medium text-muted-foreground">{t('automationForm.fields.message')}</label>
                           <input
-                            placeholder="Alert message..."
+                            placeholder={t('automationForm.placeholders.alertMessage')}
                             className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                             {...register(`actions.${index}.alertMessage`)}
                           />
@@ -717,7 +737,7 @@ export default function AutomationForm({
 
                     {watchActions?.[index]?.type === 'execute_command' && (
                       <div className="space-y-2">
-                        <label className="text-xs font-medium text-muted-foreground">Command</label>
+                        <label className="text-xs font-medium text-muted-foreground">{t('automationForm.fields.command')}</label>
                         <input
                           placeholder="systemctl restart nginx"
                           className="h-9 w-full rounded-md border bg-background px-3 text-sm font-mono focus:outline-hidden focus:ring-2 focus:ring-ring"
@@ -728,12 +748,12 @@ export default function AutomationForm({
 
                     {watchActions?.[index]?.type === 'deploy_software' && (
                       <div className="space-y-2">
-                        <label className="text-xs font-medium text-muted-foreground">Software</label>
+                        <label className="text-xs font-medium text-muted-foreground">{t('automationForm.fields.software')}</label>
                         <select
                           className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                           {...register(`actions.${index}.catalogId`)}
                         >
-                          <option value="">Select software...</option>
+                          <option value="">{t('automationForm.placeholders.selectSoftware')}</option>
                           {softwareCatalog.map(item => (
                             <option key={item.id} value={item.id}>
                               {item.vendor ? `${item.name} (${item.vendor})` : item.name}
@@ -741,7 +761,7 @@ export default function AutomationForm({
                           ))}
                         </select>
                         <p className="text-xs text-muted-foreground">
-                          Installs the latest version of the selected software; skips devices that already have it.
+                          {t('automationForm.software.installLatestHint')}
                         </p>
                       </div>
                     )}
@@ -763,7 +783,7 @@ export default function AutomationForm({
         {actionFields.length === 0 && (
           <div className="rounded-md border border-dashed p-6 text-center">
             <p className="text-sm text-muted-foreground">
-              No actions defined. Click "Add Action" to create one.
+              {t('automationForm.empty.noActions')}
             </p>
           </div>
         )}
@@ -771,7 +791,7 @@ export default function AutomationForm({
 
       {/* On Failure Behavior */}
       <div className="rounded-md border bg-muted/20 p-4">
-        <h3 className="text-sm font-semibold mb-4">On Failure Behavior</h3>
+        <h3 className="text-sm font-semibold mb-4">{t('automationForm.sections.onFailure')}</h3>
         <Controller
           name="onFailure"
           control={control}
@@ -799,12 +819,12 @@ export default function AutomationForm({
 
         {watchOnFailure === 'notify' && (
           <div className="mt-4 space-y-2">
-            <label className="text-sm font-medium">Failure Notification Channel</label>
+            <label className="text-sm font-medium">{t('automationForm.fields.failureNotificationChannel')}</label>
             <select
               className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('notifyOnFailureChannelId')}
             >
-              <option value="">Select a channel...</option>
+              <option value="">{t('automationForm.placeholders.selectChannel')}</option>
               {notificationChannels.map(channel => (
                 <option key={channel.id} value={channel.id}>
                   {channel.name} ({channel.type})
@@ -822,14 +842,14 @@ export default function AutomationForm({
           onClick={onCancel}
           className="h-11 w-full rounded-md border bg-background text-sm font-medium text-foreground transition hover:bg-muted sm:w-auto sm:px-6"
         >
-          Cancel
+          {t('common:actions.cancel')}
         </button>
         <button
           type="submit"
           disabled={isLoading}
           className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto sm:px-6"
         >
-          {isLoading ? 'Saving...' : submitLabel}
+          {isLoading ? t('common:states.saving') : resolvedSubmitLabel}
         </button>
       </div>
     </form>

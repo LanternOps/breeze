@@ -1,5 +1,6 @@
 import type { ClipboardEvent, FormEvent, KeyboardEvent } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { MfaMethod } from '../../stores/auth';
 
 const DIGIT_COUNT = 6;
@@ -27,7 +28,7 @@ export default function MFAVerifyForm({
   onSubmit,
   onPasskeyVerify,
   errorMessage,
-  submitLabel = 'Verify',
+  submitLabel,
   loading,
   mfaMethod = 'totp',
   passkeyAvailable = false,
@@ -36,6 +37,7 @@ export default function MFAVerifyForm({
   smsSending,
   smsSent
 }: MFAVerifyFormProps) {
+  const { t } = useTranslation('auth');
   const [digits, setDigits] = useState<string[]>(Array(DIGIT_COUNT).fill(''));
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [resendCooldown, setResendCooldown] = useState(0);
@@ -129,9 +131,9 @@ export default function MFAVerifyForm({
     return (
       <div className="space-y-6">
         <div className="space-y-2">
-          <h2 className="text-lg font-semibold">Use your passkey</h2>
+          <h2 className="text-lg font-semibold">{t('mfaVerify.passkey.title', { defaultValue: 'Use your passkey' })}</h2>
           <p className="text-sm text-muted-foreground">
-            Continue with the passkey registered to your account.
+            {t('mfaVerify.passkey.description', { defaultValue: 'Continue with the passkey registered to your account.' })}
           </p>
         </div>
 
@@ -148,7 +150,7 @@ export default function MFAVerifyForm({
           disabled={isLoading}
           className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          {isLoading ? 'Verifying...' : submitLabel}
+          {isLoading ? t('common.verifying', { defaultValue: 'Verifying...' }) : submitLabel ?? t('mfaVerify.submit', { defaultValue: 'Verify' })}
         </button>
       </div>
     );
@@ -160,13 +162,21 @@ export default function MFAVerifyForm({
       className="space-y-6"
     >
       <div className="space-y-2">
-        <h2 className="text-lg font-semibold">Enter your verification code</h2>
+        <h2 className="text-lg font-semibold">{t('mfaVerify.code.title', { defaultValue: 'Enter your verification code' })}</h2>
         <p className="text-sm text-muted-foreground">
           {isSms
             ? smsSent
-              ? `Enter the 6-digit code sent to your phone ending in ${phoneLast4 || '****'}.`
-              : `We'll send a code to your phone ending in ${phoneLast4 || '****'}.`
-            : 'Use your authenticator app to get the 6-digit code.'}
+              ? t('mfaVerify.sms.sentDescription', {
+                  defaultValue: `Enter the 6-digit code sent to your phone ending in ${phoneLast4 || '****'}.`,
+                  phoneLast4: phoneLast4 || '****',
+                })
+              : t('mfaVerify.sms.readyDescription', {
+                  defaultValue: `We'll send a code to your phone ending in ${phoneLast4 || '****'}.`,
+                  phoneLast4: phoneLast4 || '****',
+                })
+            : t('mfaVerify.totp.description', {
+                defaultValue: 'Use your authenticator app to get the 6-digit code.',
+              })}
         </p>
       </div>
 
@@ -177,14 +187,14 @@ export default function MFAVerifyForm({
           disabled={smsSending || resendCooldown > 0}
           className="flex h-11 w-full items-center justify-center rounded-md border bg-muted text-sm font-medium transition hover:bg-muted/80 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          {smsSending ? 'Sending...' : 'Send code'}
+          {smsSending ? t('mfaVerify.sms.sending', { defaultValue: 'Sending...' }) : t('mfaVerify.sms.sendCode', { defaultValue: 'Send code' })}
         </button>
       )}
 
       {(!isSms || smsSent) && (
         <>
           <div className="space-y-2">
-            <label className="text-sm font-medium">Verification code</label>
+            <label className="text-sm font-medium">{t('fields.verificationCode', { defaultValue: 'Verification code' })}</label>
             <div className="flex items-center gap-2">
               {digits.map((digit, index) => (
                 <input
@@ -208,8 +218,12 @@ export default function MFAVerifyForm({
             </div>
             <p className="text-xs text-muted-foreground">
               {isSms
-                ? 'If you lose access to your phone, use a recovery code.'
-                : 'If you lose access to your device, use a recovery code.'}
+                ? t('mfaVerify.sms.recoveryHelp', {
+                    defaultValue: 'If you lose access to your phone, use a recovery code.',
+                  })
+                : t('mfaVerify.totp.recoveryHelp', {
+                    defaultValue: 'If you lose access to your device, use a recovery code.',
+                  })}
             </p>
           </div>
 
@@ -221,10 +235,13 @@ export default function MFAVerifyForm({
               className="text-sm text-muted-foreground underline hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
             >
               {resendCooldown > 0
-                ? `Resend code (${resendCooldown}s)`
+                ? t('mfaVerify.sms.resendCooldown', {
+                    defaultValue: `Resend code (${resendCooldown}s)`,
+                    seconds: resendCooldown,
+                  })
                 : smsSending
-                  ? 'Sending...'
-                  : 'Resend code'}
+                  ? t('mfaVerify.sms.sending', { defaultValue: 'Sending...' })
+                  : t('mfaVerify.sms.resendCode', { defaultValue: 'Resend code' })}
             </button>
           )}
         </>
@@ -243,7 +260,7 @@ export default function MFAVerifyForm({
           disabled={isLoading || code.length !== DIGIT_COUNT}
           className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          {isLoading ? 'Verifying...' : submitLabel}
+          {isLoading ? t('common.verifying', { defaultValue: 'Verifying...' }) : submitLabel ?? t('mfaVerify.submit', { defaultValue: 'Verify' })}
         </button>
       )}
 
@@ -251,7 +268,7 @@ export default function MFAVerifyForm({
         <div className="space-y-3">
           <div className="flex items-center gap-3">
             <span className="h-px flex-1 bg-border" />
-            <span className="text-xs uppercase tracking-wide text-muted-foreground">or</span>
+            <span className="text-xs uppercase tracking-wide text-muted-foreground">{t('common.or', { defaultValue: 'or' })}</span>
             <span className="h-px flex-1 bg-border" />
           </div>
           <button
@@ -261,7 +278,7 @@ export default function MFAVerifyForm({
             disabled={isLoading}
             className="flex h-11 w-full items-center justify-center rounded-md border text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
           >
-            Use a passkey instead
+            {t('mfaVerify.passkey.useInstead', { defaultValue: 'Use a passkey instead' })}
           </button>
         </div>
       )}

@@ -1,4 +1,5 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   LayoutDashboard,
   Monitor,
@@ -61,6 +62,7 @@ import { semverCompare } from '@breeze/shared';
 import { getJwtClaims } from '../../lib/authScope';
 import BrandHeader from './BrandHeader';
 import { ENABLE_EDR_INTEGRATIONS } from '../../lib/featureFlags';
+import '../../lib/i18n';
 
 interface SidebarProps {
   currentPath?: string;
@@ -132,6 +134,7 @@ function useSidebarScrollPersist(): React.RefObject<HTMLElement | null> {
 // ---------------------------------------------------------------------------
 type NavItem = {
   name: string;
+  labelKey?: string;
   href: string;
   icon: React.ComponentType<{ className?: string }>;
   badgeKind?: 'deletion-requests';
@@ -161,17 +164,17 @@ type NavItem = {
 // grant keeps a permission-scoped role (e.g. "Partner Billing", which holds only
 // catalog/invoices/quotes/contracts) from seeing items it has no access to.
 // Dashboard is ungated — it's the always-available landing page.
-const topLevelNav: NavItem[] = [
-  { name: 'Dashboard', href: '/', icon: LayoutDashboard },
-  { name: 'Devices', href: '/devices', icon: Monitor, requiredPermission: { resource: 'devices', action: 'read' } },
-  { name: 'Alerts', href: '/alerts', icon: Bell, requiredPermission: { resource: 'alerts', action: 'read' } },
-  { name: 'Tickets', href: '/tickets', icon: Ticket, requiredPermission: { resource: 'tickets', action: 'read' } },
-  { name: 'Incidents', href: '/incidents', icon: ShieldAlert, requiredPermission: { resource: 'alerts', action: 'read' } },
-  { name: 'Remote Access', href: '/remote', icon: Terminal, requiredPermission: { resource: 'remote', action: 'access' } },
-  { name: 'Scripts', href: '/scripts', icon: FileCode, requiredPermission: { resource: 'scripts', action: 'read' } },
-  { name: 'Patches', href: '/patches', icon: Download, requiredPermission: { resource: 'devices', action: 'read' } },
-  { name: 'Vulnerabilities', href: '/vulnerabilities', icon: Bug, requiredPermission: { resource: 'devices', action: 'read' } },
-  { name: 'OneDrive', href: '/onedrive', icon: Cloud, requiredPermission: { resource: 'devices', action: 'read' } },
+export const topLevelNav: NavItem[] = [
+  { name: 'Dashboard', labelKey: 'nav.dashboard', href: '/', icon: LayoutDashboard },
+  { name: 'Devices', labelKey: 'nav.devices', href: '/devices', icon: Monitor, requiredPermission: { resource: 'devices', action: 'read' } },
+  { name: 'Alerts', labelKey: 'nav.alerts', href: '/alerts', icon: Bell, requiredPermission: { resource: 'alerts', action: 'read' } },
+  { name: 'Tickets', labelKey: 'nav.tickets', href: '/tickets', icon: Ticket, requiredPermission: { resource: 'tickets', action: 'read' } },
+  { name: 'Incidents', labelKey: 'nav.incidents', href: '/incidents', icon: ShieldAlert, requiredPermission: { resource: 'alerts', action: 'read' } },
+  { name: 'Remote Access', labelKey: 'nav.remoteAccess', href: '/remote', icon: Terminal, requiredPermission: { resource: 'remote', action: 'access' } },
+  { name: 'Scripts', labelKey: 'nav.scripts', href: '/scripts', icon: FileCode, requiredPermission: { resource: 'scripts', action: 'read' } },
+  { name: 'Patches', labelKey: 'nav.patches', href: '/patches', icon: Download, requiredPermission: { resource: 'devices', action: 'read' } },
+  { name: 'Vulnerabilities', labelKey: 'nav.vulnerabilities', href: '/vulnerabilities', icon: Bug, requiredPermission: { resource: 'devices', action: 'read' } },
+  { name: 'OneDrive', labelKey: 'nav.oneDrive', href: '/onedrive', icon: Cloud, requiredPermission: { resource: 'devices', action: 'read' } },
 ];
 
 // ---------------------------------------------------------------------------
@@ -180,6 +183,7 @@ const topLevelNav: NavItem[] = [
 interface NavSection {
   id: string;
   label: string;
+  labelKey?: string;
   icon: React.ComponentType<{ className?: string }>;
   items: NavItem[];
 }
@@ -189,102 +193,109 @@ export const navSections: NavSection[] = [
   {
     id: 'ai-fleet',
     label: 'AI & Fleet',
+    labelKey: 'nav.sectionAiFleet',
     icon: BrainCircuit,
     items: [
-      { name: 'Fleet', href: '/fleet', icon: BrainCircuit },
-      { name: 'AI Workspace', href: '/workspace', icon: MessagesSquare },
-      { name: 'AI for Office', href: '/ai-for-office', icon: FileSpreadsheet, partnerScopeOnly: true, requiresAiForOffice: true },
+      { name: 'Fleet', labelKey: 'nav.fleet', href: '/fleet', icon: BrainCircuit },
+      { name: 'AI Workspace', labelKey: 'nav.aiWorkspace', href: '/workspace', icon: MessagesSquare },
+      { name: 'AI for Office', labelKey: 'nav.aiForOffice', href: '/ai-for-office', icon: FileSpreadsheet, partnerScopeOnly: true, requiresAiForOffice: true },
     ],
   },
   {
     id: 'monitoring',
     label: 'Monitoring',
+    labelKey: 'nav.sectionMonitoring',
     icon: Activity,
     // Both surfaces read device/network state, gated on devices:read server-side.
     items: [
-      { name: 'Network Monitor', href: '/monitoring', icon: Activity, requiredPermission: { resource: 'devices', action: 'read' } },
-      { name: 'Network Discovery', href: '/discovery', icon: Network, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Network Monitor', labelKey: 'nav.networkMonitor', href: '/monitoring', icon: Activity, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Network Discovery', labelKey: 'nav.networkDiscovery', href: '/discovery', icon: Network, requiredPermission: { resource: 'devices', action: 'read' } },
     ],
   },
   {
     id: 'security',
     label: 'Security',
+    labelKey: 'nav.sectionSecurity',
     icon: ShieldCheck,
     // The security suite is built on device posture/scan data (devices:read).
     // A billing-only role has no devices:read grant, so the whole section hides.
     items: [
-      { name: 'Security', href: '/security', icon: ShieldCheck, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Security', labelKey: 'nav.security', href: '/security', icon: ShieldCheck, requiredPermission: { resource: 'devices', action: 'read' } },
       ...(ENABLE_EDR_INTEGRATIONS
-        ? [{ name: 'EDR', href: '/security/edr', icon: ShieldAlert, requiredPermission: { resource: 'devices', action: 'read' } } satisfies NavItem]
+        ? [{ name: 'EDR', labelKey: 'nav.edr', href: '/security/edr', icon: ShieldAlert, requiredPermission: { resource: 'devices', action: 'read' } } satisfies NavItem]
         : []),
-      { name: 'DNS Security', href: '/dns-security', icon: Network, requiredPermission: { resource: 'devices', action: 'read' } },
-      { name: 'PAM', href: '/pam', icon: KeyRound, requiredPermission: { resource: 'devices', action: 'read' } },
-      { name: 'User Risk', href: '/security/user-risk', icon: UserCheck, requiredPermission: { resource: 'devices', action: 'read' } },
-      { name: 'Sensitive Data', href: '/sensitive-data', icon: ScanSearch, requiredPermission: { resource: 'devices', action: 'read' } },
-      { name: 'Peripherals', href: '/peripherals', icon: Usb, requiredPermission: { resource: 'devices', action: 'read' } },
-      { name: 'AI Risk Engine', href: '/ai-risk', icon: BrainCircuit, requiredPermission: { resource: 'devices', action: 'read' } },
-      { name: 'CIS Benchmarks', href: '/cis-hardening', icon: ClipboardCheck, requiredPermission: { resource: 'devices', action: 'read' } },
-      { name: 'Compliance Baselines', href: '/audit-baselines', icon: ListChecks, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'DNS Security', labelKey: 'nav.dnsSecurity', href: '/dns-security', icon: Network, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'PAM', labelKey: 'nav.pam', href: '/pam', icon: KeyRound, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'User Risk', labelKey: 'nav.userRisk', href: '/security/user-risk', icon: UserCheck, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Sensitive Data', labelKey: 'nav.sensitiveData', href: '/sensitive-data', icon: ScanSearch, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Peripherals', labelKey: 'nav.peripherals', href: '/peripherals', icon: Usb, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'AI Risk Engine', labelKey: 'nav.aiRiskEngine', href: '/ai-risk', icon: BrainCircuit, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'CIS Benchmarks', labelKey: 'nav.cisBenchmarks', href: '/cis-hardening', icon: ClipboardCheck, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Compliance Baselines', labelKey: 'nav.complianceBaselines', href: '/audit-baselines', icon: ListChecks, requiredPermission: { resource: 'devices', action: 'read' } },
     ],
   },
   {
     id: 'operations',
     label: 'Operations',
+    labelKey: 'nav.sectionOperations',
     icon: Layers,
     items: [
-      { name: 'Quotes', href: '/billing/quotes', icon: FileText, partnerScopeOnly: true, requiredPermission: { resource: 'quotes', action: 'read' } },
-      { name: 'Invoices', href: '/billing/invoices', icon: Receipt, partnerScopeOnly: true, requiredPermission: { resource: 'invoices', action: 'read' } },
-      { name: 'Contracts', href: '/contracts', icon: FileSignature, partnerScopeOnly: true, requiredPermission: { resource: 'contracts', action: 'read' } },
-      { name: 'Timesheets', href: '/timesheet', icon: Clock, requiredPermission: { resource: 'time_entries', action: 'read' } },
-      { name: 'Product Catalog', href: '/settings/catalog', icon: Tags, partnerScopeOnly: true, requiredPermission: { resource: 'catalog', action: 'read' } },
-      { name: 'Software Library', href: '/software', icon: Package, requiredPermission: { resource: 'devices', action: 'read' } },
-      { name: 'Software Policies', href: '/software-inventory', icon: Package, requiredPermission: { resource: 'devices', action: 'read' } },
-      { name: 'Config Policies', href: '/configuration-policies', icon: Layers, requiredPermission: { resource: 'devices', action: 'read' } },
-      { name: 'Integrations', href: '/integrations', icon: Plug },
+      { name: 'Quotes', labelKey: 'nav.quotes', href: '/billing/quotes', icon: FileText, partnerScopeOnly: true, requiredPermission: { resource: 'quotes', action: 'read' } },
+      { name: 'Invoices', labelKey: 'nav.invoices', href: '/billing/invoices', icon: Receipt, partnerScopeOnly: true, requiredPermission: { resource: 'invoices', action: 'read' } },
+      { name: 'Contracts', labelKey: 'nav.contracts', href: '/contracts', icon: FileSignature, partnerScopeOnly: true, requiredPermission: { resource: 'contracts', action: 'read' } },
+      { name: 'Timesheets', labelKey: 'nav.timesheets', href: '/timesheet', icon: Clock, requiredPermission: { resource: 'time_entries', action: 'read' } },
+      { name: 'Product Catalog', labelKey: 'nav.productCatalog', href: '/settings/catalog', icon: Tags, partnerScopeOnly: true, requiredPermission: { resource: 'catalog', action: 'read' } },
+      { name: 'Software Library', labelKey: 'nav.softwareLibrary', href: '/software', icon: Package, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Software Policies', labelKey: 'nav.softwarePolicies', href: '/software-inventory', icon: Package, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Config Policies', labelKey: 'nav.configPolicies', href: '/configuration-policies', icon: Layers, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Integrations', labelKey: 'nav.integrations', href: '/integrations', icon: Plug },
     ],
   },
   {
     id: 'backup',
     label: 'Backup',
+    labelKey: 'nav.sectionBackup',
     icon: HardDrive,
     // Backup/recovery surfaces are gated on the backup:read grant.
     items: [
-      { name: 'Backup', href: '/backup', icon: HardDrive, requiredPermission: { resource: 'backup', action: 'read' } },
-      { name: 'Cloud Backup', href: '/c2c', icon: Cloud, requiredPermission: { resource: 'backup', action: 'read' } },
-      { name: 'Disaster Recovery', href: '/dr', icon: ShieldEllipsis, requiredPermission: { resource: 'backup', action: 'read' } },
+      { name: 'Backup', labelKey: 'nav.backup', href: '/backup', icon: HardDrive, requiredPermission: { resource: 'backup', action: 'read' } },
+      { name: 'Cloud Backup', labelKey: 'nav.cloudBackup', href: '/c2c', icon: Cloud, requiredPermission: { resource: 'backup', action: 'read' } },
+      { name: 'Disaster Recovery', labelKey: 'nav.disasterRecovery', href: '/dr', icon: ShieldEllipsis, requiredPermission: { resource: 'backup', action: 'read' } },
     ],
   },
   {
     id: 'reporting',
     label: 'Reporting',
+    labelKey: 'nav.sectionReporting',
     icon: BarChart3,
     items: [
-      { name: 'Reports', href: '/reports', icon: FileText, requiredPermission: { resource: 'reports', action: 'read' } },
-      { name: 'Analytics', href: '/analytics', icon: BarChart3, requiredPermission: { resource: 'reports', action: 'read' } },
-      { name: 'Audit Trail', href: '/audit', icon: FileText, requiredPermission: { resource: 'audit', action: 'read' } },
-      { name: 'Event Logs', href: '/logs', icon: ScrollText, requiredPermission: { resource: 'audit', action: 'read' } },
+      { name: 'Reports', labelKey: 'nav.reports', href: '/reports', icon: FileText, requiredPermission: { resource: 'reports', action: 'read' } },
+      { name: 'Analytics', labelKey: 'nav.analytics', href: '/analytics', icon: BarChart3, requiredPermission: { resource: 'reports', action: 'read' } },
+      { name: 'Audit Trail', labelKey: 'nav.auditTrail', href: '/audit', icon: FileText, requiredPermission: { resource: 'audit', action: 'read' } },
+      { name: 'Event Logs', labelKey: 'nav.eventLogs', href: '/logs', icon: ScrollText, requiredPermission: { resource: 'audit', action: 'read' } },
     ],
   },
   {
     id: 'settings',
     label: 'Settings',
+    labelKey: 'nav.sectionSettings',
     icon: Building,
     items: [
-      { name: 'Partner', href: '/settings/partner', icon: Building, partnerScopeOnly: true },
-      { name: 'Organizations', href: '/settings/organizations', icon: Building2, requiredPermission: { resource: 'organizations', action: 'read' } },
-      { name: 'AI Usage & Budget', href: '/settings/ai-usage', icon: BrainCircuit, partnerScopeOnly: true },
-      { name: 'Custom Fields', href: '/settings/custom-fields', icon: ListChecks, requiredPermission: { resource: 'organizations', action: 'read' } },
-      { name: 'Saved Filters', href: '/settings/filters', icon: Filter },
+      { name: 'Partner', labelKey: 'nav.partner', href: '/settings/partner', icon: Building, partnerScopeOnly: true },
+      { name: 'Organizations', labelKey: 'nav.organizations', href: '/settings/organizations', icon: Building2, requiredPermission: { resource: 'organizations', action: 'read' } },
+      { name: 'AI Usage & Budget', labelKey: 'nav.aiUsageBudget', href: '/settings/ai-usage', icon: BrainCircuit, partnerScopeOnly: true },
+      { name: 'Custom Fields', labelKey: 'nav.customFields', href: '/settings/custom-fields', icon: ListChecks, requiredPermission: { resource: 'organizations', action: 'read' } },
+      { name: 'Saved Filters', labelKey: 'nav.savedFilters', href: '/settings/filters', icon: Filter },
       // Users + Roles are both served by the users routes (users:read).
-      { name: 'Users', href: '/settings/users', icon: Users, requiredPermission: { resource: 'users', action: 'read' } },
-      { name: 'Roles', href: '/settings/roles', icon: KeyRound, requiredPermission: { resource: 'users', action: 'read' } },
-      { name: 'SSO', href: '/settings/sso', icon: Fingerprint, requiredPermission: { resource: 'sso', action: 'admin' } },
-      { name: 'Access Reviews', href: '/settings/access-reviews', icon: FileCheck, requiredPermission: { resource: 'users', action: 'read' } },
-      { name: 'Enrollment Keys', href: '/settings/enrollment-keys', icon: Key, requiredPermission: { resource: 'devices', action: 'read' } },
-      { name: 'Deletion requests', href: '/admin/account-deletion-requests', icon: UserX, badgeKind: 'deletion-requests', platformAdminOnly: true },
-      { name: 'Quarantined Devices', href: '/admin/quarantined', icon: Ban, platformAdminOnly: true },
-      { name: 'Third-Party Catalog', href: '/admin/third-party-catalog', icon: Boxes, platformAdminOnly: true },
-      { name: 'Connected Apps (admin)', href: '/admin/connected-apps', icon: Plug, platformAdminOnly: true },
+      { name: 'Users', labelKey: 'nav.users', href: '/settings/users', icon: Users, requiredPermission: { resource: 'users', action: 'read' } },
+      { name: 'Roles', labelKey: 'nav.roles', href: '/settings/roles', icon: KeyRound, requiredPermission: { resource: 'users', action: 'read' } },
+      { name: 'SSO', labelKey: 'nav.sso', href: '/settings/sso', icon: Fingerprint, requiredPermission: { resource: 'sso', action: 'admin' } },
+      { name: 'Access Reviews', labelKey: 'nav.accessReviews', href: '/settings/access-reviews', icon: FileCheck, requiredPermission: { resource: 'users', action: 'read' } },
+      { name: 'Enrollment Keys', labelKey: 'nav.enrollmentKeys', href: '/settings/enrollment-keys', icon: Key, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Deletion requests', labelKey: 'nav.deletionRequests', href: '/admin/account-deletion-requests', icon: UserX, badgeKind: 'deletion-requests', platformAdminOnly: true },
+      { name: 'Quarantined Devices', labelKey: 'nav.quarantinedDevices', href: '/admin/quarantined', icon: Ban, platformAdminOnly: true },
+      { name: 'Third-Party Catalog', labelKey: 'nav.thirdPartyCatalog', href: '/admin/third-party-catalog', icon: Boxes, platformAdminOnly: true },
+      { name: 'Connected Apps (admin)', labelKey: 'nav.connectedAppsAdmin', href: '/admin/connected-apps', icon: Plug, platformAdminOnly: true },
     ],
   },
 ];
@@ -371,6 +382,7 @@ function useDeletionRequestsBadge(enabled: boolean): number | undefined {
 }
 
 export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps) {
+  const { t } = useTranslation();
   const [mode, setMode] = useState<SidebarMode>(readSavedMode);
   const [hovered, setHovered] = useState(false);
   const currentPath = useCurrentPath(initialPath);
@@ -570,11 +582,12 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     const narrow = forMobileOverlay ? false : isNarrow;
     const badgeCount = item.badgeKind === 'deletion-requests' ? deletionRequestsCount : undefined;
     const showBadge = typeof badgeCount === 'number' && badgeCount > 0;
+    const label = item.labelKey ? t(/* i18n-dynamic */ item.labelKey, { defaultValue: item.name }) : item.name;
     return (
       <a
         key={item.name}
         href={item.href}
-        title={narrow && !hovered ? item.name : undefined}
+        title={narrow && !hovered ? label : undefined}
         onClick={forMobileOverlay ? () => closeMobileMenu() : undefined}
         className={cn(
           'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
@@ -584,7 +597,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
         )}
       >
         <item.icon className="h-5 w-5 shrink-0" />
-        {labels && <span className="truncate flex-1">{item.name}</span>}
+        {labels && <span className="truncate flex-1">{label}</span>}
         {labels && showBadge && (
           <span
             className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-500/20 px-1.5 chart-legend-xs font-semibold text-amber-800 dark:bg-amber-500/30 dark:text-amber-200"
@@ -621,7 +634,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
             className="flex items-center justify-between w-full px-2 py-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground/70 hover:text-muted-foreground cursor-pointer transition-colors"
             style={{ fontSize: '12px' }}
           >
-            <span>{section.label}</span>
+            <span>{section.labelKey ? t(/* i18n-dynamic */ section.labelKey, { defaultValue: section.label }) : section.label}</span>
             <ChevronDown
               className={cn(
                 'h-3.5 w-3.5 transition-transform duration-200',
@@ -652,7 +665,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
 
   // --- Toggle button icon --------------------------------------------------
   const ToggleIcon = effectiveMode === 'open' ? ChevronLeft : effectiveMode === 'hover' ? ChevronsLeft : ChevronRight;
-  const toggleTitle = effectiveMode === 'open' ? 'Auto-hide sidebar' : effectiveMode === 'hover' ? 'Collapse sidebar' : 'Expand sidebar';
+  const toggleTitle = effectiveMode === 'open' ? t('layout.sidebar.autoHide') : effectiveMode === 'hover' ? t('layout.sidebar.collapse') : t('layout.sidebar.expand');
 
   // --- Shared CSS for expand/collapse animation ----------------------------
   const sectionAnimCss = (
@@ -695,8 +708,8 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
           {showLabels && (
             <button
               onClick={collapseAllExceptActive}
-              title="Collapse all sections"
-              aria-label="Collapse all sections"
+              title={t('layout.sidebar.collapseSections')}
+              aria-label={t('layout.sidebar.collapseSections')}
               className="rounded-md p-1.5 hover:bg-muted"
             >
               <ChevronsDownUp className="h-5 w-5" />
@@ -753,8 +766,8 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
           <div className="flex items-center gap-1">
             <button
               onClick={collapseAllExceptActive}
-              title="Collapse all sections"
-              aria-label="Collapse all sections"
+              title={t('layout.sidebar.collapseSections')}
+              aria-label={t('layout.sidebar.collapseSections')}
               className="rounded-md p-1.5 hover:bg-muted"
             >
               <ChevronsDownUp className="h-5 w-5" />
@@ -762,7 +775,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
             <button
               onClick={closeMobileMenu}
               className="rounded-md p-1.5 hover:bg-muted"
-              title="Close menu"
+              title={t('layout.sidebar.closeMenu')}
             >
               <X className="h-5 w-5" />
             </button>

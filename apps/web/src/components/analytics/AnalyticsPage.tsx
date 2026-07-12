@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Loader2, RefreshCw } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import DashboardGrid, { type GridItem } from './DashboardGrid';
 import WidgetRenderer, { type WidgetDefinition } from './WidgetRenderer';
 import QueryBuilder from './QueryBuilder';
@@ -8,18 +9,19 @@ import SLAComplianceCard from './SLAComplianceCard';
 import ExecutiveSummary, { type ExecutiveSummaryProps } from './ExecutiveSummary';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatTime } from '@/lib/dateTimeFormat';
+import { formatPercent } from '@/lib/i18n/format';
 
 const dashboardOptions = [
-  { value: 'operations', label: 'Operations Overview' },
-  { value: 'capacity', label: 'Capacity Planning' },
-  { value: 'sla', label: 'SLA Compliance' }
+  { value: 'operations', labelKey: 'analytics.analyticsPage.dashboardOptions.operations' },
+  { value: 'capacity', labelKey: 'analytics.analyticsPage.dashboardOptions.capacity' },
+  { value: 'sla', labelKey: 'analytics.analyticsPage.dashboardOptions.sla' }
 ];
 
 const dateRanges = [
-  { value: '24h', label: 'Last 24 hours' },
-  { value: '7d', label: 'Last 7 days' },
-  { value: '30d', label: 'Last 30 days' },
-  { value: 'custom', label: 'Custom range' }
+  { value: '24h', labelKey: 'analytics.analyticsPage.dateRanges.last24Hours' },
+  { value: '7d', labelKey: 'analytics.analyticsPage.dateRanges.last7Days' },
+  { value: '30d', labelKey: 'analytics.analyticsPage.dateRanges.last30Days' },
+  { value: 'custom', labelKey: 'analytics.analyticsPage.dateRanges.customRange' }
 ];
 
 type PerformancePoint = {
@@ -33,8 +35,10 @@ type OsDistributionPoint = {
   value: number;
 };
 
+type AlertSeverityKey = 'critical' | 'high' | 'medium' | 'low' | 'acknowledged';
+
 type AlertRow = {
-  severity: string;
+  severity: AlertSeverityKey;
   count: number;
 };
 
@@ -215,14 +219,14 @@ const buildAlertStats = (raw: unknown) => {
   const acknowledged = pickOptionalNumber(source.acknowledged, bySeverity.acknowledged);
 
   const rows: AlertRow[] = [
-    { severity: 'Critical', count: critical },
-    { severity: 'High', count: high },
-    { severity: 'Medium', count: medium },
-    { severity: 'Low', count: low }
+    { severity: 'critical', count: critical },
+    { severity: 'high', count: high },
+    { severity: 'medium', count: medium },
+    { severity: 'low', count: low }
   ];
 
   if (acknowledged !== undefined) {
-    rows.push({ severity: 'Acknowledged', count: acknowledged });
+    rows.push({ severity: 'acknowledged', count: acknowledged });
   }
 
   return {
@@ -336,6 +340,7 @@ interface AnalyticsPageProps {
 }
 
 export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
+  const { t } = useTranslation('reports');
   const [selectedDashboard, setSelectedDashboard] = useState('operations');
   const [dateRange, setDateRange] = useState('30d');
   const [customStartDate, setCustomStartDate] = useState('');
@@ -357,7 +362,7 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
     criticalAlerts: 0,
     warningAlerts: 0,
     trendData: [],
-    trendLabel: 'Operational health'
+    trendLabel: t('analytics.analyticsPage.trend.operationalHealth')
   });
   const [deviceIds, setDeviceIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
@@ -365,8 +370,8 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
   const rangeLabel = useMemo(
-    () => dateRanges.find(option => option.value === dateRange)?.label ?? 'Custom range',
-    [dateRange]
+    () => t(/* i18n-dynamic */ dateRanges.find(option => option.value === dateRange)?.labelKey ?? 'analytics.analyticsPage.dateRanges.customRange'),
+    [dateRange, t]
   );
 
   const fetchAnalyticsData = useCallback(async () => {
@@ -557,20 +562,22 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
         criticalAlerts: alertSummary.critical,
         warningAlerts: alertSummary.warning,
         trendData,
-        trendLabel: typeof analyticsRecord.trendLabel === 'string' ? analyticsRecord.trendLabel : 'Operational health'
+        trendLabel: typeof analyticsRecord.trendLabel === 'string'
+          ? analyticsRecord.trendLabel
+          : t('analytics.analyticsPage.trend.operationalHealth')
       });
 
       if (errors.length > 0) {
-        setError(`Unable to load: ${errors.join(', ')}`);
+        setError(t('analytics.analyticsPage.errors.unableToLoad', { sources: errors.join(', ') }));
       }
 
       setLastUpdated(new Date());
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load analytics data');
+      setError(err instanceof Error ? err.message : t('analytics.analyticsPage.errors.failedToLoadAnalytics'));
     } finally {
       setLoading(false);
     }
-  }, [dateRange, customEndDate, customStartDate]);
+  }, [dateRange, customEndDate, customStartDate, t]);
 
   useEffect(() => {
     fetchAnalyticsData();
@@ -580,22 +587,22 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
     () => [
       {
         id: 'summary-uptime',
-        title: 'Uptime',
+        title: t('analytics.analyticsPage.widgets.uptime.title'),
         type: 'summary',
         data: {
-          value: `${summaryMetrics.uptime.toFixed(2)}%`,
-          label: 'Fleet uptime',
+          value: formatPercent(summaryMetrics.uptime / 100, { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+          label: t('analytics.analyticsPage.widgets.uptime.label'),
           change: summaryMetrics.uptimeChange,
           changeLabel: summaryMetrics.uptimeChangeLabel
         }
       },
       {
         id: 'summary-sessions',
-        title: 'Remote Sessions',
+        title: t('analytics.analyticsPage.widgets.remoteSessions.title'),
         type: 'summary',
         data: {
           value: summaryMetrics.sessions,
-          label: 'Sessions in range',
+          label: t('analytics.analyticsPage.widgets.remoteSessions.label'),
           change: summaryMetrics.sessionsChange,
           changeLabel: summaryMetrics.sessionsChangeLabel
         }
@@ -604,14 +611,14 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
         id: 'performance',
         type: 'chart',
         data: {
-          title: 'Performance Trend',
-          subtitle: 'CPU and memory utilization',
+          title: t('analytics.analyticsPage.widgets.performance.title'),
+          subtitle: t('analytics.analyticsPage.widgets.performance.subtitle'),
           type: 'line',
           data: performanceData,
           xKey: 'timestamp',
           series: [
-            { key: 'cpu', label: 'CPU', color: '#3b82f6' },
-            { key: 'memory', label: 'Memory', color: '#22c55e' }
+            { key: 'cpu', label: t('analytics.analyticsPage.widgets.performance.cpu'), color: '#3b82f6' },
+            { key: 'memory', label: t('analytics.analyticsPage.widgets.performance.memory'), color: '#22c55e' }
           ]
         }
       },
@@ -619,8 +626,8 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
         id: 'os-breakdown',
         type: 'chart',
         data: {
-          title: 'OS Distribution',
-          subtitle: 'Share of managed devices',
+          title: t('analytics.analyticsPage.widgets.osBreakdown.title'),
+          subtitle: t('analytics.analyticsPage.widgets.osBreakdown.subtitle'),
           type: 'pie',
           data: osDistribution,
           nameKey: 'name',
@@ -631,22 +638,27 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
         id: 'alert-table',
         type: 'table',
         data: {
-          title: 'Alert Statistics',
+          title: t('analytics.analyticsPage.widgets.alertTable.title'),
           columns: [
-            { key: 'severity', label: 'Severity', sortable: true },
-            { key: 'count', label: 'Count', sortable: true, className: 'text-right' }
+            { key: 'severity', label: t('analytics.analyticsPage.widgets.alertTable.severity'), sortable: true },
+            { key: 'count', label: t('analytics.analyticsPage.widgets.alertTable.count'), sortable: true, className: 'text-right' }
           ],
-          data: alertRows
+          data: alertRows.map(row => ({
+            ...row,
+            severity: t(/* i18n-dynamic */ `analytics.analyticsPage.alertSeverity.${row.severity}`)
+          }))
         }
       },
       {
         id: 'compliance-gauge',
         type: 'gauge',
         data: {
-          title: 'Policy Compliance',
+          title: t('analytics.analyticsPage.widgets.complianceGauge.title'),
           value: complianceStats.complianceRate,
           description: complianceStats.totalPolicies !== undefined
-            ? `${complianceStats.enabledPolicies ?? complianceStats.totalPolicies} policies evaluated`
+            ? t('analytics.analyticsPage.widgets.complianceGauge.policiesEvaluated', {
+              count: complianceStats.enabledPolicies ?? complianceStats.totalPolicies
+            })
             : undefined
         }
       }
@@ -663,7 +675,8 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
       summaryMetrics.sessionsChangeLabel,
       summaryMetrics.uptime,
       summaryMetrics.uptimeChange,
-      summaryMetrics.uptimeChangeLabel
+      summaryMetrics.uptimeChangeLabel,
+      t
     ]
   );
 
@@ -713,8 +726,8 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div>
-          <h1 className="text-xl font-semibold">Analytics</h1>
-          <p className="text-sm text-muted-foreground">Insights across your fleet and services</p>
+          <h1 className="text-xl font-semibold">{t('analytics.analyticsPage.title')}</h1>
+          <p className="text-sm text-muted-foreground">{t('analytics.analyticsPage.subtitle')}</p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <select
@@ -724,7 +737,7 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
           >
             {dashboardOptions.map(option => (
               <option key={option.value} value={option.value}>
-                {option.label}
+                {t(/* i18n-dynamic */ option.labelKey)}
               </option>
             ))}
           </select>
@@ -735,7 +748,7 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
           >
             {dateRanges.map(option => (
               <option key={option.value} value={option.value}>
-                {option.label}
+                {t(/* i18n-dynamic */ option.labelKey)}
               </option>
             ))}
           </select>
@@ -746,11 +759,11 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
             disabled={loading}
           >
             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-            Refresh
+            {t('analytics.analyticsPage.actions.refresh')}
           </button>
           {lastUpdated && (
             <span className="text-xs text-muted-foreground">
-              Updated {formatTime(lastUpdated, { timeZone: timezone })}
+              {t('analytics.analyticsPage.lastUpdated', { time: formatTime(lastUpdated, { timeZone: timezone }) })}
             </span>
           )}
         </div>
@@ -782,7 +795,7 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
             className="mt-2 inline-flex items-center gap-1 text-sm text-primary hover:underline"
           >
             <RefreshCw className="h-3 w-3" />
-            Retry
+            {t('analytics.analyticsPage.actions.retry')}
           </button>
         </div>
       )}
@@ -831,7 +844,7 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
           if (item.i === 'capacity') {
             return (
               <CapacityForecast
-                title="Capacity Forecast"
+                title={t('analytics.analyticsPage.widgets.capacity.title')}
                 currentValue={capacityForecast.currentValue}
                 data={capacityForecast.data}
                 thresholds={capacityForecast.thresholds}

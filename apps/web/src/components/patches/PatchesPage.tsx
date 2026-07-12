@@ -1,5 +1,6 @@
 import { useMemo, useState, useEffect, useCallback } from 'react';
 import { Layers, FileCog, BarChart3, Plus, Loader2, RefreshCw } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import PatchList, {
   type Patch,
   type PatchApprovalStatus,
@@ -20,7 +21,6 @@ import { extractApiError } from '@/lib/apiError';
 import { showToast } from '../shared/Toast';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { Dialog } from '../shared/Dialog';
-import { scopeConfirmMessage } from '@/lib/scopeConfirmMessage';
 import { runAction, ActionError } from '@/lib/runAction';
 
 type TabKey = 'rings' | 'patches' | 'compliance';
@@ -53,12 +53,13 @@ function resolveTab(tab: TabKey, canManageRings: boolean): TabKey {
 const DEVICE_SCAN_PAGE_LIMIT = 100;
 
 export default function PatchesPage() {
+  const { t } = useTranslation('patches');
   const { organizations, currentOrgId } = useOrgStore();
   const currentOrg = organizations.find(o => o.id === currentOrgId) ?? null;
   const { scope } = getJwtClaims();
   // Rings + approvals are partner-scoped: only partner/system users manage them.
   const canManageRings = scope === 'partner' || scope === 'system';
-  const RING_SCOPE_HINT = 'Update rings are managed at the partner level';
+  const RING_SCOPE_HINT = t('patchesPage.ringScopeHint');
 
   // Seed from the hash, applying the org-scope guard: an org user landing on
   // #rings (e.g. a bookmark) falls back to compliance so the rings body is never
@@ -69,7 +70,7 @@ export default function PatchesPage() {
   const setActiveTab = useCallback((tab: TabKey) => {
     setActiveTabState(tab);
     setTabInHash(tab);
-  }, []);
+  }, [t]);
 
   // Sync the active tab from the hash on mount and on every hashchange — browser
   // back/forward and manual hash edits re-select the tab, mirroring DiscoveryPage.
@@ -114,11 +115,11 @@ export default function PatchesPage() {
 
   const tabs = useMemo(
     () => [
-      { id: 'compliance' as TabKey, label: 'Compliance', icon: <BarChart3 className="h-4 w-4" /> },
-      { id: 'patches' as TabKey, label: 'Patches', icon: <FileCog className="h-4 w-4" /> },
-      ...(canManageRings ? [{ id: 'rings' as TabKey, label: 'Update Rings', icon: <Layers className="h-4 w-4" /> }] : [])
+      { id: 'compliance' as TabKey, label: t('patchesPage.tabs.compliance'), icon: <BarChart3 className="h-4 w-4" /> },
+      { id: 'patches' as TabKey, label: t('patchesPage.tabs.patches'), icon: <FileCog className="h-4 w-4" /> },
+      ...(canManageRings ? [{ id: 'rings' as TabKey, label: t('patchesPage.tabs.updateRings'), icon: <Layers className="h-4 w-4" /> }] : [])
     ],
-    [canManageRings]
+    [canManageRings, t]
   );
 
   // Ring selector data (simplified for dropdown)
@@ -143,7 +144,7 @@ export default function PatchesPage() {
       const response = await fetchWithAuth('/update-rings');
       if (!response.ok) {
         if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
-        throw new Error('Failed to fetch update rings');
+        throw new Error(t('patchesPage.errors.fetchRings'));
       }
       const data = await response.json();
       const ringData = data.data ?? data ?? [];
@@ -152,7 +153,7 @@ export default function PatchesPage() {
         : [];
       setRings(normalized);
     } catch (err) {
-      setRingsError(err instanceof Error ? err.message : 'Failed to fetch update rings');
+      setRingsError(err instanceof Error ? err.message : t('patchesPage.errors.fetchRings'));
     } finally {
       setRingsLoading(false);
     }
@@ -178,7 +179,7 @@ export default function PatchesPage() {
       const response = await fetchWithAuth(url);
       if (!response.ok) {
         if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
-        throw new Error('Failed to fetch patches');
+        throw new Error(t('patchesPage.errors.fetchPatches'));
       }
       const data = await response.json();
       const patchData = data.data ?? data.patches ?? data.items ?? data ?? [];
@@ -192,11 +193,11 @@ export default function PatchesPage() {
         setSourceCounts({});
       }
     } catch (err) {
-      setPatchesError(err instanceof Error ? err.message : 'Failed to fetch patches');
+      setPatchesError(err instanceof Error ? err.message : t('patchesPage.errors.fetchPatches'));
     } finally {
       setPatchesLoading(false);
     }
-  }, [selectedRingId]);
+  }, [selectedRingId, t]);
 
   useEffect(() => {
     fetchRings();
@@ -231,7 +232,7 @@ export default function PatchesPage() {
     // from auth.partnerId) or ring-scoped (when selectedRingId is set). Org-scoped
     // users cannot manage approvals — those are governed at the partner level.
     if (!canManageRings) {
-      throw new Error('Patch approvals are managed at the partner level');
+      throw new Error(t('patchesPage.errors.partnerLevel'));
     }
     // runaction-exempt: aggregate/partial-success — inline bulkError UI (see NOTE above)
     const response = await fetchWithAuth('/patches/bulk-approve', {
@@ -243,7 +244,7 @@ export default function PatchesPage() {
     });
     if (!response.ok) {
       if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
-      throw new Error('Failed to approve patches');
+      throw new Error(t('patchesPage.errors.approvePatches'));
     }
     const body = await response.json().catch(() => ({})) as {
       approved?: string[];
@@ -257,14 +258,21 @@ export default function PatchesPage() {
       )
     );
     if (failedIds.length > 0) {
-      throw new Error(`Failed to approve ${failedIds.length} ${failedIds.length === 1 ? 'patch' : 'patches'}`);
+      throw new Error(
+        t(
+          /* i18n-dynamic */ failedIds.length === 1
+            ? 'patchesPage.errors.approveCountOne'
+            : 'patchesPage.errors.approveCountMany',
+          { count: failedIds.length }
+        )
+      );
     }
   };
 
   const handleBulkDecline = async (patchIds: string[]) => {
     // Same partner-level scope requirement as approve (see handleBulkApprove).
     if (!canManageRings) {
-      throw new Error('Patch approvals are managed at the partner level');
+      throw new Error(t('patchesPage.errors.partnerLevel'));
     }
     const failed: string[] = [];
     for (const id of patchIds) {
@@ -284,7 +292,9 @@ export default function PatchesPage() {
         declined.includes(patch.id) ? { ...patch, approvalStatus: 'declined' as PatchApprovalStatus } : patch
       )
     );
-    if (failed.length > 0) throw new Error(`Failed to decline ${failed.length} patches`);
+    if (failed.length > 0) {
+      throw new Error(t('patchesPage.errors.declineCount', { count: failed.length }));
+    }
   };
 
   // Gather device IDs across all pages, then surface a scope-naming confirmation
@@ -305,7 +315,7 @@ export default function PatchesPage() {
         const devResponse = await fetchWithAuth(`/devices?limit=${DEVICE_SCAN_PAGE_LIMIT}&page=${page}`);
         if (!devResponse.ok) {
           if (devResponse.status === 401) { void navigateTo('/login', { replace: true }); return; }
-          throw new Error('Failed to load devices for scan');
+          throw new Error(t('patchesPage.errors.loadDevicesForScan'));
         }
 
         const devBody = await devResponse.json();
@@ -327,7 +337,7 @@ export default function PatchesPage() {
       }
 
       const deviceIds = [...ids];
-      if (deviceIds.length === 0) throw new Error('No devices available for scanning');
+      if (deviceIds.length === 0) throw new Error(t('patchesPage.errors.noDevicesForScan'));
 
       // Derive org names from the actual device payloads so the confirmation
       // always names the true scope. Map known orgIds to store names; if an
@@ -348,7 +358,7 @@ export default function PatchesPage() {
     } catch (err) {
       // Pre-scan errors only (device-list fetch failure, no devices).
       showToast({
-        message: err instanceof Error ? err.message : 'Patch scan failed',
+        message: err instanceof Error ? err.message : t('patchesPage.scan.failedFallback'),
         type: 'error',
       });
     } finally {
@@ -383,7 +393,7 @@ export default function PatchesPage() {
       } | null;
 
       if (!scanRes.ok || !scanBody) {
-        showToast({ message: extractApiError(scanBody, 'Patch scan failed'), type: 'error' });
+        showToast({ message: extractApiError(scanBody, t('patchesPage.scan.failedFallback')), type: 'error' });
         return;
       }
 
@@ -394,16 +404,18 @@ export default function PatchesPage() {
       const skipped =
         (scanBody.skipped?.missingDeviceIds?.length ?? 0) +
         (scanBody.skipped?.inaccessibleDeviceIds?.length ?? 0);
-      const noun = (n: number) => (n === 1 ? 'device' : 'devices');
+      const noun = (n: number) => t(/* i18n-dynamic */ n === 1 ? 'patchesPage.scan.deviceOne' : 'patchesPage.scan.deviceMany');
       const shortfall = [
-        failed > 0 ? `${failed} failed to queue` : null,
-        skipped > 0 ? `${skipped} skipped (no access / not found)` : null,
+        failed > 0 ? t('patchesPage.scan.failedToQueue', { count: failed }) : null,
+        skipped > 0 ? t('patchesPage.scan.skipped', { count: skipped }) : null,
       ].filter(Boolean).join(', ');
 
       if (queued === 0) {
         // Nothing was queued — a genuine failure even though HTTP is 200.
         showToast({
-          message: `Patch scan failed: 0 of ${requested} ${noun(requested)} queued${shortfall ? ` (${shortfall})` : ''}.`,
+          message: shortfall
+            ? t('patchesPage.scan.failedZeroWithShortfall', { requested, noun: noun(requested), shortfall })
+            : t('patchesPage.scan.failedZero', { requested, noun: noun(requested) }),
           type: 'error',
         });
         return;
@@ -414,12 +426,16 @@ export default function PatchesPage() {
         // has no "warning" variant; use error styling so a partial run is not
         // mistaken for a clean success.
         showToast({
-          message: `Patch scan queued for ${queued} of ${requested} ${noun(requested)} — ${shortfall}.`,
+          message: t('patchesPage.scan.queuedPartial', { queued, requested, noun: noun(requested), shortfall }),
           type: 'error',
         });
       } else {
         showToast({
-          message: `Patch scan queued for ${queued} ${noun(queued)}${dispatched > 0 ? `, ${dispatched} dispatched immediately` : ''}.`,
+          message: t('patchesPage.scan.queuedSuccess', {
+            queued,
+            noun: noun(queued),
+            dispatchSuffix: dispatched > 0 ? t('patchesPage.scan.dispatchedSuffix', { count: dispatched }) : '',
+          }),
           type: 'success',
         });
       }
@@ -428,7 +444,7 @@ export default function PatchesPage() {
       // The scan call above surfaces its own outcome and never throws; a 401
       // from the scan POST already redirected and returned before reaching here.
       showToast({
-        message: err instanceof Error ? err.message : 'Patch scan failed',
+        message: err instanceof Error ? err.message : t('patchesPage.scan.failedFallback'),
         type: 'error',
       });
     } finally {
@@ -464,8 +480,8 @@ export default function PatchesPage() {
               categoryRules: values.categoryRules,
             }),
           }),
-        errorFallback: isEditing ? 'Failed to update ring' : 'Failed to create update ring',
-        successMessage: isEditing ? 'Update ring saved' : 'Update ring created',
+        errorFallback: isEditing ? t('patchesPage.errors.updateRing') : t('patchesPage.errors.createRing'),
+        successMessage: isEditing ? t('patchesPage.toast.ringSaved') : t('patchesPage.toast.ringCreated'),
         onUnauthorized: () => void navigateTo('/login', { replace: true }),
       });
       await fetchRings();
@@ -479,8 +495,8 @@ export default function PatchesPage() {
         err instanceof ActionError
           ? err.message
           : isEditing
-            ? 'Failed to update ring'
-            : 'Failed to create update ring'
+            ? t('patchesPage.errors.updateRing')
+            : t('patchesPage.errors.createRing')
       );
     } finally {
       setRingSubmitting(false);
@@ -491,14 +507,14 @@ export default function PatchesPage() {
     try {
       await runAction({
         request: () => fetchWithAuth(`/update-rings/${ring.id}`, { method: 'DELETE' }),
-        errorFallback: 'Failed to delete ring',
-        successMessage: 'Update ring deleted',
+        errorFallback: t('patchesPage.errors.deleteRing'),
+        successMessage: t('patchesPage.toast.ringDeleted'),
         onUnauthorized: () => void navigateTo('/login', { replace: true }),
       });
       await fetchRings();
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
-      setRingsError(err instanceof ActionError ? err.message : 'Failed to delete ring');
+      setRingsError(err instanceof ActionError ? err.message : t('patchesPage.errors.deleteRing'));
     }
   };
 
@@ -511,10 +527,10 @@ export default function PatchesPage() {
   const handleDeploy = useCallback(() => {
     setActiveTab('compliance');
     showToast({
-      message: 'Choose the devices to install this patch on from the Compliance tab.',
+      message: t('patchesPage.toast.chooseDevicesForInstall'),
       type: 'success',
     });
-  }, [setActiveTab]);
+  }, [setActiveTab, t]);
 
   // ---- Derived ----
 
@@ -522,9 +538,9 @@ export default function PatchesPage() {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Patch Management</h1>
+          <h1 className="text-xl font-semibold tracking-tight">{t('patchesPage.title')}</h1>
           <PageScopeIndicator pathname={typeof window !== 'undefined' ? window.location.pathname : '/patches'} orgName={currentOrg?.name} />
-          <p className="text-muted-foreground">Manage update rings, approvals, compliance, and patch deployments.</p>
+          <p className="text-muted-foreground">{t('patchesPage.description')}</p>
         </div>
         <div className="flex items-center gap-3">
           {(activeTab === 'compliance' || activeTab === 'patches') && (
@@ -535,7 +551,7 @@ export default function PatchesPage() {
               className="inline-flex h-10 items-center justify-center gap-2 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted disabled:opacity-50"
             >
               {scanLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-              {scanLoading ? 'Scanning...' : 'Run Scan'}
+              {scanLoading ? t('patchesPage.actions.scanning') : t('patchesPage.actions.runScan')}
             </button>
           )}
           {activeTab === 'rings' && (
@@ -551,7 +567,7 @@ export default function PatchesPage() {
               className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Plus className="h-4 w-4" />
-              New Ring
+              {t('patchesPage.actions.newRing')}
             </button>
           )}
         </div>
@@ -597,7 +613,7 @@ export default function PatchesPage() {
             <div className="flex items-center justify-center py-12">
               <div className="text-center">
                 <Loader2 className="mx-auto h-8 w-8 animate-spin text-muted-foreground" />
-                <p className="mt-4 text-sm text-muted-foreground">Loading update rings...</p>
+                <p className="mt-4 text-sm text-muted-foreground">{t('patchesPage.loadingRings')}</p>
               </div>
             </div>
           ) : ringsError && rings.length === 0 ? (
@@ -608,7 +624,7 @@ export default function PatchesPage() {
                 onClick={fetchRings}
                 className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
               >
-                Try again
+                {t('patchesPage.actions.tryAgain')}
               </button>
             </div>
           ) : (
@@ -673,17 +689,27 @@ export default function PatchesPage() {
         open={pendingScan !== null}
         onClose={() => setPendingScan(null)}
         onConfirm={() => { if (pendingScan) void executeScan(pendingScan.deviceIds); }}
-        title="Confirm patch scan"
+        title={t('patchesPage.scan.confirmTitle')}
         message={
           pendingScan
-            ? scopeConfirmMessage({
-                action: 'Scan for patches',
-                deviceCount: pendingScan.deviceIds.length,
-                orgNames: pendingScan.orgNames,
-              })
+            ? pendingScan.orgNames.length <= 1
+              ? t(
+                  /* i18n-dynamic */ pendingScan.deviceIds.length === 1
+                    ? 'patchesPage.scan.confirmMessageOne'
+                    : 'patchesPage.scan.confirmMessageMany',
+                  {
+                    count: pendingScan.deviceIds.length,
+                    org: pendingScan.orgNames[0] ?? t('patchesPage.scan.selectedOrganization'),
+                  }
+                )
+              : t('patchesPage.scan.confirmMessageMultiOrg', {
+                  count: pendingScan.deviceIds.length,
+                  orgCount: pendingScan.orgNames.length,
+                  orgNames: pendingScan.orgNames.join(', '),
+                })
             : ''
         }
-        confirmLabel="Scan"
+        confirmLabel={t('patchesPage.actions.scan')}
         variant="warning"
         isLoading={scanLoading}
         confirmTestId="confirm-fleet-action"
@@ -693,16 +719,18 @@ export default function PatchesPage() {
       <Dialog
         open={ringModalOpen}
         onClose={() => { setRingModalOpen(false); setEditingRing(null); }}
-        title={editingRing ? 'Edit update ring' : 'Create update ring'}
+        title={editingRing ? t('patchesPage.ringModal.editTitle') : t('patchesPage.ringModal.createTitle')}
         maxWidth="2xl"
         alignTop
         className="flex max-h-[90vh] flex-col"
       >
         <div className="flex items-center justify-between border-b px-6 py-4">
-          <h2 className="text-lg font-semibold">{editingRing ? 'Edit update ring' : 'Create update ring'}</h2>
+          <h2 className="text-lg font-semibold">
+            {editingRing ? t('patchesPage.ringModal.editTitle') : t('patchesPage.ringModal.createTitle')}
+          </h2>
           <button
             type="button"
-            aria-label="Close"
+            aria-label={t('patchesPage.actions.close')}
             onClick={() => { setRingModalOpen(false); setEditingRing(null); }}
             className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
           >
@@ -714,7 +742,11 @@ export default function PatchesPage() {
             key={editingRing?.id ?? 'new'}
             onSubmit={handleRingSubmit}
             onCancel={() => { setRingModalOpen(false); setEditingRing(null); }}
-            submitLabel={ringSubmitting ? (editingRing ? 'Saving...' : 'Creating...') : (editingRing ? 'Save Changes' : 'Create Ring')}
+            submitLabel={
+              ringSubmitting
+                ? (editingRing ? t('patchesPage.actions.saving') : t('patchesPage.actions.creating'))
+                : (editingRing ? t('patchesPage.actions.saveChanges') : t('patchesPage.actions.createRing'))
+            }
             loading={ringSubmitting}
             usage={editingRing ? { deviceCount: editingRing.deviceCount } : undefined}
             defaultValues={editingRing ? {

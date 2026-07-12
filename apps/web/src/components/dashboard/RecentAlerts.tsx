@@ -4,6 +4,7 @@ import { cn } from '@/lib/utils';
 import { getErrorMessage, getErrorTitle } from '@/lib/errorMessages';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatTimeAgo } from '@/lib/formatTime';
+import { useTranslation } from 'react-i18next';
 
 interface Alert {
   id: string;
@@ -47,6 +48,7 @@ const severityConfig = {
 };
 
 export default function RecentAlerts() {
+  const { t } = useTranslation('common');
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
@@ -95,9 +97,9 @@ export default function RecentAlerts() {
     return (
       <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="mb-4 flex items-center justify-between">
-          <h3 data-testid="dashboard-recent-alerts-heading" className="text-sm font-semibold">Recent Alerts</h3>
+          <h3 data-testid="dashboard-recent-alerts-heading" className="text-sm font-semibold">{t('dashboard.alerts.title')}</h3>
           <a href="/alerts" className="text-xs font-medium text-primary hover:text-primary/80 transition-colors">
-            View all
+            {t('dashboard.alerts.viewAll')}
           </a>
         </div>
         <div className="space-y-3">
@@ -119,9 +121,9 @@ export default function RecentAlerts() {
     return (
       <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="mb-4 flex items-center justify-between">
-          <h3 data-testid="dashboard-recent-alerts-heading" className="text-sm font-semibold">Recent Alerts</h3>
+          <h3 data-testid="dashboard-recent-alerts-heading" className="text-sm font-semibold">{t('dashboard.alerts.title')}</h3>
           <a href="/alerts" className="text-xs font-medium text-primary hover:text-primary/80 transition-colors">
-            View all
+            {t('dashboard.alerts.viewAll')}
           </a>
         </div>
         <div className="flex flex-col items-center justify-center py-8 text-center">
@@ -131,7 +133,7 @@ export default function RecentAlerts() {
           <p className="text-sm font-medium text-foreground mb-1">{getErrorTitle(error)}</p>
           <p className="text-xs text-muted-foreground mb-3">{getErrorMessage(error)}</p>
           <button onClick={retry} className="text-xs font-medium text-primary hover:underline">
-            Try again
+            {t('actions.retry')}
           </button>
         </div>
       </div>
@@ -141,24 +143,24 @@ export default function RecentAlerts() {
   return (
     <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="mb-4 flex items-center justify-between">
-        <h3 data-testid="dashboard-recent-alerts-heading" className="text-sm font-semibold">Recent Alerts</h3>
+        <h3 data-testid="dashboard-recent-alerts-heading" className="text-sm font-semibold">{t('dashboard.alerts.title')}</h3>
         <a href="/alerts" className="text-sm text-primary hover:underline">
-          View all
+          {t('dashboard.alerts.viewAll')}
         </a>
       </div>
       <div className="space-y-3">
         {alerts.length === 0 ? (
           <div className="flex h-32 flex-col items-center justify-center gap-1 text-center">
-            <p className="text-sm font-medium text-foreground/70">All clear</p>
-            <p className="text-xs text-muted-foreground">No active alerts across your fleet</p>
+            <p className="text-sm font-medium text-foreground/70">{t('dashboard.alerts.allClear')}</p>
+            <p className="text-xs text-muted-foreground">{t('dashboard.alerts.empty')}</p>
           </div>
         ) : (
           alerts.map((alert) => {
             const severityKey = alert.severity.toLowerCase() as keyof typeof severityConfig;
             const config = severityConfig[severityKey] || severityConfig.low;
             const Icon = config.icon;
-            const deviceName = alert.device?.name || alert.deviceName || 'Unknown';
-            const alertTitle = alert.title || alert.message || 'Alert';
+            const deviceName = alert.device?.name || alert.deviceName || t('states.unknown');
+            const alertTitle = alert.title || alert.message || t('dashboard.alerts.fallbackTitle');
 
             return (
               <div

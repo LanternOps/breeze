@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Package, Search, ShieldCheck, AlertTriangle, RefreshCw, Plus, Pencil, Trash2, Play, Lock } from 'lucide-react';
 import { fetchWithAuth } from '@/stores/auth';
 import { getSafeExternalHref } from '@/lib/safeHref';
@@ -47,6 +48,7 @@ type PendingTest = {
 };
 
 export default function ThirdPartyCatalog() {
+  const { t } = useTranslation('admin');
   const [items, setItems] = useState<CatalogEntry[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -83,18 +85,18 @@ export default function ThirdPartyCatalog() {
           setTotal(0);
           return;
         }
-        throw new Error('Failed to load catalog');
+        throw new Error(t('admin.thirdPartyCatalog.errors.load'));
       }
       setRequiresPlatformAdmin(false);
       const data = await response.json();
       setItems(data.items ?? []);
       setTotal(data.total ?? 0);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('admin.thirdPartyCatalog.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [search, showOnlyTested]);
+  }, [search, showOnlyTested, t]);
 
   useEffect(() => {
     const timer = setTimeout(fetchCatalog, search ? 250 : 0);
@@ -138,13 +140,13 @@ export default function ThirdPartyCatalog() {
       const summary = completed
         .map((c) => `${c.entry.friendlyName}: ${c.result}`)
         .join('; ');
-      setNotice(`Test complete — ${summary}`);
+      setNotice(t('admin.thirdPartyCatalog.notice.testComplete', { summary }));
     }
-  }, [items, pendingTests]);
+  }, [items, pendingTests, t]);
 
   const handleRetest = async (entry: CatalogEntry) => {
     const version = window.prompt(
-      `Run smoke test for ${entry.friendlyName} at which version?`,
+      t('admin.thirdPartyCatalog.prompt.runSmokeTest', { name: entry.friendlyName }),
       entry.lastTestedVersion ?? ''
     );
     if (!version || !version.trim()) return;
@@ -159,7 +161,7 @@ export default function ThirdPartyCatalog() {
       });
       if (!response.ok) {
         const err = await response.json().catch(() => ({}));
-        throw new Error(err?.error ?? `Failed to queue test (${response.status})`);
+        throw new Error(err?.error ?? t('admin.thirdPartyCatalog.errors.queueTestStatus', { status: response.status }));
       }
       setPendingTests((prev) => [
         ...prev.filter((p) => p.entryId !== entry.id),
@@ -169,26 +171,26 @@ export default function ThirdPartyCatalog() {
           initialLastTestedAt: entry.lastTestedAt,
         },
       ]);
-      setNotice(`Test queued for ${entry.friendlyName}. Polling for result…`);
+      setNotice(t('admin.thirdPartyCatalog.notice.testQueued', { name: entry.friendlyName }));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to queue test');
+      setError(err instanceof Error ? err.message : t('admin.thirdPartyCatalog.errors.queueTest'));
     } finally {
       setRetestingId(null);
     }
   };
 
   const handleDelete = async (entry: CatalogEntry) => {
-    if (!window.confirm(`Delete "${entry.friendlyName}" from the catalog?`)) return;
+    if (!window.confirm(t('admin.thirdPartyCatalog.confirmDelete', { name: entry.friendlyName }))) return;
     setDeletingId(entry.id);
     setError(undefined);
     try {
       const response = await fetchWithAuth(`/third-party-catalog/${entry.id}`, {
         method: 'DELETE',
       });
-      if (!response.ok) throw new Error('Failed to delete entry');
+      if (!response.ok) throw new Error(t('admin.thirdPartyCatalog.errors.deleteEntry'));
       await fetchCatalog();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete');
+      setError(err instanceof Error ? err.message : t('admin.thirdPartyCatalog.errors.delete'));
     } finally {
       setDeletingId(null);
     }
@@ -212,7 +214,7 @@ export default function ThirdPartyCatalog() {
     return (
       <div className="p-6">
         <h1 className="text-2xl font-semibold flex items-center gap-2 mb-6">
-          <Package className="w-6 h-6" /> Third-Party Package Catalog
+          <Package className="w-6 h-6" /> {t('admin.thirdPartyCatalog.title')}
         </h1>
         <div
           data-testid="catalog-requires-platform-admin"
@@ -220,12 +222,11 @@ export default function ThirdPartyCatalog() {
         >
           <Lock className="w-6 h-6 shrink-0 mt-0.5" />
           <div>
-            <div className="font-semibold mb-1">Platform-admin access required</div>
+            <div className="font-semibold mb-1">{t('admin.thirdPartyCatalog.platformAdmin.title')}</div>
             <div className="text-sm">
-              The third-party catalog is managed by Breeze platform admins. Your account
+              {t('admin.thirdPartyCatalog.platformAdmin.prefix')}
               ({/* role-aware text intentionally not surfaced — server-side identity is the source of truth */}
-              an org/partner admin) can view the curated catalog through normal patch flows but
-              cannot edit it directly.
+              {t('admin.thirdPartyCatalog.platformAdmin.role')}) {t('admin.thirdPartyCatalog.platformAdmin.suffix')}
             </div>
           </div>
         </div>
@@ -238,11 +239,11 @@ export default function ThirdPartyCatalog() {
       <div className="flex items-start justify-between mb-6">
         <div>
           <h1 className="text-2xl font-semibold flex items-center gap-2">
-            <Package className="w-6 h-6" /> Third-Party Package Catalog
+            <Package className="w-6 h-6" /> {t('admin.thirdPartyCatalog.title')}
           </h1>
           <p className="text-sm text-gray-600 mt-1">
-            Breeze-curated metadata for third-party software detected by winget on agents.
-            Total entries: <span data-testid="catalog-total">{total}</span>
+            {t('admin.thirdPartyCatalog.description')}{' '}
+            {t('admin.thirdPartyCatalog.totalEntries')} <span data-testid="catalog-total">{total}</span>
           </p>
         </div>
         <div className="flex gap-2">
@@ -251,14 +252,14 @@ export default function ThirdPartyCatalog() {
             onClick={fetchCatalog}
             className="px-3 py-2 text-sm border rounded hover:bg-gray-50 flex items-center gap-1"
           >
-            <RefreshCw className="w-4 h-4" /> Refresh
+            <RefreshCw className="w-4 h-4" /> {t('admin.thirdPartyCatalog.refresh')}
           </button>
           <button
             data-testid="catalog-add-button"
             onClick={() => setEditor({ kind: 'add' })}
             className="px-3 py-2 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 flex items-center gap-1"
           >
-            <Plus className="w-4 h-4" /> Add package
+            <Plus className="w-4 h-4" /> {t('admin.thirdPartyCatalog.addPackage')}
           </button>
         </div>
       </div>
@@ -271,7 +272,7 @@ export default function ThirdPartyCatalog() {
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search by name, vendor, or winget ID…"
+            placeholder={t('admin.thirdPartyCatalog.searchPlaceholder')}
             className="w-full pl-9 pr-3 py-2 border rounded text-sm"
           />
         </div>
@@ -282,7 +283,7 @@ export default function ThirdPartyCatalog() {
             checked={showOnlyTested}
             onChange={(e) => setShowOnlyTested(e.target.checked)}
           />
-          Breeze-tested only
+          {t('admin.thirdPartyCatalog.breezeTestedOnly')}
         </label>
       </div>
 
@@ -302,29 +303,29 @@ export default function ThirdPartyCatalog() {
             onClick={() => setNotice(undefined)}
             className="text-blue-600 hover:underline text-sm"
           >
-            Dismiss
+            {t('admin.thirdPartyCatalog.dismiss')}
           </button>
         </div>
       )}
 
       {loading ? (
-        <div className="text-center py-12 text-gray-500">Loading catalog…</div>
+        <div className="text-center py-12 text-gray-500">{t('admin.thirdPartyCatalog.loading')}</div>
       ) : items.length === 0 ? (
         <div className="text-center py-12 text-gray-500" data-testid="catalog-empty">
-          No catalog entries match the current filters.
+          {t('admin.thirdPartyCatalog.empty')}
         </div>
       ) : (
         <div className="overflow-x-auto border rounded">
           <table className="w-full text-sm">
             <thead className="bg-gray-50 border-b">
               <tr className="text-left">
-                <th className="px-4 py-2 font-medium">Vendor</th>
-                <th className="px-4 py-2 font-medium">Package</th>
-                <th className="px-4 py-2 font-medium">Winget ID</th>
-                <th className="px-4 py-2 font-medium">Severity</th>
-                <th className="px-4 py-2 font-medium">Status</th>
-                <th className="px-4 py-2 font-medium">Last test</th>
-                <th className="px-4 py-2 font-medium text-right">Actions</th>
+                <th className="px-4 py-2 font-medium">{t('admin.thirdPartyCatalog.table.vendor')}</th>
+                <th className="px-4 py-2 font-medium">{t('admin.thirdPartyCatalog.table.package')}</th>
+                <th className="px-4 py-2 font-medium">{t('admin.thirdPartyCatalog.table.wingetId')}</th>
+                <th className="px-4 py-2 font-medium">{t('admin.thirdPartyCatalog.table.severity')}</th>
+                <th className="px-4 py-2 font-medium">{t('admin.thirdPartyCatalog.table.status')}</th>
+                <th className="px-4 py-2 font-medium">{t('admin.thirdPartyCatalog.table.lastTest')}</th>
+                <th className="px-4 py-2 font-medium text-right">{t('admin.thirdPartyCatalog.table.actions')}</th>
               </tr>
             </thead>
             <tbody>
@@ -361,7 +362,13 @@ export default function ThirdPartyCatalog() {
                         severityStyles[entry.defaultSeverity] ?? severityStyles.unknown
                       }`}
                     >
-                      {entry.defaultSeverity}
+                      {{
+                        critical: t('admin.thirdPartyCatalog.severity.critical'),
+                        important: t('admin.thirdPartyCatalog.severity.important'),
+                        moderate: t('admin.thirdPartyCatalog.severity.moderate'),
+                        low: t('admin.thirdPartyCatalog.severity.low'),
+                        unknown: t('admin.thirdPartyCatalog.severity.unknown'),
+                      }[entry.defaultSeverity]}
                     </span>
                   </td>
                   <td className="px-4 py-2">
@@ -370,7 +377,7 @@ export default function ThirdPartyCatalog() {
                         data-testid={`catalog-row-${entry.id}-tested-badge`}
                         className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-green-100 text-green-800"
                       >
-                        <ShieldCheck className="w-3 h-3" /> Breeze-tested
+                        <ShieldCheck className="w-3 h-3" /> {t('admin.thirdPartyCatalog.breezeTested')}
                       </span>
                     )}
                   </td>
@@ -380,7 +387,7 @@ export default function ThirdPartyCatalog() {
                         data-testid={`catalog-row-${entry.id}-test-running`}
                         className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-blue-100 text-blue-800"
                       >
-                        <RefreshCw className="w-3 h-3 animate-spin" /> running…
+                        <RefreshCw className="w-3 h-3 animate-spin" /> {t('admin.thirdPartyCatalog.test.running')}
                       </span>
                     ) : entry.lastTestedResult ? (
                       <span
@@ -388,9 +395,14 @@ export default function ThirdPartyCatalog() {
                         className={`inline-block px-2 py-0.5 rounded text-xs ${
                           testResultStyles[entry.lastTestedResult] ?? testResultStyles.skipped
                         }`}
-                        title={entry.lastTestedVersion ? `v${entry.lastTestedVersion}` : undefined}
+                        title={entry.lastTestedVersion ? t('admin.thirdPartyCatalog.test.versionTitle', { version: entry.lastTestedVersion }) : undefined}
                       >
-                        {entry.lastTestedResult}
+                        {{
+                          pass: t('admin.thirdPartyCatalog.test.pass'),
+                          fail: t('admin.thirdPartyCatalog.test.fail'),
+                          inconclusive: t('admin.thirdPartyCatalog.test.inconclusive'),
+                          skipped: t('admin.thirdPartyCatalog.test.skipped'),
+                        }[entry.lastTestedResult] ?? entry.lastTestedResult}
                       </span>
                     ) : (
                       <span className="text-xs text-gray-400">—</span>
@@ -404,8 +416,8 @@ export default function ThirdPartyCatalog() {
                           onClick={() => handleRetest(entry)}
                           disabled={retestingId === entry.id}
                           className="p-1 rounded hover:bg-gray-200 disabled:opacity-50"
-                          aria-label="Re-test"
-                          title="Run smoke test"
+                          aria-label={t('admin.thirdPartyCatalog.actions.retest')}
+                          title={t('admin.thirdPartyCatalog.actions.runSmokeTest')}
                         >
                           <Play className="w-4 h-4 text-blue-600" />
                         </button>
@@ -414,7 +426,7 @@ export default function ThirdPartyCatalog() {
                         data-testid={`catalog-row-${entry.id}-edit`}
                         onClick={() => setEditor({ kind: 'edit', entry })}
                         className="p-1 rounded hover:bg-gray-200"
-                        aria-label="Edit"
+                        aria-label={t('admin.thirdPartyCatalog.actions.edit')}
                       >
                         <Pencil className="w-4 h-4" />
                       </button>
@@ -423,7 +435,7 @@ export default function ThirdPartyCatalog() {
                         onClick={() => handleDelete(entry)}
                         disabled={deletingId === entry.id}
                         className="p-1 rounded hover:bg-gray-200 disabled:opacity-50"
-                        aria-label="Delete"
+                        aria-label={t('admin.thirdPartyCatalog.actions.delete')}
                       >
                         <Trash2 className="w-4 h-4 text-red-600" />
                       </button>

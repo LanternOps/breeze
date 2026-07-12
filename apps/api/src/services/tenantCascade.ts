@@ -293,6 +293,11 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'sso_verified_domains',
   'storage_encryption_keys',
   'ticket_alert_links',
+  // ticket_forms (spec 2026-07-10): dual-axis (org_id XOR partner_id) —
+  // partner-wide forms are cleared via cascadeDeletePartner's dynamic
+  // partner_id sweep (information_schema-driven), not a static list; this
+  // entry only covers the org-owned axis of the GDPR org cascade.
+  'ticket_forms',
   'ticket_parts',
   'tickets',
   'time_entries',

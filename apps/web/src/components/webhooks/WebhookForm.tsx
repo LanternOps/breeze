@@ -4,12 +4,13 @@ import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Plus, Trash2, Sparkles } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useTranslation } from 'react-i18next';
 
-const webhookSchema = z
+const createWebhookSchema = (t: (key: string) => string) => z
   .object({
-    name: z.string().min(1, 'Webhook name is required'),
-    url: z.string().url('Invalid URL').min(1, 'URL is required'),
-    events: z.array(z.string()).min(1, 'Select at least one event'),
+    name: z.string().min(1, t('longTail.webhooks.WebhookForm.validation.nameRequired')),
+    url: z.string().url(t('longTail.webhooks.WebhookForm.validation.invalidUrl')).min(1, t('longTail.webhooks.WebhookForm.validation.urlRequired')),
+    events: z.array(z.string()).min(1, t('longTail.webhooks.WebhookForm.validation.eventRequired')),
     authType: z.enum(['hmac', 'bearer']),
     secret: z.string().optional(),
     bearerToken: z.string().optional(),
@@ -18,7 +19,7 @@ const webhookSchema = z
     headers: z
       .array(
         z.object({
-          key: z.string().min(1, 'Header key is required'),
+          key: z.string().min(1, t('longTail.webhooks.WebhookForm.validation.headerKeyRequired')),
           value: z.string().optional()
         })
       )
@@ -28,7 +29,7 @@ const webhookSchema = z
     if (values.authType === 'hmac' && !values.secret?.trim()) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: 'Secret is required for HMAC authentication',
+        message: t('longTail.webhooks.WebhookForm.validation.secretRequired'),
         path: ['secret']
       });
     }
@@ -36,7 +37,7 @@ const webhookSchema = z
     if (values.authType === 'bearer' && !values.bearerToken?.trim()) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: 'Token is required for bearer authentication',
+        message: t('longTail.webhooks.WebhookForm.validation.tokenRequired'),
         path: ['bearerToken']
       });
     }
@@ -47,14 +48,14 @@ const webhookSchema = z
       } catch {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: 'Payload template must be valid JSON',
+          message: t('longTail.webhooks.WebhookForm.validation.payloadJsonRequired'),
           path: ['payloadTemplate']
         });
       }
     }
   });
 
-export type WebhookFormValues = z.infer<typeof webhookSchema>;
+export type WebhookFormValues = z.infer<ReturnType<typeof createWebhookSchema>>;
 
 type WebhookFormProps = {
   onSubmit?: (values: WebhookFormValues) => void | Promise<void>;
@@ -65,12 +66,12 @@ type WebhookFormProps = {
 };
 
 export const webhookEventOptions = [
-  { value: 'device.online', label: 'Device Online', description: 'Triggered when a device connects.' },
-  { value: 'device.offline', label: 'Device Offline', description: 'Triggered when a device disconnects.' },
-  { value: 'alert.created', label: 'Alert Created', description: 'Triggered when an alert is created.' },
-  { value: 'alert.resolved', label: 'Alert Resolved', description: 'Triggered when an alert is resolved.' },
-  { value: 'script.completed', label: 'Script Completed', description: 'Triggered when a script finishes.' },
-  { value: 'ticket.created', label: 'Ticket Created', description: 'Triggered when a ticket is created.' }
+  { value: 'device.online', label: 'Device Online', labelKey: 'longTail.webhooks.WebhookForm.events.deviceOnline.label', description: 'Triggered when a device connects.', descriptionKey: 'longTail.webhooks.WebhookForm.events.deviceOnline.description' },
+  { value: 'device.offline', label: 'Device Offline', labelKey: 'longTail.webhooks.WebhookForm.events.deviceOffline.label', description: 'Triggered when a device disconnects.', descriptionKey: 'longTail.webhooks.WebhookForm.events.deviceOffline.description' },
+  { value: 'alert.created', label: 'Alert Created', labelKey: 'longTail.webhooks.WebhookForm.events.alertCreated.label', description: 'Triggered when an alert is created.', descriptionKey: 'longTail.webhooks.WebhookForm.events.alertCreated.description' },
+  { value: 'alert.resolved', label: 'Alert Resolved', labelKey: 'longTail.webhooks.WebhookForm.events.alertResolved.label', description: 'Triggered when an alert is resolved.', descriptionKey: 'longTail.webhooks.WebhookForm.events.alertResolved.description' },
+  { value: 'script.completed', label: 'Script Completed', labelKey: 'longTail.webhooks.WebhookForm.events.scriptCompleted.label', description: 'Triggered when a script finishes.', descriptionKey: 'longTail.webhooks.WebhookForm.events.scriptCompleted.description' },
+  { value: 'ticket.created', label: 'Ticket Created', labelKey: 'longTail.webhooks.WebhookForm.events.ticketCreated.label', description: 'Triggered when a ticket is created.', descriptionKey: 'longTail.webhooks.WebhookForm.events.ticketCreated.description' }
 ];
 
 const generateSecret = (length = 32) => {
@@ -90,9 +91,12 @@ export default function WebhookForm({
   onSubmit,
   onCancel,
   defaultValues,
-  submitLabel = 'Save webhook',
+  submitLabel,
   loading
 }: WebhookFormProps) {
+  const { t } = useTranslation('common');
+  const resolvedSubmitLabel = submitLabel ?? t('longTail.webhooks.WebhookForm.defaultSubmitLabel');
+  const webhookSchema = useMemo(() => createWebhookSchema(t), [t]);
   const {
     register,
     handleSubmit,
@@ -137,9 +141,9 @@ export default function WebhookForm({
         error: ''
       };
     } catch {
-      return { preview: payloadTemplate, error: 'Invalid JSON in template.' };
+      return { preview: payloadTemplate, error: t('longTail.webhooks.WebhookForm.invalidJsonPreview') };
     }
-  }, [payloadTemplate]);
+  }, [payloadTemplate, t]);
 
   const handleGenerateSecret = () => {
     const secret = generateSecret();
@@ -167,8 +171,8 @@ export default function WebhookForm({
       <input type="hidden" {...register('enabled')} />
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-lg font-semibold">Webhook configuration</h2>
-          <p className="text-sm text-muted-foreground">Set delivery, authentication, and payload behavior.</p>
+          <h2 className="text-lg font-semibold">{t('longTail.webhooks.WebhookForm.title')}</h2>
+          <p className="text-sm text-muted-foreground">{t('longTail.webhooks.WebhookForm.subtitle')}</p>
         </div>
         <button
           type="button"
@@ -181,18 +185,18 @@ export default function WebhookForm({
           )}
         >
           <span className={cn('h-2 w-2 rounded-full', enabled ? 'bg-emerald-500' : 'bg-slate-400')} />
-          {enabled ? 'Enabled' : 'Disabled'}
+          {enabled ? t('common:states.enabled') : t('common:states.disabled')}
         </button>
       </div>
 
       <div className="grid gap-6 md:grid-cols-2">
         <div className="space-y-2">
           <label htmlFor="webhook-name" className="text-sm font-medium">
-            Webhook name
+            {t('longTail.webhooks.WebhookForm.fields.name')}
           </label>
           <input
             id="webhook-name"
-            placeholder="Production Webhook"
+            placeholder={t('longTail.webhooks.WebhookForm.placeholders.name')}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('name')}
           />
@@ -201,11 +205,11 @@ export default function WebhookForm({
 
         <div className="space-y-2">
           <label htmlFor="webhook-url" className="text-sm font-medium">
-            Endpoint URL
+            {t('longTail.webhooks.WebhookForm.fields.endpointUrl')}
           </label>
           <input
             id="webhook-url"
-            placeholder="https://api.example.com/webhooks"
+            placeholder={t('longTail.webhooks.WebhookForm.placeholders.endpointUrl')}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('url')}
           />
@@ -214,7 +218,7 @@ export default function WebhookForm({
       </div>
 
       <div className="space-y-2">
-        <label className="text-sm font-medium">Events</label>
+        <label className="text-sm font-medium">{t('longTail.webhooks.WebhookForm.fields.events')}</label>
         <div className="grid gap-3 sm:grid-cols-2">
           {webhookEventOptions.map(option => (
             <label
@@ -231,8 +235,8 @@ export default function WebhookForm({
                 {...register('events')}
               />
               <div>
-                <p className="text-sm font-medium">{option.label}</p>
-                <p className="text-xs text-muted-foreground">{option.description}</p>
+                <p className="text-sm font-medium">{t(/* i18n-dynamic */ option.labelKey)}</p>
+                <p className="text-xs text-muted-foreground">{t(/* i18n-dynamic */ option.descriptionKey)}</p>
               </div>
             </label>
           ))}
@@ -242,9 +246,9 @@ export default function WebhookForm({
 
       <div className="space-y-3 rounded-md border bg-muted/20 p-4">
         <div>
-          <h3 className="text-sm font-semibold">Authentication</h3>
+          <h3 className="text-sm font-semibold">{t('longTail.webhooks.WebhookForm.authentication.title')}</h3>
           <p className="text-xs text-muted-foreground">
-            Choose how your destination verifies webhook authenticity.
+            {t('longTail.webhooks.WebhookForm.authentication.subtitle')}
           </p>
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
@@ -256,8 +260,8 @@ export default function WebhookForm({
               {...register('authType')}
             />
             <div>
-              <p className="text-sm font-medium">HMAC signature</p>
-              <p className="text-xs text-muted-foreground">Sign requests with a shared secret.</p>
+              <p className="text-sm font-medium">{t('longTail.webhooks.WebhookForm.authentication.hmac.title')}</p>
+              <p className="text-xs text-muted-foreground">{t('longTail.webhooks.WebhookForm.authentication.hmac.description')}</p>
             </div>
           </label>
           <label className="flex items-start gap-3 rounded-md border bg-background p-3 text-sm">
@@ -268,8 +272,8 @@ export default function WebhookForm({
               {...register('authType')}
             />
             <div>
-              <p className="text-sm font-medium">Bearer token</p>
-              <p className="text-xs text-muted-foreground">Send a static token in the header.</p>
+              <p className="text-sm font-medium">{t('longTail.webhooks.WebhookForm.authentication.bearer.title')}</p>
+              <p className="text-xs text-muted-foreground">{t('longTail.webhooks.WebhookForm.authentication.bearer.description')}</p>
             </div>
           </label>
         </div>
@@ -277,7 +281,7 @@ export default function WebhookForm({
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <label htmlFor="webhook-secret" className="text-sm font-medium">
-                Signing secret
+                {t('longTail.webhooks.WebhookForm.fields.signingSecret')}
               </label>
               <button
                 type="button"
@@ -285,26 +289,26 @@ export default function WebhookForm({
                 className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
               >
                 <Sparkles className="h-3 w-3" />
-                Auto-generate
+                {t('longTail.webhooks.WebhookForm.actions.autoGenerate')}
               </button>
             </div>
             <input
               id="webhook-secret"
               type="text"
-              placeholder="Enter a signing secret"
+              placeholder={t('longTail.webhooks.WebhookForm.placeholders.signingSecret')}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('secret')}
             />
             {errors.secret && <p className="text-sm text-destructive">{errors.secret.message}</p>}
             <p className="text-xs text-muted-foreground">
-              Use this secret to verify webhook signatures.
+              {t('longTail.webhooks.WebhookForm.help.signingSecret')}
             </p>
           </div>
         ) : (
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <label htmlFor="webhook-token" className="text-sm font-medium">
-                Bearer token
+                {t('longTail.webhooks.WebhookForm.fields.bearerToken')}
               </label>
               <button
                 type="button"
@@ -312,13 +316,13 @@ export default function WebhookForm({
                 className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
               >
                 <Sparkles className="h-3 w-3" />
-                Auto-generate
+                {t('longTail.webhooks.WebhookForm.actions.autoGenerate')}
               </button>
             </div>
             <input
               id="webhook-token"
               type="text"
-              placeholder="Enter a bearer token"
+              placeholder={t('longTail.webhooks.WebhookForm.placeholders.bearerToken')}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('bearerToken')}
             />
@@ -326,7 +330,7 @@ export default function WebhookForm({
               <p className="text-sm text-destructive">{errors.bearerToken.message}</p>
             )}
             <p className="text-xs text-muted-foreground">
-              This token is sent as an Authorization header.
+              {t('longTail.webhooks.WebhookForm.help.bearerToken')}
             </p>
           </div>
         )}
@@ -334,15 +338,15 @@ export default function WebhookForm({
 
       <div className="space-y-3 rounded-md border bg-muted/20 p-4">
         <div>
-          <h3 className="text-sm font-semibold">Payload template</h3>
+          <h3 className="text-sm font-semibold">{t('longTail.webhooks.WebhookForm.payload.title')}</h3>
           <p className="text-xs text-muted-foreground">
-            Define the JSON payload shape sent to your destination.
+            {t('longTail.webhooks.WebhookForm.payload.subtitle')}
           </p>
         </div>
         <div className="grid gap-4 lg:grid-cols-2">
           <div className="space-y-2">
             <label htmlFor="payload-template" className="text-sm font-medium">
-              Template (JSON)
+              {t('longTail.webhooks.WebhookForm.fields.templateJson')}
             </label>
             <textarea
               id="payload-template"
@@ -356,12 +360,12 @@ export default function WebhookForm({
             )}
           </div>
           <div className="space-y-2">
-            <label className="text-sm font-medium">JSON preview</label>
+            <label className="text-sm font-medium">{t('longTail.webhooks.WebhookForm.fields.jsonPreview')}</label>
             <div className="rounded-md border bg-background p-3 text-xs text-muted-foreground">
               {payloadPreview.preview ? (
                 <pre className="max-h-56 overflow-auto">{payloadPreview.preview}</pre>
               ) : (
-                <p className="text-xs text-muted-foreground">Preview appears once JSON is valid.</p>
+                <p className="text-xs text-muted-foreground">{t('longTail.webhooks.WebhookForm.payload.previewEmpty')}</p>
               )}
             </div>
             {!errors.payloadTemplate && payloadPreview.error && (
@@ -374,8 +378,8 @@ export default function WebhookForm({
       <div className="space-y-3 rounded-md border bg-muted/20 p-4">
         <div className="flex items-center justify-between">
           <div>
-            <h3 className="text-sm font-semibold">Custom Headers</h3>
-            <p className="text-xs text-muted-foreground">Optional headers sent with each request.</p>
+            <h3 className="text-sm font-semibold">{t('longTail.webhooks.WebhookForm.headers.title')}</h3>
+            <p className="text-xs text-muted-foreground">{t('longTail.webhooks.WebhookForm.headers.subtitle')}</p>
           </div>
           <button
             type="button"
@@ -383,23 +387,23 @@ export default function WebhookForm({
             className="inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted"
           >
             <Plus className="h-4 w-4" />
-            Add Header
+            {t('longTail.webhooks.WebhookForm.actions.addHeader')}
           </button>
         </div>
 
         {fields.length === 0 ? (
-          <p className="text-xs text-muted-foreground">No custom headers configured.</p>
+          <p className="text-xs text-muted-foreground">{t('longTail.webhooks.WebhookForm.headers.empty')}</p>
         ) : (
           <div className="space-y-2">
             {fields.map((field, index) => (
               <div key={field.id} className="flex items-center gap-2">
                 <input
-                  placeholder="Header key"
+                  placeholder={t('longTail.webhooks.WebhookForm.placeholders.headerKey')}
                   className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   {...register(`headers.${index}.key`)}
                 />
                 <input
-                  placeholder="Header value"
+                  placeholder={t('longTail.webhooks.WebhookForm.placeholders.headerValue')}
                   className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   {...register(`headers.${index}.value`)}
                 />
@@ -422,14 +426,14 @@ export default function WebhookForm({
           onClick={onCancel}
           className="h-11 w-full rounded-md border bg-background text-sm font-medium text-foreground transition hover:bg-muted sm:w-auto sm:px-6"
         >
-          Cancel
+          {t('common:actions.cancel')}
         </button>
         <button
           type="submit"
           disabled={isLoading}
           className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto sm:px-6"
         >
-          {isLoading ? 'Saving...' : submitLabel}
+          {isLoading ? t('common:states.saving') : resolvedSubmitLabel}
         </button>
       </div>
     </form>

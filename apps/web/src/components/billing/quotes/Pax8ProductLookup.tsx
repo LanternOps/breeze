@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '../../../lib/i18n';
 import { pax8Search, pax8Pricing, type Pax8Product, type Pax8PriceOption } from '../../../lib/api/distributors';
 import { computeMarginBreakdown, formatMarginSummary } from '../../settings/marginMath';
 
@@ -15,6 +17,7 @@ interface Props {
 }
 
 export default function Pax8ProductLookup({ blockId, busy, onImportAdd }: Props) {
+  const { t } = useTranslation('billing');
   const [query, setQuery] = useState('');
   const [products, setProducts] = useState<Pax8Product[]>([]);
   const [pricing, setPricing] = useState<Record<string, Pax8PriceOption[]>>({});
@@ -47,7 +50,7 @@ export default function Pax8ProductLookup({ blockId, busy, onImportAdd }: Props)
       const res = await pax8Search(q);
       if (!res.ok) {
         const body = (await res.json().catch(() => null)) as { error?: string } | null;
-        setError(body?.error ?? 'Search failed.');
+        setError(body?.error ?? t('quotes.pax8ProductLookup.searchFailed'));
         setProducts([]);
         return;
       }
@@ -56,7 +59,7 @@ export default function Pax8ProductLookup({ blockId, busy, onImportAdd }: Props)
       setProducts(results);
       await Promise.all(results.map((p) => loadPricing(p.pax8ProductId)));
     } catch {
-      setError('Search failed.');
+      setError(t('quotes.pax8ProductLookup.searchFailed'));
       setProducts([]);
     } finally {
       setSearching(false);
@@ -69,7 +72,7 @@ export default function Pax8ProductLookup({ blockId, busy, onImportAdd }: Props)
         <input
           type="text"
           value={query}
-          placeholder="Product, vendor, or SKU"
+          placeholder={t('quotes.pax8ProductLookup.placeholder')}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void search(); } }}
           data-testid={`pax8-product-search-${blockId}`}
@@ -82,7 +85,7 @@ export default function Pax8ProductLookup({ blockId, busy, onImportAdd }: Props)
           data-testid={`pax8-product-search-btn-${blockId}`}
           className="inline-flex h-9 items-center rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
         >
-          {searching ? 'Searching…' : 'Search'}
+          {searching ? t('quotes.pax8ProductLookup.searching') : t('common:actions.search')}
         </button>
       </div>
 
@@ -104,7 +107,7 @@ export default function Pax8ProductLookup({ blockId, busy, onImportAdd }: Props)
             </div>
             {options.length > 0 && (
               <div className="mt-2 flex items-center gap-2">
-                <label className="text-xs text-muted-foreground">Term</label>
+                <label className="text-xs text-muted-foreground">{t('quotes.pax8ProductLookup.term')}</label>
                 <select
                   value={idx}
                   data-testid={`pax8-product-term-${p.pax8ProductId}`}
@@ -118,15 +121,15 @@ export default function Pax8ProductLookup({ blockId, busy, onImportAdd }: Props)
                 >
                   {options.map((o, i) => (
                     <option key={i} value={i}>
-                      {[o.commitmentTerm, o.billingTerm].filter(Boolean).join(' / ') || `Option ${i + 1}`}
-                      {o.partnerBuyRate ? ` — cost ${o.currencyCode ?? 'USD'} ${o.partnerBuyRate}` : ''}
+                      {[o.commitmentTerm, o.billingTerm].filter(Boolean).join(' / ') || t('quotes.pax8ProductLookup.option', { number: i + 1 })}
+                      {o.partnerBuyRate ? ` — ${t('quotes.pax8ProductLookup.cost', { currency: o.currencyCode ?? 'USD', amount: o.partnerBuyRate })}` : ''}
                     </option>
                   ))}
                 </select>
               </div>
             )}
             <div className="mt-2 flex items-center gap-2">
-              <label className="text-xs text-muted-foreground">Sell price</label>
+              <label className="text-xs text-muted-foreground">{t('quotes.pax8ProductLookup.sellPrice')}</label>
               <input
                 type="number" min="0" step="0.01"
                 value={priceVal}
@@ -141,7 +144,7 @@ export default function Pax8ProductLookup({ blockId, busy, onImportAdd }: Props)
                 data-testid={`pax8-product-add-${p.pax8ProductId}`}
                 className="inline-flex h-9 items-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
               >
-                Import &amp; add
+                {t('quotes.pax8ProductLookup.importAndAdd')}
               </button>
             </div>
             {margin && (

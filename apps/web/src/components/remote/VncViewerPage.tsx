@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { ArrowLeft, X } from 'lucide-react';
 import VncViewer from './VncViewer';
 import { fetchWithAuth } from '@/stores/auth';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 
 interface Props {
   tunnelId: string;
@@ -15,6 +17,7 @@ function buildTunnelWsUrl(tunnelId: string, ticket: string): string {
 }
 
 export default function VncViewerPage({ tunnelId }: Props) {
+  const { t } = useTranslation('remote');
   const [wsUrl, setWsUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -26,19 +29,19 @@ export default function VncViewerPage({ tunnelId }: Props) {
         const res = await fetchWithAuth(`/tunnels/${tunnelId}/ws-ticket`, { method: 'POST' });
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
-          throw new Error(body.error || 'Failed to obtain VNC tunnel ticket');
+          throw new Error(body.error || t('vncViewerPage.errors.obtainTicket'));
         }
         const body = await res.json();
         const ticket = typeof body.ticket === 'string' ? body.ticket : body.ticket?.ticket;
         if (!ticket) {
-          throw new Error('Invalid tunnel ticket response');
+          throw new Error(t('vncViewerPage.errors.invalidTicket'));
         }
         if (!cancelled) {
           setWsUrl(buildTunnelWsUrl(tunnelId, ticket));
         }
       } catch (err) {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Failed to connect to VNC tunnel');
+          setError(err instanceof Error ? err.message : t('vncViewerPage.errors.connect'));
         }
       }
     };
@@ -47,7 +50,7 @@ export default function VncViewerPage({ tunnelId }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [tunnelId]);
+  }, [tunnelId, t]);
 
   const handleDisconnect = useCallback(() => {
     fetchWithAuth(`/tunnels/${tunnelId}`, { method: 'DELETE' }).catch((err) => {
@@ -65,11 +68,11 @@ export default function VncViewerPage({ tunnelId }: Props) {
             className="flex items-center gap-1.5 text-sm text-gray-400 hover:text-white transition"
           >
             <ArrowLeft className="h-4 w-4" />
-            Back
+            {t('common:actions.back')}
           </a>
           <span className="text-sm text-gray-500">|</span>
           <span className="text-sm font-medium text-gray-200">
-            VNC Session
+            {t('vncViewerPage.sessionTitle')}
           </span>
           <span className="text-xs text-gray-500">{tunnelId.slice(0, 8)}</span>
         </div>
@@ -80,7 +83,7 @@ export default function VncViewerPage({ tunnelId }: Props) {
             className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm text-gray-400 hover:bg-gray-800 hover:text-white transition"
           >
             <X className="h-4 w-4" />
-            Disconnect
+            {t('vncViewerPage.disconnect')}
           </button>
         </div>
       </div>
@@ -98,7 +101,7 @@ export default function VncViewerPage({ tunnelId }: Props) {
           />
         ) : (
           <div className="flex h-full items-center justify-center text-sm text-gray-400">
-            Connecting...
+            {t('vncViewerPage.connecting')}
           </div>
         )}
       </div>

@@ -1,4 +1,6 @@
 import { useCallback, useMemo, type CSSProperties } from 'react';
+import { useTranslation } from 'react-i18next';
+import '../../../lib/i18n';
 import { useOrgStore } from '../../../stores/orgStore';
 import { quoteImageUrl } from '../../../lib/api/quotes';
 import { catalogItemImagePath } from '../../../lib/api/catalog';
@@ -29,27 +31,17 @@ function DocLineThumb({ path }: { path: string }) {
   return <img src={url} alt="" className="h-10 w-10 shrink-0 rounded border bg-card object-contain" />;
 }
 
-const RECURRENCE_LABEL: Record<QuoteLine['recurrence'], string> = {
-  one_time: '',
-  monthly: 'Monthly',
-  annual: 'Annual',
-};
-const RECURRENCE_SUFFIX: Record<QuoteLine['recurrence'], string> = {
-  one_time: '',
-  monthly: '/mo',
-  annual: '/yr',
-};
-
 /** Quote images require the Bearer header, so a bare <img src> would 401. The
  *  shared useAuthedImage hook fetches the authed bytes → blob → object URL,
  *  revoked on unmount/change. Same loader the editor and detail views use. */
 function DocImage({ quoteId, imageId, caption }: { quoteId: string; imageId: string; caption?: string }) {
+  const { t } = useTranslation('billing');
   const { url, failed } = useAuthedImage(quoteImageUrl(quoteId, imageId));
 
   if (failed) {
     return (
       <div className="rounded-lg border border-dashed bg-muted/40 px-4 py-8 text-center text-xs text-muted-foreground">
-        Image unavailable
+        {t('quotes.document.imageUnavailable')}
       </div>
     );
   }
@@ -58,13 +50,14 @@ function DocImage({ quoteId, imageId, caption }: { quoteId: string; imageId: str
   }
   return (
     <figure className="space-y-2">
-      <img src={url} alt={caption || 'Proposal image'} className="w-full rounded-lg border bg-card object-contain" />
+      <img src={url} alt={caption || t('quotes.document.proposalImageAlt')} className="w-full rounded-lg border bg-card object-contain" />
       {caption && <figcaption className="text-center text-xs text-muted-foreground">{caption}</figcaption>}
     </figure>
   );
 }
 
 function PricingTable({ lines, quoteId, currency, label, taxRate, showTax }: { lines: QuoteLine[]; quoteId: string; currency: string; label?: string; taxRate: string | null; showTax: boolean }) {
+  const { t } = useTranslation('billing');
   if (lines.length === 0) return null;
   const sorted = [...lines].sort((a, b) => a.sortOrder - b.sortOrder);
   return (
@@ -72,21 +65,21 @@ function PricingTable({ lines, quoteId, currency, label, taxRate, showTax }: { l
       {label && (
         <div className="border-b bg-muted/40 px-4 py-2.5 text-sm font-semibold text-foreground sm:px-5">{label}</div>
       )}
-      <div className="overflow-x-auto" role="region" aria-label={`${label || 'Pricing'} — scroll sideways for more columns`} tabIndex={0}>
+      <div className="overflow-x-auto" role="region" aria-label={t('quotes.document.pricingScrollAria', { label: label || t('quotes.document.pricing') })} tabIndex={0}>
         <table className="w-full min-w-[30rem] text-sm">
           <thead>
             <tr className="border-b text-xs uppercase tracking-wide text-muted-foreground">
-              <th className="px-4 py-2.5 text-left font-medium sm:px-5">Description</th>
-              <th className="px-2 py-2.5 text-right font-medium">Qty</th>
-              <th className="px-2 py-2.5 text-right font-medium">Unit price</th>
-              {showTax && <th className="px-2 py-2.5 text-right font-medium">Tax</th>}
-              <th className="px-4 py-2.5 text-right font-medium sm:px-5">Amount</th>
+              <th className="px-4 py-2.5 text-left font-medium sm:px-5">{t('quotes.document.table.description')}</th>
+              <th className="px-2 py-2.5 text-right font-medium">{t('quotes.document.table.qty')}</th>
+              <th className="px-2 py-2.5 text-right font-medium">{t('quotes.document.table.unitPrice')}</th>
+              {showTax && <th className="px-2 py-2.5 text-right font-medium">{t('quotes.document.table.tax')}</th>}
+              <th className="px-4 py-2.5 text-right font-medium sm:px-5">{t('quotes.document.table.amount')}</th>
             </tr>
           </thead>
           <tbody>
             {sorted.map((l) => {
-              const suffix = RECURRENCE_SUFFIX[l.recurrence];
-              const tag = RECURRENCE_LABEL[l.recurrence];
+              const suffix = l.recurrence === 'monthly' ? t('billingUi.units.perMonth') : l.recurrence === 'annual' ? t('billingUi.units.perYear') : '';
+              const tag = l.recurrence === 'monthly' ? t('quotes.document.recurrence.monthly') : l.recurrence === 'annual' ? t('quotes.document.recurrence.annual') : '';
               const tax = showTax ? lineTaxAmount(l.lineTotal, l.taxable, taxRate) : null;
               return (
                 <tr key={l.id} className="border-b align-top last:border-0">
@@ -131,6 +124,7 @@ function PricingTable({ lines, quoteId, currency, label, taxRate, showTax }: { l
 }
 
 function DocBlock({ block, lines, quoteId, currency, taxRate, showTax }: { block: QuoteBlock; lines: QuoteLine[]; quoteId: string; currency: string; taxRate: string | null; showTax: boolean }) {
+  const { t } = useTranslation('billing');
   if (block.blockType === 'heading') {
     const text = (block.content?.text as string | undefined)?.trim();
     if (!text) return null;
@@ -148,7 +142,7 @@ function DocBlock({ block, lines, quoteId, currency, taxRate, showTax }: { block
     return <DocImage quoteId={block.quoteId} imageId={imageId} caption={caption} />;
   }
   // line_items
-  const label = (block.content?.label as string | undefined)?.trim() || 'Pricing';
+  const label = (block.content?.label as string | undefined)?.trim() || t('quotes.document.pricing');
   return <PricingTable lines={lines} quoteId={quoteId} currency={currency} label={label} taxRate={taxRate} showTax={showTax} />;
 }
 
@@ -162,6 +156,7 @@ interface DocumentProps {
  *  content the customer sees on their portal link, branded with the partner's
  *  logo/accent. Works for drafts (no portal round-trip). */
 export function QuoteDocument({ detail, customerName }: DocumentProps) {
+  const { t } = useTranslation('billing');
   const { quote, blocks, lines, branding } = detail;
   const currency = branding?.currencyCode ?? quote.currencyCode;
   const seller = branding?.seller ?? quote.sellerSnapshot ?? null;
@@ -205,7 +200,7 @@ export function QuoteDocument({ detail, customerName }: DocumentProps) {
               <img src={branding.logoUrl} alt={branding.partnerName} className="h-11 w-auto max-w-[220px] object-contain" />
             ) : (
               <p className="text-xl font-semibold tracking-tight text-foreground" data-testid="quote-document-wordmark">
-                {branding?.partnerName ?? 'Proposal'}
+                {branding?.partnerName ?? t('quotes.document.proposal')}
               </p>
             )}
             {/* Brand letterhead rule — a short, deliberate accent mark, not a full-bleed stripe. */}
@@ -223,18 +218,18 @@ export function QuoteDocument({ detail, customerName }: DocumentProps) {
 
           <div className="space-y-2 sm:text-right">
             <p className="text-[1.75rem] font-semibold leading-none tracking-tight text-foreground" data-testid="quote-document-number">
-              {quote.quoteNumber ?? 'Draft'}
+              {quote.quoteNumber ?? t('quotes.document.draft')}
             </p>
-            <p className="text-sm font-medium text-muted-foreground">Proposal</p>
+            <p className="text-sm font-medium text-muted-foreground">{t('quotes.document.proposal')}</p>
             <StatusPill
               role={STATUS_ROLES[quote.status].role}
               label={statusLabel(quote)}
               className={STATUS_ROLES[quote.status].className}
             />
             <dl className="space-y-0.5 pt-1 text-xs text-muted-foreground sm:flex sm:flex-col sm:items-end">
-              <div className="flex gap-2"><dt>Issued</dt><dd className="font-medium text-foreground/80">{formatDate(quote.issueDate)}</dd></div>
+              <div className="flex gap-2"><dt>{t('quotes.document.issued')}</dt><dd className="font-medium text-foreground/80">{formatDate(quote.issueDate)}</dd></div>
               {quote.expiryDate && (
-                <div className="flex gap-2"><dt>Valid until</dt><dd className="font-medium text-foreground/80">{formatDate(quote.expiryDate)}</dd></div>
+                <div className="flex gap-2"><dt>{t('quotes.document.validUntil')}</dt><dd className="font-medium text-foreground/80">{formatDate(quote.expiryDate)}</dd></div>
               )}
             </dl>
           </div>
@@ -248,7 +243,7 @@ export function QuoteDocument({ detail, customerName }: DocumentProps) {
             </h1>
           )}
           <div>
-            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Prepared for</p>
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.document.preparedFor')}</p>
             <p className="mt-1 text-base font-medium text-foreground" data-testid="quote-document-customer">{customerName}</p>
           </div>
           {quote.introNotes?.trim() && (
@@ -261,14 +256,14 @@ export function QuoteDocument({ detail, customerName }: DocumentProps) {
         {/* ── Body blocks ────────────────────────────────────────── */}
         {isEmpty ? (
           <div className="rounded-lg border border-dashed bg-muted/30 px-6 py-12 text-center text-sm text-muted-foreground">
-            This proposal doesn’t have any content yet.
+            {t('quotes.document.empty')}
           </div>
         ) : (
           <div className="space-y-6">
             {sortedBlocks.map((block) => (
               <DocBlock key={block.id} block={block} lines={linesForBlock(block.id)} quoteId={quote.id} currency={currency} taxRate={quote.taxRate} showTax={showTax} />
             ))}
-            {looseLines.length > 0 && <PricingTable lines={looseLines} quoteId={quote.id} currency={currency} label="Additional items" taxRate={quote.taxRate} showTax={showTax} />}
+            {looseLines.length > 0 && <PricingTable lines={looseLines} quoteId={quote.id} currency={currency} label={t('quotes.document.additionalItems')} taxRate={quote.taxRate} showTax={showTax} />}
           </div>
         )}
 
@@ -277,13 +272,13 @@ export function QuoteDocument({ detail, customerName }: DocumentProps) {
           <section className="flex justify-end">
             <div className="w-full max-w-xs space-y-2.5">
               <div className="flex justify-between text-sm">
-                <span className="text-muted-foreground">Subtotal</span>
+                <span className="text-muted-foreground">{t('quotes.document.totals.subtotal')}</span>
                 <span className="tabular-nums text-foreground">{formatMoney(quote.subtotal, currency)}</span>
               </div>
               {showTax && (
                 <div className="flex justify-between text-sm">
                   <span className="text-muted-foreground">
-                    Tax{quote.taxRate ? ` (${pctFromFraction(quote.taxRate)}%)` : ''}
+                    {t('quotes.document.totals.tax')}{quote.taxRate ? ` (${pctFromFraction(quote.taxRate)}%)` : ''}
                   </span>
                   <span className="tabular-nums text-foreground">{formatMoney(quote.taxTotal, currency)}</span>
                 </div>
@@ -311,13 +306,13 @@ export function QuoteDocument({ detail, customerName }: DocumentProps) {
                     style={{ borderColor: 'var(--doc-accent)' }}
                     data-testid="quote-document-deposit-due"
                   >
-                    <span className="text-sm font-semibold text-foreground">Deposit due on acceptance</span>
+                    <span className="text-sm font-semibold text-foreground">{t('quotes.document.totals.depositDue')}</span>
                     <span className="text-2xl font-semibold tabular-nums" style={{ color: 'var(--doc-accent)' }}>
                       {formatMoney(depositDue, currency)}
                     </span>
                   </div>
                   <div className="flex justify-between text-sm" data-testid="quote-document-deposit-remainder">
-                    <span className="text-muted-foreground">Remaining balance (due per terms)</span>
+                    <span className="text-muted-foreground">{t('quotes.document.totals.remainingBalance')}</span>
                     <span className="tabular-nums text-foreground">{formatMoney(remainderCents / 100, currency)}</span>
                   </div>
                 </>
@@ -326,7 +321,7 @@ export function QuoteDocument({ detail, customerName }: DocumentProps) {
                   className="flex items-baseline justify-between border-t pt-3"
                   style={{ borderColor: 'var(--doc-accent)' }}
                 >
-                  <span className="text-sm font-semibold text-foreground">Due on acceptance</span>
+                  <span className="text-sm font-semibold text-foreground">{t('quotes.document.totals.dueOnAcceptance')}</span>
                   <span
                     className="text-2xl font-semibold tabular-nums"
                     style={{ color: 'var(--doc-accent)' }}
@@ -341,18 +336,18 @@ export function QuoteDocument({ detail, customerName }: DocumentProps) {
                 <div className="space-y-1.5 rounded-lg bg-muted/40 p-3 text-sm">
                   {Number(quote.monthlyRecurringTotal) > 0 && (
                     <div className="flex justify-between">
-                      <span className="text-muted-foreground">Monthly recurring</span>
+                      <span className="text-muted-foreground">{t('quotes.document.totals.monthlyRecurring')}</span>
                       <span className="tabular-nums text-foreground">{formatMoney(quote.monthlyRecurringTotal, currency)}<span className="text-xs text-muted-foreground">/mo</span></span>
                     </div>
                   )}
                   {Number(quote.annualRecurringTotal) > 0 && (
                     <div className="flex justify-between">
-                      <span className="text-muted-foreground">Annual recurring</span>
+                      <span className="text-muted-foreground">{t('quotes.document.totals.annualRecurring')}</span>
                       <span className="tabular-nums text-foreground">{formatMoney(quote.annualRecurringTotal, currency)}<span className="text-xs text-muted-foreground">/yr</span></span>
                     </div>
                   )}
                   <p className="pt-1 text-xs leading-relaxed text-muted-foreground">
-                    Accepting this proposal bills the one-time charges now. Recurring lines bill on their own schedule.
+                    {t('quotes.document.totals.recurringNote')}
                   </p>
                 </div>
               )}
@@ -363,7 +358,7 @@ export function QuoteDocument({ detail, customerName }: DocumentProps) {
         {/* ── Terms & footer ─────────────────────────────────────── */}
         {quote.termsAndConditions?.trim() && (
           <section className="space-y-2 border-t pt-6">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Terms &amp; Conditions</h3>
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.document.terms')}</h3>
             <p className="max-w-prose whitespace-pre-wrap text-pretty text-xs leading-relaxed text-muted-foreground">
               {quote.termsAndConditions.trim()}
             </p>
@@ -382,6 +377,7 @@ export function QuoteDocument({ detail, customerName }: DocumentProps) {
 /** Preview-tab wrapper: resolves the customer name from the loaded org list (same
  *  source as QuoteDetail), renders the document, and offers a PDF download. */
 export default function QuoteDocumentPreview({ detail }: { detail: QuoteDetailData }) {
+  const { t } = useTranslation('billing');
   const { quote } = detail;
   const organizations = useOrgStore((s) => s.organizations);
   const { busy, downloadPdf } = useQuotePdfDownload(quote);
@@ -398,7 +394,7 @@ export default function QuoteDocumentPreview({ detail }: { detail: QuoteDetailDa
   return (
     <div className="space-y-4" data-testid="quote-preview">
       <div className="flex items-center justify-between gap-3">
-        <p className="text-xs text-muted-foreground">This is what your customer sees on their proposal link.</p>
+        <p className="text-xs text-muted-foreground">{t('quotes.document.preview.description')}</p>
         <button
           type="button"
           onClick={() => void downloadPdf()}
@@ -406,7 +402,7 @@ export default function QuoteDocumentPreview({ detail }: { detail: QuoteDetailDa
           data-testid="quote-preview-download-pdf"
           className="inline-flex items-center justify-center rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:opacity-50"
         >
-          {busy ? 'Preparing…' : 'Download PDF'}
+          {busy ? t('quotes.document.preview.preparing') : t('quotes.document.preview.downloadPdf')}
         </button>
       </div>
       <div className="rounded-xl bg-muted/30 p-2 sm:p-8">

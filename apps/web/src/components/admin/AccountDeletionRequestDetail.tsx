@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { ArrowLeft, AlertTriangle, CheckCircle2, Loader2, ShieldAlert, X } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { showToast } from '../shared/Toast';
@@ -40,6 +41,7 @@ interface Props {
 }
 
 export default function AccountDeletionRequestDetail({ requestId }: Props) {
+  const { t } = useTranslation('admin');
   const [state, setState] = useState<LoadState>({ kind: 'loading' });
   const [dialog, setDialog] = useState<ConfirmDialogState | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -52,14 +54,14 @@ export default function AccountDeletionRequestDetail({ requestId }: Props) {
       if (res.status === 404) return setState({ kind: 'not-found' });
       if (!res.ok) {
         const body = (await res.json().catch(() => ({}))) as { error?: string };
-        return setState({ kind: 'error', message: body.error ?? `Request failed (${res.status})` });
+        return setState({ kind: 'error', message: body.error ?? t('admin.accountDeletionRequestDetail.errors.requestFailed', { status: res.status }) });
       }
       const body = (await res.json()) as AdminDeletionRequest;
       setState({ kind: 'ready', request: body });
     } catch (err) {
-      setState({ kind: 'error', message: err instanceof Error ? err.message : 'Network error' });
+      setState({ kind: 'error', message: err instanceof Error ? err.message : t('admin.accountDeletionRequestDetail.errors.network') });
     }
-  }, [requestId]);
+  }, [requestId, t]);
 
   useEffect(() => {
     void load();
@@ -68,11 +70,11 @@ export default function AccountDeletionRequestDetail({ requestId }: Props) {
   const handleProcess = async () => {
     if (!dialog || state.kind !== 'ready') return;
     if (state.request.user && dialog.typedEmail.trim() !== state.request.user.email) {
-      showToast({ type: 'error', message: 'The email you typed does not match.' });
+      showToast({ type: 'error', message: t('admin.accountDeletionRequestDetail.toast.emailMismatch') });
       return;
     }
     if (dialog.action === 'reject' && dialog.adminNote.trim().length === 0) {
-      showToast({ type: 'error', message: 'A note is required when rejecting.' });
+      showToast({ type: 'error', message: t('admin.accountDeletionRequestDetail.toast.rejectNoteRequired') });
       return;
     }
 
@@ -87,7 +89,7 @@ export default function AccountDeletionRequestDetail({ requestId }: Props) {
       );
       if (!res.ok) {
         const body = (await res.json().catch(() => ({}))) as { error?: string };
-        showToast({ type: 'error', message: body.error ?? `Action failed (${res.status})` });
+        showToast({ type: 'error', message: body.error ?? t('admin.accountDeletionRequestDetail.toast.actionFailed', { status: res.status }) });
         return;
       }
 
@@ -97,11 +99,11 @@ export default function AccountDeletionRequestDetail({ requestId }: Props) {
       showToast({
         type: 'success',
         message: dialog.action === 'approve'
-          ? 'Request approved and queued for processing.'
-          : 'Request rejected. The user has been notified.',
+          ? t('admin.accountDeletionRequestDetail.toast.approved')
+          : t('admin.accountDeletionRequestDetail.toast.rejected'),
       });
     } catch (err) {
-      showToast({ type: 'error', message: err instanceof Error ? err.message : 'Network error' });
+      showToast({ type: 'error', message: err instanceof Error ? err.message : t('admin.accountDeletionRequestDetail.errors.network') });
     } finally {
       setSubmitting(false);
     }
@@ -113,7 +115,7 @@ export default function AccountDeletionRequestDetail({ requestId }: Props) {
         href="/admin/account-deletion-requests"
         className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
       >
-        <ArrowLeft className="h-4 w-4" /> Back to deletion requests
+        <ArrowLeft className="h-4 w-4" /> {t('admin.accountDeletionRequestDetail.back')}
       </a>
 
       {state.kind === 'loading' && (
@@ -124,18 +126,18 @@ export default function AccountDeletionRequestDetail({ requestId }: Props) {
 
       {state.kind === 'unauthorized' && (
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6">
-          <h2 className="font-semibold text-destructive">Not allowed</h2>
+          <h2 className="font-semibold text-destructive">{t('admin.accountDeletionRequestDetail.unauthorized.title')}</h2>
           <p className="mt-1 text-sm text-destructive">
-            You don't have permission to review this request.
+            {t('admin.accountDeletionRequestDetail.unauthorized.description')}
           </p>
         </div>
       )}
 
       {state.kind === 'not-found' && (
         <div className="rounded-lg border border-dashed bg-muted/30 p-8 text-center">
-          <h2 className="text-base font-semibold">Request not found</h2>
+          <h2 className="text-base font-semibold">{t('admin.accountDeletionRequestDetail.notFound.title')}</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            It may have been removed or it doesn't exist in your tenant.
+            {t('admin.accountDeletionRequestDetail.notFound.description')}
           </p>
         </div>
       )}
@@ -150,7 +152,7 @@ export default function AccountDeletionRequestDetail({ requestId }: Props) {
               onClick={() => void load()}
               className="mt-1 rounded-md border border-destructive/40 px-3 py-1 text-xs font-medium hover:bg-destructive/5"
             >
-              Try again
+              {t('admin.accountDeletionRequestDetail.retry')}
             </button>
           </div>
         </div>
@@ -187,30 +189,32 @@ export default function AccountDeletionRequestDetail({ requestId }: Props) {
 }
 
 function DetailHeader({ request }: { request: AdminDeletionRequest }) {
+  const { t } = useTranslation('admin');
   return (
     <div className="space-y-1">
-      <h1 className="text-2xl font-semibold tracking-tight">Account deletion request</h1>
+      <h1 className="text-2xl font-semibold tracking-tight">{t('admin.accountDeletionRequestDetail.header.title')}</h1>
       <p className="text-sm text-muted-foreground">
-        Reference <span className="font-mono text-foreground">{request.requestId}</span>
+        {t('admin.accountDeletionRequestDetail.header.reference')} <span className="font-mono text-foreground">{request.requestId}</span>
       </p>
     </div>
   );
 }
 
 function UserCard({ request }: { request: AdminDeletionRequest }) {
+  const { t } = useTranslation('admin');
   return (
     <section className="space-y-2 rounded-lg border bg-card p-6 text-sm shadow-xs">
-      <h2 className="text-base font-semibold">Requesting user</h2>
+      <h2 className="text-base font-semibold">{t('admin.accountDeletionRequestDetail.user.title')}</h2>
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-muted-foreground">
-        <dt>Name</dt>
+        <dt>{t('admin.accountDeletionRequestDetail.user.name')}</dt>
         <dd className="text-foreground">{request.user?.name ?? '—'}</dd>
-        <dt>Email</dt>
+        <dt>{t('admin.accountDeletionRequestDetail.user.email')}</dt>
         <dd className="text-foreground">{request.user?.email ?? '—'}</dd>
-        <dt>Joined</dt>
+        <dt>{t('admin.accountDeletionRequestDetail.user.joined')}</dt>
         <dd className="text-foreground">
           {request.user?.joinedAt ? formatAbsolute(request.user.joinedAt) : '—'}
         </dd>
-        <dt>User ID</dt>
+        <dt>{t('admin.accountDeletionRequestDetail.user.userId')}</dt>
         <dd className="font-mono text-xs text-foreground">{request.user?.id ?? '—'}</dd>
       </dl>
     </section>
@@ -218,23 +222,30 @@ function UserCard({ request }: { request: AdminDeletionRequest }) {
 }
 
 function RequestCard({ request }: { request: AdminDeletionRequest }) {
+  const { t } = useTranslation('admin');
+  const statusLabel = {
+    pending: t('admin.accountDeletionRequestDetail.status.pending'),
+    processing: t('admin.accountDeletionRequestDetail.status.processing'),
+    completed: t('admin.accountDeletionRequestDetail.status.completed'),
+    cancelled: t('admin.accountDeletionRequestDetail.status.cancelled'),
+  }[request.status];
   return (
     <section className="space-y-3 rounded-lg border bg-card p-6 text-sm shadow-xs">
-      <h2 className="text-base font-semibold">Request details</h2>
+      <h2 className="text-base font-semibold">{t('admin.accountDeletionRequestDetail.request.title')}</h2>
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-muted-foreground">
-        <dt>Status</dt>
-        <dd className="text-foreground capitalize">{request.status}</dd>
-        <dt>Requested</dt>
+        <dt>{t('admin.accountDeletionRequestDetail.request.status')}</dt>
+        <dd className="text-foreground">{statusLabel}</dd>
+        <dt>{t('admin.accountDeletionRequestDetail.request.requested')}</dt>
         <dd className="text-foreground" title={formatAbsolute(request.requestedAt)}>
           {formatRelative(request.requestedAt)}
         </dd>
-        <dt>Process by</dt>
+        <dt>{t('admin.accountDeletionRequestDetail.request.processBy')}</dt>
         <dd className="text-foreground" title={formatAbsolute(request.processBy)}>
           {formatRelative(request.processBy)}
         </dd>
         {request.processedAt && (
           <>
-            <dt>Processed</dt>
+            <dt>{t('admin.accountDeletionRequestDetail.request.processed')}</dt>
             <dd className="text-foreground" title={formatAbsolute(request.processedAt)}>
               {formatRelative(request.processedAt)}
             </dd>
@@ -243,16 +254,16 @@ function RequestCard({ request }: { request: AdminDeletionRequest }) {
       </dl>
       <div className="space-y-2">
         <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          Reason from user
+          {t('admin.accountDeletionRequestDetail.request.reasonFromUser')}
         </div>
         <div className="rounded-md border bg-muted/40 p-3 text-foreground">
-          {request.reason ? request.reason : <span className="italic text-muted-foreground">No reason given</span>}
+          {request.reason ? request.reason : <span className="italic text-muted-foreground">{t('admin.accountDeletionRequestDetail.request.noReasonGiven')}</span>}
         </div>
       </div>
       {request.adminNote && (
         <div className="space-y-2">
           <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            Admin note
+            {t('admin.accountDeletionRequestDetail.request.adminNote')}
           </div>
           <div className="rounded-md border bg-muted/40 p-3 text-foreground">{request.adminNote}</div>
         </div>
@@ -262,6 +273,7 @@ function RequestCard({ request }: { request: AdminDeletionRequest }) {
 }
 
 function ActionFooter({ onApprove, onReject }: { onApprove: () => void; onReject: () => void }) {
+  const { t } = useTranslation('admin');
   return (
     <section className="flex flex-col-reverse gap-2 rounded-lg border bg-card p-6 shadow-xs sm:flex-row sm:justify-end">
       <button
@@ -269,25 +281,26 @@ function ActionFooter({ onApprove, onReject }: { onApprove: () => void; onReject
         onClick={onReject}
         className="inline-flex h-10 items-center justify-center rounded-md border px-4 text-sm font-medium transition hover:bg-muted"
       >
-        Reject
+        {t('admin.accountDeletionRequestDetail.actions.reject')}
       </button>
       <button
         type="button"
         onClick={onApprove}
         className="inline-flex h-10 items-center justify-center rounded-md bg-destructive px-4 text-sm font-medium text-destructive-foreground transition hover:opacity-90"
       >
-        Approve and queue for processing
+        {t('admin.accountDeletionRequestDetail.actions.approveAndQueue')}
       </button>
     </section>
   );
 }
 
 function ProcessedNotice({ request }: { request: AdminDeletionRequest }) {
+  const { t } = useTranslation('admin');
   const label = request.status === 'processing'
-    ? 'Approved and queued for processing.'
+    ? t('admin.accountDeletionRequestDetail.processedNotice.processing')
     : request.status === 'cancelled'
-      ? 'Rejected. User has been notified.'
-      : 'Completed.';
+      ? t('admin.accountDeletionRequestDetail.processedNotice.cancelled')
+      : t('admin.accountDeletionRequestDetail.processedNotice.completed');
   return (
     <section className="flex items-start gap-3 rounded-lg border bg-card p-6 shadow-xs">
       <CheckCircle2 className="mt-0.5 h-5 w-5 flex-none text-primary" aria-hidden />
@@ -295,7 +308,7 @@ function ProcessedNotice({ request }: { request: AdminDeletionRequest }) {
         <p className="font-medium">{label}</p>
         {request.processedAt && (
           <p className="text-sm text-muted-foreground">
-            Processed {formatRelative(request.processedAt)}.
+            {t('admin.accountDeletionRequestDetail.processedNotice.processed', { time: formatRelative(request.processedAt) })}
           </p>
         )}
       </div>
@@ -318,6 +331,7 @@ function ConfirmDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const { t } = useTranslation('admin');
   const emailMatches = useMemo(
     () => state.typedEmail.trim() === targetEmail,
     [state.typedEmail, targetEmail]
@@ -336,7 +350,7 @@ function ConfirmDialog({
               <AlertTriangle className={`h-5 w-5 ${isApprove ? 'text-destructive' : 'text-amber-700 dark:text-amber-400'}`} aria-hidden />
             </div>
             <h2 className="text-lg font-semibold">
-              {isApprove ? 'Approve deletion?' : 'Reject deletion?'}
+              {isApprove ? t('admin.accountDeletionRequestDetail.confirm.approveTitle') : t('admin.accountDeletionRequestDetail.confirm.rejectTitle')}
             </h2>
           </div>
           <button
@@ -344,7 +358,7 @@ function ConfirmDialog({
             onClick={onCancel}
             disabled={submitting}
             className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted disabled:cursor-not-allowed"
-            aria-label="Close"
+            aria-label={t('admin.accountDeletionRequestDetail.confirm.close')}
           >
             <X className="h-4 w-4" aria-hidden />
           </button>
@@ -353,18 +367,16 @@ function ConfirmDialog({
         <div className="mt-4 space-y-3 text-sm">
           {isApprove ? (
             <p className="text-muted-foreground">
-              Approving queues this account for deletion. The actual deletion runs out-of-band; you
-              can't undo this from the UI once it picks the request up.
+              {t('admin.accountDeletionRequestDetail.confirm.approveDescription')}
             </p>
           ) : (
             <p className="text-muted-foreground">
-              Rejecting cancels the request. The user will be emailed your note explaining why
-              their request was declined.
+              {t('admin.accountDeletionRequestDetail.confirm.rejectDescription')}
             </p>
           )}
 
           <label htmlFor="confirm-email" className="block text-sm font-medium">
-            Type the user's email to confirm
+            {t('admin.accountDeletionRequestDetail.confirm.emailLabel')}
           </label>
           <input
             id="confirm-email"
@@ -378,8 +390,8 @@ function ConfirmDialog({
           />
 
           <label htmlFor="admin-note" className="block text-sm font-medium">
-            Note {!isApprove && <span className="text-destructive">*</span>}
-            {isApprove && <span className="text-muted-foreground"> (optional)</span>}
+            {t('admin.accountDeletionRequestDetail.confirm.noteLabel')} {!isApprove && <span className="text-destructive">*</span>}
+            {isApprove && <span className="text-muted-foreground"> {t('admin.accountDeletionRequestDetail.confirm.optionalSuffix')}</span>}
           </label>
           <textarea
             id="admin-note"
@@ -388,8 +400,8 @@ function ConfirmDialog({
             onChange={(e) => onChange({ adminNote: e.target.value })}
             maxLength={2000}
             placeholder={isApprove
-              ? 'Optional internal context for the audit log…'
-              : 'Why are you declining? This is emailed to the user.'}
+              ? t('admin.accountDeletionRequestDetail.confirm.approvePlaceholder')
+              : t('admin.accountDeletionRequestDetail.confirm.rejectPlaceholder')}
             className="w-full rounded-md border bg-background p-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             required={!isApprove}
           />
@@ -402,7 +414,7 @@ function ConfirmDialog({
             disabled={submitting}
             className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
           >
-            Cancel
+            {t('admin.accountDeletionRequestDetail.confirm.cancel')}
           </button>
           <button
             type="button"
@@ -417,10 +429,10 @@ function ConfirmDialog({
             {submitting ? (
               <>
                 <span className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
-                {isApprove ? 'Approving…' : 'Rejecting…'}
+                {isApprove ? t('admin.accountDeletionRequestDetail.confirm.approving') : t('admin.accountDeletionRequestDetail.confirm.rejecting')}
               </>
             ) : (
-              isApprove ? 'Approve' : 'Reject'
+              isApprove ? t('admin.accountDeletionRequestDetail.confirm.approve') : t('admin.accountDeletionRequestDetail.confirm.reject')
             )}
           </button>
         </div>

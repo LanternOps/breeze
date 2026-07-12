@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { CheckCircle, AlertTriangle, Loader2, Mail, Globe, Shield, Puzzle } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 
@@ -60,6 +61,7 @@ function ConfigRow({ label, value }: { label: string; value: React.ReactNode }) 
 }
 
 export default function ConfigReviewStep({ onNext }: ConfigReviewStepProps) {
+  const { t } = useTranslation('auth');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [config, setConfig] = useState<ConfigStatus>();
@@ -74,10 +76,10 @@ export default function ConfigReviewStep({ onNext }: ConfigReviewStepProps) {
       if (res.ok) {
         setConfig(await res.json());
       } else {
-        setError(`Failed to load configuration (HTTP ${res.status})`);
+        setError(t('setup.config.errors.loadFailedWithStatus', { status: res.status }));
       }
     } catch {
-      setError('Unable to reach the server. Check your connection.');
+      setError(t('setup.config.errors.connectionFailed'));
     } finally {
       setLoading(false);
     }
@@ -95,14 +97,14 @@ export default function ConfigReviewStep({ onNext }: ConfigReviewStepProps) {
     return (
       <div className="space-y-4">
         <div className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {error || 'Configuration unavailable'}
+          {error || t('setup.config.errors.unavailable')}
         </div>
         <div className="flex justify-end">
           <button
             onClick={onNext}
             className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-xs hover:bg-primary/90"
           >
-            Continue
+            {t('setup.common.continue')}
           </button>
         </div>
       </div>
@@ -112,88 +114,88 @@ export default function ConfigReviewStep({ onNext }: ConfigReviewStepProps) {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-lg font-semibold">Configuration Review</h2>
+        <h2 className="text-lg font-semibold">{t('setup.config.title')}</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Review your environment configuration. These settings are controlled via environment variables.
+          {t('setup.config.description')}
         </p>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2">
-        <ConfigCard icon={Mail} title="Email">
+        <ConfigCard icon={Mail} title={t('setup.config.cards.email')}>
           <ConfigRow
-            label="Status"
-            value={<StatusBadge ok={config.email.configured} label={config.email.configured ? 'Configured' : 'Not configured'} />}
+            label={t('setup.config.rows.status')}
+            value={<StatusBadge ok={config.email.configured} label={config.email.configured ? t('setup.config.status.configured') : t('setup.config.status.notConfigured')} />}
           />
           <ConfigRow
-            label="Provider"
+            label={t('setup.config.rows.provider')}
             value={<span className="font-mono text-xs">{config.email.provider}</span>}
           />
           {config.email.from && (
             <ConfigRow
-              label="From"
+              label={t('setup.config.rows.from')}
               value={<span className="font-mono text-xs">{config.email.from}</span>}
             />
           )}
         </ConfigCard>
 
-        <ConfigCard icon={Globe} title="Domain">
+        <ConfigCard icon={Globe} title={t('setup.config.cards.domain')}>
           <ConfigRow
-            label="Public URL"
+            label={t('setup.config.rows.publicUrl')}
             value={
               <StatusBadge
                 ok={!!config.domain.publicUrl}
-                label={config.domain.publicUrl || 'Not set'}
+                label={config.domain.publicUrl || t('setup.config.status.notSet')}
               />
             }
           />
           {config.domain.breezeDomain && (
             <ConfigRow
-              label="Domain"
+              label={t('setup.config.rows.domain')}
               value={<span className="font-mono text-xs">{config.domain.breezeDomain}</span>}
             />
           )}
         </ConfigCard>
 
-        <ConfigCard icon={Shield} title="Security">
+        <ConfigCard icon={Shield} title={t('setup.config.cards.security')}>
           <ConfigRow
-            label="HTTPS"
-            value={<StatusBadge ok={config.security.httpsForced} label={config.security.httpsForced ? 'Forced' : 'Optional'} />}
+            label={t('setup.config.rows.https')}
+            value={<StatusBadge ok={config.security.httpsForced} label={config.security.httpsForced ? t('setup.config.status.forced') : t('setup.config.status.optional')} />}
           />
           <ConfigRow
-            label="MFA"
-            value={<StatusBadge ok={config.security.mfaEnabled} label={config.security.mfaEnabled ? 'Enabled' : 'Disabled'} />}
+            label={t('setup.config.rows.mfa')}
+            value={<StatusBadge ok={config.security.mfaEnabled} label={config.security.mfaEnabled ? t('setup.config.status.enabled') : t('setup.config.status.disabled')} />}
           />
           <ConfigRow
-            label="Registration"
+            label={t('setup.config.rows.registration')}
             value={
               <StatusBadge
                 ok={!config.security.registrationEnabled}
-                label={config.security.registrationEnabled ? 'Open' : 'Closed'}
+                label={config.security.registrationEnabled ? t('setup.config.status.open') : t('setup.config.status.closed')}
               />
             }
           />
         </ConfigCard>
 
-        <ConfigCard icon={Puzzle} title="Integrations">
+        <ConfigCard icon={Puzzle} title={t('setup.config.cards.integrations')}>
           <ConfigRow
-            label="SMS (Twilio)"
-            value={<StatusBadge ok={config.integrations.sms} label={config.integrations.sms ? 'Connected' : 'Not configured'} />}
+            label={t('setup.config.rows.sms')}
+            value={<StatusBadge ok={config.integrations.sms} label={config.integrations.sms ? t('setup.config.status.connected') : t('setup.config.status.notConfigured')} />}
           />
           <ConfigRow
-            label="AI"
-            value={<StatusBadge ok={config.integrations.ai} label={config.integrations.ai ? 'Connected' : 'Not configured'} />}
+            label={t('setup.config.rows.ai')}
+            value={<StatusBadge ok={config.integrations.ai} label={config.integrations.ai ? t('setup.config.status.connected') : t('setup.config.status.notConfigured')} />}
           />
           <ConfigRow
-            label="mTLS"
-            value={<StatusBadge ok={config.integrations.mtls} label={config.integrations.mtls ? 'Enabled' : 'Not configured'} />}
+            label={t('setup.config.rows.mtls')}
+            value={<StatusBadge ok={config.integrations.mtls} label={config.integrations.mtls ? t('setup.config.status.enabled') : t('setup.config.status.notConfigured')} />}
           />
           <ConfigRow
-            label="Storage"
-            value={<StatusBadge ok={config.integrations.storage} label={config.integrations.storage ? 'Connected' : 'Not configured'} />}
+            label={t('setup.config.rows.storage')}
+            value={<StatusBadge ok={config.integrations.storage} label={config.integrations.storage ? t('setup.config.status.connected') : t('setup.config.status.notConfigured')} />}
           />
           <ConfigRow
-            label="Sentry"
-            value={<StatusBadge ok={config.integrations.sentry} label={config.integrations.sentry ? 'Connected' : 'Not configured'} />}
+            label={t('setup.config.rows.sentry')}
+            value={<StatusBadge ok={config.integrations.sentry} label={config.integrations.sentry ? t('setup.config.status.connected') : t('setup.config.status.notConfigured')} />}
           />
         </ConfigCard>
       </div>
@@ -203,7 +205,7 @@ export default function ConfigReviewStep({ onNext }: ConfigReviewStepProps) {
           onClick={onNext}
           className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-xs hover:bg-primary/90"
         >
-          Continue
+          {t('setup.common.continue')}
         </button>
       </div>
     </div>

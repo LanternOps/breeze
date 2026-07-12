@@ -33,6 +33,7 @@ import PartnerRegionalTab, { DEFAULT_BUSINESS_HOURS } from './PartnerRegionalTab
 import LoginBrandingCard from './LoginBrandingCard';
 import type {
   PartnerSettings,
+  SupportedLocale,
   BusinessHoursPreset,
   DateFormat,
   TimeFormat,
@@ -49,6 +50,8 @@ import type {
 import { isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE } from '@breeze/shared';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '@/lib/runAction';
+import { useTranslation } from 'react-i18next';
+import { i18n } from '@/lib/i18n';
 
 type TabKey = 'company' | 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'loginBranding' | 'aiBudgets' | 'remoteAccess' | 'ticketing';
 
@@ -79,34 +82,34 @@ type TabDef = {
 
 const TAB_GROUPS: { label: string; tabs: TabDef[] }[] = [
   {
-    label: 'Company',
+    label: 'partnerSettingsPage.groups.company',
     tabs: [
-      { key: 'company', hash: 'company', label: 'Company', description: 'Name, address, contacts', icon: Building2 },
-      { key: 'regional', hash: 'regional', label: 'Regional', description: 'Timezone, formats, hours', icon: Globe },
-      { key: 'defaults', hash: 'defaults', label: 'Defaults', description: 'Maintenance, agent pins', icon: SlidersHorizontal, enforced: true },
+      { key: 'company', hash: 'company', label: 'partnerSettingsPage.tabs.company.label', description: 'partnerSettingsPage.tabs.company.description', icon: Building2 },
+      { key: 'regional', hash: 'regional', label: 'partnerSettingsPage.tabs.regional.label', description: 'partnerSettingsPage.tabs.regional.description', icon: Globe },
+      { key: 'defaults', hash: 'defaults', label: 'partnerSettingsPage.tabs.defaults.label', description: 'partnerSettingsPage.tabs.defaults.description', icon: SlidersHorizontal, enforced: true },
     ],
   },
   {
-    label: 'Security & Access',
+    label: 'partnerSettingsPage.groups.security',
     tabs: [
-      { key: 'security', hash: 'security', label: 'Security', description: 'IP allowlist and access', icon: Shield, enforced: true },
-      { key: 'remoteAccess', hash: 'remote-access', label: 'Remote Access', description: 'Remote desktop providers', icon: MonitorSmartphone, enforced: true },
-      { key: 'eventLogs', hash: 'event-logs', label: 'Event Logs', description: 'Forwarding and retention', icon: ScrollText, enforced: true },
+      { key: 'security', hash: 'security', label: 'partnerSettingsPage.tabs.security.label', description: 'partnerSettingsPage.tabs.security.description', icon: Shield, enforced: true },
+      { key: 'remoteAccess', hash: 'remote-access', label: 'partnerSettingsPage.tabs.remoteAccess.label', description: 'partnerSettingsPage.tabs.remoteAccess.description', icon: MonitorSmartphone, enforced: true },
+      { key: 'eventLogs', hash: 'event-logs', label: 'partnerSettingsPage.tabs.eventLogs.label', description: 'partnerSettingsPage.tabs.eventLogs.description', icon: ScrollText, enforced: true },
     ],
   },
   {
-    label: 'Communications',
+    label: 'partnerSettingsPage.groups.communications',
     tabs: [
-      { key: 'notifications', hash: 'notifications', label: 'Notifications', description: 'Email and webhook alerts', icon: Bell, enforced: true },
-      { key: 'ticketing', hash: 'ticketing', label: 'Ticketing', description: 'Statuses, SLAs, exports', icon: Ticket, selfSaving: true },
-      { key: 'aiBudgets', hash: 'ai-budgets', label: 'AI Budgets', description: 'AI spending limits', icon: Wallet, enforced: true },
+      { key: 'notifications', hash: 'notifications', label: 'partnerSettingsPage.tabs.notifications.label', description: 'partnerSettingsPage.tabs.notifications.description', icon: Bell, enforced: true },
+      { key: 'ticketing', hash: 'ticketing', label: 'partnerSettingsPage.tabs.ticketing.label', description: 'partnerSettingsPage.tabs.ticketing.description', icon: Ticket, selfSaving: true },
+      { key: 'aiBudgets', hash: 'ai-budgets', label: 'partnerSettingsPage.tabs.aiBudgets.label', description: 'partnerSettingsPage.tabs.aiBudgets.description', icon: Wallet, enforced: true },
     ],
   },
   {
-    label: 'Branding',
+    label: 'partnerSettingsPage.groups.branding',
     tabs: [
-      { key: 'branding', hash: 'branding', label: 'Branding', description: 'Logo and colors', icon: Palette, enforced: true },
-      { key: 'loginBranding', hash: 'login-branding', label: 'Login Branding', description: 'Login page appearance', icon: LogIn, selfSaving: true },
+      { key: 'branding', hash: 'branding', label: 'partnerSettingsPage.tabs.branding.label', description: 'partnerSettingsPage.tabs.branding.description', icon: Palette, enforced: true },
+      { key: 'loginBranding', hash: 'login-branding', label: 'partnerSettingsPage.tabs.loginBranding.label', description: 'partnerSettingsPage.tabs.loginBranding.description', icon: LogIn, selfSaving: true },
     ],
   },
 ];
@@ -149,13 +152,14 @@ export async function runPartnerSave(
 ): Promise<Partner> {
   return runAction<Partner>({
     request: () => fetchWithAuth('/orgs/partners/me', { method: 'PATCH', body: JSON.stringify(payload) }),
-    successMessage: 'Partner settings saved',
-    errorFallback: 'Failed to save settings',
+    successMessage: i18n.t('settings:partnerSettingsPage.saved'),
+    errorFallback: i18n.t('settings:partnerSettingsPage.saveFailed'),
     onUnauthorized: deps.onUnauthorized,
   });
 }
 
 export default function PartnerSettingsPage() {
+  const { t } = useTranslation('settings');
   const { currentPartnerId, isLoading: contextLoading, setPartner: setPartnerContext } = useOrgStore();
   const [partner, setPartner] = useState<Partner | null>(null);
   const [loading, setLoading] = useState(true);
@@ -175,6 +179,7 @@ export default function PartnerSettingsPage() {
   const [timezone, setTimezone] = useState('UTC');
   const [dateFormat, setDateFormat] = useState<DateFormat>('MM/DD/YYYY');
   const [timeFormat, setTimeFormat] = useState<TimeFormat>('12h');
+  const [language, setLanguage] = useState<SupportedLocale>('en');
   const [businessHoursPreset, setBusinessHoursPreset] = useState<BusinessHoursPreset>('business');
   const [customHours, setCustomHours] = useState<Record<string, DaySchedule>>(DEFAULT_BUSINESS_HOURS);
   const [contactName, setContactName] = useState('');
@@ -204,7 +209,7 @@ export default function PartnerSettingsPage() {
   // Drives the disabled-when-clean Save button and the per-tab dots in the nav.
   const currentSnapshot: Snapshot = useMemo(() => ({
     company: JSON.stringify({ companyName, address, contactName, contactEmail, contactPhone, contactWebsite }),
-    regional: JSON.stringify({ timezone, dateFormat, timeFormat, businessHoursPreset, customHours }),
+    regional: JSON.stringify({ timezone, dateFormat, timeFormat, language, businessHoursPreset, customHours }),
     security: JSON.stringify(securityData),
     notifications: JSON.stringify(notificationsData),
     eventLogs: JSON.stringify(eventLogsData),
@@ -214,7 +219,7 @@ export default function PartnerSettingsPage() {
     remoteAccess: JSON.stringify(remoteAccessData),
   }), [
     companyName, address, contactName, contactEmail, contactPhone, contactWebsite,
-    timezone, dateFormat, timeFormat, businessHoursPreset, customHours,
+    timezone, dateFormat, timeFormat, language, businessHoursPreset, customHours,
     securityData, notificationsData, eventLogsData, defaultsData, brandingData,
     aiBudgetsData, remoteAccessData,
   ]);
@@ -255,8 +260,8 @@ export default function PartnerSettingsPage() {
       const response = await fetchWithAuth('/orgs/partners/me');
       if (!response.ok) {
         if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
-        if (response.status === 403) { setError('You do not have permission to view partner settings'); return; }
-        throw new Error('Failed to fetch partner settings');
+        if (response.status === 403) { setError(t('partnerSettingsPage.permissionDenied')); return; }
+        throw new Error(t('partnerSettingsPage.fetchFailed'));
       }
       const data: Partner = await response.json();
       setPartner(data);
@@ -268,6 +273,7 @@ export default function PartnerSettingsPage() {
       setTimezone(settings.timezone || data.timezone || 'UTC');
       setDateFormat(settings.dateFormat || 'MM/DD/YYYY');
       setTimeFormat(settings.timeFormat || '12h');
+      setLanguage((settings.language as string) === 'pt-BR' ? 'pt-BR' : 'en');
       setBusinessHoursPreset(settings.businessHours?.preset || 'business');
       if (settings.businessHours?.custom) {
         setCustomHours({ ...DEFAULT_BUSINESS_HOURS, ...settings.businessHours.custom });
@@ -305,11 +311,11 @@ export default function PartnerSettingsPage() {
         .then((p: PinnableVersions) => setPinnableVersions(p))
         .catch(() => setPinnableVersions(null));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('partnerSettingsPage.genericError'));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     if (currentPartnerId) {
@@ -366,7 +372,7 @@ export default function PartnerSettingsPage() {
     setError(undefined);
 
     const settings: Record<string, unknown> = {
-      timezone, dateFormat, timeFormat, language: 'en',
+      timezone, dateFormat, timeFormat, language,
       businessHours: {
         preset: businessHoursPreset,
         ...(businessHoursPreset === 'custom' ? { custom: customHours } : {})
@@ -409,12 +415,12 @@ export default function PartnerSettingsPage() {
       const notCovered = ipStatus && !currentIpCovered(ipStatus.currentIp, nextList);
       if (notCovered) {
         const proceed = window.confirm(
-          'Your current IP is not in this allowlist. Saving may lock you out of the dashboard. Continue?'
+          t('partnerSettingsPage.confirmIpNotCovered')
         );
         if (!proceed) { setSaving(false); return; }
       } else if (ipStatusUnavailable) {
         const proceed = window.confirm(
-          'Couldn’t verify your current IP against this allowlist. If your IP isn’t covered, saving may lock you out. Continue?'
+          t('partnerSettingsPage.confirmIpUnknown')
         );
         if (!proceed) { setSaving(false); return; }
       }
@@ -430,7 +436,7 @@ export default function PartnerSettingsPage() {
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
       if (!(err instanceof ActionError)) {
-        setError(err instanceof Error ? err.message : 'Failed to save settings');
+        setError(err instanceof Error ? err.message : t('partnerSettingsPage.saveFailed'));
       }
       // ActionError non-401: runAction already toasted
     } finally {
@@ -456,7 +462,7 @@ export default function PartnerSettingsPage() {
       <div className="flex items-center justify-center py-12">
         <div className="text-center">
           <Loader2 className="h-8 w-8 animate-spin mx-auto text-primary" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading partner settings...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('partnerSettingsPage.loading')}</p>
         </div>
       </div>
     );
@@ -466,9 +472,9 @@ export default function PartnerSettingsPage() {
     return (
       <div className="rounded-lg border border-amber-200 bg-amber-50 p-6 text-center dark:border-amber-800 dark:bg-amber-950">
         <Building2 className="mx-auto h-12 w-12 text-amber-500" />
-        <h2 className="mt-4 text-lg font-semibold">Partner Access Required</h2>
+        <h2 className="mt-4 text-lg font-semibold">{t('partnerSettingsPage.accessRequired')}</h2>
         <p className="mt-2 text-sm text-muted-foreground">
-          Partner settings are only available to partner-level users.
+          {t('partnerSettingsPage.accessDescription')}
         </p>
       </div>
     );
@@ -479,7 +485,7 @@ export default function PartnerSettingsPage() {
       <div className="flex items-center justify-center py-12">
         <div className="text-center">
           <Loader2 className="h-8 w-8 animate-spin mx-auto text-primary" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading partner settings...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('partnerSettingsPage.loading')}</p>
         </div>
       </div>
     );
@@ -491,7 +497,7 @@ export default function PartnerSettingsPage() {
         <p className="text-sm text-destructive">{error}</p>
         <button type="button" onClick={fetchPartner}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90">
-          Try again
+          {t('common:actions.retry')}
         </button>
       </div>
     );
@@ -503,20 +509,20 @@ export default function PartnerSettingsPage() {
     <div className="mx-auto max-w-6xl space-y-6">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Partner Settings</h1>
+          <h1 className="text-xl font-semibold tracking-tight">{t('partnerSettingsPage.title')}</h1>
           <p className="text-sm text-muted-foreground">
-            Configure defaults for {partner?.name || 'your MSP'}.
+            {t('partnerSettingsPage.description', { name: partner?.name || t('partnerSettingsPage.yourMsp') })}
           </p>
         </div>
         {activeDef.selfSaving ? (
           <p className="self-center text-sm text-muted-foreground">
-            This section saves its own changes.
+            {t('partnerSettingsPage.selfSaving')}
           </p>
         ) : (
           <button type="button" onClick={handleSave} disabled={saving || !isDirty}
             className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50">
             {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-            {saving ? 'Saving...' : 'Save Settings'}
+            {saving ? t('common:states.saving') : t('partnerSettingsPage.saveSettings')}
           </button>
         )}
       </header>
@@ -530,8 +536,8 @@ export default function PartnerSettingsPage() {
       <div className="grid gap-6 lg:grid-cols-[240px_minmax(0,1fr)]">
         <SettingsSectionNav
           groups={TAB_GROUPS.map(group => ({
-            label: group.label,
-            items: group.tabs.map(tab => ({ ...tab, dirty: !!dirtyTabs[tab.key] })),
+            label: t(/* i18n-dynamic */ group.label),
+            items: group.tabs.map(tab => ({ ...tab, label: t(/* i18n-dynamic */ tab.label), description: t(/* i18n-dynamic */ tab.description), dirty: !!dirtyTabs[tab.key] })),
           }))}
           activeKey={activeTab}
           onNavigate={key => navigateToTab(key as TabKey)}
@@ -541,7 +547,7 @@ export default function PartnerSettingsPage() {
         <div className="min-w-0 space-y-6">
           {activeDef.enforced && (
             <div className="rounded-md border bg-blue-50 dark:bg-blue-950/30 px-4 py-3 text-sm text-blue-700 dark:text-blue-300">
-              Values you set here are enforced across all organizations. Leave fields empty to let each organization configure individually.
+              {t('partnerSettingsPage.enforcedDescription')}
             </div>
           )}
 
@@ -573,11 +579,13 @@ export default function PartnerSettingsPage() {
               timezone={timezone}
               dateFormat={dateFormat}
               timeFormat={timeFormat}
+              language={language}
               businessHoursPreset={businessHoursPreset}
               customHours={customHours}
               onTimezoneChange={setTimezone}
               onDateFormatChange={setDateFormat}
               onTimeFormatChange={setTimeFormat}
+              onLanguageChange={setLanguage}
               onBusinessHoursPresetChange={setBusinessHoursPreset}
               onCustomHoursChange={updateCustomHours}
             />
@@ -636,8 +644,7 @@ export default function PartnerSettingsPage() {
           {activeTab === 'ticketing' && (
             <section className="space-y-2" data-testid="partner-ticketing-tab">
               <p className="text-sm text-muted-foreground">
-                Configure ticket statuses, priority SLA defaults, categories, and billing exports.
-                These apply across all of your organizations.
+                {t('partnerSettingsPage.ticketingDescription')}
               </p>
               <TicketingSettingsTabs syncHash={false} initialTab={deepLinkTicketMailbox ? 'inbound' : undefined} />
             </section>

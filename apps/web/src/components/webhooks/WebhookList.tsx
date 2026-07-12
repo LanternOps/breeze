@@ -2,6 +2,7 @@ import { useMemo, useState, type MouseEvent } from 'react';
 import { Pencil, Trash2, Play, ToggleLeft, ToggleRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatDateTime } from '@/lib/dateTimeFormat';
+import { useTranslation } from 'react-i18next';
 
 export type WebhookStatus = 'active' | 'disabled';
 
@@ -52,18 +53,13 @@ const statusStyles: Record<WebhookStatus, string> = {
   disabled: 'bg-muted text-muted-foreground'
 };
 
-const statusLabels: Record<WebhookStatus, string> = {
-  active: 'Active',
-  disabled: 'Disabled'
-};
-
 const getStatus = (webhook: Webhook): WebhookStatus => {
   if (webhook.status) return webhook.status;
   return webhook.enabled === false ? 'disabled' : 'active';
 };
 
-const formatTimestamp = (value?: string | null, timezone?: string) => {
-  if (!value) return 'N/A';
+const formatTimestamp = (value: string | null | undefined, timezone: string | undefined, t: (key: string) => string) => {
+  if (!value) return t('longTail.webhooks.WebhookList.notAvailable');
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return formatDateTime(date, { timeZone: timezone });
@@ -79,6 +75,7 @@ export default function WebhookList({
   selectedWebhookId,
   timezone
 }: WebhookListProps) {
+  const { t } = useTranslation('common');
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<WebhookStatus | 'all'>('all');
   const [testingId, setTestingId] = useState<string | null>(null);
@@ -125,15 +122,15 @@ export default function WebhookList({
     <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-lg font-semibold">Webhooks</h2>
+          <h2 className="text-lg font-semibold">{t('longTail.webhooks.WebhookList.title')}</h2>
           <p className="text-sm text-muted-foreground">
-            {filteredWebhooks.length} of {webhooks.length} webhooks
+            {t('longTail.webhooks.WebhookList.webhookCount', { filtered: filteredWebhooks.length, total: webhooks.length })}
           </p>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <input
             type="search"
-            placeholder="Search by name or URL"
+            placeholder={t('longTail.webhooks.WebhookList.searchPlaceholder')}
             value={query}
             onChange={event => setQuery(event.target.value)}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-56"
@@ -143,9 +140,9 @@ export default function WebhookList({
             onChange={event => setStatusFilter(event.target.value as WebhookStatus | 'all')}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-36"
           >
-            <option value="all">All statuses</option>
-            <option value="active">Active</option>
-            <option value="disabled">Disabled</option>
+            <option value="all">{t('longTail.webhooks.WebhookList.filters.allStatuses')}</option>
+            <option value="active">{t('common:states.active')}</option>
+            <option value="disabled">{t('common:states.disabled')}</option>
           </select>
         </div>
       </div>
@@ -154,19 +151,19 @@ export default function WebhookList({
         <table className="min-w-full divide-y">
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <th className="px-4 py-3">Name</th>
-              <th className="px-4 py-3">URL</th>
-              <th className="px-4 py-3">Events</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3">Last Triggered</th>
-              <th className="px-4 py-3 text-right">Actions</th>
+              <th className="px-4 py-3">{t('common:labels.name')}</th>
+              <th className="px-4 py-3">{t('longTail.webhooks.WebhookList.headers.url')}</th>
+              <th className="px-4 py-3">{t('longTail.webhooks.WebhookList.headers.events')}</th>
+              <th className="px-4 py-3">{t('common:labels.status')}</th>
+              <th className="px-4 py-3">{t('longTail.webhooks.WebhookList.headers.lastTriggered')}</th>
+              <th className="px-4 py-3 text-right">{t('common:labels.actions')}</th>
             </tr>
           </thead>
           <tbody className="divide-y">
             {filteredWebhooks.length === 0 ? (
               <tr>
                 <td colSpan={6} className="px-4 py-12 text-center">
-                  <p className="text-sm text-muted-foreground">No webhooks found.</p>
+                  <p className="text-sm text-muted-foreground">{t('longTail.webhooks.WebhookList.empty')}</p>
                 </td>
               </tr>
             ) : (
@@ -195,7 +192,7 @@ export default function WebhookList({
                     </td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">
                       {webhook.events.length === 0 ? (
-                        <span>None</span>
+                        <span>{t('common:labels.none')}</span>
                       ) : (
                         <div className="flex flex-wrap gap-1">
                           {eventsToShow.map(event => (
@@ -207,7 +204,9 @@ export default function WebhookList({
                             </span>
                           ))}
                           {remainingEvents > 0 && (
-                            <span className="text-xs text-muted-foreground">+{remainingEvents} more</span>
+                            <span className="text-xs text-muted-foreground">
+                              {t('longTail.webhooks.WebhookList.moreEvents', { count: remainingEvents })}
+                            </span>
                           )}
                         </div>
                       )}
@@ -228,19 +227,19 @@ export default function WebhookList({
                         ) : (
                           <ToggleLeft className="h-4 w-4" />
                         )}
-                        {statusLabels[status]}
+                        {status === 'active' ? t('common:states.active') : t('common:states.disabled')}
                       </button>
                     </td>
                     <td className="px-4 py-3 text-sm">
                       <div className="space-y-2">
-                        <p className="text-sm text-muted-foreground">{formatTimestamp(lastTriggered, timezone)}</p>
+                        <p className="text-sm text-muted-foreground">{formatTimestamp(lastTriggered, timezone, t)}</p>
                         {(webhook.successCount != null || webhook.failureCount != null) && (
                           <div className="flex items-center gap-2">
                             <span className="inline-flex items-center rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-700">
-                              {webhook.successCount ?? 0} success
+                              {t('longTail.webhooks.WebhookList.successCount', { count: webhook.successCount ?? 0 })}
                             </span>
                             <span className="inline-flex items-center rounded-full bg-destructive/10 px-2 py-0.5 text-xs font-medium text-destructive">
-                              {webhook.failureCount ?? 0} failed
+                              {t('longTail.webhooks.WebhookList.failedCount', { count: webhook.failureCount ?? 0 })}
                             </span>
                           </div>
                         )}
@@ -262,7 +261,7 @@ export default function WebhookList({
                           ) : (
                             <Play className="h-3 w-3" />
                           )}
-                          Test
+                          {t('longTail.webhooks.WebhookList.actions.test')}
                         </button>
                         <button
                           type="button"
@@ -271,7 +270,7 @@ export default function WebhookList({
                             onEdit?.(webhook);
                           }}
                           className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
-                          title="Edit webhook"
+                          title={t('longTail.webhooks.WebhookList.actions.editWebhook')}
                         >
                           <Pencil className="h-4 w-4" />
                         </button>
@@ -282,7 +281,7 @@ export default function WebhookList({
                             onDelete?.(webhook);
                           }}
                           className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted text-destructive"
-                          title="Delete webhook"
+                          title={t('longTail.webhooks.WebhookList.actions.deleteWebhook')}
                         >
                           <Trash2 className="h-4 w-4" />
                         </button>

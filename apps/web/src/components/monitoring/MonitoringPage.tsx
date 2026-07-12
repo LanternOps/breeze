@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import MonitoringAssetsDashboard from './MonitoringAssetsDashboard';
 import NetworkMonitorList from '../monitors/NetworkMonitorList';
 import SNMPTemplateList from '../snmp/SNMPTemplateList';
@@ -17,6 +18,7 @@ function getTabFromHash(): MonitoringTab {
 }
 
 export default function MonitoringPage() {
+  const { t } = useTranslation('common');
   const [activeTab, setActiveTab] = useState<MonitoringTab>(getTabFromHash);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | undefined>(undefined);
   const [templateRefreshToken, setTemplateRefreshToken] = useState(0);
@@ -42,9 +44,9 @@ export default function MonitoringPage() {
   }, [activeTab]);
 
   const tabLabels: Record<MonitoringTab, string> = {
-    assets: 'Assets',
-    checks: 'Network Checks',
-    templates: 'SNMP Templates'
+    assets: t('longTail.monitoring.MonitoringPage.tabs.assets'),
+    checks: t('longTail.monitoring.MonitoringPage.tabs.checks'),
+    templates: t('longTail.monitoring.MonitoringPage.tabs.templates')
   };
   const tabButtons = MONITORING_TABS.map((id) => ({ id, label: tabLabels[id] }));
 
@@ -56,9 +58,9 @@ export default function MonitoringPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">Monitoring</h1>
+        <h1 className="text-xl font-semibold tracking-tight">{t('longTail.monitoring.MonitoringPage.title')}</h1>
         <p className="text-muted-foreground">
-          SNMP polling and network checks. Discovery can feed into monitoring, but monitoring is managed here.
+          {t('longTail.monitoring.MonitoringPage.description')}
         </p>
       </div>
 

@@ -1,3 +1,5 @@
+import '@/lib/i18n';
+import { useTranslation } from 'react-i18next';
 import { useCallback, useEffect, useState } from 'react';
 import { variablesForContext } from '@breeze/shared';
 import {
@@ -18,6 +20,7 @@ interface FormState {
 const EMPTY_FORM: FormState = { id: null, name: '', category: '', body: '' };
 
 export default function CannedResponsesCard() {
+  const { t } = useTranslation('settings');
   const [items, setItems] = useState<CannedResponse[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -40,8 +43,8 @@ export default function CannedResponsesCard() {
   }, [load]);
 
   const openNew = () => setForm({ ...EMPTY_FORM });
-  const openEdit = (t: CannedResponse) =>
-    setForm({ id: t.id, name: t.name, category: t.category ?? '', body: t.body });
+  const openEdit = (response: CannedResponse) =>
+    setForm({ id: response.id, name: response.name, category: response.category ?? '', body: response.body });
 
   const save = useCallback(async () => {
     if (!form || !form.name.trim() || !form.body.trim() || saving) return;
@@ -83,10 +86,9 @@ export default function CannedResponsesCard() {
       <section className="rounded-lg border p-4">
         <div className="mb-3 flex items-center justify-between">
           <div>
-            <h2 className="text-sm font-semibold">Canned responses</h2>
+            <h2 className="text-sm font-semibold">{t('cannedResponsesCard.cannedResponses')}</h2>
             <p className="text-xs text-muted-foreground">
-              Reusable reply templates with merge variables. Shared across all of your technicians.
-            </p>
+              {t('cannedResponsesCard.reusableReplyTemplatesWithMergeVariablesSharedAcrossAllO')}</p>
           </div>
           <button
             type="button"
@@ -94,15 +96,13 @@ export default function CannedResponsesCard() {
             className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white"
             data-testid="canned-response-new"
           >
-            New
-          </button>
+            {t('cannedResponsesCard.new')}</button>
         </div>
 
         {form && (
           <div className="mb-4 rounded-md border bg-muted/20 p-3" data-testid="canned-response-form">
             <label className="text-xs font-medium" htmlFor="canned-response-name">
-              Name
-            </label>
+              {t('cannedResponsesCard.name')}</label>
             <input
               id="canned-response-name"
               type="text"
@@ -114,7 +114,7 @@ export default function CannedResponsesCard() {
             />
 
             <label className="text-xs font-medium" htmlFor="canned-response-category">
-              Category <span className="text-muted-foreground">(optional)</span>
+              {t('cannedResponsesCard.category')}<span className="text-muted-foreground">{t('cannedResponsesCard.optional')}</span>
             </label>
             <input
               id="canned-response-category"
@@ -127,8 +127,7 @@ export default function CannedResponsesCard() {
             />
 
             <label className="text-xs font-medium" htmlFor="canned-response-body">
-              Body
-            </label>
+              {t('cannedResponsesCard.body')}</label>
             <textarea
               id="canned-response-body"
               value={form.body}
@@ -140,7 +139,7 @@ export default function CannedResponsesCard() {
             />
 
             <div className="mt-1.5 flex flex-wrap items-center gap-1">
-              <span className="text-xs text-muted-foreground">Insert:</span>
+              <span className="text-xs text-muted-foreground">{t('cannedResponsesCard.insert')}</span>
               {variablesForContext('canned').map((v) => (
                 <button
                   key={v.key}
@@ -164,7 +163,7 @@ export default function CannedResponsesCard() {
                 className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
                 data-testid="canned-response-save"
               >
-                {saving ? 'Saving' : 'Save'}
+                {saving ? t('cannedResponsesCard.saving') : t('cannedResponsesCard.save')}
               </button>
               <button
                 type="button"
@@ -173,55 +172,49 @@ export default function CannedResponsesCard() {
                 className="rounded-md border px-3 py-1.5 text-sm"
                 data-testid="canned-response-cancel"
               >
-                Cancel
-              </button>
+                {t('cannedResponsesCard.cancel')}</button>
             </div>
           </div>
         )}
 
         {loading ? (
           <p className="text-center text-sm text-muted-foreground" data-testid="canned-responses-loading">
-            Loading.
-          </p>
+            {t('cannedResponsesCard.loading')}</p>
         ) : error ? (
           <p className="text-center text-sm text-muted-foreground" data-testid="canned-responses-error">
-            Failed to load canned responses.{' '}
+            {t('cannedResponsesCard.failedToLoadCannedResponses')}{' '}
             <button type="button" onClick={() => void load()} className="underline hover:text-foreground">
-              Retry
-            </button>
+              {t('cannedResponsesCard.retry')}</button>
           </p>
         ) : items.length === 0 ? (
           <p className="text-sm text-muted-foreground" data-testid="canned-responses-empty">
-            No canned responses yet. Create one to speed up replies.
-          </p>
+            {t('cannedResponsesCard.noCannedResponsesYetCreateOneToSpeedUpReplies')}</p>
         ) : (
           <ul className="divide-y">
-            {items.map((t) => (
-              <li key={t.id} className="flex items-start justify-between gap-3 py-2" data-testid={`canned-response-row-${t.id}`}>
+            {items.map((response) => (
+              <li key={response.id} className="flex items-start justify-between gap-3 py-2" data-testid={`canned-response-row-${response.id}`}>
                 <div className="min-w-0">
                   <div className="text-sm font-medium">
-                    {t.category ? <span className="text-muted-foreground">{t.category} · </span> : null}
-                    {t.name}
+                    {response.category ? <span className="text-muted-foreground">{response.category} · </span> : null}
+                    {response.name}
                   </div>
-                  <div className="truncate text-xs text-muted-foreground">{t.body}</div>
+                  <div className="truncate text-xs text-muted-foreground">{response.body}</div>
                 </div>
                 <div className="flex shrink-0 items-center gap-2 text-sm">
                   <button
                     type="button"
-                    onClick={() => openEdit(t)}
+                    onClick={() => openEdit(response)}
                     className="text-muted-foreground hover:text-foreground"
-                    data-testid={`canned-response-edit-${t.id}`}
+                    data-testid={`canned-response-edit-${response.id}`}
                   >
-                    Edit
-                  </button>
+                    {t('cannedResponsesCard.edit')}</button>
                   <button
                     type="button"
-                    onClick={() => void remove(t.id)}
+                    onClick={() => void remove(response.id)}
                     className="text-muted-foreground hover:text-foreground"
-                    data-testid={`canned-response-delete-${t.id}`}
+                    data-testid={`canned-response-delete-${response.id}`}
                   >
-                    Delete
-                  </button>
+                    {t('cannedResponsesCard.delete')}</button>
                 </div>
               </li>
             ))}

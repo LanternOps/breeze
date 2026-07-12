@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import '../../lib/i18n';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import OrgSwitcher, { getOrgSwitchRedirect } from './OrgSwitcher';

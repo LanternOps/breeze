@@ -1,22 +1,29 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, CheckCircle2, Loader2, RefreshCw, ShieldAlert, UserCheck, XCircle } from 'lucide-react';
-
-import { runAction, handleActionError } from '../../lib/runAction';
-import { fetchWithAuth } from '../../stores/auth';
-import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
-import { formatDateTime } from '@/lib/dateTimeFormat';
-
+import { useTranslation } from "react-i18next";
+import "@/lib/i18n";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Loader2,
+  RefreshCw,
+  ShieldAlert,
+  UserCheck,
+  XCircle,
+} from "lucide-react";
+import { runAction, handleActionError } from "../../lib/runAction";
+import { fetchWithAuth } from "../../stores/auth";
+import { useMlFeatureFlags } from "../../hooks/useMlFeatureFlags";
+import { formatDateTime } from "@/lib/dateTimeFormat";
 type UserRiskScore = {
   orgId: string;
   userId: string;
   userName: string;
   userEmail: string;
   score: number;
-  trendDirection: 'up' | 'down' | 'stable' | null;
+  trendDirection: "up" | "down" | "stable" | null;
   calculatedAt: string;
   factors: Record<string, number>;
 };
-
 type UserRiskEvent = {
   id: string;
   eventType: string;
@@ -25,7 +32,6 @@ type UserRiskEvent = {
   description: string;
   occurredAt: string;
 };
-
 type UserRiskDetail = {
   user: {
     id: string;
@@ -34,13 +40,12 @@ type UserRiskDetail = {
   };
   latestScore: {
     score: number;
-    severity: 'low' | 'medium' | 'high' | 'critical';
+    severity: "low" | "medium" | "high" | "critical";
     factors: Record<string, number>;
     calculatedAt: string;
   };
   recentEvents: UserRiskEvent[];
 };
-
 type Evaluation = {
   windowDays: number;
   totalLabels: number;
@@ -55,55 +60,54 @@ type Evaluation = {
   repeatSignalUsers: number;
   repeatSignalRate: number | null;
 };
-
 const scoreTextClass = (score: number): string => {
-  if (score >= 85) return 'text-red-700';
-  if (score >= 70) return 'text-orange-700';
-  if (score >= 50) return 'text-amber-700';
-  return 'text-emerald-700';
+  if (score >= 85) return "text-red-700";
+  if (score >= 70) return "text-orange-700";
+  if (score >= 50) return "text-amber-700";
+  return "text-emerald-700";
 };
-
 const scoreBarClass = (score: number): string => {
-  if (score >= 85) return 'bg-red-500';
-  if (score >= 70) return 'bg-orange-500';
-  if (score >= 50) return 'bg-amber-500';
-  return 'bg-emerald-500';
+  if (score >= 85) return "bg-red-500";
+  if (score >= 70) return "bg-orange-500";
+  if (score >= 50) return "bg-amber-500";
+  return "bg-emerald-500";
 };
-
 // Risk-factor (driver) bars represent how much a factor *contributes* to risk,
 // so they use a warm risk palette and never green — a low contribution is still
 // risk, not "good" (which an emerald bar would imply on a high-risk user).
 const driverBarClass = (value: number): string => {
-  if (value >= 25) return 'bg-red-500';
-  if (value >= 15) return 'bg-orange-500';
-  return 'bg-amber-500';
+  if (value >= 25) return "bg-red-500";
+  if (value >= 15) return "bg-orange-500";
+  return "bg-amber-500";
 };
-
 const severityClass = (severity: string | null): string => {
-  if (severity === 'critical') return 'border-red-500/40 bg-red-500/10 text-red-700';
-  if (severity === 'high') return 'border-orange-500/40 bg-orange-500/10 text-orange-700';
-  if (severity === 'medium') return 'border-amber-500/40 bg-amber-500/10 text-amber-700';
-  return 'border-blue-500/40 bg-blue-500/10 text-blue-700';
+  if (severity === "critical")
+    return "border-red-500/40 bg-red-500/10 text-red-700";
+  if (severity === "high")
+    return "border-orange-500/40 bg-orange-500/10 text-orange-700";
+  if (severity === "medium")
+    return "border-amber-500/40 bg-amber-500/10 text-amber-700";
+  return "border-blue-500/40 bg-blue-500/10 text-blue-700";
 };
-
-const formatPercent = (value: number | null): string => (
-  value === null ? 'n/a' : `${Math.round(value * 100)}%`
-);
-
+const formatPercent = (value: number | null): string =>
+  value === null ? "n/a" : `${Math.round(value * 100)}%`;
 const formatDate = (value: string): string => {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return formatDateTime(date, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  return formatDateTime(date, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 };
-
-const formatFactor = (value: string): string => (
+const formatFactor = (value: string): string =>
   value
-    .replace(/([a-z])([A-Z])/g, '$1 $2')
-    .replace(/_/g, ' ')
-    .toLowerCase()
-);
-
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/_/g, " ")
+    .toLowerCase();
 export default function UserRiskPage() {
+  const { t } = useTranslation("security");
   const mlFlags = useMlFeatureFlags();
   const [scores, setScores] = useState<UserRiskScore[]>([]);
   const [detail, setDetail] = useState<UserRiskDetail | null>(null);
@@ -114,9 +118,10 @@ export default function UserRiskPage() {
   const [error, setError] = useState<string | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [detailReloadKey, setDetailReloadKey] = useState(0);
-  const [labeling, setLabeling] = useState<'true_positive' | 'false_positive' | null>(null);
-  const userRiskDisabled = mlFlags.isDisabled('ml.user_risk_v0.enabled');
-
+  const [labeling, setLabeling] = useState<
+    "true_positive" | "false_positive" | null
+  >(null);
+  const userRiskDisabled = mlFlags.isDisabled("ml.user_risk_v0.enabled");
   const loadScores = useCallback(async () => {
     if (!mlFlags.loaded || userRiskDisabled) {
       setLoading(false);
@@ -126,24 +131,33 @@ export default function UserRiskPage() {
     setError(null);
     try {
       const [scoresResponse, evaluationResponse] = await Promise.all([
-        fetchWithAuth('/user-risk/scores?limit=25&minScore=50'),
-        fetchWithAuth('/user-risk/evaluation?days=30'),
+        fetchWithAuth("/user-risk/scores?limit=25&minScore=50"),
+        fetchWithAuth("/user-risk/evaluation?days=30"),
       ]);
-      if (!scoresResponse.ok) throw new Error('Failed to load user risk scores');
-      if (!evaluationResponse.ok) throw new Error('Failed to load user risk evaluation');
+      if (!scoresResponse.ok)
+        throw new Error(t("securityUserRiskPage.failedToLoadUserRiskScores"));
+      if (!evaluationResponse.ok)
+        throw new Error(
+          t("securityUserRiskPage.failedToLoadUserRiskEvaluation"),
+        );
       const scoresJson = await scoresResponse.json();
       const evaluationJson = await evaluationResponse.json();
-      const rows = Array.isArray(scoresJson?.data) ? scoresJson.data as UserRiskScore[] : [];
+      const rows = Array.isArray(scoresJson?.data)
+        ? (scoresJson.data as UserRiskScore[])
+        : [];
       setScores(rows);
       setEvaluation(evaluationJson?.data ?? null);
       setSelected((current) => current ?? rows[0] ?? null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load user risk');
+      setError(
+        err instanceof Error
+          ? err.message
+          : t("securityUserRiskPage.failedToLoadUserRisk"),
+      );
     } finally {
       setLoading(false);
     }
   }, [mlFlags.loaded, userRiskDisabled]);
-
   useEffect(() => {
     if (!mlFlags.loaded) return;
     if (userRiskDisabled) {
@@ -157,7 +171,6 @@ export default function UserRiskPage() {
     }
     void loadScores();
   }, [loadScores, mlFlags.loaded, userRiskDisabled]);
-
   useEffect(() => {
     if (userRiskDisabled) {
       setDetail(null);
@@ -169,90 +182,113 @@ export default function UserRiskPage() {
       setDetailError(null);
       return;
     }
-
     let active = true;
     setDetailLoading(true);
     setDetailError(null);
     fetchWithAuth(`/user-risk/users/${selected.userId}?orgId=${selected.orgId}`)
       .then(async (response) => {
-        if (!response.ok) throw new Error('Failed to load user risk detail');
+        if (!response.ok)
+          throw new Error(t("securityUserRiskPage.failedToLoadUserRiskDetail"));
         const json = await response.json();
         if (active) setDetail(json?.data ?? null);
       })
       .catch((err) => {
         if (active) {
           setDetail(null);
-          setDetailError(err instanceof Error ? err.message : 'Failed to load user risk detail');
+          setDetailError(
+            err instanceof Error
+              ? err.message
+              : t("securityUserRiskPage.failedToLoadUserRiskDetail"),
+          );
         }
       })
       .finally(() => {
         if (active) setDetailLoading(false);
       });
-
     return () => {
       active = false;
     };
   }, [selected, userRiskDisabled, detailReloadKey]);
-
-  const factors = useMemo(() => (
-    Object.entries(detail?.latestScore.factors ?? selected?.factors ?? {})
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 5)
-  ), [detail?.latestScore.factors, selected?.factors]);
-
-  async function submitLabel(outcome: 'true_positive' | 'false_positive') {
+  const factors = useMemo(
+    () =>
+      Object.entries(detail?.latestScore.factors ?? selected?.factors ?? {})
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5),
+    [detail?.latestScore.factors, selected?.factors],
+  );
+  async function submitLabel(outcome: "true_positive" | "false_positive") {
     if (!selected) return;
     setLabeling(outcome);
     try {
       await runAction({
-        request: () => fetchWithAuth(`/user-risk/users/${selected.userId}/feedback`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            orgId: selected.orgId,
-            outcome,
-            score: selected.score,
+        request: () =>
+          fetchWithAuth(`/user-risk/users/${selected.userId}/feedback`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              orgId: selected.orgId,
+              outcome,
+              score: selected.score,
+            }),
           }),
-        }),
-        errorFallback: 'Could not save user risk feedback',
-        successMessage: outcome === 'true_positive' ? 'True positive label saved' : 'False positive label saved',
+        errorFallback: t("securityUserRiskPage.couldNotSaveUserRiskFeedback"),
+        successMessage:
+          outcome === "true_positive"
+            ? t("securityUserRiskPage.truePositiveLabelSaved")
+            : t("securityUserRiskPage.falsePositiveLabelSaved"),
       });
       await loadScores();
     } catch (err) {
-      handleActionError(err, 'Could not save user risk feedback');
+      handleActionError(
+        err,
+        t("securityUserRiskPage.couldNotSaveUserRiskFeedback"),
+      );
     } finally {
       setLabeling(null);
     }
   }
-
   if (loading) {
     return (
-      <div className="flex u-min-h-px-420 items-center justify-center" data-testid="user-risk-loading">
+      <div
+        className="flex u-min-h-px-420 items-center justify-center"
+        data-testid="user-risk-loading"
+      >
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
       </div>
     );
   }
-
   if (userRiskDisabled) {
     return (
       <div className="space-y-5" data-testid="user-risk-page">
         <header>
-          <h1 className="text-2xl font-semibold tracking-normal">User Risk</h1>
-          <p className="text-sm text-muted-foreground">Review rules-v0 risk scores, evidence, and evaluation labels.</p>
+          <h1 className="text-2xl font-semibold tracking-normal">
+            {t("securityUserRiskPage.userRisk")}
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            {t("securityUserRiskPage.reviewRulesV0RiskScoresEvidenceAnd")}
+          </p>
         </header>
-        <section className="rounded-lg border bg-card p-6" data-testid="user-risk-disabled">
+        <section
+          className="rounded-lg border bg-card p-6"
+          data-testid="user-risk-disabled"
+        >
           <div className="flex items-start gap-3">
             <ShieldAlert className="mt-0.5 h-5 w-5 text-muted-foreground" />
             <div>
-              <h2 className="text-sm font-semibold">User risk scoring is disabled for this organization.</h2>
-              <p className="mt-1 text-sm text-muted-foreground">Scores, evidence, and labels will appear here when the user-risk v0 producer is enabled.</p>
+              <h2 className="text-sm font-semibold">
+                {t("securityUserRiskPage.userRiskScoringIsDisabledForThis")}
+              </h2>
+              <p className="mt-1 text-sm text-muted-foreground">
+                {t(
+                  "securityUserRiskPage.scoresEvidenceAndLabelsWillAppearHere",
+                )}
+              </p>
             </div>
           </div>
         </section>
       </div>
     );
   }
-
   if (error) {
     return (
       <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-5 text-sm text-destructive">
@@ -260,79 +296,128 @@ export default function UserRiskPage() {
           <AlertTriangle className="h-4 w-4" />
           <span>{error}</span>
         </div>
-        <button type="button" onClick={() => void loadScores()} className="mt-4 inline-flex items-center gap-2 rounded-md border px-3 py-2 text-xs font-medium">
+        <button
+          type="button"
+          onClick={() => void loadScores()}
+          className="mt-4 inline-flex items-center gap-2 rounded-md border px-3 py-2 text-xs font-medium"
+        >
           <RefreshCw className="h-4 w-4" />
-          Retry
+          {t("securityUserRiskPage.retry")}
         </button>
       </div>
     );
   }
-
   return (
     <div className="space-y-5" data-testid="user-risk-page">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold tracking-normal">User Risk</h1>
-          <p className="text-sm text-muted-foreground">Review rules-v0 risk scores, evidence, and evaluation labels.</p>
+          <h1 className="text-2xl font-semibold tracking-normal">
+            {t("securityUserRiskPage.userRisk")}
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            {t("securityUserRiskPage.reviewRulesV0RiskScoresEvidenceAnd")}
+          </p>
         </div>
-        <button type="button" onClick={() => void loadScores()} className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted">
+        <button
+          type="button"
+          onClick={() => void loadScores()}
+          className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted"
+        >
           <RefreshCw className="h-4 w-4" />
-          Refresh
+          {t("securityUserRiskPage.refresh")}
         </button>
       </header>
 
       <section className="grid gap-3 md:grid-cols-4">
-        <MetricCard label="Precision" value={formatPercent(evaluation?.precision ?? null)} />
-        <MetricCard label="Labels" value={`${evaluation?.totalLabels ?? 0}`} />
-        <MetricCard label="Training completion" value={formatPercent(evaluation?.trainingCompletionRate ?? null)} />
-        <MetricCard label="Repeat signal users" value={`${evaluation?.repeatSignalUsers ?? 0}`} />
+        <MetricCard
+          label={t("securityUserRiskPage.precision")}
+          value={formatPercent(evaluation?.precision ?? null)}
+        />
+        <MetricCard
+          label={t("securityUserRiskPage.labels")}
+          value={`${evaluation?.totalLabels ?? 0}`}
+        />
+        <MetricCard
+          label={t("securityUserRiskPage.trainingCompletion")}
+          value={formatPercent(evaluation?.trainingCompletionRate ?? null)}
+        />
+        <MetricCard
+          label={t("securityUserRiskPage.repeatSignalUsers")}
+          value={`${evaluation?.repeatSignalUsers ?? 0}`}
+        />
       </section>
 
       <div className="grid gap-5 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.35fr)]">
         <section className="rounded-lg border bg-card">
           <div className="border-b p-4">
-            <h2 className="text-sm font-semibold">At-risk users</h2>
+            <h2 className="text-sm font-semibold">
+              {t("securityUserRiskPage.atRiskUsers")}
+            </h2>
           </div>
           <div className="max-h-[620px] divide-y overflow-y-auto">
             {scores.length === 0 ? (
-              <div className="p-5 text-sm text-muted-foreground">No users are above the current risk threshold.</div>
-            ) : scores.map((score) => (
-              <button
-                key={`${score.orgId}:${score.userId}`}
-                type="button"
-                onClick={() => setSelected(score)}
-                className={`block w-full p-4 text-left hover:bg-muted/60 ${selected?.userId === score.userId && selected.orgId === score.orgId ? 'bg-muted' : ''}`}
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-medium">{score.userName}</div>
-                    <div className="truncate text-xs text-muted-foreground">{score.userEmail}</div>
+              <div className="p-5 text-sm text-muted-foreground">
+                {t("securityUserRiskPage.noUsersAreAboveTheCurrentRisk")}
+              </div>
+            ) : (
+              scores.map((score) => (
+                <button
+                  key={`${score.orgId}:${score.userId}`}
+                  type="button"
+                  onClick={() => setSelected(score)}
+                  className={`block w-full p-4 text-left hover:bg-muted/60 ${selected?.userId === score.userId && selected.orgId === score.orgId ? "bg-muted" : ""}`}
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-medium">
+                        {score.userName}
+                      </div>
+                      <div className="truncate text-xs text-muted-foreground">
+                        {score.userEmail}
+                      </div>
+                    </div>
+                    <div
+                      className={`text-xl font-semibold ${scoreTextClass(score.score)}`}
+                    >
+                      {score.score}
+                    </div>
                   </div>
-                  <div className={`text-xl font-semibold ${scoreTextClass(score.score)}`}>{score.score}</div>
-                </div>
-                <div className="mt-3 h-2 rounded-full bg-muted">
-                  <div className={`h-2 rounded-full ${scoreBarClass(score.score)}`} style={{ width: `${score.score}%` }} />
-                </div>
-              </button>
-            ))}
+                  <div className="mt-3 h-2 rounded-full bg-muted">
+                    <div
+                      className={`h-2 rounded-full ${scoreBarClass(score.score)}`}
+                      style={{ width: `${score.score}%` }}
+                    />
+                  </div>
+                </button>
+              ))
+            )}
           </div>
         </section>
 
         <section className="rounded-lg border bg-card">
           {!selected ? (
-            <div className="p-6 text-sm text-muted-foreground">Select a user to inspect risk evidence.</div>
+            <div className="p-6 text-sm text-muted-foreground">
+              {t("securityUserRiskPage.selectAUserToInspectRiskEvidence")}
+            </div>
           ) : (
             <div className="space-y-5 p-5">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <div className="flex items-center gap-2">
                     <ShieldAlert className="h-5 w-5 text-orange-600" />
-                    <h2 className="text-lg font-semibold">{detail?.user.name ?? selected.userName}</h2>
+                    <h2 className="text-lg font-semibold">
+                      {detail?.user.name ?? selected.userName}
+                    </h2>
                   </div>
-                  <p className="text-sm text-muted-foreground">{detail?.user.email ?? selected.userEmail}</p>
+                  <p className="text-sm text-muted-foreground">
+                    {detail?.user.email ?? selected.userEmail}
+                  </p>
                 </div>
-                <span className={`rounded-full border px-2.5 py-1 text-xs font-medium ${severityClass(detail?.latestScore.severity ?? null)}`}>
-                  {detail?.latestScore.severity ?? 'score'} {detail?.latestScore.score ?? selected.score}
+                <span
+                  className={`rounded-full border px-2.5 py-1 text-xs font-medium ${severityClass(detail?.latestScore.severity ?? null)}`}
+                >
+                  {detail?.latestScore.severity ?? "score"}{" "}
+                  {detail?.latestScore.score ?? selected.score}
                 </span>
               </div>
 
@@ -351,7 +436,7 @@ export default function UserRiskPage() {
                     className="mt-3 inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
                   >
                     <RefreshCw className="h-4 w-4" />
-                    Retry
+                    {t("securityUserRiskPage.retry")}
                   </button>
                 </div>
               )}
@@ -359,35 +444,50 @@ export default function UserRiskPage() {
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
-                  onClick={() => void submitLabel('true_positive')}
+                  onClick={() => void submitLabel("true_positive")}
                   disabled={labeling !== null}
                   className="inline-flex items-center gap-2 rounded-md border border-emerald-500/40 px-3 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-500/10 disabled:opacity-60"
                 >
-                  {labeling === 'true_positive' ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
-                  True positive
+                  {labeling === "true_positive" ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <CheckCircle2 className="h-4 w-4" />
+                  )}
+                  {t("securityUserRiskPage.truePositive")}
                 </button>
                 <button
                   type="button"
-                  onClick={() => void submitLabel('false_positive')}
+                  onClick={() => void submitLabel("false_positive")}
                   disabled={labeling !== null}
                   className="inline-flex items-center gap-2 rounded-md border border-slate-400/50 px-3 py-2 text-sm font-medium hover:bg-muted disabled:opacity-60"
                 >
-                  {labeling === 'false_positive' ? <Loader2 className="h-4 w-4 animate-spin" /> : <XCircle className="h-4 w-4" />}
-                  False positive
+                  {labeling === "false_positive" ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <XCircle className="h-4 w-4" />
+                  )}
+                  {t("securityUserRiskPage.falsePositive")}
                 </button>
               </div>
 
               <div>
-                <h3 className="mb-3 text-sm font-semibold">Top drivers</h3>
+                <h3 className="mb-3 text-sm font-semibold">
+                  {t("securityUserRiskPage.topDrivers")}
+                </h3>
                 <div className="space-y-3">
                   {factors.map(([factor, value]) => (
                     <div key={factor}>
                       <div className="mb-1 flex items-center justify-between gap-3 text-xs">
-                        <span className="capitalize text-muted-foreground">{formatFactor(factor)}</span>
+                        <span className="capitalize text-muted-foreground">
+                          {formatFactor(factor)}
+                        </span>
                         <span className="font-medium">{value}</span>
                       </div>
                       <div className="h-2 rounded-full bg-muted">
-                        <div className={`h-2 rounded-full ${driverBarClass(value)}`} style={{ width: `${value}%` }} />
+                        <div
+                          className={`h-2 rounded-full ${driverBarClass(value)}`}
+                          style={{ width: `${value}%` }}
+                        />
                       </div>
                     </div>
                   ))}
@@ -395,30 +495,46 @@ export default function UserRiskPage() {
               </div>
 
               <div>
-                <h3 className="mb-3 text-sm font-semibold">Recent evidence</h3>
+                <h3 className="mb-3 text-sm font-semibold">
+                  {t("securityUserRiskPage.recentEvidence")}
+                </h3>
                 {detailLoading ? (
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <Loader2 className="h-4 w-4 animate-spin" />
-                    Loading evidence
+                    {t("securityUserRiskPage.loadingEvidence")}
                   </div>
                 ) : detail?.recentEvents?.length ? (
                   <div className="space-y-2">
                     {detail.recentEvents.slice(0, 6).map((event) => (
                       <div key={event.id} className="rounded-md border p-3">
                         <div className="flex flex-wrap items-center justify-between gap-2">
-                          <span className="text-sm font-medium">{event.description}</span>
-                          <span className={`rounded-full border px-2 py-0.5 text-xs ${severityClass(event.severity)}`}>{event.severity ?? 'info'}</span>
+                          <span className="text-sm font-medium">
+                            {event.description}
+                          </span>
+                          <span
+                            className={`rounded-full border px-2 py-0.5 text-xs ${severityClass(event.severity)}`}
+                          >
+                            {event.severity ?? "info"}
+                          </span>
                         </div>
                         <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
                           <span>{event.eventType}</span>
                           <span>{formatDate(event.occurredAt)}</span>
-                          <span>{event.scoreImpact >= 0 ? '+' : ''}{event.scoreImpact} impact</span>
+                          <span>
+                            {t("securityUserRiskPage.scoreImpact", {
+                              value: `${event.scoreImpact >= 0 ? "+" : ""}${event.scoreImpact}`,
+                            })}
+                          </span>
                         </div>
                       </div>
                     ))}
                   </div>
                 ) : (
-                  <div className="rounded-md border p-3 text-sm text-muted-foreground">No recent evidence found for this score.</div>
+                  <div className="rounded-md border p-3 text-sm text-muted-foreground">
+                    {t(
+                      "securityUserRiskPage.noRecentEvidenceFoundForThisScore",
+                    )}
+                  </div>
                 )}
               </div>
             </div>
@@ -428,7 +544,6 @@ export default function UserRiskPage() {
     </div>
   );
 }
-
 function MetricCard({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-lg border bg-card p-4">

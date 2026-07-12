@@ -1,5 +1,6 @@
 import { render, waitFor, act } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import '@/lib/i18n';
 // Raw source of the component under test, for the build-mechanism guard below.
 import scriptFormSource from './ScriptForm.tsx?raw';
 

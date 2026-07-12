@@ -1,15 +1,12 @@
-import type { LucideIcon } from 'lucide-react';
-import { cn } from '@/lib/utils';
-
-type Variant = 'default' | 'success' | 'warning' | 'danger';
-
+import type { LucideIcon } from "lucide-react";
+import { cn } from "@/lib/utils";
+type Variant = "default" | "success" | "warning" | "danger";
 const variantStyles: Record<Variant, string> = {
-  default: 'text-foreground',
-  success: 'text-emerald-600',
-  warning: 'text-amber-600',
-  danger: 'text-red-600'
+  default: "text-foreground",
+  success: "text-emerald-600",
+  warning: "text-amber-600",
+  danger: "text-red-600",
 };
-
 interface SecurityStatCardProps {
   icon: LucideIcon;
   label: string;
@@ -25,24 +22,23 @@ interface SecurityStatCardProps {
   /** Selected treatment when the card's filter preset is currently applied. */
   active?: boolean;
 }
-
 export default function SecurityStatCard({
   icon: Icon,
   label,
   value,
-  variant = 'default',
+  variant = "default",
   detail,
   loading = false,
   interactive = false,
-  active = false
+  active = false,
 }: SecurityStatCardProps) {
   return (
     <div
       className={cn(
-        'h-full rounded-lg border bg-card p-4 shadow-xs',
-        interactive && 'transition hover:shadow-sm',
-        interactive && !active && 'hover:border-primary/40',
-        active && 'border-primary bg-primary/5'
+        "h-full rounded-lg border bg-card p-4 shadow-xs",
+        interactive && "transition hover:shadow-sm",
+        interactive && !active && "hover:border-primary/40",
+        active && "border-primary bg-primary/5",
       )}
       data-active={active || undefined}
     >
@@ -53,12 +49,18 @@ export default function SecurityStatCard({
         <div className="min-w-0">
           <p className="text-xs text-muted-foreground">{label}</p>
           {loading ? (
-            <div className="py-1.5" aria-hidden="true" data-testid="stat-card-skeleton">
+            <div
+              className="py-1.5"
+              aria-hidden="true"
+              data-testid="stat-card-skeleton"
+            >
               <div className="h-5 w-10 rounded bg-muted motion-safe:animate-pulse" />
             </div>
           ) : (
             <>
-              <p className={cn('text-xl font-semibold', variantStyles[variant])}>
+              <p
+                className={cn("text-xl font-semibold", variantStyles[variant])}
+              >
                 {value}
               </p>
               {detail && (

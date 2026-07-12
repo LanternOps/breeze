@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 import { Lock, Save, ShieldCheck, ShieldOff, Timer, Fingerprint } from 'lucide-react';
 import { useOrgStore } from '../../stores/orgStore';
 import { fetchWithAuth } from '../../stores/auth';
@@ -39,6 +41,7 @@ const defaultSecurity: SecurityData = {
 };
 
 export default function OrgSecuritySettings({ security, mtls, onDirty, onSave, locked }: OrgSecuritySettingsProps) {
+  const { t } = useTranslation('settings');
   const isLocked = (field: string) => locked?.includes(`security.${field}`) ?? false;
 
   const initialData = { ...defaultSecurity, ...security };
@@ -96,13 +99,13 @@ export default function OrgSecuritySettings({ security, mtls, onDirty, onSave, l
 
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
-        throw new Error(body.error || 'Failed to save mTLS settings');
+        throw new Error(body.error || t('orgSecuritySettings.mtls.errors.save'));
       }
 
       setMtlsSuccess(true);
       setTimeout(() => setMtlsSuccess(false), 3000);
     } catch (err) {
-      setMtlsError(err instanceof Error ? err.message : 'Failed to save mTLS settings');
+      setMtlsError(err instanceof Error ? err.message : t('orgSecuritySettings.mtls.errors.save'));
     } finally {
       setMtlsSaving(false);
     }
@@ -112,9 +115,9 @@ export default function OrgSecuritySettings({ security, mtls, onDirty, onSave, l
     <section className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h2 className="text-lg font-semibold">Security</h2>
+          <h2 className="text-lg font-semibold">{t('orgSecuritySettings.title')}</h2>
           <p className="text-sm text-muted-foreground">
-            Define password, MFA, and session requirements for your organization.
+            {t('orgSecuritySettings.description')}
           </p>
         </div>
         <button
@@ -123,7 +126,7 @@ export default function OrgSecuritySettings({ security, mtls, onDirty, onSave, l
           className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90"
         >
           <Save className="h-4 w-4" />
-          Save security
+          {t('orgSecuritySettings.actions.save')}
         </button>
       </div>
 
@@ -131,11 +134,11 @@ export default function OrgSecuritySettings({ security, mtls, onDirty, onSave, l
         <div className="space-y-4 rounded-lg border bg-muted/40 p-4">
           <div className="flex items-center gap-2 text-sm font-medium">
             <Lock className="h-4 w-4" />
-            Password policy
+            {t('orgSecuritySettings.password.title')}
           </div>
           <div className="grid gap-4 md:grid-cols-3">
             <div className="space-y-2">
-              <label className="text-sm font-medium">Minimum length</label>
+              <label className="text-sm font-medium">{t('orgSecuritySettings.password.minLength')}</label>
               <input
                 type="number"
                 min={8}
@@ -149,11 +152,11 @@ export default function OrgSecuritySettings({ security, mtls, onDirty, onSave, l
                 className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('minLength') ? 'opacity-60' : ''}`}
               />
               {isLocked('minLength') && (
-                <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+                <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgSecuritySettings.managedByPartner')}</span>
               )}
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">Complexity</label>
+              <label className="text-sm font-medium">{t('orgSecuritySettings.password.complexity')}</label>
               <select
                 value={complexity}
                 disabled={isLocked('complexity')}
@@ -163,16 +166,16 @@ export default function OrgSecuritySettings({ security, mtls, onDirty, onSave, l
                 }}
                 className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('complexity') ? 'opacity-60' : ''}`}
               >
-                <option value="standard">Standard</option>
-                <option value="strict">Strict</option>
-                <option value="passphrase">Passphrase</option>
+                <option value="standard">{t('orgSecuritySettings.password.complexityOptions.standard')}</option>
+                <option value="strict">{t('orgSecuritySettings.password.complexityOptions.strict')}</option>
+                <option value="passphrase">{t('orgSecuritySettings.password.complexityOptions.passphrase')}</option>
               </select>
               {isLocked('complexity') && (
-                <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+                <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgSecuritySettings.managedByPartner')}</span>
               )}
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">Expiration (days)</label>
+              <label className="text-sm font-medium">{t('orgSecuritySettings.password.expirationDays')}</label>
               <input
                 type="number"
                 min={30}
@@ -186,22 +189,22 @@ export default function OrgSecuritySettings({ security, mtls, onDirty, onSave, l
                 className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('expirationDays') ? 'opacity-60' : ''}`}
               />
               {isLocked('expirationDays') && (
-                <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+                <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgSecuritySettings.managedByPartner')}</span>
               )}
             </div>
           </div>
           <p className="text-xs text-muted-foreground">
-            Standard complexity requires 1 uppercase, 1 lowercase, 1 number, and 1 symbol.
+            {t('orgSecuritySettings.password.description')}
           </p>
         </div>
 
         <div className="space-y-4 rounded-lg border bg-muted/40 p-4">
           <div className="flex items-center gap-2 text-sm font-medium">
             {requireMfa ? <ShieldCheck className="h-4 w-4" /> : <ShieldOff className="h-4 w-4" />}
-            MFA settings
+            {t('orgSecuritySettings.mfa.title')}
           </div>
           <label className={`flex items-center justify-between gap-4 text-sm ${isLocked('requireMfa') ? 'opacity-60' : ''}`}>
-            <span>Require MFA for all users</span>
+            <span>{t('orgSecuritySettings.mfa.requireAll')}</span>
             <input
               type="checkbox"
               checked={requireMfa}
@@ -214,12 +217,12 @@ export default function OrgSecuritySettings({ security, mtls, onDirty, onSave, l
             />
           </label>
           {isLocked('requireMfa') && (
-            <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+            <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgSecuritySettings.managedByPartner')}</span>
           )}
           <div className="space-y-2">
-            <p className="text-xs font-medium uppercase text-muted-foreground">Allowed methods</p>
+            <p className="text-xs font-medium uppercase text-muted-foreground">{t('orgSecuritySettings.mfa.allowedMethods')}</p>
             <label className="flex items-center justify-between gap-4 text-sm">
-              <span>Authenticator app (TOTP)</span>
+              <span>{t('orgSecuritySettings.mfa.totp')}</span>
               <input
                 type="checkbox"
                 checked={allowedMethods.totp}
@@ -231,7 +234,7 @@ export default function OrgSecuritySettings({ security, mtls, onDirty, onSave, l
               />
             </label>
             <label className="flex items-center justify-between gap-4 text-sm">
-              <span>SMS codes</span>
+              <span>{t('orgSecuritySettings.mfa.sms')}</span>
               <input
                 type="checkbox"
                 checked={allowedMethods.sms}
@@ -250,11 +253,11 @@ export default function OrgSecuritySettings({ security, mtls, onDirty, onSave, l
         <div className="space-y-4 rounded-lg border bg-muted/40 p-4">
           <div className="flex items-center gap-2 text-sm font-medium">
             <Timer className="h-4 w-4" />
-            Session settings
+            {t('orgSecuritySettings.sessions.title')}
           </div>
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2">
-              <label className="text-sm font-medium">Timeout (minutes)</label>
+              <label className="text-sm font-medium">{t('orgSecuritySettings.sessions.timeout')}</label>
               <input
                 type="number"
                 min={15}
@@ -268,11 +271,11 @@ export default function OrgSecuritySettings({ security, mtls, onDirty, onSave, l
                 className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('sessionTimeout') ? 'opacity-60' : ''}`}
               />
               {isLocked('sessionTimeout') && (
-                <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+                <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgSecuritySettings.managedByPartner')}</span>
               )}
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">Max sessions</label>
+              <label className="text-sm font-medium">{t('orgSecuritySettings.sessions.maxSessions')}</label>
               <input
                 type="number"
                 min={1}
@@ -286,19 +289,19 @@ export default function OrgSecuritySettings({ security, mtls, onDirty, onSave, l
                 className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('maxSessions') ? 'opacity-60' : ''}`}
               />
               {isLocked('maxSessions') && (
-                <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+                <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgSecuritySettings.managedByPartner')}</span>
               )}
             </div>
           </div>
           <p className="text-xs text-muted-foreground">
-            Sessions exceeding the limit are signed out automatically.
+            {t('orgSecuritySettings.sessions.description')}
           </p>
         </div>
 
         <div className="space-y-4 rounded-lg border bg-muted/40 p-4">
           <div className="flex items-center gap-2 text-sm font-medium">
             <ShieldCheck className="h-4 w-4" />
-            IP allowlist
+            {t('orgSecuritySettings.ipAllowlist.title')}
           </div>
           <textarea
             value={ipAllowlist}
@@ -309,13 +312,13 @@ export default function OrgSecuritySettings({ security, mtls, onDirty, onSave, l
             }}
             rows={5}
             className={`w-full rounded-md border bg-background px-3 py-2 text-sm ${isLocked('ipAllowlist') ? 'opacity-60' : ''}`}
-            placeholder="Enter one IP per line"
+            placeholder={t('orgSecuritySettings.ipAllowlist.placeholder')}
           />
           {isLocked('ipAllowlist') && (
-            <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+            <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgSecuritySettings.managedByPartner')}</span>
           )}
           <p className="text-xs text-muted-foreground">
-            Leave blank to allow all IPs. Use CIDR notation to allow ranges.
+            {t('orgSecuritySettings.ipAllowlist.description')}
           </p>
         </div>
       </div>
@@ -326,9 +329,9 @@ export default function OrgSecuritySettings({ security, mtls, onDirty, onSave, l
       {/* mTLS Certificate Policy */}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h3 className="text-base font-semibold">mTLS Certificate Policy</h3>
+          <h3 className="text-base font-semibold">{t('orgSecuritySettings.mtls.title')}</h3>
           <p className="text-sm text-muted-foreground">
-            Configure mutual TLS certificate lifecycle for agent connections.
+            {t('orgSecuritySettings.mtls.description')}
           </p>
         </div>
         <button
@@ -338,7 +341,7 @@ export default function OrgSecuritySettings({ security, mtls, onDirty, onSave, l
           className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
         >
           <Save className="h-4 w-4" />
-          {mtlsSaving ? 'Saving...' : 'Save mTLS settings'}
+          {mtlsSaving ? t('common:states.saving') : t('orgSecuritySettings.mtls.actions.save')}
         </button>
       </div>
 
@@ -350,7 +353,7 @@ export default function OrgSecuritySettings({ security, mtls, onDirty, onSave, l
 
       {mtlsSuccess ? (
         <div className="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200">
-          mTLS settings saved successfully.
+          {t('orgSecuritySettings.mtls.saved')}
         </div>
       ) : null}
 
@@ -358,10 +361,10 @@ export default function OrgSecuritySettings({ security, mtls, onDirty, onSave, l
         <div className="space-y-4 rounded-lg border bg-muted/40 p-4">
           <div className="flex items-center gap-2 text-sm font-medium">
             <Fingerprint className="h-4 w-4" />
-            Certificate lifetime
+            {t('orgSecuritySettings.mtls.lifetime.title')}
           </div>
           <div className="space-y-2">
-            <label className="text-sm font-medium">Lifetime (days)</label>
+            <label className="text-sm font-medium">{t('orgSecuritySettings.mtls.lifetime.label')}</label>
             <input
               type="number"
               min={1}
@@ -376,18 +379,17 @@ export default function OrgSecuritySettings({ security, mtls, onDirty, onSave, l
             />
           </div>
           <p className="text-xs text-muted-foreground">
-            How long each agent mTLS certificate remains valid before renewal is required.
-            Shorter lifetimes improve security but increase renewal frequency. Default is 90 days.
+            {t('orgSecuritySettings.mtls.lifetime.description')}
           </p>
         </div>
 
         <div className="space-y-4 rounded-lg border bg-muted/40 p-4">
           <div className="flex items-center gap-2 text-sm font-medium">
             <ShieldCheck className="h-4 w-4" />
-            Expired certificate policy
+            {t('orgSecuritySettings.mtls.expiredPolicy.title')}
           </div>
           <div className="space-y-2">
-            <label className="text-sm font-medium">When a certificate expires</label>
+            <label className="text-sm font-medium">{t('orgSecuritySettings.mtls.expiredPolicy.label')}</label>
             <select
               value={expiredCertPolicy}
               onChange={event => {
@@ -396,14 +398,14 @@ export default function OrgSecuritySettings({ security, mtls, onDirty, onSave, l
               }}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm"
             >
-              <option value="auto_reissue">Auto Re-issue</option>
-              <option value="quarantine">Quarantine</option>
+              <option value="auto_reissue">{t('orgSecuritySettings.mtls.expiredPolicy.autoReissue')}</option>
+              <option value="quarantine">{t('orgSecuritySettings.mtls.expiredPolicy.quarantine')}</option>
             </select>
           </div>
           <p className="text-xs text-muted-foreground">
             {expiredCertPolicy === 'auto_reissue'
-              ? 'The agent automatically receives a new certificate when the current one expires. This ensures uninterrupted connectivity.'
-              : 'The device is quarantined when its certificate expires. An administrator must manually approve the device before it can reconnect.'}
+              ? t('orgSecuritySettings.mtls.expiredPolicy.autoReissueDescription')
+              : t('orgSecuritySettings.mtls.expiredPolicy.quarantineDescription')}
           </p>
         </div>
       </div>

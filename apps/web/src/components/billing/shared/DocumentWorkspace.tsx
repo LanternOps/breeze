@@ -1,4 +1,6 @@
 import { useCallback, type KeyboardEvent, type ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
+import '../../../lib/i18n';
 
 export interface DocumentTab {
   id: string;
@@ -48,6 +50,7 @@ export function DocumentWorkspace({
   onTabChange,
   children,
 }: DocumentWorkspaceProps) {
+  const { t } = useTranslation('billing');
   const visibleTabs = tabs.filter((t) => !t.hidden);
 
   // Roving keyboard navigation across the tablist (WAI-ARIA tabs pattern):
@@ -74,7 +77,7 @@ export function DocumentWorkspace({
         <div className="min-w-0">
           <a
             href={backHref}
-            aria-label={`Back to ${backLabel.toLowerCase()}`}
+            aria-label={t('shared.documentWorkspace.backAria', { label: backLabel.toLowerCase() })}
             className="text-xs text-muted-foreground hover:underline"
           >
             <span aria-hidden="true">←</span> {backLabel}

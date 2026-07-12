@@ -3,6 +3,8 @@ import { Folder, ChevronRight, ArrowUp, X, Loader2, AlertCircle } from 'lucide-r
 import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '@/stores/auth';
 import { buildBreadcrumbs, getParentPath, isPathRoot } from './filePathUtils';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 
 type FileEntry = {
   name: string;
@@ -30,6 +32,7 @@ export default function FolderPickerDialog({
   onSelect,
   onClose
 }: FolderPickerDialogProps) {
+  const { t } = useTranslation('remote');
   const [currentPath, setCurrentPath] = useState(initialPath);
   const [directories, setDirectories] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -43,8 +46,8 @@ export default function FolderPickerDialog({
       const params = new URLSearchParams({ path });
       const response = await fetchWithAuth(`/system-tools/devices/${deviceId}/files?${params}`);
       if (!response.ok) {
-        const json = await response.json().catch(() => ({ error: 'Failed to load directory' }));
-        throw new Error(json.error || 'Failed to load directory');
+        const json = await response.json().catch(() => ({ error: t('folderPickerDialog.errors.loadDirectory') }));
+        throw new Error(json.error || t('folderPickerDialog.errors.loadDirectory'));
       }
       const json = await response.json();
       const entries: FileEntry[] = Array.isArray(json.data) ? json.data : [];
@@ -56,13 +59,13 @@ export default function FolderPickerDialog({
       );
       setCurrentPath(path);
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to load directory';
+      const message = err instanceof Error ? err.message : t('folderPickerDialog.errors.loadDirectory');
       setError(message);
       setDirectories([]);
     } finally {
       setLoading(false);
     }
-  }, [deviceId]);
+  }, [deviceId, t]);
 
   // Fetch directory when dialog opens or initialPath changes
   useEffect(() => {
@@ -104,7 +107,7 @@ export default function FolderPickerDialog({
             type="button"
             onClick={onClose}
             className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-            title="Close"
+            title={t('common:actions.close')}
           >
             <X className="h-5 w-5" />
           </button>
@@ -117,7 +120,7 @@ export default function FolderPickerDialog({
             onClick={goUp}
             disabled={isPathRoot(currentPath)}
             className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40 disabled:hover:bg-transparent"
-            title="Go up"
+            title={t('folderPickerDialog.goUp')}
           >
             <ArrowUp className="h-4 w-4" />
           </button>
@@ -147,7 +150,7 @@ export default function FolderPickerDialog({
 
         {/* Current path display */}
         <div className="border-b bg-muted/30 px-4 py-2">
-          <p className="text-xs text-muted-foreground">Selected folder</p>
+          <p className="text-xs text-muted-foreground">{t('folderPickerDialog.selectedFolder')}</p>
           <p className="truncate text-sm font-medium">{currentPath}</p>
         </div>
 
@@ -166,12 +169,12 @@ export default function FolderPickerDialog({
                 onClick={() => fetchDirectory(currentPath)}
                 className="text-xs text-primary hover:underline"
               >
-                Retry
+                {t('common:actions.retry')}
               </button>
             </div>
           ) : directories.length === 0 ? (
             <div className="py-12 text-center text-sm text-muted-foreground">
-              No subdirectories
+              {t('folderPickerDialog.noSubdirectories')}
             </div>
           ) : (
             <div className="divide-y">
@@ -198,14 +201,14 @@ export default function FolderPickerDialog({
             onClick={onClose}
             className="rounded-md border px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
           >
-            Cancel
+            {t('common:actions.cancel')}
           </button>
           <button
             type="button"
             onClick={handleSelect}
             className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
           >
-            Select this folder
+            {t('folderPickerDialog.selectFolder')}
           </button>
         </div>
     </Dialog>

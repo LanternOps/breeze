@@ -12,6 +12,7 @@ export type PartnerType = 'msp' | 'enterprise' | 'internal';
 export type PlanType = 'free' | 'pro' | 'enterprise' | 'unlimited';
 export type OrgType = 'customer' | 'internal';
 export type OrgStatus = 'active' | 'suspended' | 'trial' | 'churned';
+export type SupportedLocale = 'en' | 'pt-BR';
 
 export interface Partner {
   id: string;
@@ -698,7 +699,7 @@ export interface PartnerSettings {
   timezone?: string;
   dateFormat?: DateFormat;
   timeFormat?: TimeFormat;
-  language?: 'en';
+  language?: SupportedLocale;
   businessHours?: {
     preset: BusinessHoursPreset;
     custom?: Record<string, DaySchedule>;

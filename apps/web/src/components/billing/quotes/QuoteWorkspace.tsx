@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '../../../lib/i18n';
 import { fetchWithAuth } from '../../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { DocumentWorkspace, type DocumentTab } from '../shared/DocumentWorkspace';
@@ -12,10 +14,10 @@ const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
 type Tab = 'editor' | 'preview' | 'detail';
 
-const TAB_LABELS: { value: Tab; label: string }[] = [
-  { value: 'editor', label: 'Editor' },
-  { value: 'preview', label: 'Preview' },
-  { value: 'detail', label: 'Detail' },
+const TAB_LABELS: { value: Tab; labelKey: string }[] = [
+  { value: 'editor', labelKey: 'quotes.workspace.tabs.editor' },
+  { value: 'preview', labelKey: 'quotes.workspace.tabs.preview' },
+  { value: 'detail', labelKey: 'quotes.workspace.tabs.detail' },
 ];
 
 interface Props {
@@ -30,6 +32,7 @@ function readTab(isDraft: boolean): Tab {
 }
 
 export default function QuoteWorkspace({ id }: Props) {
+  const { t } = useTranslation('billing');
   const [detail, setDetail] = useState<QuoteDetailData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -43,24 +46,24 @@ export default function QuoteWorkspace({ id }: Props) {
   // discard the user's in-progress local state and cursor position. Only the
   // initial load shows the spinner / replaces the view on error.
   const fetchDetail = useCallback(async (quiet = false) => {
-    if (!id) { setError('Missing quote id'); setLoading(false); return; }
+    if (!id) { setError(t('quotes.workspace.errors.missingId')); setLoading(false); return; }
     try {
       if (!quiet) setLoading(true);
       setError(undefined);
       const res = await fetchWithAuth(`/quotes/${id}`);
       if (res.status === 401) return UNAUTHORIZED();
-      if (res.status === 404) { if (!quiet) setError('Quote not found.'); return; }
-      if (!res.ok) throw new Error('Failed to load quote');
+      if (res.status === 404) { if (!quiet) setError(t('quotes.workspace.errors.notFound')); return; }
+      if (!res.ok) throw new Error(t('quotes.workspace.errors.loadFailed'));
       const body = (await res.json()) as { data: QuoteDetailData };
       setDetail(body.data);
     } catch (err) {
       // A failed quiet reload leaves the editor intact; the inline action's own
       // runAction toast already surfaced the failure.
-      if (!quiet) setError(err instanceof Error ? err.message : 'Failed to load quote');
+      if (!quiet) setError(err instanceof Error ? err.message : t('quotes.workspace.errors.loadFailed'));
     } finally {
       if (!quiet) setLoading(false);
     }
-  }, [id]);
+  }, [id, t]);
 
   const load = useCallback(() => fetchDetail(false), [fetchDetail]);
   const reload = useCallback(() => fetchDetail(true), [fetchDetail]);
@@ -97,10 +100,10 @@ export default function QuoteWorkspace({ id }: Props) {
   if (error || !detail) {
     return (
       <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center text-sm text-destructive" data-testid="quote-workspace-error">
-        {error ?? 'Quote unavailable.'}
+        {error ?? t('quotes.workspace.errors.unavailable')}
         <div>
           <a href="/billing/quotes" className="mt-3 inline-block rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted">
-            Back to quotes
+            {t('quotes.workspace.backToQuotes')}
           </a>
         </div>
       </div>
@@ -110,10 +113,10 @@ export default function QuoteWorkspace({ id }: Props) {
   // The Editor only applies to drafts, so it's hidden once a quote is issued —
   // no dead-end tab that just shows a "can't edit" message. A stale #editor hash
   // on a non-draft falls back to Detail.
-  const tabs: DocumentTab[] = TAB_LABELS.map((t) => ({
-    id: t.value,
-    label: t.label,
-    hidden: t.value === 'editor' && !isDraft,
+  const tabs: DocumentTab[] = TAB_LABELS.map((tabDef) => ({
+    id: tabDef.value,
+    label: t(/* i18n-dynamic */ tabDef.labelKey),
+    hidden: tabDef.value === 'editor' && !isDraft,
   }));
   const activeTab: Tab = tabs.some((t) => t.id === tab && !t.hidden) ? tab : 'detail';
 
@@ -121,8 +124,8 @@ export default function QuoteWorkspace({ id }: Props) {
     <DocumentWorkspace
       idPrefix="quote"
       backHref="/billing/quotes"
-      backLabel="Quotes"
-      title={detail.quote.title?.trim() || detail.quote.quoteNumber || 'Draft quote'}
+      backLabel={t('quotes.workspace.backLabel')}
+      title={detail.quote.title?.trim() || detail.quote.quoteNumber || t('quotes.workspace.draftTitle')}
       // Primary actions live in the header so Send (the money-moment) and Download
       // are reachable from any tab, not buried inside the Detail tab.
       actions={<QuoteActions detail={detail} onChanged={reload} variant="header" savePending={editorSavePending} />}

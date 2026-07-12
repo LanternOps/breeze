@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 import {
   CheckCircle2,
   XCircle,
@@ -46,15 +48,16 @@ type Props = {
   mode?: 'approvals-only';
 };
 
-const statusConfig: Record<string, { label: string; color: string; icon: typeof Clock }> = {
-  pending: { label: 'Pending', color: 'bg-yellow-500/15 text-yellow-700 border-yellow-500/30', icon: Clock },
-  approved: { label: 'Approved', color: 'bg-green-500/15 text-green-700 border-green-500/30', icon: CheckCircle2 },
-  rejected: { label: 'Rejected', color: 'bg-red-500/15 text-red-700 border-red-500/30', icon: XCircle },
-  expired: { label: 'Expired', color: 'bg-gray-500/15 text-gray-600 border-gray-500/30', icon: Clock },
-  consumed: { label: 'Consumed', color: 'bg-blue-500/15 text-blue-700 border-blue-500/30', icon: CheckCircle2 },
+const statusConfig: Record<string, { labelKey: string; color: string; icon: typeof Clock }> = {
+  pending: { labelKey: 'pending', color: 'bg-yellow-500/15 text-yellow-700 border-yellow-500/30', icon: Clock },
+  approved: { labelKey: 'approved', color: 'bg-green-500/15 text-green-700 border-green-500/30', icon: CheckCircle2 },
+  rejected: { labelKey: 'rejected', color: 'bg-red-500/15 text-red-700 border-red-500/30', icon: XCircle },
+  expired: { labelKey: 'expired', color: 'bg-gray-500/15 text-gray-600 border-gray-500/30', icon: Clock },
+  consumed: { labelKey: 'consumed', color: 'bg-blue-500/15 text-blue-700 border-blue-500/30', icon: CheckCircle2 },
 };
 
 export default function BaselineApplyTab({ baseline, mode }: Props) {
+  const { t } = useTranslation('security');
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
   const [step, setStep] = useState<'select' | 'preview' | 'requested' | 'execute'>(
     mode === 'approvals-only' ? 'requested' : 'select'
@@ -80,12 +83,12 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
       const response = await fetchWithAuth(`/audit-baselines/apply-requests?${params.toString()}`);
       if (!response.ok) {
         const errBody = await response.json().catch(() => null);
-        throw new Error(extractApiError(errBody, 'Failed to fetch approval requests'));
+        throw new Error(extractApiError(errBody, t('auditBaselinesBaselineApplyTab.messages.fetchApprovalsFailed')));
       }
       const data = await response.json();
       setApprovals(Array.isArray(data.data) ? data.data : []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('auditBaselinesBaselineApplyTab.messages.genericError'));
     } finally {
       setApprovalsLoading(false);
     }
@@ -100,14 +103,14 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
       const response = await fetchWithAuth(`/devices?${params.toString()}`);
       if (!response.ok) {
         const errBody = await response.json().catch(() => null);
-        throw new Error(extractApiError(errBody, 'Failed to fetch devices'));
+        throw new Error(extractApiError(errBody, t('auditBaselinesBaselineApplyTab.messages.fetchDevicesFailed')));
       }
       const data = await response.json();
       const allDevices: Device[] = Array.isArray(data.data) ? data.data : Array.isArray(data) ? data : [];
       // Filter to matching OS type
       setDevices(allDevices.filter((d) => d.osType === baseline.osType));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('auditBaselinesBaselineApplyTab.messages.genericError'));
     } finally {
       setDevicesLoading(false);
     }
@@ -161,13 +164,13 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
       });
       if (!response.ok) {
         const data = await response.json().catch(() => null);
-        throw new Error(extractApiError(data, 'Dry run failed'));
+        throw new Error(extractApiError(data, t('auditBaselinesBaselineApplyTab.messages.dryRunFailed')));
       }
       const data = await response.json();
       setDryRunResult({ skipped: data.skipped ?? [] });
       setStep('preview');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('auditBaselinesBaselineApplyTab.messages.genericError'));
     } finally {
       setSubmitting(false);
     }
@@ -190,12 +193,12 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
       });
       if (!response.ok) {
         const data = await response.json().catch(() => null);
-        throw new Error(extractApiError(data, 'Failed to create approval request'));
+        throw new Error(extractApiError(data, t('auditBaselinesBaselineApplyTab.messages.createApprovalFailed')));
       }
       setStep('requested');
       fetchApprovals();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('auditBaselinesBaselineApplyTab.messages.genericError'));
     } finally {
       setSubmitting(false);
     }
@@ -214,11 +217,11 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
       });
       if (!response.ok) {
         const data = await response.json().catch(() => null);
-        throw new Error(extractApiError(data, 'Failed to process decision'));
+        throw new Error(extractApiError(data, t('auditBaselinesBaselineApplyTab.messages.processDecisionFailed')));
       }
       fetchApprovals();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('auditBaselinesBaselineApplyTab.messages.genericError'));
     } finally {
       setDecisionSubmitting(null);
     }
@@ -243,11 +246,11 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
       });
       if (!response.ok) {
         const data = await response.json().catch(() => null);
-        throw new Error(extractApiError(data, 'Failed to apply baseline'));
+        throw new Error(extractApiError(data, t('auditBaselinesBaselineApplyTab.messages.applyFailed')));
       }
       fetchApprovals();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('auditBaselinesBaselineApplyTab.messages.genericError'));
     } finally {
       setSubmitting(false);
     }
@@ -295,7 +298,7 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
                   : 'text-muted-foreground hover:text-foreground'
               )}
             >
-              {s === 'select' ? '1. Select Devices' : s === 'preview' ? '2. Preview' : '3. Approval'}
+              {t(/* i18n-dynamic */ `auditBaselinesBaselineApplyTab.steps.${s}`)}
             </button>
           </div>
         ))}
@@ -311,7 +314,7 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
           ) : devices.length === 0 ? (
             <div className="rounded-lg border bg-card p-6 text-center shadow-xs">
               <p className="text-sm text-muted-foreground">
-                No {baseline?.osType} devices found in this organization.
+                {t('auditBaselinesBaselineApplyTab.noDevices', { osType: baseline?.osType })}
               </p>
             </div>
           ) : (
@@ -328,9 +331,9 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
                           className="h-4 w-4 rounded border"
                         />
                       </th>
-                      <th className="px-4 py-3">Hostname</th>
-                      <th className="px-4 py-3">OS</th>
-                      <th className="px-4 py-3">Status</th>
+                      <th className="px-4 py-3">{t('auditBaselinesBaselineApplyTab.table.hostname')}</th>
+                      <th className="px-4 py-3">{t('auditBaselinesBaselineApplyTab.table.os')}</th>
+                      <th className="px-4 py-3">{t('auditBaselinesBaselineApplyTab.table.status')}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -366,7 +369,10 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
 
               <div className="flex items-center justify-between">
                 <p className="text-sm text-muted-foreground">
-                  {selectedDeviceIds.size} of {devices.length} devices selected
+                  {t('auditBaselinesBaselineApplyTab.selectedDevices', {
+                    selected: selectedDeviceIds.size,
+                    total: devices.length,
+                  })}
                 </p>
                 <button
                   type="button"
@@ -378,7 +384,7 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
                   )}
                 >
                   {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
-                  Preview Changes
+                  {t('auditBaselinesBaselineApplyTab.actions.previewChanges')}
                 </button>
               </div>
             </>
@@ -390,21 +396,21 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
       {step === 'preview' && dryRunResult && (
         <div className="space-y-4">
           <div className="rounded-lg border bg-card p-6 shadow-xs">
-            <h3 className="text-sm font-semibold">Dry Run Results</h3>
+            <h3 className="text-sm font-semibold">{t('auditBaselinesBaselineApplyTab.dryRun.title')}</h3>
             <div className="mt-4 grid gap-4 sm:grid-cols-2">
               <div className="rounded-md border bg-muted/20 p-3">
-                <p className="text-xs text-muted-foreground">Eligible Devices</p>
+                <p className="text-xs text-muted-foreground">{t('auditBaselinesBaselineApplyTab.dryRun.eligibleDevices')}</p>
                 <p className="text-lg font-semibold">{selectedDeviceIds.size - dryRunResult.skipped.length}</p>
               </div>
               <div className="rounded-md border bg-muted/20 p-3">
-                <p className="text-xs text-muted-foreground">Skipped</p>
+                <p className="text-xs text-muted-foreground">{t('auditBaselinesBaselineApplyTab.dryRun.skipped')}</p>
                 <p className="text-lg font-semibold">{dryRunResult.skipped.length}</p>
               </div>
             </div>
 
             {dryRunResult.skipped.length > 0 && (
               <div className="mt-4">
-                <p className="text-xs font-medium text-muted-foreground">Skipped Devices</p>
+                <p className="text-xs font-medium text-muted-foreground">{t('auditBaselinesBaselineApplyTab.dryRun.skippedDevices')}</p>
                 <div className="mt-2 space-y-1">
                   {dryRunResult.skipped.map((s) => (
                     <div key={s.deviceId} className="flex items-center gap-2 rounded-md border bg-yellow-500/5 px-3 py-2 text-xs">
@@ -418,9 +424,9 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
             )}
 
             <div className="mt-4 rounded-md border border-yellow-500/30 bg-yellow-500/10 p-3 text-sm">
-              <p className="font-medium text-yellow-700">Approval Required</p>
+              <p className="font-medium text-yellow-700">{t('auditBaselinesBaselineApplyTab.approvalRequired.title')}</p>
               <p className="mt-1 text-xs text-yellow-600">
-                Applying a baseline requires approval from another user before execution.
+                {t('auditBaselinesBaselineApplyTab.approvalRequired.description')}
               </p>
             </div>
           </div>
@@ -434,7 +440,7 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
               }}
               className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
             >
-              Back
+              {t('auditBaselinesBaselineApplyTab.actions.back')}
             </button>
             <button
               type="button"
@@ -446,7 +452,7 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
               )}
             >
               {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
-              Request Approval
+              {t('auditBaselinesBaselineApplyTab.actions.requestApproval')}
             </button>
           </div>
         </div>
@@ -469,11 +475,11 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
     if (approvals.length === 0) {
       return (
         <div className="rounded-lg border bg-card p-8 text-center shadow-xs">
-          <h3 className="text-sm font-semibold">No approval requests</h3>
+          <h3 className="text-sm font-semibold">{t('auditBaselinesBaselineApplyTab.emptyApprovals.title')}</h3>
           <p className="mt-1 text-sm text-muted-foreground">
             {baseline
-              ? 'Select devices and run a dry-run to create an approval request.'
-              : 'No baseline apply requests have been created yet.'}
+              ? t('auditBaselinesBaselineApplyTab.emptyApprovals.withBaselineDescription')
+              : t('auditBaselinesBaselineApplyTab.emptyApprovals.description')}
           </p>
         </div>
       );
@@ -485,13 +491,13 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               {mode === 'approvals-only' && (
-                <th className="px-4 py-3">Baseline</th>
+                <th className="px-4 py-3">{t('auditBaselinesBaselineApplyTab.approvalsTable.baseline')}</th>
               )}
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3 text-right">Devices</th>
-              <th className="px-4 py-3">Created</th>
-              <th className="px-4 py-3">Expires</th>
-              <th className="px-4 py-3 text-right">Actions</th>
+              <th className="px-4 py-3">{t('auditBaselinesBaselineApplyTab.approvalsTable.status')}</th>
+              <th className="px-4 py-3 text-right">{t('auditBaselinesBaselineApplyTab.approvalsTable.devices')}</th>
+              <th className="px-4 py-3">{t('auditBaselinesBaselineApplyTab.approvalsTable.created')}</th>
+              <th className="px-4 py-3">{t('auditBaselinesBaselineApplyTab.approvalsTable.expires')}</th>
+              <th className="px-4 py-3 text-right">{t('auditBaselinesBaselineApplyTab.approvalsTable.actions')}</th>
             </tr>
           </thead>
           <tbody>
@@ -521,7 +527,7 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
                       )}
                     >
                       <StatusIcon className="h-3 w-3" />
-                      {sc.label}
+                      {t(/* i18n-dynamic */ `auditBaselinesBaselineApplyTab.status.${sc.labelKey}`)}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-right">{deviceCount}</td>
@@ -530,7 +536,7 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
                   </td>
                   <td className="px-4 py-3 text-muted-foreground">
                     {isExpired && approval.status === 'pending' ? (
-                      <span className="text-red-600">Expired</span>
+                      <span className="text-red-600">{t('auditBaselinesBaselineApplyTab.status.expired')}</span>
                     ) : (
                       formatDateTime(approval.expiresAt)
                     )}
@@ -550,7 +556,7 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
                             ) : (
                               <CheckCircle2 className="h-3 w-3" />
                             )}
-                            Approve
+                            {t('auditBaselinesBaselineApplyTab.actions.approve')}
                           </button>
                           <button
                             type="button"
@@ -559,7 +565,7 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
                             className="inline-flex items-center gap-1 rounded-md bg-red-500/15 px-2.5 py-1 text-xs font-medium text-red-700 transition hover:bg-red-500/25 disabled:opacity-60"
                           >
                             <XCircle className="h-3 w-3" />
-                            Reject
+                            {t('auditBaselinesBaselineApplyTab.actions.reject')}
                           </button>
                         </>
                       )}
@@ -578,7 +584,7 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
                           ) : (
                             <ChevronRight className="h-3 w-3" />
                           )}
-                          Execute
+                          {t('auditBaselinesBaselineApplyTab.actions.execute')}
                         </button>
                       )}
                     </div>

@@ -1,4 +1,6 @@
+import '@/lib/i18n';
 import { useEffect, useId, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
@@ -94,6 +96,7 @@ export default function PamRuleModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const { t } = useTranslation('security');
   const isEdit = rule !== null;
   // Seed create-mode initializers from a request-derived draft. Only applies
   // when there's no rule being edited; verdict/priority/timeWindow are left at
@@ -180,6 +183,15 @@ export default function PamRuleModal({
   const siteSelectId = useId();
   const signerGroupSelectId = useId();
   const timezoneId = useId();
+  const dayLabels = [
+    t('pamPamRuleModal.days.sun', { defaultValue: 'Sun' }),
+    t('pamPamRuleModal.days.mon', { defaultValue: 'Mon' }),
+    t('pamPamRuleModal.days.tue', { defaultValue: 'Tue' }),
+    t('pamPamRuleModal.days.wed', { defaultValue: 'Wed' }),
+    t('pamPamRuleModal.days.thu', { defaultValue: 'Thu' }),
+    t('pamPamRuleModal.days.fri', { defaultValue: 'Fri' }),
+    t('pamPamRuleModal.days.sat', { defaultValue: 'Sat' }),
+  ];
 
   useEffect(() => {
     fetchWithAuth('/orgs/organizations?limit=100')
@@ -217,7 +229,10 @@ export default function PamRuleModal({
               // org-wide and tell the user rather than silently re-scoping.
               if (!isEdit && prev === (seed?.siteId ?? '')) {
                 setSiteScopeNotice(
-                  "The site from the original request isn't available in the selected organization — scope reset to org-wide.",
+                  t('pamPamRuleModal.notices.siteScopeReset', {
+                    defaultValue:
+                      "The site from the original request isn't available in the selected organization — scope reset to org-wide.",
+                  }),
                 );
               }
               return '';
@@ -341,7 +356,11 @@ export default function PamRuleModal({
       ([, v]) => v !== null && v !== '' && v !== undefined,
     );
     if (!hasCriterion) {
-      setError('At least one match criterion is required.');
+      setError(
+        t('pamPamRuleModal.errors.matchCriterionRequired', {
+          defaultValue: 'At least one match criterion is required.',
+        }),
+      );
       return null;
     }
 
@@ -365,7 +384,11 @@ export default function PamRuleModal({
     });
     activeCriteria.matchNegate = matchNegate.length > 0 ? matchNegate : null;
     if (Boolean(windowStart) !== Boolean(windowEnd)) {
-      setError('Time window start and end must both be set (or both left empty).');
+      setError(
+        t('pamPamRuleModal.errors.timeWindowPairRequired', {
+          defaultValue: 'Time window start and end must both be set (or both left empty).',
+        }),
+      );
       return null;
     }
 
@@ -406,7 +429,10 @@ export default function PamRuleModal({
         }),
       });
       if (!res.ok) {
-        let msg = `Preview failed (HTTP ${res.status})`;
+        let msg = t('pamPamRuleModal.errors.previewWithStatus', {
+          defaultValue: 'Preview failed (HTTP {{status}})',
+          status: res.status,
+        });
         try {
           msg = extractApiError(await res.json()) || msg;
         } catch {
@@ -416,7 +442,11 @@ export default function PamRuleModal({
       }
       setPreview((await res.json()) as PreviewResult);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Preview failed');
+      setError(
+        err instanceof Error
+          ? err.message
+          : t('pamPamRuleModal.errors.preview', { defaultValue: 'Preview failed' }),
+      );
     } finally {
       setPreviewing(false);
     }
@@ -432,7 +462,11 @@ export default function PamRuleModal({
     const { activeCriteria, timeWindow } = built;
 
     if (shape === 'tool' && verdict === 'ignore') {
-      setError('Tool-action rules cannot use the Ignore verdict.');
+      setError(
+        t('pamPamRuleModal.errors.toolIgnoreVerdict', {
+          defaultValue: 'Tool-action rules cannot use the Ignore verdict.',
+        }),
+      );
       return;
     }
 
@@ -461,8 +495,16 @@ export default function PamRuleModal({
             method: isEdit ? 'PATCH' : 'POST',
             body: JSON.stringify(payload),
           }),
-        errorFallback: isEdit ? 'Failed to update rule' : 'Failed to create rule',
-        successMessage: `Rule "${name.trim()}" ${isEdit ? 'updated' : 'created'}`,
+        errorFallback: isEdit
+          ? t('pamPamRuleModal.errors.updateRule', { defaultValue: 'Failed to update rule' })
+          : t('pamPamRuleModal.errors.createRule', { defaultValue: 'Failed to create rule' }),
+        successMessage: t('pamPamRuleModal.toasts.ruleSaved', {
+          defaultValue: 'Rule "{{name}}" {{action}}',
+          name: name.trim(),
+          action: isEdit
+            ? t('pamPamRuleModal.toasts.updated', { defaultValue: 'updated' })
+            : t('pamPamRuleModal.toasts.created', { defaultValue: 'created' }),
+        }),
         onUnauthorized: () => void navigateTo('/login', { replace: true }),
       });
       onSaved();
@@ -471,7 +513,11 @@ export default function PamRuleModal({
         if (err.status === 401) return;
         setError(err.message);
       } else {
-        setError(err instanceof Error ? err.message : 'Network error');
+        setError(
+          err instanceof Error
+            ? err.message
+            : t('pamPamRuleModal.errors.network', { defaultValue: 'Network error' }),
+        );
       }
     } finally {
       setSubmitting(false);
@@ -484,7 +530,11 @@ export default function PamRuleModal({
     <Dialog
       open
       onClose={onClose}
-      title={isEdit ? 'Edit PAM rule' : 'New PAM rule'}
+      title={
+        isEdit
+          ? t('pamPamRuleModal.title.edit', { defaultValue: 'Edit PAM rule' })
+          : t('pamPamRuleModal.title.new', { defaultValue: 'New PAM rule' })
+      }
       maxWidth="lg"
       className="max-h-[90vh] overflow-y-auto p-6"
     >
@@ -492,7 +542,7 @@ export default function PamRuleModal({
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
             <label htmlFor={nameId} className="mb-1 block text-sm font-medium">
-              Name
+              {t('pamPamRuleModal.form.name', { defaultValue: 'Name' })}
             </label>
             <input
               id={nameId}
@@ -506,7 +556,7 @@ export default function PamRuleModal({
           </div>
           <div>
             <label htmlFor={priorityId} className="mb-1 block text-sm font-medium">
-              Priority
+              {t('pamPamRuleModal.form.priority', { defaultValue: 'Priority' })}
             </label>
             <input
               id={priorityId}
@@ -523,7 +573,7 @@ export default function PamRuleModal({
 
         <div>
           <label htmlFor={descId} className="mb-1 block text-sm font-medium">
-            Description (optional)
+            {t('pamPamRuleModal.form.descriptionOptional', { defaultValue: 'Description (optional)' })}
           </label>
           <input
             id={descId}
@@ -538,7 +588,7 @@ export default function PamRuleModal({
           {orgs.length > 1 && (
             <div>
               <label htmlFor={orgSelectId} className="mb-1 block text-sm font-medium">
-                Organization
+                {t('pamPamRuleModal.form.organization', { defaultValue: 'Organization' })}
               </label>
               {rule ? (
                 <input
@@ -571,7 +621,7 @@ export default function PamRuleModal({
           )}
           <div>
             <label htmlFor={siteSelectId} className="mb-1 block text-sm font-medium">
-              Scope
+              {t('pamPamRuleModal.form.scope', { defaultValue: 'Scope' })}
             </label>
             <select
               id={siteSelectId}
@@ -583,7 +633,9 @@ export default function PamRuleModal({
               data-testid="pam-rule-site"
               className={inputClass}
             >
-              <option value="">Org-wide (all sites)</option>
+              <option value="">
+                {t('pamPamRuleModal.form.orgWideAllSites', { defaultValue: 'Org-wide (all sites)' })}
+              </option>
               {sites.map((s) => (
                 <option key={s.id} value={s.id}>
                   {s.name}
@@ -601,7 +653,7 @@ export default function PamRuleModal({
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
             <label htmlFor={verdictId} className="mb-1 block text-sm font-medium">
-              Verdict
+              {t('pamPamRuleModal.form.verdict', { defaultValue: 'Verdict' })}
             </label>
             <select
               id={verdictId}
@@ -618,7 +670,9 @@ export default function PamRuleModal({
             </select>
           </div>
           <div>
-            <span className="mb-1 block text-sm font-medium">Rule shape</span>
+            <span className="mb-1 block text-sm font-medium">
+              {t('pamPamRuleModal.form.ruleShape', { defaultValue: 'Rule shape' })}
+            </span>
             <div className="flex gap-2">
               <button
                 type="button"
@@ -628,7 +682,7 @@ export default function PamRuleModal({
                   shape === 'executable' ? 'border-primary bg-primary/10 font-medium' : 'text-muted-foreground'
                 }`}
               >
-                Executable
+                {t('pamPamRuleModal.form.executable', { defaultValue: 'Executable' })}
               </button>
               <button
                 type="button"
@@ -638,7 +692,7 @@ export default function PamRuleModal({
                   shape === 'tool' ? 'border-primary bg-primary/10 font-medium' : 'text-muted-foreground'
                 }`}
               >
-                AI tool action
+                {t('pamPamRuleModal.form.aiToolAction', { defaultValue: 'AI tool action' })}
               </button>
             </div>
           </div>
@@ -647,23 +701,26 @@ export default function PamRuleModal({
         {shape === 'executable' ? (
           <div className="grid gap-4 sm:grid-cols-2">
             <Field
-              label="Signer"
+              label={t('pamPamRuleModal.fields.signer', { defaultValue: 'Signer' })}
               value={matchSigner}
               onChange={(v) => {
                 setMatchSigner(v);
                 // Mutually exclusive with a signer group (mirrors the server).
                 if (v) setMatchSignerGroupId('');
               }}
-              placeholder="e.g. Microsoft Corporation"
+              placeholder={t('pamPamRuleModal.placeholders.microsoftCorporation', {
+                defaultValue: 'e.g. Microsoft Corporation',
+              })}
               testId="pam-rule-signer"
               disabled={Boolean(matchSignerGroupId)}
               negateKey="signer"
               negated={negate.has('signer')}
               onToggleNegate={toggleNegate}
+              negateLabel={t('pamPamRuleModal.form.negate', { defaultValue: 'Negate (does not match)' })}
             />
             <div>
               <label htmlFor={signerGroupSelectId} className="mb-1 block text-sm font-medium">
-                Signer group
+              {t('pamPamRuleModal.fields.signerGroup', { defaultValue: 'Signer group' })}
               </label>
               <select
                 id={signerGroupSelectId}
@@ -676,7 +733,7 @@ export default function PamRuleModal({
                 data-testid="pam-rule-match-signer-group"
                 className={inputClass}
               >
-                <option value="">— none —</option>
+                <option value="">{t('pamPamRuleModal.form.none', { defaultValue: '— none —' })}</option>
                 {signerGroups.map((g) => (
                   <option key={g.id} value={g.id}>
                     {g.name}
@@ -684,41 +741,44 @@ export default function PamRuleModal({
                 ))}
               </select>
             </div>
-            <Field label="SHA-256 hash" value={matchHash} onChange={setMatchHash} placeholder="64 hex chars" testId="pam-rule-hash" negateKey="hash" negated={negate.has('hash')} onToggleNegate={toggleNegate} />
-            <Field label="Path glob" value={matchPathGlob} onChange={setMatchPathGlob} placeholder="C:\\Program Files\\**" testId="pam-rule-path" negateKey="pathGlob" negated={negate.has('pathGlob')} onToggleNegate={toggleNegate} />
-            <Field label="Parent image" value={matchParentImage} onChange={setMatchParentImage} placeholder="explorer.exe" testId="pam-rule-parent" negateKey="parentImage" negated={negate.has('parentImage')} onToggleNegate={toggleNegate} />
-            <Field label="Command line" value={matchCommandLine} onChange={setMatchCommandLine} placeholder="printui.dll,PrintUIEntry" testId="pam-rule-match-command-line" negateKey="commandLine" negated={negate.has('commandLine')} onToggleNegate={toggleNegate} />
+            <Field label={t('pamPamRuleModal.fields.sha256Hash', { defaultValue: 'SHA-256 hash' })} value={matchHash} onChange={setMatchHash} placeholder={t('pamPamRuleModal.placeholders.hexChars', { defaultValue: '64 hex chars' })} testId="pam-rule-hash" negateKey="hash" negated={negate.has('hash')} onToggleNegate={toggleNegate} negateLabel={t('pamPamRuleModal.form.negate', { defaultValue: 'Negate (does not match)' })} />
+            <Field label={t('pamPamRuleModal.fields.pathGlob', { defaultValue: 'Path glob' })} value={matchPathGlob} onChange={setMatchPathGlob} placeholder={t('pamPamRuleModal.placeholders.programFilesGlob', { defaultValue: 'C:\\Program Files\\**' })} testId="pam-rule-path" negateKey="pathGlob" negated={negate.has('pathGlob')} onToggleNegate={toggleNegate} negateLabel={t('pamPamRuleModal.form.negate', { defaultValue: 'Negate (does not match)' })} />
+            <Field label={t('pamPamRuleModal.fields.parentImage', { defaultValue: 'Parent image' })} value={matchParentImage} onChange={setMatchParentImage} placeholder={t('pamPamRuleModal.placeholders.explorer', { defaultValue: 'explorer.exe' })} testId="pam-rule-parent" negateKey="parentImage" negated={negate.has('parentImage')} onToggleNegate={toggleNegate} negateLabel={t('pamPamRuleModal.form.negate', { defaultValue: 'Negate (does not match)' })} />
+            <Field label={t('pamPamRuleModal.fields.commandLine', { defaultValue: 'Command line' })} value={matchCommandLine} onChange={setMatchCommandLine} placeholder={t('pamPamRuleModal.placeholders.printui', { defaultValue: 'printui.dll,PrintUIEntry' })} testId="pam-rule-match-command-line" negateKey="commandLine" negated={negate.has('commandLine')} onToggleNegate={toggleNegate} negateLabel={t('pamPamRuleModal.form.negate', { defaultValue: 'Negate (does not match)' })} />
           </div>
         ) : (
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Tool name" value={matchToolName} onChange={setMatchToolName} placeholder="run_script" testId="pam-rule-toolname" negateKey="toolName" negated={negate.has('toolName')} onToggleNegate={toggleNegate} />
+            <Field label={t('pamPamRuleModal.fields.toolName', { defaultValue: 'Tool name' })} value={matchToolName} onChange={setMatchToolName} placeholder={t('pamPamRuleModal.placeholders.runScript', { defaultValue: 'run_script' })} testId="pam-rule-toolname" negateKey="toolName" negated={negate.has('toolName')} onToggleNegate={toggleNegate} negateLabel={t('pamPamRuleModal.form.negate', { defaultValue: 'Negate (does not match)' })} />
             <Field
-              label="Risk tier (0-4)"
+              label={t('pamPamRuleModal.fields.riskTier', { defaultValue: 'Risk tier (0-4)' })}
               value={matchRiskTier}
               onChange={setMatchRiskTier}
-              placeholder="2"
+              placeholder={t('pamPamRuleModal.placeholders.riskTier', { defaultValue: '2' })}
               type="number"
               testId="pam-rule-risktier"
               negateKey="riskTier"
               negated={negate.has('riskTier')}
               onToggleNegate={toggleNegate}
+              negateLabel={t('pamPamRuleModal.form.negate', { defaultValue: 'Negate (does not match)' })}
             />
           </div>
         )}
 
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="User (optional)" value={matchUser} onChange={setMatchUser} placeholder="DOMAIN\\user" testId="pam-rule-user" negateKey="user" negated={negate.has('user')} onToggleNegate={toggleNegate} />
-          <Field label="AD group (optional)" value={matchAdGroup} onChange={setMatchAdGroup} placeholder="Helpdesk Tier 1" testId="pam-rule-adgroup" negateKey="adGroup" negated={negate.has('adGroup')} onToggleNegate={toggleNegate} />
+          <Field label={t('pamPamRuleModal.fields.userOptional', { defaultValue: 'User (optional)' })} value={matchUser} onChange={setMatchUser} placeholder={t('pamPamRuleModal.placeholders.domainUser', { defaultValue: 'DOMAIN\\user' })} testId="pam-rule-user" negateKey="user" negated={negate.has('user')} onToggleNegate={toggleNegate} negateLabel={t('pamPamRuleModal.form.negate', { defaultValue: 'Negate (does not match)' })} />
+          <Field label={t('pamPamRuleModal.fields.adGroupOptional', { defaultValue: 'AD group (optional)' })} value={matchAdGroup} onChange={setMatchAdGroup} placeholder={t('pamPamRuleModal.placeholders.helpdeskTier1', { defaultValue: 'Helpdesk Tier 1' })} testId="pam-rule-adgroup" negateKey="adGroup" negated={negate.has('adGroup')} onToggleNegate={toggleNegate} negateLabel={t('pamPamRuleModal.form.negate', { defaultValue: 'Negate (does not match)' })} />
         </div>
 
         <div className="grid gap-4 sm:grid-cols-3">
-          <Field label="Window start (HH:MM)" value={windowStart} onChange={setWindowStart} placeholder="08:00" testId="pam-rule-window-start" />
-          <Field label="Window end (HH:MM)" value={windowEnd} onChange={setWindowEnd} placeholder="18:00" testId="pam-rule-window-end" />
+          <Field label={t('pamPamRuleModal.fields.windowStart', { defaultValue: 'Window start (HH:MM)' })} value={windowStart} onChange={setWindowStart} placeholder={t('pamPamRuleModal.placeholders.windowStart', { defaultValue: '08:00' })} testId="pam-rule-window-start" />
+          <Field label={t('pamPamRuleModal.fields.windowEnd', { defaultValue: 'Window end (HH:MM)' })} value={windowEnd} onChange={setWindowEnd} placeholder={t('pamPamRuleModal.placeholders.windowEnd', { defaultValue: '18:00' })} testId="pam-rule-window-end" />
           <Field
-            label="Approval mins (optional)"
+            label={t('pamPamRuleModal.fields.approvalMinsOptional', {
+              defaultValue: 'Approval mins (optional)',
+            })}
             value={approvalDuration}
             onChange={setApprovalDuration}
-            placeholder="15"
+            placeholder={t('pamPamRuleModal.placeholders.approvalMins', { defaultValue: '15' })}
             type="number"
             testId="pam-rule-approval-mins"
           />
@@ -727,7 +787,11 @@ export default function PamRuleModal({
         {(windowStart !== '' || windowEnd !== '') && (
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
-              <span className="mb-1 block text-sm font-medium">Days (none = every day)</span>
+              <span className="mb-1 block text-sm font-medium">
+                {t('pamPamRuleModal.form.daysNoneEveryDay', {
+                  defaultValue: 'Days (none = every day)',
+                })}
+              </span>
               <div className="flex gap-1">
                 {DAY_LABELS.map((label, day) => (
                   <button
@@ -742,20 +806,20 @@ export default function PamRuleModal({
                         : 'text-muted-foreground'
                     }`}
                   >
-                    {label}
+                    {dayLabels[day] ?? label}
                   </button>
                 ))}
               </div>
             </div>
             <div>
               <label htmlFor={timezoneId} className="mb-1 block text-sm font-medium">
-                Timezone (optional)
+                {t('pamPamRuleModal.form.timezoneOptional', { defaultValue: 'Timezone (optional)' })}
               </label>
               <input
                 id={timezoneId}
                 value={windowTimezone}
                 onChange={(e) => setWindowTimezone(e.target.value)}
-                placeholder="UTC"
+                placeholder={t('pamPamRuleModal.placeholders.utc', { defaultValue: 'UTC' })}
                 maxLength={64}
                 data-testid="pam-rule-window-timezone"
                 className={inputClass}
@@ -771,7 +835,7 @@ export default function PamRuleModal({
             onChange={(e) => setEnabled(e.target.checked)}
             data-testid="pam-rule-enabled"
           />
-          Enabled
+          {t('pamPamRuleModal.form.enabled', { defaultValue: 'Enabled' })}
         </label>
 
         {error && (
@@ -785,7 +849,9 @@ export default function PamRuleModal({
 
         <div className="rounded-md border bg-muted/20 p-3">
           <div className="flex items-center justify-between">
-            <p className="text-sm font-medium">Preview against recent requests</p>
+            <p className="text-sm font-medium">
+              {t('pamPamRuleModal.preview.title', { defaultValue: 'Preview against recent requests' })}
+            </p>
             <button
               type="button"
               onClick={() => void handlePreview()}
@@ -793,15 +859,27 @@ export default function PamRuleModal({
               data-testid="pam-rule-preview-btn"
               className="rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-accent disabled:opacity-50"
             >
-              {previewing ? 'Previewing…' : 'Preview matches'}
+              {previewing
+                ? t('pamPamRuleModal.preview.previewing', { defaultValue: 'Previewing…' })
+                : t('pamPamRuleModal.preview.action', { defaultValue: 'Preview matches' })}
             </button>
           </div>
           {preview && (
             <div className="mt-2 space-y-2 text-sm" data-testid="pam-rule-preview-result">
               <p>
-                Would have matched <span className="font-semibold">{preview.totalMatched}</span> of{' '}
-                {preview.totalScanned} requests in the last {preview.windowDays} days
-                {preview.truncated ? ' (newest 5000 scanned)' : ''}.
+                {t('pamPamRuleModal.preview.matchedPrefix', { defaultValue: 'Would have matched' })}{' '}
+                <span className="font-semibold">{preview.totalMatched}</span>{' '}
+                {t('pamPamRuleModal.preview.matchedSuffix', {
+                  defaultValue: 'of {{totalScanned}} requests in the last {{windowDays}} days',
+                  totalScanned: preview.totalScanned,
+                  windowDays: preview.windowDays,
+                })}
+                {preview.truncated
+                  ? t('pamPamRuleModal.preview.truncated', {
+                      defaultValue: ' (newest 5000 scanned)',
+                    })
+                  : ''}
+                .
               </p>
               {preview.totalMatched > 0 && (
                 <p className="text-xs text-muted-foreground">
@@ -821,8 +899,10 @@ export default function PamRuleModal({
               </ul>
               {matchAdGroup.trim() && (
                 <p className="text-xs text-muted-foreground">
-                  Note: historical requests don't record AD groups, so any draft that includes an AD
-                  group criterion previews as 0 matches.
+                  {t('pamPamRuleModal.preview.adGroupNote', {
+                    defaultValue:
+                      "Note: historical requests don't record AD groups, so any draft that includes an AD group criterion previews as 0 matches.",
+                  })}
                 </p>
               )}
             </div>
@@ -831,7 +911,7 @@ export default function PamRuleModal({
 
         <div className="flex justify-end gap-2">
           <button type="button" onClick={onClose} className="rounded-md border px-3 py-2 text-sm hover:bg-accent">
-            Cancel
+            {t('common:actions.cancel', { defaultValue: 'Cancel' })}
           </button>
           <button
             type="submit"
@@ -839,7 +919,11 @@ export default function PamRuleModal({
             data-testid="pam-rule-submit"
             className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
-            {submitting ? 'Saving…' : isEdit ? 'Save changes' : 'Create rule'}
+            {submitting
+              ? t('common:states.saving', { defaultValue: 'Saving…' })
+              : isEdit
+                ? t('pamPamRuleModal.actions.saveChanges', { defaultValue: 'Save changes' })
+                : t('pamPamRuleModal.actions.createRule', { defaultValue: 'Create rule' })}
           </button>
         </div>
       </form>
@@ -858,6 +942,7 @@ function Field({
   negateKey,
   negated,
   onToggleNegate,
+  negateLabel,
 }: {
   label: string;
   value: string;
@@ -871,7 +956,9 @@ function Field({
   negateKey?: PamRuleNegateKey;
   negated?: boolean;
   onToggleNegate?: (key: PamRuleNegateKey) => void;
+  negateLabel?: string;
 }) {
+  const { t } = useTranslation('security');
   const id = useId();
   return (
     <div>
@@ -896,7 +983,8 @@ function Field({
             onChange={() => onToggleNegate(negateKey)}
             data-testid={`pam-rule-negate-${negateKey}`}
           />
-          Negate (does not match)
+          {negateLabel ??
+            t('pamPamRuleModal.form.negate', { defaultValue: 'Negate (does not match)' })}
         </label>
       )}
     </div>

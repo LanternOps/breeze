@@ -1,8 +1,10 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Send, Square } from 'lucide-react';
 import { useScriptAiStore } from '@/stores/scriptAiStore';
 
 export default function ScriptAiInput() {
+  const { t } = useTranslation('scripts');
   const [input, setInput] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const { sendMessage, isStreaming, interruptResponse, sessionId } = useScriptAiStore();
@@ -40,7 +42,7 @@ export default function ScriptAiInput() {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={sessionId ? 'Describe the script you need...' : 'Opening AI assistant...'}
+          placeholder={sessionId ? t('scriptAiInput.placeholder.ready') : t('scriptAiInput.placeholder.opening')}
           disabled={!sessionId}
           rows={1}
           className="flex-1 resize-none rounded-md border bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-50"
@@ -50,7 +52,7 @@ export default function ScriptAiInput() {
             type="button"
             onClick={interruptResponse}
             className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border bg-destructive/10 text-destructive hover:bg-destructive/20"
-            title="Stop generating"
+            title={t('scriptAiInput.actions.stopGenerating')}
           >
             <Square className="h-4 w-4" />
           </button>
@@ -60,7 +62,7 @@ export default function ScriptAiInput() {
             onClick={handleSend}
             disabled={!input.trim() || !sessionId}
             className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-            title="Send message"
+            title={t('scriptAiInput.actions.sendMessage')}
           >
             <Send className="h-4 w-4" />
           </button>

@@ -1,3 +1,5 @@
+import '@/lib/i18n';
+import { useTranslation } from 'react-i18next';
 import { useState, useEffect, useCallback } from 'react';
 import ApiKeyList, { type ApiKey } from './ApiKeyList';
 import ApiKeyForm, { CreatedKeyModal, type ApiKeyFormValues } from './ApiKeyForm';
@@ -8,6 +10,7 @@ import { navigateTo } from '@/lib/navigation';
 type ModalMode = 'closed' | 'create' | 'view' | 'rotate' | 'revoke';
 
 export default function ApiKeysPage() {
+  const { t } = useTranslation('settings');
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -29,7 +32,7 @@ export default function ApiKeysPage() {
           void navigateTo('/login', { replace: true });
           return;
         }
-        throw new Error('Failed to fetch API keys');
+        throw new Error(t('apiKeysPage.failedToFetchAPIKeys'));
       }
       const data = await response.json();
       setApiKeys(data.data ?? data.apiKeys ?? []);
@@ -40,7 +43,7 @@ export default function ApiKeysPage() {
       }
       setIsAdmin(data.isAdmin ?? false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('apiKeysPage.anErrorOccurred'));
     } finally {
       setLoading(false);
     }
@@ -88,7 +91,7 @@ export default function ApiKeysPage() {
     try {
       const { currentOrgId } = useOrgStore.getState();
       if (!currentOrgId) {
-        throw new Error('No organization selected');
+        throw new Error(t('apiKeysPage.noOrganizationSelected'));
       }
       const response = await fetchWithAuth('/api-keys', {
         method: 'POST',
@@ -97,7 +100,7 @@ export default function ApiKeysPage() {
 
       if (!response.ok) {
         const err = await response.json().catch(() => null);
-        throw new Error(err?.error || 'Failed to create API key');
+        throw new Error(err?.error || t('apiKeysPage.failedToCreateAPIKey'));
       }
 
       const data = await response.json();
@@ -105,7 +108,7 @@ export default function ApiKeysPage() {
       await fetchApiKeys(currentPage);
       handleCloseModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('apiKeysPage.anErrorOccurred'));
     } finally {
       setSubmitting(false);
     }
@@ -121,7 +124,7 @@ export default function ApiKeysPage() {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to rotate API key');
+        throw new Error(t('apiKeysPage.failedToRotateAPIKey'));
       }
 
       const data = await response.json();
@@ -129,7 +132,7 @@ export default function ApiKeysPage() {
       await fetchApiKeys(currentPage);
       handleCloseModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('apiKeysPage.anErrorOccurred'));
     } finally {
       setSubmitting(false);
     }
@@ -145,13 +148,13 @@ export default function ApiKeysPage() {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to revoke API key');
+        throw new Error(t('apiKeysPage.failedToRevokeAPIKey'));
       }
 
       await fetchApiKeys(currentPage);
       handleCloseModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('apiKeysPage.anErrorOccurred'));
     } finally {
       setSubmitting(false);
     }
@@ -162,7 +165,7 @@ export default function ApiKeysPage() {
       <div className="flex items-center justify-center py-12">
         <div className="text-center">
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading API keys...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('apiKeysPage.loadingAPIKeys')}</p>
         </div>
       </div>
     );
@@ -177,8 +180,7 @@ export default function ApiKeysPage() {
           onClick={() => fetchApiKeys()}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Try again
-        </button>
+          {t('apiKeysPage.tryAgain')}</button>
       </div>
     );
   }
@@ -187,10 +189,9 @@ export default function ApiKeysPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">API Keys</h1>
+          <h1 className="text-xl font-semibold tracking-tight">{t('apiKeysPage.aPIKeys')}</h1>
           <p className="text-muted-foreground">
-            Manage API keys for programmatic access to your account.
-          </p>
+            {t('apiKeysPage.manageAPIKeysForProgrammaticAccessToYourAccount')}</p>
         </div>
         <button
           type="button"
@@ -200,8 +201,7 @@ export default function ApiKeysPage() {
           <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
           </svg>
-          Create Key
-        </button>
+          {t('apiKeysPage.createKey')}</button>
       </div>
 
       {error && (
@@ -227,8 +227,8 @@ export default function ApiKeysPage() {
           onSubmit={handleCreateSubmit}
           onCancel={handleCloseModal}
           loading={submitting}
-          title="Create API Key"
-          description="Create a new API key with specific permissions."
+          title={t('apiKeysPage.createAPIKey')}
+          description={t('apiKeysPage.createANewAPIKeyWithSpecificPermissions')}
           isAdmin={isAdmin}
         />
       )}
@@ -237,22 +237,22 @@ export default function ApiKeysPage() {
       {modalMode === 'view' && selectedKey && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
           <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-xs">
-            <h2 className="text-lg font-semibold">API Key Details</h2>
+            <h2 className="text-lg font-semibold">{t('apiKeysPage.aPIKeyDetails')}</h2>
             <div className="mt-4 space-y-4">
               <div>
-                <label className="text-xs font-medium uppercase text-muted-foreground">Name</label>
+                <label className="text-xs font-medium uppercase text-muted-foreground">{t('apiKeysPage.name')}</label>
                 <p className="mt-1 text-sm font-medium">{selectedKey.name}</p>
               </div>
               <div>
-                <label className="text-xs font-medium uppercase text-muted-foreground">Key Prefix</label>
+                <label className="text-xs font-medium uppercase text-muted-foreground">{t('apiKeysPage.keyPrefix')}</label>
                 <p className="mt-1 font-mono text-sm">{selectedKey.keyPrefix}...</p>
               </div>
               <div>
-                <label className="text-xs font-medium uppercase text-muted-foreground">Status</label>
+                <label className="text-xs font-medium uppercase text-muted-foreground">{t('apiKeysPage.status')}</label>
                 <p className="mt-1 text-sm capitalize">{selectedKey.status}</p>
               </div>
               <div>
-                <label className="text-xs font-medium uppercase text-muted-foreground">Scopes</label>
+                <label className="text-xs font-medium uppercase text-muted-foreground">{t('apiKeysPage.scopes')}</label>
                 <div className="mt-1 flex flex-wrap gap-1">
                   {selectedKey.scopes.map(scope => (
                     <span
@@ -266,35 +266,35 @@ export default function ApiKeysPage() {
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="text-xs font-medium uppercase text-muted-foreground">Created</label>
+                  <label className="text-xs font-medium uppercase text-muted-foreground">{t('apiKeysPage.created')}</label>
                   <p className="mt-1 text-sm">
                     {new Date(selectedKey.createdAt).toLocaleDateString()}
                   </p>
                 </div>
                 <div>
-                  <label className="text-xs font-medium uppercase text-muted-foreground">Last Used</label>
+                  <label className="text-xs font-medium uppercase text-muted-foreground">{t('apiKeysPage.lastUsed')}</label>
                   <p className="mt-1 text-sm">
                     {selectedKey.lastUsedAt
                       ? new Date(selectedKey.lastUsedAt).toLocaleDateString()
-                      : 'Never'}
+                      : t('apiKeysPage.never')}
                   </p>
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="text-xs font-medium uppercase text-muted-foreground">Expires</label>
+                  <label className="text-xs font-medium uppercase text-muted-foreground">{t('apiKeysPage.expires')}</label>
                   <p className="mt-1 text-sm">
                     {selectedKey.expiresAt
                       ? new Date(selectedKey.expiresAt).toLocaleDateString()
-                      : 'Never'}
+                      : t('apiKeysPage.never')}
                   </p>
                 </div>
                 <div>
-                  <label className="text-xs font-medium uppercase text-muted-foreground">Rate Limit</label>
+                  <label className="text-xs font-medium uppercase text-muted-foreground">{t('apiKeysPage.rateLimit')}</label>
                   <p className="mt-1 text-sm">
                     {selectedKey.rateLimit
-                      ? `${selectedKey.rateLimit} req/hour`
-                      : 'Default'}
+                      ? t('apiKeysPage.requestsPerHour', { count: selectedKey.rateLimit })
+                      : t('apiKeysPage.default')}
                   </p>
                 </div>
               </div>
@@ -305,8 +305,7 @@ export default function ApiKeysPage() {
                 onClick={handleCloseModal}
                 className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
               >
-                Close
-              </button>
+                {t('apiKeysPage.close')}</button>
             </div>
           </div>
         </div>
@@ -316,16 +315,13 @@ export default function ApiKeysPage() {
       {modalMode === 'rotate' && selectedKey && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
           <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
-            <h2 className="text-lg font-semibold">Rotate API Key</h2>
+            <h2 className="text-lg font-semibold">{t('apiKeysPage.rotateAPIKey')}</h2>
             <p className="mt-2 text-sm text-muted-foreground">
-              Are you sure you want to rotate{' '}
-              <span className="font-medium">{selectedKey.name}</span>? This will generate a new key
-              and invalidate the current one immediately.
-            </p>
+              {t('apiKeysPage.areYouSureYouWantToRotate')}{' '}
+              <span className="font-medium">{selectedKey.name}</span>{t('apiKeysPage.thisWillGenerateANewKeyAndInvalidateTheCurrentOneImmedia')}</p>
             <div className="mt-4 rounded-md border border-amber-500/40 bg-amber-500/10 p-3">
               <p className="text-xs text-amber-800">
-                Any applications using this key will need to be updated with the new key.
-              </p>
+                {t('apiKeysPage.anyApplicationsUsingThisKeyWillNeedToBeUpdatedWithTheNew')}</p>
             </div>
             <div className="mt-6 flex justify-end gap-3">
               <button
@@ -333,15 +329,14 @@ export default function ApiKeysPage() {
                 onClick={handleCloseModal}
                 className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
               >
-                Cancel
-              </button>
+                {t('apiKeysPage.cancel')}</button>
               <button
                 type="button"
                 onClick={handleConfirmRotate}
                 disabled={submitting}
                 className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {submitting ? 'Rotating...' : 'Rotate Key'}
+                {submitting ? t('apiKeysPage.rotating') : t('apiKeysPage.rotateKey')}
               </button>
             </div>
           </div>
@@ -352,15 +347,13 @@ export default function ApiKeysPage() {
       {modalMode === 'revoke' && selectedKey && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
           <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
-            <h2 className="text-lg font-semibold">Revoke API Key</h2>
+            <h2 className="text-lg font-semibold">{t('apiKeysPage.revokeAPIKey')}</h2>
             <p className="mt-2 text-sm text-muted-foreground">
-              Are you sure you want to revoke{' '}
-              <span className="font-medium">{selectedKey.name}</span>? This action cannot be undone.
-            </p>
+              {t('apiKeysPage.areYouSureYouWantToRevoke')}{' '}
+              <span className="font-medium">{selectedKey.name}</span>{t('apiKeysPage.thisActionCannotBeUndone')}</p>
             <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 p-3">
               <p className="text-xs text-destructive">
-                Any applications using this key will immediately lose access.
-              </p>
+                {t('apiKeysPage.anyApplicationsUsingThisKeyWillImmediatelyLoseAccess')}</p>
             </div>
             <div className="mt-6 flex justify-end gap-3">
               <button
@@ -368,15 +361,14 @@ export default function ApiKeysPage() {
                 onClick={handleCloseModal}
                 className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
               >
-                Cancel
-              </button>
+                {t('apiKeysPage.cancel')}</button>
               <button
                 type="button"
                 onClick={handleConfirmRevoke}
                 disabled={submitting}
                 className="inline-flex h-10 items-center justify-center rounded-md bg-destructive px-4 text-sm font-medium text-destructive-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {submitting ? 'Revoking...' : 'Revoke Key'}
+                {submitting ? t('apiKeysPage.revoking') : t('apiKeysPage.revokeKey')}
               </button>
             </div>
           </div>

@@ -1,3 +1,5 @@
+import '@/lib/i18n';
+import { useTranslation } from 'react-i18next';
 type RoleSelectorProps = {
   roles: string[];
   value: string;
@@ -11,16 +13,16 @@ export default function RoleSelector({
   onChange,
   disabled
 }: RoleSelectorProps) {
+  const { t } = useTranslation('settings');
   return (
     <div className="space-y-3 rounded-lg border bg-card p-4 shadow-xs">
       <div>
-        <p className="text-xs uppercase tracking-wide text-muted-foreground">Current role</p>
+        <p className="text-xs uppercase tracking-wide text-muted-foreground">{t('roleSelector.currentRole')}</p>
         <p className="text-base font-semibold">{value}</p>
       </div>
       <div className="space-y-2">
         <label htmlFor="role-selector" className="text-sm font-medium">
-          Assign new role
-        </label>
+          {t('roleSelector.assignNewRole')}</label>
         <select
           id="role-selector"
           value={value}

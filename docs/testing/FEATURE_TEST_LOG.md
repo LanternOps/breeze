@@ -3552,3 +3552,63 @@ tests never exercised the real browser payloads** — worth a validator/UI-contr
 > forward on `main` — verified present in `origin/main`, which is also well ahead of the
 > throwaway branch (Zod-4 migration, contract auto-renew, quotes + portal Caddy routes).
 > The QA branch was discarded; only this log + `UI_IMPROVEMENTS.md` + the checklist were salvaged.
+
+## Web console i18n Phase 1 (en / pt-BR) — 2026-07-10
+
+**Branch:** `worktree-web-i18n-phase1`
+**Commit:** `e44d668ef` (implementation uncommitted)
+**Tested by:** Codex
+**Result:** PARTIAL
+
+### What was tested
+
+- [x] UI unit coverage: language selector persists and applies `pt-BR`; mounted sidebar switches between English and Portuguese; full web Vitest suite run.
+- [x] API unit coverage: `/users/me` rejects unsupported locales and merges `pt-BR` preferences.
+- [x] Static verification: Astro check completes with zero errors.
+- [ ] Live UI/API smoke: unavailable because this worktree has no configured `E2E_*` credentials and no running web/API/Postgres/Redis compose services.
+
+### Evidence
+
+- Full web suite: 412 files / 3,215 tests passed (including the new i18n and ProfilePage regression coverage).
+- API users route tests: 68 passed.
+- Astro check: 0 errors (existing hints only).
+
+### Issues Found
+
+- No implementation defects found in automated verification.
+- Live persistence across a fresh browser profile remains to be exercised when an E2E stack is configured.
+
+## Web console i18n Phase 2 extraction (en / pt-BR) — 2026-07-11
+
+**Branch:** `worktree-web-i18n-phase1`
+**Commit:** `0b17bf3b7`
+**Tested by:** Codex
+**Result:** PASS
+**Plan progress:** 34 of 34 executable items complete (100%).
+
+### What was tested
+
+- [x] Full web unit suite after the final residue pass.
+- [x] Locale parity and static translation-key usage across all extracted namespaces.
+- [x] Partner-default locale API coverage and precedence behavior.
+- [x] Astro type/static analysis and production web build.
+- [x] Post-wave visible-string residue audit, including multiline UI, CSV, and printable-report copy.
+- [x] Manual pt-BR click-through of the top 10 pages on an isolated, seeded OrbStack worktree stack: Dashboard, Profile, Devices, Alerts, Tickets, Remote Access, Scripts, Patches, Vulnerabilities, and Reports. Locale persistence, `<html lang>`, navigation, browser titles, and representative content were re-verified after fixes.
+
+### Evidence
+
+- Full web suite: 425 files / 3,270 tests passed.
+- API org/user route suites: 2 files / 214 tests passed.
+- Astro check: 1,334 files, 0 errors (existing hints only).
+- Production build: passed; pt-BR remains emitted through lazy locale chunks.
+- Live browser recheck passed for the confirmed residue fixes: localized metadata/help/profile copy, dashboard/device/alert relative times, Devices filters/table labels, Alerts tabs, Remote/Vulnerabilities landing copy, and Reports diacritics.
+- Fresh-tab pt-BR recheck passed with zero hydration/runtime console errors after deferring the persisted locale switch until Astro's initial islands finish hydrating.
+- Worktree diff and whitespace checks: clean.
+
+### Issues Found
+
+- Automated verification found and fixed structural enum/state values that had been translated by mechanical extraction, two callback variables shadowing `t()`, cross-namespace device metadata labels, and several post-wave literal-string misses.
+- The live walkthrough found and fixed remaining runtime-only residues that unit/static checks could not expose, including a duplicate Devices quick-filter rendering path.
+- The live walkthrough also exposed and fixed a stored-locale hydration race that could render pt-BR before English SSR islands hydrated.
+- Final read-only code review found no unresolved Critical or Important issues after runtime, enforcement, formatter, and copy-quality remediation.
+- Brazilian Portuguese copy remains machine-drafted and should receive native-speaker review before production rollout.

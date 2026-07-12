@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react';
-import { Coins } from 'lucide-react';
-import { fetchWithAuth, useAuthStore } from '../../stores/auth';
-import { cn, widthPercentClass } from '@/lib/utils';
+import { useEffect, useState } from "react";
+import { Coins } from "lucide-react";
+import { fetchWithAuth, useAuthStore } from "../../stores/auth";
+import { cn, widthPercentClass } from "@/lib/utils";
+import { formatCurrency } from "@/lib/i18n/format";
+import { useTranslation } from "react-i18next";
 
 interface UsageData {
   daily: { totalCostCents: number; messageCount: number };
@@ -19,7 +21,10 @@ interface AiCostIndicatorProps {
   enabled?: boolean;
 }
 
-export default function AiCostIndicator({ enabled = true }: AiCostIndicatorProps) {
+export default function AiCostIndicator({
+  enabled = true,
+}: AiCostIndicatorProps) {
+  const { t } = useTranslation("ai");
   const [usage, setUsage] = useState<UsageData | null>(null);
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
 
@@ -41,7 +46,7 @@ export default function AiCostIndicator({ enabled = true }: AiCostIndicatorProps
 
     async function fetchUsage() {
       try {
-        const res = await fetchWithAuth('/ai/usage');
+        const res = await fetchWithAuth("/ai/usage");
         if (res.ok && mounted) {
           setUsage(await res.json());
           failCount = 0;
@@ -51,7 +56,7 @@ export default function AiCostIndicator({ enabled = true }: AiCostIndicatorProps
           failCount++;
         }
       } catch (err) {
-        console.warn('[AiCostIndicator] fetch failed:', err);
+        console.warn("[AiCostIndicator] fetch failed:", err);
         failCount++;
         if (failCount >= 5) stopPolling();
       }
@@ -69,13 +74,20 @@ export default function AiCostIndicator({ enabled = true }: AiCostIndicatorProps
 
   const monthlyBudget = usage.budget?.monthlyBudgetCents;
   const monthlyUsed = usage.monthly.totalCostCents;
-  const percentage = monthlyBudget ? Math.min((monthlyUsed / monthlyBudget) * 100, 100) : 0;
+  const percentage = monthlyBudget
+    ? Math.min((monthlyUsed / monthlyBudget) * 100, 100)
+    : 0;
 
   const costDisplay = monthlyBudget
-    ? `$${(monthlyUsed / 100).toFixed(2)} / $${(monthlyBudget / 100).toFixed(2)}`
-    : `$${(monthlyUsed / 100).toFixed(2)} this month`;
+    ? `${formatCurrency(monthlyUsed / 100)} / ${formatCurrency(monthlyBudget / 100)}`
+    : `${formatCurrency(monthlyUsed / 100)} this month`;
 
-  const barColor = percentage > 90 ? 'bg-red-500' : percentage > 70 ? 'bg-yellow-500' : 'bg-primary';
+  const barColor =
+    percentage > 90
+      ? "bg-red-500"
+      : percentage > 70
+        ? "bg-yellow-500"
+        : "bg-primary";
 
   return (
     <div className="flex items-center gap-2 px-4 py-1.5 border-b">
@@ -84,11 +96,19 @@ export default function AiCostIndicator({ enabled = true }: AiCostIndicatorProps
       {monthlyBudget && (
         <div className="flex-1 h-1 rounded-full bg-muted overflow-hidden">
           <div
-            className={cn('h-full rounded-full transition-all', barColor, widthPercentClass(percentage))}
+            className={cn(
+              "h-full rounded-full transition-all",
+              barColor,
+              widthPercentClass(percentage),
+            )}
           />
         </div>
       )}
-      <span className="text-[10px] text-gray-400 dark:text-gray-600">{usage.monthly.messageCount} msgs</span>
+      <span className="text-[10px] text-gray-400 dark:text-gray-600">
+        {t("aiCostIndicator.messageCount", {
+          count: usage.monthly.messageCount,
+        })}
+      </span>
     </div>
   );
 }

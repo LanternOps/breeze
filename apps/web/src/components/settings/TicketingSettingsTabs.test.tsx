@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { grantedActions } = vi.hoisted(() => ({ grantedActions: new Set<string>() }));
@@ -31,17 +31,23 @@ vi.mock('./M365MailboxCard', () => ({
 vi.mock('./CannedResponsesCard', () => ({
   default: () => <div data-testid="stub-canned-responses-card">CannedStub</div>
 }));
+vi.mock('./TicketFormsCard', () => ({
+  default: () => <div data-testid="stub-ticket-forms-card">FormsStub</div>
+}));
 
 import TicketingSettingsTabs from './TicketingSettingsTabs';
+import { applyLocale, i18n } from '@/lib/i18n';
 
 describe('TicketingSettingsTabs', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    await i18n.changeLanguage('en');
     window.location.hash = '';
     grantedActions.clear();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     window.location.hash = '';
+    await i18n.changeLanguage('en');
   });
 
   it('renders all four sub-tabs and defaults to statuses', () => {
@@ -106,5 +112,16 @@ describe('TicketingSettingsTabs', () => {
     render(<TicketingSettingsTabs syncHash={false} initialTab="inbound" />);
 
     expect(screen.getByTestId('m365-mailbox-card')).toBeInTheDocument();
+  });
+
+  it('updates already-mounted tab labels when the locale changes', async () => {
+    render(<TicketingSettingsTabs />);
+    expect(screen.getByTestId('ticketing-tab-categories')).toHaveTextContent('Categories');
+
+    await act(async () => {
+      await applyLocale('pt-BR');
+    });
+
+    expect(screen.getByTestId('ticketing-tab-categories')).toHaveTextContent('Categorias');
   });
 });

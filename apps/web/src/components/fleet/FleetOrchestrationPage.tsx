@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   Shield, Rocket, Package, FolderTree, Clock, Zap, Bell,
   FileText, Loader2, XCircle, RefreshCw, MessageSquare,
   ChevronRight, AlertTriangle, CheckCircle2
 } from 'lucide-react';
 import { cn, widthPercentClass } from '@/lib/utils';
+import { formatNumber } from '@/lib/i18n/format';
 import { fetchWithAuth } from '../../stores/auth';
 import { useAiStore } from '@/stores/aiStore';
 
@@ -54,14 +56,14 @@ interface FleetStats {
 // ─── Quick Actions ──────────────────────────────────────────────────────
 
 const quickActions = [
-  { label: 'Check compliance', prompt: 'Show me a compliance summary for all configuration policies', icon: Shield },
-  { label: 'Active deployments', prompt: 'List all active deployments and their progress', icon: Rocket },
-  { label: 'Critical patches', prompt: 'What critical patches are pending approval?', icon: Package },
-  { label: 'Alert overview', prompt: 'Give me a summary of active alerts by severity', icon: Bell },
-  { label: 'Maintenance windows', prompt: 'What maintenance windows are active right now?', icon: Clock },
-  { label: 'Run automations', prompt: 'List all enabled automations and their recent run history', icon: Zap },
-  { label: 'Device groups', prompt: 'Show me all device groups and their member counts', icon: FolderTree },
-  { label: 'Generate report', prompt: 'Generate an executive summary report for the fleet', icon: FileText },
+  { label: 'Check compliance', labelKey: 'longTail.fleet.FleetOrchestrationPage.quickActions.checkCompliance', prompt: 'Show me a compliance summary for all configuration policies', icon: Shield },
+  { label: 'Active deployments', labelKey: 'longTail.fleet.FleetOrchestrationPage.quickActions.activeDeployments', prompt: 'List all active deployments and their progress', icon: Rocket },
+  { label: 'Critical patches', labelKey: 'longTail.fleet.FleetOrchestrationPage.quickActions.criticalPatches', prompt: 'What critical patches are pending approval?', icon: Package },
+  { label: 'Alert overview', labelKey: 'longTail.fleet.FleetOrchestrationPage.quickActions.alertOverview', prompt: 'Give me a summary of active alerts by severity', icon: Bell },
+  { label: 'Maintenance windows', labelKey: 'longTail.fleet.FleetOrchestrationPage.quickActions.maintenanceWindows', prompt: 'What maintenance windows are active right now?', icon: Clock },
+  { label: 'Run automations', labelKey: 'longTail.fleet.FleetOrchestrationPage.quickActions.runAutomations', prompt: 'List all enabled automations and their recent run history', icon: Zap },
+  { label: 'Device groups', labelKey: 'longTail.fleet.FleetOrchestrationPage.quickActions.deviceGroups', prompt: 'Show me all device groups and their member counts', icon: FolderTree },
+  { label: 'Generate report', labelKey: 'longTail.fleet.FleetOrchestrationPage.quickActions.generateReport', prompt: 'Generate an executive summary report for the fleet', icon: FileText },
 ];
 
 // ─── Data Fetching ──────────────────────────────────────────────────────
@@ -199,6 +201,7 @@ function countByStatus(list: unknown, statuses: string[]): number {
 // ─── Component ──────────────────────────────────────────────────────────
 
 export default function FleetOrchestrationPage() {
+  const { t } = useTranslation('common');
   const [stats, setStats] = useState<FleetStats | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -234,7 +237,7 @@ export default function FleetOrchestrationPage() {
         },
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load fleet stats');
+      setError(err instanceof Error ? err.message : t('longTail.fleet.FleetOrchestrationPage.errors.loadFailed'));
     } finally {
       setIsLoading(false);
     }
@@ -254,7 +257,7 @@ export default function FleetOrchestrationPage() {
     return (
       <div className="space-y-6 p-6">
         <div className="flex items-center justify-between">
-          <h1 className="text-xl font-semibold tracking-tight">Fleet Orchestration</h1>
+          <h1 className="text-xl font-semibold tracking-tight">{t('longTail.fleet.FleetOrchestrationPage.title')}</h1>
         </div>
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {[...Array(8)].map((_, i) => (
@@ -272,7 +275,7 @@ export default function FleetOrchestrationPage() {
   if (error) {
     return (
       <div className="space-y-6 p-6">
-        <h1 className="text-xl font-semibold tracking-tight">Fleet Orchestration</h1>
+        <h1 className="text-xl font-semibold tracking-tight">{t('longTail.fleet.FleetOrchestrationPage.title')}</h1>
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6">
           <div className="flex items-center gap-2 text-destructive">
             <XCircle className="h-5 w-5" />
@@ -290,9 +293,9 @@ export default function FleetOrchestrationPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Fleet Orchestration</h1>
+          <h1 className="text-xl font-semibold tracking-tight">{t('longTail.fleet.FleetOrchestrationPage.title')}</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Manage policies, deployments, patches, and automations across your fleet
+            {t('longTail.fleet.FleetOrchestrationPage.description')}
           </p>
         </div>
         <button
@@ -300,7 +303,7 @@ export default function FleetOrchestrationPage() {
           className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted transition-colors"
         >
           <RefreshCw className="h-4 w-4" />
-          Refresh
+          {t('common:actions.refresh')}
         </button>
       </div>
 
@@ -310,7 +313,7 @@ export default function FleetOrchestrationPage() {
           <div className="flex items-center gap-2 text-yellow-700 dark:text-yellow-400">
             <AlertTriangle className="h-4 w-4 shrink-0" />
             <span className="text-sm">
-              Some data may be incomplete. Failed to load: {warnings.join(', ')}
+              {t('longTail.fleet.FleetOrchestrationPage.partialWarning', { endpoints: warnings.join(', ') })}
             </span>
           </div>
         </div>
@@ -319,68 +322,74 @@ export default function FleetOrchestrationPage() {
       {/* Stat Cards */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
-          title="Policies"
+          title={t('longTail.fleet.FleetOrchestrationPage.cards.policies')}
           icon={Shield}
           value={s.policies.total}
-          subtitle={`${s.policies.active} active`}
+          subtitle={t('longTail.fleet.FleetOrchestrationPage.cards.activeCount', { count: s.policies.active })}
           accent="blue"
           onClick={() => handleQuickAction('Show me a compliance summary for all configuration policies')}
         />
         <StatCard
-          title="Deployments"
+          title={t('longTail.fleet.FleetOrchestrationPage.cards.deployments')}
           icon={Rocket}
           value={s.deployments.active}
-          subtitle={`${s.deployments.total} total, ${s.deployments.pending} pending`}
+          subtitle={t('longTail.fleet.FleetOrchestrationPage.cards.deploymentsSubtitle', {
+            total: s.deployments.total,
+            pending: s.deployments.pending,
+          })}
           accent={s.deployments.failed > 0 ? 'red' : 'green'}
-          badge={s.deployments.failed > 0 ? `${s.deployments.failed} failed` : undefined}
+          badge={s.deployments.failed > 0 ? t('longTail.fleet.FleetOrchestrationPage.cards.failedCount', { count: s.deployments.failed }) : undefined}
           onClick={() => handleQuickAction('List all active deployments and their progress')}
         />
         <StatCard
-          title="Patches"
+          title={t('longTail.fleet.FleetOrchestrationPage.cards.patches')}
           icon={Package}
           value={s.patches.pendingPatches}
-          subtitle={`pending installation`}
+          subtitle={t('longTail.fleet.FleetOrchestrationPage.cards.pendingInstallation')}
           accent={s.patches.failedPatches > 0 ? 'red' : 'yellow'}
-          badge={s.patches.failedPatches > 0 ? `${s.patches.failedPatches} failed` : undefined}
+          badge={s.patches.failedPatches > 0 ? t('longTail.fleet.FleetOrchestrationPage.cards.failedCount', { count: s.patches.failedPatches }) : undefined}
           onClick={() => handleQuickAction('What critical patches are pending approval?')}
         />
         <StatCard
-          title="Alerts"
+          title={t('longTail.fleet.FleetOrchestrationPage.cards.alerts')}
           icon={Bell}
           value={s.alerts.total}
-          subtitle={`${s.alerts.critical} critical, ${s.alerts.high} high`}
+          subtitle={t('longTail.fleet.FleetOrchestrationPage.cards.alertsSubtitle', {
+            critical: s.alerts.critical,
+            high: s.alerts.high,
+          })}
           accent={s.alerts.critical > 0 ? 'red' : s.alerts.high > 0 ? 'yellow' : 'green'}
           onClick={() => handleQuickAction('Give me a summary of active alerts by severity')}
         />
         <StatCard
-          title="Groups"
+          title={t('longTail.fleet.FleetOrchestrationPage.cards.groups')}
           icon={FolderTree}
           value={s.groupCount}
-          subtitle="device groups"
+          subtitle={t('longTail.fleet.FleetOrchestrationPage.cards.deviceGroupsSubtitle')}
           accent="blue"
           onClick={() => handleQuickAction('Show me all device groups and their member counts')}
         />
         <StatCard
-          title="Automations"
+          title={t('longTail.fleet.FleetOrchestrationPage.cards.automations')}
           icon={Zap}
           value={s.automationCount}
-          subtitle="configured"
+          subtitle={t('longTail.fleet.FleetOrchestrationPage.cards.configured')}
           accent="purple"
           onClick={() => handleQuickAction('List all enabled automations and their recent run history')}
         />
         <StatCard
-          title="Maintenance"
+          title={t('longTail.fleet.FleetOrchestrationPage.cards.maintenance')}
           icon={Clock}
           value={s.maintenanceActive}
-          subtitle="active windows"
+          subtitle={t('longTail.fleet.FleetOrchestrationPage.cards.activeWindows')}
           accent={s.maintenanceActive > 0 ? 'yellow' : 'green'}
           onClick={() => handleQuickAction('What maintenance windows are active right now?')}
         />
         <StatCard
-          title="Reports"
+          title={t('longTail.fleet.FleetOrchestrationPage.cards.reports')}
           icon={FileText}
           value={s.reportCount}
-          subtitle="report definitions"
+          subtitle={t('longTail.fleet.FleetOrchestrationPage.cards.reportDefinitions')}
           accent="blue"
           onClick={() => handleQuickAction('Generate an executive summary report for the fleet')}
         />
@@ -390,8 +399,8 @@ export default function FleetOrchestrationPage() {
       <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-center gap-2 mb-4">
           <MessageSquare className="h-5 w-5 text-primary" />
-          <h2 className="text-lg font-semibold">AI Fleet Actions</h2>
-          <span className="text-xs text-muted-foreground ml-2">Click to ask the AI assistant</span>
+          <h2 className="text-lg font-semibold">{t('longTail.fleet.FleetOrchestrationPage.aiFleetActions')}</h2>
+          <span className="text-xs text-muted-foreground ml-2">{t('longTail.fleet.FleetOrchestrationPage.aiFleetActionsHint')}</span>
         </div>
         <div className="flex flex-wrap gap-2">
           {quickActions.map((action) => (
@@ -403,7 +412,7 @@ export default function FleetOrchestrationPage() {
                          transition-colors cursor-pointer"
             >
               <action.icon className="h-4 w-4" />
-              {action.label}
+              {t(/* i18n-dynamic */ action.labelKey)}
               <ChevronRight className="h-3 w-3 opacity-50" />
             </button>
           ))}
@@ -416,13 +425,13 @@ export default function FleetOrchestrationPage() {
         <div className="rounded-lg border bg-card p-6 shadow-xs">
           <h3 className="text-sm font-semibold mb-4 flex items-center gap-2">
             <Rocket className="h-4 w-4" />
-            Deployment Status
+            {t('longTail.fleet.FleetOrchestrationPage.deploymentStatus')}
           </h3>
           <div className="space-y-3">
-            <StatusBar label="Active" value={s.deployments.active} total={s.deployments.total} color="bg-blue-500" />
-            <StatusBar label="Pending" value={s.deployments.pending} total={s.deployments.total} color="bg-yellow-500" />
-            <StatusBar label="Completed" value={s.deployments.completed} total={s.deployments.total} color="bg-green-500" />
-            <StatusBar label="Failed" value={s.deployments.failed} total={s.deployments.total} color="bg-red-500" />
+            <StatusBar label={t('common:states.active')} value={s.deployments.active} total={s.deployments.total} color="bg-blue-500" />
+            <StatusBar label={t('common:states.pending')} value={s.deployments.pending} total={s.deployments.total} color="bg-yellow-500" />
+            <StatusBar label={t('longTail.fleet.FleetOrchestrationPage.status.completed')} value={s.deployments.completed} total={s.deployments.total} color="bg-green-500" />
+            <StatusBar label={t('longTail.fleet.FleetOrchestrationPage.status.failed')} value={s.deployments.failed} total={s.deployments.total} color="bg-red-500" />
           </div>
         </div>
 
@@ -430,13 +439,13 @@ export default function FleetOrchestrationPage() {
         <div className="rounded-lg border bg-card p-6 shadow-xs">
           <h3 className="text-sm font-semibold mb-4 flex items-center gap-2">
             <Bell className="h-4 w-4" />
-            Alert Breakdown
+            {t('longTail.fleet.FleetOrchestrationPage.alertBreakdown')}
           </h3>
           <div className="space-y-3">
-            <StatusBar label="Critical" value={s.alerts.critical} total={s.alerts.total} color="bg-red-500" />
-            <StatusBar label="High" value={s.alerts.high} total={s.alerts.total} color="bg-orange-500" />
-            <StatusBar label="Medium" value={s.alerts.medium} total={s.alerts.total} color="bg-yellow-500" />
-            <StatusBar label="Low" value={s.alerts.low} total={s.alerts.total} color="bg-blue-500" />
+            <StatusBar label={t('longTail.fleet.FleetOrchestrationPage.severity.critical')} value={s.alerts.critical} total={s.alerts.total} color="bg-red-500" />
+            <StatusBar label={t('longTail.fleet.FleetOrchestrationPage.severity.high')} value={s.alerts.high} total={s.alerts.total} color="bg-orange-500" />
+            <StatusBar label={t('longTail.fleet.FleetOrchestrationPage.severity.medium')} value={s.alerts.medium} total={s.alerts.total} color="bg-yellow-500" />
+            <StatusBar label={t('longTail.fleet.FleetOrchestrationPage.severity.low')} value={s.alerts.low} total={s.alerts.total} color="bg-blue-500" />
           </div>
         </div>
 
@@ -444,23 +453,23 @@ export default function FleetOrchestrationPage() {
         <div className="rounded-lg border bg-card p-6 shadow-xs">
           <h3 className="text-sm font-semibold mb-4 flex items-center gap-2">
             <Package className="h-4 w-4" />
-            Patch Posture
+            {t('longTail.fleet.FleetOrchestrationPage.patchPosture')}
           </h3>
           <div className="grid grid-cols-3 gap-4 text-center">
             <MiniStat
-              label="Pending"
+              label={t('common:states.pending')}
               value={s.patches.pendingPatches}
               icon={AlertTriangle}
               color="text-yellow-500"
             />
             <MiniStat
-              label="Installed"
+              label={t('longTail.fleet.FleetOrchestrationPage.installed')}
               value={s.patches.installedPatches}
               icon={CheckCircle2}
               color="text-green-500"
             />
             <MiniStat
-              label="Failed"
+              label={t('longTail.fleet.FleetOrchestrationPage.status.failed')}
               value={s.patches.failedPatches}
               icon={XCircle}
               color={s.patches.failedPatches > 0 ? 'text-red-500' : 'text-green-500'}
@@ -472,23 +481,23 @@ export default function FleetOrchestrationPage() {
         <div className="rounded-lg border bg-card p-6 shadow-xs">
           <h3 className="text-sm font-semibold mb-4 flex items-center gap-2">
             <Shield className="h-4 w-4" />
-            Policy Compliance
+            {t('longTail.fleet.FleetOrchestrationPage.policyCompliance')}
           </h3>
           <div className="grid grid-cols-3 gap-4 text-center">
             <MiniStat
-              label="Policies"
+              label={t('longTail.fleet.FleetOrchestrationPage.cards.policies')}
               value={s.policies.total}
               icon={Shield}
               color="text-blue-500"
             />
             <MiniStat
-              label="Active"
+              label={t('common:states.active')}
               value={s.policies.active}
               icon={CheckCircle2}
               color="text-green-500"
             />
             <MiniStat
-              label="Non-Compliant"
+              label={t('longTail.fleet.FleetOrchestrationPage.nonCompliant')}
               value={s.policies.nonCompliantDevices}
               icon={AlertTriangle}
               color={s.policies.nonCompliantDevices > 0 ? 'text-red-500' : 'text-green-500'}
@@ -535,7 +544,7 @@ function StatCard({
         )}
       </div>
       <div className="mt-4">
-        <div className="text-2xl font-bold">{value.toLocaleString()}</div>
+        <div className="text-2xl font-bold">{formatNumber(value)}</div>
         <div className="text-sm text-muted-foreground">{title}</div>
         <div className="text-xs text-muted-foreground/70 mt-1">{subtitle}</div>
       </div>
@@ -572,7 +581,7 @@ function MiniStat({ label, value, icon: Icon, color }: {
   return (
     <div className="flex flex-col items-center gap-1">
       <Icon className={cn('h-5 w-5', color)} />
-      <span className="text-xl font-bold">{value.toLocaleString()}</span>
+      <span className="text-xl font-bold">{formatNumber(value)}</span>
       <span className="text-xs text-muted-foreground">{label}</span>
     </div>
   );

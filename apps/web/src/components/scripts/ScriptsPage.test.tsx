@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import '@/lib/i18n';
 
 import ScriptsPage from './ScriptsPage';
 import { fetchWithAuth } from '../../stores/auth';

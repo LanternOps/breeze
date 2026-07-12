@@ -9,6 +9,8 @@ import {
 import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import DRPlanGroupCard, { type DRGroupForm, type DRPlanDevice as Device } from './DRPlanGroupCard';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 
 type DRPlanDetails = {
   id: string;
@@ -57,6 +59,7 @@ export default function DRPlanEditor({
   onClose,
   onSaved,
 }: DRPlanEditorProps) {
+  const { t } = useTranslation('backup');
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [rpoTargetMinutes, setRpoTargetMinutes] = useState('60');
@@ -316,8 +319,7 @@ export default function DRPlanEditor({
             {isEdit ? 'Edit Recovery Plan' : 'Create Recovery Plan'}
           </h2>
           <p className="text-sm text-muted-foreground">
-            Define recovery objectives, sequence groups, and assign devices in restore order.
-          </p>
+            {t('dRPlanEditor.defineRecoveryObjectivesSequenceGroupsAndAssignDevices')} </p>
         </div>
         <button type="button" onClick={onClose} className="rounded-md p-1 hover:bg-muted">
           <X className="h-4 w-4 text-muted-foreground" />
@@ -334,7 +336,7 @@ export default function DRPlanEditor({
         {loading ? (
           <div className="py-12 text-center">
             <Loader2 className="mx-auto h-6 w-6 animate-spin text-primary" />
-            <p className="mt-3 text-sm text-muted-foreground">Loading plan editor...</p>
+            <p className="mt-3 text-sm text-muted-foreground">{t('dRPlanEditor.loadingPlanEditor')}</p>
           </div>
         ) : (
           <>
@@ -342,26 +344,24 @@ export default function DRPlanEditor({
               <div className="space-y-4 rounded-lg border p-4">
                 <div>
                   <label htmlFor="dr-plan-name" className="mb-1 block text-xs font-medium text-muted-foreground">
-                    Plan name
-                  </label>
+                    {t('dRPlanEditor.planName')} </label>
                   <input
                     id="dr-plan-name"
                     value={name}
                     onChange={(event) => setName(event.target.value)}
-                    placeholder="Branch office failover"
+                    placeholder={t('dRPlanEditor.branchOfficeFailover')}
                     className="h-10 w-full rounded-md border bg-background px-3 text-sm"
                   />
                 </div>
                 <div>
                   <label htmlFor="dr-plan-description" className="mb-1 block text-xs font-medium text-muted-foreground">
-                    Description
-                  </label>
+                    {t('dRPlanEditor.description')} </label>
                   <textarea
                     id="dr-plan-description"
                     value={description}
                     onChange={(event) => setDescription(event.target.value)}
                     rows={4}
-                    placeholder="What this plan covers and when it should be used."
+                    placeholder={t('dRPlanEditor.whatThisPlanCoversAndWhenItShould')}
                     className="w-full rounded-md border bg-background px-3 py-2 text-sm"
                   />
                 </div>
@@ -369,8 +369,7 @@ export default function DRPlanEditor({
 
               <div className="rounded-lg border bg-muted/20 p-4">
                 <label htmlFor="dr-plan-rpo" className="mb-1 block text-xs font-medium text-muted-foreground">
-                  RPO target
-                </label>
+                  {t('dRPlanEditor.rpoTarget')} </label>
                 <input
                   id="dr-plan-rpo"
                   type="number"
@@ -379,13 +378,12 @@ export default function DRPlanEditor({
                   onChange={(event) => setRpoTargetMinutes(event.target.value)}
                   className="h-10 w-full rounded-md border bg-background px-3 text-sm"
                 />
-                <p className="mt-2 text-xs text-muted-foreground">Minutes of allowable data loss.</p>
+                <p className="mt-2 text-xs text-muted-foreground">{t('dRPlanEditor.minutesOfAllowableDataLoss')}</p>
               </div>
 
               <div className="rounded-lg border bg-muted/20 p-4">
                 <label htmlFor="dr-plan-rto" className="mb-1 block text-xs font-medium text-muted-foreground">
-                  RTO target
-                </label>
+                  {t('dRPlanEditor.rtoTarget')} </label>
                 <input
                   id="dr-plan-rto"
                   type="number"
@@ -394,27 +392,26 @@ export default function DRPlanEditor({
                   onChange={(event) => setRtoTargetMinutes(event.target.value)}
                   className="h-10 w-full rounded-md border bg-background px-3 text-sm"
                 />
-                <p className="mt-2 text-xs text-muted-foreground">Minutes to restore service.</p>
+                <p className="mt-2 text-xs text-muted-foreground">{t('dRPlanEditor.minutesToRestoreService')}</p>
               </div>
 
               <div className="rounded-lg border bg-muted/20 p-4">
-                <p className="text-xs font-medium text-muted-foreground">Coverage</p>
+                <p className="text-xs font-medium text-muted-foreground">{t('dRPlanEditor.coverage')}</p>
                 <p className="mt-2 text-2xl font-semibold text-foreground">{selectedDeviceCount}</p>
-                <p className="mt-1 text-xs text-muted-foreground">Unique devices in the plan</p>
+                <p className="mt-1 text-xs text-muted-foreground">{t('dRPlanEditor.uniqueDevicesInThePlan')}</p>
                 {isEdit && (
                   <div className="mt-4">
                     <label htmlFor="dr-plan-status" className="mb-1 block text-xs font-medium text-muted-foreground">
-                      Status
-                    </label>
+                      {t('dRPlanEditor.status')} </label>
                     <select
                       id="dr-plan-status"
                       value={status}
                       onChange={(event) => setStatus(event.target.value as 'draft' | 'active' | 'archived')}
                       className="h-10 w-full rounded-md border bg-background px-3 text-sm"
                     >
-                      <option value="draft">Draft</option>
-                      <option value="active">Active</option>
-                      <option value="archived">Archived</option>
+                      <option value="draft">{t('dRPlanEditor.draft')}</option>
+                      <option value="active">{t('dRPlanEditor.active')}</option>
+                      <option value="archived">{t('dRPlanEditor.archived')}</option>
                     </select>
                   </div>
                 )}
@@ -424,10 +421,9 @@ export default function DRPlanEditor({
             <section className="space-y-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <h3 className="text-base font-semibold text-foreground">Recovery groups</h3>
+                  <h3 className="text-base font-semibold text-foreground">{t('dRPlanEditor.recoveryGroups')}</h3>
                   <p className="text-sm text-muted-foreground">
-                    Order groups from earliest restore step to latest dependency.
-                  </p>
+                    {t('dRPlanEditor.orderGroupsFromEarliestRestoreStepToLatest')} </p>
                 </div>
                 <button
                   type="button"
@@ -435,8 +431,7 @@ export default function DRPlanEditor({
                   className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted"
                 >
                   <Plus className="h-4 w-4" />
-                  Add group
-                </button>
+                  {t('dRPlanEditor.addGroup')} </button>
               </div>
 
               <div className="space-y-4">
@@ -470,8 +465,7 @@ export default function DRPlanEditor({
       <div className="flex items-center justify-between border-t px-6 py-4">
         <div className="flex items-center gap-3 text-xs text-muted-foreground">
           <Layers3 className="h-4 w-4 text-primary" />
-          {groups.length} group{groups.length !== 1 ? 's' : ''} covering {selectedDeviceCount} unique device
-          {selectedDeviceCount !== 1 ? 's' : ''}
+          {t('dRPlanEditor.groupCount', { count: groups.length })} {t('dRPlanEditor.covering')} {t('dRPlanEditor.uniqueDeviceCount', { count: selectedDeviceCount })}
         </div>
         <div className="flex gap-3">
           <button
@@ -480,8 +474,7 @@ export default function DRPlanEditor({
             disabled={saving}
             className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
           >
-            Cancel
-          </button>
+            {t('dRPlanEditor.cancel')} </button>
           <button
             type="button"
             onClick={handleSave}
@@ -489,8 +482,7 @@ export default function DRPlanEditor({
             className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
           >
             {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-            Save plan
-          </button>
+            {t('dRPlanEditor.savePlan')} </button>
         </div>
       </div>
     </Dialog>

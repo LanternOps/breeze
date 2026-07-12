@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../lib/runAction';
@@ -28,6 +30,7 @@ interface PartnerBilling {
 }
 
 export default function PartnerBillingSettings() {
+  const { t } = useTranslation('billing');
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -122,25 +125,25 @@ export default function PartnerBillingSettings() {
             billingTermsAndConditions: terms.trim() === '' ? null : terms,
           }),
         }),
-        errorFallback: 'Failed to save billing settings.',
-        successMessage: 'Billing settings saved',
+        errorFallback: t('partnerBillingSettings.saveError'),
+        successMessage: t('partnerBillingSettings.saveSuccess'),
         onUnauthorized: UNAUTHORIZED,
       });
       void load();
     } catch (err) {
-      handleActionError(err, 'Failed to save billing settings.');
+      handleActionError(err, t('partnerBillingSettings.saveError'));
     } finally {
       setSaving(false);
     }
   }, [saving, currencyCode, taxPercent, prefix, termsDays, markupPercent, autoTaxHardware, aiStyle, footer,
       companyName, phone, website, addr1, addr2, city, region, postal, country, terms, load]);
 
-  if (loading) return <p className="text-sm text-muted-foreground">Loading billing settings…</p>;
+  if (loading) return <p className="text-sm text-muted-foreground">{t('partnerBillingSettings.loading')}</p>;
   if (loadError) {
     return (
       <div className="rounded-lg border bg-card p-6 text-sm text-muted-foreground" data-testid="partner-billing-load-error">
-        Billing settings failed to load.{' '}
-        <button type="button" onClick={() => void load()} className="underline hover:text-foreground">Retry</button>
+        {t('partnerBillingSettings.loadError')}{' '}
+        <button type="button" onClick={() => void load()} className="underline hover:text-foreground">{t('common:actions.retry')}</button>
       </div>
     );
   }
@@ -148,13 +151,13 @@ export default function PartnerBillingSettings() {
   return (
     <div className="space-y-6" data-testid="partner-billing-settings">
       <section className="rounded-lg border bg-card p-6 shadow-xs">
-        <h2 className="text-lg font-semibold">Billing defaults</h2>
+        <h2 className="text-lg font-semibold">{t('partnerBillingSettings.defaults.title')}</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Currency, tax, numbering, and terms applied to new quotes and invoices across your customers.
+          {t('partnerBillingSettings.defaults.description')}
         </p>
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
           <div>
-            <label className="text-sm font-medium" htmlFor="pb-currency">Currency code</label>
+            <label className="text-sm font-medium" htmlFor="pb-currency">{t('partnerBillingSettings.defaults.currencyCode')}</label>
             <input
               id="pb-currency" type="text" maxLength={3} value={currencyCode}
               onChange={(e) => setCurrencyCode(e.target.value.toUpperCase())}
@@ -163,16 +166,16 @@ export default function PartnerBillingSettings() {
             />
           </div>
           <div>
-            <label className="text-sm font-medium" htmlFor="pb-tax">Default tax rate (%)</label>
+            <label className="text-sm font-medium" htmlFor="pb-tax">{t('partnerBillingSettings.defaults.defaultTaxRate')}</label>
             <input
               id="pb-tax" type="number" min={0} max={100} step="0.001" value={taxPercent}
-              onChange={(e) => setTaxPercent(e.target.value)} placeholder="None"
+              onChange={(e) => setTaxPercent(e.target.value)} placeholder={t('common:labels.none')}
               data-testid="partner-billing-tax"
               className="mt-1 w-full rounded-md border bg-background px-3 py-1.5 text-sm"
             />
           </div>
           <div>
-            <label className="text-sm font-medium" htmlFor="pb-prefix">Invoice number prefix</label>
+            <label className="text-sm font-medium" htmlFor="pb-prefix">{t('partnerBillingSettings.defaults.invoiceNumberPrefix')}</label>
             <input
               id="pb-prefix" type="text" maxLength={12} value={prefix}
               onChange={(e) => setPrefix(e.target.value)}
@@ -181,7 +184,7 @@ export default function PartnerBillingSettings() {
             />
           </div>
           <div>
-            <label className="text-sm font-medium" htmlFor="pb-terms-days">Payment terms (days)</label>
+            <label className="text-sm font-medium" htmlFor="pb-terms-days">{t('partnerBillingSettings.defaults.paymentTermsDays')}</label>
             <input
               id="pb-terms-days" type="number" min={0} max={365} step="1" value={termsDays}
               onChange={(e) => setTermsDays(e.target.value)}
@@ -190,16 +193,15 @@ export default function PartnerBillingSettings() {
             />
           </div>
           <div>
-            <label className="text-sm font-medium" htmlFor="pb-markup">Default markup (%)</label>
+            <label className="text-sm font-medium" htmlFor="pb-markup">{t('partnerBillingSettings.defaults.defaultMarkup')}</label>
             <input
               id="pb-markup" type="number" min={0} max={9999.99} step="0.01" value={markupPercent}
-              onChange={(e) => setMarkupPercent(e.target.value)} placeholder="None"
+              onChange={(e) => setMarkupPercent(e.target.value)} placeholder={t('common:labels.none')}
               data-testid="partner-billing-markup"
               className="mt-1 w-full rounded-md border bg-background px-3 py-1.5 text-sm"
             />
             <p className="mt-1 text-xs text-muted-foreground">
-              Default markup over distributor cost, used to pre-fill the sell price when importing catalog
-              items. The resulting gross margin is shown as you import.
+              {t('partnerBillingSettings.defaults.markupHelp')}
             </p>
           </div>
         </div>
@@ -213,31 +215,30 @@ export default function PartnerBillingSettings() {
               data-testid="partner-billing-auto-tax-hardware"
               className="h-4 w-4 rounded border"
             />
-            <span className="text-sm font-medium">Auto-tax hardware items</span>
+            <span className="text-sm font-medium">{t('partnerBillingSettings.defaults.autoTaxHardware')}</span>
           </label>
           <p className="mt-1 text-xs text-muted-foreground">
-            Newly imported hardware defaults to taxable.
+            {t('partnerBillingSettings.defaults.autoTaxHardwareHelp')}
           </p>
         </div>
         <div className="mt-4">
-          <label className="text-sm font-medium" htmlFor="pb-ai-style">AI product copy style</label>
+          <label className="text-sm font-medium" htmlFor="pb-ai-style">{t('partnerBillingSettings.defaults.aiStyle')}</label>
           <textarea
             id="pb-ai-style" rows={4} value={aiStyle} maxLength={2000}
             onChange={(e) => setAiStyle(e.target.value)}
-            placeholder={'Default: the item name is a short, generic customer-friendly name ("Wireless Access Point"); the description starts with the full product name, then bullet-point specs precise enough to verify an order against. Describe your own style here to override it.'}
+            placeholder={t('partnerBillingSettings.defaults.aiStylePlaceholder')}
             data-testid="partner-billing-ai-style"
             className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
           />
           <p className="mt-1 text-xs text-muted-foreground">
-            Shapes how &ldquo;Auto-fill from web&rdquo; and &ldquo;Polish with AI&rdquo; write product names and
-            descriptions on quotes, invoices, and catalog items. Leave blank for the default format.
+            {t('partnerBillingSettings.defaults.aiStyleHelp')}
           </p>
         </div>
         <div className="mt-4">
-          <label className="text-sm font-medium" htmlFor="pb-footer">Invoice footer</label>
+          <label className="text-sm font-medium" htmlFor="pb-footer">{t('partnerBillingSettings.defaults.invoiceFooter')}</label>
           <textarea
             id="pb-footer" rows={3} value={footer}
-            onChange={(e) => setFooter(e.target.value)} placeholder="Payment instructions, thank-you note, etc."
+            onChange={(e) => setFooter(e.target.value)} placeholder={t('partnerBillingSettings.defaults.invoiceFooterPlaceholder')}
             data-testid="partner-billing-footer"
             className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
           />
@@ -245,12 +246,12 @@ export default function PartnerBillingSettings() {
       </section>
 
       <section className="rounded-lg border bg-card p-6 shadow-xs">
-        <h2 className="text-lg font-semibold">Company contact</h2>
+        <h2 className="text-lg font-semibold">{t('partnerBillingSettings.company.title')}</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Shown as the seller on quotes and invoices.
+          {t('partnerBillingSettings.company.description')}
         </p>
         <div className="mt-4">
-          <label className="text-sm font-medium" htmlFor="pb-company">Company name</label>
+          <label className="text-sm font-medium" htmlFor="pb-company">{t('partnerBillingSettings.company.name')}</label>
           <input
             id="pb-company" type="text" value={companyName}
             onChange={(e) => setCompanyName(e.target.value)}
@@ -260,7 +261,7 @@ export default function PartnerBillingSettings() {
         </div>
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
           <div>
-            <label className="text-sm font-medium" htmlFor="pb-phone">Phone</label>
+            <label className="text-sm font-medium" htmlFor="pb-phone">{t('partnerBillingSettings.company.phone')}</label>
             <input
               id="pb-phone" type="text" value={phone}
               onChange={(e) => setPhone(e.target.value)}
@@ -269,7 +270,7 @@ export default function PartnerBillingSettings() {
             />
           </div>
           <div>
-            <label className="text-sm font-medium" htmlFor="pb-website">Website</label>
+            <label className="text-sm font-medium" htmlFor="pb-website">{t('partnerBillingSettings.company.website')}</label>
             <input
               id="pb-website" type="text" value={website}
               onChange={(e) => setWebsite(e.target.value)}
@@ -279,7 +280,7 @@ export default function PartnerBillingSettings() {
           </div>
         </div>
         <div className="mt-4">
-          <label className="text-sm font-medium" htmlFor="pb-addr1">Address line 1</label>
+          <label className="text-sm font-medium" htmlFor="pb-addr1">{t('partnerBillingSettings.company.addressLine1')}</label>
           <input
             id="pb-addr1" type="text" value={addr1}
             onChange={(e) => setAddr1(e.target.value)}
@@ -288,7 +289,7 @@ export default function PartnerBillingSettings() {
           />
         </div>
         <div className="mt-4">
-          <label className="text-sm font-medium" htmlFor="pb-addr2">Address line 2</label>
+          <label className="text-sm font-medium" htmlFor="pb-addr2">{t('partnerBillingSettings.company.addressLine2')}</label>
           <input
             id="pb-addr2" type="text" value={addr2}
             onChange={(e) => setAddr2(e.target.value)}
@@ -298,7 +299,7 @@ export default function PartnerBillingSettings() {
         </div>
         <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <div className="lg:col-span-2">
-            <label className="text-sm font-medium" htmlFor="pb-city">City</label>
+            <label className="text-sm font-medium" htmlFor="pb-city">{t('partnerBillingSettings.company.city')}</label>
             <input
               id="pb-city" type="text" value={city}
               onChange={(e) => setCity(e.target.value)}
@@ -307,7 +308,7 @@ export default function PartnerBillingSettings() {
             />
           </div>
           <div>
-            <label className="text-sm font-medium" htmlFor="pb-region">State / region</label>
+            <label className="text-sm font-medium" htmlFor="pb-region">{t('partnerBillingSettings.company.region')}</label>
             <input
               id="pb-region" type="text" value={region}
               onChange={(e) => setRegion(e.target.value)}
@@ -316,7 +317,7 @@ export default function PartnerBillingSettings() {
             />
           </div>
           <div>
-            <label className="text-sm font-medium" htmlFor="pb-postal">Postal code</label>
+            <label className="text-sm font-medium" htmlFor="pb-postal">{t('partnerBillingSettings.company.postal')}</label>
             <input
               id="pb-postal" type="text" value={postal}
               onChange={(e) => setPostal(e.target.value)}
@@ -326,7 +327,7 @@ export default function PartnerBillingSettings() {
           </div>
         </div>
         <div className="mt-4 sm:w-24">
-          <label className="text-sm font-medium" htmlFor="pb-country">Country (2-letter)</label>
+          <label className="text-sm font-medium" htmlFor="pb-country">{t('partnerBillingSettings.company.country')}</label>
           <input
             id="pb-country" type="text" maxLength={2} value={country}
             onChange={(e) => setCountry(e.target.value.toUpperCase())}
@@ -335,11 +336,11 @@ export default function PartnerBillingSettings() {
           />
         </div>
         <div className="mt-4">
-          <label className="text-sm font-medium" htmlFor="pb-tc">Default terms &amp; conditions</label>
+          <label className="text-sm font-medium" htmlFor="pb-tc">{t('partnerBillingSettings.company.defaultTerms')}</label>
           <textarea
             id="pb-tc" rows={4} value={terms}
             onChange={(e) => setTerms(e.target.value)}
-            placeholder="Payment terms, disclaimers, warranty language, etc."
+            placeholder={t('partnerBillingSettings.company.defaultTermsPlaceholder')}
             data-testid="partner-billing-terms"
             className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
           />
@@ -352,7 +353,7 @@ export default function PartnerBillingSettings() {
           data-testid="partner-billing-save"
           className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
         >
-          {saving ? 'Saving…' : 'Save billing settings'}
+          {saving ? t('common:states.saving') : t('partnerBillingSettings.saveButton')}
         </button>
       </div>
     </div>

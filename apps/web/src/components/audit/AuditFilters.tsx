@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Calendar, Check, ChevronDown, Loader2, Search, User, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
@@ -30,15 +31,31 @@ type UserOption = {
 const actionOptions = ['login', 'update', 'delete', 'create', 'export', 'access'];
 const resourceOptions = ['policy', 'report', 'dataset', 'identity', 'automation', 'asset'];
 
-const presetLabels: Record<DatePreset, string> = {
-  today: 'Today',
-  '7d': 'Last 7 days',
-  '30d': 'Last 30 days',
-  custom: 'Custom'
-};
-
 export default function AuditFilters({ onApply, onClear }: AuditFiltersProps) {
+  const { t } = useTranslation('admin');
   const [datePreset, setDatePreset] = useState<DatePreset>('7d');
+  const presetLabels: Record<DatePreset, string> = {
+    today: t('audit.auditFilters.presets.today'),
+    '7d': t('audit.auditFilters.presets.last7Days'),
+    '30d': t('audit.auditFilters.presets.last30Days'),
+    custom: t('audit.auditFilters.presets.custom')
+  };
+  const actionLabels: Record<string, string> = {
+    login: t('audit.auditFilters.actions.login'),
+    update: t('audit.auditFilters.actions.update'),
+    delete: t('audit.auditFilters.actions.delete'),
+    create: t('audit.auditFilters.actions.create'),
+    export: t('audit.auditFilters.actions.export'),
+    access: t('audit.auditFilters.actions.access')
+  };
+  const resourceLabels: Record<string, string> = {
+    policy: t('audit.auditFilters.resources.policy'),
+    report: t('audit.auditFilters.resources.report'),
+    dataset: t('audit.auditFilters.resources.dataset'),
+    identity: t('audit.auditFilters.resources.identity'),
+    automation: t('audit.auditFilters.resources.automation'),
+    asset: t('audit.auditFilters.resources.asset')
+  };
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
   const [userSearch, setUserSearch] = useState('');
@@ -119,15 +136,15 @@ export default function AuditFilters({ onApply, onClear }: AuditFiltersProps) {
   return (
     <div className="space-y-6 rounded-lg border bg-card p-6">
       <div>
-        <h2 className="text-lg font-semibold">Audit Filters</h2>
-        <p className="text-sm text-muted-foreground">Refine audit entries by user, action, and resource.</p>
+        <h2 className="text-lg font-semibold">{t('audit.auditFilters.title')}</h2>
+        <p className="text-sm text-muted-foreground">{t('audit.auditFilters.description')}</p>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
         <div className="space-y-3">
           <div className="flex items-center gap-2 text-sm font-semibold">
             <Calendar className="h-4 w-4 text-muted-foreground" />
-            Date Range
+            {t('audit.auditFilters.dateRange')}
           </div>
           <div className="flex flex-wrap gap-2">
             {(Object.keys(presetLabels) as DatePreset[]).map(preset => (
@@ -149,7 +166,7 @@ export default function AuditFilters({ onApply, onClear }: AuditFiltersProps) {
           {datePreset === 'custom' && (
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="space-y-2 text-xs font-semibold uppercase text-muted-foreground">
-                Start
+                {t('audit.auditFilters.start')}
                 <input
                   type="date"
                   value={customStart}
@@ -158,7 +175,7 @@ export default function AuditFilters({ onApply, onClear }: AuditFiltersProps) {
                 />
               </label>
               <label className="space-y-2 text-xs font-semibold uppercase text-muted-foreground">
-                End
+                {t('audit.auditFilters.end')}
                 <input
                   type="date"
                   value={customEnd}
@@ -173,7 +190,7 @@ export default function AuditFilters({ onApply, onClear }: AuditFiltersProps) {
         <div className="space-y-3">
           <div className="flex items-center gap-2 text-sm font-semibold">
             <User className="h-4 w-4 text-muted-foreground" />
-            User
+            {t('audit.auditFilters.user')}
           </div>
           <div className="relative">
             <div className="flex items-center gap-2 rounded-md border bg-background px-3 py-2">
@@ -184,7 +201,7 @@ export default function AuditFilters({ onApply, onClear }: AuditFiltersProps) {
                 onChange={event => setUserSearch(event.target.value)}
                 onFocus={() => setUserMenuOpen(true)}
                 onBlur={() => setTimeout(() => setUserMenuOpen(false), 150)}
-                placeholder="Search users"
+                placeholder={t('audit.auditFilters.searchUsers')}
                 className="w-full bg-transparent text-sm text-foreground outline-hidden"
               />
               <ChevronDown className="h-4 w-4 text-muted-foreground" />
@@ -194,11 +211,11 @@ export default function AuditFilters({ onApply, onClear }: AuditFiltersProps) {
                 {loadingUsers && (
                   <div className="flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground">
                     <Loader2 className="h-4 w-4 animate-spin" />
-                    Loading users...
+                    {t('audit.auditFilters.loadingUsers')}
                   </div>
                 )}
                 {!loadingUsers && filteredUsers.length === 0 && (
-                  <div className="px-3 py-2 text-sm text-muted-foreground">No users found</div>
+                  <div className="px-3 py-2 text-sm text-muted-foreground">{t('audit.auditFilters.noUsersFound')}</div>
                 )}
                 {filteredUsers.map(user => (
                   <button
@@ -228,7 +245,7 @@ export default function AuditFilters({ onApply, onClear }: AuditFiltersProps) {
           {selectedUser && (
             <div className="flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2 text-sm">
               <span className="text-muted-foreground">
-                Filtering by <span className="font-medium text-foreground">{selectedUser.name}</span>
+                {t('audit.auditFilters.filteringBy')} <span className="font-medium text-foreground">{selectedUser.name}</span>
               </span>
               <button
                 type="button"
@@ -239,7 +256,7 @@ export default function AuditFilters({ onApply, onClear }: AuditFiltersProps) {
                 className="inline-flex items-center gap-1 text-xs font-semibold text-muted-foreground hover:text-foreground"
               >
                 <X className="h-3.5 w-3.5" />
-                Clear
+                {t('audit.auditFilters.clear')}
               </button>
             </div>
           )}
@@ -248,14 +265,14 @@ export default function AuditFilters({ onApply, onClear }: AuditFiltersProps) {
 
       <div className="grid gap-6 lg:grid-cols-2">
         <div className="space-y-3">
-          <h3 className="text-sm font-semibold">Action Types</h3>
+          <h3 className="text-sm font-semibold">{t('audit.auditFilters.actionTypes')}</h3>
           <div className="grid gap-2 sm:grid-cols-2">
             {actionOptions.map(action => (
               <label
                 key={action}
                 className="flex items-center justify-between rounded-md border bg-background px-3 py-2 text-sm"
               >
-                <span className="capitalize text-foreground">{action}</span>
+                <span className="text-foreground">{actionLabels[action]}</span>
                 <input
                   type="checkbox"
                   checked={selectedActions.includes(action)}
@@ -268,14 +285,14 @@ export default function AuditFilters({ onApply, onClear }: AuditFiltersProps) {
         </div>
 
         <div className="space-y-3">
-          <h3 className="text-sm font-semibold">Resource Types</h3>
+          <h3 className="text-sm font-semibold">{t('audit.auditFilters.resourceTypes')}</h3>
           <div className="grid gap-2 sm:grid-cols-2">
             {resourceOptions.map(resource => (
               <label
                 key={resource}
                 className="flex items-center justify-between rounded-md border bg-background px-3 py-2 text-sm"
               >
-                <span className="capitalize text-foreground">{resource}</span>
+                <span className="text-foreground">{resourceLabels[resource]}</span>
                 <input
                   type="checkbox"
                   checked={selectedResources.includes(resource)}
@@ -289,14 +306,14 @@ export default function AuditFilters({ onApply, onClear }: AuditFiltersProps) {
       </div>
 
       <div className="space-y-3">
-        <h3 className="text-sm font-semibold">Search Details</h3>
+        <h3 className="text-sm font-semibold">{t('audit.auditFilters.searchDetails')}</h3>
         <div className="flex items-center gap-2 rounded-md border bg-background px-3 py-2">
           <Search className="h-4 w-4 text-muted-foreground" />
           <input
             type="text"
             value={detailsSearch}
             onChange={event => setDetailsSearch(event.target.value)}
-            placeholder="Search activity details"
+            placeholder={t('audit.auditFilters.searchDetailsPlaceholder')}
             className="w-full bg-transparent text-sm text-foreground outline-hidden"
           />
         </div>
@@ -308,14 +325,14 @@ export default function AuditFilters({ onApply, onClear }: AuditFiltersProps) {
           onClick={handleApply}
           className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Apply Filters
+          {t('audit.auditFilters.applyFilters')}
         </button>
         <button
           type="button"
           onClick={handleClear}
           className="inline-flex h-10 items-center justify-center rounded-md border px-4 text-sm font-medium text-muted-foreground hover:text-foreground"
         >
-          Clear All
+          {t('audit.auditFilters.clearAll')}
         </button>
       </div>
     </div>

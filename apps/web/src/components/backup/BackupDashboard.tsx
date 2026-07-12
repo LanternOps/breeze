@@ -16,6 +16,8 @@ import {
   parseUsageHistory,
   statIconMap
 } from './backupDashboardHelpers';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 
 const MssqlDashboard = lazy(() => import('./MssqlDashboard'));
 const HypervDashboard = lazy(() => import('./HypervDashboard'));
@@ -48,17 +50,19 @@ function isValidTab(hash: string): hash is BackupTab {
 }
 
 function TabFallback() {
+  const { t } = useTranslation('backup');
   return (
     <div className="flex items-center justify-center py-16">
       <div className="text-center">
         <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-        <p className="mt-4 text-sm text-muted-foreground">Loading...</p>
+        <p className="mt-4 text-sm text-muted-foreground">{t('backupDashboard.loading')}</p>
       </div>
     </div>
   );
 }
 
 export default function BackupDashboard() {
+  const { t } = useTranslation('backup');
   const [activeTab, setActiveTab] = useState<BackupTab>(() => {
     if (typeof window === 'undefined') return 'overview';
     const hash = window.location.hash.replace('#', '');
@@ -340,7 +344,7 @@ export default function BackupDashboard() {
       <div className="flex items-center justify-center py-16">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading backup overview...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('backupDashboard.loadingBackupOverview')}</p>
         </div>
       </div>
     );
@@ -367,8 +371,7 @@ export default function BackupDashboard() {
             {TAB_LABELS[tab]}
             {tab !== 'overview' && tab !== 'verification' && (
               <span className="rounded bg-warning/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase leading-none tracking-wider text-warning">
-                Alpha
-              </span>
+                {t('backupDashboard.alpha')} </span>
             )}
           </button>
         ))}
@@ -382,8 +385,7 @@ export default function BackupDashboard() {
             onClick={fetchOverview}
             className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
           >
-            Try again
-          </button>
+            {t('backupDashboard.tryAgain')} </button>
         </div>
       )}
 
@@ -441,10 +443,9 @@ export default function BackupDashboard() {
 
               <div className="space-y-3 rounded-lg border bg-card p-5 shadow-xs">
                 <div>
-                  <h3 className="text-base font-semibold text-foreground">Active instant boots</h3>
+                  <h3 className="text-base font-semibold text-foreground">{t('backupDashboard.activeInstantBoots')}</h3>
                   <p className="text-sm text-muted-foreground">
-                    Monitor instant boot sessions that are still pending or running.
-                  </p>
+                    {t('backupDashboard.monitorInstantBootSessionsThatAreStillPending')} </p>
                 </div>
                 <InstantBootStatus />
               </div>

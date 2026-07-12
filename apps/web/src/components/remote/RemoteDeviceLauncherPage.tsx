@@ -3,6 +3,8 @@ import { ArrowLeft, Loader2, Monitor, RefreshCcw, Search } from 'lucide-react';
 import { fetchWithAuth } from '@/stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { formatDateTime } from '@/lib/dateTimeFormat';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 
 type LauncherMode = 'terminal' | 'files';
 
@@ -20,23 +22,23 @@ type Device = {
 };
 
 type ModeConfig = {
-  title: string;
-  description: string;
-  actionLabel: string;
+  titleKey: string;
+  descriptionKey: string;
+  actionLabelKey: string;
   pathPrefix: string;
 };
 
 const MODE_CONFIG: Record<LauncherMode, ModeConfig> = {
   terminal: {
-    title: 'Start Terminal Session',
-    description: 'Choose an online device to open a remote terminal.',
-    actionLabel: 'Open Terminal',
+    titleKey: 'remoteDeviceLauncherPage.modes.terminal.title',
+    descriptionKey: 'remoteDeviceLauncherPage.modes.terminal.description',
+    actionLabelKey: 'remoteDeviceLauncherPage.modes.terminal.action',
     pathPrefix: '/remote/terminal'
   },
   files: {
-    title: 'Start File Transfer',
-    description: 'Choose an online device to open the remote file manager.',
-    actionLabel: 'Open Files',
+    titleKey: 'remoteDeviceLauncherPage.modes.files.title',
+    descriptionKey: 'remoteDeviceLauncherPage.modes.files.description',
+    actionLabelKey: 'remoteDeviceLauncherPage.modes.files.action',
     pathPrefix: '/remote/files'
   }
 };
@@ -83,6 +85,7 @@ function formatLastSeen(value?: string): string {
 }
 
 export default function RemoteDeviceLauncherPage({ mode }: RemoteDeviceLauncherPageProps) {
+  const { t } = useTranslation('remote');
   const config = MODE_CONFIG[mode];
   const [devices, setDevices] = useState<Device[]>([]);
   const [loading, setLoading] = useState(true);
@@ -96,7 +99,7 @@ export default function RemoteDeviceLauncherPage({ mode }: RemoteDeviceLauncherP
     try {
       const response = await fetchWithAuth('/devices?status=online&limit=200');
       if (!response.ok) {
-        throw new Error('Failed to load devices');
+        throw new Error(t('remoteDeviceLauncherPage.errors.loadDevices'));
       }
 
       const payload = await response.json();
@@ -119,11 +122,11 @@ export default function RemoteDeviceLauncherPage({ mode }: RemoteDeviceLauncherP
 
       setDevices(normalized);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load devices');
+      setError(err instanceof Error ? err.message : t('remoteDeviceLauncherPage.errors.loadDevices'));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     void loadDevices();
@@ -149,13 +152,13 @@ export default function RemoteDeviceLauncherPage({ mode }: RemoteDeviceLauncherP
         <a
           href="/remote"
           className="flex h-10 w-10 items-center justify-center rounded-md border hover:bg-muted"
-          aria-label="Back to Remote Access"
+          aria-label={t('remoteDeviceLauncherPage.backToRemoteAccess')}
         >
           <ArrowLeft className="h-5 w-5" />
         </a>
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">{config.title}</h1>
-          <p className="text-muted-foreground">{config.description}</p>
+          <h1 className="text-xl font-semibold tracking-tight">{t(/* i18n-dynamic */ config.titleKey)}</h1>
+          <p className="text-muted-foreground">{t(/* i18n-dynamic */ config.descriptionKey)}</p>
         </div>
       </div>
 
@@ -167,7 +170,7 @@ export default function RemoteDeviceLauncherPage({ mode }: RemoteDeviceLauncherP
               type="search"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search online devices..."
+              placeholder={t('remoteDeviceLauncherPage.searchPlaceholder')}
               className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
           </div>
@@ -177,7 +180,7 @@ export default function RemoteDeviceLauncherPage({ mode }: RemoteDeviceLauncherP
             className="inline-flex h-10 items-center justify-center gap-2 rounded-md border px-4 text-sm font-medium hover:bg-muted"
           >
             <RefreshCcw className="h-4 w-4" />
-            Refresh
+            {t('common:actions.refresh')}
           </button>
         </div>
       </div>
@@ -195,7 +198,7 @@ export default function RemoteDeviceLauncherPage({ mode }: RemoteDeviceLauncherP
               onClick={() => void loadDevices()}
               className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
             >
-              Retry
+              {t('common:actions.retry')}
             </button>
           </div>
         ) : filteredDevices.length === 0 ? (
@@ -203,14 +206,14 @@ export default function RemoteDeviceLauncherPage({ mode }: RemoteDeviceLauncherP
             <Monitor className="h-8 w-8 text-muted-foreground" />
             <p className="text-sm text-muted-foreground">
               {devices.length === 0
-                ? 'No online devices are available.'
-                : 'No devices match your search.'}
+                ? t('remoteDeviceLauncherPage.noOnlineDevices')
+                : t('remoteDeviceLauncherPage.noSearchMatches')}
             </p>
             <a
               href="/devices"
               className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
             >
-              Open Device List
+              {t('remoteDeviceLauncherPage.openDeviceList')}
             </a>
           </div>
         ) : (
@@ -218,11 +221,11 @@ export default function RemoteDeviceLauncherPage({ mode }: RemoteDeviceLauncherP
             <table className="min-w-full divide-y">
               <thead className="bg-muted/40">
                 <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  <th className="px-4 py-3">Device</th>
-                  <th className="px-4 py-3">OS</th>
-                  <th className="px-4 py-3">Status</th>
-                  <th className="px-4 py-3">Last Seen</th>
-                  <th className="px-4 py-3 text-right">Action</th>
+                  <th className="px-4 py-3">{t('common:labels.device')}</th>
+                  <th className="px-4 py-3">{t('remoteDeviceLauncherPage.os')}</th>
+                  <th className="px-4 py-3">{t('common:labels.status')}</th>
+                  <th className="px-4 py-3">{t('remoteDeviceLauncherPage.lastSeen')}</th>
+                  <th className="px-4 py-3 text-right">{t('remoteDeviceLauncherPage.action')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
@@ -237,7 +240,7 @@ export default function RemoteDeviceLauncherPage({ mode }: RemoteDeviceLauncherP
                     <td className="px-4 py-3 text-sm text-muted-foreground">{formatOs(device.osType)}</td>
                     <td className="px-4 py-3 text-sm">
                       <span className="inline-flex items-center rounded-full border border-green-500/40 bg-green-500/20 px-2.5 py-1 text-xs font-medium text-green-700">
-                        {device.status || 'online'}
+                        {device.status || t('common:states.online')}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">{formatLastSeen(device.lastSeenAt)}</td>
@@ -247,7 +250,7 @@ export default function RemoteDeviceLauncherPage({ mode }: RemoteDeviceLauncherP
                         onClick={() => handleLaunch(device.id)}
                         className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
                       >
-                        {config.actionLabel}
+                        {t(/* i18n-dynamic */ config.actionLabelKey)}
                       </button>
                     </td>
                   </tr>

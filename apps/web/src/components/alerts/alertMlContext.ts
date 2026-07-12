@@ -47,10 +47,11 @@ export function formatAnomalyType(value: string | null): string {
 
 export function formatAnomalyValue(value: number | null): string {
   if (value === null) return 'n/a';
-  return Number.isInteger(value) ? value.toLocaleString() : value.toFixed(2);
+  return formatNumber(value, Number.isInteger(value) ? {} : { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 export function formatAnomalyConfidence(value: number | null): string {
   if (value === null) return 'n/a';
-  return `${Math.round(value * 100)}%`;
+  return formatPercent(value, { maximumFractionDigits: 0 });
 }
+import { formatNumber, formatPercent } from '@/lib/i18n/format';

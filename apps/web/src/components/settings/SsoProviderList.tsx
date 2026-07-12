@@ -1,3 +1,5 @@
+import { i18n } from '@/lib/i18n';
+import { useTranslation } from 'react-i18next';
 import { useMemo, useState } from 'react';
 
 export type SsoProvider = {
@@ -27,17 +29,17 @@ const typeLabels: Record<SsoProvider['type'], string> = {
   saml: 'SAML'
 };
 
-const statusConfig: Record<SsoProvider['status'], { label: string; className: string }> = {
+const statusConfig: Record<SsoProvider['status'], { labelKey: string; className: string }> = {
   active: {
-    label: 'Active',
+    labelKey: 'ssoProviderList.active',
     className: 'border-green-200 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-950 dark:text-green-400'
   },
   inactive: {
-    label: 'Inactive',
+    labelKey: 'ssoProviderList.inactive',
     className: 'border-gray-200 bg-gray-50 text-gray-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-400'
   },
   testing: {
-    label: 'Testing',
+    labelKey: 'ssoProviderList.testing',
     className: 'border-yellow-200 bg-yellow-50 text-yellow-700 dark:border-yellow-800 dark:bg-yellow-950 dark:text-yellow-400'
   }
 };
@@ -49,6 +51,7 @@ export default function SsoProviderList({
   onToggleStatus,
   onDelete
 }: SsoProviderListProps) {
+  const { t } = useTranslation('settings');
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
 
@@ -79,15 +82,14 @@ export default function SsoProviderList({
     <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-lg font-semibold">SSO Providers</h2>
+          <h2 className="text-lg font-semibold">{t('ssoProviderList.sSOProviders')}</h2>
           <p className="text-sm text-muted-foreground">
-            {filteredProviders.length} of {providers.length} providers
-          </p>
+            {filteredProviders.length} {t('ssoProviderList.of')}{providers.length} {t('ssoProviderList.providers')}</p>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <input
             type="search"
-            placeholder="Search providers"
+            placeholder={t('ssoProviderList.searchProviders')}
             value={query}
             onChange={event => setQuery(event.target.value)}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-56"
@@ -99,7 +101,7 @@ export default function SsoProviderList({
           >
             {statusOptions.map(status => (
               <option key={status} value={status}>
-                {status === 'all' ? 'All statuses' : statusConfig[status as SsoProvider['status']].label}
+                {status === 'all' ? t('ssoProviderList.allStatuses') : t(/* i18n-dynamic */ statusConfig[status as SsoProvider['status']].labelKey)}
               </option>
             ))}
           </select>
@@ -110,12 +112,12 @@ export default function SsoProviderList({
         <table className="min-w-full divide-y">
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <th className="px-4 py-3">Name</th>
-              <th className="px-4 py-3">Type</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3">Enforce SSO</th>
-              <th className="px-4 py-3">Created</th>
-              <th className="px-4 py-3 text-right">Actions</th>
+              <th className="px-4 py-3">{t('ssoProviderList.name')}</th>
+              <th className="px-4 py-3">{t('ssoProviderList.type')}</th>
+              <th className="px-4 py-3">{t('ssoProviderList.status')}</th>
+              <th className="px-4 py-3">{t('ssoProviderList.enforceSSO')}</th>
+              <th className="px-4 py-3">{t('ssoProviderList.created')}</th>
+              <th className="px-4 py-3 text-right">{t('ssoProviderList.actions')}</th>
             </tr>
           </thead>
           <tbody className="divide-y">
@@ -139,15 +141,13 @@ export default function SsoProviderList({
                           />
                         </svg>
                       </div>
-                      <p className="text-sm font-medium text-muted-foreground">No SSO providers configured</p>
+                      <p className="text-sm font-medium text-muted-foreground">{t('ssoProviderList.noSSOProvidersConfigured')}</p>
                       <p className="text-sm text-muted-foreground">
-                        Add an SSO provider to enable single sign-on for your organization.
-                      </p>
+                        {t('ssoProviderList.addAnSSOProviderToEnableSingleSignOnForYourOrganization')}</p>
                     </div>
                   ) : (
                     <p className="text-sm text-muted-foreground">
-                      No providers found. Try adjusting your search or filters.
-                    </p>
+                      {t('ssoProviderList.noProvidersFoundTryAdjustingYourSearchOrFilters')}</p>
                   )}
                 </td>
               </tr>
@@ -165,11 +165,10 @@ export default function SsoProviderList({
                         {provider.partnerId && (
                           <span
                             className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
-                            title="Partner-wide provider — used for technician login across all organizations"
+                            title={t('ssoProviderList.partnerWideProviderUsedForTechnicianLoginAcrossAllOrgani')}
                             data-testid="sso-provider-partner-badge"
                           >
-                            Partner
-                          </span>
+                            {t('ssoProviderList.partner')}</span>
                         )}
                       </div>
                     </td>
@@ -180,7 +179,7 @@ export default function SsoProviderList({
                     </td>
                     <td className="px-4 py-3 text-sm">
                       <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusStyle.className}`}>
-                        {statusStyle.label}
+                        {t(/* i18n-dynamic */ statusStyle.labelKey)}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-sm">
@@ -189,10 +188,9 @@ export default function SsoProviderList({
                           <svg className="mr-1 h-4 w-4" fill="currentColor" viewBox="0 0 20 20">
                             <path fillRule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clipRule="evenodd" />
                           </svg>
-                          Enforced
-                        </span>
+                          {t('ssoProviderList.enforced')}</span>
                       ) : (
-                        <span className="text-muted-foreground">Optional</span>
+                        <span className="text-muted-foreground">{t('ssoProviderList.optional')}</span>
                       )}
                     </td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">
@@ -205,15 +203,13 @@ export default function SsoProviderList({
                           onClick={() => onEdit?.(provider)}
                           className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted"
                         >
-                          Edit
-                        </button>
+                          {t('ssoProviderList.edit')}</button>
                         <button
                           type="button"
                           onClick={() => onTest?.(provider)}
                           className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted"
                         >
-                          Test
-                        </button>
+                          {t('ssoProviderList.test')}</button>
                         <button
                           type="button"
                           onClick={() => onToggleStatus?.(
@@ -222,15 +218,14 @@ export default function SsoProviderList({
                           )}
                           className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted"
                         >
-                          {provider.status === 'active' ? 'Deactivate' : 'Activate'}
+                          {provider.status === 'active' ? t('ssoProviderList.deactivate') : t('ssoProviderList.activate')}
                         </button>
                         <button
                           type="button"
                           onClick={() => onDelete?.(provider)}
                           className="rounded-md border border-destructive/40 px-3 py-1 text-xs font-medium text-destructive hover:bg-destructive/10"
                         >
-                          Delete
-                        </button>
+                          {t('ssoProviderList.delete')}</button>
                       </div>
                     </td>
                   </tr>

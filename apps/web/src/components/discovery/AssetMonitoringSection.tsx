@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import EnableMonitoringForm from './EnableMonitoringForm';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatDateTime } from '@/lib/dateTimeFormat';
@@ -29,13 +30,6 @@ type AssetNetworkMonitor = {
   lastChecked: string | null;
 };
 
-const monitorTypeLabels: Record<string, string> = {
-  icmp_ping: 'ICMP Ping',
-  tcp_port: 'TCP Port',
-  http_check: 'HTTP',
-  dns_check: 'DNS',
-};
-
 const monitorStatusStyles: Record<string, string> = {
   online: 'bg-success/15 text-success border-success/30',
   offline: 'bg-destructive/15 text-destructive border-destructive/30',
@@ -50,6 +44,7 @@ type AssetMonitoringSectionProps = {
 };
 
 export default function AssetMonitoringSection({ assetId, ipAddress, open }: AssetMonitoringSectionProps) {
+  const { t } = useTranslation('discovery');
   const [monitoring, setMonitoring] = useState<MonitoringStatus | null>(null);
   const [networkMonitors, setNetworkMonitors] = useState<AssetNetworkMonitor[]>([]);
   const [monitoringLoading, setMonitoringLoading] = useState(false);
@@ -75,23 +70,23 @@ export default function AssetMonitoringSection({ assetId, ipAddress, open }: Ass
       if (monitoringRes.ok) {
         setMonitoring(await monitoringRes.json());
       } else {
-        setMonitoringError('Failed to load monitoring status');
+        setMonitoringError(t('assetMonitoringSection.errors.loadStatus'));
       }
 
       if (networkMonitorsRes.ok) {
         const data = await networkMonitorsRes.json();
         setNetworkMonitors(data.data ?? []);
       } else {
-        setNetworkMonitorsError('Failed to load network monitors');
+        setNetworkMonitorsError(t('assetMonitoringSection.errors.loadMonitors'));
       }
     } catch {
-      setMonitoringError('Failed to load monitoring status');
-      setNetworkMonitorsError('Failed to load network monitors');
+      setMonitoringError(t('assetMonitoringSection.errors.loadStatus'));
+      setNetworkMonitorsError(t('assetMonitoringSection.errors.loadMonitors'));
     } finally {
       setMonitoringLoading(false);
       setNetworkMonitorsLoading(false);
     }
-  }, [assetId]);
+  }, [assetId, t]);
 
   useEffect(() => {
     if (!open) {
@@ -112,11 +107,11 @@ export default function AssetMonitoringSection({ assetId, ipAddress, open }: Ass
       const res = await fetchWithAuth(`/monitoring/assets/${assetId}`, { method: 'DELETE' });
       if (!res.ok) {
         const data = await res.json().catch(() => null);
-        throw new Error(data?.error ?? 'Failed to disable monitoring');
+        throw new Error(data?.error ?? t('assetMonitoringSection.errors.disable'));
       }
       await refreshMonitoring();
     } catch (err) {
-      setDisableError(err instanceof Error ? err.message : 'Failed to disable monitoring');
+      setDisableError(err instanceof Error ? err.message : t('assetMonitoringSection.errors.disable'));
     } finally {
       setDisabling(false);
     }
@@ -131,7 +126,7 @@ export default function AssetMonitoringSection({ assetId, ipAddress, open }: Ass
 
   return (
     <div className="rounded-md border bg-muted/30 p-4">
-      <h3 className="text-sm font-semibold">Monitoring</h3>
+      <h3 className="text-sm font-semibold">{t('assetMonitoringSection.title')}</h3>
       {monitoringError && (
         <div className="mt-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
           {monitoringError}
@@ -149,7 +144,7 @@ export default function AssetMonitoringSection({ assetId, ipAddress, open }: Ass
       )}
 
       {monitoringLoading || networkMonitorsLoading ? (
-        <div className="mt-3 text-xs text-muted-foreground">Loading monitoring status...</div>
+        <div className="mt-3 text-xs text-muted-foreground">{t('assetMonitoringSection.loading')}</div>
       ) : showEnableForm ? (
         <div className="mt-3">
           <EnableMonitoringForm
@@ -174,35 +169,39 @@ export default function AssetMonitoringSection({ assetId, ipAddress, open }: Ass
                     : 'bg-muted text-muted-foreground border-muted'
               }`}
             >
-              {hasActiveMonitoring ? 'Active' : hasConfiguredMonitoring ? 'Configured (Paused)' : 'Not Configured'}
+              {hasActiveMonitoring
+                ? t('assetMonitoringSection.state.active')
+                : hasConfiguredMonitoring
+                  ? t('assetMonitoringSection.state.configuredPaused')
+                  : t('assetMonitoringSection.state.notConfigured')}
             </span>
             <span className="text-xs text-muted-foreground">
               {totalMonitorCount > 0
-                ? `${activeMonitorCount}/${totalMonitorCount} network checks active`
-                : 'No network checks configured'}
+                ? t('assetMonitoringSection.activeChecks', { active: activeMonitorCount, total: totalMonitorCount })
+                : t('assetMonitoringSection.noChecks')}
             </span>
           </div>
 
           {snmpDevice && (
             <div className="rounded-md border bg-background px-3 py-2">
-              <p className="text-xs font-medium">SNMP Device Monitor</p>
+              <p className="text-xs font-medium">{t('assetMonitoringSection.snmpTitle')}</p>
               <p className="mt-1 text-xs text-muted-foreground">
-                {snmpDevice.snmpVersion} &middot; every {snmpDevice.pollingInterval}s
-                {snmpDevice.lastPolled ? ` • last polled ${formatDateTime(snmpDevice.lastPolled)}` : ''}
+                {t('assetMonitoringSection.snmpSummary', { version: snmpDevice.snmpVersion, seconds: snmpDevice.pollingInterval })}
+                {snmpDevice.lastPolled ? t('assetMonitoringSection.lastPolled', { time: formatDateTime(snmpDevice.lastPolled) }) : ''}
               </p>
             </div>
           )}
 
           {networkMonitors.length > 0 && (
             <div className="rounded-md border bg-background px-3 py-2">
-              <p className="text-xs font-medium">Network Monitors ({networkMonitors.length})</p>
+              <p className="text-xs font-medium">{t('assetMonitoringSection.networkMonitorsTitle', { count: networkMonitors.length })}</p>
               <div className="mt-2 space-y-1.5">
                 {networkMonitors.map((monitor) => (
                   <div key={monitor.id} className="flex items-center justify-between gap-3 text-xs">
                     <div className="min-w-0">
                       <p className="truncate font-medium">{monitor.name}</p>
                       <p className="truncate text-muted-foreground">
-                        {monitorTypeLabels[monitor.monitorType] ?? monitor.monitorType} • {monitor.target}
+                        {t(/* i18n-dynamic */ `assetMonitoringSection.monitorTypes.${monitor.monitorType}`, { defaultValue: monitor.monitorType })} • {monitor.target}
                       </p>
                     </div>
                     <span
@@ -212,7 +211,7 @@ export default function AssetMonitoringSection({ assetId, ipAddress, open }: Ass
                           : (monitorStatusStyles[monitor.lastStatus] ?? monitorStatusStyles.unknown)
                       }`}
                     >
-                      {!monitor.isActive ? 'Paused' : monitor.lastStatus}
+                      {!monitor.isActive ? t('assetMonitoringSection.state.paused') : monitor.lastStatus}
                     </span>
                   </div>
                 ))}
@@ -226,13 +225,13 @@ export default function AssetMonitoringSection({ assetId, ipAddress, open }: Ass
               onClick={() => setShowEnableForm(true)}
               className="h-8 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90"
             >
-              {hasConfiguredMonitoring ? 'Add / Update Monitoring' : 'Enable Monitoring'}
+              {hasConfiguredMonitoring ? t('assetMonitoringSection.actions.addUpdate') : t('assetMonitoringSection.actions.enable')}
             </button>
             <a
               href={`/monitoring?assetId=${encodeURIComponent(assetId)}`}
               className="inline-flex items-center h-8 rounded-md border px-3 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted"
             >
-              Open Monitoring
+              {t('assetMonitoringSection.actions.open')}
             </a>
             {hasActiveMonitoring && (
               <button
@@ -241,7 +240,7 @@ export default function AssetMonitoringSection({ assetId, ipAddress, open }: Ass
                 disabled={disabling}
                 className="h-8 rounded-md border border-destructive/40 px-3 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-70"
               >
-                {disabling ? 'Disabling...' : 'Disable Active Monitoring'}
+                {disabling ? t('assetMonitoringSection.actions.disabling') : t('assetMonitoringSection.actions.disableActive')}
               </button>
             )}
           </div>

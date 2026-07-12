@@ -13,6 +13,8 @@ import { formatDateTime } from '@/lib/dateTimeFormat';
 import { Dialog } from '../shared/Dialog';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { fetchWithAuth } from '../../stores/auth';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 
 type Device = { id: string; hostname?: string | null; displayName?: string | null };
 
@@ -92,6 +94,7 @@ export default function DRExecutionView({
   onClose,
   onUpdated,
 }: DRExecutionViewProps) {
+  const { t } = useTranslation('backup');
   const [execution, setExecution] = useState<ExecutionRecord | null>(null);
   const [devices, setDevices] = useState<Record<string, Device>>({});
   const [loading, setLoading] = useState(false);
@@ -253,13 +256,12 @@ export default function DRExecutionView({
 
   return (
     <>
-      <Dialog open={open} onClose={onClose} title="Execution details" maxWidth="5xl" className="overflow-hidden">
+      <Dialog open={open} onClose={onClose} title={t('dRExecutionView.executionDetails')} maxWidth="5xl" className="overflow-hidden">
         <div className="flex items-center justify-between border-b px-6 py-4">
           <div>
-            <h2 className="text-lg font-semibold text-foreground">Execution tracker</h2>
+            <h2 className="text-lg font-semibold text-foreground">{t('dRExecutionView.executionTracker')}</h2>
             <p className="text-sm text-muted-foreground">
-              Live group progress and device-level restore state for the selected DR run.
-            </p>
+              {t('dRExecutionView.liveGroupProgressAndDeviceLevelRestoreState')} </p>
           </div>
           <button type="button" onClick={onClose} className="rounded-md p-1 hover:bg-muted">
             <X className="h-4 w-4 text-muted-foreground" />
@@ -281,25 +283,25 @@ export default function DRExecutionView({
           {loading && !execution ? (
             <div className="py-12 text-center">
               <Loader2 className="mx-auto h-6 w-6 animate-spin text-primary" />
-              <p className="mt-3 text-sm text-muted-foreground">Loading execution data...</p>
+              <p className="mt-3 text-sm text-muted-foreground">{t('dRExecutionView.loadingExecutionData')}</p>
             </div>
           ) : execution ? (
             <>
               <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
                 <div className="rounded-lg border bg-muted/20 p-4">
-                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Plan</p>
+                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('dRExecutionView.plan')}</p>
                   <p className="mt-2 text-sm font-semibold text-foreground">{execution.plan?.name ?? 'Recovery execution'}</p>
                 </div>
                 <div className="rounded-lg border bg-muted/20 p-4">
-                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Type</p>
+                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('dRExecutionView.type')}</p>
                   <p className="mt-2 text-sm font-semibold capitalize text-foreground">{execution.executionType}</p>
                 </div>
                 <div className="rounded-lg border bg-muted/20 p-4">
-                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Status</p>
+                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('dRExecutionView.status')}</p>
                   <p className="mt-2 text-sm font-semibold capitalize text-foreground">{execution.status}</p>
                 </div>
                 <div className="rounded-lg border bg-muted/20 p-4">
-                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Duration</p>
+                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('dRExecutionView.duration')}</p>
                   <p className="mt-2 text-sm font-semibold text-foreground">
                     {formatDuration(execution.startedAt, execution.completedAt)}
                   </p>
@@ -308,10 +310,10 @@ export default function DRExecutionView({
 
               <section className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-4">
                 <div className="space-y-1 text-sm">
-                  <p className="text-muted-foreground">Started: <span className="text-foreground">{formatDate(execution.startedAt)}</span></p>
-                  <p className="text-muted-foreground">Completed: <span className="text-foreground">{formatDate(execution.completedAt)}</span></p>
+                  <p className="text-muted-foreground">{t('dRExecutionView.started')} <span className="text-foreground">{formatDate(execution.startedAt)}</span></p>
+                  <p className="text-muted-foreground">{t('dRExecutionView.completed')} <span className="text-foreground">{formatDate(execution.completedAt)}</span></p>
                   <p className="text-muted-foreground">
-                    Initiated by:{' '}
+                    {t('dRExecutionView.initiatedBy')}{' '}
                     <span className="text-foreground">
                       {execution.initiatedBy ? execution.initiatedBy.slice(0, 8) : 'System'}
                     </span>
@@ -323,8 +325,7 @@ export default function DRExecutionView({
                     onClick={() => void fetchExecution()}
                     className="rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted"
                   >
-                    Refresh
-                  </button>
+                    {t('dRExecutionView.refresh')} </button>
                   {canAbort && (
                     <button
                       type="button"
@@ -332,8 +333,7 @@ export default function DRExecutionView({
                       className="inline-flex items-center gap-2 rounded-md bg-destructive px-3 py-2 text-sm font-medium text-destructive-foreground hover:bg-destructive/90"
                     >
                       <Square className="h-4 w-4" />
-                      Abort execution
-                    </button>
+                      {t('dRExecutionView.abortExecution')} </button>
                   )}
                 </div>
               </section>
@@ -356,8 +356,7 @@ export default function DRExecutionView({
                               {group.sequence + 1}. {group.name}
                             </p>
                             <p className="text-xs text-muted-foreground">
-                              {group.devices.length} device{group.devices.length !== 1 ? 's' : ''} · {group.estimatedDurationMinutes ?? '—'} min estimate
-                            </p>
+                              {t('dRExecutionView.deviceCount', { count: group.devices.length })} · {group.estimatedDurationMinutes ?? '—'} {t('dRExecutionView.minEstimate')} </p>
                           </div>
                         </div>
                         <span className="rounded-full bg-muted px-3 py-1 text-xs font-medium capitalize text-foreground">
@@ -379,8 +378,8 @@ export default function DRExecutionView({
                           ))}
                         <div>
                           <div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
-                            <span>Device progress</span>
-                            <span>{percent}% complete</span>
+                            <span>{t('dRExecutionView.deviceProgress')}</span>
+                            <span>{percent}{t('dRExecutionView.complete')}</span>
                           </div>
                           <div className="h-2 rounded-full bg-muted">
                             <div
@@ -421,7 +420,7 @@ export default function DRExecutionView({
               </section>
             </>
           ) : (
-            <div className="py-12 text-center text-sm text-muted-foreground">Execution details are unavailable.</div>
+            <div className="py-12 text-center text-sm text-muted-foreground">{t('dRExecutionView.executionDetailsAreUnavailable')}</div>
           )}
         </div>
       </Dialog>
@@ -430,7 +429,7 @@ export default function DRExecutionView({
         open={confirmAbort}
         onClose={() => setConfirmAbort(false)}
         onConfirm={handleAbort}
-        title="Abort disaster recovery execution?"
+        title={t('dRExecutionView.abortDisasterRecoveryExecution')}
         message="This marks the current execution as aborted. Running device actions may need manual cleanup."
         confirmLabel="Abort execution"
         isLoading={aborting}

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { formatDateTime } from '@/lib/dateTimeFormat';
@@ -69,6 +70,7 @@ const statusColors: Record<IncidentStatus, string> = {
 };
 
 export default function IncidentDetailPage({ incidentId }: IncidentDetailProps) {
+  const { t } = useTranslation('common');
   const [incident, setIncident] = useState<Incident | null>(null);
   const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
   const [actions, setActions] = useState<ActionEntry[]>([]);
@@ -88,10 +90,10 @@ export default function IncidentDetailPage({ incidentId }: IncidentDetailProps) 
           return;
         }
         if (response.status === 404) {
-          setError('Incident not found');
+          setError(t('longTail.incidents.IncidentDetailPage.errors.notFound'));
           return;
         }
-        throw new Error('Failed to fetch incident');
+        throw new Error(t('longTail.incidents.IncidentDetailPage.errors.fetchFailed'));
       }
       const data = await response.json();
       setIncident(data.incident);
@@ -99,11 +101,11 @@ export default function IncidentDetailPage({ incidentId }: IncidentDetailProps) 
       setActions(data.actions ?? []);
       setEvidence(data.evidence ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('common:states.error'));
     } finally {
       setLoading(false);
     }
-  }, [incidentId]);
+  }, [incidentId, t]);
 
   useEffect(() => {
     fetchDetail();
@@ -114,7 +116,7 @@ export default function IncidentDetailPage({ incidentId }: IncidentDetailProps) 
       <div className="flex items-center justify-center py-12">
         <div className="text-center">
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading incident...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('longTail.incidents.IncidentDetailPage.loading')}</p>
         </div>
       </div>
     );
@@ -127,16 +129,16 @@ export default function IncidentDetailPage({ incidentId }: IncidentDetailProps) 
           href="/incidents"
           className="text-sm text-primary hover:underline"
         >
-          &larr; Back to incidents
+          {t('longTail.incidents.IncidentDetailPage.backToIncidents')}
         </a>
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
-          <p className="text-sm text-destructive">{error ?? 'Incident not found'}</p>
+          <p className="text-sm text-destructive">{error ?? t('longTail.incidents.IncidentDetailPage.errors.notFound')}</p>
           <button
             type="button"
             onClick={() => fetchDetail()}
             className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
           >
-            Try again
+            {t('longTail.incidents.IncidentDetailPage.tryAgain')}
           </button>
         </div>
       </div>
@@ -144,17 +146,17 @@ export default function IncidentDetailPage({ incidentId }: IncidentDetailProps) 
   }
 
   const dateFields: { label: string; value: string | null }[] = [
-    { label: 'Detected', value: incident.detectedAt },
-    { label: 'Contained', value: incident.containedAt },
-    { label: 'Resolved', value: incident.resolvedAt },
-    { label: 'Closed', value: incident.closedAt },
+    { label: t('longTail.incidents.IncidentDetailPage.dates.detected'), value: incident.detectedAt },
+    { label: t('longTail.incidents.IncidentDetailPage.dates.contained'), value: incident.containedAt },
+    { label: t('longTail.incidents.IncidentDetailPage.dates.resolved'), value: incident.resolvedAt },
+    { label: t('longTail.incidents.IncidentDetailPage.dates.closed'), value: incident.closedAt },
   ];
   const visibleDates = dateFields.filter((d) => d.value);
 
   const tabs: { key: DetailTab; label: string; count?: number }[] = [
-    { key: 'timeline', label: 'Timeline' },
-    { key: 'actions', label: 'Actions', count: actions.length },
-    { key: 'evidence', label: 'Evidence', count: evidence.length },
+    { key: 'timeline', label: t('longTail.incidents.IncidentDetailPage.tabs.timeline') },
+    { key: 'actions', label: t('common:labels.actions'), count: actions.length },
+    { key: 'evidence', label: t('longTail.incidents.IncidentDetailPage.tabs.evidence'), count: evidence.length },
   ];
 
   return (
@@ -164,7 +166,7 @@ export default function IncidentDetailPage({ incidentId }: IncidentDetailProps) 
         href="/incidents"
         className="text-sm text-primary hover:underline"
       >
-        &larr; Back to incidents
+        {t('longTail.incidents.IncidentDetailPage.backToIncidents')}
       </a>
 
       {/* Header */}
@@ -175,7 +177,7 @@ export default function IncidentDetailPage({ incidentId }: IncidentDetailProps) 
             {incident.severity.toUpperCase()}
           </span>
           <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium capitalize ${statusColors[incident.status]}`}>
-            {incident.status}
+            {t(/* i18n-dynamic */ `longTail.incidents.IncidentDetailPage.status.${incident.status}`)}
           </span>
           {incident.classification && (
             <span className="inline-flex items-center rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground">
@@ -188,7 +190,7 @@ export default function IncidentDetailPage({ incidentId }: IncidentDetailProps) 
       {/* Summary */}
       {incident.summary && (
         <div className="rounded-lg border bg-card p-4">
-          <h2 className="text-sm font-medium text-muted-foreground mb-1">Summary</h2>
+          <h2 className="text-sm font-medium text-muted-foreground mb-1">{t('longTail.incidents.IncidentDetailPage.summary')}</h2>
           <p className="text-sm text-foreground">{incident.summary}</p>
         </div>
       )}
@@ -244,8 +246,9 @@ export default function IncidentDetailPage({ incidentId }: IncidentDetailProps) 
 /* Timeline Tab                                                        */
 /* ------------------------------------------------------------------ */
 function TimelineView({ entries }: { entries: TimelineEntry[] }) {
+  const { t } = useTranslation('common');
   if (entries.length === 0) {
-    return <p className="text-sm text-muted-foreground py-4">No timeline entries yet.</p>;
+    return <p className="text-sm text-muted-foreground py-4">{t('longTail.incidents.IncidentDetailPage.timeline.empty')}</p>;
   }
 
   return (
@@ -283,8 +286,9 @@ function TimelineView({ entries }: { entries: TimelineEntry[] }) {
 /* Actions Tab                                                         */
 /* ------------------------------------------------------------------ */
 function ActionsView({ entries }: { entries: ActionEntry[] }) {
+  const { t } = useTranslation('common');
   if (entries.length === 0) {
-    return <p className="text-sm text-muted-foreground py-4">No actions recorded.</p>;
+    return <p className="text-sm text-muted-foreground py-4">{t('longTail.incidents.IncidentDetailPage.actions.empty')}</p>;
   }
 
   return (
@@ -292,10 +296,10 @@ function ActionsView({ entries }: { entries: ActionEntry[] }) {
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b bg-muted/50">
-            <th className="px-4 py-3 text-left font-medium text-muted-foreground">Action</th>
-            <th className="px-4 py-3 text-left font-medium text-muted-foreground">Status</th>
-            <th className="px-4 py-3 text-left font-medium text-muted-foreground">By</th>
-            <th className="px-4 py-3 text-left font-medium text-muted-foreground">When</th>
+            <th className="px-4 py-3 text-left font-medium text-muted-foreground">{t('longTail.incidents.IncidentDetailPage.actions.action')}</th>
+            <th className="px-4 py-3 text-left font-medium text-muted-foreground">{t('common:labels.status')}</th>
+            <th className="px-4 py-3 text-left font-medium text-muted-foreground">{t('longTail.incidents.IncidentDetailPage.actions.by')}</th>
+            <th className="px-4 py-3 text-left font-medium text-muted-foreground">{t('longTail.incidents.IncidentDetailPage.actions.when')}</th>
           </tr>
         </thead>
         <tbody>
@@ -333,8 +337,9 @@ function ActionsView({ entries }: { entries: ActionEntry[] }) {
 /* Evidence Tab                                                        */
 /* ------------------------------------------------------------------ */
 function EvidenceView({ entries }: { entries: EvidenceEntry[] }) {
+  const { t } = useTranslation('common');
   if (entries.length === 0) {
-    return <p className="text-sm text-muted-foreground py-4">No evidence collected.</p>;
+    return <p className="text-sm text-muted-foreground py-4">{t('longTail.incidents.IncidentDetailPage.evidence.empty')}</p>;
   }
 
   return (
@@ -342,11 +347,11 @@ function EvidenceView({ entries }: { entries: EvidenceEntry[] }) {
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b bg-muted/50">
-            <th className="px-4 py-3 text-left font-medium text-muted-foreground">Type</th>
-            <th className="px-4 py-3 text-left font-medium text-muted-foreground">Description</th>
-            <th className="px-4 py-3 text-left font-medium text-muted-foreground">Collected By</th>
-            <th className="px-4 py-3 text-left font-medium text-muted-foreground">When</th>
-            <th className="px-4 py-3 text-left font-medium text-muted-foreground">Hash</th>
+            <th className="px-4 py-3 text-left font-medium text-muted-foreground">{t('common:labels.type')}</th>
+            <th className="px-4 py-3 text-left font-medium text-muted-foreground">{t('common:labels.description')}</th>
+            <th className="px-4 py-3 text-left font-medium text-muted-foreground">{t('longTail.incidents.IncidentDetailPage.evidence.collectedBy')}</th>
+            <th className="px-4 py-3 text-left font-medium text-muted-foreground">{t('longTail.incidents.IncidentDetailPage.actions.when')}</th>
+            <th className="px-4 py-3 text-left font-medium text-muted-foreground">{t('longTail.incidents.IncidentDetailPage.evidence.hash')}</th>
           </tr>
         </thead>
         <tbody>

@@ -503,3 +503,4 @@ describe('AssetDetailModal — SNMP data card', () => {
     expect(screen.getByText(/No SNMP data was collected/i)).toBeInTheDocument();
   });
 });
+import '@/lib/i18n';

@@ -1,4 +1,5 @@
 import { TrendingDown, TrendingUp } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { cn, formatNumber } from '@/lib/utils';
 import ChartWidget, { type ChartWidgetProps } from './ChartWidget';
 import GaugeWidget, { type GaugeWidgetProps } from './GaugeWidget';
@@ -56,6 +57,8 @@ function SummaryWidget({ title, data }: { title?: string; data: SummaryWidgetDat
 }
 
 export default function WidgetRenderer({ widget }: WidgetRendererProps) {
+  const { t } = useTranslation('reports');
+
   switch (widget.type) {
     case 'chart':
       return <ChartWidget {...(widget.data as ChartWidgetProps)} />;
@@ -68,7 +71,7 @@ export default function WidgetRenderer({ widget }: WidgetRendererProps) {
     default:
       return (
         <div className="flex h-full items-center justify-center rounded-lg border bg-card p-4 text-sm text-muted-foreground">
-          Unsupported widget
+          {t('analytics.widgetRenderer.unsupportedWidget')}
         </div>
       );
   }

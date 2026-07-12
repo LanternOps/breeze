@@ -1,17 +1,48 @@
-import { describe, it, expect } from 'vitest';
+import { render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, it, expect } from 'vitest';
 
 // Mock the stores so importing Sidebar.tsx (which the navSections export lives
 // in) doesn't pull in real auth/ui store side effects.
 import { vi } from 'vitest';
+const fetchWithAuthMock = vi.hoisted(() => vi.fn());
 vi.mock('../../stores/auth', () => ({
-  fetchWithAuth: vi.fn(),
-  useAuthStore: { getState: () => ({ tokens: null }) },
+  fetchWithAuth: fetchWithAuthMock,
+  useAuthStore: Object.assign(
+    (selector: (state: { user: { isPlatformAdmin: boolean; permissions: Array<{ resource: string; action: string }> } }) => unknown) =>
+      selector({ user: { isPlatformAdmin: false, permissions: [{ resource: '*', action: '*' }] } }),
+    { getState: () => ({ tokens: null }) },
+  ),
 }));
 vi.mock('../../stores/uiStore', () => ({
   useUiStore: vi.fn(() => ({ isMobileMenuOpen: false, closeMobileMenu: vi.fn() })),
 }));
+vi.mock('../../lib/authScope', () => ({ getJwtClaims: () => ({ scope: 'partner' }) }));
+vi.mock('./BrandHeader', () => ({ default: () => null }));
 
-import { navSections } from './Sidebar';
+import Sidebar, { navSections, topLevelNav } from './Sidebar';
+import { i18n, loadLocale } from '../../lib/i18n';
+import en from '../../locales/en/common.json';
+import ptBR from '../../locales/pt-BR/common.json';
+
+beforeEach(async () => {
+  localStorage.clear();
+  localStorage.setItem('sidebar-mode', 'open');
+  fetchWithAuthMock.mockReset();
+  fetchWithAuthMock.mockResolvedValue({ ok: false, status: 404, json: async () => ({}) } as Response);
+  window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+    matches: false,
+    media: query,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  })) as unknown as typeof window.matchMedia;
+  await i18n.changeLanguage('en');
+  await loadLocale('pt-BR');
+});
+
+afterEach(async () => {
+  await i18n.changeLanguage('en');
+  vi.clearAllMocks();
+});
 
 function section(id: string) {
   const s = navSections.find((sec) => sec.id === id);
@@ -87,5 +118,86 @@ describe('navSections structure (#1321, #1324)', () => {
       'reporting',
       'settings',
     ]);
+  });
+});
+
+describe('sidebar i18n seed', () => {
+  it('renders pt-BR top-level labels when selected', async () => {
+    await i18n.changeLanguage('pt-BR');
+    render(<Sidebar currentPath="/" />);
+
+    expect(await screen.findByText('Painel')).toBeInTheDocument();
+    expect(screen.getByText('Dispositivos')).toBeInTheDocument();
+    expect(screen.queryByText('Dashboard')).not.toBeInTheDocument();
+  });
+
+  it('renders English labels by default', async () => {
+    render(<Sidebar currentPath="/" />);
+    expect(await screen.findByText('Dashboard')).toBeInTheDocument();
+  });
+
+  it('gives every top-level item a key that resolves in both locales', () => {
+    for (const item of topLevelNav) {
+      expect(item.labelKey, `missing labelKey for ${item.name}`).toBeTruthy();
+      expect(i18n.t(item.labelKey!, { lng: 'pt-BR' })).not.toBe(item.labelKey);
+      expect(i18n.t(item.labelKey!, { lng: 'en' })).toBe(item.name);
+    }
+  });
+
+  it('gives every section and nested item a key that resolves in both locales', () => {
+    for (const navSection of navSections) {
+      expect(navSection.labelKey, `missing labelKey for section ${navSection.label}`).toBeTruthy();
+      expect(i18n.t(navSection.labelKey!, { lng: 'en' })).toBe(navSection.label);
+      expect(i18n.t(navSection.labelKey!, { lng: 'pt-BR' })).not.toBe(navSection.labelKey);
+
+      for (const item of navSection.items) {
+        expect(item.labelKey, `missing labelKey for ${navSection.label} > ${item.name}`).toBeTruthy();
+        expect(i18n.t(item.labelKey!, { lng: 'en' })).toBe(item.name);
+        expect(i18n.t(item.labelKey!, { lng: 'pt-BR' })).not.toBe(item.labelKey);
+      }
+    }
+  });
+
+  it('keeps the English and pt-BR navigation keys in exact parity', () => {
+    expect(Object.keys(ptBR.nav).sort()).toEqual(Object.keys(en.nav).sort());
+  });
+
+  it('keeps hrefs and permission identifiers stable while translating labels', async () => {
+    const navigationContract = [...topLevelNav, ...navSections.flatMap((navSection) => navSection.items)]
+      .map((item) => ({
+        name: item.name,
+        href: item.href,
+        requiredPermission: item.requiredPermission,
+      }));
+
+    for (const locale of ['en', 'pt-BR']) {
+      await i18n.changeLanguage(locale);
+      for (const item of [...topLevelNav, ...navSections.flatMap((navSection) => navSection.items)]) {
+        i18n.t(item.labelKey!);
+      }
+
+      expect([...topLevelNav, ...navSections.flatMap((navSection) => navSection.items)].map((item) => ({
+        name: item.name,
+        href: item.href,
+        requiredPermission: item.requiredPermission,
+      }))).toEqual(navigationContract);
+    }
+  });
+
+  it('renders a translated nested item without changing its href', async () => {
+    await i18n.changeLanguage('pt-BR');
+    render(<Sidebar currentPath="/monitoring" />);
+
+    const nestedLink = await screen.findByText('Monitoramento de Rede');
+    expect(nestedLink.closest('a')).toHaveAttribute('href', '/monitoring');
+    expect(screen.queryByText('Network Monitor')).not.toBeInTheDocument();
+  });
+
+  it('switches an already-mounted sidebar when the language changes', async () => {
+    render(<Sidebar currentPath="/" />);
+    expect(await screen.findByText('Dashboard')).toBeInTheDocument();
+
+    await i18n.changeLanguage('pt-BR');
+    await waitFor(() => expect(screen.getByText('Painel')).toBeInTheDocument());
   });
 });

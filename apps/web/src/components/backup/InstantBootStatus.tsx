@@ -3,6 +3,8 @@ import { AlertCircle, Loader2, Monitor, RefreshCw, Zap } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 
 type InstantBootStatusRow = {
   id: string;
@@ -22,6 +24,7 @@ const statusConfig: Record<InstantBootStatusRow['status'], { label: string; clas
 };
 
 export default function InstantBootStatus() {
+  const { t } = useTranslation('backup');
   const [boots, setBoots] = useState<InstantBootStatusRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -59,8 +62,7 @@ export default function InstantBootStatus() {
     return (
       <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
         <Loader2 className="h-4 w-4 animate-spin" />
-        Loading instant boot status...
-      </div>
+        {t('instantBootStatus.loadingInstantBootStatus')} </div>
     );
   }
 
@@ -76,10 +78,9 @@ export default function InstantBootStatus() {
     return (
       <div className="rounded-lg border border-dashed bg-muted/20 p-6 text-center">
         <Zap className="mx-auto h-8 w-8 text-muted-foreground/40" />
-        <p className="mt-2 text-sm text-muted-foreground">No active instant boots.</p>
+        <p className="mt-2 text-sm text-muted-foreground">{t('instantBootStatus.noActiveInstantBoots')}</p>
         <p className="mt-1 text-xs text-muted-foreground">
-          Migration completion controls are hidden until the backend supports them end to end.
-        </p>
+          {t('instantBootStatus.migrationCompletionControlsAreHiddenUntilTheBackend')} </p>
       </div>
     );
   }
@@ -98,7 +99,7 @@ export default function InstantBootStatus() {
                 <div>
                   <p className="text-sm font-semibold text-foreground">{boot.vmName}</p>
                   <p className="text-xs text-muted-foreground">
-                    Host: {boot.hostDeviceName ?? boot.hostDeviceId.slice(0, 8)}
+                    {t('instantBootStatus.host')} {boot.hostDeviceName ?? boot.hostDeviceId.slice(0, 8)}
                   </p>
                 </div>
               </div>
@@ -116,7 +117,7 @@ export default function InstantBootStatus() {
             {typeof boot.syncProgress === 'number' && (
               <div className="mt-3">
                 <div className="flex items-center justify-between text-xs text-muted-foreground">
-                  <span>Background sync</span>
+                  <span>{t('instantBootStatus.backgroundSync')}</span>
                   <span>{boot.syncProgress}%</span>
                 </div>
                 <div className="mt-1 h-2 w-full overflow-hidden rounded-full bg-muted">
@@ -130,8 +131,7 @@ export default function InstantBootStatus() {
 
             <div className="mt-3 flex items-start gap-2 rounded-md border border-dashed bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
               <RefreshCw className="mt-0.5 h-3.5 w-3.5" />
-              Migration completion controls remain hidden until the backend supports a real completion command.
-            </div>
+              {t('instantBootStatus.migrationCompletionControlsRemainHiddenUntilTheBackend')} </div>
           </div>
         );
       })}

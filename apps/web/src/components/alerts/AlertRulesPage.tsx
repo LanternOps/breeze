@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 import { Plus } from 'lucide-react';
 import AlertRuleList, { type AlertRule } from './AlertRuleList';
 import AlertsTabStrip from './AlertsTabStrip';
@@ -10,6 +12,7 @@ import { extractApiError } from '@/lib/apiError';
 type ModalMode = 'closed' | 'delete' | 'test';
 
 export default function AlertRulesPage() {
+  const { t } = useTranslation('alerts');
   const [rules, setRules] = useState<AlertRule[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -128,11 +131,11 @@ export default function AlertRulesPage() {
     let cancelled = false;
     showToast({
       type: 'undo',
-      message: `Deleting alert rule "${ruleToDelete.name}"...`,
+      message: t('alertRulesPage.deletingRule', { name: ruleToDelete.name }),
       duration: 5000,
       onUndo: () => {
         cancelled = true;
-        showToast({ type: 'success', message: 'Alert rule deletion cancelled', duration: 2000 });
+        showToast({ type: 'success', message: t('alertRulesPage.deletionCancelled'), duration: 2000 });
       }
     });
 
@@ -165,7 +168,7 @@ export default function AlertRulesPage() {
       <div className="flex items-center justify-center py-12">
         <div className="text-center">
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading alert rules...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('alertRulesPage.loadingAlertRules')}</p>
         </div>
       </div>
     );
@@ -180,7 +183,7 @@ export default function AlertRulesPage() {
           onClick={fetchRules}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Try again
+          {t('alertRulesPage.tryAgain')}
         </button>
       </div>
     );
@@ -191,22 +194,22 @@ export default function AlertRulesPage() {
       <AlertsTabStrip currentPath="/alerts/rules" />
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Alert Rules</h1>
-          <p className="text-muted-foreground">Configure when and how alerts are triggered.</p>
+          <h1 className="text-xl font-semibold tracking-tight">{t('alertRulesPage.alertRules')}</h1>
+          <p className="text-muted-foreground">{t('alertRulesPage.configureWhenAndHowAlertsAreTriggered')}</p>
         </div>
         <div className="flex items-center gap-3">
           <a
             href="/alerts/channels"
             className="inline-flex h-10 items-center justify-center gap-2 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted"
           >
-            Notification Channels
+            {t('alertRulesPage.notificationChannels')}
           </a>
           <a
             href="/alerts/rules/new"
             className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
           >
             <Plus className="h-4 w-4" />
-            New Rule
+            {t('alertRulesPage.newRule')}
           </a>
         </div>
       </div>
@@ -232,10 +235,9 @@ export default function AlertRulesPage() {
       {modalMode === 'delete' && selectedRule && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
           <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
-            <h2 className="text-lg font-semibold">Delete Alert Rule</h2>
+            <h2 className="text-lg font-semibold">{t('alertRulesPage.deleteAlertRule')}</h2>
             <p className="mt-2 text-sm text-muted-foreground">
-              Are you sure you want to delete <span className="font-medium">{selectedRule.name}</span>?
-              This action cannot be undone.
+              {t('alertRulesPage.areYouSureYouWantToDelete')} <span className="font-medium">{selectedRule.name}</span>{t('alertRulesPage.thisActionCannotBeUndone')}
             </p>
             <div className="mt-6 flex justify-end gap-3">
               <button
@@ -243,7 +245,7 @@ export default function AlertRulesPage() {
                 onClick={handleCloseModal}
                 className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
               >
-                Cancel
+                {t('alertRulesPage.cancel')}
               </button>
               <button
                 type="button"
@@ -262,14 +264,14 @@ export default function AlertRulesPage() {
       {modalMode === 'test' && selectedRule && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
           <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
-            <h2 className="text-lg font-semibold">Test Alert Rule</h2>
+            <h2 className="text-lg font-semibold">{t('alertRulesPage.testAlertRule')}</h2>
             <p className="mt-2 text-sm text-muted-foreground">
-              Testing <span className="font-medium">{selectedRule.name}</span>
+              {t('alertRulesPage.testing')} <span className="font-medium">{selectedRule.name}</span>
             </p>
             {submitting ? (
               <div className="mt-4 flex items-center gap-2">
                 <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-                <span className="text-sm">Running test...</span>
+                <span className="text-sm">{t('alertRulesPage.runningTest')}</span>
               </div>
             ) : testResult ? (
               <div
@@ -291,7 +293,7 @@ export default function AlertRulesPage() {
                 onClick={handleCloseModal}
                 className="h-10 rounded-md border px-4 text-sm font-medium transition hover:bg-muted"
               >
-                Close
+                {t('alertRulesPage.close')}
               </button>
             </div>
           </div>

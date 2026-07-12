@@ -1,13 +1,14 @@
 import type { InheritableEventLogSettings } from '@breeze/shared';
+import { Trans, useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 
 type Props = {
   data: InheritableEventLogSettings;
   onChange: (data: InheritableEventLogSettings) => void;
 };
 
-const PLACEHOLDER = 'Not set — orgs configure individually';
-
 export default function PartnerEventLogsTab({ data, onChange }: Props) {
+  const { t } = useTranslation('settings');
   const set = (patch: Partial<InheritableEventLogSettings>) =>
     onChange({ ...data, ...patch });
 
@@ -20,62 +21,62 @@ export default function PartnerEventLogsTab({ data, onChange }: Props) {
           onChange={e => set({ enabled: e.target.checked })}
           className="h-4 w-4 rounded border"
         />
-        <label className="text-sm font-medium">Enable centralized event log shipping</label>
+        <label className="text-sm font-medium">{t('partnerEventLogs.enable')}</label>
       </div>
 
       {data.enabled && (
         <div className="grid gap-6 sm:grid-cols-2">
           <div className="space-y-2">
-            <label className="text-sm font-medium">Log endpoint URL</label>
+            <label className="text-sm font-medium">{t('partnerEventLogs.endpoint')}</label>
             <input
               type="url"
               value={data.elasticsearchUrl ?? ''}
               onChange={e => set({ elasticsearchUrl: e.target.value || undefined })}
-              placeholder="https://logs.example.com:9200"
+              placeholder={t('partnerEventLogs.endpointPlaceholder')}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm"
             />
           </div>
 
           <div className="space-y-2">
-            <label className="text-sm font-medium">Index Prefix</label>
+            <label className="text-sm font-medium">{t('partnerEventLogs.indexPrefix')}</label>
             <input
               type="text"
               value={data.indexPrefix ?? ''}
               onChange={e => set({ indexPrefix: e.target.value || undefined })}
-              placeholder="breeze-logs"
+              placeholder={t('partnerEventLogs.indexPlaceholder')}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm"
             />
           </div>
 
           <div className="space-y-2">
-            <label className="text-sm font-medium">API Key</label>
+            <label className="text-sm font-medium">{t('partnerEventLogs.apiKey')}</label>
             <input
               type="password"
               value={data.elasticsearchApiKey ?? ''}
               onChange={e => set({ elasticsearchApiKey: e.target.value || undefined })}
-              placeholder={PLACEHOLDER}
+              placeholder={t('partnerEventLogs.notSet')}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm"
             />
           </div>
 
           <div className="space-y-2">
-            <label className="text-sm font-medium">Username (basic auth)</label>
+            <label className="text-sm font-medium">{t('partnerEventLogs.username')}</label>
             <input
               type="text"
               value={data.elasticsearchUsername ?? ''}
               onChange={e => set({ elasticsearchUsername: e.target.value || undefined })}
-              placeholder={PLACEHOLDER}
+              placeholder={t('partnerEventLogs.notSet')}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm"
             />
           </div>
 
           <div className="space-y-2">
-            <label className="text-sm font-medium">Password (basic auth)</label>
+            <label className="text-sm font-medium">{t('partnerEventLogs.password')}</label>
             <input
               type="password"
               value={data.elasticsearchPassword ?? ''}
               onChange={e => set({ elasticsearchPassword: e.target.value || undefined })}
-              placeholder={PLACEHOLDER}
+              placeholder={t('partnerEventLogs.notSet')}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm"
             />
           </div>
@@ -83,9 +84,7 @@ export default function PartnerEventLogsTab({ data, onChange }: Props) {
       )}
 
       <p className="text-xs text-muted-foreground">
-        When enabled, all child organizations will ship event logs to the configured endpoint. Works with any
-        Elasticsearch/OpenSearch-compatible <code>_bulk</code> store (Elasticsearch, OpenSearch, Wazuh indexer, AWS OpenSearch Service).
-        Leave disabled to let each organization configure individually.
+        <Trans i18nKey="partnerEventLogs.description" t={t} components={{ bulk: <code /> }} />
       </p>
     </div>
   );

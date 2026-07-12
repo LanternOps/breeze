@@ -1,4 +1,6 @@
 import { useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 import { Pencil, Plus, Trash2, ToggleLeft, ToggleRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
@@ -122,6 +124,7 @@ export default function AlertRuleList({
   onToggle,
   onCreate
 }: AlertRuleListProps) {
+  const { t } = useTranslation('alerts');
   const [templateFilter, setTemplateFilter] = useState('all');
   const [targetFilter, setTargetFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -193,7 +196,7 @@ export default function AlertRuleList({
           onEdit?.(rule);
         }}
         className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
-        title="Edit rule"
+        title={t('alertRuleList.editRule')}
       >
         <Pencil className="h-4 w-4" />
       </button>
@@ -204,7 +207,7 @@ export default function AlertRuleList({
           handleDelete(rule);
         }}
         className="flex h-8 w-8 items-center justify-center rounded-md text-destructive hover:bg-destructive/10"
-        title="Delete rule"
+        title={t('alertRuleList.deleteRule')}
       >
         <Trash2 className="h-4 w-4" />
       </button>
@@ -215,9 +218,9 @@ export default function AlertRuleList({
     <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-lg font-semibold">Alert Rules</h2>
+          <h2 className="text-lg font-semibold">{t('alertRuleList.alertRules')}</h2>
           <p className="text-sm text-muted-foreground">
-            {filteredRules.length} of {data.length} rules
+            {filteredRules.length} {t('alertRuleList.of')} {data.length} {t('alertRuleList.rules')}
           </p>
         </div>
         <button
@@ -226,7 +229,7 @@ export default function AlertRuleList({
           className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
         >
           <Plus className="h-4 w-4" />
-          Add rule
+          {t('alertRuleList.addRule')}
         </button>
       </div>
 
@@ -236,7 +239,7 @@ export default function AlertRuleList({
           onChange={event => setTemplateFilter(event.target.value)}
           className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-48"
         >
-          <option value="all">All templates</option>
+          <option value="all">{t('alertRuleList.allTemplates')}</option>
           {templateOptions.map(template => (
             <option key={template} value={template}>
               {template}
@@ -248,20 +251,20 @@ export default function AlertRuleList({
           onChange={event => setTargetFilter(event.target.value)}
           className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-40"
         >
-          <option value="all">All targets</option>
-          <option value="org">Org</option>
-          <option value="site">Site</option>
-          <option value="group">Group</option>
-          <option value="device">Device</option>
+          <option value="all">{t('alertRuleList.allTargets')}</option>
+          <option value="org">{t('alertRuleList.org')}</option>
+          <option value="site">{t('alertRuleList.site')}</option>
+          <option value="group">{t('alertRuleList.group')}</option>
+          <option value="device">{t('alertRuleList.device')}</option>
         </select>
         <select
           value={statusFilter}
           onChange={event => setStatusFilter(event.target.value)}
           className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-36"
         >
-          <option value="all">All status</option>
-          <option value="active">Active</option>
-          <option value="paused">Paused</option>
+          <option value="all">{t('alertRuleList.allStatus')}</option>
+          <option value="active">{t('alertRuleList.active')}</option>
+          <option value="paused">{t('alertRuleList.paused')}</option>
         </select>
       </div>
 
@@ -271,19 +274,19 @@ export default function AlertRuleList({
           <table className="min-w-full divide-y">
             <thead className="bg-muted/40">
               <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                <th className="px-4 py-3">Name</th>
-                <th className="px-4 py-3">Template</th>
-                <th className="px-4 py-3">Target</th>
-                <th className="px-4 py-3">Status</th>
-                <th className="px-4 py-3">Alerts Triggered</th>
-                <th className="px-4 py-3 text-right">Actions</th>
+                <th className="px-4 py-3">{t('alertRuleList.name')}</th>
+                <th className="px-4 py-3">{t('alertRuleList.template')}</th>
+                <th className="px-4 py-3">{t('alertRuleList.target')}</th>
+                <th className="px-4 py-3">{t('alertRuleList.status')}</th>
+                <th className="px-4 py-3">{t('alertRuleList.alertsTriggered')}</th>
+                <th className="px-4 py-3 text-right">{t('alertRuleList.actions')}</th>
               </tr>
             </thead>
             <tbody className="divide-y">
               {filteredRules.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                    No alert rules found. Adjust your filters to see results.
+                    {t('alertRuleList.noAlertRulesFoundAdjustYourFilters')}
                   </td>
                 </tr>
               ) : (
@@ -303,18 +306,18 @@ export default function AlertRuleList({
                       <td className="px-4 py-3">
                         <p className="text-sm font-medium">{templateName}</p>
                         {rule.templateId && (
-                          <p className="text-xs text-muted-foreground">Template ID: {rule.templateId}</p>
+                          <p className="text-xs text-muted-foreground">{t('alertRuleList.templateId')} {rule.templateId}</p>
                         )}
                       </td>
                       <td className="px-4 py-3">
                         <p className="text-sm">{getTargetLabel(rule)}</p>
-                        <p className="text-xs text-muted-foreground">Type: {getTargetType(rule)}</p>
+                        <p className="text-xs text-muted-foreground">{t('alertRuleList.type')} {getTargetType(rule)}</p>
                       </td>
                       <td className="px-4 py-3">{renderStatusToggle(rule)}</td>
                       <td className="px-4 py-3">
                         <p className="text-sm font-medium">{rule.alertsTriggered ?? 0}</p>
                         {rule.lastTriggered && (
-                          <p className="text-xs text-muted-foreground">Last: {rule.lastTriggered}</p>
+                          <p className="text-xs text-muted-foreground">{t('alertRuleList.last')} {rule.lastTriggered}</p>
                         )}
                       </td>
                       <td className="px-4 py-3">{renderActions(rule)}</td>
@@ -329,7 +332,7 @@ export default function AlertRuleList({
           filteredRules.length === 0 ? (
             <DataCard>
               <p className="py-2 text-center text-sm text-muted-foreground">
-                No alert rules found. Adjust your filters to see results.
+                {t('alertRuleList.noAlertRulesFoundAdjustYourFilters')}
               </p>
             </DataCard>
           ) : (
@@ -349,14 +352,14 @@ export default function AlertRuleList({
                       <div>
                         <p className="text-sm font-medium">{templateName}</p>
                         {rule.templateId && (
-                          <p className="text-xs text-muted-foreground">Template ID: {rule.templateId}</p>
+                          <p className="text-xs text-muted-foreground">{t('alertRuleList.templateId')} {rule.templateId}</p>
                         )}
                       </div>
                     </CardField>
                     <CardField label="Target">
                       <div>
                         <p className="text-sm">{getTargetLabel(rule)}</p>
-                        <p className="text-xs text-muted-foreground">Type: {getTargetType(rule)}</p>
+                        <p className="text-xs text-muted-foreground">{t('alertRuleList.type')} {getTargetType(rule)}</p>
                       </div>
                     </CardField>
                     <CardField label="Status">{renderStatusToggle(rule)}</CardField>
@@ -364,7 +367,7 @@ export default function AlertRuleList({
                       <div>
                         <p className="text-sm font-medium">{rule.alertsTriggered ?? 0}</p>
                         {rule.lastTriggered && (
-                          <p className="text-xs text-muted-foreground">Last: {rule.lastTriggered}</p>
+                          <p className="text-xs text-muted-foreground">{t('alertRuleList.last')} {rule.lastTriggered}</p>
                         )}
                       </div>
                     </CardField>

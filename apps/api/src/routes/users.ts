@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import type { SupportedLocale } from '@breeze/shared';
 import { zValidator } from '../lib/validation';
 import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
@@ -6,7 +7,7 @@ import { and, eq, or } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import { nanoid } from 'nanoid';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { users, partnerUsers, organizationUsers, roles, organizations, permissions, rolePermissions } from '../db/schema';
+import { users, partnerUsers, organizationUsers, roles, organizations, partners, permissions, rolePermissions } from '../db/schema';
 import { authMiddleware, hasSatisfiedMfa, requireMfa, requirePermission } from '../middleware/auth';
 import {
   MAX_AVATAR_SIZE_BYTES,
@@ -468,6 +469,32 @@ userRoutes.get('/me', async (c) => {
 
   const requiresSetup = userRequiresSetup(user);
 
+  // The partner default is derived only from the authenticated tenant context.
+  // Do not accept a partner id from query/body input here: doing so would let a
+  // caller probe another tenant's settings while loading their own profile.
+  //
+  // Read under a SYSTEM context: org-scoped sessions get accessiblePartnerIds
+  // = [] (computeAccessiblePartnerIds in middleware/auth.ts), so the ambient
+  // request context's `breeze_has_partner_access` RLS policy would filter this
+  // row out and silently leave partnerDefaultLocale null for the majority of
+  // logins. auth.partnerId comes from the verified JWT, never client input, so
+  // escalating this single hard-scoped-by-id lookup is safe.
+  let partnerDefaultLocale: SupportedLocale | null = null;
+  if (auth.partnerId) {
+    const partnerId = auth.partnerId;
+    const [partner] = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() =>
+        db
+          .select({ settings: partners.settings })
+          .from(partners)
+          .where(eq(partners.id, partnerId))
+          .limit(1)
+      )
+    );
+    const language = (partner?.settings as { language?: unknown } | null | undefined)?.language;
+    partnerDefaultLocale = language === 'en' || language === 'pt-BR' ? language : null;
+  }
+
   // Surface the user's effective permission grants so the web app can hide nav
   // items and action buttons the user can't use. This is UX only — every route
   // still enforces requirePermission server-side.
@@ -487,6 +514,7 @@ userRoutes.get('/me', async (c) => {
     partnerId: auth.partnerId,
     orgId: auth.orgId,
     scope: auth.scope,
+    partnerDefaultLocale,
     permissions: userPerms?.permissions ?? [],
     requiresSetup
   });
@@ -588,7 +616,8 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
           'comfortable, compact, or dense'
         )
         ?? validatePreferenceEnum(prefs, 'font', ['breeze', 'system'], 'breeze or system')
-        ?? validatePreferenceEnum(prefs, 'timeFormat', ['12h', '24h'], '12h or 24h');
+        ?? validatePreferenceEnum(prefs, 'timeFormat', ['12h', '24h'], '12h or 24h')
+        ?? validatePreferenceEnum(prefs, 'locale', ['en', 'pt-BR'], 'en or pt-BR');
       if (validationError) {
         return c.json({ error: validationError }, 400);
       }

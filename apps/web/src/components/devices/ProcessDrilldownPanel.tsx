@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import { Dialog } from '../shared/Dialog';
+import { formatNumber } from '@/lib/i18n/format';
 
 type Row = { name: string; pid: number; cpu: number; ramMb: number; diskBps?: number; netBps?: number };
 type SortKey = 'cpu' | 'ramMb';
@@ -20,6 +22,7 @@ type Props = {
 type EmptyKind = null | 'none-recorded' | 'none-near-time';
 
 export default function ProcessDrilldownPanel({ deviceId, at, onClose }: Props) {
+  const { t } = useTranslation('devices');
   const [rows, setRows] = useState<Row[]>([]);
   const [sampleTime, setSampleTime] = useState<string | null>(null);
   const [emptyKind, setEmptyKind] = useState<EmptyKind>(null);
@@ -43,7 +46,7 @@ export default function ProcessDrilldownPanel({ deviceId, at, onClose }: Props) 
           // already returns CPU-desc order by default (sortBy/sortDesc aren't
           // accepted query params here).
           const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/processes?limit=16`);
-          if (!res.ok) throw new Error('Failed to fetch live processes');
+          if (!res.ok) throw new Error(t('processDrilldownPanel.errors.liveProcesses'));
           const json = await res.json();
           // The on-demand endpoint returns { data: [...processes], meta } — the
           // process array lives directly under `data`.
@@ -61,7 +64,7 @@ export default function ProcessDrilldownPanel({ deviceId, at, onClose }: Props) 
           setEmptyKind(null);
         } else {
           const res = await fetchWithAuth(`/devices/${deviceId}/process-samples?at=${encodeURIComponent(at)}`);
-          if (!res.ok) throw new Error('Failed to fetch process sample');
+          if (!res.ok) throw new Error(t('processDrilldownPanel.errors.processSample'));
           const json = await res.json();
           if (cancelled) return;
           if (!json.sample) {
@@ -77,14 +80,14 @@ export default function ProcessDrilldownPanel({ deviceId, at, onClose }: Props) 
           setEmptyKind(null);
         }
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load processes');
+        if (!cancelled) setError(err instanceof Error ? err.message : t('processDrilldownPanel.errors.loadProcesses'));
       } finally {
         if (!cancelled) setLoading(false);
       }
     })();
 
     return () => { cancelled = true; };
-  }, [deviceId, at, live]);
+  }, [deviceId, at, live, t]);
 
   const sorted = useMemo(
     () => [...rows].sort((a, b) => (sortKey === 'cpu' ? b.cpu - a.cpu : b.ramMb - a.ramMb)),
@@ -92,10 +95,10 @@ export default function ProcessDrilldownPanel({ deviceId, at, onClose }: Props) 
   );
 
   return (
-    <Dialog open onClose={onClose} title="Top processes" maxWidth="lg">
+    <Dialog open onClose={onClose} title={t('processDrilldownPanel.title')} maxWidth="lg">
       <div className="p-4" data-testid="process-drilldown-panel">
         <div className="flex items-center justify-between gap-3">
-          <h3 className="text-base font-semibold">Top processes</h3>
+          <h3 className="text-base font-semibold">{t('processDrilldownPanel.title')}</h3>
           <label className="flex items-center gap-2 text-sm">
             <input
               type="checkbox"
@@ -103,7 +106,7 @@ export default function ProcessDrilldownPanel({ deviceId, at, onClose }: Props) 
               onChange={(e) => setLive(e.target.checked)}
               data-testid="process-drilldown-live-toggle"
             />
-            Live
+            {t('processDrilldownPanel.live')}
           </label>
         </div>
 
@@ -114,14 +117,14 @@ export default function ProcessDrilldownPanel({ deviceId, at, onClose }: Props) 
           {error
             ? ''
             : live
-              ? 'Live (now)'
+              ? t('processDrilldownPanel.subtitle.liveNow')
               : sampleTime
-                ? `Nearest sample: ${formatDateTime(sampleTime)}`
+                ? t('processDrilldownPanel.subtitle.nearestSample', { time: formatDateTime(sampleTime) })
                 : emptyKind === 'none-recorded'
-                  ? 'No process samples recorded for this device yet'
+                  ? t('processDrilldownPanel.subtitle.noneRecorded')
                   : emptyKind === 'none-near-time'
-                    ? 'No process sample recorded at or before this time'
-                    : 'No sample near this time'}
+                    ? t('processDrilldownPanel.subtitle.noneNearTime')
+                    : t('processDrilldownPanel.subtitle.noSample')}
         </p>
 
         <div className="mt-3 flex gap-2 text-sm">
@@ -130,12 +133,12 @@ export default function ProcessDrilldownPanel({ deviceId, at, onClose }: Props) 
         </div>
 
         {error && <p className="mt-3 text-sm text-red-500">{error}</p>}
-        {loading && <p className="mt-3 text-sm text-muted-foreground">Loading…</p>}
+        {loading && <p className="mt-3 text-sm text-muted-foreground">{t('common:states.loading')}</p>}
 
         <table className="mt-3 w-full text-sm">
           <thead>
             <tr className="text-left text-muted-foreground">
-              <th>Process</th><th>PID</th><th>CPU %</th><th>RAM (MB)</th>
+              <th>{t('processDrilldownPanel.table.process')}</th><th>{t('processDrilldownPanel.table.pid')}</th><th>{t('processDrilldownPanel.table.cpu')}</th><th>{t('processDrilldownPanel.table.ram')}</th>
             </tr>
           </thead>
           <tbody>
@@ -143,10 +146,10 @@ export default function ProcessDrilldownPanel({ deviceId, at, onClose }: Props) 
               <tr data-testid="process-drilldown-empty">
                 <td colSpan={4} className="py-4 text-center text-muted-foreground">
                   {live
-                    ? 'No processes returned for this device.'
+                    ? t('processDrilldownPanel.empty.live')
                     : emptyKind === 'none-recorded'
-                      ? 'No process samples have been recorded for this device yet. The agent collects them periodically — check back once it has reported.'
-                      : 'No process sample was recorded at or before this point. Try clicking a more recent point on the graph.'}
+                      ? t('processDrilldownPanel.empty.noneRecorded')
+                      : t('processDrilldownPanel.empty.noneNearTime')}
                 </td>
               </tr>
             )}
@@ -154,7 +157,7 @@ export default function ProcessDrilldownPanel({ deviceId, at, onClose }: Props) 
               <tr key={r.pid} data-testid={`process-drilldown-row-${i}`}>
                 <td>{r.name}</td>
                 <td>{r.pid}</td>
-                <td>{r.cpu.toFixed(1)}</td>
+                <td>{formatNumber(r.cpu, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</td>
                 <td>{Math.round(r.ramMb)}</td>
               </tr>
             ))}

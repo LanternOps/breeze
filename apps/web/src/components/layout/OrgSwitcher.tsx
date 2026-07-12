@@ -13,6 +13,7 @@ import { useOrgStore, type Organization, type Site } from '@/stores/orgStore';
 import { waitForPendingRefresh } from '@/stores/auth';
 import { showToast } from '@/components/shared/Toast';
 import { isGlobalScopeRoute } from '../../lib/routeScope';
+import { useTranslation } from 'react-i18next';
 
 // Switching org/site reloads the page. Stash a confirmation message so the
 // destination page can surface "Switched to X" after the reload, landing the
@@ -78,6 +79,7 @@ const statusColors: Record<string, string> = {
 };
 
 function StatusBadge({ status }: { status: string }) {
+  const { t } = useTranslation('common');
   return (
     <span
       className={cn(
@@ -85,7 +87,7 @@ function StatusBadge({ status }: { status: string }) {
         statusColors[status] || statusColors.inactive
       )}
     >
-      {status}
+      {t(/* i18n-dynamic */ `layout.org.status.${status}`, { defaultValue: status })}
     </span>
   );
 }
@@ -116,6 +118,7 @@ function OrgMenuItem({
   // site row is rendered, so it can scrollIntoView after the submenu mounts.
   selectedSiteRef: (el: HTMLButtonElement | null) => void;
 }) {
+  const { t } = useTranslation('common');
   const orgSites = sites.filter((site) => site.orgId === org.id);
   const hasSites = orgSites.length > 0;
   const showSites = isExpanded && hasSites;
@@ -162,7 +165,7 @@ function OrgMenuItem({
               currentSiteId === null && isSelected && 'bg-muted'
             )}
           >
-            <span className="text-muted-foreground">All Sites</span>
+            <span className="text-muted-foreground">{t('layout.org.allSites')}</span>
             {currentSiteId === null && isSelected && (
               <Check className="h-3 w-3 text-primary" />
             )}
@@ -183,7 +186,7 @@ function OrgMenuItem({
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-xs text-muted-foreground">
-                  {site.deviceCount} devices
+                  {t('layout.org.deviceCount', { count: site.deviceCount })}
                 </span>
                 {currentSiteId === site.id && (
                   <Check className="h-3 w-3 text-primary" />
@@ -208,6 +211,7 @@ function OrgMenuItem({
  * a toggle there would be misleading — see routeScope).
  */
 function OrgScopePill({ isGlobalRoute }: { isGlobalRoute: boolean }) {
+  const { t } = useTranslation('common');
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
   const lastOrgId = useOrgStore((s) => s.lastOrgId);
   const organizations = useOrgStore((s) => s.organizations);
@@ -231,7 +235,7 @@ function OrgScopePill({ isGlobalRoute }: { isGlobalRoute: boolean }) {
     setApplying(next);
     if (next === 'all') {
       setOrganization('');
-      stashSwitchToast('Showing all organizations');
+      stashSwitchToast(t('layout.org.toast.showingAll'));
     } else {
       const target =
         lastOrgId && organizations.some((o) => o.id === lastOrgId)
@@ -242,8 +246,8 @@ function OrgScopePill({ isGlobalRoute }: { isGlobalRoute: boolean }) {
         return;
       }
       setOrganization(target);
-      const name = organizations.find((o) => o.id === target)?.name ?? 'organization';
-      stashSwitchToast(`Showing ${name}`);
+      const name = organizations.find((o) => o.id === target)?.name ?? t('labels.organization');
+      stashSwitchToast(t('layout.org.toast.showing', { name }));
     }
     await waitForPendingRefresh();
     const redirect = getOrgSwitchRedirect(window.location.pathname);
@@ -254,7 +258,7 @@ function OrgScopePill({ isGlobalRoute }: { isGlobalRoute: boolean }) {
   return (
     <div
       role="group"
-      aria-label="Organization scope"
+      aria-label={t('layout.org.scopeLabel')}
       data-testid="org-scope-pill"
       className="inline-flex shrink-0 overflow-hidden rounded-md border text-xs"
     >
@@ -268,14 +272,14 @@ function OrgScopePill({ isGlobalRoute }: { isGlobalRoute: boolean }) {
           'flex items-center gap-1 px-2 py-1.5 transition-colors disabled:opacity-60',
           !isAll ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
         )}
-        title="Show data for the selected organization only"
+        title={t('layout.org.currentTitle')}
       >
         {applying === 'current' ? (
           <Loader2 className="h-3 w-3 animate-spin" />
         ) : (
           <Building2 className="h-3 w-3" />
         )}
-        <span className="hidden sm:inline">Current</span>
+        <span className="hidden sm:inline">{t('layout.org.current')}</span>
       </button>
       <button
         type="button"
@@ -287,20 +291,21 @@ function OrgScopePill({ isGlobalRoute }: { isGlobalRoute: boolean }) {
           'flex items-center gap-1 px-2 py-1.5 transition-colors disabled:opacity-60',
           isAll ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
         )}
-        title="Show data across every accessible organization"
+        title={t('layout.org.allTitle')}
       >
         {applying === 'all' ? (
           <Loader2 className="h-3 w-3 animate-spin" />
         ) : (
           <Globe className="h-3 w-3" />
         )}
-        <span className="hidden sm:inline">All orgs</span>
+        <span className="hidden sm:inline">{t('layout.org.allOrgs')}</span>
       </button>
     </div>
   );
 }
 
 export default function OrgSwitcher() {
+  const { t } = useTranslation('common');
   const [isOpen, setIsOpen] = useState(false);
   // True from the moment a switch is initiated until the page reloads — shows a
   // spinner on the trigger and disables it so the bar never silently freezes.
@@ -437,12 +442,12 @@ export default function OrgSwitcher() {
   // so the user can see they're in partner-wide scope. On a scoped route, show
   // the selected org (and site), or "All Organizations" if nothing is selected.
   const displayText = isGlobalRoute
-    ? 'All Organizations'
+    ? t('layout.org.allOrganizations')
     : currentOrg
       ? currentSite
         ? `${currentOrg.name} / ${currentSite.name}`
         : currentOrg.name
-      : 'All Organizations';
+      : t('layout.org.allOrganizations');
 
   return (
     <div className="flex min-w-0 items-center gap-1 sm:gap-2">
@@ -460,8 +465,8 @@ export default function OrgSwitcher() {
           )}
           disabled={isLoading || switching}
           title={isGlobalRoute
-            ? 'This page shows all organizations'
-            : 'Select Organization (Cmd+O)'}
+            ? t('layout.org.globalTitle')
+            : t('layout.org.selectTitle')}
         >
           {isLoading || switching ? (
             <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
@@ -474,7 +479,7 @@ export default function OrgSwitcher() {
             data-testid="org-switcher-label"
             className="hidden min-w-0 truncate md:inline-block md:max-w-40 lg:max-w-[200px]"
           >
-            {switching ? 'Switching…' : displayText}
+            {switching ? t('layout.org.switching') : displayText}
           </span>
           {!isGlobalRoute && currentOrg && (
             <span className="hidden shrink-0 md:inline-flex">
@@ -492,12 +497,12 @@ export default function OrgSwitcher() {
       {isOpen && (
         <div ref={panelRef} data-testid="org-switcher-panel" className="absolute left-0 top-full z-50 mt-1 w-80 rounded-md border bg-popover p-2 shadow-lg">
           <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
-            Organizations
+            {t('layout.org.organizations')}
           </div>
 
           {organizations.length === 0 ? (
             <div className="px-2 py-4 text-center text-sm text-muted-foreground">
-              {isLoading ? 'Loading...' : 'No organizations available'}
+              {isLoading ? t('states.loading') : t('layout.org.noneAvailable')}
             </div>
           ) : (
             <div className="max-h-[calc(100vh-160px)] space-y-1 overflow-y-auto">
@@ -531,7 +536,7 @@ export default function OrgSwitcher() {
                     if (org.id !== currentOrgId) {
                       setSwitching(true);
                       setOrganization(org.id);
-                      stashSwitchToast(`Switched to ${org.name}`);
+                      stashSwitchToast(t('layout.org.toast.switched', { name: org.name }));
                       // Wait for any in-flight /auth/refresh to settle before
                       // navigating — leaving while a refresh is mid-flight
                       // clears the cookie jti and bounces to /login (#950,
@@ -554,10 +559,10 @@ export default function OrgSwitcher() {
                     if (changed) {
                       setSwitching(true);
                       const siteName = siteId
-                        ? sites.find((s) => s.id === siteId)?.name ?? 'site'
+                        ? sites.find((s) => s.id === siteId)?.name ?? t('labels.site')
                         : null;
                       stashSwitchToast(
-                        siteName ? `Switched to ${siteName}` : 'Showing all sites'
+                        siteName ? t('layout.org.toast.switched', { name: siteName }) : t('layout.org.toast.showingAllSites')
                       );
                       // Same #950 refresh-race guard before reloading.
                       await waitForPendingRefresh();

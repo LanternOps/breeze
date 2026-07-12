@@ -9,6 +9,7 @@ import {
   ShieldCheck,
   ShieldOff
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 import { ENABLE_EDR_INTEGRATIONS, ENABLE_ENDPOINT_AV_FEATURES } from '../../lib/featureFlags';
 import { friendlyFetchError } from '../../lib/utils';
@@ -80,6 +81,7 @@ function compactPath(value: string): string {
 }
 
 export default function DeviceSecurityTab({ deviceId, orgId, timezone }: DeviceSecurityTabProps) {
+  const { t } = useTranslation('devices');
   const [threats, setThreats] = useState<ThreatRecord[]>([]);
   const [scans, setScans] = useState<ScanRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -202,8 +204,8 @@ export default function DeviceSecurityTab({ deviceId, orgId, timezone }: DeviceS
       <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h3 className="text-lg font-semibold">Security Operations</h3>
-            <p className="text-sm text-muted-foreground">Run scans and review the latest detection activity for this device.</p>
+            <h3 className="text-lg font-semibold">{t('deviceSecurityTab.securityOperations')}</h3>
+            <p className="text-sm text-muted-foreground">{t('deviceSecurityTab.securityOperationsDescription')}</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <button
@@ -213,7 +215,7 @@ export default function DeviceSecurityTab({ deviceId, orgId, timezone }: DeviceS
               className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm font-medium hover:bg-muted disabled:opacity-60"
             >
               {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-              Refresh
+              {t('common:actions.refresh')}
             </button>
             <button
               type="button"
@@ -222,7 +224,7 @@ export default function DeviceSecurityTab({ deviceId, orgId, timezone }: DeviceS
               className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm font-medium hover:bg-muted disabled:opacity-60"
             >
               {runningFullScan ? <Loader2 className="h-4 w-4 animate-spin" /> : <ScanSearch className="h-4 w-4" />}
-              Run full scan
+              {t('deviceSecurityTab.runFullScan')}
             </button>
           </div>
         </div>
@@ -232,16 +234,16 @@ export default function DeviceSecurityTab({ deviceId, orgId, timezone }: DeviceS
         <div className="rounded-lg border bg-card p-6 shadow-xs">
           <div className="mb-4 flex items-center gap-2">
             <ShieldAlert className="h-4 w-4 text-red-500" />
-            <h3 className="text-sm font-semibold">Recent Threats</h3>
+            <h3 className="text-sm font-semibold">{t('deviceSecurityTab.recentThreats')}</h3>
           </div>
 
           {loading ? (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
-              Loading threats...
+              {t('deviceSecurityTab.loadingThreats')}
             </div>
           ) : threats.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No recent threats for this device.</p>
+            <p className="text-sm text-muted-foreground">{t('deviceSecurityTab.emptyThreats')}</p>
           ) : (
             <div className="space-y-3">
               {threats.map((threat) => (
@@ -250,10 +252,10 @@ export default function DeviceSecurityTab({ deviceId, orgId, timezone }: DeviceS
                     <p className="text-sm font-medium">{threat.name}</p>
                     <div className="flex flex-wrap items-center gap-2">
                       <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold ${severityBadge[threat.severity]}`}>
-                        {threat.severity}
+                        {t(/* i18n-dynamic */ `deviceSecurityTab.severity.${threat.severity}`)}
                       </span>
                       <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold ${statusBadge[threat.status]}`}>
-                        {threat.status}
+                        {t(/* i18n-dynamic */ `deviceSecurityTab.threatStatus.${threat.status}`)}
                       </span>
                     </div>
                   </div>
@@ -262,7 +264,7 @@ export default function DeviceSecurityTab({ deviceId, orgId, timezone }: DeviceS
                     {compactPath(threat.filePath)}
                   </p>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Detected: {formatDateTime(threat.detectedAt, timezone)}
+                    {t('deviceSecurityTab.detected', { date: formatDateTime(threat.detectedAt, timezone) })}
                   </p>
 
                   <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -275,7 +277,7 @@ export default function DeviceSecurityTab({ deviceId, orgId, timezone }: DeviceS
                           className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-muted disabled:opacity-60"
                         >
                           {actingThreatId === threat.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShieldOff className="h-3.5 w-3.5" />}
-                          Quarantine
+                          {t('deviceSecurityTab.quarantine')}
                         </button>
                         <button
                           type="button"
@@ -284,7 +286,7 @@ export default function DeviceSecurityTab({ deviceId, orgId, timezone }: DeviceS
                           className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-muted disabled:opacity-60"
                         >
                           <AlertTriangle className="h-3.5 w-3.5" />
-                          Remove
+                          {t('common:actions.remove')}
                         </button>
                       </>
                     )}
@@ -297,7 +299,7 @@ export default function DeviceSecurityTab({ deviceId, orgId, timezone }: DeviceS
                         className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-muted disabled:opacity-60"
                       >
                         {actingThreatId === threat.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShieldCheck className="h-3.5 w-3.5" />}
-                        Restore
+                        {t('deviceSecurityTab.restore')}
                       </button>
                     )}
                   </div>
@@ -310,33 +312,33 @@ export default function DeviceSecurityTab({ deviceId, orgId, timezone }: DeviceS
         <div className="rounded-lg border bg-card p-6 shadow-xs">
           <div className="mb-4 flex items-center gap-2">
             <ScanSearch className="h-4 w-4 text-primary" />
-            <h3 className="text-sm font-semibold">Recent Scans</h3>
+            <h3 className="text-sm font-semibold">{t('deviceSecurityTab.recentScans')}</h3>
           </div>
 
           {loading ? (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
-              Loading scans...
+              {t('deviceSecurityTab.loadingScans')}
             </div>
           ) : scans.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No scan history for this device yet.</p>
+            <p className="text-sm text-muted-foreground">{t('deviceSecurityTab.emptyScans')}</p>
           ) : (
             <div className="space-y-3">
               {scans.map((scan) => (
                 <div key={scan.id} className="rounded-md border bg-background p-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <p className="text-sm font-medium capitalize">{scan.scanType} scan</p>
+                    <p className="text-sm font-medium capitalize">{t('deviceSecurityTab.scanType', { type: t(/* i18n-dynamic */ `deviceSecurityTab.scanTypes.${scan.scanType}`) })}</p>
                     <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold ${scanStatusBadge[scan.status]}`}>
-                      {scan.status}
+                      {t(/* i18n-dynamic */ `deviceSecurityTab.scanStatus.${scan.status}`)}
                     </span>
                   </div>
 
                   <div className="mt-2 grid gap-1 text-xs text-muted-foreground sm:grid-cols-2">
-                    <p>Started: {formatDateTime(scan.startedAt, timezone)}</p>
-                    <p>Finished: {formatDateTime(scan.finishedAt, timezone)}</p>
+                    <p>{t('deviceSecurityTab.started', { date: formatDateTime(scan.startedAt, timezone) })}</p>
+                    <p>{t('deviceSecurityTab.finished', { date: formatDateTime(scan.finishedAt, timezone) })}</p>
                     <p className="sm:col-span-2 flex items-center gap-1">
                       <CheckCircle2 className="h-3.5 w-3.5" />
-                      Threats found: {scan.threatsFound}
+                      {t('deviceSecurityTab.threatsFound', { count: scan.threatsFound })}
                     </p>
                   </div>
                 </div>

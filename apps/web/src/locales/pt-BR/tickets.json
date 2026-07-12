@@ -1,0 +1,469 @@
+{
+  "slaChip": {
+    "pausedLeft": "Pausado · restam {{relative}}",
+    "left": "restam {{relative}}",
+    "breached": "Violado"
+  },
+  "slaTimers": {
+    "title": "SLA",
+    "firstResponse": "Primeira resposta",
+    "resolution": "Resolução",
+    "state": {
+      "met": "Cumprido",
+      "notMet": "Não cumprido",
+      "breached": "Violado",
+      "pausedLeft": "Pausado · restam {{relative}}",
+      "left": "restam {{relative}}"
+    },
+    "clockPaused": "Relógio pausado enquanto o chamado está {{status}}.",
+    "status": {
+      "onHold": "em espera",
+      "pending": "pendente"
+    }
+  },
+  "cannedResponsePicker": {
+    "button": "Resposta pronta"
+  },
+  "deviceTicketsTab": {
+    "loading": "Carregando chamados...",
+    "loadFailed": "Falha ao carregar chamados.",
+    "empty": "Nenhum chamado para este dispositivo.",
+    "status": {
+      "new": "Novo",
+      "open": "Aberto",
+      "pending": "Pendente",
+      "on_hold": "Em espera",
+      "resolved": "Resolvido",
+      "closed": "Fechado"
+    },
+    "priority": {
+      "urgent": "Urgente",
+      "high": "Alta",
+      "normal": "Normal",
+      "low": "Baixa"
+    }
+  },
+  "ticketQueueList": {
+    "empty": "Nenhum chamado corresponde.",
+    "clearFilters": "Limpar filtros",
+    "ariaLabel": "Fila de chamados",
+    "selectTicket": "Selecionar {{ticket}}",
+    "timeAgo": {
+      "minutes": "há {{count}}min",
+      "minutes_one": "há {{count}}min",
+      "minutes_other": "há {{count}}min",
+      "hours": "há {{count}}h",
+      "hours_one": "há {{count}}h",
+      "hours_other": "há {{count}}h",
+      "days": "há {{count}}d",
+      "days_one": "há {{count}}d",
+      "days_other": "há {{count}}d"
+    },
+    "status": {
+      "new": "Novo",
+      "open": "Aberto",
+      "pending": "Pendente",
+      "on_hold": "Em espera",
+      "resolved": "Resolvido",
+      "closed": "Fechado"
+    },
+    "priority": {
+      "urgent": "Urgente",
+      "high": "Alta",
+      "normal": "Normal",
+      "low": "Baixa"
+    }
+  },
+  "ticketArchivedList": {
+    "emptyTitle": "Nenhum chamado arquivado.",
+    "emptyDescription": "Chamados excluídos aparecem aqui. Restaure um para devolvê-lo às filas ativas.",
+    "ariaLabel": "Chamados arquivados",
+    "deleted": "excluído {{relative}}",
+    "restore": "Restaurar",
+    "restoring": "Restaurando…",
+    "timeAgo": {
+      "minutes": "há {{count}}min",
+      "minutes_one": "há {{count}}min",
+      "minutes_other": "há {{count}}min",
+      "hours": "há {{count}}h",
+      "hours_one": "há {{count}}h",
+      "hours_other": "há {{count}}h",
+      "days": "há {{count}}d",
+      "days_one": "há {{count}}d",
+      "days_other": "há {{count}}d"
+    },
+    "status": {
+      "new": "Novo",
+      "open": "Aberto",
+      "pending": "Pendente",
+      "on_hold": "Em espera",
+      "resolved": "Resolvido",
+      "closed": "Fechado"
+    },
+    "priority": {
+      "urgent": "Urgente",
+      "high": "Alta",
+      "normal": "Normal",
+      "low": "Baixa"
+    }
+  },
+  "ticketComposer": {
+    "reply": "Responder",
+    "internalNote": "Nota interna",
+    "internalBanner": "Interno: não visível para o solicitante",
+    "replyPlaceholder": "Responder a {{requester}}…",
+    "requesterFallback": "solicitante",
+    "internalPlaceholder": "Adicionar uma nota interna…",
+    "sending": "Enviando",
+    "sendReply": "Enviar resposta",
+    "addInternalNote": "Adicionar nota interna"
+  },
+  "ticketFeed": {
+    "empty": "Nenhuma atividade ainda.",
+    "commentDeleted": "{{author}} — excluído",
+    "commentFallback": "Um comentário",
+    "requester": "Solicitante",
+    "technician": "Técnico",
+    "internal": "Interno",
+    "edited": "editado",
+    "system": {
+      "systemAuthor": "Sistema",
+      "technicianAuthor": "Técnico",
+      "statusChanged": "{{author}} alterou o status: {{from}} para {{to}}",
+      "assigned": "{{author}} atribuiu este chamado",
+      "unassigned": "{{author}} removeu a atribuição deste chamado",
+      "loggedTime": "{{author}} registrou tempo",
+      "systemEvent": "Evento do sistema",
+      "collapsed": "{{count}} alterações. Mostrar",
+      "collapsed_one": "{{count}} alteração. Mostrar",
+      "collapsed_other": "{{count}} alterações. Mostrar"
+    },
+    "status": {
+      "new": "Novo",
+      "open": "Aberto",
+      "pending": "Pendente",
+      "on_hold": "Em espera",
+      "resolved": "Resolvido",
+      "closed": "Fechado"
+    },
+    "deleteDialog": {
+      "title": "Excluir comentário",
+      "message": "Tem certeza de que deseja excluir este comentário? Esta ação não pode ser desfeita."
+    }
+  },
+  "ticketPartsCard": {
+    "title": "Peças",
+    "empty": "Nenhuma peça.",
+    "nonBillableSuffix": " · não faturável",
+    "marginTitle": "Margem",
+    "deletePrompt": "Excluir?",
+    "addPart": "Adicionar peça",
+    "fromCatalogPrefix": "Do catálogo:",
+    "unlink": "Desvincular",
+    "catalogPlaceholder": "Adicionar do catálogo (opcional)",
+    "quantity": "Quantidade",
+    "unitPrice": "Preço unitário",
+    "costPlaceholder": "Custo (opcional)",
+    "cost": "Custo",
+    "billable": "Faturável",
+    "update": "Atualizar",
+    "toast": {
+      "updateFailed": "Falha ao atualizar peça",
+      "updated": "Peça atualizada",
+      "addFailed": "Falha ao adicionar peça",
+      "added": "Peça adicionada",
+      "updateFailedSentence": "Falha ao atualizar peça.",
+      "addFailedSentence": "Falha ao adicionar peça.",
+      "deleteFailed": "Falha ao excluir peça",
+      "deleted": "Peça excluída",
+      "deleteFailedSentence": "Falha ao excluir peça."
+    }
+  },
+  "ticketTimeBilling": {
+    "title": "Tempo e Faturamento",
+    "totalTime": "Tempo total",
+    "billable": "Faturável",
+    "timeAmount": "Valor do tempo",
+    "partsCount": "Peças ({{count}})",
+    "partsCount_one": "Peças ({{count}})",
+    "partsCount_other": "Peças ({{count}})",
+    "starting": "Iniciando…",
+    "startTimer": "Iniciar timer",
+    "logTime": "Registrar tempo",
+    "minutes": "Minutos",
+    "descriptionPlaceholder": "Descrição (opcional)",
+    "techFallback": "Técnico",
+    "running": "em execução",
+    "toast": {
+      "startTimerFailed": "Falha ao iniciar timer.",
+      "logFailed": "Falha ao registrar tempo",
+      "logged": "Tempo registrado",
+      "logFailedSentence": "Falha ao registrar tempo."
+    }
+  },
+  "inboundReviewQueue": {
+    "title": "Fila de revisão",
+    "description": "E-mails em quarentena (remetente desconhecido) e e-mails de entrada com falha. Converta em chamado ou dispense.",
+    "loading": "Carregando.",
+    "loadFailed": "Falha ao carregar a fila de revisão.",
+    "adminsOnly": "A fila de revisão está disponível apenas para administradores.",
+    "empty": "Nada para revisar.",
+    "unknownSender": "(remetente desconhecido)",
+    "noSubject": "(sem assunto)",
+    "selectOrganization": "Selecionar organização…",
+    "createTicket": "Criar chamado",
+    "convertToTicket": "Converter em chamado",
+    "dismiss": "Dispensar",
+    "prev": "Anterior",
+    "pageOf": "Página {{page}} de {{totalPages}}",
+    "pickOrgFirst": "Escolha uma organização primeiro.",
+    "convertFailed": "Falha ao converter em chamado. Tente novamente.",
+    "ticketCreated": "Chamado criado a partir do e-mail",
+    "dismissFailed": "Falha ao dispensar. Tente novamente.",
+    "dismissed": "E-mail de entrada dispensado",
+    "parseStatus": {
+      "quarantined": "em quarentena",
+      "failed": "falhou"
+    },
+    "friendly": {
+      "orgNotAccessible": "Essa organização não está disponível no seu parceiro.",
+      "rowNotFound": "Esse e-mail de entrada não está mais disponível.",
+      "rowAlreadyResolved": "Esse e-mail de entrada já foi tratado. Atualizando a lista.",
+      "noSender": "Este e-mail não tem um endereço de remetente utilizável, então não pode virar chamado. Dispense-o ou acompanhe fora do sistema."
+    }
+  },
+  "createTicketPage": {
+    "title": "Criar chamado",
+    "orgsLoadFailed": "Falha ao carregar organizações.",
+    "selectOrganization": "Selecionar organização",
+    "subject": "Assunto",
+    "requesterOptional": "Solicitante (opcional)",
+    "defaultYou": "Padrão (você)",
+    "someoneElse": "Outra pessoa…",
+    "requesterName": "Nome do solicitante",
+    "emailOptional": "E-mail (opcional)",
+    "requesterEmail": "E-mail do solicitante",
+    "deviceOptional": "Dispositivo (opcional)",
+    "category": "Categoria",
+    "priority": "Prioridade",
+    "creating": "Criando",
+    "createTicket": "Criar chamado",
+    "creationFailed": "Falha ao criar chamado. Tente novamente.",
+    "createdToast": "Chamado {{number}} criado",
+    "priorityOptions": {
+      "low": "Baixa",
+      "normal": "Normal",
+      "high": "Alta",
+      "urgent": "Urgente"
+    }
+  },
+  "ticketsPage": {
+    "title": "Chamados",
+    "createTicket": "Criar chamado",
+    "reviewQueue": "Fila de revisão",
+    "archived": "Arquivados",
+    "searchPlaceholder": "Pesquisar chamados",
+    "filterByOrganization": "Filtrar por organização",
+    "allOrganizations": "Todas as organizações",
+    "filterByPriority": "Filtrar por prioridade",
+    "allPriorities": "Todas as prioridades",
+    "filterByCategory": "Filtrar por categoria",
+    "allCategories": "Todas as categorias",
+    "assigneeLockedTitle": "A aba já filtra por responsável",
+    "filterByAssignee": "Filtrar por responsável",
+    "allAssignees": "Todos os responsáveis",
+    "sortTickets": "Ordenar chamados",
+    "loadFailed": "Falha ao carregar chamados.",
+    "selectAll": "Selecionar todos",
+    "selectedCount": "{{count}} selecionados",
+    "selectedCount_one": "{{count}} selecionado",
+    "selectedCount_other": "{{count}} selecionados",
+    "clearSelection": "Limpar",
+    "noSelection": "Selecione um chamado. Use j/k para mover, Enter para expandir.",
+    "ticketingSettings": "Configurações de chamados",
+    "assignFailed": "Falha ao atribuir. Tente novamente.",
+    "assignedToYou": "Atribuído a você",
+    "restoreFailed": "Falha ao restaurar. Tente novamente.",
+    "ticketRestored": "Chamado restaurado",
+    "tabs": {
+      "mine": "Meus chamados",
+      "unassigned": "Não atribuídos",
+      "open": "Todos abertos",
+      "breaching": "Perto de violar",
+      "closed": "Fechados"
+    },
+    "sort": {
+      "triage": "Ordem de triagem",
+      "newest": "Mais recentes primeiro",
+      "oldest": "Mais antigos primeiro",
+      "due": "Data de vencimento"
+    },
+    "priority": {
+      "urgent": "Urgente",
+      "high": "Alta",
+      "normal": "Normal",
+      "low": "Baixa"
+    },
+    "status": {
+      "new": "Novo",
+      "open": "Aberto",
+      "pending": "Pendente",
+      "on_hold": "Em espera",
+      "resolved": "Resolvido",
+      "closed": "Fechado"
+    },
+    "empty": {
+      "title": "Nenhum chamado ainda",
+      "description": "Chamados chegam pelo portal do cliente, por regras de alerta e por técnicos. Crie o primeiro ou configure uma regra de alerta para abrir chamados automaticamente."
+    },
+    "bulk": {
+      "assignToAria": "Atribuir em massa a",
+      "assignTo": "Atribuir a…",
+      "unassign": "Remover atribuição",
+      "setStatusAria": "Definir status em massa",
+      "setStatus": "Definir status…",
+      "updateFailed": "Falha na atualização em massa. Tente novamente.",
+      "deleteFailed": "Falha na exclusão em massa. Tente novamente.",
+      "updatedPast": "atualizados",
+      "deletedPast": "excluídos",
+      "reasonCount": "{{count}} {{reason}}",
+      "reasonCount_one": "{{count}} {{reason}}",
+      "reasonCount_other": "{{count}} {{reason}}",
+      "partialToast": "{{updated}} {{verb}}, {{skipped}} ignorados{{failedSuffix}}{{reasonsSuffix}}",
+      "successToast": "{{updated}} {{verb}}",
+      "failedSuffix": ", {{failed}} falharam",
+      "reasonsSuffix": " — {{reasons}}",
+      "reason": {
+        "outOfScope": "fora do seu escopo",
+        "invalidTransition": "mudança de status inválida",
+        "assigneeNotFound": "responsável não encontrado",
+        "assigneeWrongPartner": "responsável pertence a outro parceiro",
+        "concurrentModification": "modificado por outra pessoa",
+        "ticketPartnerUnresolvable": "parceiro do chamado não resolvível",
+        "other": "outros erros"
+      }
+    },
+    "bulkDeleteDialog": {
+      "title": "Excluir {{count}} chamado?",
+      "title_one": "Excluir {{count}} chamado?",
+      "title_other": "Excluir {{count}} chamados?",
+      "message": "Isso os oculta de todas as filas; um administrador pode restaurá-los em Arquivados.",
+      "confirm": "Excluir chamados"
+    }
+  },
+  "ticketWorkbench": {
+    "notFound": "Chamado não encontrado. Ele pode ter sido excluído ou você pode não ter acesso a ele.",
+    "loadFailed": "Falha ao carregar chamado.",
+    "backToQueue": "Voltar à fila",
+    "ticketSubject": "Assunto do chamado",
+    "openFullPage": "Abrir página completa",
+    "priorityLabel": "Prioridade",
+    "categoryLabel": "Categoria",
+    "noCategory": "Sem categoria",
+    "currentCategory": "Categoria atual",
+    "assignee": "Responsável",
+    "unassigned": "Não atribuído",
+    "mspStaff": "Equipe MSP",
+    "assigneeValue": "Responsável: {{assignee}} ✕",
+    "source": "Origem",
+    "dueDate": "Data de vencimento",
+    "waitingOn": "Aguardando",
+    "resolution": "Resolução",
+    "linkedAlerts": "Alertas vinculados",
+    "status": {
+      "new": "Novo",
+      "open": "Aberto",
+      "pending": "Pendente",
+      "on_hold": "Em espera",
+      "resolved": "Resolvido",
+      "closed": "Fechado"
+    },
+    "priority": {
+      "urgent": "Urgente",
+      "high": "Alta",
+      "normal": "Normal",
+      "low": "Baixa"
+    },
+    "tags": {
+      "label": "Tags",
+      "removeTag": "Remover tag {{tag}}",
+      "addTag": "Adicionar tag…",
+      "addTagAria": "Adicionar tag"
+    },
+    "invoice": {
+      "create": "Criar fatura",
+      "creating": "Criando…",
+      "createFailed": "Não foi possível criar uma fatura a partir deste chamado.",
+      "created": "Rascunho de fatura criado"
+    },
+    "move": {
+      "open": "Mover para outra org…",
+      "label": "Mover para organização",
+      "selectOrganization": "Selecionar organização…",
+      "confirm": "Mover",
+      "failed": "Falha ao mover. Tente novamente."
+    },
+    "triage": {
+      "title": "Triagem sugerida",
+      "checking": "Verificando sinais do chamado…",
+      "priority": "Prioridade: {{priority}}",
+      "category": "Categoria: {{category}}",
+      "confidence": "{{percent}}% de confiança",
+      "notRight": "Não está correto",
+      "applying": "Aplicando…",
+      "suggestedCategory": "Categoria sugerida",
+      "applyFailed": "Não foi possível aplicar a sugestão de triagem do chamado.",
+      "applied": "Sugestão de triagem aplicada",
+      "feedbackFailed": "Não foi possível salvar o feedback da triagem do chamado.",
+      "feedbackSaved": "Feedback da triagem salvo"
+    },
+    "resolve": {
+      "noteLabel": "Nota de resolução (visível para o solicitante)",
+      "submit": "Resolver chamado"
+    },
+    "pending": {
+      "reasonLabel": "O que você está aguardando? (opcional)",
+      "setPending": "Definir como pendente",
+      "putOnHold": "Colocar em espera"
+    },
+    "description": {
+      "empty": "Sem descrição.",
+      "add": "Adicionar descrição"
+    },
+    "requester": {
+      "label": "Solicitante",
+      "someoneElse": "Outra pessoa…",
+      "nameAria": "Nome do solicitante",
+      "emailPlaceholder": "E-mail (opcional)",
+      "emailAria": "E-mail do solicitante"
+    },
+    "device": {
+      "none": "Sem dispositivo",
+      "unlink": "Desvincular"
+    },
+    "toast": {
+      "statusUpdated": "Status atualizado",
+      "statusUpdateFailed": "Falha ao atualizar status. Tente novamente.",
+      "ticketResolved": "Chamado resolvido",
+      "resolveFailed": "Falha ao resolver. Tente novamente.",
+      "replyFailed": "Falha ao responder. Tente novamente.",
+      "updateFailed": "Falha ao atualizar. Tente novamente.",
+      "commentEditFailed": "Falha ao editar comentário. Tente novamente.",
+      "commentDeleteFailed": "Falha ao excluir comentário. Tente novamente.",
+      "priorityUpdateFailed": "Falha ao atualizar prioridade. Tente novamente.",
+      "categoryUpdateFailed": "Falha ao atualizar categoria. Tente novamente.",
+      "assigned": "Atribuído",
+      "unassigned": "Não atribuído",
+      "assignFailed": "Falha ao atribuir. Tente novamente."
+    },
+    "delete": {
+      "failed": "Falha ao excluir. Tente novamente.",
+      "deleted": "Chamado excluído"
+    },
+    "deleteDialog": {
+      "title": "Excluir este chamado?",
+      "message": "Isso oculta o chamado de todas as filas. Um administrador pode restaurá-lo na fila Arquivados.",
+      "confirm": "Excluir chamado"
+    }
+  }
+}

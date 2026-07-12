@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ShieldCheck, AlertTriangle, CheckCircle2, XCircle } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import type { TCCPermissions } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 
@@ -13,6 +14,7 @@ type MacOSPermissionsCardProps = {
 };
 
 export default function MacOSPermissionsCard({ deviceId, tccPermissions: initialTcc, formatDate }: MacOSPermissionsCardProps) {
+  const { t } = useTranslation('devices');
   const [tccPermissions, setTccPermissions] = useState<TCCPermissions>(initialTcc);
 
   // Sync local state when parent passes new initial data (e.g. device switch)
@@ -57,58 +59,58 @@ export default function MacOSPermissionsCard({ deviceId, tccPermissions: initial
     <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex items-center gap-2 mb-4">
         <ShieldCheck className="h-4 w-4 text-muted-foreground" />
-        <h3 className="text-sm font-semibold">macOS Permissions</h3>
+        <h3 className="text-sm font-semibold">{t('macOSPermissionsCard.title')}</h3>
       </div>
       {hasMissing && (
         <div className="mb-4 flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2">
           <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0 text-amber-600" />
           <p className="text-sm text-amber-700 dark:text-amber-400">
             {!tccPermissions.fullDiskAccess
-              ? 'Full Disk Access must be granted in System Settings > Privacy & Security. Screen Recording and Accessibility will be configured automatically.'
+              ? t('macOSPermissionsCard.fullDiskAccessWarning')
               : tccPermissions.remoteDesktop === false
-                ? 'Remote Desktop permission is required for unattended login-window access on macOS 14+.'
-              : 'Screen Recording and Accessibility are being configured automatically. If this persists, check agent logs or restart the agent.'}
+                ? t('macOSPermissionsCard.remoteDesktopWarning')
+              : t('macOSPermissionsCard.configuringWarning')}
           </p>
         </div>
       )}
       <dl className="divide-y">
         <div className="flex justify-between py-2">
-          <dt className="text-sm text-muted-foreground">Full Disk Access</dt>
+          <dt className="text-sm text-muted-foreground">{t('macOSPermissionsCard.permissions.fullDiskAccess')}</dt>
           <dd className="text-sm font-medium">
             {tccPermissions.fullDiskAccess ? (
               <span className="inline-flex items-center gap-1 text-green-600 dark:text-green-400">
-                <CheckCircle2 className="h-4 w-4" /> Granted
+                <CheckCircle2 className="h-4 w-4" /> {t('macOSPermissionsCard.states.granted')}
               </span>
             ) : (
               <span className="inline-flex items-center gap-1 text-red-600 dark:text-red-400">
-                <XCircle className="h-4 w-4" /> Missing
+                <XCircle className="h-4 w-4" /> {t('macOSPermissionsCard.states.missing')}
               </span>
             )}
           </dd>
         </div>
         {([
-          ['Screen Recording', tccPermissions.screenRecording],
-          ['Accessibility', tccPermissions.accessibility],
-          ['Remote Desktop', tccPermissions.remoteDesktop],
+          [t('macOSPermissionsCard.permissions.screenRecording'), tccPermissions.screenRecording],
+          [t('macOSPermissionsCard.permissions.accessibility'), tccPermissions.accessibility],
+          [t('macOSPermissionsCard.permissions.remoteDesktop'), tccPermissions.remoteDesktop],
         ] as const).map(([label, granted]) => (
           <div key={label} className="flex justify-between py-2">
             <dt className="text-sm text-muted-foreground">{label}</dt>
             <dd className="text-sm font-medium">
               {granted === true ? (
                 <span className="inline-flex items-center gap-1 text-green-600 dark:text-green-400">
-                  <CheckCircle2 className="h-4 w-4" /> Granted
+                  <CheckCircle2 className="h-4 w-4" /> {t('macOSPermissionsCard.states.granted')}
                 </span>
               ) : granted === false ? (
                 <span className="inline-flex items-center gap-1 text-red-600 dark:text-red-400">
-                  <XCircle className="h-4 w-4" /> Missing
+                  <XCircle className="h-4 w-4" /> {t('macOSPermissionsCard.states.missing')}
                 </span>
               ) : tccPermissions.fullDiskAccess ? (
                 <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
-                  <AlertTriangle className="h-4 w-4" /> Unknown
+                  <AlertTriangle className="h-4 w-4" /> {t('macOSPermissionsCard.states.unknown')}
                 </span>
               ) : (
                 <span className="inline-flex items-center gap-1 text-muted-foreground">
-                  Auto-managed via FDA
+                  {t('macOSPermissionsCard.states.autoManaged')}
                 </span>
               )}
             </dd>
@@ -116,7 +118,7 @@ export default function MacOSPermissionsCard({ deviceId, tccPermissions: initial
         ))}
       </dl>
       <p className="mt-3 text-xs text-muted-foreground">
-        Last checked: {formatDate(tccPermissions.checkedAt)}
+        {t('macOSPermissionsCard.lastChecked', { date: formatDate(tccPermissions.checkedAt) })}
       </p>
     </div>
   );

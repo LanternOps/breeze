@@ -1,4 +1,6 @@
 import { useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
 
 export type Site = {
@@ -17,6 +19,7 @@ type SiteListProps = {
 };
 
 export default function SiteList({ sites, onAddSite, onEdit, onDelete, onSiteClick }: SiteListProps) {
+  const { t } = useTranslation('settings');
   const [query, setQuery] = useState('');
 
   const filteredSites = useMemo(() => {
@@ -50,14 +53,14 @@ export default function SiteList({ sites, onAddSite, onEdit, onDelete, onSiteCli
         onClick={() => onSiteClick ? onSiteClick(site) : onEdit?.(site)}
         className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted"
       >
-        Edit
+        {t('common:actions.edit')}
       </button>
       <button
         type="button"
         onClick={() => onDelete?.(site)}
         className="rounded-md border border-destructive/40 px-3 py-1 text-xs font-medium text-destructive hover:bg-destructive/10"
       >
-        Delete
+        {t('common:actions.delete')}
       </button>
     </div>
   );
@@ -66,15 +69,15 @@ export default function SiteList({ sites, onAddSite, onEdit, onDelete, onSiteCli
     <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-lg font-semibold">Sites</h2>
+          <h2 className="text-lg font-semibold">{t('siteList.title')}</h2>
           <p className="text-sm text-muted-foreground">
-            {filteredSites.length} of {sites.length} sites
+            {t('siteList.count', { filtered: filteredSites.length, total: sites.length })}
           </p>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <input
             type="search"
-            placeholder="Search sites"
+            placeholder={t('siteList.searchPlaceholder')}
             value={query}
             onChange={event => setQuery(event.target.value)}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-56"
@@ -84,7 +87,7 @@ export default function SiteList({ sites, onAddSite, onEdit, onDelete, onSiteCli
             onClick={onAddSite}
             className="flex h-10 w-full items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 sm:w-auto"
           >
-            Add site
+            {t('siteList.actions.add')}
           </button>
         </div>
       </div>
@@ -95,17 +98,17 @@ export default function SiteList({ sites, onAddSite, onEdit, onDelete, onSiteCli
           <table className="min-w-full divide-y">
             <thead className="bg-muted/40">
               <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                <th className="px-4 py-3">Name</th>
-                <th className="px-4 py-3">Timezone</th>
-                <th className="px-4 py-3">Devices</th>
-                <th className="px-4 py-3 text-right">Actions</th>
+                <th className="px-4 py-3">{t('common:labels.name')}</th>
+                <th className="px-4 py-3">{t('siteList.columns.timezone')}</th>
+                <th className="px-4 py-3">{t('siteList.columns.devices')}</th>
+                <th className="px-4 py-3 text-right">{t('common:labels.actions')}</th>
               </tr>
             </thead>
             <tbody className="divide-y">
               {filteredSites.length === 0 ? (
                 <tr>
                   <td colSpan={4} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                    No sites found. Add a site to get started.
+                    {t('siteList.empty')}
                   </td>
                 </tr>
               ) : (
@@ -125,7 +128,7 @@ export default function SiteList({ sites, onAddSite, onEdit, onDelete, onSiteCli
           filteredSites.length === 0 ? (
             <DataCard>
               <p className="py-2 text-center text-sm text-muted-foreground">
-                No sites found. Add a site to get started.
+                {t('siteList.empty')}
               </p>
             </DataCard>
           ) : (
@@ -133,10 +136,10 @@ export default function SiteList({ sites, onAddSite, onEdit, onDelete, onSiteCli
               <DataCard key={site.id}>
                 <div className="text-sm font-semibold">{renderSiteName(site)}</div>
                 <div className="mt-3 space-y-2 border-t pt-3">
-                  <CardField label="Timezone">
+                  <CardField label={t('siteList.columns.timezone')}>
                     <span className="text-sm">{site.timezone}</span>
                   </CardField>
-                  <CardField label="Devices">
+                  <CardField label={t('siteList.columns.devices')}>
                     <span className="text-sm">{site.deviceCount}</span>
                   </CardField>
                 </div>

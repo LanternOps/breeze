@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import { ArrowRight, Pencil, Play, RefreshCw, Trash2 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatDateTime, mapNetworkBaseline, type NetworkBaseline } from './networkTypes';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
@@ -78,6 +79,7 @@ export default function NetworkBaselinesPanel({
   timezone,
   onViewChanges
 }: NetworkBaselinesPanelProps) {
+  const { t } = useTranslation('discovery');
   const [baselines, setBaselines] = useState<NetworkBaseline[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -112,7 +114,7 @@ export default function NetworkBaselinesPanel({
       const query = params.toString();
       const response = await fetchWithAuth(`/network/baselines${query ? `?${query}` : ''}`);
       if (!response.ok) {
-        throw new Error(await extractError(response, 'Failed to load network baselines'));
+        throw new Error(await extractError(response, t('networkBaselinesPanel.errors.load')));
       }
 
       const payload = await response.json();
@@ -128,11 +130,11 @@ export default function NetworkBaselinesPanel({
 
       setBaselines(mapped);
     } catch (fetchError) {
-      setError(fetchError instanceof Error ? fetchError.message : 'Failed to load network baselines');
+      setError(fetchError instanceof Error ? fetchError.message : t('networkBaselinesPanel.errors.load'));
     } finally {
       setLoading(false);
     }
-  }, [currentOrgId, currentSiteId]);
+  }, [currentOrgId, currentSiteId, t]);
 
   useEffect(() => {
     fetchBaselines();
@@ -159,10 +161,10 @@ export default function NetworkBaselinesPanel({
   };
 
   const validateForm = (): string | null => {
-    if (!form.siteId.trim()) return 'Select a site before saving.';
-    if (!cidrRegex.test(form.subnet.trim())) return 'Subnet must be in CIDR format (example: 192.168.1.0/24).';
+    if (!form.siteId.trim()) return t('networkBaselinesPanel.validation.selectSite');
+    if (!cidrRegex.test(form.subnet.trim())) return t('networkBaselinesPanel.validation.cidr');
     if (!Number.isInteger(form.intervalHours) || form.intervalHours < 1 || form.intervalHours > 168) {
-      return 'Scan interval must be between 1 and 168 hours.';
+      return t('networkBaselinesPanel.validation.interval');
     }
     return null;
   };
@@ -202,10 +204,10 @@ export default function NetworkBaselinesPanel({
           if (response.status === 403) {
             setCanManage(false);
           }
-          throw new Error(await extractError(response, 'Failed to update baseline'));
+          throw new Error(await extractError(response, t('networkBaselinesPanel.errors.update')));
         }
 
-        setInfo('Baseline settings updated.');
+        setInfo(t('networkBaselinesPanel.messages.updated'));
       } else {
         const response = await fetchWithAuth('/network/baselines', {
           method: 'POST',
@@ -222,16 +224,16 @@ export default function NetworkBaselinesPanel({
           if (response.status === 403) {
             setCanManage(false);
           }
-          throw new Error(await extractError(response, 'Failed to create baseline'));
+          throw new Error(await extractError(response, t('networkBaselinesPanel.errors.create')));
         }
 
-        setInfo('Baseline created.');
+        setInfo(t('networkBaselinesPanel.messages.created'));
       }
 
       await fetchBaselines();
       resetForm();
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : 'Failed to save baseline');
+      setError(saveError instanceof Error ? saveError.message : t('networkBaselinesPanel.errors.save'));
     } finally {
       setSaving(false);
     }
@@ -250,7 +252,7 @@ export default function NetworkBaselinesPanel({
         if (response.status === 403) {
           setCanManage(false);
         }
-        throw new Error(await extractError(response, 'Failed to trigger baseline scan'));
+        throw new Error(await extractError(response, t('networkBaselinesPanel.errors.run')));
       }
 
       const payload = await response.json().catch(() => null);
@@ -258,10 +260,10 @@ export default function NetworkBaselinesPanel({
         ? (payload as { queueJobId: string }).queueJobId
         : null;
 
-      setInfo(queueJobId ? `Scan queued (${queueJobId}).` : 'Scan queued.');
+      setInfo(queueJobId ? t('networkBaselinesPanel.messages.scanQueuedWithId', { id: queueJobId }) : t('networkBaselinesPanel.messages.scanQueued'));
       await fetchBaselines();
     } catch (runError) {
-      setError(runError instanceof Error ? runError.message : 'Failed to run baseline scan');
+      setError(runError instanceof Error ? runError.message : t('networkBaselinesPanel.errors.run'));
     }
   };
 
@@ -285,17 +287,17 @@ export default function NetworkBaselinesPanel({
         if (response.status === 403) {
           setCanManage(false);
         }
-        throw new Error(await extractError(response, 'Failed to delete baseline'));
+        throw new Error(await extractError(response, t('networkBaselinesPanel.errors.delete')));
       }
 
-      setInfo(`Deleted baseline ${deleteTarget.subnet}.`);
+      setInfo(t('networkBaselinesPanel.messages.deleted', { subnet: deleteTarget.subnet }));
       await fetchBaselines();
       if (editingId === deleteTarget.id) {
         resetForm();
       }
       setDeleteTarget(null);
     } catch (deleteError) {
-      setError(deleteError instanceof Error ? deleteError.message : 'Failed to delete baseline');
+      setError(deleteError instanceof Error ? deleteError.message : t('networkBaselinesPanel.errors.delete'));
     } finally {
       setDeleting(false);
     }
@@ -306,7 +308,7 @@ export default function NetworkBaselinesPanel({
       <div className="flex items-center justify-center rounded-lg border bg-card p-10 shadow-xs">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading network baselines...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('networkBaselinesPanel.loading')}</p>
         </div>
       </div>
     );
@@ -314,10 +316,10 @@ export default function NetworkBaselinesPanel({
 
   const enabledAlertsFor = (baseline: NetworkBaseline): string[] => {
     const enabledAlerts: string[] = [];
-    if (baseline.alertSettings.newDevice) enabledAlerts.push('new');
-    if (baseline.alertSettings.disappeared) enabledAlerts.push('gone');
-    if (baseline.alertSettings.changed) enabledAlerts.push('changed');
-    if (baseline.alertSettings.rogueDevice) enabledAlerts.push('rogue');
+    if (baseline.alertSettings.newDevice) enabledAlerts.push(t('networkBaselinesPanel.alertNames.new'));
+    if (baseline.alertSettings.disappeared) enabledAlerts.push(t('networkBaselinesPanel.alertNames.gone'));
+    if (baseline.alertSettings.changed) enabledAlerts.push(t('networkBaselinesPanel.alertNames.changed'));
+    if (baseline.alertSettings.rogueDevice) enabledAlerts.push(t('networkBaselinesPanel.alertNames.rogue'));
     return enabledAlerts;
   };
 
@@ -327,7 +329,7 @@ export default function NetworkBaselinesPanel({
       <>
         <div className="font-mono text-sm">{baseline.subnet}</div>
         <div className="text-xs text-muted-foreground">
-          Alerts: {enabledAlerts.length > 0 ? enabledAlerts.join(', ') : 'none'}
+          {t('networkBaselinesPanel.alertsSummary', { alerts: enabledAlerts.length > 0 ? enabledAlerts.join(', ') : t('common:labels.none') })}
         </div>
       </>
     );
@@ -337,11 +339,11 @@ export default function NetworkBaselinesPanel({
     <>
       <div className="text-sm">
         {baseline.scanSchedule.enabled
-          ? `Every ${baseline.scanSchedule.intervalHours}h`
-          : 'Paused'}
+          ? t('networkBaselinesPanel.everyHoursShort', { count: baseline.scanSchedule.intervalHours })
+          : t('networkBaselinesPanel.paused')}
       </div>
       <div className="text-xs text-muted-foreground">
-        Next: {formatDateTime(baseline.scanSchedule.nextScanAt, timezone)}
+        {t('networkBaselinesPanel.next', { time: formatDateTime(baseline.scanSchedule.nextScanAt, timezone) })}
       </div>
     </>
   );
@@ -352,9 +354,9 @@ export default function NetworkBaselinesPanel({
         type="button"
         onClick={() => onViewChanges(baseline.id)}
         className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs hover:bg-muted"
-        title="View changes"
+        title={t('networkBaselinesPanel.actions.viewChanges')}
       >
-        Changes
+        {t('networkBaselinesPanel.actions.changes')}
         <ArrowRight className="h-3 w-3" />
       </button>
       <button
@@ -362,7 +364,7 @@ export default function NetworkBaselinesPanel({
         onClick={() => handleRunNow(baseline)}
         disabled={!canManage}
         className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted disabled:opacity-40"
-        title="Run now"
+        title={t('networkBaselinesPanel.actions.runNow')}
       >
         <Play className="h-4 w-4" />
       </button>
@@ -371,7 +373,7 @@ export default function NetworkBaselinesPanel({
         onClick={() => handleEdit(baseline)}
         disabled={!canManage}
         className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted disabled:opacity-40"
-        title="Edit"
+        title={t('common:actions.edit')}
       >
         <Pencil className="h-4 w-4" />
       </button>
@@ -380,7 +382,7 @@ export default function NetworkBaselinesPanel({
         onClick={() => handleDelete(baseline)}
         disabled={!canManage}
         className="flex h-8 w-8 items-center justify-center rounded-md border border-destructive/30 text-destructive hover:bg-destructive/10 disabled:opacity-40"
-        title="Delete"
+        title={t('common:actions.delete')}
       >
         <Trash2 className="h-4 w-4" />
       </button>
@@ -393,8 +395,8 @@ export default function NetworkBaselinesPanel({
       <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="text-lg font-semibold">Network Baselines</h2>
-            <p className="text-sm text-muted-foreground">{baselines.length} baselines configured</p>
+            <h2 className="text-lg font-semibold">{t('networkBaselinesPanel.title')}</h2>
+            <p className="text-sm text-muted-foreground">{t('networkBaselinesPanel.configuredCount', { count: baselines.length })}</p>
           </div>
           <button
             type="button"
@@ -402,13 +404,13 @@ export default function NetworkBaselinesPanel({
             className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm hover:bg-muted"
           >
             <RefreshCw className="h-4 w-4" />
-            Refresh
+            {t('common:actions.refresh')}
           </button>
         </div>
 
         {!canManage && (
           <div className="mt-4 rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-sm text-yellow-800">
-            Mutating actions are disabled after permission check failure. Requires `devices:write`.
+            {t('networkBaselinesPanel.permissionManage')}
           </div>
         )}
 
@@ -429,19 +431,19 @@ export default function NetworkBaselinesPanel({
             <table className="min-w-full divide-y">
               <thead className="bg-muted/40">
                 <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  <th className="px-4 py-3">Subnet</th>
-                  <th className="px-4 py-3">Site</th>
-                  <th className="px-4 py-3">Schedule</th>
-                  <th className="px-4 py-3">Last Scan</th>
-                  <th className="px-4 py-3">Known Devices</th>
-                  <th className="px-4 py-3 text-right">Actions</th>
+                  <th className="px-4 py-3">{t('networkBaselinesPanel.columns.subnet')}</th>
+                  <th className="px-4 py-3">{t('common:labels.site')}</th>
+                  <th className="px-4 py-3">{t('networkBaselinesPanel.columns.schedule')}</th>
+                  <th className="px-4 py-3">{t('networkBaselinesPanel.columns.lastScan')}</th>
+                  <th className="px-4 py-3">{t('networkBaselinesPanel.columns.knownDevices')}</th>
+                  <th className="px-4 py-3 text-right">{t('common:labels.actions')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
                 {baselines.length === 0 ? (
                   <tr>
                     <td colSpan={6} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                      No network baselines yet. Create one to enable continuous change detection.
+                      {t('networkBaselinesPanel.empty')}
                     </td>
                   </tr>
                 ) : (
@@ -463,7 +465,7 @@ export default function NetworkBaselinesPanel({
             baselines.length === 0 ? (
               <DataCard>
                 <p className="py-2 text-center text-sm text-muted-foreground">
-                  No network baselines yet. Create one to enable continuous change detection.
+                  {t('networkBaselinesPanel.empty')}
                 </p>
               </DataCard>
             ) : (
@@ -473,20 +475,20 @@ export default function NetworkBaselinesPanel({
                 <DataCard key={baseline.id}>
                   <div className="font-mono text-sm font-semibold">{baseline.subnet}</div>
                   <div className="text-xs text-muted-foreground">
-                    Alerts: {enabledAlerts.length > 0 ? enabledAlerts.join(', ') : 'none'}
+                    {t('networkBaselinesPanel.alertsSummary', { alerts: enabledAlerts.length > 0 ? enabledAlerts.join(', ') : t('common:labels.none') })}
                   </div>
                   <div className="mt-3 space-y-2 border-t pt-3">
-                    <CardField label="Site">
+                    <CardField label={t('common:labels.site')}>
                       <span className="text-sm">{siteNameById.get(baseline.siteId) ?? baseline.siteId}</span>
                     </CardField>
                     <div>
-                      <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Schedule</span>
+                      <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('networkBaselinesPanel.columns.schedule')}</span>
                       <div className="mt-1">{renderSchedule(baseline)}</div>
                     </div>
-                    <CardField label="Last scan">
+                    <CardField label={t('networkBaselinesPanel.columns.lastScan')}>
                       <span className="text-sm">{formatDateTime(baseline.lastScanAt, timezone)}</span>
                     </CardField>
-                    <CardField label="Known devices">
+                    <CardField label={t('networkBaselinesPanel.columns.knownDevices')}>
                       <span className="text-sm">{baseline.knownDevices.length}</span>
                     </CardField>
                   </div>
@@ -502,11 +504,11 @@ export default function NetworkBaselinesPanel({
       <form onSubmit={handleSubmit} className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="text-lg font-semibold">{editingBaseline ? 'Edit Baseline' : 'Create Baseline'}</h2>
+            <h2 className="text-lg font-semibold">{editingBaseline ? t('networkBaselinesPanel.form.editTitle') : t('networkBaselinesPanel.form.createTitle')}</h2>
             <p className="text-sm text-muted-foreground">
               {editingBaseline
-                ? 'Update scan cadence and alert behavior.'
-                : 'Create a subnet baseline for scheduled discovery comparisons.'}
+                ? t('networkBaselinesPanel.form.editDescription')
+                : t('networkBaselinesPanel.form.createDescription')}
             </p>
           </div>
           {editingBaseline && (
@@ -515,21 +517,21 @@ export default function NetworkBaselinesPanel({
               onClick={resetForm}
               className="rounded-md border px-2 py-1 text-xs hover:bg-muted"
             >
-              Cancel
+              {t('common:actions.cancel')}
             </button>
           )}
         </div>
 
         <div className="mt-4 space-y-4">
           <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">Site</label>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">{t('common:labels.site')}</label>
             <select
               value={form.siteId}
               onChange={(event) => setForm((previous) => ({ ...previous, siteId: event.target.value }))}
               disabled={!!editingBaseline}
               className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
             >
-              <option value="">Select site</option>
+              <option value="">{t('networkBaselinesPanel.options.selectSite')}</option>
               {siteOptions.map((site) => (
                 <option key={site.id} value={site.id}>
                   {site.name}
@@ -539,17 +541,17 @@ export default function NetworkBaselinesPanel({
           </div>
 
           <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">Subnet (CIDR)</label>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">{t('networkBaselinesPanel.fields.subnetCidr')}</label>
             <input
               type="text"
               value={form.subnet}
               onChange={(event) => setForm((previous) => ({ ...previous, subnet: event.target.value }))}
-              placeholder="192.168.1.0/24"
+              placeholder={t('networkBaselinesPanel.placeholders.subnet')}
               disabled={!!editingBaseline}
               className="h-9 w-full rounded-md border bg-background px-3 text-sm font-mono focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
             />
             {editingBaseline && (
-              <p className="mt-1 text-xs text-muted-foreground">Site and subnet are immutable after creation.</p>
+              <p className="mt-1 text-xs text-muted-foreground">{t('networkBaselinesPanel.form.immutableHint')}</p>
             )}
           </div>
 
@@ -560,11 +562,11 @@ export default function NetworkBaselinesPanel({
               onChange={(event) => setForm((previous) => ({ ...previous, enabled: event.target.checked }))}
               className="h-4 w-4 rounded border"
             />
-            Enable scheduled scans
+            {t('networkBaselinesPanel.fields.enableScheduledScans')}
           </label>
 
           <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">Scan Interval (hours)</label>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">{t('networkBaselinesPanel.fields.scanInterval')}</label>
             <input
               type="number"
               min={1}
@@ -576,7 +578,7 @@ export default function NetworkBaselinesPanel({
           </div>
 
           <div className="rounded-md border p-3">
-            <p className="text-xs font-medium text-muted-foreground">Alert Settings</p>
+            <p className="text-xs font-medium text-muted-foreground">{t('networkBaselinesPanel.fields.alertSettings')}</p>
             <div className="mt-2 space-y-2 text-sm">
               <label className="flex items-center gap-2">
                 <input
@@ -585,7 +587,7 @@ export default function NetworkBaselinesPanel({
                   onChange={(event) => setForm((previous) => ({ ...previous, alertNewDevice: event.target.checked }))}
                   className="h-4 w-4 rounded border"
                 />
-                New device
+                {t('networkBaselinesPanel.alertLabels.newDevice')}
               </label>
               <label className="flex items-center gap-2">
                 <input
@@ -594,7 +596,7 @@ export default function NetworkBaselinesPanel({
                   onChange={(event) => setForm((previous) => ({ ...previous, alertDisappeared: event.target.checked }))}
                   className="h-4 w-4 rounded border"
                 />
-                Device disappeared
+                {t('networkBaselinesPanel.alertLabels.disappeared')}
               </label>
               <label className="flex items-center gap-2">
                 <input
@@ -603,7 +605,7 @@ export default function NetworkBaselinesPanel({
                   onChange={(event) => setForm((previous) => ({ ...previous, alertChanged: event.target.checked }))}
                   className="h-4 w-4 rounded border"
                 />
-                Device changed
+                {t('networkBaselinesPanel.alertLabels.changed')}
               </label>
               <label className="flex items-center gap-2">
                 <input
@@ -612,7 +614,7 @@ export default function NetworkBaselinesPanel({
                   onChange={(event) => setForm((previous) => ({ ...previous, alertRogueDevice: event.target.checked }))}
                   className="h-4 w-4 rounded border"
                 />
-                Rogue device
+                {t('networkBaselinesPanel.alertLabels.rogue')}
               </label>
             </div>
           </div>
@@ -624,8 +626,8 @@ export default function NetworkBaselinesPanel({
           className="mt-6 w-full rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {saving
-            ? (editingBaseline ? 'Saving...' : 'Creating...')
-            : (editingBaseline ? 'Save Baseline Settings' : 'Create Baseline')}
+            ? (editingBaseline ? t('common:states.saving') : t('networkBaselinesPanel.actions.creating'))
+            : (editingBaseline ? t('networkBaselinesPanel.actions.saveSettings') : t('networkBaselinesPanel.actions.create'))}
         </button>
       </form>
     </div>
@@ -633,9 +635,9 @@ export default function NetworkBaselinesPanel({
       open={deleteTarget !== null}
       onClose={() => setDeleteTarget(null)}
       onConfirm={handleConfirmDelete}
-      title="Delete Network Baseline"
-      message={`Are you sure you want to delete baseline ${deleteTarget?.subnet}? Associated change events will also be deleted. This action cannot be undone.`}
-      confirmLabel="Delete Baseline"
+      title={t('networkBaselinesPanel.deleteDialog.title')}
+      message={t('networkBaselinesPanel.deleteDialog.message', { subnet: deleteTarget?.subnet })}
+      confirmLabel={t('networkBaselinesPanel.deleteDialog.confirm')}
       variant="destructive"
       isLoading={deleting}
     />

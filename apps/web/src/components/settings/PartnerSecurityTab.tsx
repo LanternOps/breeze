@@ -1,4 +1,6 @@
 import type { InheritableSecuritySettings, IpAllowlistStatus } from '@breeze/shared';
+import { Trans, useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 
 type Props = {
   data: InheritableSecuritySettings;
@@ -7,8 +9,6 @@ type Props = {
   /** True when the status fetch failed (distinct from "no status yet"). */
   statusUnavailable?: boolean;
 };
-
-const PLACEHOLDER = 'Not set — orgs configure individually';
 
 /** Split textarea input into trimmed, non-empty allowlist entries. */
 export function parseAllowlistInput(text: string): string[] {
@@ -38,6 +38,7 @@ export function currentIpCovered(currentIp: string | null, list: string[]): bool
 }
 
 export default function PartnerSecurityTab({ data, onChange, status, statusUnavailable }: Props) {
+  const { t } = useTranslation('settings');
   const set = (patch: Partial<InheritableSecuritySettings>) =>
     onChange({ ...data, ...patch });
 
@@ -50,12 +51,12 @@ export default function PartnerSecurityTab({ data, onChange, status, statusUnava
       <div className="grid gap-6 sm:grid-cols-2">
         {/* Password Policy */}
         <div className="space-y-2">
-          <label className="text-sm font-medium">Minimum Password Length</label>
+          <label className="text-sm font-medium">{t('partnerSecurity.minimumLength')}</label>
           <input
             type="number"
             value={data.minLength ?? ''}
             onChange={e => set({ minLength: e.target.value ? Number(e.target.value) : undefined })}
-            placeholder={PLACEHOLDER}
+            placeholder={t('partnerSecurity.notSet')}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm"
             min={6}
             max={128}
@@ -63,26 +64,26 @@ export default function PartnerSecurityTab({ data, onChange, status, statusUnava
         </div>
 
         <div className="space-y-2">
-          <label className="text-sm font-medium">Password Complexity</label>
+          <label className="text-sm font-medium">{t('partnerSecurity.complexity')}</label>
           <select
             value={data.complexity ?? ''}
             onChange={e => set({ complexity: (e.target.value || undefined) as InheritableSecuritySettings['complexity'] })}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm"
           >
-            <option value="">{PLACEHOLDER}</option>
-            <option value="standard">Standard</option>
-            <option value="strict">Strict</option>
-            <option value="passphrase">Passphrase</option>
+            <option value="">{t('partnerSecurity.notSet')}</option>
+            <option value="standard">{t('partnerSecurity.complexities.standard')}</option>
+            <option value="strict">{t('partnerSecurity.complexities.strict')}</option>
+            <option value="passphrase">{t('partnerSecurity.complexities.passphrase')}</option>
           </select>
         </div>
 
         <div className="space-y-2">
-          <label className="text-sm font-medium">Password Expiration (days)</label>
+          <label className="text-sm font-medium">{t('partnerSecurity.expiration')}</label>
           <input
             type="number"
             value={data.expirationDays ?? ''}
             onChange={e => set({ expirationDays: e.target.value ? Number(e.target.value) : undefined })}
-            placeholder={PLACEHOLDER}
+            placeholder={t('partnerSecurity.notSet')}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm"
             min={30}
             max={365}
@@ -90,12 +91,12 @@ export default function PartnerSecurityTab({ data, onChange, status, statusUnava
         </div>
 
         <div className="space-y-2">
-          <label className="text-sm font-medium">Session Timeout (minutes)</label>
+          <label className="text-sm font-medium">{t('partnerSecurity.sessionTimeout')}</label>
           <input
             type="number"
             value={data.sessionTimeout ?? ''}
             onChange={e => set({ sessionTimeout: e.target.value ? Number(e.target.value) : undefined })}
-            placeholder={PLACEHOLDER}
+            placeholder={t('partnerSecurity.notSet')}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm"
             min={15}
             max={240}
@@ -103,12 +104,12 @@ export default function PartnerSecurityTab({ data, onChange, status, statusUnava
         </div>
 
         <div className="space-y-2">
-          <label className="text-sm font-medium">Max Concurrent Sessions</label>
+          <label className="text-sm font-medium">{t('partnerSecurity.maxSessions')}</label>
           <input
             type="number"
             value={data.maxSessions ?? ''}
             onChange={e => set({ maxSessions: e.target.value ? Number(e.target.value) : undefined })}
-            placeholder={PLACEHOLDER}
+            placeholder={t('partnerSecurity.notSet')}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm"
             min={1}
             max={10}
@@ -122,23 +123,22 @@ export default function PartnerSecurityTab({ data, onChange, status, statusUnava
             onChange={e => set({ requireMfa: e.target.checked })}
             className="h-4 w-4 rounded border"
           />
-          <label className="text-sm font-medium">Require MFA for all users</label>
+          <label className="text-sm font-medium">{t('partnerSecurity.requireMfa')}</label>
         </div>
       </div>
 
       <div className="space-y-2">
-        <label className="text-sm font-medium">IP Allowlist</label>
+        <label className="text-sm font-medium">{t('partnerSecurity.ipAllowlist')}</label>
 
         {status && status.enforced && !status.active && (
           <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-            Allowlist configured but <strong>inactive</strong> — the API isn’t seeing real client IPs.
-            Configure proxy trust (<code>TRUST_PROXY_HEADERS</code> + <code>TRUSTED_PROXY_CIDRS</code>) for it to take effect.
+            <Trans i18nKey="partnerSecurity.inactiveWarning" t={t} components={{ strong: <strong />, first: <code />, second: <code /> }} />
           </div>
         )}
 
         {statusUnavailable && (
           <div className="rounded-md border border-muted-foreground/30 bg-muted px-3 py-2 text-xs text-muted-foreground">
-            Couldn’t verify allowlist status. The server still enforces any saved allowlist — double-check your own IP is covered before saving.
+            {t('partnerSecurity.statusUnavailable')}
           </div>
         )}
 
@@ -150,13 +150,12 @@ export default function PartnerSecurityTab({ data, onChange, status, statusUnava
           }}
           rows={4}
           className="w-full rounded-md border bg-background px-3 py-2 text-sm"
-          placeholder="Enter one IP or CIDR range per line. Leave blank to let each org decide."
+          placeholder={t('partnerSecurity.allowlistPlaceholder')}
         />
 
         <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="text-xs text-muted-foreground">
-            Leave blank to let each organization configure individually. Use CIDR notation for ranges.
-            Requires a configured reverse proxy so the API can see real client IPs.
+            {t('partnerSecurity.allowlistHelp')}
           </p>
           {currentIp && (
             <button
@@ -169,7 +168,7 @@ export default function PartnerSecurityTab({ data, onChange, status, statusUnava
                 }
               }}
             >
-              {alreadyListed ? `Your IP (${currentIp}) is listed` : `Add my current IP (${currentIp})`}
+              {alreadyListed ? t('partnerSecurity.ipListed', { ip: currentIp }) : t('partnerSecurity.addCurrentIp', { ip: currentIp })}
             </button>
           )}
         </div>

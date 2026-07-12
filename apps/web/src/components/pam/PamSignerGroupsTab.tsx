@@ -1,5 +1,7 @@
+import '@/lib/i18n';
 import { useCallback, useEffect, useId, useState } from 'react';
 import { Plus, ShieldCheck, Trash2 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
@@ -14,6 +16,7 @@ import { type PamSignerGroup } from './types';
  * via matchSignerGroupId. Manage vendors once, reference everywhere.
  */
 export default function PamSignerGroupsTab({ liveTick = 0 }: { liveTick?: number }) {
+  const { t } = useTranslation('security');
   const [groups, setGroups] = useState<PamSignerGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -32,7 +35,12 @@ export default function PamSignerGroupsTab({ liveTick = 0 }: { liveTick?: number
           void navigateTo('/login', { replace: true });
           return;
         }
-        throw new Error(`Failed to load signer groups (HTTP ${res.status})`);
+        throw new Error(
+          t('pamPamSignerGroupsTab.errors.loadWithStatus', {
+            defaultValue: 'Failed to load signer groups (HTTP {{status}})',
+            status: res.status,
+          }),
+        );
       }
       const body = await res.json();
       const list = ((body.signerGroups ?? []) as PamSignerGroup[]).slice();
@@ -40,11 +48,15 @@ export default function PamSignerGroupsTab({ liveTick = 0 }: { liveTick?: number
       setGroups(list);
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') return;
-      setError(err instanceof Error ? err.message : 'Failed to load signer groups');
+      setError(
+        err instanceof Error
+          ? err.message
+          : t('pamPamSignerGroupsTab.errors.load', { defaultValue: 'Failed to load signer groups' }),
+      );
     } finally {
       if (!signal?.aborted) setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -59,8 +71,13 @@ export default function PamSignerGroupsTab({ liveTick = 0 }: { liveTick?: number
     try {
       await runAction({
         request: () => fetchWithAuth(`/pam/signer-groups/${group.id}`, { method: 'DELETE' }),
-        errorFallback: 'Failed to delete signer group',
-        successMessage: `Signer group "${group.name}" deleted`,
+        errorFallback: t('pamPamSignerGroupsTab.errors.deleteGroup', {
+          defaultValue: 'Failed to delete signer group',
+        }),
+        successMessage: t('pamPamSignerGroupsTab.toasts.groupDeleted', {
+          defaultValue: 'Signer group "{{name}}" deleted',
+          name: group.name,
+        }),
         onUnauthorized: () => void navigateTo('/login', { replace: true }),
       });
       void fetchGroups();
@@ -69,7 +86,12 @@ export default function PamSignerGroupsTab({ liveTick = 0 }: { liveTick?: number
       // don't re-toast it here.
       if (err instanceof ActionError && err.status === 401) return;
       if (!(err instanceof ActionError)) {
-        showToast({ type: 'error', message: 'Failed to delete signer group' });
+        showToast({
+          type: 'error',
+          message: t('pamPamSignerGroupsTab.errors.deleteGroup', {
+            defaultValue: 'Failed to delete signer group',
+          }),
+        });
       }
     } finally {
       setDeleting(false);
@@ -81,8 +103,10 @@ export default function PamSignerGroupsTab({ liveTick = 0 }: { liveTick?: number
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <p className="text-sm text-muted-foreground">
-          A signer group is a named list of trusted Authenticode signers. Reference one from a rule
-          instead of repeating the same publisher across many rules.
+          {t('pamPamSignerGroupsTab.description', {
+            defaultValue:
+              'A signer group is a named list of trusted Authenticode signers. Reference one from a rule instead of repeating the same publisher across many rules.',
+          })}
         </p>
         <button
           type="button"
@@ -91,7 +115,7 @@ export default function PamSignerGroupsTab({ liveTick = 0 }: { liveTick?: number
           className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
         >
           <Plus className="h-4 w-4" />
-          Add signer group
+          {t('pamPamSignerGroupsTab.actions.addSignerGroup', { defaultValue: 'Add signer group' })}
         </button>
       </div>
 
@@ -107,14 +131,18 @@ export default function PamSignerGroupsTab({ liveTick = 0 }: { liveTick?: number
       {loading ? (
         <div className="flex items-center gap-2 rounded-md border bg-card px-4 py-6 text-sm text-muted-foreground">
           <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-          Loading signer groups…
+          {t('pamPamSignerGroupsTab.loading', { defaultValue: 'Loading signer groups…' })}
         </div>
       ) : groups.length === 0 ? (
         <div className="rounded-md border border-dashed bg-card px-4 py-8 text-center">
           <ShieldCheck className="mx-auto h-8 w-8 text-muted-foreground" />
-          <p className="mt-2 text-sm font-medium">No signer groups yet</p>
+          <p className="mt-2 text-sm font-medium">
+            {t('pamPamSignerGroupsTab.empty.title', { defaultValue: 'No signer groups yet' })}
+          </p>
           <p className="mt-1 text-xs text-muted-foreground">
-            Create one to reuse a trusted-publisher list across multiple rules.
+            {t('pamPamSignerGroupsTab.empty.description', {
+              defaultValue: 'Create one to reuse a trusted-publisher list across multiple rules.',
+            })}
           </p>
         </div>
       ) : (
@@ -122,8 +150,8 @@ export default function PamSignerGroupsTab({ liveTick = 0 }: { liveTick?: number
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b text-left text-xs text-muted-foreground">
-                <th className="px-3 py-2 font-medium">Name</th>
-                <th className="px-3 py-2 font-medium">Signers</th>
+                <th className="px-3 py-2 font-medium">{t('pamPamSignerGroupsTab.table.name', { defaultValue: 'Name' })}</th>
+                <th className="px-3 py-2 font-medium">{t('pamPamSignerGroupsTab.table.signers', { defaultValue: 'Signers' })}</th>
                 <th className="px-3 py-2 font-medium" />
               </tr>
             </thead>
@@ -164,7 +192,7 @@ export default function PamSignerGroupsTab({ liveTick = 0 }: { liveTick?: number
                       data-testid={`pam-signer-group-edit-${group.id}`}
                       className="rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-accent"
                     >
-                      Edit
+                      {t('common:actions.edit', { defaultValue: 'Edit' })}
                     </button>
                     <button
                       type="button"
@@ -172,7 +200,7 @@ export default function PamSignerGroupsTab({ liveTick = 0 }: { liveTick?: number
                       data-testid={`pam-signer-group-delete-${group.id}`}
                       className="ml-1.5 rounded-md border border-destructive/40 px-2.5 py-1 text-xs font-medium text-destructive hover:bg-destructive/10"
                     >
-                      Delete
+                      {t('common:actions.delete', { defaultValue: 'Delete' })}
                     </button>
                   </td>
                 </tr>
@@ -186,9 +214,13 @@ export default function PamSignerGroupsTab({ liveTick = 0 }: { liveTick?: number
         open={deleteTarget !== null}
         onClose={() => setDeleteTarget(null)}
         onConfirm={() => void confirmDelete()}
-        title="Delete signer group"
-        message={`Delete signer group "${deleteTarget?.name ?? ''}"? Rules referencing it must be updated first.`}
-        confirmLabel="Delete group"
+        title={t('pamPamSignerGroupsTab.deleteDialog.title', { defaultValue: 'Delete signer group' })}
+        message={t('pamPamSignerGroupsTab.deleteDialog.message', {
+          defaultValue:
+            'Delete signer group "{{name}}"? Rules referencing it must be updated first.',
+          name: deleteTarget?.name ?? '',
+        })}
+        confirmLabel={t('pamPamSignerGroupsTab.deleteDialog.confirm', { defaultValue: 'Delete group' })}
         variant="destructive"
         isLoading={deleting}
         confirmTestId="pam-signer-group-delete-confirm"
@@ -222,6 +254,7 @@ function PamSignerGroupModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const { t } = useTranslation('security');
   const isEdit = group !== null;
   const [name, setName] = useState(group?.name ?? '');
   const [description, setDescription] = useState(group?.description ?? '');
@@ -271,8 +304,20 @@ function PamSignerGroupModal({
             method: isEdit ? 'PATCH' : 'POST',
             body: JSON.stringify(payload),
           }),
-        errorFallback: isEdit ? 'Failed to update signer group' : 'Failed to create signer group',
-        successMessage: `Signer group "${name.trim()}" ${isEdit ? 'updated' : 'created'}`,
+        errorFallback: isEdit
+          ? t('pamPamSignerGroupsTab.modal.errors.update', {
+              defaultValue: 'Failed to update signer group',
+            })
+          : t('pamPamSignerGroupsTab.modal.errors.create', {
+              defaultValue: 'Failed to create signer group',
+            }),
+        successMessage: t('pamPamSignerGroupsTab.modal.toasts.saved', {
+          defaultValue: 'Signer group "{{name}}" {{action}}',
+          name: name.trim(),
+          action: isEdit
+            ? t('pamPamSignerGroupsTab.modal.toasts.updated', { defaultValue: 'updated' })
+            : t('pamPamSignerGroupsTab.modal.toasts.created', { defaultValue: 'created' }),
+        }),
         onUnauthorized: () => void navigateTo('/login', { replace: true }),
       });
       onSaved();
@@ -281,7 +326,11 @@ function PamSignerGroupModal({
         if (err.status === 401) return;
         setError(err.message);
       } else {
-        setError(err instanceof Error ? err.message : 'Network error');
+        setError(
+          err instanceof Error
+            ? err.message
+            : t('pamPamSignerGroupsTab.modal.errors.network', { defaultValue: 'Network error' }),
+        );
       }
     } finally {
       setSubmitting(false);
@@ -292,14 +341,18 @@ function PamSignerGroupModal({
     <Dialog
       open
       onClose={onClose}
-      title={isEdit ? 'Edit signer group' : 'New signer group'}
+      title={
+        isEdit
+          ? t('pamPamSignerGroupsTab.modal.title.edit', { defaultValue: 'Edit signer group' })
+          : t('pamPamSignerGroupsTab.modal.title.new', { defaultValue: 'New signer group' })
+      }
       maxWidth="lg"
       className="max-h-[90vh] overflow-y-auto p-6"
     >
       <form onSubmit={handleSubmit} className="space-y-4">
         <div>
           <label htmlFor={nameId} className="mb-1 block text-sm font-medium">
-            Name
+            {t('pamPamSignerGroupsTab.modal.form.name', { defaultValue: 'Name' })}
           </label>
           <input
             id={nameId}
@@ -314,7 +367,9 @@ function PamSignerGroupModal({
 
         <div>
           <label htmlFor={descId} className="mb-1 block text-sm font-medium">
-            Description (optional)
+            {t('pamPamSignerGroupsTab.modal.form.descriptionOptional', {
+              defaultValue: 'Description (optional)',
+            })}
           </label>
           <input
             id={descId}
@@ -327,9 +382,14 @@ function PamSignerGroupModal({
         </div>
 
         <div>
-          <span className="mb-1 block text-sm font-medium">Signers</span>
+          <span className="mb-1 block text-sm font-medium">
+            {t('pamPamSignerGroupsTab.modal.form.signers', { defaultValue: 'Signers' })}
+          </span>
           <p className="mb-2 text-xs text-muted-foreground">
-            One Authenticode signer (subject CN) per row; matched case-insensitively.
+            {t('pamPamSignerGroupsTab.modal.form.signersHelp', {
+              defaultValue:
+                'One Authenticode signer (subject CN) per row; matched case-insensitively.',
+            })}
           </p>
           <div className="space-y-2">
             {signers.map((signer, i) => (
@@ -337,7 +397,9 @@ function PamSignerGroupModal({
                 <input
                   value={signer}
                   onChange={(e) => updateSigner(i, e.target.value)}
-                  placeholder="e.g. Microsoft Corporation"
+                  placeholder={t('pamPamSignerGroupsTab.modal.form.signerPlaceholder', {
+                    defaultValue: 'e.g. Microsoft Corporation',
+                  })}
                   maxLength={255}
                   data-testid={`pam-signer-group-signer-${i}`}
                   className={inputClass}
@@ -345,7 +407,9 @@ function PamSignerGroupModal({
                 <button
                   type="button"
                   onClick={() => removeSigner(i)}
-                  aria-label="Remove signer"
+                  aria-label={t('pamPamSignerGroupsTab.modal.actions.removeSigner', {
+                    defaultValue: 'Remove signer',
+                  })}
                   data-testid={`pam-signer-group-remove-signer-${i}`}
                   className="rounded-md border border-destructive/40 p-2 text-destructive hover:bg-destructive/10"
                 >
@@ -361,7 +425,7 @@ function PamSignerGroupModal({
             className="mt-2 inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-accent"
           >
             <Plus className="h-3.5 w-3.5" />
-            Add signer
+            {t('pamPamSignerGroupsTab.modal.actions.addSigner', { defaultValue: 'Add signer' })}
           </button>
         </div>
 
@@ -380,7 +444,7 @@ function PamSignerGroupModal({
             onClick={onClose}
             className="rounded-md border px-3 py-2 text-sm hover:bg-accent"
           >
-            Cancel
+              {t('common:actions.cancel', { defaultValue: 'Cancel' })}
           </button>
           <button
             type="submit"
@@ -388,7 +452,15 @@ function PamSignerGroupModal({
             data-testid="pam-signer-group-save"
             className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
-            {submitting ? 'Saving…' : isEdit ? 'Save changes' : 'Create group'}
+            {submitting
+              ? t('common:states.saving', { defaultValue: 'Saving…' })
+              : isEdit
+                ? t('pamPamSignerGroupsTab.modal.actions.saveChanges', {
+                    defaultValue: 'Save changes',
+                  })
+                : t('pamPamSignerGroupsTab.modal.actions.createGroup', {
+                    defaultValue: 'Create group',
+                  })}
           </button>
         </div>
       </form>

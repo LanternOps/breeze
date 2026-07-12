@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../lib/runAction';
@@ -13,7 +15,6 @@ import {
   type PaymentMethod,
   PAYMENT_METHOD_LABELS,
   STATUS_ROLES,
-  statusLabel,
   formatDate,
   formatMoney,
   lineTaxAmount,
@@ -40,9 +41,13 @@ interface Props {
 }
 
 export default function InvoiceDetail({ detail, onChanged, actionsInHeader = false }: Props) {
+  const { t } = useTranslation('billing');
   const { can } = usePermissions();
   const { invoice, lines } = detail;
   const currency = invoice.currencyCode;
+  const invoiceStatusLabel = invoice.status === 'sent' && !invoice.sentAt
+    ? t('invoice.status.issued')
+    : t(/* i18n-dynamic */ `invoice.status.${invoice.status}`);
   const stripeConnected = detail.stripeConnected === true;
 
   const [accountingView, setAccountingView] = useState(false);
@@ -79,13 +84,13 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
       // An operator must NOT read "No payments recorded" when the fetch actually
       // failed — surface a visible error (with inline retry) and a toast.
       setPaymentsError(true);
-      handleActionError(new Error(res.statusText), 'Failed to load payments.');
+      handleActionError(new Error(res.statusText), t('invoiceDetail.payments.loadFailed'));
       return;
     }
     setPaymentsError(false);
     const body = (await res.json()) as { data: InvoicePayment[] };
     setPayments(body.data ?? []);
-  }, [invoice.id]);
+  }, [invoice.id, t]);
 
   useEffect(() => { void loadPayments(); }, [loadPayments]);
 
@@ -154,18 +159,18 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
         request: () => fetchWithAuth(`/invoices/${invoice.id}/due-date`, {
           method: 'PATCH', body: JSON.stringify({ dueDate: dueDateDraft }),
         }),
-        errorFallback: 'Could not update the due date.',
-        successMessage: 'Due date updated',
+        errorFallback: t('invoiceDetail.dueDate.updateError'),
+        successMessage: t('invoiceDetail.dueDate.updateSuccess'),
         onUnauthorized: UNAUTHORIZED,
       });
       setDueDateEditing(false);
       refresh();
     } catch (err) {
-      handleActionError(err, 'Could not update the due date.');
+      handleActionError(err, t('invoiceDetail.dueDate.updateError'));
     } finally {
       setBusy(false);
     }
-  }, [busy, dueDateDraft, invoice.id, refresh]);
+  }, [busy, dueDateDraft, invoice.id, refresh, t]);
 
   const requestPayment = useCallback(async () => {
     if (busy) return;
@@ -175,21 +180,21 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
       // was sent when the API confirms an email was dispatched.
       const result = await runAction<{ data: { emailed: boolean } }>({
         request: () => fetchWithAuth(`/invoices/${invoice.id}/send`, { method: 'POST' }),
-        errorFallback: 'Could not send the invoice.',
+        errorFallback: t('invoiceDetail.requestPayment.sendError'),
         onUnauthorized: UNAUTHORIZED,
       });
       if (result?.data?.emailed) {
-        showToast({ type: 'success', message: partiallyPaid ? 'Payment request sent' : 'Invoice sent' });
+        showToast({ type: 'success', message: partiallyPaid ? t('invoiceDetail.requestPayment.paymentRequestSent') : t('invoiceDetail.requestPayment.invoiceSent') });
       } else {
-        showToast({ type: 'warning', message: 'No email was sent (no billing contact / email not configured)' });
+        showToast({ type: 'warning', message: t('invoiceDetail.requestPayment.noEmailWarning') });
       }
       refresh();
     } catch (err) {
-      handleActionError(err, 'Could not send the invoice.');
+      handleActionError(err, t('invoiceDetail.requestPayment.sendError'));
     } finally {
       setBusy(false);
     }
-  }, [busy, invoice.id, partiallyPaid, refresh]);
+  }, [busy, invoice.id, partiallyPaid, refresh, t]);
 
   const recordPayment = useCallback(async () => {
     if (busy || !payAmount) return;
@@ -205,18 +210,18 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
             receivedAt: payDate,
           }),
         }),
-        errorFallback: 'Could not record the payment.',
-        successMessage: 'Payment recorded',
+        errorFallback: t('invoiceDetail.payments.recordError'),
+        successMessage: t('invoiceDetail.payments.recordSuccess'),
         onUnauthorized: UNAUTHORIZED,
       });
       setPayAmount(''); setPayRef('');
       refresh();
     } catch (err) {
-      handleActionError(err, 'Could not record the payment.');
+      handleActionError(err, t('invoiceDetail.payments.recordError'));
     } finally {
       setBusy(false);
     }
-  }, [busy, payAmount, payMethod, payRef, payDate, invoice.id, refresh]);
+  }, [busy, payAmount, payMethod, payRef, payDate, invoice.id, refresh, t]);
 
   const sendPayLink = useCallback(async () => {
     if (busy) return;
@@ -224,30 +229,30 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
     try {
       const result = await runAction<{ data: { url: string } }>({
         request: () => fetchWithAuth(`/invoices/${invoice.id}/pay-link`, { method: 'POST' }),
-        errorFallback: 'Could not create a payment link.',
-        friendly: (code) => (code === 'STRIPE_NOT_CONNECTED' ? 'Connect Stripe to accept online payments.' : undefined),
+        errorFallback: t('invoiceDetail.payments.linkError'),
+        friendly: (code) => (code === 'STRIPE_NOT_CONNECTED' ? t('invoiceDetail.payments.connectStripe') : undefined),
         onUnauthorized: UNAUTHORIZED,
       });
       const url = result?.data?.url;
       if (url) {
         try {
           await navigator.clipboard.writeText(url);
-          showToast({ type: 'success', message: 'Payment link copied to clipboard' });
+          showToast({ type: 'success', message: t('invoiceDetail.payments.linkCopied') });
         } catch {
           // Clipboard blocked (insecure context / permissions) — surface the URL.
-          window.prompt('Share this payment link with your customer:', url);
+          window.prompt(t('invoiceDetail.payments.shareLinkPrompt'), url);
         }
       } else {
         // 200 without a URL shouldn't happen (the API throws STRIPE_NO_URL), but
         // never leave a money action with no feedback.
-        showToast({ type: 'error', message: 'No payment link was returned. Try again.' });
+        showToast({ type: 'error', message: t('invoiceDetail.payments.noLinkReturned') });
       }
     } catch (err) {
-      handleActionError(err, 'Could not create a payment link.');
+      handleActionError(err, t('invoiceDetail.payments.linkError'));
     } finally {
       setBusy(false);
     }
-  }, [busy, invoice.id]);
+  }, [busy, invoice.id, t]);
 
   const voidPayment = useCallback(async (paymentId: string) => {
     if (busy) return;
@@ -255,18 +260,18 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
     try {
       await runAction({
         request: () => fetchWithAuth(`/invoices/${invoice.id}/payments/${paymentId}`, { method: 'DELETE' }),
-        errorFallback: 'Could not reverse the payment.',
-        successMessage: 'Payment reversed',
+        errorFallback: t('invoiceDetail.payments.reverseError'),
+        successMessage: t('invoiceDetail.payments.reverseSuccess'),
         onUnauthorized: UNAUTHORIZED,
       });
       setReversePayment(null);
       refresh();
     } catch (err) {
-      handleActionError(err, 'Could not reverse the payment.');
+      handleActionError(err, t('invoiceDetail.payments.reverseError'));
     } finally {
       setBusy(false);
     }
-  }, [busy, invoice.id, refresh]);
+  }, [busy, invoice.id, refresh, t]);
 
   const submitVoid = useCallback(async () => {
     if (busy || !voidReason.trim()) return;
@@ -277,8 +282,8 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
           method: 'POST',
           body: JSON.stringify({ reason: voidReason.trim(), reissue: voidReissue }),
         }),
-        errorFallback: 'Could not void the invoice.',
-        successMessage: voidReissue ? 'Invoice voided and reissued as a draft' : 'Invoice voided',
+        errorFallback: t('invoiceDetail.void.error'),
+        successMessage: voidReissue ? t('invoiceDetail.void.reissuedSuccess') : t('invoiceDetail.void.success'),
         onUnauthorized: UNAUTHORIZED,
       });
       setVoidOpen(false);
@@ -289,11 +294,11 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
         refresh();
       }
     } catch (err) {
-      handleActionError(err, 'Could not void the invoice.');
+      handleActionError(err, t('invoiceDetail.void.error'));
     } finally {
       setBusy(false);
     }
-  }, [busy, voidReason, voidReissue, invoice.id, refresh]);
+  }, [busy, voidReason, voidReissue, invoice.id, refresh, t]);
 
   return (
     <div className="space-y-6" data-testid="invoice-detail">
@@ -307,20 +312,20 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
                 onChange={(e) => setAccountingView(e.target.checked)}
                 data-testid="invoice-accounting-toggle"
               />
-              Accounting view (cost, margin, hidden components)
+              {t('invoiceDetail.accountingView')}
             </label>
           </div>
           <div className="rounded-lg border bg-card shadow-xs">
             <table className="w-full text-sm" data-testid="invoice-detail-lines">
               <thead>
                 <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
-                  <th className="px-3 py-2 font-medium">Description</th>
-                  <th className="px-3 py-2 text-right font-medium">Qty</th>
-                  <th className="px-3 py-2 text-right font-medium">Price</th>
-                  {accountingView && <th className="px-3 py-2 text-right font-medium">Cost</th>}
-                  {accountingView && <th className="px-3 py-2 text-right font-medium">Margin</th>}
-                  {showTax && <th className="px-3 py-2 text-right font-medium">Tax</th>}
-                  <th className="px-3 py-2 text-right font-medium">Total</th>
+                  <th className="px-3 py-2 font-medium">{t('invoiceDetail.lines.description')}</th>
+                  <th className="px-3 py-2 text-right font-medium">{t('invoiceDetail.lines.qty')}</th>
+                  <th className="px-3 py-2 text-right font-medium">{t('invoiceDetail.lines.price')}</th>
+                  {accountingView && <th className="px-3 py-2 text-right font-medium">{t('invoiceDetail.lines.cost')}</th>}
+                  {accountingView && <th className="px-3 py-2 text-right font-medium">{t('invoiceDetail.lines.margin')}</th>}
+                  {showTax && <th className="px-3 py-2 text-right font-medium">{t('invoiceDetail.lines.tax')}</th>}
+                  <th className="px-3 py-2 text-right font-medium">{t('invoiceDetail.lines.total')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -336,7 +341,7 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
                       <span className={l.parentLineId ? '' : 'font-medium text-foreground'}>
                         {l.parentLineId ? <span aria-hidden="true">↳ </span> : ''}{lineTitle(l)}
                       </span>
-                      {accountingView && !l.customerVisible ? ' (hidden)' : ''}
+                      {accountingView && !l.customerVisible ? t('invoiceDetail.lines.hiddenMarker') : ''}
                       {lineBlurb(l) && <div className="text-xs text-muted-foreground">{lineBlurb(l)}</div>}
                     </td>
                     <td className="px-3 py-2 text-right">{l.quantity}</td>
@@ -359,7 +364,7 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
             <div className="mb-3 flex items-center justify-between">
               <StatusPill
                 role={STATUS_ROLES[invoice.status].role}
-                label={statusLabel(invoice)}
+                label={invoiceStatusLabel}
                 className={STATUS_ROLES[invoice.status].className}
                 testId="invoice-detail-status"
               />
@@ -371,7 +376,7 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
                       value={dueDateDraft}
                       onChange={(e) => setDueDateDraft(e.target.value)}
                       disabled={busy}
-                      aria-label="Due date"
+                      aria-label={t('invoiceDetail.dueDate.aria')}
                       data-testid="invoice-due-date-input"
                       className="h-7 rounded-md border bg-background px-1.5 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
                     />
@@ -380,14 +385,14 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
                       data-testid="invoice-due-date-save"
                       className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
                     >
-                      Save
+                      {t('common:actions.save')}
                     </button>
                     <button
                       type="button" onClick={() => { setDueDateDraft(invoice.dueDate ?? ''); setDueDateEditing(false); }} disabled={busy}
                       data-testid="invoice-due-date-cancel"
                       className="rounded-md px-1.5 py-1 text-xs text-muted-foreground hover:text-foreground"
                     >
-                      Cancel
+                      {t('common:actions.cancel')}
                     </button>
                   </span>
                 ) : (
@@ -397,24 +402,24 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
                     data-testid="invoice-due-date-edit"
                     className="text-xs text-muted-foreground underline decoration-dotted underline-offset-2 hover:text-foreground"
                   >
-                    Due {formatDate(invoice.dueDate)}
+                    {t('invoiceDetail.dueDate.display', { date: formatDate(invoice.dueDate) })}
                   </button>
                 )
               ) : (
-                <span className="text-xs text-muted-foreground">Due {formatDate(invoice.dueDate)}</span>
+                <span className="text-xs text-muted-foreground">{t('invoiceDetail.dueDate.display', { date: formatDate(invoice.dueDate) })}</span>
               )}
             </div>
             <dl className="space-y-1 text-sm tabular-nums">
-              <div className="flex justify-between"><dt className="text-muted-foreground">Subtotal</dt><dd>{formatMoney(invoice.subtotal, currency)}</dd></div>
+              <div className="flex justify-between"><dt className="text-muted-foreground">{t('invoiceDetail.summary.subtotal')}</dt><dd>{formatMoney(invoice.subtotal, currency)}</dd></div>
               {showTax && (
-                <div className="flex justify-between"><dt className="text-muted-foreground">Tax{invoice.taxRate ? ` (${pctFromFraction(invoice.taxRate)}%)` : ''}</dt><dd>{formatMoney(invoice.taxTotal, currency)}</dd></div>
+                <div className="flex justify-between"><dt className="text-muted-foreground">{t('invoiceDetail.summary.tax')}{invoice.taxRate ? ` (${pctFromFraction(invoice.taxRate)}%)` : ''}</dt><dd>{formatMoney(invoice.taxTotal, currency)}</dd></div>
               )}
-              <div className="flex min-w-0 justify-between gap-2 font-semibold"><dt>Total</dt><dd className="break-words">{formatMoney(invoice.total, currency)}</dd></div>
-              <div className="flex justify-between"><dt className="text-muted-foreground">Paid</dt><dd>{formatMoney(invoice.amountPaid, currency)}</dd></div>
+              <div className="flex min-w-0 justify-between gap-2 font-semibold"><dt>{t('invoiceDetail.summary.total')}</dt><dd className="break-words">{formatMoney(invoice.total, currency)}</dd></div>
+              <div className="flex justify-between"><dt className="text-muted-foreground">{t('invoiceDetail.summary.paid')}</dt><dd>{formatMoney(invoice.amountPaid, currency)}</dd></div>
             </dl>
             {/* Balance-due focal number */}
             <div className="mt-3 flex min-w-0 items-end justify-between gap-2 border-t pt-3">
-              <span className="shrink-0 text-xs font-medium uppercase tracking-wide text-muted-foreground">Balance due</span>
+              <span className="shrink-0 text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('invoiceDetail.summary.balanceDue')}</span>
               <span
                 className={`break-words text-2xl font-semibold tabular-nums ${Number(invoice.balance) > 0 && invoice.status !== 'void' ? '' : 'text-muted-foreground'}`}
                 data-testid="invoice-detail-balance"
@@ -427,9 +432,9 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
             {hasDeposit && (
               <div className="mt-3 rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground" data-testid="invoice-deposit-strip">
                 {chargeNow.isDeposit ? (
-                  <>Deposit of <strong className="text-foreground">{formatMoney(invoice.depositDue!, currency)}</strong> due — {formatMoney(invoice.amountPaid, currency)} of {formatMoney(invoice.total, currency)} paid.</>
+                  <>{t('invoiceDetail.deposit.duePrefix')} <strong className="text-foreground">{formatMoney(invoice.depositDue!, currency)}</strong> {t('invoiceDetail.deposit.dueSuffix', { paid: formatMoney(invoice.amountPaid, currency), total: formatMoney(invoice.total, currency) })}</>
                 ) : (
-                  <>Deposit paid — remaining balance {formatMoney(invoice.balance, currency)}.</>
+                  <>{t('invoiceDetail.deposit.paid', { balance: formatMoney(invoice.balance, currency) })}</>
                 )}
               </div>
             )}
@@ -442,7 +447,7 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
           {/* Seller From block */}
           {invoice.sellerSnapshot && (
             <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="invoice-detail-from">
-              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">From</h3>
+              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('invoiceDetail.from')}</h3>
               <div className="space-y-0.5 text-sm">
                 {invoice.sellerSnapshot.name && (
                   <p className="font-medium" data-testid="invoice-detail-from-name">{invoice.sellerSnapshot.name}</p>
@@ -466,7 +471,7 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
           {/* Terms & Conditions */}
           {invoice.termsAndConditions && (
             <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="invoice-detail-terms">
-              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Terms & Conditions</h3>
+              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('invoiceDetail.terms')}</h3>
               <p className="whitespace-pre-wrap text-sm text-muted-foreground">{invoice.termsAndConditions}</p>
             </div>
           )}
@@ -485,7 +490,7 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
                 data-testid="invoice-request-payment"
                 className="inline-flex w-full items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
               >
-                {partiallyPaid ? 'Request payment' : 'Send invoice'}
+                {partiallyPaid ? t('invoiceDetail.requestPayment.requestPayment') : t('invoiceDetail.requestPayment.sendInvoice')}
               </button>
             )}
             {canVoid && can('invoices', 'send') && (
@@ -494,48 +499,48 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
                 data-testid="invoice-void-open"
                 className="inline-flex w-full items-center justify-center rounded-md border border-destructive/40 px-4 py-2 text-sm font-medium text-destructive hover:bg-destructive/10"
               >
-                Void invoice
+                {t('invoiceDetail.void.button')}
               </button>
             )}
           </div>
 
           {/* Payments */}
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="invoice-payments">
-            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Payments</h3>
+            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('invoiceDetail.payments.title')}</h3>
             {paymentsError ? (
               <p className="text-sm text-destructive" data-testid="invoice-payments-error">
-                Could not load payments.{' '}
-                <button type="button" onClick={() => void loadPayments()} className="underline hover:text-foreground">Retry</button>
+                {t('invoiceDetail.payments.loadFailed')}{' '}
+                <button type="button" onClick={() => void loadPayments()} className="underline hover:text-foreground">{t('common:actions.retry')}</button>
               </p>
             ) : payments.length === 0 ? (
-              <p className="text-sm text-muted-foreground" data-testid="invoice-payments-empty">No payments recorded.</p>
+              <p className="text-sm text-muted-foreground" data-testid="invoice-payments-empty">{t('invoiceDetail.payments.empty')}</p>
             ) : (
               <ul className="divide-y text-sm">
                 {payments.map((p) => (
                   <li key={p.id} className="flex items-center justify-between gap-2 py-2" data-testid={`invoice-payment-${p.id}`}>
                     <span className="flex flex-wrap items-center gap-1.5">
                       <span className="tabular-nums">{formatMoney(p.amount, currency)}</span>
-                      <span className="text-muted-foreground">· {PAYMENT_METHOD_LABELS[p.method]} · {formatDate(p.receivedAt)}</span>
+                      <span className="text-muted-foreground">· {t(/* i18n-dynamic */ `invoiceDetail.paymentMethods.${p.method}`)} · {formatDate(p.receivedAt)}</span>
                       {p.source === 'stripe' && (
                         <span
                           className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
                           data-testid={`invoice-payment-online-${p.id}`}
                         >
-                          Online
+                          {t('invoiceDetail.payments.online')}
                         </span>
                       )}
                     </span>
                     {/* Stripe payments are refunded through Stripe, never hand-voided. */}
                     {p.source === 'stripe' ? (
-                      <span className="whitespace-nowrap text-[11px] text-muted-foreground">via Stripe</span>
+                      <span className="whitespace-nowrap text-[11px] text-muted-foreground">{t('invoiceDetail.payments.viaStripe')}</span>
                     ) : can('invoices', 'send') ? (
                       <button
                         type="button" onClick={() => setReversePayment(p)} disabled={busy || invoice.status === 'void'}
-                        aria-label={`Reverse payment of ${formatMoney(p.amount, currency)}`}
+                        aria-label={t('invoiceDetail.payments.reverseAria', { amount: formatMoney(p.amount, currency) })}
                         data-testid={`invoice-payment-void-${p.id}`}
                         className="rounded-md border border-destructive/40 px-2 py-0.5 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
                       >
-                        Reverse
+                        {t('invoiceDetail.payments.reverse')}
                       </button>
                     ) : null}
                   </li>
@@ -545,7 +550,7 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
 
             {invoice.status === 'draft' && (
               <p className="mt-3 text-xs text-muted-foreground" data-testid="invoice-payments-draft-hint">
-                Issue this invoice to record payments.
+                {t('invoiceDetail.payments.draftHint')}
               </p>
             )}
 
@@ -555,13 +560,13 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
                 data-testid="invoice-pay-link"
                 className="mt-3 inline-flex w-full items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
               >
-                Send payment link
+                {t('invoiceDetail.payments.sendLink')}
               </button>
             )}
             {canRecordPayment && !stripeConnected && (
               <p className="mt-3 text-xs text-muted-foreground" data-testid="invoice-stripe-nudge">
-                Connect Stripe to accept online card payments.{' '}
-                <a href="/settings/billing" className="underline hover:text-foreground">Set up</a>
+                {t('invoiceDetail.payments.stripeNudge')}{' '}
+                <a href="/settings/billing" className="underline hover:text-foreground">{t('invoiceDetail.payments.setUp')}</a>
               </p>
             )}
 
@@ -569,47 +574,47 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
               <div className="mt-3 space-y-2 border-t pt-3" data-testid="invoice-payment-form">
                 <div className="grid grid-cols-2 gap-2">
                   <input
-                    type="number" min="0" step="0.01" placeholder="Amount" value={payAmount}
+                    type="number" min="0" step="0.01" placeholder={t('invoiceDetail.payments.amount')} value={payAmount}
                     onChange={(e) => setPayAmount(e.target.value)}
-                    aria-label="Amount"
+                    aria-label={t('invoiceDetail.payments.amount')}
                     data-testid="invoice-payment-amount"
                     className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                   <select
                     value={payMethod} onChange={(e) => setPayMethod(e.target.value as PaymentMethod)}
-                    aria-label="Payment method"
+                    aria-label={t('invoiceDetail.payments.method')}
                     data-testid="invoice-payment-method"
                     className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   >
                     {(Object.keys(PAYMENT_METHOD_LABELS) as PaymentMethod[]).map((m) => (
-                      <option key={m} value={m}>{PAYMENT_METHOD_LABELS[m]}</option>
+                      <option key={m} value={m}>{t(/* i18n-dynamic */ `invoiceDetail.paymentMethods.${m}`)}</option>
                     ))}
                   </select>
                   <input
-                    type="text" placeholder="Reference (optional)" value={payRef}
+                    type="text" placeholder={t('invoiceDetail.payments.referencePlaceholder')} value={payRef}
                     onChange={(e) => setPayRef(e.target.value)}
-                    aria-label="Reference"
+                    aria-label={t('invoiceDetail.payments.reference')}
                     data-testid="invoice-payment-ref"
                     className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                   <input
                     type="date" value={payDate} onChange={(e) => setPayDate(e.target.value)}
-                    aria-label="Payment date"
+                    aria-label={t('invoiceDetail.payments.date')}
                     data-testid="invoice-payment-date"
                     className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                 </div>
                 <button
                   type="button" onClick={() => setPayConfirmOpen(true)} disabled={busy || !payAmount}
-                  title={!payAmount ? 'Enter a payment amount to record it' : undefined}
+                  title={!payAmount ? t('invoiceDetail.payments.amountRequired') : undefined}
                   aria-describedby={!payAmount ? 'invoice-payment-submit-hint' : undefined}
                   data-testid="invoice-payment-submit"
                   className="inline-flex w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
                 >
-                  Record payment
+                  {t('invoiceDetail.payments.record')}
                 </button>
                 <span id="invoice-payment-submit-hint" className="sr-only">
-                  Enter a payment amount to record it
+                  {t('invoiceDetail.payments.amountRequired')}
                 </span>
               </div>
             )}
@@ -623,9 +628,12 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
         onClose={() => setReversePayment(null)}
         onConfirm={() => { if (reversePayment) void voidPayment(reversePayment.id); }}
         isLoading={busy}
-        title="Reverse this payment?"
-        message={reversePayment ? `This reverses the ${formatMoney(reversePayment.amount, currency)} ${PAYMENT_METHOD_LABELS[reversePayment.method]} payment and removes it from the invoice balance. This can't be undone.` : ''}
-        confirmLabel="Reverse payment"
+        title={t('invoiceDetail.payments.reverseConfirm.title')}
+        message={reversePayment ? t('invoiceDetail.payments.reverseConfirm.message', {
+          amount: formatMoney(reversePayment.amount, currency),
+          method: t(/* i18n-dynamic */ `invoiceDetail.paymentMethods.${reversePayment.method}`),
+        }) : ''}
+        confirmLabel={t('invoiceDetail.payments.reverseConfirm.label')}
         confirmTestId="invoice-payment-reverse-confirm"
       />
 
@@ -636,23 +644,27 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
         onConfirm={() => { setPayConfirmOpen(false); void recordPayment(); }}
         isLoading={busy}
         variant="warning"
-        title="Record payment"
-        message={`Record a ${formatMoney(Number(payAmount), currency)} payment (${PAYMENT_METHOD_LABELS[payMethod]}) dated ${formatDate(payDate)}?`}
-        confirmLabel="Record payment"
+        title={t('invoiceDetail.payments.recordConfirm.title')}
+        message={t('invoiceDetail.payments.recordConfirm.message', {
+          amount: formatMoney(Number(payAmount), currency),
+          method: t(/* i18n-dynamic */ `invoiceDetail.paymentMethods.${payMethod}`),
+          date: formatDate(payDate),
+        })}
+        confirmLabel={t('invoiceDetail.payments.record')}
         confirmTestId="invoice-payment-confirm"
       />
 
       {/* Void dialog */}
-      <Dialog open={voidOpen} onClose={() => setVoidOpen(false)} title="Void invoice" labelledBy="invoice-void-title" maxWidth="md" className="p-6">
+      <Dialog open={voidOpen} onClose={() => setVoidOpen(false)} title={t('invoiceDetail.void.title')} labelledBy="invoice-void-title" maxWidth="md" className="p-6">
         <div className="space-y-4" data-testid="invoice-void-dialog">
           <div>
-            <h2 id="invoice-void-title" className="text-lg font-semibold">Void invoice</h2>
+            <h2 id="invoice-void-title" className="text-lg font-semibold">{t('invoiceDetail.void.title')}</h2>
             <p className="mt-1 text-sm text-muted-foreground">
-              Voiding releases billed work so it can be re-invoiced. This cannot be undone.
+              {t('invoiceDetail.void.description')}
             </p>
           </div>
           <label className="flex flex-col gap-1 text-sm">
-            Reason
+            {t('invoiceDetail.void.reason')}
             <textarea
               value={voidReason} onChange={(e) => setVoidReason(e.target.value)} rows={3}
               data-testid="invoice-void-reason"
@@ -661,17 +673,17 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
           </label>
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={voidReissue} onChange={(e) => setVoidReissue(e.target.checked)} data-testid="invoice-void-reissue" />
-            Reissue as a new draft
+            {t('invoiceDetail.void.reissue')}
           </label>
           <div className="flex justify-end gap-2">
-            <button type="button" onClick={() => setVoidOpen(false)} className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted">Cancel</button>
+            <button type="button" onClick={() => setVoidOpen(false)} className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted">{t('common:actions.cancel')}</button>
             {can('invoices', 'send') && (
               <button
                 type="button" onClick={() => void submitVoid()} disabled={busy || !voidReason.trim()}
                 data-testid="invoice-void-submit"
                 className="inline-flex items-center justify-center rounded-md border border-destructive/40 px-4 py-2 text-sm font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
               >
-                Void invoice
+                {t('invoiceDetail.void.button')}
               </button>
             )}
           </div>
