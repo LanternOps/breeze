@@ -33,6 +33,7 @@ export const refreshTokenFamilies = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    absoluteExpiresAt: timestamp('absolute_expires_at', { withTimezone: true }).notNull(),
     lastUsedAt: timestamp('last_used_at', { withTimezone: true }).notNull().defaultNow(),
     revokedAt: timestamp('revoked_at', { withTimezone: true }),
     revokedReason: varchar('revoked_reason', { length: 64 }),

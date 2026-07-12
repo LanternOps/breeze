@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, customType, primaryKey } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, customType, primaryKey, integer } from 'drizzle-orm/pg-core';
 import { partners, organizations } from './orgs';
 
 // Postgres `bytea` mapped to a Node Buffer. postgres.js returns bytea columns
@@ -36,6 +36,10 @@ export const users = pgTable('users', {
   phoneVerified: boolean('phone_verified').notNull().default(false),
   mfaMethod: mfaMethodEnum('mfa_method'),
   status: userStatusEnum('status').notNull().default('invited'),
+  authEpoch: integer('auth_epoch').notNull().default(1),
+  mfaEpoch: integer('mfa_epoch').notNull().default(1),
+  emailEpoch: integer('email_epoch').notNull().default(1),
+  passwordResetEpoch: integer('password_reset_epoch').notNull().default(1),
   // Why the user is disabled. 'partner_suspended' is set by partner suspension
   // so unsuspend re-enables exactly those users; NULL means disabled for some
   // other reason (compromise, off-boarding, manual admin action) and unsuspend
