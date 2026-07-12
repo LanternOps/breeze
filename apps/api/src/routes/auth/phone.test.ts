@@ -1,17 +1,58 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-vi.mock('../../db', () => ({
-  db: {
+// Task 7: `db.transaction` runs its callback with `db` itself as `tx` — the
+// factor-mutating routes fold their write into
+// `invalidateMfaAssuranceAfterFactorChange`'s `mutate(tx)`, and `tx.update`
+// needs the same mock behaviour as the top-level `db.update` this suite
+// already asserts against. The epoch-bump's own
+// `tx.update(users)...returning(...)` gets a valid row by default so
+// `advanceUserEpochs` doesn't throw "user not found" in tests that don't care
+// about the epoch value.
+vi.mock('../../db', () => {
+  const dbMock: any = {
     select: vi.fn(),
     update: vi.fn(() => ({
-      set: vi.fn(() => ({
-        where: vi.fn(() => Promise.resolve())
-      }))
+      set: vi.fn(() => {
+        const whereResult: any = Promise.resolve();
+        whereResult.returning = vi.fn(() =>
+          Promise.resolve([{ authEpoch: 1, mfaEpoch: 2, emailEpoch: 1, passwordResetEpoch: 1 }])
+        );
+        return {
+          where: vi.fn(() => whereResult)
+        };
+      })
     })),
-  },
-  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
-  runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  };
+  dbMock.transaction = vi.fn((fn: (tx: unknown) => Promise<unknown>) => fn(dbMock));
+  return {
+    db: dbMock,
+    withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+    runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  };
+});
+
+// Keep advanceUserEpochs/revokeAllRefreshFamilies REAL; only
+// runPostCommitCleanup (Redis/permission-cache/OAuth fan-out) is mocked.
+vi.mock('../../services/authLifecycle', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/authLifecycle')>();
+  return {
+    ...actual,
+    runPostCommitCleanup: vi.fn().mockResolvedValue({
+      redisOk: true,
+      permissionCacheOk: true,
+      oauthOk: true,
+      oauthResult: { grantsRevoked: 0, refreshTokensRevoked: 0, jtisRevoked: 0 },
+    }),
+  };
+});
+
+// Mocked (rather than left real) because the real module pulls in agentWs →
+// configurationPolicy → a much bigger `db/schema` surface than this suite's
+// schema mock provides.
+vi.mock('../../services/remoteSessionTeardown', () => ({
+  TEARDOWN_FAILED: -1,
+  terminateUserRemoteSessions: vi.fn().mockResolvedValue(0),
 }));
 
 vi.mock('../../db/schema', () => ({

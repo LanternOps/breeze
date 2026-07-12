@@ -24,6 +24,9 @@ import {
   verifyPasskeyRegistration
 } from '../../services/passkeys';
 import { readMobileDeviceId } from '../../services/mobileDeviceBinding';
+import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
+import { invalidateMfaAssuranceAfterFactorChange } from '../../services/mfaAssurance';
+import { TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
 import { ENABLE_2FA } from './schemas';
 import {
   auditLogin,
@@ -157,46 +160,60 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
   }
 
   const fields = registrationInfoToPasskeyFields(verification, credential);
-  const [inserted] = await db
-    .insert(userPasskeys)
-    .values({
-      userId: auth.user.id,
-      credentialId: fields.credentialId,
-      publicKey: fields.publicKey,
-      counter: fields.counter,
-      deviceType: fields.deviceType,
-      backedUp: fields.backedUp,
-      transports: fields.transports,
-      name: name ?? 'Passkey',
-      aaguid: fields.aaguid,
-      updatedAt: new Date()
-    })
-    .returning();
+
+  // SR2-07/SR2-19: the insert AND the users.mfaEnabled flip are folded into
+  // ONE transaction with the epoch bump + refresh-family revoke — registering
+  // a new passkey is a factor-add and must invalidate assurance minted before
+  // this factor existed. The inserted row is captured via closure so it can
+  // be used in the response after the transaction commits.
+  let inserted: PasskeyRow | undefined;
+  const result = await invalidateMfaAssuranceAfterFactorChange(auth.user.id, 'passkey-register', async (tx) => {
+    const [row] = await tx
+      .insert(userPasskeys)
+      .values({
+        userId: auth.user.id,
+        credentialId: fields.credentialId,
+        publicKey: fields.publicKey,
+        counter: fields.counter,
+        deviceType: fields.deviceType,
+        backedUp: fields.backedUp,
+        transports: fields.transports,
+        name: name ?? 'Passkey',
+        aaguid: fields.aaguid,
+        updatedAt: new Date()
+      })
+      .returning();
+
+    if (!row) {
+      throw new Error('Passkey insert returned no row');
+    }
+    inserted = row;
+
+    // Enable MFA, but do NOT overwrite an existing TOTP/SMS factor's method.
+    // `mfaMethod` is single-valued and drives login routing (login.ts/mfa.ts);
+    // clobbering it to 'passkey' would strand a user's working authenticator
+    // and risk lockout if they later lose the passkey device. Only make
+    // passkey the primary method when the user has no other factor configured.
+    const [currentMfa] = await tx
+      .select({ mfaSecret: users.mfaSecret, mfaMethod: users.mfaMethod })
+      .from(users)
+      .where(eq(users.id, auth.user.id))
+      .limit(1);
+    const hasExistingFactor = Boolean(currentMfa?.mfaSecret) || currentMfa?.mfaMethod === 'sms';
+
+    await tx
+      .update(users)
+      .set({
+        mfaEnabled: true,
+        ...(hasExistingFactor ? {} : { mfaMethod: 'passkey' }),
+        updatedAt: new Date()
+      })
+      .where(eq(users.id, auth.user.id));
+  });
 
   if (!inserted) {
     throw new Error('Passkey insert returned no row');
   }
-
-  // Enable MFA, but do NOT overwrite an existing TOTP/SMS factor's method.
-  // `mfaMethod` is single-valued and drives login routing (login.ts/mfa.ts);
-  // clobbering it to 'passkey' would strand a user's working authenticator
-  // and risk lockout if they later lose the passkey device. Only make passkey
-  // the primary method when the user has no other factor configured.
-  const [currentMfa] = await db
-    .select({ mfaSecret: users.mfaSecret, mfaMethod: users.mfaMethod })
-    .from(users)
-    .where(eq(users.id, auth.user.id))
-    .limit(1);
-  const hasExistingFactor = Boolean(currentMfa?.mfaSecret) || currentMfa?.mfaMethod === 'sms';
-
-  await db
-    .update(users)
-    .set({
-      mfaEnabled: true,
-      ...(hasExistingFactor ? {} : { mfaMethod: 'passkey' }),
-      updatedAt: new Date()
-    })
-    .where(eq(users.id, auth.user.id));
 
   writeAuthAudit(c, {
     orgId: auth.orgId ?? undefined,
@@ -204,7 +221,12 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
     result: 'success',
     userId: auth.user.id,
     email: auth.user.email,
-    details: { method: 'passkey', credentialId: fields.credentialId }
+    details: {
+      method: 'passkey',
+      credentialId: fields.credentialId,
+      mfaEpoch: result.mfaEpoch,
+      teardownFailed: result.remoteSessionsTerminated === TEARDOWN_FAILED
+    }
   });
 
   return c.json({
@@ -469,29 +491,31 @@ passkeyRoutes.delete('/passkeys/:id', authMiddleware, zValidator('json', deleteP
     return c.json({ error: 'Cannot remove the last MFA factor while your role or organization requires MFA' }, 403);
   }
 
-  await db
-    .delete(userPasskeys)
-    .where(eq(userPasskeys.id, id));
+  const result = await invalidateMfaAssuranceAfterFactorChange(auth.user.id, 'passkey-delete', async (tx) => {
+    await tx
+      .delete(userPasskeys)
+      .where(eq(userPasskeys.id, id));
 
-  if (remainingFactorCount === 0) {
-    await db
-      .update(users)
-      .set({
-        mfaEnabled: false,
-        mfaMethod: null,
-        updatedAt: new Date()
-      })
-      .where(eq(users.id, auth.user.id));
-  } else if (factorState.currentMfaMethod === 'passkey' && factorState.passkeyCount - 1 === 0) {
-    await db
-      .update(users)
-      .set({
-        mfaEnabled: true,
-        mfaMethod: factorState.hasTotp ? 'totp' : 'sms',
-        updatedAt: new Date()
-      })
-      .where(eq(users.id, auth.user.id));
-  }
+    if (remainingFactorCount === 0) {
+      await tx
+        .update(users)
+        .set({
+          mfaEnabled: false,
+          mfaMethod: null,
+          updatedAt: new Date()
+        })
+        .where(eq(users.id, auth.user.id));
+    } else if (factorState.currentMfaMethod === 'passkey' && factorState.passkeyCount - 1 === 0) {
+      await tx
+        .update(users)
+        .set({
+          mfaEnabled: true,
+          mfaMethod: factorState.hasTotp ? 'totp' : 'sms',
+          updatedAt: new Date()
+        })
+        .where(eq(users.id, auth.user.id));
+    }
+  });
 
   writeAuthAudit(c, {
     orgId: auth.orgId ?? undefined,
@@ -499,7 +523,12 @@ passkeyRoutes.delete('/passkeys/:id', authMiddleware, zValidator('json', deleteP
     result: 'success',
     userId: auth.user.id,
     email: auth.user.email,
-    details: { method: 'passkey', passkeyId: id }
+    details: {
+      method: 'passkey',
+      passkeyId: id,
+      mfaEpoch: result.mfaEpoch,
+      teardownFailed: result.remoteSessionsTerminated === TEARDOWN_FAILED
+    }
   });
 
   return c.json({ success: true });
@@ -536,12 +565,20 @@ async function getMfaFactorState(auth: AuthContext): Promise<{
   currentMfaMethod: 'totp' | 'sms' | 'passkey' | null;
   mfaRequired: boolean;
 }> {
+  // I3/SR2-05: mfaRequired now comes from the resolver so a partner-set
+  // requireMfa (partner-inherited, invisible to the old org-only EXISTS
+  // below) blocks last-factor removal too, matching enrollment/login/disable.
+  const policy = await getEffectiveMfaPolicy({
+    scope: auth.scope,
+    userId: auth.user.id,
+    orgId: auth.orgId ?? null,
+    partnerId: auth.partnerId ?? null,
+  });
+
   // This runs inside the DELETE handler's request (user-scoped) context, where
   // a bare `withSystemDbAccessContext` would be a no-op. Escape the active
-  // context first so the roles / partner_users / organization_users /
-  // organizations reads that decide `mfaRequired` actually run under system
-  // scope — otherwise user-scoped RLS could hide a force_mfa role/org-setting
-  // row, under-count factors, and let the last MFA factor be removed.
+  // context first so the factor-count read is not affected by user-scoped RLS
+  // edge cases.
   const [state] = await runOutsideDbContext(() => withSystemDbAccessContext(async () =>
     db
       .select({
@@ -553,23 +590,7 @@ async function getMfaFactorState(auth: AuthContext): Promise<{
         )`,
         hasTotp: sql<boolean>`${users.mfaSecret} IS NOT NULL`,
         hasSms: sql<boolean>`${users.mfaMethod} = 'sms' AND ${users.phoneVerified} = true`,
-        currentMfaMethod: users.mfaMethod,
-        forceMfa: sql<boolean>`EXISTS (
-          SELECT 1
-          FROM roles r
-          LEFT JOIN partner_users pu ON pu.role_id = r.id
-          LEFT JOIN organization_users ou ON ou.role_id = r.id
-          WHERE (pu.user_id = ${auth.user.id} OR ou.user_id = ${auth.user.id})
-            AND r.force_mfa = true
-        )`,
-        orgRequiresMfa: auth.orgId
-          ? sql<boolean>`EXISTS (
-              SELECT 1
-              FROM organizations o
-              WHERE o.id = ${auth.orgId}
-                AND COALESCE((o.settings->'security'->>'requireMfa')::boolean, false) = true
-            )`
-          : sql<boolean>`false`
+        currentMfaMethod: users.mfaMethod
       })
       .from(users)
       .where(eq(users.id, auth.user.id))
@@ -581,7 +602,7 @@ async function getMfaFactorState(auth: AuthContext): Promise<{
     hasTotp: Boolean(state?.hasTotp),
     hasSms: Boolean(state?.hasSms),
     currentMfaMethod: state?.currentMfaMethod ?? null,
-    mfaRequired: Boolean((state as { forceMfa?: boolean; orgRequiresMfa?: boolean } | undefined)?.forceMfa || (state as { forceMfa?: boolean; orgRequiresMfa?: boolean } | undefined)?.orgRequiresMfa)
+    mfaRequired: policy.required
   };
 }
 

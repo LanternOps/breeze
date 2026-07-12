@@ -3,7 +3,7 @@ import { zValidator } from '../../lib/validation';
 import { and, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import * as dbModule from '../../db';
-import { users, organizations } from '../../db/schema';
+import { users } from '../../db/schema';
 import {
   createTokenPair,
   generateMFASecret,
@@ -23,6 +23,8 @@ import { readMobileDeviceId } from '../../services/mobileDeviceBinding';
 import { authMiddleware } from '../../middleware/auth';
 import { ENABLE_2FA, mfaVerifySchema, mfaEnableSchema } from './schemas';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
+import { invalidateMfaAssuranceAfterFactorChange } from '../../services/mfaAssurance';
+import { TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
 import {
   getClientIP,
   setRefreshTokenCookie,
@@ -407,16 +409,23 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
     return c.json({ error: 'Invalid MFA code' }, 401);
   }
 
-  await db
-    .update(users)
-    .set({
-      mfaSecret: encryptMfaSecret(secret),
-      mfaEnabled: true,
-      mfaMethod: 'totp',
-      mfaRecoveryCodes: hashRecoveryCodes(recoveryCodes),
-      updatedAt: new Date()
-    })
-    .where(eq(users.id, auth.user.id));
+  // SR2-07/SR2-19: fold the factor write into the atomic epoch-bump +
+  // refresh-family-revoke transaction, then best-effort post-commit cleanup +
+  // remote-session teardown — enabling MFA is a security-relevant factor
+  // change and must invalidate any assurance minted before this factor
+  // existed.
+  const result = await invalidateMfaAssuranceAfterFactorChange(auth.user.id, 'mfa-setup-confirm', async (tx) => {
+    await tx
+      .update(users)
+      .set({
+        mfaSecret: encryptMfaSecret(secret),
+        mfaEnabled: true,
+        mfaMethod: 'totp',
+        mfaRecoveryCodes: hashRecoveryCodes(recoveryCodes),
+        updatedAt: new Date()
+      })
+      .where(eq(users.id, auth.user.id));
+  });
 
   const setupOrgId = await resolveUserAuditOrgId(auth.user.id);
   writeAuthAudit(c, {
@@ -425,7 +434,7 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
     result: 'success',
     userId: auth.user.id,
     email: auth.user.email,
-    details: { method: 'totp' }
+    details: { method: 'totp', mfaEpoch: result.mfaEpoch, teardownFailed: result.remoteSessionsTerminated === TEARDOWN_FAILED }
   });
 
   await redis.del(`mfa:setup:${auth.user.id}`);
@@ -449,18 +458,18 @@ mfaRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaDisableSche
   const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'mfa:pwd');
   if (passwordError) return passwordError;
 
-  // Check org policy — if requireMfa is true, block disable
-  if (auth.orgId) {
-    const [org] = await db
-      .select({ settings: organizations.settings })
-      .from(organizations)
-      .where(eq(organizations.id, auth.orgId))
-      .limit(1);
-
-    const orgSettings = org?.settings as { security?: { requireMfa?: boolean } } | null;
-    if (orgSettings?.security?.requireMfa) {
-      return c.json({ error: 'Your organization requires MFA. Contact your admin to change this policy.' }, 403);
-    }
+  // MFA policy blocks self-disable when effective policy (role OR org/partner
+  // requireMfa, partner-inherited) still requires MFA for this user. Uses the
+  // resolver so a partner-set requireMfa — invisible to the old org-only read
+  // — is honored, and partner-scope users are covered (I3, SR2-05).
+  const disablePolicy = await getEffectiveMfaPolicy({
+    scope: auth.scope,
+    userId: auth.user.id,
+    orgId: auth.orgId ?? null,
+    partnerId: auth.partnerId ?? null,
+  });
+  if (disablePolicy.required) {
+    return c.json({ error: 'Your organization requires MFA. Contact your admin to change this policy.' }, 403);
   }
 
   const [user] = await db
@@ -529,18 +538,20 @@ mfaRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaDisableSche
     }
   }
 
-  await db
-    .update(users)
-    .set({
-      mfaSecret: null,
-      mfaEnabled: false,
-      mfaMethod: null,
-      mfaRecoveryCodes: null,
-      phoneNumber: null,
-      phoneVerified: false,
-      updatedAt: new Date()
-    })
-    .where(eq(users.id, auth.user.id));
+  const result = await invalidateMfaAssuranceAfterFactorChange(auth.user.id, 'mfa-disable', async (tx) => {
+    await tx
+      .update(users)
+      .set({
+        mfaSecret: null,
+        mfaEnabled: false,
+        mfaMethod: null,
+        mfaRecoveryCodes: null,
+        phoneNumber: null,
+        phoneVerified: false,
+        updatedAt: new Date()
+      })
+      .where(eq(users.id, auth.user.id));
+  });
 
   writeAuthAudit(c, {
     orgId: auth.orgId ?? undefined,
@@ -548,7 +559,7 @@ mfaRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaDisableSche
     result: 'success',
     userId: auth.user.id,
     email: auth.user.email,
-    details: { method: currentMethod }
+    details: { method: currentMethod, mfaEpoch: result.mfaEpoch, teardownFailed: result.remoteSessionsTerminated === TEARDOWN_FAILED }
   });
 
   return c.json({ success: true, message: 'MFA disabled successfully' });
@@ -613,16 +624,18 @@ mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableWithPa
     return c.json({ error: message, message }, 401);
   }
 
-  await db
-    .update(users)
-    .set({
-      mfaSecret: encryptMfaSecret(secret),
-      mfaEnabled: true,
-      mfaMethod: 'totp',
-      mfaRecoveryCodes: hashRecoveryCodes(recoveryCodes),
-      updatedAt: new Date()
-    })
-    .where(eq(users.id, auth.user.id));
+  const result = await invalidateMfaAssuranceAfterFactorChange(auth.user.id, 'mfa-enable', async (tx) => {
+    await tx
+      .update(users)
+      .set({
+        mfaSecret: encryptMfaSecret(secret),
+        mfaEnabled: true,
+        mfaMethod: 'totp',
+        mfaRecoveryCodes: hashRecoveryCodes(recoveryCodes),
+        updatedAt: new Date()
+      })
+      .where(eq(users.id, auth.user.id));
+  });
 
   await redis.del(`mfa:setup:${auth.user.id}`);
 
@@ -633,7 +646,7 @@ mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableWithPa
     result: 'success',
     userId: auth.user.id,
     email: auth.user.email,
-    details: { method: 'totp' }
+    details: { method: 'totp', mfaEpoch: result.mfaEpoch, teardownFailed: result.remoteSessionsTerminated === TEARDOWN_FAILED }
   });
 
   return c.json({ success: true, recoveryCodes, message: 'MFA enabled successfully' });
@@ -663,13 +676,19 @@ mfaRoutes.post('/mfa/recovery-codes', authMiddleware, zValidator('json', passwor
   }
 
   const recoveryCodes = generateRecoveryCodes();
-  await db
-    .update(users)
-    .set({
-      mfaRecoveryCodes: hashRecoveryCodes(recoveryCodes),
-      updatedAt: new Date()
-    })
-    .where(eq(users.id, auth.user.id));
+  // Rotating recovery codes advances mfa_epoch and signs the user out — per
+  // SR2-19 this is intended: the recovery-code set is part of the MFA config,
+  // and a stale set otherwise remains usable after rotation from a stolen
+  // session.
+  const result = await invalidateMfaAssuranceAfterFactorChange(auth.user.id, 'mfa-recovery-rotate', async (tx) => {
+    await tx
+      .update(users)
+      .set({
+        mfaRecoveryCodes: hashRecoveryCodes(recoveryCodes),
+        updatedAt: new Date()
+      })
+      .where(eq(users.id, auth.user.id));
+  });
 
   const orgId = await resolveUserAuditOrgId(auth.user.id);
   writeAuthAudit(c, {
@@ -678,7 +697,7 @@ mfaRoutes.post('/mfa/recovery-codes', authMiddleware, zValidator('json', passwor
     result: 'success',
     userId: auth.user.id,
     email: auth.user.email,
-    details: { count: recoveryCodes.length }
+    details: { count: recoveryCodes.length, mfaEpoch: result.mfaEpoch, teardownFailed: result.remoteSessionsTerminated === TEARDOWN_FAILED }
   });
 
   return c.json({ success: true, recoveryCodes, message: 'Recovery codes generated successfully' });

@@ -15,6 +15,8 @@ import {
 } from '../../services';
 import { getTwilioService } from '../../services/twilio';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
+import { invalidateMfaAssuranceAfterFactorChange } from '../../services/mfaAssurance';
+import { TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
 import { authMiddleware } from '../../middleware/auth';
 import { ENABLE_2FA, phoneVerifySchema, phoneConfirmSchema, smsSendSchema, smsMfaEnableSchema } from './schemas';
 import {
@@ -147,15 +149,33 @@ phoneRoutes.post('/phone/confirm', authMiddleware, zValidator('json', phoneConfi
     return c.json({ error: 'Invalid verification code' }, 401);
   }
 
-  // Update user with verified phone
-  await db
-    .update(users)
-    .set({
-      phoneNumber,
-      phoneVerified: true,
-      updatedAt: new Date()
-    })
-    .where(eq(users.id, auth.user.id));
+  // Replacement-only invalidation: initial SMS phone verification (before
+  // /mfa/sms/enable has ever run) must NOT sign the user out mid-flow — they
+  // still need to complete enrollment. Only a phone number REPLACEMENT behind
+  // an already-ACTIVE SMS factor is a security-relevant factor change (the
+  // old number could otherwise keep receiving MFA codes for a session that
+  // predates the swap), so only that case invalidates assurance.
+  const [cur] = await db
+    .select({ mfaEnabled: users.mfaEnabled, mfaMethod: users.mfaMethod })
+    .from(users)
+    .where(eq(users.id, auth.user.id))
+    .limit(1);
+  const isSmsFactorReplacement = cur?.mfaEnabled === true && cur.mfaMethod === 'sms';
+
+  let assuranceResult: Awaited<ReturnType<typeof invalidateMfaAssuranceAfterFactorChange>> | null = null;
+  if (isSmsFactorReplacement) {
+    assuranceResult = await invalidateMfaAssuranceAfterFactorChange(auth.user.id, 'phone-replacement', async (tx) => {
+      await tx
+        .update(users)
+        .set({ phoneNumber, phoneVerified: true, updatedAt: new Date() })
+        .where(eq(users.id, auth.user.id));
+    });
+  } else {
+    await db
+      .update(users)
+      .set({ phoneNumber, phoneVerified: true, updatedAt: new Date() })
+      .where(eq(users.id, auth.user.id));
+  }
 
   writeAuthAudit(c, {
     orgId: orgId ?? undefined,
@@ -163,7 +183,16 @@ phoneRoutes.post('/phone/confirm', authMiddleware, zValidator('json', phoneConfi
     result: 'success',
     userId: auth.user.id,
     email: auth.user.email,
-    details: { phoneLast4: phoneNumber.slice(-4) }
+    details: {
+      phoneLast4: phoneNumber.slice(-4),
+      ...(assuranceResult
+        ? {
+            smsFactorReplacement: true,
+            mfaEpoch: assuranceResult.mfaEpoch,
+            teardownFailed: assuranceResult.remoteSessionsTerminated === TEARDOWN_FAILED
+          }
+        : {})
+    }
   });
 
   return c.json({ success: true, message: 'Phone number verified' });
@@ -221,16 +250,18 @@ phoneRoutes.post('/mfa/sms/enable', authMiddleware, zValidator('json', smsMfaEna
   const recoveryCodes = generateRecoveryCodes();
 
   // Enable SMS MFA
-  await db
-    .update(users)
-    .set({
-      mfaEnabled: true,
-      mfaMethod: 'sms',
-      mfaSecret: null,
-      mfaRecoveryCodes: hashRecoveryCodes(recoveryCodes),
-      updatedAt: new Date()
-    })
-    .where(eq(users.id, auth.user.id));
+  const result = await invalidateMfaAssuranceAfterFactorChange(auth.user.id, 'sms-mfa-enable', async (tx) => {
+    await tx
+      .update(users)
+      .set({
+        mfaEnabled: true,
+        mfaMethod: 'sms',
+        mfaSecret: null,
+        mfaRecoveryCodes: hashRecoveryCodes(recoveryCodes),
+        updatedAt: new Date()
+      })
+      .where(eq(users.id, auth.user.id));
+  });
 
   const orgId = await resolveUserAuditOrgId(auth.user.id);
   writeAuthAudit(c, {
@@ -239,7 +270,7 @@ phoneRoutes.post('/mfa/sms/enable', authMiddleware, zValidator('json', smsMfaEna
     result: 'success',
     userId: auth.user.id,
     email: auth.user.email,
-    details: { method: 'sms' }
+    details: { method: 'sms', mfaEpoch: result.mfaEpoch, teardownFailed: result.remoteSessionsTerminated === TEARDOWN_FAILED }
   });
 
   return c.json({ success: true, recoveryCodes, message: 'SMS MFA enabled successfully' });

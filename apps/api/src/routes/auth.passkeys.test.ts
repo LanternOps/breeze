@@ -150,8 +150,21 @@ vi.mock('../services/ipAllowlist', () => ({
   isBlocked: vi.fn(() => false),
 }));
 
-vi.mock('../db', () => ({
-  db: {
+// Task 7: `db.transaction` runs its callback with `db` ITSELF as `tx` — every
+// mutating factor route now folds its write into
+// `invalidateMfaAssuranceAfterFactorChange`'s `mutate(tx)`, and `tx.insert` /
+// `tx.select` / `tx.update` / `tx.delete` need the exact same queue-backed
+// mock behaviour as the top-level `db` calls this suite already asserts
+// against (`dbState.updateSets` etc). The epoch-bump's own
+// `tx.update(users)...returning(...)` shares the same `updateReturningQueue`;
+// most tests don't care about the epoch value, so the fallback below supplies
+// a valid row instead of `[]` (which would make `advanceUserEpochs` throw
+// "user not found"). Tests that need a SPECIFIC returning value (e.g. the
+// rename PATCH route) still take priority by pushing onto the queue first.
+const DEFAULT_EPOCH_ROW = [{ authEpoch: 1, mfaEpoch: 2, emailEpoch: 1, passwordResetEpoch: 1 }];
+
+vi.mock('../db', () => {
+  const dbMock: any = {
     select: vi.fn(() => dbState.makeSelectChain(dbState.selectQueue.shift() ?? [])),
     insert: vi.fn(() => ({
       values: vi.fn(() => ({
@@ -166,7 +179,7 @@ vi.mock('../db', () => ({
         // that also exposes `.returning()` so both shapes work.
         const whereResult: any = Promise.resolve(undefined);
         whereResult.returning = vi.fn(() =>
-          Promise.resolve(dbState.updateReturningQueue.shift() ?? [])
+          Promise.resolve(dbState.updateReturningQueue.shift() ?? DEFAULT_EPOCH_ROW)
         );
         return {
           where: vi.fn(() => whereResult),
@@ -176,10 +189,51 @@ vi.mock('../db', () => ({
     delete: vi.fn(() => ({
       where: vi.fn(() => Promise.resolve(undefined)),
     })),
-  },
-  withSystemDbAccessContext: vi.fn(async <T>(fn: () => Promise<T>) => fn()),
-  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  };
+  dbMock.transaction = vi.fn((fn: (tx: unknown) => Promise<unknown>) => fn(dbMock));
+  return {
+    db: dbMock,
+    withSystemDbAccessContext: vi.fn(async <T>(fn: () => Promise<T>) => fn()),
+    runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  };
+});
+
+// Task 7: keep advanceUserEpochs/revokeAllRefreshFamilies REAL (they just
+// issue `tx.update(...)` against the stubbed transaction above); only
+// runPostCommitCleanup — which fans out to real Redis/permission-cache/OAuth
+// side effects — is mocked.
+vi.mock('../services/authLifecycle', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/authLifecycle')>();
+  return {
+    ...actual,
+    runPostCommitCleanup: vi.fn().mockResolvedValue({
+      redisOk: true,
+      permissionCacheOk: true,
+      oauthOk: true,
+      oauthResult: { grantsRevoked: 0, refreshTokensRevoked: 0, jtisRevoked: 0 },
+    }),
+  };
+});
+
+// Mocked (rather than left real) because the real module pulls in agentWs →
+// configurationPolicy → a much bigger `db/schema` surface than this suite's
+// schema mock provides.
+vi.mock('../services/remoteSessionTeardown', () => ({
+  TEARDOWN_FAILED: -1,
+  terminateUserRemoteSessions: vi.fn().mockResolvedValue(0),
 }));
+
+// Keep the REAL resolver (login.ts already depends on it and this suite's
+// existing login tests exercise it for real), but wrap it in a `vi.fn` so the
+// passkey last-factor-guard tests can override just their own call via
+// `mockResolvedValueOnce` without disturbing login's calls.
+vi.mock('../services/mfaPolicy', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/mfaPolicy')>();
+  return {
+    ...actual,
+    getEffectiveMfaPolicy: vi.fn(actual.getEffectiveMfaPolicy),
+  };
+});
 
 vi.mock('../db/schema', () => ({
   users: {
@@ -253,6 +307,7 @@ vi.mock('../middleware/auth', () => ({
 import { createTokenPair, getRedis, getUserEpochs, rateLimiter, verifyPassword } from '../services';
 import { PasskeyChallengeError } from '../services/passkeys';
 import { withSystemDbAccessContext } from '../db';
+import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
 
 const user = {
   id: 'user-123',
@@ -734,10 +789,17 @@ describe('passkey MFA auth routes', () => {
 
   it('blocks deleting the last MFA factor when MFA is required', async () => {
     vi.mocked(verifyPassword).mockResolvedValueOnce(true);
+    // I3/SR2-05: mfaRequired now comes from getEffectiveMfaPolicy, not the old
+    // inline forceMfa/orgRequiresMfa EXISTS columns.
+    vi.mocked(getEffectiveMfaPolicy).mockResolvedValueOnce({
+      required: true,
+      allowedMethods: { totp: true, sms: true, passkey: true },
+      source: { roleForceMfa: true, settingsRequireMfa: false, killSwitchOff: true },
+    });
     dbState.selectQueue.push(
       [{ passwordHash: '$argon2id$hash' }],
       [{ id: 'credential-1', userId: 'user-123' }],
-      [{ passkeyCount: 1, hasTotp: false, hasSms: false, forceMfa: true }],
+      [{ passkeyCount: 1, hasTotp: false, hasSms: false }],
     );
 
     const res = await app.request('/auth/passkeys/credential-1', {

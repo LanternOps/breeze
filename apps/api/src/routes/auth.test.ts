@@ -137,6 +137,14 @@ vi.mock('../services/authLifecycle', async (importOriginal) => {
   };
 });
 
+// Task 7: mfaAssurance's post-commit remote-session teardown. Mocked (rather
+// than left real) because the real module pulls in agentWs → configurationPolicy
+// → a much bigger `db/schema` surface than this suite's schema mock provides.
+vi.mock('../services/remoteSessionTeardown', () => ({
+  TEARDOWN_FAILED: -1,
+  terminateUserRemoteSessions: vi.fn().mockResolvedValue(0),
+}));
+
 vi.mock('../db/schema', () => ({
   users: {},
   sessions: {},
