@@ -77,32 +77,22 @@ vi.mock('../db', () => {
 });
 
 const tokenState = vi.hoisted(() => ({
-  lastPayload: null as Record<string, unknown> | null,
-  lastOptions: null as Record<string, unknown> | null,
-  mintCalls: [] as string[],
-  bindCalls: [] as Array<{ jti: string; familyId: string }>,
+  lastIdentity: null as Record<string, unknown> | null,
 }));
 
 vi.mock('../services', () => ({
-  createTokenPair: vi.fn(
-    async (payload: Record<string, unknown>, options?: Record<string, unknown>) => {
-      tokenState.lastPayload = payload;
-      tokenState.lastOptions = options ?? null;
+  issueUserSession: vi.fn(
+    async (identity: Record<string, unknown>) => {
+      tokenState.lastIdentity = identity;
       return {
         accessToken: 'access-tok',
         refreshToken: 'refresh-tok',
         refreshJti: 'jti-new',
         expiresInSeconds: 900,
+        familyId: 'fam-1',
       };
     }
   ),
-  mintRefreshTokenFamily: vi.fn(async (userId: string) => {
-    tokenState.mintCalls.push(userId);
-    return 'fam-1';
-  }),
-  bindRefreshJtiToFamily: vi.fn(async (jti: string, familyId: string) => {
-    tokenState.bindCalls.push({ jti, familyId });
-  }),
   getRedis: vi.fn(() => ({
     setex: vi.fn(async () => 'OK'),
   })),
@@ -229,10 +219,7 @@ describe('cfAccessLoginMiddleware', () => {
     verifyState.next = undefined;
     dbState.userRow = null;
     dbState.lastUpdateId = null;
-    tokenState.lastPayload = null;
-    tokenState.lastOptions = null;
-    tokenState.mintCalls = [];
-    tokenState.bindCalls = [];
+    tokenState.lastIdentity = null;
     auditState.audits = [];
     auditState.loginFailures = [];
     contextState.value = {
@@ -356,8 +343,8 @@ describe('cfAccessLoginMiddleware', () => {
     expect(body.user.email).toBe(activeUser.email);
     expect(body.tokens.accessToken).toBe('access-tok');
     expect(body.mfaRequired).toBe(false);
-    expect(tokenState.lastPayload).toMatchObject({
-      sub: activeUser.id,
+    expect(tokenState.lastIdentity).toMatchObject({
+      userId: activeUser.id,
       mfa: true, // vacuously satisfied because mfaEnabled=false
     });
     expect(cookieState.set).toBe('refresh-tok');
@@ -368,7 +355,7 @@ describe('cfAccessLoginMiddleware', () => {
     });
   });
 
-  it('binds the minted refresh token to a fresh family (reuse-detection invariant)', async () => {
+  it('delegates the complete identity to the high-level session issuer', async () => {
     envState.enabled = true;
     verifyState.next = {
       kind: 'claims',
@@ -381,15 +368,18 @@ describe('cfAccessLoginMiddleware', () => {
       next
     );
     expect(res).toBeInstanceOf(Response);
-    // 1. A fresh family was minted for this user.
-    expect(tokenState.mintCalls).toEqual([activeUser.id]);
-    // 2. createTokenPair received the family id via refreshFam.
-    expect(tokenState.lastOptions).toMatchObject({ refreshFam: 'fam-1' });
-    // 3. The minted refresh jti was bound to the family in Redis.
-    expect(tokenState.bindCalls).toEqual([{ jti: 'jti-new', familyId: 'fam-1' }]);
+    expect(tokenState.lastIdentity).toMatchObject({
+      userId: activeUser.id,
+      email: activeUser.email,
+      roleId: 'role-1',
+      partnerId: 'partner-1',
+      orgId: null,
+      scope: 'partner',
+      mfa: true,
+    });
   });
 
-  it('does not mint a family when the MFA temp-token path short-circuits', async () => {
+  it('does not issue a session when the MFA temp-token path short-circuits', async () => {
     envState.enabled = true;
     envState.trustsMfa = false;
     verifyState.next = {
@@ -399,8 +389,7 @@ describe('cfAccessLoginMiddleware', () => {
     dbState.userRow = { ...activeUser, mfaEnabled: true, mfaSecret: 'encrypted', mfaMethod: 'totp' };
     const { next } = createNext();
     await cfAccessLoginMiddleware(createContext({ 'Cf-Access-Jwt-Assertion': 'tok' }), next);
-    expect(tokenState.mintCalls).toEqual([]);
-    expect(tokenState.bindCalls).toEqual([]);
+    expect(tokenState.lastIdentity).toBeNull();
   });
 
   it('issues an MFA temp token when user has MFA and TRUSTS_MFA is false', async () => {
@@ -422,7 +411,7 @@ describe('cfAccessLoginMiddleware', () => {
     expect(body.tempToken).toBeTruthy();
     expect(body.mfaMethod).toBe('totp');
     expect(body.tokens).toBeNull();
-    expect(tokenState.lastPayload).toBeNull(); // no full token mint yet
+    expect(tokenState.lastIdentity).toBeNull(); // no full token mint yet
   });
 
   it('issues an MFA temp token when user has passkey MFA and TRUSTS_MFA is false', async () => {
@@ -443,7 +432,7 @@ describe('cfAccessLoginMiddleware', () => {
     expect(body.mfaRequired).toBe(true);
     expect(body.mfaMethod).toBe('passkey');
     expect(body.tokens).toBeNull();
-    expect(tokenState.lastPayload).toBeNull();
+    expect(tokenState.lastIdentity).toBeNull();
   });
 
   it('mints tokens with mfa=true when TRUSTS_MFA is true even if user has MFA enabled', async () => {
@@ -462,6 +451,6 @@ describe('cfAccessLoginMiddleware', () => {
     expect(called()).toBe(false);
     const body = await (res as Response).json();
     expect(body.mfaRequired).toBe(false);
-    expect(tokenState.lastPayload).toMatchObject({ mfa: true });
+    expect(tokenState.lastIdentity).toMatchObject({ mfa: true });
   });
 });

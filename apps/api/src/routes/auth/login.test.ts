@@ -22,7 +22,7 @@ vi.mock('../../db/schema', () => ({
 }));
 
 vi.mock('../../services', () => ({
-  createTokenPair: vi.fn(async () => ({
+  issueUserSession: vi.fn(async () => ({
     accessToken: 'access-token',
     refreshToken: 'refresh-token',
     refreshJti: 'refresh-jti',
@@ -45,8 +45,6 @@ vi.mock('../../services', () => ({
   isFamilyRevoked: vi.fn(async () => false),
   touchFamilyLastUsed: vi.fn(async () => undefined),
   isTokenIssuedBeforePasswordChange: vi.fn(() => false),
-  mintRefreshTokenFamily: vi.fn(async () => 'family-id'),
-  bindRefreshJtiToFamily: vi.fn(async () => undefined),
   recordAccountFailure: vi.fn(async () => ({ count: 1, newlyLocked: false })),
   clearAccountFailures: vi.fn(async () => undefined),
   isAccountLocked: vi.fn(async () => false),
@@ -144,12 +142,11 @@ vi.mock('../../services/sentry', () => ({
 import { loginRoutes } from './login';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
-  createTokenPair,
+  issueUserSession,
   verifyToken,
   isRefreshTokenJtiRevoked,
   revokeFamily,
   revokeRefreshTokenJti,
-  bindRefreshJtiToFamily,
   isTokenIssuedBeforePasswordChange,
 } from '../../services';
 import { enforceIpAllowlist } from '../../services/ipAllowlist';
@@ -219,7 +216,7 @@ describe('POST /login — IP allowlist', () => {
 
     expect(res.status).toBe(403);
     expect(await res.json()).toMatchObject({ code: 'ip_not_allowed' });
-    expect(createTokenPair).not.toHaveBeenCalled();
+    expect(issueUserSession).not.toHaveBeenCalled();
   });
 
   it('denies login and does not mint tokens when the IP allowlist check fails', async () => {
@@ -230,7 +227,7 @@ describe('POST /login — IP allowlist', () => {
 
     expect(res.status).toBe(401);
     expect(await res.json()).toMatchObject({ error: 'Invalid email or password' });
-    expect(createTokenPair).not.toHaveBeenCalled();
+    expect(issueUserSession).not.toHaveBeenCalled();
   });
 
   // The web auth store is seeded from THIS payload on password login; the
@@ -309,7 +306,7 @@ describe('POST /login — inactive-tenant observability signal (#719)', () => {
     // The metric is emitted ONLY via auditUserLoginFailure's internal
     // recordFailedLogin call; login.ts must not add its own (#719 regression).
     expect(recordFailedLogin).toHaveBeenCalledTimes(1);
-    expect(createTokenPair).not.toHaveBeenCalled();
+    expect(issueUserSession).not.toHaveBeenCalled();
   });
 
   it('counts an inactive-tenant denial as tenant_inactive and still returns a generic 401', async () => {
@@ -344,7 +341,7 @@ describe('POST /login — inactive-tenant observability signal (#719)', () => {
     // The metric is emitted ONLY via auditUserLoginFailure's internal
     // recordFailedLogin call; login.ts must not add its own (#719 regression).
     expect(recordFailedLogin).toHaveBeenCalledTimes(1);
-    expect(createTokenPair).not.toHaveBeenCalled();
+    expect(issueUserSession).not.toHaveBeenCalled();
   });
 
   // security review #2: a membership-less, non-platform-admin user must NOT be
@@ -367,7 +364,7 @@ describe('POST /login — inactive-tenant observability signal (#719)', () => {
     expect(res.status).toBe(401);
     const body = await res.json() as Record<string, unknown>;
     expect(body).toMatchObject({ error: 'Invalid email or password' });
-    expect(createTokenPair).not.toHaveBeenCalled();
+    expect(issueUserSession).not.toHaveBeenCalled();
   });
 });
 
@@ -476,7 +473,7 @@ describe('POST /refresh — hard-reject fam-less legacy tokens (#917 L-1)', () =
     // no Redis jti mutation (guards against a refactor reordering the fam check).
     expect(isRefreshTokenJtiRevoked).not.toHaveBeenCalled();
     expect(revokeRefreshTokenJti).not.toHaveBeenCalled();
-    expect(createTokenPair).not.toHaveBeenCalled();
+    expect(issueUserSession).not.toHaveBeenCalled();
   });
 
   it('accepts a refresh token carrying a fam claim and mints a new pair under that family', async () => {
@@ -491,10 +488,9 @@ describe('POST /refresh — hard-reject fam-less legacy tokens (#917 L-1)', () =
     const res = await postRefresh();
 
     expect(res.status).toBe(200);
-    expect(createTokenPair).toHaveBeenCalledTimes(1);
-    // Family propagates into the rotated token and the jti→family binding.
-    expect(vi.mocked(createTokenPair).mock.calls[0]?.[1]).toEqual({ refreshFam: 'family-42' });
-    expect(bindRefreshJtiToFamily).toHaveBeenCalledWith('refresh-jti', 'family-42');
+    expect(issueUserSession).toHaveBeenCalledTimes(1);
+    // Rotation reuses the verified family rather than minting a new one.
+    expect(vi.mocked(issueUserSession).mock.calls[0]?.[1]).toEqual({ familyId: 'family-42' });
     expect(revokeFamily).not.toHaveBeenCalled();
   });
 });

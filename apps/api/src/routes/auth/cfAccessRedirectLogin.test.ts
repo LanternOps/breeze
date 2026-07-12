@@ -71,35 +71,25 @@ vi.mock('../../db', () => {
 });
 
 const servicesState = vi.hoisted(() => ({
-  lastTokenPayload: null as Record<string, unknown> | null,
-  lastTokenOptions: null as Record<string, unknown> | null,
+  lastSessionIdentity: null as Record<string, unknown> | null,
   verifyResult: null as Record<string, unknown> | null,
-  mintCalls: [] as string[],
-  bindCalls: [] as Array<{ jti: string; familyId: string }>,
   revokeAllCalls: [] as string[],
   revokeJtiCalls: [] as string[],
 }));
 
 vi.mock('../../services', () => ({
-  createTokenPair: vi.fn(
-    async (payload: Record<string, unknown>, options?: Record<string, unknown>) => {
-      servicesState.lastTokenPayload = payload;
-      servicesState.lastTokenOptions = options ?? null;
+  issueUserSession: vi.fn(
+    async (identity: Record<string, unknown>) => {
+      servicesState.lastSessionIdentity = identity;
       return {
         accessToken: 'access-tok',
         refreshToken: 'refresh-tok',
         refreshJti: 'jti-new',
         expiresInSeconds: 900,
+        familyId: 'fam-1',
       };
     }
   ),
-  mintRefreshTokenFamily: vi.fn(async (userId: string) => {
-    servicesState.mintCalls.push(userId);
-    return 'fam-1';
-  }),
-  bindRefreshJtiToFamily: vi.fn(async (jti: string, familyId: string) => {
-    servicesState.bindCalls.push({ jti, familyId });
-  }),
   revokeAllUserTokens: vi.fn(async (userId: string) => {
     servicesState.revokeAllCalls.push(userId);
   }),
@@ -189,11 +179,8 @@ describe('GET /cf-access-login', () => {
     auditState.loginFailures = [];
     cookieState.set = null;
     cookieState.cleared = false;
-    servicesState.lastTokenPayload = null;
-    servicesState.lastTokenOptions = null;
+    servicesState.lastSessionIdentity = null;
     servicesState.verifyResult = null;
-    servicesState.mintCalls = [];
-    servicesState.bindCalls = [];
     servicesState.revokeAllCalls = [];
     servicesState.revokeJtiCalls = [];
     delete process.env.DASHBOARD_URL;
@@ -327,7 +314,7 @@ describe('GET /cf-access-login', () => {
     });
   });
 
-  it('binds the minted refresh token to a fresh family (reuse-detection invariant)', async () => {
+  it('delegates the complete identity to the high-level session issuer', async () => {
     envState.enabled = true;
     verifyState.next = {
       kind: 'claims',
@@ -343,12 +330,15 @@ describe('GET /cf-access-login', () => {
     dbState.userRow = { ...activeUser };
     const res = await callGet('/cf-access-login', { 'Cf-Access-Jwt-Assertion': 'tok' });
     expect(res.status).toBe(302);
-    // 1. A fresh family was minted for this user.
-    expect(servicesState.mintCalls).toEqual([activeUser.id]);
-    // 2. createTokenPair received the family id via refreshFam.
-    expect(servicesState.lastTokenOptions).toMatchObject({ refreshFam: 'fam-1' });
-    // 3. The minted refresh jti was bound to the family in Redis.
-    expect(servicesState.bindCalls).toEqual([{ jti: 'jti-new', familyId: 'fam-1' }]);
+    expect(servicesState.lastSessionIdentity).toMatchObject({
+      userId: activeUser.id,
+      email: activeUser.email,
+      roleId: 'role-1',
+      partnerId: 'partner-1',
+      orgId: null,
+      scope: 'partner',
+      mfa: true,
+    });
   });
 
   it('preserves a safe next param and appends cf-access-login=success', async () => {

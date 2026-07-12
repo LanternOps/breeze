@@ -4,7 +4,7 @@ import { eq } from 'drizzle-orm';
 import * as dbModule from '../../db';
 import { users } from '../../db/schema';
 import {
-  createTokenPair,
+  issueUserSession,
   verifyToken,
   verifyPassword,
   hashPassword,
@@ -20,8 +20,6 @@ import {
   isFamilyRevoked,
   touchFamilyLastUsed,
   isTokenIssuedBeforePasswordChange,
-  mintRefreshTokenFamily,
-  bindRefreshJtiToFamily,
   recordAccountFailure,
   clearAccountFailures,
   isAccountLocked,
@@ -475,21 +473,8 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
   // MFA is vacuously satisfied when the user hasn't enrolled in MFA
   const mfaSatisfied = !(ENABLE_2FA && user.mfaEnabled);
 
-  // Task 7: mint a fresh refresh-token family for this login. The family id
-  // is embedded in the refresh token's `fam` claim and tracked in
-  // refresh_token_families. Every subsequent /refresh inherits this family;
-  // if a revoked jti from this chain is ever replayed, the WHOLE chain
-  // (every descendant + the current valid token) gets revoked, not just the
-  // replayed jti — closing the OAuth 2.1 token-reuse race described in
-  // RFC 9700 §4.13.2.
-  //
-  // The helper is shared by every authenticated token-mint path (login,
-  // mfa-verify, register-partner, accept-invite, sso) — one source of
-  // truth so no future path can quietly opt out of reuse-detection.
-  const familyId = await mintRefreshTokenFamily(user.id);
-
-  const tokens = await createTokenPair({
-    sub: user.id,
+  const tokens = await issueUserSession({
+    userId: user.id,
     email: user.email,
     roleId,
     orgId,
@@ -499,13 +484,8 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     // SR-001: bind the token to the mobile install id when the client sends
     // it. Web/SSO clients don't send the header → mdid stays absent → no
     // behaviour change for them.
-    mdid: readMobileDeviceId(c) ?? undefined
-  }, { refreshFam: familyId });
-
-  // Record the jti → family mapping in Redis for hot-path /refresh lookup.
-  // Best-effort: the family id is also encoded in the JWT, so a Redis miss
-  // still works via the verified claim.
-  await bindRefreshJtiToFamily(tokens.refreshJti, familyId);
+    mobileDeviceId: readMobileDeviceId(c) ?? undefined
+  });
 
   // Update last login. MUST run inside a system DB context: /login is an
   // unauthenticated route, so no breeze.user_id/partner/org GUC is set and the
@@ -776,8 +756,8 @@ loginRoutes.post('/refresh', async (c) => {
 
   // Create new token pair. The rotated refresh token inherits the family from
   // the verified `fam` claim so reuse-detection follows the whole chain.
-  const tokens = await createTokenPair({
-    sub: user.id,
+  const tokens = await issueUserSession({
+    userId: user.id,
     email: user.email,
     roleId: context.roleId,
     orgId: context.orgId,
@@ -787,13 +767,8 @@ loginRoutes.post('/refresh', async (c) => {
     // SR-001: preserve the device binding from the prior (signed) refresh
     // token. Deliberately NOT re-read from the header — a refresh must not be
     // able to drop the binding by omitting it.
-    mdid: carryForwardBinding(payload)
-  }, { refreshFam: familyId });
-
-  // Map the newly-minted jti to the same family so a future replay of THIS
-  // jti can also be detected via Redis. Best-effort; the JWT `fam` claim
-  // is the primary record.
-  await bindRefreshJtiToFamily(tokens.refreshJti, familyId);
+    mobileDeviceId: carryForwardBinding(payload)
+  }, { familyId });
   // Telemetry: bump lastUsedAt on the family row. Fire-and-forget — never
   // blocks the refresh.
   void touchFamilyLastUsed(familyId);

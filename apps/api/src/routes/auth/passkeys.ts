@@ -6,11 +6,9 @@ import * as dbModule from '../../db';
 import { userPasskeys, users } from '../../db/schema';
 import { authMiddleware, type AuthContext } from '../../middleware/auth';
 import {
-  bindRefreshJtiToFamily,
-  createTokenPair,
   getRedis,
+  issueUserSession,
   mfaLimiter,
-  mintRefreshTokenFamily,
   rateLimiter
 } from '../../services';
 import {
@@ -359,18 +357,16 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
   await redis.del(`mfa:pending:${tempToken}`);
 
   const context = await resolveCurrentUserTokenContext(user.id);
-  const familyId = await mintRefreshTokenFamily(user.id);
-  const tokens = await createTokenPair({
-    sub: user.id,
+  const tokens = await issueUserSession({
+    userId: user.id,
     email: user.email,
     roleId: context.roleId,
     orgId: context.orgId,
     partnerId: context.partnerId,
     scope: context.scope,
     mfa: true,
-    mdid: readMobileDeviceId(c) ?? undefined
-  }, { refreshFam: familyId });
-  await bindRefreshJtiToFamily(tokens.refreshJti, familyId);
+    mobileDeviceId: readMobileDeviceId(c) ?? undefined
+  });
 
   // System DB context required: passkey login is unauthenticated at this point,
   // so without it the `users` RLS UPDATE silently matches 0 rows under

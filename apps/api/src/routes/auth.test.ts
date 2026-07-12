@@ -7,7 +7,7 @@ vi.mock('../services', () => ({
   hashPassword: vi.fn().mockResolvedValue('$argon2id$hashed'),
   verifyPassword: vi.fn(),
   isPasswordStrong: vi.fn(),
-  createTokenPair: vi.fn().mockResolvedValue({
+  issueUserSession: vi.fn().mockResolvedValue({
     accessToken: 'access-token',
     refreshToken: 'refresh-token',
     refreshJti: 'jti-mock',
@@ -40,10 +40,6 @@ vi.mock('../services', () => ({
   revokeFamily: vi.fn().mockResolvedValue(undefined),
   isFamilyRevoked: vi.fn().mockResolvedValue(false),
   touchFamilyLastUsed: vi.fn().mockResolvedValue(undefined),
-  // Task 7 follow-up: shared family-mint helper used by every authenticated
-  // token-mint path (login, mfa, register-partner, accept-invite, sso).
-  mintRefreshTokenFamily: vi.fn().mockResolvedValue('family-id-mock'),
-  bindRefreshJtiToFamily: vi.fn().mockResolvedValue(undefined),
   rateLimiter: vi.fn().mockResolvedValue({ allowed: true, remaining: 4, resetAt: new Date() }),
   loginLimiter: { limit: 5, windowSeconds: 300 },
   forgotPasswordLimiter: { limit: 3, windowSeconds: 3600 },
@@ -179,7 +175,7 @@ import {
   hashPassword,
   verifyPassword,
   isPasswordStrong,
-  createTokenPair,
+  issueUserSession,
   verifyToken,
   verifyMFAToken,
   generateRecoveryCodes,
@@ -507,7 +503,7 @@ describe('auth routes', () => {
       });
 
       expect(res.status).toBe(401);
-      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(issueUserSession).not.toHaveBeenCalled();
     });
 
     it('returns generic 401 when organization SSO policy disables password login', async () => {
@@ -568,7 +564,7 @@ describe('auth routes', () => {
       expect(res.status).toBe(401);
       const body = await res.json();
       expect(body.error).toBe('Invalid email or password');
-      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(issueUserSession).not.toHaveBeenCalled();
     });
 
     it('should return 401 for invalid credentials', async () => {
@@ -835,7 +831,7 @@ describe('auth routes', () => {
       const body = await res.json();
       expect(body.error).toMatch(/locked/i);
       // Correct password verified but we MUST NOT mint tokens for a locked account.
-      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(issueUserSession).not.toHaveBeenCalled();
     });
 
     it('Task 10: bad password bumps the per-account failure counter and triggers a lockout email exactly once on newlyLocked', async () => {
@@ -1169,17 +1165,14 @@ describe('auth routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.tokens).toBeDefined();
-      expect(createTokenPair).toHaveBeenCalledWith(
+      expect(issueUserSession).toHaveBeenCalledWith(
         expect.objectContaining({
           scope: 'system',
           roleId: null,
           orgId: null,
           partnerId: null
         }),
-        // Task 7: /refresh now passes a 2nd `CreateTokenPairOptions` arg.
-        // Empty object when the prior token had no `fam` claim (legacy /
-        // unit-test path where getFamilyForJti is mocked to null).
-        expect.any(Object)
+        { familyId: 'family-id-mock' }
       );
       expect(revokeRefreshTokenJti).toHaveBeenCalledWith('refresh-jti-1');
     });
@@ -1249,7 +1242,7 @@ describe('auth routes', () => {
       });
 
       expect(res.status).toBe(401);
-      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(issueUserSession).not.toHaveBeenCalled();
     });
 
     // security review #2: a membership-less, non-platform-admin user (membership
@@ -1289,7 +1282,7 @@ describe('auth routes', () => {
       });
 
       expect(res.status).toBe(401);
-      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(issueUserSession).not.toHaveBeenCalled();
     });
 
     it('rejects when a concurrent /refresh already claimed the jti (SET NX miss)', async () => {
@@ -1341,7 +1334,7 @@ describe('auth routes', () => {
       });
 
       expect(res.status).toBe(401);
-      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(issueUserSession).not.toHaveBeenCalled();
       // #1107: a lost race must surface refresh_raced and must NOT clear the
       // cookie — the winning sibling already set a fresh one this browser shares.
       const body = await res.json();
@@ -1385,7 +1378,7 @@ describe('auth routes', () => {
       expect(body.reason).toBe('refresh_raced');
       // The whole point: the family must survive, and the cookie must NOT be cleared.
       expect(revokeFamily).not.toHaveBeenCalled();
-      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(issueUserSession).not.toHaveBeenCalled();
       const setCookie = res.headers.get('set-cookie') ?? '';
       expect(setCookie).not.toContain('breeze_refresh_token=;');
     });
@@ -1541,16 +1534,15 @@ describe('auth routes', () => {
       });
 
       expect(res.status).toBe(200);
-      expect(createTokenPair).toHaveBeenCalledWith(
+      expect(issueUserSession).toHaveBeenCalledWith(
         expect.objectContaining({
-          sub: 'user-123',
+          userId: 'user-123',
           scope: 'organization',
           roleId: 'role-live',
           orgId: 'org-live',
           partnerId: 'partner-live'
         }),
-        // Task 7: /refresh now passes a 2nd CreateTokenPairOptions arg.
-        expect.any(Object)
+        { familyId: 'family-id-mock' }
       );
       expect(revokeRefreshTokenJti).toHaveBeenCalledWith('refresh-jti-3');
     });
@@ -1600,7 +1592,7 @@ describe('auth routes', () => {
       });
 
       expect(res.status).toBe(401);
-      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(issueUserSession).not.toHaveBeenCalled();
     });
   });
 

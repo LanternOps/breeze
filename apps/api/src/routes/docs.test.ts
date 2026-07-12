@@ -7,7 +7,7 @@ vi.mock('../services', () => ({
   hashPassword: vi.fn().mockResolvedValue('$argon2id$hashed'),
   verifyPassword: vi.fn(),
   isPasswordStrong: vi.fn(),
-  createTokenPair: vi.fn().mockResolvedValue({
+  issueUserSession: vi.fn().mockResolvedValue({
     accessToken: 'access-token',
     refreshToken: 'refresh-token',
     expiresInSeconds: 900

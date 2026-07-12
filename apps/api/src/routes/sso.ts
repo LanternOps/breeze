@@ -33,7 +33,7 @@ import {
   PROVIDER_PRESETS,
   type OIDCConfig
 } from '../services/sso';
-import { createTokenPair, createSession, mintRefreshTokenFamily, bindRefreshJtiToFamily, rateLimiter, getRedis } from '../services';
+import { createSession, issueUserSession, rateLimiter, getRedis, type UserSessionIdentity } from '../services';
 import { writeRouteAudit } from '../services/auditEvents';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { getTrustedClientIp } from '../services/clientIp';
@@ -1787,8 +1787,8 @@ ssoRoutes.get('/callback', async (c) => {
     // L4 step-up (requireFreshMfaStepUp re-verifies a Breeze-held TOTP).
     const ssoMfa = provider.trustsIdpMfa === true && idpAssertedMfa(idClaims);
 
-    // Membership resolution + token payload, keyed on the provider's axis.
-    let tokenPayload: Parameters<typeof createTokenPair>[0];
+    // Membership resolution + token identity, keyed on the provider's axis.
+    let sessionIdentity: UserSessionIdentity;
     if (provider.partnerId) {
       // Defense-in-depth: a partner token is ONLY for partner STAFF
       // (users.orgId IS NULL). Re-assert the invariant at the MINT gate, not
@@ -1827,8 +1827,8 @@ ssoRoutes.get('/callback', async (c) => {
         clearStateCookie();
         return c.redirect('/login?error=invalid_role_scope');
       }
-      tokenPayload = {
-        sub: user.id,
+      sessionIdentity = {
+        userId: user.id,
         email: user.email,
         roleId: partnerMembership.roleId,
         orgId: null,
@@ -1874,8 +1874,8 @@ ssoRoutes.get('/callback', async (c) => {
         return c.redirect('/login?error=invalid_role_scope');
       }
 
-      tokenPayload = {
-        sub: user.id,
+      sessionIdentity = {
+        userId: user.id,
         email: user.email,
         roleId: orgUser.roleId,
         orgId: provider.orgId!,
@@ -1987,21 +1987,12 @@ ssoRoutes.get('/callback', async (c) => {
     // The SSO session row was already consumed atomically up-front
     // (delete().returning()), so there is nothing left to clean up here.
 
-    // Create session and tokens. `tokenPayload` (and its mfa claim) was already
+    // Create session and tokens. `sessionIdentity` (and its MFA outcome) was already
     // built by the axis branch above.
     const ip = getClientIP(c);
     const userAgent = c.req.header('user-agent') || 'unknown';
 
-    // Mint a fresh refresh-token family for the SSO-completed session so
-    // SSO logins get the same reuse-detection coverage as password/MFA
-    // logins. Without this, SSO-issued tokens would silently bypass RFC
-    // 9700 §4.13.2 protection.
-    const ssoFamilyId = await mintRefreshTokenFamily(user.id);
-    const { accessToken, refreshToken, refreshJti, expiresInSeconds } = await createTokenPair(
-      tokenPayload,
-      { refreshFam: ssoFamilyId }
-    );
-    await bindRefreshJtiToFamily(refreshJti, ssoFamilyId);
+    const { accessToken, refreshToken, expiresInSeconds } = await issueUserSession(sessionIdentity);
 
     await createSession({
       userId: user.id,

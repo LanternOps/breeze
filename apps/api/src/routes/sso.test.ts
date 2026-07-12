@@ -47,17 +47,13 @@ vi.mock('../services/sso', () => ({
 }));
 
 vi.mock('../services', () => ({
-  createTokenPair: vi.fn().mockResolvedValue({
+  issueUserSession: vi.fn().mockResolvedValue({
     accessToken: 'access-token',
     refreshToken: 'refresh-token',
     refreshJti: 'sso-jti-mock',
     expiresInSeconds: 900
   }),
   createSession: vi.fn(),
-  // Task 7 follow-up: SSO callback now mints a refresh-token family for
-  // every completed sign-in so reuse-detection covers SSO sessions.
-  mintRefreshTokenFamily: vi.fn().mockResolvedValue('sso-family-id-mock'),
-  bindRefreshJtiToFamily: vi.fn().mockResolvedValue(undefined),
   // Partner-axis login rate limiting (#2183 spec §5) — default allowed so
   // existing tests exercising the route body are unaffected; the dedicated
   // 429 test overrides this per-call.
@@ -207,7 +203,7 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 import { db } from '../db';
-import { createTokenPair, rateLimiter } from '../services';
+import { issueUserSession, rateLimiter } from '../services';
 import { authMiddleware } from '../middleware/auth';
 import {
   discoverOIDCConfig,
@@ -1162,7 +1158,7 @@ describe('sso routes', () => {
 
       expect(res.status).toBe(302);
       expect(res.headers.get('location') ?? '').toContain('error=sso_subject_mismatch');
-      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(issueUserSession).not.toHaveBeenCalled();
     });
 
     // ── security review #2: identity-first lookup (1A) + safe JIT linking (1B)
@@ -1203,7 +1199,7 @@ describe('sso routes', () => {
       expect(res.status).toBe(302);
       expect(res.headers.get('location') ?? '').toMatch(/ssoCode=/);
       // The session is the LINKED user — proving the email was not the lookup key.
-      expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ sub: USER_UUID }), expect.any(Object));
+      expect(issueUserSession).toHaveBeenCalledWith(expect.objectContaining({ userId: USER_UUID }));
     });
 
     it('refuses to JIT-link an SSO assertion to an existing PASSWORD account (1B)', async () => {
@@ -1217,7 +1213,7 @@ describe('sso routes', () => {
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(res.headers.get('location') ?? '').toContain('error=sso_link_required');
-      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(issueUserSession).not.toHaveBeenCalled();
     });
 
     it('refuses to JIT-link when the account is linked to a DIFFERENT provider (1B)', async () => {
@@ -1231,7 +1227,7 @@ describe('sso routes', () => {
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(res.headers.get('location') ?? '').toContain('error=sso_link_required');
-      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(issueUserSession).not.toHaveBeenCalled();
     });
 
     it('auto-links an existing SSO-only account with no conflicting credential (1B safe path)', async () => {
@@ -1247,7 +1243,7 @@ describe('sso routes', () => {
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(res.headers.get('location') ?? '').toMatch(/ssoCode=/);
-      expect(createTokenPair).toHaveBeenCalled();
+      expect(issueUserSession).toHaveBeenCalled();
     });
 
     // ── security review #2 (H-1): IdP-asserted MFA signal
@@ -1268,21 +1264,21 @@ describe('sso routes', () => {
       wireLinkedLogin({ trustsIdpMfa: true, amr: ['pwd', 'mfa'] });
       const res = await doCallback();
       expect(res.status).toBe(302);
-      expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ mfa: true }), expect.any(Object));
+      expect(issueUserSession).toHaveBeenCalledWith(expect.objectContaining({ mfa: true }));
     });
 
     it('mints mfa:false when the provider trusts IdP MFA but amr does NOT attest it', async () => {
       wireLinkedLogin({ trustsIdpMfa: true, amr: ['pwd'] });
       const res = await doCallback();
       expect(res.status).toBe(302);
-      expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ mfa: false }), expect.any(Object));
+      expect(issueUserSession).toHaveBeenCalledWith(expect.objectContaining({ mfa: false }));
     });
 
     it('mints mfa:false when the provider does NOT trust IdP MFA even if amr attests it', async () => {
       wireLinkedLogin({ trustsIdpMfa: false, amr: ['mfa'] });
       const res = await doCallback();
       expect(res.status).toBe(302);
-      expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ mfa: false }), expect.any(Object));
+      expect(issueUserSession).toHaveBeenCalledWith(expect.objectContaining({ mfa: false }));
     });
 
     // ── security review #2 (H-2): SSO domain-verification gate wiring
@@ -1303,7 +1299,7 @@ describe('sso routes', () => {
 
       expect(res.status).toBe(302);
       expect(res.headers.get('location') ?? '').toContain('error=sso_domain_unverified');
-      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(issueUserSession).not.toHaveBeenCalled();
       expect(db.insert).not.toHaveBeenCalled();
     });
 
@@ -1324,7 +1320,7 @@ describe('sso routes', () => {
       expect(res.status).toBe(302);
       // Succeeds — gate was not reached
       expect(res.headers.get('location') ?? '').toMatch(/ssoCode=/);
-      expect(createTokenPair).toHaveBeenCalled();
+      expect(issueUserSession).toHaveBeenCalled();
       // isSsoProvisioningBlocked is still called in the mock infrastructure
       // but the gate block is inside `if (!user)` which is false here — so
       // the callback must NOT have redirected to sso_domain_unverified.
@@ -2038,9 +2034,8 @@ describe('sso routes', () => {
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(res.headers.get('location') ?? '').toMatch(/ssoCode=/);
-      expect(createTokenPair).toHaveBeenCalledWith(
-        expect.objectContaining({ sub: USER_UUID, roleId: 'prole-1', orgId: null, partnerId: PARTNER_UUID, scope: 'partner' }),
-        expect.any(Object)
+      expect(issueUserSession).toHaveBeenCalledWith(
+        expect.objectContaining({ userId: USER_UUID, roleId: 'prole-1', orgId: null, partnerId: PARTNER_UUID, scope: 'partner' })
       );
       expect(auditLogin).toHaveBeenCalledWith(
         expect.anything(),
@@ -2061,9 +2056,8 @@ describe('sso routes', () => {
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(res.headers.get('location') ?? '').toMatch(/ssoCode=/);
-      expect(createTokenPair).toHaveBeenCalledWith(
-        expect.objectContaining({ scope: 'partner', partnerId: PARTNER_UUID, orgId: null }),
-        expect.any(Object)
+      expect(issueUserSession).toHaveBeenCalledWith(
+        expect.objectContaining({ scope: 'partner', partnerId: PARTNER_UUID, orgId: null })
       );
     });
 
@@ -2088,7 +2082,7 @@ describe('sso routes', () => {
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(res.headers.get('location') ?? '').toContain('error=identity_in_use');
-      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(issueUserSession).not.toHaveBeenCalled();
     });
 
     it('proceeds when the identity INSERT loses the race to the SAME user (parallel logins)', async () => {
@@ -2110,9 +2104,8 @@ describe('sso routes', () => {
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(res.headers.get('location') ?? '').toMatch(/ssoCode=/);
-      expect(createTokenPair).toHaveBeenCalledWith(
-        expect.objectContaining({ scope: 'partner', partnerId: PARTNER_UUID, orgId: null }),
-        expect.any(Object)
+      expect(issueUserSession).toHaveBeenCalledWith(
+        expect.objectContaining({ scope: 'partner', partnerId: PARTNER_UUID, orgId: null })
       );
     });
 
@@ -2127,7 +2120,7 @@ describe('sso routes', () => {
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(res.headers.get('location') ?? '').toContain('error=sso_link_required');
-      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(issueUserSession).not.toHaveBeenCalled();
     });
 
     it('never resolves an org-bound user through a partner provider', async () => {
@@ -2143,7 +2136,7 @@ describe('sso routes', () => {
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(res.headers.get('location') ?? '').toContain('error=invite_required');
-      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(issueUserSession).not.toHaveBeenCalled();
     });
 
     it('redirects invite_required for unknown identities (no JIT)', async () => {
@@ -2156,7 +2149,7 @@ describe('sso routes', () => {
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(res.headers.get('location') ?? '').toContain('error=invite_required');
-      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(issueUserSession).not.toHaveBeenCalled();
     });
 
     it('rejects a linked user whose row is org-bound even with a partner membership (mint-gate re-assert)', async () => {
@@ -2172,7 +2165,7 @@ describe('sso routes', () => {
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(res.headers.get('location') ?? '').toContain('error=no_partner_access');
-      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(issueUserSession).not.toHaveBeenCalled();
     });
 
     it('redirects no_partner_access when the user has no partner_users membership', async () => {
@@ -2186,7 +2179,7 @@ describe('sso routes', () => {
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(res.headers.get('location') ?? '').toContain('error=no_partner_access');
-      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(issueUserSession).not.toHaveBeenCalled();
     });
 
     it('rejects a partner provider whose defaultRoleId is not partner-scoped', async () => {
@@ -2198,7 +2191,7 @@ describe('sso routes', () => {
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(res.headers.get('location') ?? '').toContain('error=invalid_provider_configuration');
-      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(issueUserSession).not.toHaveBeenCalled();
     });
 
     const wireMfa = (opts: { trustsIdpMfa: boolean; amr?: string[] }) => {
@@ -2216,9 +2209,8 @@ describe('sso routes', () => {
       wireMfa({ trustsIdpMfa: true, amr: ['pwd', 'mfa'] });
       const res = await doCallback();
       expect(res.status).toBe(302);
-      expect(createTokenPair).toHaveBeenCalledWith(
-        expect.objectContaining({ scope: 'partner', mfa: true }),
-        expect.any(Object)
+      expect(issueUserSession).toHaveBeenCalledWith(
+        expect.objectContaining({ scope: 'partner', mfa: true })
       );
     });
 
@@ -2226,9 +2218,8 @@ describe('sso routes', () => {
       wireMfa({ trustsIdpMfa: true, amr: ['pwd'] });
       const res = await doCallback();
       expect(res.status).toBe(302);
-      expect(createTokenPair).toHaveBeenCalledWith(
-        expect.objectContaining({ scope: 'partner', mfa: false }),
-        expect.any(Object)
+      expect(issueUserSession).toHaveBeenCalledWith(
+        expect.objectContaining({ scope: 'partner', mfa: false })
       );
     });
   });
@@ -2409,7 +2400,7 @@ describe('sso routes', () => {
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(res.headers.get('location')).toBe('/settings/profile?ssoLinked=1');
-      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(issueUserSession).not.toHaveBeenCalled();
       expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({
         userId: USER_UUID, providerId: PROVIDER_UUID, externalId: 'external-user-1'
       }));
@@ -2425,7 +2416,7 @@ describe('sso routes', () => {
       expect(res.status).toBe(302);
       expect(res.headers.get('location')).toContain('ssoLinkError=email_mismatch');
       expect(db.insert).not.toHaveBeenCalled();
-      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(issueUserSession).not.toHaveBeenCalled();
     });
 
     it('callback link mode rejects a (provider, sub) already linked to another user (no insert)', async () => {
@@ -2439,7 +2430,7 @@ describe('sso routes', () => {
       expect(res.status).toBe(302);
       expect(res.headers.get('location')).toContain('ssoLinkError=identity_in_use');
       expect(db.insert).not.toHaveBeenCalled();
-      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(issueUserSession).not.toHaveBeenCalled();
     });
   });
 });

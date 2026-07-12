@@ -5,7 +5,7 @@ import { z } from 'zod';
 import * as dbModule from '../../db';
 import { users, organizations } from '../../db/schema';
 import {
-  createTokenPair,
+  issueUserSession,
   generateMFASecret,
   verifyMFAToken,
   consumeMFAToken,
@@ -14,9 +14,7 @@ import {
   generateRecoveryCodes,
   rateLimiter,
   mfaLimiter,
-  getRedis,
-  mintRefreshTokenFamily,
-  bindRefreshJtiToFamily
+  getRedis
 } from '../../services';
 import { getTwilioService } from '../../services/twilio';
 import { readMobileDeviceId } from '../../services/mobileDeviceBinding';
@@ -219,14 +217,8 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
     const mfaOrgId = mfaContext.orgId;
     const mfaScope = mfaContext.scope;
 
-    // Create tokens with user's context. Mint a fresh refresh-token family
-    // so MFA-completed logins get the same reuse-detection guarantees as
-    // password-only logins. Missing this on /mfa/verify would silently
-    // exempt every MFA-enabled user from RFC 9700 §4.13.2 protection —
-    // exactly the wrong cohort to skip.
-    const mfaFamilyId = await mintRefreshTokenFamily(user.id);
-    const tokens = await createTokenPair({
-      sub: user.id,
+    const tokens = await issueUserSession({
+      userId: user.id,
       email: user.email,
       roleId: mfaRoleId,
       orgId: mfaOrgId,
@@ -234,10 +226,8 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
       scope: mfaScope,
       mfa: true,
       // SR-001: bind to the mobile install id when present (MFA login path).
-      mdid: readMobileDeviceId(c) ?? undefined
-    }, { refreshFam: mfaFamilyId });
-
-    await bindRefreshJtiToFamily(tokens.refreshJti, mfaFamilyId);
+      mobileDeviceId: readMobileDeviceId(c) ?? undefined
+    });
 
     // Update last login
     // System DB context required: the MFA-verify step is still unauthenticated,

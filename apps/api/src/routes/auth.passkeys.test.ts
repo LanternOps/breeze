@@ -52,7 +52,7 @@ vi.mock('../services', () => ({
   hashPassword: vi.fn().mockResolvedValue('$argon2id$hashed'),
   verifyPassword: vi.fn().mockResolvedValue(true),
   isPasswordStrong: vi.fn().mockReturnValue({ valid: true, errors: [] }),
-  createTokenPair: vi.fn().mockResolvedValue({
+  issueUserSession: vi.fn().mockResolvedValue({
     accessToken: 'access-token',
     refreshToken: 'refresh-token',
     refreshJti: 'refresh-jti',
@@ -78,8 +78,6 @@ vi.mock('../services', () => ({
   revokeFamily: vi.fn().mockResolvedValue(undefined),
   isFamilyRevoked: vi.fn().mockResolvedValue(false),
   touchFamilyLastUsed: vi.fn().mockResolvedValue(undefined),
-  mintRefreshTokenFamily: vi.fn().mockResolvedValue('family-passkey'),
-  bindRefreshJtiToFamily: vi.fn().mockResolvedValue(undefined),
   rateLimiter: vi.fn().mockResolvedValue({ allowed: true, remaining: 4, resetAt: new Date() }),
   loginLimiter: { limit: 5, windowSeconds: 300 },
   forgotPasswordLimiter: { limit: 3, windowSeconds: 3600 },
@@ -249,7 +247,7 @@ vi.mock('../middleware/auth', () => ({
   requirePermission: vi.fn(() => (_c: any, next: any) => next()),
 }));
 
-import { createTokenPair, getRedis, rateLimiter, verifyPassword } from '../services';
+import { issueUserSession, getRedis, rateLimiter, verifyPassword } from '../services';
 import { PasskeyChallengeError } from '../services/passkeys';
 import { withSystemDbAccessContext } from '../db';
 
@@ -567,9 +565,8 @@ describe('passkey MFA auth routes', () => {
     });
 
     expect(res.status).toBe(200);
-    expect(createTokenPair).toHaveBeenCalledWith(
-      expect.objectContaining({ sub: 'user-123', mfa: true }),
-      expect.objectContaining({ refreshFam: 'family-passkey' }),
+    expect(issueUserSession).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'user-123', mfa: true }),
     );
     expect(redisMock.del).toHaveBeenCalledWith('mfa:pending:temp-token');
   });
@@ -596,7 +593,7 @@ describe('passkey MFA auth routes', () => {
 
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({ error: expect.stringMatching(/passkey mfa is not configured/i) });
-    expect(createTokenPair).not.toHaveBeenCalled();
+    expect(issueUserSession).not.toHaveBeenCalled();
     expect(rateLimiter).not.toHaveBeenCalled();
     expect(redisMock.del).not.toHaveBeenCalled();
   });
@@ -681,9 +678,8 @@ describe('passkey MFA auth routes', () => {
     });
 
     expect(res.status).toBe(200);
-    expect(createTokenPair).toHaveBeenCalledWith(
-      expect.objectContaining({ sub: 'user-123', email: 'test@example.com', mfa: true }),
-      expect.objectContaining({ refreshFam: 'family-passkey' }),
+    expect(issueUserSession).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'user-123', email: 'test@example.com', mfa: true }),
     );
     expect(await res.json()).toMatchObject({
       mfaRequired: false,
@@ -714,7 +710,7 @@ describe('passkey MFA auth routes', () => {
     });
 
     expect(res.status).toBe(403);
-    expect(createTokenPair).not.toHaveBeenCalled();
+    expect(issueUserSession).not.toHaveBeenCalled();
     expect(redisMock.del).not.toHaveBeenCalled();
   });
 
@@ -802,7 +798,7 @@ describe('passkey MFA auth routes', () => {
 
     expect(res.status).toBe(401);
     expect(await res.json()).toMatchObject({ error: expect.stringMatching(/verification failed/i) });
-    expect(createTokenPair).not.toHaveBeenCalled();
+    expect(issueUserSession).not.toHaveBeenCalled();
     expect(redisMock.del).not.toHaveBeenCalled();
   });
 
@@ -832,7 +828,7 @@ describe('passkey MFA auth routes', () => {
     });
 
     expect(res.status).toBe(403);
-    expect(createTokenPair).not.toHaveBeenCalled();
+    expect(issueUserSession).not.toHaveBeenCalled();
     expect(passkeyMocks.verifyPasskeyAuthentication).not.toHaveBeenCalled();
     expect(redisMock.del).not.toHaveBeenCalled();
   });
@@ -860,7 +856,7 @@ describe('passkey MFA auth routes', () => {
 
     expect(res.status).toBe(429);
     expect(await res.json()).toMatchObject({ error: expect.stringMatching(/too many/i) });
-    expect(createTokenPair).not.toHaveBeenCalled();
+    expect(issueUserSession).not.toHaveBeenCalled();
     // The limiter must short-circuit before any credential lookup/verification.
     expect(passkeyMocks.verifyPasskeyAuthentication).not.toHaveBeenCalled();
   });
@@ -879,7 +875,7 @@ describe('passkey MFA auth routes', () => {
 
     expect(res.status).toBe(503);
     expect(await res.json()).toMatchObject({ error: expect.stringMatching(/unavailable/i) });
-    expect(createTokenPair).not.toHaveBeenCalled();
+    expect(issueUserSession).not.toHaveBeenCalled();
     expect(rateLimiter).not.toHaveBeenCalled();
   });
 
@@ -902,7 +898,7 @@ describe('passkey MFA auth routes', () => {
 
     expect(res.status).toBe(401);
     expect(await res.json()).toMatchObject({ error: expect.stringMatching(/invalid or expired/i) });
-    expect(createTokenPair).not.toHaveBeenCalled();
+    expect(issueUserSession).not.toHaveBeenCalled();
     expect(redisMock.del).not.toHaveBeenCalled();
   });
 
@@ -1055,7 +1051,7 @@ describe('passkey MFA auth routes', () => {
 
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({ error: expect.stringMatching(/use passkey verification/i) });
-    expect(createTokenPair).not.toHaveBeenCalled();
+    expect(issueUserSession).not.toHaveBeenCalled();
   });
 
   // PATCH /passkeys/:id rename.

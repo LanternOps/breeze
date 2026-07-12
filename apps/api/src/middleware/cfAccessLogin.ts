@@ -15,9 +15,7 @@ import {
   verifyCfAccessJwt,
 } from '../services/cfAccessJwt';
 import {
-  bindRefreshJtiToFamily,
-  createTokenPair,
-  mintRefreshTokenFamily,
+  issueUserSession,
 } from '../services';
 import { getRedis } from '../services';
 import { createAuditLogAsync } from '../services/auditService';
@@ -176,27 +174,16 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
 
   const mfaSatisfied = trustsMfa || !(ENABLE_2FA && user.mfaEnabled);
 
-  // Mint a fresh refresh-token family for this login so the rotation chain
-  // participates in OAuth 2.1 reuse-detection — same invariant as every
-  // other authenticated mint path (see services/refreshTokenFamily.ts and
-  // the /login handler this middleware short-circuits).
-  const familyId = await mintRefreshTokenFamily(user.id);
-
-  const tokens = await createTokenPair(
-    {
-      sub: user.id,
-      email: user.email,
-      roleId: context.roleId,
-      orgId: context.orgId,
-      partnerId: context.partnerId,
-      scope: context.scope,
-      mfa: mfaSatisfied,
-      mdid: readMobileDeviceId(c) ?? undefined,
-    },
-    { refreshFam: familyId }
-  );
-
-  await bindRefreshJtiToFamily(tokens.refreshJti, familyId);
+  const tokens = await issueUserSession({
+    userId: user.id,
+    email: user.email,
+    roleId: context.roleId,
+    orgId: context.orgId,
+    partnerId: context.partnerId,
+    scope: context.scope,
+    mfa: mfaSatisfied,
+    mobileDeviceId: readMobileDeviceId(c) ?? undefined,
+  });
 
   // System DB context required: no request auth context is established on this
   // pre-auth path, so a bare UPDATE silently matches 0 rows under breeze_app RLS
