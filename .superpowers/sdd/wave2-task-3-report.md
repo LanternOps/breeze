@@ -20,7 +20,7 @@
   - Exact role/partner/organization/scope authority axes.
   - Exact effective required flag, policy-source set, and allowed-method set.
   - Exact enrolled-method set, including TOTP, SMS, passkey, and stored recovery-code enrollment.
-  - Primary authentication method and selected local MFA method.
+  - Primary authentication method, configured local MFA method, and separately selected effective local MFA method.
   - Canonical `issuedAt`/`expiresAt` timestamps separated by exactly five minutes.
 - Password and Cloudflare Access login now reload active user/enrollment and live policy before creating the record. They select only a currently enrolled and allowed primary factor and return passkey/SMS presentation metadata derived from that same snapshot; Cloudflare Access binds `primaryAuthenticationMethod: 'cf_access'`.
 - TOTP, SMS, passkey options/verification, and SMS-code sending use the strict shared reader. No route retains a partial/legacy pending parser.
@@ -47,7 +47,8 @@ type PendingMfaSessionV2 = {
   allowedMethods: Array<'totp' | 'sms' | 'passkey' | 'recovery_code'>;
   enrolledMethods: Array<'totp' | 'sms' | 'passkey' | 'recovery_code'>;
   primaryAuthenticationMethod: 'password' | 'sso' | 'cf_access';
-  primaryMfaMethod: 'totp' | 'sms' | 'passkey';
+  configuredMfaMethod: 'totp' | 'sms' | 'passkey' | null;
+  primaryMfaMethod: 'totp' | 'sms' | 'passkey'; // selected effective method
   issuedAt: string;
   expiresAt: string;
 };
@@ -138,7 +139,6 @@ The first attempt used the repository's full database integration config. Its sh
 
 All first-party user-session issuers remain explicitly locked by `userSessionCallsites.test.ts`:
 
-- `apps/api/src/middleware/cfAccessLogin.ts`
 - `apps/api/src/routes/auth/cfAccessRedirectLogin.ts`
 - `apps/api/src/routes/auth/invite.ts`
 - `apps/api/src/routes/auth/login.ts`
@@ -147,6 +147,9 @@ All first-party user-session issuers remain explicitly locked by `userSessionCal
 - `apps/api/src/services/mfaAssurance.ts`
 
 `routes/auth/mfa.ts` and `routes/auth/passkeys.ts` no longer mint sessions directly.
+`middleware/cfAccessLogin.ts` creates a locked pending/direct decision but no
+longer calls `issueUserSession`; direct issuance is consolidated in
+`services/mfaAssurance.ts`.
 
 ## Verification gates
 
@@ -263,3 +266,82 @@ PASS (existing import.meta/CJS warning only)
 git diff --check
 PASS
 ```
+
+## Final Review Fix
+
+### External identity binding
+
+`AuthenticatedUserSessionDecisionInput` is now a discriminated credential
+binding rather than an optional password-only attachment:
+
+- `password` requires the verified password hash, `passwordChangedAt`, and
+  `authEpoch` binding.
+- `cf_access` requires the normalized email from the verified Access JWT.
+
+The Cloudflare middleware derives this value only from `verifyCfAccessJwt`
+claims; no request body or earlier database row can select it. Under the user
+row lock, the decision compares normalized live user email to normalized
+verified assertion email. Drift rejects before pending Redis storage or session
+issuance. The middleware terminates that typed drift with a generic `401`
+rather than falling through to password authentication, so the same request
+cannot create a pending record, token, cookie, family, or JTI. Case-equivalent
+emails remain valid.
+
+### Shared Task 5 lock contract
+
+`mfaAssuranceLocks.ts` now exports the reusable production primitive
+`lockMfaAssuranceState`. Its mandatory order is documented and tested as:
+
+1. partner MFA-policy advisory lock;
+2. user row lock;
+3. passkey/factor row locks.
+
+Pending/direct decisions and post-factor issuance consume this helper. The Wave
+2 Task 5 plan now requires all factor/effective-policy mutations to consume the
+same helper/order before mutation, epoch advancement, or family revocation, and
+requires real winner-order plus deadlock regressions.
+
+### Report audit corrections
+
+- The V2 schema above now distinguishes nullable `configuredMfaMethod` from
+  selected effective `primaryMfaMethod`.
+- The executable issuer inventory no longer lists `cfAccessLogin.ts`; it calls
+  the locked decision boundary, while `services/mfaAssurance.ts` performs direct
+  issuance.
+- Claims in the report were rechecked against the final static inventory and
+  production call sites.
+
+### Final RED/GREEN and verification
+
+```text
+CF external identity RED
+FAIL — changed live email still issued; middleware omitted credentialBinding
+
+shared lock contract RED
+FAIL — mfaAssuranceLocks module did not exist
+
+strict CF denial RED
+FAIL — typed identity drift fell through instead of terminating the request
+
+service/CF/auth focused GREEN
+PASS — 6 files, 190/190 tests
+
+transaction/policy/session regression gate
+PASS — 9 files, 259/259 tests
+
+Wave 1-style auth/session regression gate
+PASS — 6 files, 240/240 tests
+
+real PostgreSQL + Redis interleaving after lock-helper extraction
+PASS — 1/1
+
+Cloudflare middleware exact suite after terminal drift denial
+PASS — 15/15
+
+TypeScript / ESLint / API build / git diff --check
+PASS (build retains the existing import.meta/CJS warning)
+```
+
+The first final interleaving attempt found the test containers stopped and did
+not reach an assertion. The repository test containers were recreated; the
+authoritative exact rerun passed 1/1.

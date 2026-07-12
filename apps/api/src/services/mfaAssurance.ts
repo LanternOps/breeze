@@ -1,14 +1,13 @@
 import { nanoid } from 'nanoid';
-import { and, eq, isNull } from 'drizzle-orm';
 import type { MfaMethod, MfaPrimaryMethod } from '@breeze/shared';
-import { userPasskeys, users } from '../db/schema';
-import { lockMfaPolicyPartner, resolveEffectiveMfaPolicy } from './mfaPolicy';
+import { resolveEffectiveMfaPolicy } from './mfaPolicy';
 import { getRedis } from './redis';
 import { bindIssuedUserSession, issueUserSession } from './userSession';
 import {
   withAuthLifecycleSystemTransaction,
   type AuthLifecycleTransaction,
 } from './authLifecycle';
+import { lockMfaAssuranceState } from './mfaAssuranceLocks';
 
 const PENDING_MFA_TTL_SECONDS = 5 * 60;
 const PENDING_MFA_TTL_MS = PENDING_MFA_TTL_SECONDS * 1000;
@@ -297,16 +296,32 @@ export interface CreatePendingMfaForLoginInput {
   primaryAuthenticationMethod: PrimaryAuthenticationMethod;
 }
 
-export interface AuthenticatedUserSessionDecisionInput extends CreatePendingMfaForLoginInput {
+type AuthenticatedUserSessionDecisionBase = Omit<
+  CreatePendingMfaForLoginInput,
+  'primaryAuthenticationMethod'
+> & {
   requireLocalMfa: boolean;
   externallySatisfiedMfa?: boolean;
   mobileDeviceId?: string;
-  passwordCredential?: {
-    passwordHash: string;
-    passwordChangedAt: Date | null;
-    authEpoch: number;
+};
+
+export type AuthenticatedUserSessionDecisionInput =
+  | AuthenticatedUserSessionDecisionBase & {
+    primaryAuthenticationMethod: 'password';
+    credentialBinding: {
+      kind: 'password';
+      passwordHash: string;
+      passwordChangedAt: Date | null;
+      authEpoch: number;
+    };
+  }
+  | AuthenticatedUserSessionDecisionBase & {
+    primaryAuthenticationMethod: 'cf_access';
+    credentialBinding: {
+      kind: 'cf_access';
+      verifiedEmail: string;
+    };
   };
-}
 
 function deriveEnrolledMethods(
   user: {
@@ -368,31 +383,18 @@ async function loadLockedPendingMfaAuthority(
   tx: AuthLifecycleTransaction,
   input: Pick<CreatePendingMfaForLoginInput, 'userId' | 'roleId' | 'orgId' | 'partnerId' | 'scope'>,
 ) {
-  if (input.partnerId) {
-    await lockMfaPolicyPartner(tx, input.partnerId);
-  }
-  const userRows = await tx
-    .select()
-    .from(users)
-    .where(eq(users.id, input.userId))
-    .for('update')
-    .limit(1);
-  const passkeyRows = await tx
-    .select({ id: userPasskeys.id })
-    .from(userPasskeys)
-    .where(and(
-      eq(userPasskeys.userId, input.userId),
-      isNull(userPasskeys.disabledAt),
-    ))
-    .for('update')
-    .limit(100);
+  const { user, activePasskeyCount } = await lockMfaAssuranceState(tx, input);
   const policy = await resolveEffectiveMfaPolicy({ ...input, tx });
-  return { user: userRows[0], activePasskeyCount: passkeyRows.length, policy };
+  return { user, activePasskeyCount, policy };
 }
 
 function datesEqual(first: Date | null, second: Date | null): boolean {
   if (first === null || second === null) return first === second;
   return first.getTime() === second.getTime();
+}
+
+function normalizeIdentityEmail(email: string): string {
+  return email.trim().toLowerCase();
 }
 
 /**
@@ -410,11 +412,18 @@ export async function decideAuthenticatedUserSession(
       throw new PendingMfaInvalidError();
     }
     if (input.primaryAuthenticationMethod === 'password') {
-      const credential = input.passwordCredential;
-      if (!credential
+      const credential = input.credentialBinding;
+      if (credential.kind !== 'password'
         || user.passwordHash !== credential.passwordHash
         || user.authEpoch !== credential.authEpoch
         || !datesEqual(user.passwordChangedAt, credential.passwordChangedAt)) {
+        throw new PendingMfaInvalidError();
+      }
+    } else {
+      const credential = input.credentialBinding;
+      if (credential.kind !== 'cf_access'
+        || !isNonEmptyString(credential.verifiedEmail.trim())
+        || normalizeIdentityEmail(user.email) !== normalizeIdentityEmail(credential.verifiedEmail)) {
         throw new PendingMfaInvalidError();
       }
     }

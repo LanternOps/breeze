@@ -437,7 +437,8 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
       primaryAuthenticationMethod: 'password',
       requireLocalMfa: ENABLE_2FA,
       mobileDeviceId: readMobileDeviceId(c) ?? undefined,
-      passwordCredential: {
+      credentialBinding: {
+        kind: 'password',
         passwordHash: user.passwordHash,
         passwordChangedAt: user.passwordChangedAt ?? null,
         authEpoch: user.authEpoch,

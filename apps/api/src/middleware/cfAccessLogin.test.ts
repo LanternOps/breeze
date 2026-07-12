@@ -203,7 +203,7 @@ vi.mock('../routes/auth/schemas', async () => {
 });
 
 import { cfAccessLoginMiddleware } from './cfAccessLogin';
-import { decideAuthenticatedUserSession } from '../services';
+import { decideAuthenticatedUserSession, PendingMfaInvalidError } from '../services';
 
 function createContext(headers: Record<string, string | undefined> = {}): Context {
   const normalized = Object.fromEntries(
@@ -432,6 +432,37 @@ describe('cfAccessLoginMiddleware', () => {
       tempToken: 'live-enrollment-token',
       mfaMethod: 'passkey',
     });
+  });
+
+  it('binds the locked decision to the verified assertion email and denies drift', async () => {
+    envState.enabled = true;
+    verifyState.next = {
+      kind: 'claims',
+      claims: { email: 'Old.Name@Example.com', sub: 'cf-1', aud: envState.audience, iss: `https://${envState.teamDomain}`, exp: 999, iat: 1 },
+    };
+    dbState.userRow = { ...activeUser, email: 'old.name@example.com' };
+    vi.mocked(decideAuthenticatedUserSession).mockImplementationOnce(async (input) => {
+      expect(input).toMatchObject({
+        primaryAuthenticationMethod: 'cf_access',
+        credentialBinding: {
+          kind: 'cf_access',
+          verifiedEmail: 'old.name@example.com',
+        },
+      });
+      throw new PendingMfaInvalidError();
+    });
+
+    const { next, called } = createNext();
+    const response = await cfAccessLoginMiddleware(
+      createContext({ 'Cf-Access-Jwt-Assertion': 'tok' }),
+      next,
+    );
+
+    expect(response).toBeInstanceOf(Response);
+    expect((response as Response).status).toBe(401);
+    expect(called()).toBe(false);
+    expect(cookieState.set).toBeNull();
+    expect(tokenState.lastIdentity).toBeNull();
   });
 
   it('delegates the complete identity to the high-level session issuer', async () => {

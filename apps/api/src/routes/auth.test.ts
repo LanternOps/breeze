@@ -919,7 +919,8 @@ describe('auth routes', () => {
         scope: 'partner',
         primaryAuthenticationMethod: 'password',
         requireLocalMfa: true,
-        passwordCredential: expect.objectContaining({
+        credentialBinding: expect.objectContaining({
+          kind: 'password',
           passwordHash: '$argon2id$hash',
           authEpoch: 1,
         }),

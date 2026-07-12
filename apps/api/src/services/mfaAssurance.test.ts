@@ -492,7 +492,8 @@ describe('pending MFA V2 state', () => {
       scope: 'organization',
       primaryAuthenticationMethod: 'password',
       requireLocalMfa: true,
-      passwordCredential: {
+      credentialBinding: {
+        kind: 'password',
         passwordHash: 'verified-password-hash',
         passwordChangedAt: new Date('2026-07-01T00:00:00.000Z'),
         authEpoch: 4,
@@ -519,7 +520,8 @@ describe('pending MFA V2 state', () => {
       scope: 'organization',
       primaryAuthenticationMethod: 'password',
       requireLocalMfa: true,
-      passwordCredential: {
+      credentialBinding: {
+        kind: 'password',
         passwordHash: 'verified-password-hash',
         passwordChangedAt: new Date('2026-07-01T00:00:00.000Z'),
         authEpoch: 4,
@@ -527,6 +529,48 @@ describe('pending MFA V2 state', () => {
     })).rejects.toBeInstanceOf(PendingMfaInvalidError);
 
     expect(issueUserSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects when the verified Cloudflare email changes before the locked decision', async () => {
+    dbState.userRows[0]!.email = 'renamed@example.com';
+
+    await expect(decideAuthenticatedUserSession({
+      userId: 'user-1',
+      roleId: 'role-1',
+      orgId: 'org-1',
+      partnerId: 'partner-1',
+      scope: 'organization',
+      primaryAuthenticationMethod: 'cf_access',
+      requireLocalMfa: false,
+      credentialBinding: {
+        kind: 'cf_access',
+        verifiedEmail: 'user@example.com',
+      },
+    })).rejects.toBeInstanceOf(PendingMfaInvalidError);
+
+    expect(issueUserSessionMock).not.toHaveBeenCalled();
+    expect(redisMock.setex).not.toHaveBeenCalled();
+    expect(bindIssuedUserSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('accepts a case-equivalent verified Cloudflare email under the user lock', async () => {
+    dbState.userRows[0]!.email = 'User@Example.COM';
+
+    await expect(decideAuthenticatedUserSession({
+      userId: 'user-1',
+      roleId: 'role-1',
+      orgId: 'org-1',
+      partnerId: 'partner-1',
+      scope: 'organization',
+      primaryAuthenticationMethod: 'cf_access',
+      requireLocalMfa: false,
+      credentialBinding: {
+        kind: 'cf_access',
+        verifiedEmail: 'user@example.com',
+      },
+    })).resolves.toMatchObject({ kind: 'issued' });
+
+    expect(issueUserSessionMock).toHaveBeenCalledOnce();
   });
 
   it.each([

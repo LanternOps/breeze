@@ -203,16 +203,21 @@ git commit -m "fix(mfa): require existing-factor proof for enrollment"
 - Modify: `apps/api/src/routes/auth/passkeys.ts`
 - Modify: `apps/api/src/routes/orgs.ts`
 - Modify: `apps/api/src/services/authLifecycle.ts`
+- Reuse: `apps/api/src/services/mfaAssuranceLocks.ts`
 - Modify: `apps/api/src/services/remoteSessionTeardown.ts` only if an adapter is needed
 - Modify: corresponding API route tests
 
 **Interfaces:**
 - Consumes Wave 1 lifecycle primitives inside factor/settings transactions.
+- Must consume `lockMfaAssuranceState` before mutation. The production lock
+  contract is mandatory and ordered: partner MFA-policy advisory lock → user
+  row → passkey/factor rows. Task 5 must not reproduce these locks ad hoc or
+  acquire them in another order.
 - Produces `{ success: true, reauthenticate: true }` after user factor mutations.
 
 - [ ] **Step 1: Write failing mutation tests**
 
-Cover TOTP setup/replace/disable, SMS enable/phone replace, passkey add/delete, recovery rotation, org policy change, partner policy change, rollback, and remote teardown partial failure. Assert factor/settings state + epoch + family revocation are atomic.
+Cover TOTP setup/replace/disable, SMS enable/phone replace, passkey add/delete, recovery rotation, org policy change, partner policy change, rollback, and remote teardown partial failure. Assert factor/settings state + epoch + family revocation are atomic. Add real-driver races between pending/session issuance and factor or effective-policy mutation in both winner orders; assert stale assurance never issues. Add a two-transaction lock-order regression that proves issuance and mutation complete without deadlock because both acquire partner policy → user → factor rows in the shared order.
 
 - [ ] **Step 2: Run RED**
 
@@ -220,11 +225,11 @@ Run auth/passkey/org route tests; expected current mutation-only behavior to fai
 
 - [ ] **Step 3: Implement transactional user mutations**
 
-Use the request transaction to change factor, increment `mfa_epoch`, and revoke all user families. After commit clear Redis/permission caches and terminate remote sessions. Return reauthentication signal; no old cookie remains usable.
+Inside the request transaction, call `lockMfaAssuranceState(tx, { partnerId, userId })` before changing any factor, incrementing `mfa_epoch`, or revoking user families. Then change the factor, advance the epoch, and revoke all user families atomically. After commit clear Redis/permission caches and terminate remote sessions. Return reauthentication signal; no old cookie remains usable.
 
 - [ ] **Step 4: Implement policy bulk invalidation**
 
-In the same transaction as the settings update, increment `mfa_epoch` and revoke families for every affected current member. Partner policy applies to partner members and organization members under the partner; organization policy applies to that organization's members. Use set-based SQL and report affected counts in audit.
+In the same transaction as the settings update, acquire the partner MFA-policy advisory lock first, then lock affected user rows and factor rows in stable user-id order using the shared contract before incrementing `mfa_epoch` and revoking families for every affected current member. Partner policy applies to partner members and organization members under the partner; organization policy applies to that organization's members. Use set-based SQL where it preserves this lock order and report affected counts in audit.
 
 - [ ] **Step 5: Consume the setup TOTP step**
 

@@ -146,12 +146,20 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
       partnerId: context.partnerId,
       scope: context.scope,
       primaryAuthenticationMethod: 'cf_access',
+      credentialBinding: {
+        kind: 'cf_access',
+        verifiedEmail: normalizedEmail,
+      },
       requireLocalMfa: ENABLE_2FA && !trustsMfa,
       externallySatisfiedMfa: trustsMfa,
       mobileDeviceId: readMobileDeviceId(c) ?? undefined,
     });
   } catch (error) {
-    if (error instanceof PendingMfaUnavailableError || error instanceof PendingMfaInvalidError) {
+    if (error instanceof PendingMfaInvalidError) {
+      console.error('[cf-access-login] locked identity or MFA state changed; denying assertion login');
+      return c.json({ error: 'Invalid email or password' }, 401);
+    }
+    if (error instanceof PendingMfaUnavailableError) {
       console.error('[cf-access-login] cannot make live MFA session decision; falling through');
       return next();
     }
