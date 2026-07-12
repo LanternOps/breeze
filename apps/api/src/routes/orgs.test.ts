@@ -12,6 +12,12 @@ const lifecycleAuthorizationMocks = vi.hoisted(() => ({
   authorizeOrganizationWrite: vi.fn(),
 }));
 
+const mfaPolicyMocks = vi.hoisted(() => ({
+  ConfigurationError: class MfaPolicyConfigurationError extends Error {},
+  validatePartnerWrite: vi.fn(),
+  validateOrganizationWrite: vi.fn(),
+}));
+
 vi.mock('../services', () => ({}));
 
 vi.mock('../services/sentry', () => ({
@@ -59,6 +65,12 @@ vi.mock('../services/authLifecycle', () => ({
 vi.mock('../services/lifecycleAuthorization', () => ({
   organizationLifecycleWriteCondition: vi.fn(() => ({})),
   authorizeOrganizationLifecycleWrite: lifecycleAuthorizationMocks.authorizeOrganizationWrite,
+}));
+
+vi.mock('../services/mfaPolicy', () => ({
+  MfaPolicyConfigurationError: mfaPolicyMocks.ConfigurationError,
+  validatePartnerMfaPolicySettingsWrite: mfaPolicyMocks.validatePartnerWrite,
+  validateOrganizationMfaPolicySettingsWrite: mfaPolicyMocks.validateOrganizationWrite,
 }));
 
 vi.mock('../db', () => ({
@@ -504,7 +516,7 @@ describe('org routes', () => {
       expect(capturedUpdateData.timezone).toBe('UTC');
     });
 
-    // #1318: updatePartnerSchema uses `settings: z.any()`, so an invalid IANA
+    // #1318: updatePartnerSchema preserves extensible settings, so an invalid
     // settings.timezone is NOT caught by zod here (unlike /partners/me). It must
     // be rejected with a 400 rather than silently persisted into the JSONB while
     // the column write is skipped — that is the column<->settings desync this PR
@@ -770,6 +782,26 @@ describe('org routes', () => {
         expect(res.status).toBe(200);
         expect(getCaptured().settings.security.ipAllowlist).toEqual([]);
         expect(clearPartnerAllowlistCache).toHaveBeenCalledWith('partner-1');
+      });
+
+      it('rejects an explicit MFA allowlist with no enabled primary factor', async () => {
+        const res = await patchPartner({ settings: { security: { allowedMethods: {} } } });
+
+        expect(res.status).toBe(400);
+        expect(db.update).not.toHaveBeenCalled();
+      });
+
+      it('canonicalizes the legacy MFA allowlist alias before the settings write', async () => {
+        mockCurrentPartnerSelect({});
+        const getCaptured = mockUpdateCapture();
+
+        const res = await patchPartner({
+          settings: { security: { allowedMfaMethods: { passkey: true } } },
+        });
+
+        expect(res.status).toBe(200);
+        expect(getCaptured().settings.security.allowedMethods).toEqual({ passkey: true });
+        expect(getCaptured().settings.security).not.toHaveProperty('allowedMfaMethods');
       });
     });
 
@@ -1451,6 +1483,69 @@ describe('org routes', () => {
       expect(res.status).toBe(400);
     });
 
+    it('rejects an explicit organization MFA allowlist with no enabled primary factor', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { security: { allowedMethods: {} } } }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects a write whose primary factors have an empty intersection with partner policy', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mfaPolicyMocks.validateOrganizationWrite.mockRejectedValueOnce(
+        new mfaPolicyMocks.ConfigurationError(
+          'MFA allowed methods must overlap with the partner policy',
+        ),
+      );
+
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { security: { allowedMethods: { sms: true } } } }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('canonicalizes the legacy alias before the organization settings write', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      const whereRet: any = Promise.resolve([{ partnerId: 'partner-123', settings: {} }]);
+      whereRet.limit = vi.fn().mockResolvedValue([]);
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue(whereRet) }),
+      } as any);
+      let capturedUpdateData: any;
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockImplementation((data: any) => {
+          capturedUpdateData = data;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'org-1', settings: data.settings }]),
+            }),
+          };
+        }),
+      } as any);
+
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          settings: { security: { allowedMfaMethods: { passkey: true } } },
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(capturedUpdateData.settings.security.allowedMethods).toEqual({ passkey: true });
+      expect(capturedUpdateData.settings.security).not.toHaveProperty('allowedMfaMethods');
+    });
+
     it('should update an organization', async () => {
       setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
       vi.mocked(db.update).mockReturnValue({
@@ -1598,8 +1693,8 @@ describe('org routes', () => {
     });
 
     // issue #1963: the org write path feeds getOrgAgentUpdatePolicy, so a
-    // malformed maintenance window must be rejected here (settings is z.any(),
-    // so the handler validates this field explicitly) before it can reach the
+    // malformed maintenance window must be rejected here (the extensible settings
+    // schema does not validate it) before it can reach the
     // heartbeat gate and silently fail open. Validation runs before any DB work.
     it('rejects a malformed agent-update maintenance window with 400', async () => {
       setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
@@ -1668,10 +1763,10 @@ describe('org routes', () => {
       expect(db.update).not.toHaveBeenCalled();
     });
 
-    it('rejects a non-object agentVersionPins with 400 (z.any() settings blob has no structural guard)', async () => {
+    it('rejects a non-object agentVersionPins with 400 (extensible settings has no structural guard)', async () => {
       setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
-      // A string reaches the handler because org `settings` is z.any(); the
-      // explicit validator must reject it rather than iterate a non-object.
+      // A string reaches the handler because this unrelated settings field is
+      // preserved; the explicit validator must reject it rather than iterate it.
       const res = await app.request('/orgs/organizations/org-1', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },

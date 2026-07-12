@@ -25,6 +25,7 @@ export * from './quotes';
 export * from './maintenanceWindow';
 export * from './agentVersionPins';
 export * from './softwareDetection';
+export * from './mfaPolicy';
 
 // ============================================
 // Device Roles

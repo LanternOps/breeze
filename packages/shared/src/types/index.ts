@@ -561,7 +561,7 @@ export interface InheritableSecuritySettings {
   complexity?: 'standard' | 'strict' | 'passphrase';
   expirationDays?: number;
   requireMfa?: boolean;
-  allowedMethods?: { totp?: boolean; sms?: boolean };
+  allowedMethods?: { totp?: boolean; sms?: boolean; passkey?: boolean };
   sessionTimeout?: number;
   maxSessions?: number;
   ipAllowlist?: string[];

@@ -29,7 +29,20 @@ import { applyOrganizationOrder, sanitizeOrganizationOrder } from '../services/o
 import { captureException } from '../services/sentry';
 import { encryptColumnValueForWrite } from '../services/encryptedColumnRegistry';
 import { escapeLike } from '../utils/sql';
-import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema } from '@breeze/shared';
+import {
+  agentVersionPinsSchema,
+  canonicalizeTimezone,
+  hasMfaAllowedMethodsInput,
+  isAllowedLauncherScheme,
+  isValidIanaTimezone,
+  isValidMaintenanceWindow,
+  MAINTENANCE_WINDOW_ERROR_MESSAGE,
+  mfaAllowedMethodsSchema,
+  mfaSettingsSchema,
+  normalizeVersionPin,
+  PINNABLE_COMPONENTS,
+  preferCanonicalMfaAllowedMethodsInput,
+} from '@breeze/shared';
 import type { IpAllowlistStatus, SupportedLocale } from '@breeze/shared';
 import { isValidIpOrCidr } from '../services/ipMatch';
 import { seedSystemTicketStatuses } from '../services/ticketConfigService';
@@ -38,6 +51,11 @@ import { clearPartnerAllowlistCache, ipAllowlistMode, readPartnerAllowlist } fro
 import { registerOrgPortalSettingsRoutes } from './orgPortalSettings';
 import { registerOrgPortalUsersRoutes } from './orgPortalUsers';
 import { registerOrgTicketSettingsRoutes } from './orgTicketSettings';
+import {
+  MfaPolicyConfigurationError,
+  validateOrganizationMfaPolicySettingsWrite,
+  validatePartnerMfaPolicySettingsWrite,
+} from '../services/mfaPolicy';
 
 export const orgRoutes = new Hono();
 const requireOrgRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
@@ -99,11 +117,11 @@ const createPartnerSchema = z.object({
   // plan and maxDevices are managed by the billing service (via direct DB writes).
   // They are intentionally excluded from the API schema to prevent self-service changes.
   maxOrganizations: z.number().int().nullable().optional(),
-  settings: z.any().optional(),
+  settings: mfaSettingsSchema.nullable().optional(),
   billingEmail: z.string().email().optional()
 });
 
-// The system-scoped partner routes accept free-form settings (z.any()), but
+// The system-scoped partner routes preserve free-form settings keys, but
 // security.ipAllowlist entries must still be valid IPs/CIDRs — otherwise a
 // platform-admin write would bypass the validation /partners/me enforces and
 // store entries the matcher can never satisfy (silent fail-open).
@@ -121,7 +139,7 @@ const updatePartnerSchema = createPartnerSchema.partial().extend({
   // Operator-only per-partner AI for Office entitlement. Settable here (system
   // scope) but NOT on /partners/me (partner scope) — partners can't self-enable.
   aiForOfficeEnabled: z.boolean().optional(),
-  settings: z.any().optional().refine(settingsAllowlistEntriesValid, {
+  settings: mfaSettingsSchema.nullable().optional().refine(settingsAllowlistEntriesValid, {
     message: 'Each IP allowlist entry must be a valid IP address or CIDR range',
   }),
 });
@@ -158,7 +176,7 @@ const createOrganizationSchema = z.object({
   type: z.enum(['customer', 'internal']).optional(),
   status: z.enum(['active', 'suspended', 'trial', 'churned']).optional(),
   // maxDevices is managed by the billing service — excluded from API schema
-  settings: z.any().optional(),
+  settings: mfaSettingsSchema.nullable().optional(),
   contractStart: z.string().nullable().optional(),
   contractEnd: z.string().nullable().optional(),
   billingContact: z.any().optional()
@@ -387,12 +405,13 @@ const partnerSettingsSchema = z.object({
     postalCode: z.string().max(32).optional(),
     country: z.string().length(2).optional().or(z.literal('')),
   }).optional(),
-  security: z.object({
+  security: z.preprocess(preferCanonicalMfaAllowedMethodsInput, z.object({
     minLength: z.number().int().min(6).max(128).optional(),
     complexity: z.enum(['standard', 'strict', 'passphrase']).optional(),
     expirationDays: z.number().int().min(0).optional(),
     requireMfa: z.boolean().optional(),
-    allowedMethods: z.object({ totp: z.boolean().optional(), sms: z.boolean().optional() }).optional(),
+    allowedMethods: mfaAllowedMethodsSchema.optional(),
+    allowedMfaMethods: mfaAllowedMethodsSchema.optional(),
     sessionTimeout: z.number().int().min(1).optional(),
     maxSessions: z.number().int().min(1).optional(),
     ipAllowlist: z
@@ -402,7 +421,14 @@ const partnerSettingsSchema = z.object({
         (list) => !list || list.every((entry) => isValidIpOrCidr(entry)),
         { message: 'Each IP allowlist entry must be a valid IP address or CIDR range' },
       ),
-  }).optional(),
+  })).transform(({ allowedMfaMethods, allowedMethods, ...security }) => ({
+    ...security,
+    ...(allowedMethods !== undefined
+      ? { allowedMethods }
+      : allowedMfaMethods !== undefined
+        ? { allowedMethods: allowedMfaMethods }
+        : {}),
+  })).optional(),
   notifications: z.object({
     fromAddress: z.string().optional(),
     replyTo: z.string().optional(),
@@ -643,6 +669,21 @@ orgRoutes.patch(
     };
   }
 
+  if (body.settings && hasMfaAllowedMethodsInput(body.settings)) {
+    try {
+      await validatePartnerMfaPolicySettingsWrite({
+        tx: db as any,
+        partnerId: auth.partnerId as string,
+        settings: newSettings,
+      });
+    } catch (error) {
+      if (error instanceof MfaPolicyConfigurationError) {
+        return c.json({ error: error.message }, 400);
+      }
+      throw error;
+    }
+  }
+
   // Tenant-isolation guard: defaultTriageOrgId is stored verbatim, but the
   // future auto-triage path will route mail INTO that org. A cross-partner id
   // here would route a partner's inbound mail to an org outside their tenant.
@@ -829,8 +870,8 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
       // column stale, and resolveEffectiveTimezone reads the column first, so
       // the partner-tz default would silently desync.
       //
-      // updatePartnerSchema uses `settings: z.any()`, so unlike /partners/me
-      // there is no zod IANA refine here. Validate the tz on the system path
+      // The extensible settings schema does not validate timezone, unlike the
+      // narrower /partners/me schema. Validate the tz on the system path
       // too: an invalid value (e.g. 'Mars/Olympus_Mons') must be REJECTED, not
       // silently dropped — otherwise canonicalizeTimezone(null) skips the column
       // write while the garbage persists in the JSONB, the exact column<->
@@ -857,6 +898,13 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
 
   let lifecycleSnapshot: PartnerLifecycleSnapshot | undefined;
   const updatePartner = async (tx: typeof db) => {
+    if (data.settings && hasMfaAllowedMethodsInput(data.settings)) {
+      await validatePartnerMfaPolicySettingsWrite({
+        tx: tx as any,
+        partnerId: id,
+        settings: data.settings,
+      });
+    }
     const [before] = data.status === undefined
       ? []
       : await tx
@@ -878,9 +926,17 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
     }
     return updatedPartner;
   };
-  const partner = data.status === undefined
-    ? await updatePartner(db)
-    : await withAuthLifecycleSystemTransaction((tx) => updatePartner(tx as unknown as typeof db));
+  let partner;
+  try {
+    partner = data.status === undefined
+      ? await updatePartner(db)
+      : await withAuthLifecycleSystemTransaction((tx) => updatePartner(tx as unknown as typeof db));
+  } catch (error) {
+    if (error instanceof MfaPolicyConfigurationError) {
+      return c.json({ error: error.message }, 400);
+    }
+    throw error;
+  }
 
   if (!partner) {
     return c.json({ error: 'Partner not found' }, 404);
@@ -1220,11 +1276,26 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
   // request's auth-scoped tx via runOutsideDbContext and open a fresh
   // system-scoped tx for just this insert. Atomicity with the rest of the
   // handler isn't a concern — the only follow-up here is an audit write.
-  const [organization] = await runOutsideDbContext(() =>
-    withSystemDbAccessContext(async () =>
-      db.insert(organizations).values(insertValues).returning()
-    )
-  );
+  let organization;
+  try {
+    [organization] = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(async () => {
+        if (data.settings && hasMfaAllowedMethodsInput(data.settings)) {
+          await validateOrganizationMfaPolicySettingsWrite({
+            tx: db as any,
+            partnerId: targetPartnerId!,
+            settings: data.settings,
+          });
+        }
+        return db.insert(organizations).values(insertValues).returning();
+      })
+    );
+  } catch (error) {
+    if (error instanceof MfaPolicyConfigurationError) {
+      return c.json({ error: error.message }, 400);
+    }
+    throw error;
+  }
 
   writeRouteAudit(c, {
     orgId: organization?.id,
@@ -1302,8 +1373,8 @@ const updateOrgHandler = [requireScope('organization', 'partner', 'system'), req
     // Reject a malformed agent-update maintenance window before any DB work
     // (issue #1963). This is the path getOrgAgentUpdatePolicy reads, so without
     // this check a typo'd window would silently fail the heartbeat gate open.
-    // The org `settings` blob is `z.any()`, so the window is the one field
-    // validated explicitly here rather than in updateOrganizationSchema.
+    // The org settings schema validates MFA policy while preserving unrelated
+    // keys, so the window remains explicitly validated here.
     const defaults = settingsObj.defaults;
     if (defaults && typeof defaults === 'object') {
       const mw = (defaults as Record<string, unknown>).maintenanceWindow;
@@ -1336,7 +1407,15 @@ const updateOrgHandler = [requireScope('organization', 'partner', 'system'), req
         if (category === 'defaults') {
           fields = fields.filter((f) => f !== 'agentVersionPins');
         }
-        await assertNotLocked(id, category, fields);
+        // MFA allowlists use strict intersection rather than partner-lock
+        // replacement semantics, so an organization may narrow the partner's
+        // set as long as at least one primary factor remains.
+        if (category === 'security') {
+          fields = fields.filter((f) => f !== 'allowedMethods' && f !== 'allowedMfaMethods');
+        }
+        if (fields.length > 0) {
+          await assertNotLocked(id, category, fields);
+        }
       }
     }
   }
@@ -1377,6 +1456,14 @@ const updateOrgHandler = [requireScope('organization', 'partner', 'system'), req
     );
     if (!authorization.authorized) return undefined;
 
+    if (data.settings && hasMfaAllowedMethodsInput(data.settings)) {
+      await validateOrganizationMfaPolicySettingsWrite({
+        tx: tx as any,
+        orgId: id,
+        settings: data.settings,
+      });
+    }
+
     const conditions = organizationLifecycleWriteCondition(id, authorization.targetPartnerId);
     const [before] = data.status === undefined
       ? []
@@ -1400,9 +1487,17 @@ const updateOrgHandler = [requireScope('organization', 'partner', 'system'), req
     }
     return updatedOrganization;
   };
-  const organization = await withAuthLifecycleSystemTransaction(
-    (tx) => updateOrganization(tx as unknown as typeof db),
-  );
+  let organization;
+  try {
+    organization = await withAuthLifecycleSystemTransaction(
+      (tx) => updateOrganization(tx as unknown as typeof db),
+    );
+  } catch (error) {
+    if (error instanceof MfaPolicyConfigurationError) {
+      return c.json({ error: error.message }, 400);
+    }
+    throw error;
+  }
 
   if (!organization) {
     return c.json({ error: 'Organization not found' }, 404);
