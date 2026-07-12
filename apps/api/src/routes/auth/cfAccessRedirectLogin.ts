@@ -164,7 +164,7 @@ cfAccessRedirectLoginRoutes.get('/cf-access-login', async (c) => {
     return loginErrorRedirect('mfa-required');
   }
 
-  const mfaSatisfied = trustsMfa || !(ENABLE_2FA && user.mfaEnabled);
+  const mfaSatisfied = trustsMfa;
 
   const tokens = await issueUserSession({
     userId: user.id,
@@ -174,6 +174,7 @@ cfAccessRedirectLoginRoutes.get('/cf-access-login', async (c) => {
     partnerId: context.partnerId,
     scope: context.scope,
     mfa: mfaSatisfied,
+    amr: ['cf_access'],
   });
 
   // System DB context required: no request auth context is established on this

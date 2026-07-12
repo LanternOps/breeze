@@ -165,6 +165,15 @@ vi.mock('../services/tenantStatus', () => ({
   assertActiveTenantContext: vi.fn().mockResolvedValue(undefined)
 }));
 
+vi.mock('../services/mfaPolicy', () => ({
+  resolveEffectiveMfaPolicy: vi.fn(async () => ({
+    required: false,
+    allowedMethods: new Set(['totp', 'sms', 'passkey', 'recovery_code']),
+    sources: [],
+  })),
+  getMfaAssuranceFailure: vi.fn(() => null),
+}));
+
 vi.mock('./auth/ssoPolicy', () => ({
   SsoPasswordAuthRequiredError: class SsoPasswordAuthRequiredError extends Error {},
   assertPasswordAuthAllowedBySso: vi.fn().mockResolvedValue(undefined)
@@ -501,6 +510,10 @@ describe('auth routes', () => {
       expect(body.tokens).toBeDefined();
       expect(body.user).toBeDefined();
       expect(body.mfaRequired).toBe(false);
+      expect(issueUserSession).toHaveBeenCalledWith(expect.objectContaining({
+        mfa: false,
+        amr: ['password'],
+      }));
     });
 
     it('returns generic 401 when password login resolves to an inactive tenant', async () => {
@@ -1179,6 +1192,7 @@ describe('auth routes', () => {
         ae: 1,
         me: 1,
         mfa: false,
+        amr: ['password'],
         iat: 123456,
         jti: 'refresh-jti-1',
         fam: 'family-id-mock'
@@ -1273,7 +1287,8 @@ describe('auth routes', () => {
         ae: 1,
         me: 1,
         sid: 'test-session:user-123',
-        mfa: false
+        mfa: false,
+        amr: ['password'],
       });
 
       const res = await app.request('/auth/refresh', {
@@ -1301,6 +1316,7 @@ describe('auth routes', () => {
         ae: 1,
         me: 1,
         mfa: false,
+        amr: ['password'],
         iat: 123456,
         jti: 'refresh-jti-2',
         fam: 'family-id-mock'
@@ -1327,7 +1343,7 @@ describe('auth routes', () => {
       vi.mocked(verifyToken).mockResolvedValue({
         sub: 'user-123', email: 'test@example.com', roleId: null, orgId: null,
         partnerId: null, scope: 'system', type: 'refresh', ae: 1, me: 1,
-        mfa: false, iat: 123456, jti: 'refresh-jti-orphan', fam: 'family-id-mock'
+        mfa: false, amr: ['password'], iat: 123456, jti: 'refresh-jti-orphan', fam: 'family-id-mock'
       });
       vi.mocked(db.select)
         .mockReturnValueOnce({
@@ -1381,6 +1397,7 @@ describe('auth routes', () => {
         ae: 1,
         me: 1,
         mfa: false,
+        amr: ['password'],
         iat: 123456,
         jti: 'refresh-jti-race',
         fam: 'family-id-mock'
@@ -1445,6 +1462,7 @@ describe('auth routes', () => {
         ae: 1,
         me: 1,
         mfa: false,
+        amr: ['password'],
         iat: 123456,
         jti: 'refresh-jti-graced',
         fam: 'family-id-mock'
@@ -1485,6 +1503,7 @@ describe('auth routes', () => {
         ae: 1,
         me: 1,
         mfa: false,
+        amr: ['password'],
         iat: 123456,
         jti: 'refresh-jti-stolen',
         fam: 'fam-attacked'
@@ -1518,6 +1537,7 @@ describe('auth routes', () => {
         ae: 1,
         me: 1,
         mfa: false,
+        amr: ['password'],
         iat: 123456,
         jti: 'refresh-jti-winner',
         fam: 'family-id-mock'
@@ -1577,6 +1597,7 @@ describe('auth routes', () => {
         ae: 1,
         me: 1,
         mfa: false,
+        amr: ['password'],
         iat: 123456,
         jti: 'refresh-jti-3',
         fam: 'family-id-mock'
@@ -1655,6 +1676,7 @@ describe('auth routes', () => {
         ae: 1,
         me: 1,
         mfa: false,
+        amr: ['password'],
         iat: 123456,
         jti: 'refresh-jti-tenant',
         fam: 'family-id-mock'
@@ -2315,6 +2337,7 @@ describe('auth routes', () => {
         ae: 1,
         me: 1,
         mfa: false,
+        amr: ['password'],
         iat: 123456,
         jti: 'refresh-jti-sec',
         fam: 'family-id-mock'
@@ -2382,6 +2405,7 @@ describe('auth routes', () => {
         ae: 1,
         me: 1,
         mfa: false,
+        amr: ['password'],
         iat: 123456,
         jti: 'refresh-jti-no-sec',
         fam: 'family-id-mock'

@@ -4,7 +4,10 @@ import {
   createAccessToken,
   createRefreshToken,
   verifyToken,
-  createTokenPair
+  createTokenPair,
+  createViewerAccessToken,
+  verifyViewerAccessToken,
+  type AuthenticationMethod,
 } from './jwt';
 
 describe('jwt service', () => {
@@ -16,6 +19,7 @@ describe('jwt service', () => {
     partnerId: 'partner-123',
     scope: 'organization' as const,
     mfa: false,
+    amr: ['password'] as const,
     ae: 1,
     me: 1,
     sid: 'family-test-123',
@@ -40,6 +44,14 @@ describe('jwt service', () => {
       expect(typeof token).toBe('string');
       expect(token.split('.')).toHaveLength(3); // JWT has 3 parts
     });
+
+    it('refuses to sign an AMR-inconsistent first-party access token', async () => {
+      await expect(createAccessToken({
+        ...testPayload,
+        mfa: true,
+        amr: ['password'],
+      })).rejects.toThrow(/authentication methods/i);
+    });
   });
 
   describe('createRefreshToken', () => {
@@ -49,6 +61,14 @@ describe('jwt service', () => {
       expect(token).toBeDefined();
       expect(typeof token).toBe('string');
       expect(token.split('.')).toHaveLength(3);
+    });
+
+    it('refuses to sign an AMR-inconsistent first-party refresh token', async () => {
+      await expect(createRefreshToken({
+        ...testPayload,
+        mfa: false,
+        amr: ['password', 'totp'],
+      })).rejects.toThrow(/authentication methods/i);
     });
   });
 
@@ -161,6 +181,59 @@ describe('jwt service', () => {
 
       await expect(verifyToken(token)).resolves.toBeNull();
     });
+
+    it.each([
+      ['missing', undefined],
+      ['non-array', 'password'],
+      ['empty', []],
+      ['duplicate', ['password', 'password']],
+      ['unrecognized', ['password', 'webauthn']],
+    ])('rejects %s AMR on first-party tokens', async (_case, amr) => {
+      const token = await signFirstPartyToken({
+        ...testPayload,
+        amr,
+        type: 'access',
+      });
+
+      await expect(verifyToken(token)).resolves.toBeNull();
+    });
+
+    it.each([
+      [{ mfa: true, amr: ['password'] }, 'password-only MFA'],
+      [{ mfa: false, amr: ['password', 'totp'] }, 'unasserted TOTP'],
+      [{ mfa: false, amr: ['cf_access', 'sms'] }, 'unasserted CF Access plus SMS'],
+      [{ mfa: true, amr: ['password', 'totp', 'sms'] }, 'multiple local factors'],
+      [{ mfa: false, amr: ['password', 'sso'] }, 'multiple primary methods'],
+    ])('rejects inconsistent AMR combination: %s (%s)', async (claims) => {
+      const token = await signFirstPartyToken({
+        ...testPayload,
+        ...claims,
+        type: 'access',
+      });
+
+      await expect(verifyToken(token)).resolves.toBeNull();
+    });
+
+    it.each([
+      [false, ['password']],
+      [true, ['password', 'totp']],
+      [true, ['password', 'sms']],
+      [true, ['password', 'passkey']],
+      [true, ['password', 'recovery_code']],
+      [false, ['sso']],
+      [true, ['sso']],
+      [false, ['cf_access']],
+      [true, ['cf_access']],
+      [true, ['cf_access', 'totp']],
+    ])('round-trips canonical AMR mfa=%s methods=%j', async (mfa, amr) => {
+      const token = await createAccessToken({
+        ...testPayload,
+        mfa,
+        amr: amr as AuthenticationMethod[],
+      });
+
+      await expect(verifyToken(token)).resolves.toMatchObject({ mfa, amr });
+    });
   });
 
   describe('mobile device binding claim (mdid) — SR-001', () => {
@@ -215,6 +288,41 @@ describe('jwt service', () => {
 
       expect(accessPayload).toMatchObject({ ae: 3, me: 7, sid: familyId, type: 'access' });
       expect(refreshPayload).toMatchObject({ ae: 3, me: 7, fam: familyId, type: 'refresh' });
+    });
+
+    it('carries the exact same verified AMR in the access and refresh pair', async () => {
+      const amr = ['password', 'passkey'] as const;
+      const result = await createTokenPair(
+        { ...testPayload, mfa: true, amr },
+        { refreshFam: 'family-amr-bound' }
+      );
+
+      const accessPayload = await verifyToken(result.accessToken);
+      const refreshPayload = await verifyToken(result.refreshToken);
+
+      expect(accessPayload?.amr).toEqual(amr);
+      expect(refreshPayload?.amr).toEqual(amr);
+    });
+  });
+
+  describe('viewer-token isolation', () => {
+    it('does not impose first-party AMR on viewer tokens or accept them as user tokens', async () => {
+      const viewer = await createViewerAccessToken({
+        sub: 'viewer-user',
+        email: 'viewer@example.com',
+        sessionId: 'viewer-session',
+      });
+
+      await expect(verifyViewerAccessToken(viewer)).resolves.toMatchObject({
+        purpose: 'viewer',
+        sessionId: 'viewer-session',
+      });
+      await expect(verifyToken(viewer)).resolves.toBeNull();
+    });
+
+    it('does not accept a first-party AMR token as a viewer token', async () => {
+      const access = await createAccessToken(testPayload);
+      await expect(verifyViewerAccessToken(access)).resolves.toBeNull();
     });
   });
 

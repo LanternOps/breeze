@@ -154,6 +154,7 @@ describe.skipIf(!SHOULD_RUN)('OAuth 2.1 code flow end-to-end', () => {
       partnerId: partner.id,
       scope: 'partner',
       mfa: false,
+      amr: ['password'],
     });
 
     // ---- 1. DCR ----
@@ -359,6 +360,7 @@ describe.skipIf(!SHOULD_RUN)('OAuth 2.1 code flow end-to-end', () => {
       partnerId: partner.id,
       scope: 'partner',
       mfa: false,
+      amr: ['password'],
     });
 
     const redirectUri = 'https://example.com/cb-grant';

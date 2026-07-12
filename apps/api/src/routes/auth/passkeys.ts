@@ -21,6 +21,10 @@ import {
   verifyPasskeyRegistration
 } from '../../services/passkeys';
 import { readMobileDeviceId } from '../../services/mobileDeviceBinding';
+import {
+  parseAuthenticationMethods,
+  type AuthenticationMethod,
+} from '../../services/jwt';
 import { ENABLE_2FA } from './schemas';
 import {
   auditLogin,
@@ -75,6 +79,7 @@ const deletePasskeySchema = z.object({
 type PendingPasskeyMfa = {
   userId: string;
   mfaMethod: string;
+  amr: AuthenticationMethod[];
   // #2153: true when the account has a registered passkey usable as an
   // alternate second factor, even if the PRIMARY mfaMethod is totp/sms.
   // Set server-side at login (login.ts) from a system-scoped user_passkeys
@@ -365,6 +370,7 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
     partnerId: context.partnerId,
     scope: context.scope,
     mfa: true,
+    amr: [...pending.amr, 'passkey'],
     mobileDeviceId: readMobileDeviceId(c) ?? undefined
   });
 
@@ -507,17 +513,16 @@ async function readPendingPasskeyMfa(tempToken: string): Promise<PendingPasskeyM
   try {
     const parsed = JSON.parse(raw) as Partial<PendingPasskeyMfa>;
     if (typeof parsed.userId !== 'string') return null;
+    const amr = parseAuthenticationMethods(parsed.amr, false);
+    if (!amr) return null;
     return {
       userId: parsed.userId,
       mfaMethod: parsed.mfaMethod || 'totp',
-      passkeyAvailable: parsed.passkeyAvailable === true
+      passkeyAvailable: parsed.passkeyAvailable === true,
+      amr,
     };
   } catch {
-    return {
-      userId: raw,
-      mfaMethod: 'totp',
-      passkeyAvailable: false
-    };
+    return null;
   }
 }
 

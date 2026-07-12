@@ -159,7 +159,7 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
     await redis.setex(
       `mfa:pending:${tempToken}`,
       300,
-      JSON.stringify({ userId: user.id, mfaMethod, passkeyAvailable })
+      JSON.stringify({ userId: user.id, mfaMethod, passkeyAvailable, amr: ['cf_access'] })
     );
     return c.json({
       mfaRequired: true,
@@ -172,7 +172,7 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
     });
   }
 
-  const mfaSatisfied = trustsMfa || !(ENABLE_2FA && user.mfaEnabled);
+  const mfaSatisfied = trustsMfa;
 
   const tokens = await issueUserSession({
     userId: user.id,
@@ -182,6 +182,7 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
     partnerId: context.partnerId,
     scope: context.scope,
     mfa: mfaSatisfied,
+    amr: ['cf_access'],
     mobileDeviceId: readMobileDeviceId(c) ?? undefined,
   });
 

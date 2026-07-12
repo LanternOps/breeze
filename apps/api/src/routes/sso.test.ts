@@ -1256,7 +1256,13 @@ describe('sso routes', () => {
       vi.mocked(db.select)
         .mockReturnValueOnce(sel([{ ...PROVIDER_ROW[0], trustsIdpMfa: opts.trustsIdpMfa }]))
         .mockReturnValueOnce(sel([{ userId: USER_UUID }])) // identity link
-        .mockReturnValueOnce(sel([{ id: USER_UUID, email: 'test@example.com', name: 'Linked' }]))
+        .mockReturnValueOnce(sel([{
+          id: USER_UUID,
+          email: 'test@example.com',
+          name: 'Linked',
+          partnerId: PARTNER_UUID,
+          orgId: ORG_UUID,
+        }]))
         .mockReturnValueOnce(selJoin([{ orgId: ORG_UUID, roleId: 'role-1', roleName: 'Member', roleScope: 'organization' }]))
         .mockReturnValueOnce(sel([{ id: 'identity-1' }]));
     };
@@ -1265,21 +1271,31 @@ describe('sso routes', () => {
       wireLinkedLogin({ trustsIdpMfa: true, amr: ['pwd', 'mfa'] });
       const res = await doCallback();
       expect(res.status).toBe(302);
-      expect(issueUserSession).toHaveBeenCalledWith(expect.objectContaining({ mfa: true }));
+      expect(issueUserSession).toHaveBeenCalledWith(expect.objectContaining({
+        mfa: true,
+        amr: ['sso'],
+        partnerId: PARTNER_UUID,
+      }));
     });
 
     it('mints mfa:false when the provider trusts IdP MFA but amr does NOT attest it', async () => {
       wireLinkedLogin({ trustsIdpMfa: true, amr: ['pwd'] });
       const res = await doCallback();
       expect(res.status).toBe(302);
-      expect(issueUserSession).toHaveBeenCalledWith(expect.objectContaining({ mfa: false }));
+      expect(issueUserSession).toHaveBeenCalledWith(expect.objectContaining({
+        mfa: false,
+        amr: ['sso'],
+      }));
     });
 
     it('mints mfa:false when the provider does NOT trust IdP MFA even if amr attests it', async () => {
       wireLinkedLogin({ trustsIdpMfa: false, amr: ['mfa'] });
       const res = await doCallback();
       expect(res.status).toBe(302);
-      expect(issueUserSession).toHaveBeenCalledWith(expect.objectContaining({ mfa: false }));
+      expect(issueUserSession).toHaveBeenCalledWith(expect.objectContaining({
+        mfa: false,
+        amr: ['sso'],
+      }));
     });
 
     // ── security review #2 (H-2): SSO domain-verification gate wiring
@@ -2211,7 +2227,7 @@ describe('sso routes', () => {
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(issueUserSession).toHaveBeenCalledWith(
-        expect.objectContaining({ scope: 'partner', mfa: true })
+        expect.objectContaining({ scope: 'partner', mfa: true, amr: ['sso'] })
       );
     });
 
@@ -2220,7 +2236,7 @@ describe('sso routes', () => {
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(issueUserSession).toHaveBeenCalledWith(
-        expect.objectContaining({ scope: 'partner', mfa: false })
+        expect.objectContaining({ scope: 'partner', mfa: false, amr: ['sso'] })
       );
     });
   });

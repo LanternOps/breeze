@@ -189,8 +189,10 @@ export interface TokenPayload {
   ae: number;
   me: number;
   // Indicates whether this token was issued after completing MFA.
-  // For legacy tokens that predate this claim, verification defaults this to false.
+  // Kept for compatibility with existing requireMfa consumers, but accepted
+  // only when it is consistent with the signed authentication-method record.
   mfa: boolean;
+  amr: readonly AuthenticationMethod[];
   // Mobile device binding (SR-001). Set only on tokens minted for the mobile
   // app, to the per-install device id. Absent on web/MCP/OAuth/agent tokens.
   // The lost-phone block is enforced against this SIGNED value, never a
@@ -205,6 +207,72 @@ export interface TokenPayload {
   fam?: string;
   iat?: number;
   jti?: string;
+}
+
+export const AUTHENTICATION_METHODS = [
+  'password',
+  'totp',
+  'sms',
+  'passkey',
+  'recovery_code',
+  'sso',
+  'cf_access',
+] as const;
+export type AuthenticationMethod = typeof AUTHENTICATION_METHODS[number];
+
+export const LOCAL_MFA_AUTHENTICATION_METHODS = [
+  'totp',
+  'sms',
+  'passkey',
+  'recovery_code',
+] as const;
+export type LocalMfaAuthenticationMethod = typeof LOCAL_MFA_AUTHENTICATION_METHODS[number];
+
+const authenticationMethodSet = new Set<string>(AUTHENTICATION_METHODS);
+const primaryAuthenticationMethodSet = new Set<string>(['password', 'sso', 'cf_access']);
+const localMfaAuthenticationMethodSet = new Set<string>(LOCAL_MFA_AUTHENTICATION_METHODS);
+
+/**
+ * Parse the signed AMR claim and enforce the combinations Breeze can actually
+ * issue. Every session has exactly one primary authenticator and at most one
+ * local factor. A local factor is MFA, while an external primary may carry
+ * mfa=true only when its issuer verified the integration-specific trust signal.
+ */
+export function parseAuthenticationMethods(
+  value: unknown,
+  mfa: unknown,
+): AuthenticationMethod[] | null {
+  if (typeof mfa !== 'boolean' || !Array.isArray(value) || value.length === 0) {
+    return null;
+  }
+  if (!value.every((method): method is AuthenticationMethod => (
+    typeof method === 'string' && authenticationMethodSet.has(method)
+  ))) {
+    return null;
+  }
+  if (new Set(value).size !== value.length) return null;
+
+  const primaryMethods = value.filter((method) => primaryAuthenticationMethodSet.has(method));
+  const localMethods = value.filter((method) => localMfaAuthenticationMethodSet.has(method));
+  if (primaryMethods.length !== 1 || localMethods.length > 1) return null;
+  if (localMethods.length === 1 && mfa !== true) return null;
+  if (primaryMethods[0] === 'password' && localMethods.length === 0 && mfa !== false) return null;
+
+  return [...value];
+}
+
+export function getLocalMfaAuthenticationMethod(
+  methods: readonly AuthenticationMethod[],
+): LocalMfaAuthenticationMethod | null {
+  return methods.find(
+    (method): method is LocalMfaAuthenticationMethod => localMfaAuthenticationMethodSet.has(method),
+  ) ?? null;
+}
+
+function assertAuthenticationMethodsForSigning(payload: TokenSigningPayload): void {
+  if (!parseAuthenticationMethods(payload.amr, payload.mfa)) {
+    throw new Error('Invalid authentication methods for first-party token');
+  }
 }
 
 /**
@@ -232,6 +300,7 @@ export function buildHeader(kid?: string): { alg: 'HS256'; kid?: string } {
 }
 
 export async function createAccessToken(payload: TokenSigningPayload): Promise<string> {
+  assertAuthenticationMethodsForSigning(payload);
   const { key, kid } = getSignKey();
   const { fam: _famIgnored, ...accessPayload } = payload;
   void _famIgnored;
@@ -257,6 +326,7 @@ export async function createRefreshToken(payload: TokenSigningPayload): Promise<
 export async function createRefreshTokenWithJti(
   payload: TokenSigningPayload
 ): Promise<{ token: string; jti: string }> {
+  assertAuthenticationMethodsForSigning(payload);
   const { key, kid } = getSignKey();
   const jti = randomUUID();
   const { sid: _sidIgnored, ...refreshPayload } = payload;
@@ -285,6 +355,7 @@ export async function verifyToken(token: string): Promise<TokenPayload | null> {
     const type = payload.type;
     const authEpoch = payload.ae;
     const mfaEpoch = payload.me;
+    const amr = parseAuthenticationMethods(payload.amr, payload.mfa);
     const sid = typeof payload.sid === 'string' && payload.sid.length > 0 ? payload.sid : undefined;
     const fam = typeof payload.fam === 'string' && payload.fam.length > 0 ? payload.fam : undefined;
     if (
@@ -293,6 +364,7 @@ export async function verifyToken(token: string): Promise<TokenPayload | null> {
       || (authEpoch as number) < 1
       || !Number.isSafeInteger(mfaEpoch)
       || (mfaEpoch as number) < 1
+      || !amr
       || (type === 'access' && !sid)
       || (type === 'refresh' && !fam)
     ) {
@@ -309,7 +381,8 @@ export async function verifyToken(token: string): Promise<TokenPayload | null> {
       type,
       ae: authEpoch as number,
       me: mfaEpoch as number,
-      mfa: payload.mfa === true,
+      mfa: payload.mfa as boolean,
+      amr,
       mdid: typeof payload.mdid === 'string' && payload.mdid.length > 0 ? payload.mdid : undefined,
       sid,
       fam,

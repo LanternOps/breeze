@@ -409,6 +409,7 @@ describe('SSO partner-axis login + Connect SSO link — real-DB e2e (#2183)', ()
       partnerId: partner.id,
       scope: 'partner',
       mfa: true,
+      amr: ['password', 'totp'],
     });
 
     const linkStartRes = await app.request(`/sso/link/start/${provider.id}`, {

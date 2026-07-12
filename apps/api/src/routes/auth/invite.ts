@@ -214,6 +214,7 @@ inviteRoutes.post('/accept-invite', zValidator('json', acceptInviteSchema), asyn
       partnerId: context.partnerId,
       scope: context.scope,
       mfa: false,
+      amr: ['password'],
     });
 
     setRefreshTokenCookie(c, tokens.refreshToken);

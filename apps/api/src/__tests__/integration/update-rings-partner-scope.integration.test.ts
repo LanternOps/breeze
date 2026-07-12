@@ -183,6 +183,7 @@ describe('update-rings routes — partner-scope + cross-partner denial', () => {
       partnerId: envA.partner.id,
       scope: 'partner',
       mfa: true,
+      amr: ['password', 'totp'],
     });
 
     const app = buildRingsApp();
@@ -247,6 +248,7 @@ describe('update-rings routes — partner-scope + cross-partner denial', () => {
       partnerId: envB.partner.id,
       scope: 'partner',
       mfa: false,
+      amr: ['password'],
     });
 
     const app = buildRingsApp();
@@ -289,6 +291,7 @@ describe('update-rings routes — partner-scope + cross-partner denial', () => {
       partnerId: envB.partner.id,
       scope: 'partner',
       mfa: true,
+      amr: ['password', 'totp'],
     });
 
     const app = buildPatchesApp();
@@ -319,6 +322,7 @@ describe('update-rings routes — partner-scope + cross-partner denial', () => {
       partnerId: envA.partner.id,
       scope: 'partner',
       mfa: true,
+      amr: ['password', 'totp'],
     });
 
     const app = buildPatchesApp();

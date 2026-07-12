@@ -1,6 +1,10 @@
 import type { Context } from 'hono';
 import { Hono } from 'hono';
-import { createAccessToken, type TokenPayload } from '../services/jwt';
+import {
+  createAccessToken,
+  type AuthenticationMethod,
+  type TokenPayload,
+} from '../services/jwt';
 
 export interface MockAuthContext {
   userId: string;
@@ -71,6 +75,7 @@ export interface TestTokenOptions {
   partnerId?: string | null;
   scope?: 'system' | 'partner' | 'organization';
   mfa?: boolean;
+  amr?: readonly AuthenticationMethod[];
   authEpoch?: number;
   mfaEpoch?: number;
   sessionId?: string;
@@ -92,7 +97,8 @@ export async function createTestToken(options: TestTokenOptions = {}): Promise<s
     ae: options.authEpoch ?? 1,
     me: options.mfaEpoch ?? 1,
     sid: options.sessionId ?? `test-session:${options.userId ?? 'test-user-id'}`,
-    mfa: options.mfa ?? false
+    mfa: options.mfa ?? false,
+    amr: options.amr ?? (options.mfa ? ['password', 'totp'] : ['password']),
   };
   return createAccessToken(payload);
 }

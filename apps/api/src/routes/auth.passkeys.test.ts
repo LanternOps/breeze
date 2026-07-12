@@ -512,6 +512,7 @@ describe('passkey MFA auth routes', () => {
       userId: 'user-123',
       mfaMethod: 'totp',
       passkeyAvailable: true,
+      amr: ['password'],
     }));
     dbState.selectQueue.push([
       {
@@ -542,6 +543,7 @@ describe('passkey MFA auth routes', () => {
       userId: 'user-123',
       mfaMethod: 'totp',
       passkeyAvailable: true,
+      amr: ['password'],
     }));
     dbState.selectQueue.push(
       [{ ...user, mfaMethod: 'totp', mfaSecret: 'enc-secret' }],
@@ -582,6 +584,7 @@ describe('passkey MFA auth routes', () => {
       userId: 'user-123',
       mfaMethod: 'totp',
       passkeyAvailable: false,
+      amr: ['password'],
     }));
 
     const res = await app.request('/auth/mfa/passkey/verify', {
@@ -600,10 +603,7 @@ describe('passkey MFA auth routes', () => {
     expect(redisMock.del).not.toHaveBeenCalled();
   });
 
-  // #2153 backward-compat: a legacy pre-JSON pending token (bare userId string,
-  // not valid JSON) must be treated as a TOTP session with NO passkey available,
-  // so in-flight sessions during a deploy can't reach the passkey path.
-  it('treats a legacy bare-string pending token as passkey-unavailable', async () => {
+  it('rejects a legacy bare-string pending token with no trustworthy AMR', async () => {
     redisMock.get.mockResolvedValueOnce('user-123');
 
     const res = await app.request('/auth/mfa/passkey/options', {
@@ -612,8 +612,8 @@ describe('passkey MFA auth routes', () => {
       body: JSON.stringify({ tempToken: 'temp-token' }),
     });
 
-    expect(res.status).toBe(400);
-    expect(await res.json()).toMatchObject({ error: expect.stringMatching(/passkey mfa is not configured/i) });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toMatchObject({ error: expect.stringMatching(/invalid or expired/i) });
     expect(passkeyMocks.generatePasskeyAuthenticationOptions).not.toHaveBeenCalled();
   });
 
@@ -621,6 +621,7 @@ describe('passkey MFA auth routes', () => {
     redisMock.get.mockResolvedValueOnce(JSON.stringify({
       userId: 'user-123',
       mfaMethod: 'passkey',
+      amr: ['password'],
     }));
     dbState.selectQueue.push([
       {
@@ -656,6 +657,7 @@ describe('passkey MFA auth routes', () => {
     redisMock.get.mockResolvedValueOnce(JSON.stringify({
       userId: 'user-123',
       mfaMethod: 'passkey',
+      amr: ['password'],
     }));
     dbState.selectQueue.push(
       [user],
@@ -681,7 +683,12 @@ describe('passkey MFA auth routes', () => {
 
     expect(res.status).toBe(200);
     expect(issueUserSession).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: 'user-123', email: 'test@example.com', mfa: true }),
+      expect.objectContaining({
+        userId: 'user-123',
+        email: 'test@example.com',
+        mfa: true,
+        amr: ['password', 'passkey'],
+      }),
     );
     expect(await res.json()).toMatchObject({
       mfaRequired: false,
@@ -696,6 +703,7 @@ describe('passkey MFA auth routes', () => {
     redisMock.get.mockResolvedValueOnce(JSON.stringify({
       userId: 'user-123',
       mfaMethod: 'passkey',
+      amr: ['password'],
     }));
     dbState.selectQueue.push(
       [user],
@@ -774,6 +782,7 @@ describe('passkey MFA auth routes', () => {
     redisMock.get.mockResolvedValueOnce(JSON.stringify({
       userId: 'user-123',
       mfaMethod: 'passkey',
+      amr: ['password'],
     }));
     dbState.selectQueue.push(
       [user],
@@ -809,6 +818,7 @@ describe('passkey MFA auth routes', () => {
     redisMock.get.mockResolvedValueOnce(JSON.stringify({
       userId: 'user-123',
       mfaMethod: 'passkey',
+      amr: ['password'],
     }));
     dbState.selectQueue.push(
       [user],
@@ -840,6 +850,7 @@ describe('passkey MFA auth routes', () => {
     redisMock.get.mockResolvedValueOnce(JSON.stringify({
       userId: 'user-123',
       mfaMethod: 'passkey',
+      amr: ['password'],
     }));
     vi.mocked(rateLimiter).mockResolvedValueOnce({
       allowed: false,
@@ -886,6 +897,7 @@ describe('passkey MFA auth routes', () => {
     redisMock.get.mockResolvedValueOnce(JSON.stringify({
       userId: 'user-123',
       mfaMethod: 'passkey',
+      amr: ['password'],
     }));
     dbState.selectQueue.push([{ ...user, status: 'suspended' }]);
 
@@ -909,6 +921,7 @@ describe('passkey MFA auth routes', () => {
     redisMock.get.mockResolvedValueOnce(JSON.stringify({
       userId: 'user-123',
       mfaMethod: 'totp',
+      amr: ['password'],
     }));
 
     const res = await app.request('/auth/mfa/passkey/options', {
@@ -926,6 +939,7 @@ describe('passkey MFA auth routes', () => {
     redisMock.get.mockResolvedValueOnce(JSON.stringify({
       userId: 'user-123',
       mfaMethod: 'passkey',
+      amr: ['password'],
     }));
     dbState.selectQueue.push([]);
 
@@ -1040,6 +1054,7 @@ describe('passkey MFA auth routes', () => {
     redisMock.get.mockResolvedValueOnce(JSON.stringify({
       userId: 'user-123',
       mfaMethod: 'passkey',
+      amr: ['password'],
     }));
     // user lookup inside /mfa/verify happens before the passkey guard returns,
     // so provide the user row.

@@ -182,6 +182,15 @@ vi.mock('../../services/sentry', () => ({
   captureException: vi.fn(),
 }));
 
+vi.mock('../../services/mfaPolicy', () => ({
+  resolveEffectiveMfaPolicy: vi.fn(async () => ({
+    required: false,
+    allowedMethods: new Set(['totp', 'sms', 'passkey', 'recovery_code']),
+    sources: [],
+  })),
+  getMfaAssuranceFailure: vi.fn(() => null),
+}));
+
 import { loginRoutes } from './login';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
@@ -204,6 +213,7 @@ import {
 } from '../../services/authLifecycle';
 import { recordFailedLogin } from '../../services/anomalyMetrics';
 import { TenantInactiveError } from '../../services/tenantStatus';
+import { getMfaAssuranceFailure } from '../../services/mfaPolicy';
 import {
   resolveCurrentUserTokenContext,
   NoTenantMembershipError,
@@ -332,6 +342,7 @@ describe('POST /logout — durable current-family revocation', () => {
       ae: 4,
       me: 7,
       mfa: false,
+      amr: ['password'],
       scope: 'partner',
       partnerId: 'partner-1',
       orgId: null,
@@ -410,6 +421,7 @@ describe('POST /logout — durable current-family revocation', () => {
       ae: 4,
       me: 7,
       mfa: false,
+      amr: ['password'],
       scope: 'partner',
       partnerId: 'partner-1',
       orgId: null,
@@ -532,6 +544,10 @@ describe('POST /login — IP allowlist', () => {
     expect(res.status).toBe(200);
     const body = await res.json() as { user: { isPlatformAdmin?: boolean } };
     expect(body.user.isPlatformAdmin).toBe(true);
+    expect(issueUserSession).toHaveBeenCalledWith(expect.objectContaining({
+      mfa: false,
+      amr: ['password'],
+    }));
   });
 
   it('coerces a missing isPlatformAdmin to false in the success payload', async () => {
@@ -767,15 +783,44 @@ describe('POST /refresh — hard-reject fam-less legacy tokens (#917 L-1)', () =
       fam: 'family-42',
       ae: 4,
       me: 7,
+      mfa: true,
+      amr: ['sso'],
     } as any);
 
     const res = await postRefresh();
 
     expect(res.status).toBe(200);
     expect(issueUserSession).toHaveBeenCalledTimes(1);
+    expect(issueUserSession).toHaveBeenCalledWith(
+      expect.objectContaining({ mfa: true, amr: ['sso'] }),
+      { familyId: 'family-42' },
+    );
     // Rotation reuses the verified family rather than minting a new one.
     expect(vi.mocked(issueUserSession).mock.calls[0]?.[1]).toEqual({ familyId: 'family-42' });
     expect(revokeFamily).not.toHaveBeenCalled();
+  });
+
+  it('rejects refresh assurance that no longer satisfies live policy before jti claim', async () => {
+    vi.mocked(verifyToken).mockResolvedValue({
+      sub: 'user-1',
+      email: 'admin@msp.com',
+      type: 'refresh',
+      jti: 'jti-insufficient-amr',
+      fam: 'family-42',
+      ae: 4,
+      me: 7,
+      mfa: false,
+      amr: ['password'],
+    } as any);
+    vi.mocked(getMfaAssuranceFailure).mockReturnValueOnce('mfa_required');
+
+    const res = await postRefresh();
+
+    expect(res.status).toBe(401);
+    expect(clearRefreshTokenCookie).toHaveBeenCalled();
+    expect(markRefreshTokenJtiRotated).not.toHaveBeenCalled();
+    expect(revokeRefreshTokenJti).not.toHaveBeenCalled();
+    expect(issueUserSession).not.toHaveBeenCalled();
   });
 
   it('rejects an auth-epoch mismatch before claiming or rotating the old jti', async () => {

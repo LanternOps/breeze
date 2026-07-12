@@ -1,6 +1,6 @@
 import { Context, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { verifyToken, TokenPayload } from '../services/jwt';
+import { parseAuthenticationMethods, verifyToken, TokenPayload } from '../services/jwt';
 import { getUserPermissions, hasPermission, canAccessOrg, canAccessSite, UserPermissions } from '../services/permissions';
 import {
   isAccessSessionFamilyActive,
@@ -8,16 +8,16 @@ import {
   isUserTokenRevoked,
 } from '../services/tokenRevocation';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext, type DbAccessScope } from '../db';
-import { users, partnerUsers, organizationUsers, organizations, roles } from '../db/schema';
+import { users, partnerUsers, organizationUsers, organizations } from '../db/schema';
 import { and, eq, inArray, isNull, SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import { ENABLE_2FA } from '../routes/auth/schemas';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 import { writeAuditEvent } from '../services/auditEvents';
 import { withSentryRequestScope } from '../services/sentry';
-import { mfaForcePartnerAdmin } from '../config/env';
 import { ipAllowlistGuard } from './ipAllowlistGuard';
 import { isSelfManagedDbContextRoute } from './selfManagedDbContextRoutes';
+import { getMfaAssuranceFailure, resolveEffectiveMfaPolicy } from '../services/mfaPolicy';
 
 export interface AuthContext {
   user: {
@@ -26,7 +26,10 @@ export interface AuthContext {
     name: string;
     isPlatformAdmin: boolean;
   };
-  token: TokenPayload;
+  // Real user requests carry verified TokenPayload AMR. A few internal helper,
+  // worker, and client-AI flows build synthetic AuthContext objects without a
+  // JWT; keep those structurally isolated instead of inventing false AMR.
+  token: Omit<TokenPayload, 'amr'> & { amr?: TokenPayload['amr'] };
   partnerId: string | null;
   orgId: string | null;
   scope: 'system' | 'partner' | 'organization';
@@ -124,59 +127,6 @@ export function siteAccessCheck(
 }
 
 /**
- * Resolve whether the user's effective role for the current request has
- * `force_mfa=true`. Returns false for system scope (platform admin is a
- * user flag, not a role) and for any user whose membership row is missing.
- *
- * Runs under system scope because the request's RLS context isn't set yet.
- */
-async function userRoleRequiresMfa(
-  scope: 'system' | 'partner' | 'organization',
-  partnerId: string | null,
-  orgId: string | null,
-  userId: string
-): Promise<boolean> {
-  if (scope === 'system') return false;
-  // Kill-switch: when off, skip the role lookup entirely so an enrollment
-  // outage can be relieved by ops with an env flag (no code deploy).
-  if (!mfaForcePartnerAdmin()) return false;
-
-  return withTrueSystemDbAccess(async () => {
-    if (scope === 'organization' && orgId) {
-      const [row] = await db
-        .select({ forceMfa: roles.forceMfa })
-        .from(organizationUsers)
-        .innerJoin(roles, eq(organizationUsers.roleId, roles.id))
-        .where(
-          and(
-            eq(organizationUsers.userId, userId),
-            eq(organizationUsers.orgId, orgId)
-          )
-        )
-        .limit(1);
-      return row?.forceMfa === true;
-    }
-
-    if (scope === 'partner' && partnerId) {
-      const [row] = await db
-        .select({ forceMfa: roles.forceMfa })
-        .from(partnerUsers)
-        .innerJoin(roles, eq(partnerUsers.roleId, roles.id))
-        .where(
-          and(
-            eq(partnerUsers.userId, userId),
-            eq(partnerUsers.partnerId, partnerId)
-          )
-        )
-        .limit(1);
-      return row?.forceMfa === true;
-    }
-
-    return false;
-  });
-}
-
-/**
  * Paths the user is permitted to hit while in the mfa_enrollment_required
  * state. Without this they couldn't enroll MFA — the same gate would
  * bounce them off the setup endpoints. Kept intentionally tight.
@@ -188,12 +138,17 @@ function isMfaEnrollmentExemptPath(path: string): boolean {
   // gives us the absolute path or a sub-app path.
   const rel = path.startsWith('/api/v1') ? path.slice('/api/v1'.length) : path;
 
-  if (rel === '/auth/logout') return true;
-  if (rel === '/users/me') return true;
-  if (rel.startsWith('/auth/mfa/')) return true;
-  // Phone verification is part of the MFA setup flow (SMS factor).
-  if (rel.startsWith('/auth/phone/')) return true;
-  return false;
+  return new Set([
+    '/auth/logout',
+    '/auth/mfa/setup',
+    '/auth/mfa/enable',
+    '/auth/mfa/sms/enable',
+    '/auth/phone/verify',
+    '/auth/phone/confirm',
+    '/auth/passkeys',
+    '/auth/passkeys/register/options',
+    '/auth/passkeys/register/verify',
+  ]).has(rel);
 }
 
 /**
@@ -490,14 +445,6 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
     throw new HTTPException(401, { message: 'Invalid token type' });
   }
 
-  if (await isUserTokenRevoked(payload.sub, payload.iat)) {
-    throw new HTTPException(401, { message: 'Invalid or expired token' });
-  }
-
-  if (!payload.sid || !(await isAccessSessionFamilyActive(payload.sid, payload.sub))) {
-    throw new HTTPException(401, { message: 'Invalid or expired token' });
-  }
-
   let liveAuthority: Awaited<ReturnType<typeof resolveLiveAuthority>>;
   try {
     liveAuthority = await resolveLiveAuthority(payload);
@@ -509,19 +456,30 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
   }
   const { user, partnerMembership } = liveAuthority;
 
-  // Role-level MFA gate. If the user's role requires MFA and they
-  // haven't enabled it, short-circuit to 428 Precondition Required.
-  // Allow a tight set of routes through (logout, the user's own
-  // profile, MFA setup endpoints) so they can complete enrollment.
-  if (ENABLE_2FA && !user.mfaEnabled) {
-    const requiresMfa = await userRoleRequiresMfa(
-      payload.scope,
-      payload.partnerId,
-      payload.orgId,
-      user.id
-    );
+  const effectiveMfaPolicy = await resolveEffectiveMfaPolicy({
+    userId: user.id,
+    roleId: payload.roleId,
+    orgId: payload.orgId,
+    partnerId: payload.partnerId,
+    scope: payload.scope,
+  });
+  const assuranceFailure = getMfaAssuranceFailure(payload, effectiveMfaPolicy);
 
-    if (requiresMfa && !isMfaEnrollmentExemptPath(c.req.path)) {
+  if (await isUserTokenRevoked(payload.sub, payload.iat)) {
+    throw new HTTPException(401, { message: 'Invalid or expired token' });
+  }
+
+  if (!payload.sid || !(await isAccessSessionFamilyActive(payload.sid, payload.sub))) {
+    throw new HTTPException(401, { message: 'Invalid or expired token' });
+  }
+
+  if (assuranceFailure === 'method_not_allowed') {
+    throw new HTTPException(403, { message: 'MFA method is no longer allowed' });
+  }
+  if (assuranceFailure === 'mfa_required') {
+    // mfaEnabled is enrollment state only. It never proves assurance; that
+    // comes exclusively from the verified AMR/mfa claims above.
+    if (!user.mfaEnabled && !isMfaEnrollmentExemptPath(c.req.path)) {
       // Fire-and-forget audit. Lets ops see when forced-enrollment is
       // bouncing users — useful for diagnosing onboarding friction or
       // a misconfigured role flag.
@@ -541,6 +499,9 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
         { error: 'mfa_enrollment_required', enrollUrl: '/auth/mfa/setup' },
         428
       );
+    }
+    if (user.mfaEnabled) {
+      throw new HTTPException(403, { message: 'Multi-factor authentication required' });
     }
   }
 
@@ -739,7 +700,10 @@ export function requireMfa() {
  */
 export function hasSatisfiedMfa(auth: Pick<AuthContext, 'token'>): boolean {
   if (!ENABLE_2FA) return true;
-  return auth.token.mfa === true;
+  return (
+    auth.token.mfa === true &&
+    parseAuthenticationMethods(auth.token.amr, auth.token.mfa) !== null
+  );
 }
 
 // Check if user can access a specific organization

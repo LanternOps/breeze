@@ -56,6 +56,7 @@ import { readMobileDeviceId, carryForwardBinding } from '../../services/mobileDe
 import { enforceIpAllowlist, IP_NOT_ALLOWED_BODY, isBlocked } from '../../services/ipAllowlist';
 import { captureException } from '../../services/sentry';
 import { cfAccessLoginMiddleware } from '../../middleware/cfAccessLogin';
+import { getMfaAssuranceFailure, resolveEffectiveMfaPolicy } from '../../services/mfaPolicy';
 import { dbWriteExpectingRows } from '../../db/dbWriteExpectingRows';
 import {
   revokeUserSessionFamilyForLogout,
@@ -438,6 +439,7 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     await getRedis()!.setex(`mfa:pending:${tempToken}`, 300, JSON.stringify({
       userId: user.id,
       mfaMethod,
+      amr: ['password'],
       // Server-authoritative: the passkey MFA endpoints gate on this flag, so
       // the client can't self-elevate to the passkey path without an actually
       // registered credential (and /verify still re-checks credential
@@ -480,9 +482,6 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
   const scope = context.scope;
 
   // Create tokens with user's context
-  // MFA is vacuously satisfied when the user hasn't enrolled in MFA
-  const mfaSatisfied = !(ENABLE_2FA && user.mfaEnabled);
-
   const tokens = await issueUserSession({
     userId: user.id,
     email: user.email,
@@ -490,7 +489,8 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     orgId,
     partnerId,
     scope,
-    mfa: mfaSatisfied,
+    mfa: false,
+    amr: ['password'],
     // SR-001: bind the token to the mobile install id when the client sends
     // it. Web/SSO clients don't send the header → mdid stays absent → no
     // behaviour change for them.
@@ -852,6 +852,18 @@ loginRoutes.post('/refresh', async (c) => {
     return c.json({ error: 'Invalid refresh token' }, 401);
   }
 
+  const effectiveMfaPolicy = await resolveEffectiveMfaPolicy({
+    userId: user.id,
+    roleId: context.roleId,
+    orgId: context.orgId,
+    partnerId: context.partnerId,
+    scope: context.scope,
+  });
+  if (getMfaAssuranceFailure(payload, effectiveMfaPolicy)) {
+    clearRefreshTokenCookie(c);
+    return c.json({ error: 'Invalid refresh token' }, 401);
+  }
+
   // Task 7: revoke the OLD jti BEFORE minting the new token, not after. This
   // closes a TOCTOU window — a concurrent /refresh racing on the same cookie
   // would otherwise both see "jti not revoked" and both mint new pairs.
@@ -893,7 +905,8 @@ loginRoutes.post('/refresh', async (c) => {
       orgId: context.orgId,
       partnerId: context.partnerId,
       scope: context.scope,
-      mfa: ENABLE_2FA ? payload.mfa : false,
+      mfa: payload.mfa,
+      amr: payload.amr,
       // SR-001: preserve the device binding from the prior (signed) refresh
       // token. Deliberately NOT re-read from the header — a refresh must not be
       // able to drop the binding by omitting it.

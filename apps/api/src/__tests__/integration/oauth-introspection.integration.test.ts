@@ -118,6 +118,7 @@ async function mintTokensForNewClient(
     partnerId: partner.id,
     scope: 'partner',
     mfa: false,
+    amr: ['password'],
   });
 
   const redirectUri = 'https://example.com/cb-introspect';

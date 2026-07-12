@@ -1,7 +1,11 @@
 import { eq } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { users } from '../db/schema/users';
-import { createTokenPair, type TokenPair } from './jwt';
+import {
+  createTokenPair,
+  type AuthenticationMethod,
+  type TokenPair,
+} from './jwt';
 import {
   bindRefreshJtiToFamily,
   getActiveRefreshTokenFamily,
@@ -16,6 +20,7 @@ export type UserSessionIdentity = {
   partnerId: string | null;
   scope: 'system' | 'partner' | 'organization';
   mfa: boolean;
+  amr: readonly AuthenticationMethod[];
   mobileDeviceId?: string;
 };
 
@@ -81,6 +86,7 @@ export async function issueUserSession(
     partnerId: identity.partnerId,
     scope: identity.scope,
     mfa: identity.mfa,
+    amr: [...identity.amr],
     mdid: identity.mobileDeviceId,
     ae: epochs.authEpoch,
     me: epochs.mfaEpoch,

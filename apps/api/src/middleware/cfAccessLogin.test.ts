@@ -345,7 +345,8 @@ describe('cfAccessLoginMiddleware', () => {
     expect(body.mfaRequired).toBe(false);
     expect(tokenState.lastIdentity).toMatchObject({
       userId: activeUser.id,
-      mfa: true, // vacuously satisfied because mfaEnabled=false
+      mfa: false,
+      amr: ['cf_access'],
     });
     expect(cookieState.set).toBe('refresh-tok');
     expect(dbState.lastUpdateId).toBe(activeUser.id);
@@ -375,7 +376,8 @@ describe('cfAccessLoginMiddleware', () => {
       partnerId: 'partner-1',
       orgId: null,
       scope: 'partner',
-      mfa: true,
+      mfa: false,
+      amr: ['cf_access'],
     });
   });
 
@@ -451,6 +453,6 @@ describe('cfAccessLoginMiddleware', () => {
     expect(called()).toBe(false);
     const body = await (res as Response).json();
     expect(body.mfaRequired).toBe(false);
-    expect(tokenState.lastIdentity).toMatchObject({ mfa: true });
+    expect(tokenState.lastIdentity).toMatchObject({ mfa: true, amr: ['cf_access'] });
   });
 });

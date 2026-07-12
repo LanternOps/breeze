@@ -234,9 +234,6 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
       phase = 'token-creation';
 
       // Token creation outside tx (doesn't need rollback)
-      // MFA is vacuously satisfied when the user hasn't enrolled in MFA
-      const mfaSatisfied = !(ENABLE_2FA && newUser.mfaEnabled);
-
       const sessionIdentity = {
         userId: newUser.id,
         email: newUser.email,
@@ -244,7 +241,8 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
         orgId: result.orgId,
         partnerId: newPartner.id,
         scope: 'partner',
-        mfa: mfaSatisfied
+        mfa: false,
+        amr: ['password']
       } as const;
       let tokens = await issueUserSession(sessionIdentity);
 

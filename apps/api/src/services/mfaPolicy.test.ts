@@ -18,6 +18,7 @@ vi.mock('../db', () => ({
 }));
 
 import {
+  getMfaAssuranceFailure,
   authorizePartnerMfaPolicyWrite,
   resolveEffectiveMfaPolicy,
   validateOrganizationMfaPolicySettingsWrite,
@@ -484,6 +485,54 @@ describe('resolveEffectiveMfaPolicy', () => {
 
     expect(result.required).toBe(false);
     expect(contextState.events).toEqual(['outside', 'system']);
+  });
+});
+
+describe('getMfaAssuranceFailure', () => {
+  const requiredPolicy = {
+    required: true,
+    allowedMethods: new Set(['totp', 'passkey', 'recovery_code'] as const),
+    sources: ['organization'] as const,
+  };
+
+  it.each([
+    ['password', ['password']],
+    ['untrusted SSO', ['sso']],
+    ['untrusted Cloudflare Access', ['cf_access']],
+  ])('rejects %s under required policy', (_case, amr) => {
+    expect(getMfaAssuranceFailure(
+      { mfa: false, amr: amr as any },
+      requiredPolicy as any,
+    )).toBe('mfa_required');
+  });
+
+  it.each([
+    ['trusted SSO', ['sso']],
+    ['trusted Cloudflare Access', ['cf_access']],
+    ['allowed TOTP', ['password', 'totp']],
+    ['allowed passkey', ['password', 'passkey']],
+    ['allowed recovery code', ['password', 'recovery_code']],
+  ])('accepts %s under required policy', (_case, amr) => {
+    expect(getMfaAssuranceFailure(
+      { mfa: true, amr: amr as any },
+      requiredPolicy as any,
+    )).toBeNull();
+  });
+
+  it('rejects a local factor that the live allowlist no longer permits', () => {
+    expect(getMfaAssuranceFailure(
+      { mfa: true, amr: ['password', 'sms'] },
+      requiredPolicy as any,
+    )).toBe('method_not_allowed');
+  });
+
+  it('does not apply local-factor allowlists to trusted external assertions', () => {
+    const totpOnly = {
+      ...requiredPolicy,
+      allowedMethods: new Set(['totp'] as const),
+    };
+    expect(getMfaAssuranceFailure({ mfa: true, amr: ['sso'] }, totpOnly as any)).toBeNull();
+    expect(getMfaAssuranceFailure({ mfa: true, amr: ['cf_access'] }, totpOnly as any)).toBeNull();
   });
 });
 

@@ -337,7 +337,8 @@ describe('GET /cf-access-login', () => {
       partnerId: 'partner-1',
       orgId: null,
       scope: 'partner',
-      mfa: true,
+      mfa: false,
+      amr: ['cf_access'],
     });
   });
 

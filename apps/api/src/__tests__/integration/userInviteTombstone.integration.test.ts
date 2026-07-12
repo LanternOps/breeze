@@ -54,6 +54,7 @@ async function setupInviter() {
     me: env.user.mfaEpoch,
     sid: `invite-integration:${env.user.id}`,
     mfa: true,
+    amr: ['password', 'totp'],
   });
   return { env, token, app: buildApp() };
 }

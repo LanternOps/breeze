@@ -77,6 +77,7 @@ async function mfaTokenFor(env: Awaited<ReturnType<typeof setupTestEnvironment>>
     partnerId: env.partner.id,
     scope: 'partner',
     mfa: true,
+    amr: ['password', 'totp'],
   });
 }
 

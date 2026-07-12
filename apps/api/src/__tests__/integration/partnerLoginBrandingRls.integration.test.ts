@@ -193,6 +193,7 @@ describe('partner_login_branding RLS — partner-axis (2026-07-03 migration)', (
       partnerId: partner.id,
       scope: 'partner',
       mfa: false,
+      amr: ['password'],
     });
     const authHeaders = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
 

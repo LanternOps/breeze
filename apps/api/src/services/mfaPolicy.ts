@@ -18,6 +18,10 @@ import {
   users,
 } from '../db/schema';
 import type { AuthLifecycleTransaction } from './authLifecycle';
+import {
+  getLocalMfaAuthenticationMethod,
+  type AuthenticationMethod,
+} from './jwt';
 
 export type { MfaMethod } from '@breeze/shared';
 
@@ -27,6 +31,29 @@ export interface EffectiveMfaPolicy {
   required: boolean;
   allowedMethods: ReadonlySet<MfaMethod>;
   sources: Array<'role' | 'partner' | 'organization'>;
+}
+
+export type MfaAssuranceFailure = 'mfa_required' | 'method_not_allowed';
+
+/**
+ * Evaluate already-verified first-party token assurance against the live
+ * effective policy. Local allowlists govern Breeze-held factors only. SSO and
+ * Cloudflare Access remain external primary authenticators and satisfy a
+ * required policy only when their issuer set the signed, AMR-consistent
+ * compatibility bit after verifying its configured MFA trust signal.
+ */
+export function getMfaAssuranceFailure(
+  token: { mfa: boolean; amr: readonly AuthenticationMethod[] },
+  policy: EffectiveMfaPolicy,
+): MfaAssuranceFailure | null {
+  const localMethod = getLocalMfaAuthenticationMethod(token.amr);
+  if (localMethod && !policy.allowedMethods.has(localMethod)) {
+    return 'method_not_allowed';
+  }
+  if (policy.required && token.mfa !== true) {
+    return 'mfa_required';
+  }
+  return null;
 }
 
 export interface ResolveEffectiveMfaPolicyInput {

@@ -129,6 +129,7 @@ async function mintMfaToken(env: Awaited<ReturnType<typeof setupTestEnvironment>
     partnerId: env.partner.id,
     scope: 'organization' as const,
     mfa: true, // satisfies requireMfa() on the remote route group
+    amr: ['password', 'totp'],
   });
 }
 

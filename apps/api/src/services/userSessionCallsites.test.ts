@@ -68,6 +68,29 @@ function findLowLevelIssuerIdentifiers(source: string): string[] {
   return LOW_LEVEL_ISSUERS.filter((issuer) => found.has(issuer));
 }
 
+function callsIssueUserSession(source: string): boolean {
+  const sourceFile = ts.createSourceFile(
+    'session-issuer-audit.ts',
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node)
+      && ts.isIdentifier(node.expression)
+      && node.expression.text === 'issueUserSession'
+    ) {
+      found = true;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return found;
+}
+
 describe('first-party user session issuer coverage', () => {
   it.each([
     ['named import', "import { createTokenPair } from './jwt';", 'createTokenPair'],
@@ -114,5 +137,29 @@ describe('first-party user session issuer coverage', () => {
       offenders,
       `First-party routes and middleware must use issueUserSession instead of low-level token issuers:\n${offenders.join('\n')}`,
     ).toEqual([]);
+  });
+
+  it('keeps the complete first-party issuer inventory explicit and AMR-aware', () => {
+    const issuers = walkProductionTypeScript(SRC_DIR)
+      .filter((file) => callsIssueUserSession(readFileSync(file, 'utf8')))
+      .map((file) => relative(SRC_DIR, file))
+      .sort();
+
+    expect(issuers).toEqual([
+      'middleware/cfAccessLogin.ts',
+      'routes/auth/cfAccessRedirectLogin.ts',
+      'routes/auth/invite.ts',
+      'routes/auth/login.ts',
+      'routes/auth/mfa.ts',
+      'routes/auth/passkeys.ts',
+      'routes/auth/register.ts',
+      'routes/sso.ts',
+    ]);
+    for (const file of issuers) {
+      expect(
+        readFileSync(join(SRC_DIR, file), 'utf8'),
+        `${file} must select explicit authentication methods`,
+      ).toMatch(/\bamr\s*:/);
+    }
   });
 });

@@ -43,6 +43,7 @@ const identity: UserSessionIdentity = {
   partnerId: '44444444-4444-4444-8444-444444444444',
   scope: 'organization',
   mfa: true,
+  amr: ['password', 'totp'],
   mobileDeviceId: 'mobile-install-1'
 };
 
@@ -111,6 +112,22 @@ describe('issueUserSession', () => {
       }
     });
     dbMocks.rememberJtiFamily.mockResolvedValue(undefined);
+  });
+
+  it('preserves the caller-verified authentication methods in both signed tokens', async () => {
+    dbMocks.selectedRows.push([{ authEpoch: 3, mfaEpoch: 5 }]);
+    dbMocks.selectedRows.push([activeFamily('family-amr')]);
+
+    const result = await issueUserSession(identity, { familyId: 'family-amr' });
+
+    await expect(verifyToken(result.accessToken)).resolves.toMatchObject({
+      mfa: true,
+      amr: ['password', 'totp'],
+    });
+    await expect(verifyToken(result.refreshToken)).resolves.toMatchObject({
+      mfa: true,
+      amr: ['password', 'totp'],
+    });
   });
 
   it('creates a 30-day family and issues an epoch-bound token pair', async () => {

@@ -16,6 +16,7 @@ import {
   mfaLimiter,
   getRedis
 } from '../../services';
+import { parseAuthenticationMethods, type AuthenticationMethod } from '../../services/jwt';
 import { getTwilioService } from '../../services/twilio';
 import { readMobileDeviceId } from '../../services/mobileDeviceBinding';
 import { authMiddleware } from '../../middleware/auth';
@@ -130,14 +131,22 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
     // Parse pending data — supports both legacy (plain userId string) and new (JSON) format
     let pendingUserId: string;
     let pendingMfaMethod: string;
+    let pendingAmr: AuthenticationMethod[];
     try {
       const parsed = JSON.parse(pendingRaw);
+      if (typeof parsed.userId !== 'string'
+        || !['totp', 'sms', 'passkey'].includes(parsed.mfaMethod || 'totp')) {
+        return c.json({ error: 'Invalid or expired MFA session' }, 401);
+      }
       pendingUserId = parsed.userId;
       pendingMfaMethod = parsed.mfaMethod || 'totp';
+      const parsedAmr = parseAuthenticationMethods(parsed.amr, false);
+      if (!parsedAmr) {
+        return c.json({ error: 'Invalid or expired MFA session' }, 401);
+      }
+      pendingAmr = parsedAmr;
     } catch {
-      // Legacy format: plain userId string
-      pendingUserId = pendingRaw;
-      pendingMfaMethod = 'totp';
+      return c.json({ error: 'Invalid or expired MFA session' }, 401);
     }
 
     // Rate limit MFA attempts
@@ -225,6 +234,7 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
       partnerId: mfaPartnerId,
       scope: mfaScope,
       mfa: true,
+      amr: [...pendingAmr, effectiveMethod as 'totp' | 'sms'],
       // SR-001: bind to the mobile install id when present (MFA login path).
       mobileDeviceId: readMobileDeviceId(c) ?? undefined
     });

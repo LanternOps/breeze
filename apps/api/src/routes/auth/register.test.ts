@@ -276,6 +276,14 @@ describe('/register-partner hook activation session rotation', () => {
     );
     expect(db.update).not.toHaveBeenCalled();
     expect(issueUserSession).toHaveBeenCalledTimes(2);
+    expect(issueUserSession).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      mfa: false,
+      amr: ['password'],
+    }));
+    expect(issueUserSession).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      mfa: false,
+      amr: ['password'],
+    }));
     expect(
       vi.mocked(activatePendingPartnerAndInvalidateSessions).mock.invocationCallOrder[0],
     ).toBeLessThan(vi.mocked(issueUserSession).mock.invocationCallOrder[1]!);

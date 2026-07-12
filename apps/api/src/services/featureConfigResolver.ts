@@ -19,7 +19,6 @@ import {
 import { and, eq, sql, inArray, asc, SQL } from 'drizzle-orm';
 import { resolveEffectiveTimezone, canonicalizeTimezone } from '@breeze/shared';
 import type { AuthContext } from '../middleware/auth';
-import type { TokenPayload } from './jwt';
 import type { AutomationAssignmentLevel } from '../jobs/queueSchemas';
 
 // ============================================
@@ -46,7 +45,7 @@ const LEVEL_PRIORITY: Record<ConfigAssignmentLevel, number> = {
  * This context passes all org checks (system scope, no org filter).
  */
 export function createSystemAuthContext(): AuthContext {
-  const token: TokenPayload = {
+  const token: AuthContext['token'] = {
     sub: '00000000-0000-0000-0000-000000000000',
     email: 'system@breeze.internal',
     roleId: null,

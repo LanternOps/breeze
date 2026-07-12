@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('../services/jwt', () => ({
+vi.mock('../services/jwt', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/jwt')>()),
   verifyToken: vi.fn()
 }));
 
@@ -22,6 +23,11 @@ vi.mock('../services/tokenRevocation', () => ({
   isUserTokenRevoked: vi.fn().mockResolvedValue(false),
   isTokenIssuedBeforePasswordChange: vi.fn(() => false),
   isAccessSessionFamilyActive: vi.fn().mockResolvedValue(true)
+}));
+
+vi.mock('../services/mfaPolicy', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/mfaPolicy')>()),
+  resolveEffectiveMfaPolicy: vi.fn(),
 }));
 
 vi.mock('../services/tenantStatus', () => ({
@@ -101,6 +107,7 @@ import {
 import { db, withDbAccessContext } from '../db';
 import { getUserPermissions, hasPermission, canAccessOrg } from '../services/permissions';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
+import { resolveEffectiveMfaPolicy } from '../services/mfaPolicy';
 
 const basePayload = {
   sub: 'user-123',
@@ -114,6 +121,7 @@ const basePayload = {
   me: 7,
   sid: 'session-family-123',
   mfa: false,
+  amr: ['password'] as const,
   iat: 1_700_000_000
 };
 
@@ -210,6 +218,11 @@ describe('authMiddleware', () => {
     vi.mocked(isAccessSessionFamilyActive).mockResolvedValue(true);
     vi.mocked(isTokenIssuedBeforePasswordChange).mockReturnValue(false);
     vi.mocked(assertActiveTenantContext).mockResolvedValue(undefined);
+    vi.mocked(resolveEffectiveMfaPolicy).mockResolvedValue({
+      required: false,
+      allowedMethods: new Set(['totp', 'sms', 'passkey', 'recovery_code']),
+      sources: [],
+    });
   });
 
   it('rejects missing authorization header', async () => {
@@ -315,6 +328,95 @@ describe('authMiddleware', () => {
     expect(withDbAccessContext).not.toHaveBeenCalled();
   });
 
+  it('rejects password-only assurance under live required policy before RLS or next', async () => {
+    const { app, nextHandler } = buildTrackedAuthApp();
+    vi.mocked(verifyToken).mockResolvedValue(basePayload);
+    vi.mocked(resolveEffectiveMfaPolicy).mockResolvedValue({
+      required: true,
+      allowedMethods: new Set(['totp', 'recovery_code']),
+      sources: ['organization'],
+    });
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWithLimit([activeUser]) as any)
+      .mockReturnValueOnce(selectWithLimit([{
+        userId: activeUser.id,
+        orgId: activeUser.orgId,
+      }]) as any);
+
+    const res = await app.request('/test', {
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(resolveEffectiveMfaPolicy).toHaveBeenCalledWith({
+      userId: activeUser.id,
+      roleId: basePayload.roleId,
+      orgId: basePayload.orgId,
+      partnerId: basePayload.partnerId,
+      scope: basePayload.scope,
+    });
+    expect(nextHandler).not.toHaveBeenCalled();
+    expect(withDbAccessContext).not.toHaveBeenCalled();
+  });
+
+  it('rejects a now-disallowed local factor before RLS or next', async () => {
+    const { app, nextHandler } = buildTrackedAuthApp();
+    vi.mocked(verifyToken).mockResolvedValue({
+      ...basePayload,
+      mfa: true,
+      amr: ['password', 'sms'],
+    });
+    vi.mocked(resolveEffectiveMfaPolicy).mockResolvedValue({
+      required: false,
+      allowedMethods: new Set(['totp', 'recovery_code']),
+      sources: [],
+    });
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWithLimit([activeUser]) as any)
+      .mockReturnValueOnce(selectWithLimit([{
+        userId: activeUser.id,
+        orgId: activeUser.orgId,
+      }]) as any);
+
+    const res = await app.request('/test', {
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(nextHandler).not.toHaveBeenCalled();
+    expect(withDbAccessContext).not.toHaveBeenCalled();
+  });
+
+  it.each(['sso', 'cf_access'] as const)(
+    'accepts a trusted %s MFA assertion under required policy',
+    async (method) => {
+      const app = buildAuthApp();
+      vi.mocked(verifyToken).mockResolvedValue({
+        ...basePayload,
+        mfa: true,
+        amr: [method],
+      });
+      vi.mocked(resolveEffectiveMfaPolicy).mockResolvedValue({
+        required: true,
+        allowedMethods: new Set(['totp', 'recovery_code']),
+        sources: ['organization'],
+      });
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectWithLimit([activeUser]) as any)
+        .mockReturnValueOnce(selectWithLimit([{
+          userId: activeUser.id,
+          orgId: activeUser.orgId,
+        }]) as any);
+
+      const res = await app.request('/test', {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(resolveEffectiveMfaPolicy).toHaveBeenCalledOnce();
+    },
+  );
+
   it.each(['revoked', 'missing', 'absolutely expired'])(
     'rejects an access token whose sid family is %s before request DB context or next',
     async () => {
@@ -332,7 +434,13 @@ describe('authMiddleware', () => {
         basePayload.sid,
         basePayload.sub,
       );
-      expect(db.select).not.toHaveBeenCalled();
+      expect(db.select).toHaveBeenCalled();
+      expect(vi.mocked(db.select).mock.invocationCallOrder[0]).toBeLessThan(
+        vi.mocked(isAccessSessionFamilyActive).mock.invocationCallOrder[0]!,
+      );
+      expect(vi.mocked(resolveEffectiveMfaPolicy).mock.invocationCallOrder[0]).toBeLessThan(
+        vi.mocked(isAccessSessionFamilyActive).mock.invocationCallOrder[0]!,
+      );
       expect(nextHandler).not.toHaveBeenCalled();
       expect(withDbAccessContext).not.toHaveBeenCalled();
     },
@@ -503,13 +611,20 @@ describe('authMiddleware', () => {
     const app = buildAuthApp();
     vi.mocked(verifyToken).mockResolvedValue(basePayload);
     vi.mocked(isUserTokenRevoked).mockResolvedValue(true);
+    mockUserSelect([activeUser]);
 
     const res = await app.request('/test', {
       headers: { Authorization: 'Bearer token' }
     });
 
     expect(res.status).toBe(401);
-    expect(vi.mocked(db.select)).not.toHaveBeenCalled();
+    expect(vi.mocked(db.select)).toHaveBeenCalled();
+    expect(vi.mocked(db.select).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(isUserTokenRevoked).mock.invocationCallOrder[0]!,
+    );
+    expect(vi.mocked(resolveEffectiveMfaPolicy).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(isUserTokenRevoked).mock.invocationCallOrder[0]!,
+    );
   });
 
   it('restricts partner scope to selected orgIds from partner membership', async () => {
@@ -594,14 +709,18 @@ describe('authMiddleware', () => {
       scope: 'partner',
       orgId: null
     });
+    vi.mocked(resolveEffectiveMfaPolicy).mockResolvedValue({
+      required: true,
+      allowedMethods: new Set(['totp', 'sms', 'passkey', 'recovery_code']),
+      sources: ['role'],
+    });
 
     vi.mocked(db.select)
       // 1) user lookup
       .mockReturnValueOnce(selectWithLimit([unenrolledUser]) as any)
       // 2) exact live partner membership
       .mockReturnValueOnce(selectWithLimit([unenrolledUser]) as any)
-      // 3) role lookup via partner_users INNER JOIN roles
-      .mockReturnValueOnce(selectWithJoinLimit([{ forceMfa: true }]) as any);
+      ;
 
     const res = await app.request('/api/v1/partner/me', {
       method: 'POST',
@@ -616,15 +735,20 @@ describe('authMiddleware', () => {
     });
   });
 
-  it('allows force_mfa role user to reach /auth/mfa/setup-totp while in mfa-required state', async () => {
+  it('allows an unenrolled required-policy user to reach the exact MFA setup path', async () => {
     const app = new Hono();
     app.use(authMiddleware);
-    app.post('/api/v1/auth/mfa/setup-totp', (c) => c.json({ secret: 'abc' }));
+    app.post('/api/v1/auth/mfa/setup', (c) => c.json({ secret: 'abc' }));
 
     vi.mocked(verifyToken).mockResolvedValue({
       ...basePayload,
       scope: 'partner',
       orgId: null
+    });
+    vi.mocked(resolveEffectiveMfaPolicy).mockResolvedValue({
+      required: true,
+      allowedMethods: new Set(['totp', 'sms', 'passkey', 'recovery_code']),
+      sources: ['role'],
     });
 
     vi.mocked(db.select)
@@ -632,13 +756,9 @@ describe('authMiddleware', () => {
       .mockReturnValueOnce(selectWithLimit([unenrolledUser]) as any)
       // 2) exact live partner membership
       .mockReturnValueOnce(selectWithLimit([unenrolledUser]) as any)
-      // 3) role lookup — would say "force MFA" but we never reach it
-      //    because the path is exempt before the gate runs role lookup.
-      //    Still — the gate path-checks AFTER doing the role lookup, so
-      //    we still need to return forceMfa here.
-      .mockReturnValueOnce(selectWithJoinLimit([{ forceMfa: true }]) as any);
+      ;
 
-    const res = await app.request('/api/v1/auth/mfa/setup-totp', {
+    const res = await app.request('/api/v1/auth/mfa/setup', {
       method: 'POST',
       headers: { Authorization: 'Bearer token' }
     });
@@ -647,7 +767,7 @@ describe('authMiddleware', () => {
     expect(res.status).toBe(200);
   });
 
-  it('permits force_mfa role user once MFA is enabled (skips role lookup entirely)', async () => {
+  it('permits a required-policy user with an allowed verified local factor', async () => {
     const app = new Hono();
     app.use(authMiddleware);
     app.post('/api/v1/partner/me', (c) => c.json({ ok: true }));
@@ -656,7 +776,13 @@ describe('authMiddleware', () => {
       ...basePayload,
       scope: 'partner',
       orgId: null,
-      mfa: true
+      mfa: true,
+      amr: ['password', 'totp'],
+    });
+    vi.mocked(resolveEffectiveMfaPolicy).mockResolvedValue({
+      required: true,
+      allowedMethods: new Set(['totp', 'recovery_code']),
+      sources: ['role'],
     });
 
     vi.mocked(db.select)
@@ -673,7 +799,7 @@ describe('authMiddleware', () => {
     expect(res.status).toBe(200);
   });
 
-  it('does not gate users whose role does NOT have force_mfa', async () => {
+  it('does not gate password-only users when the live policy is not required', async () => {
     const app = new Hono();
     app.use(authMiddleware);
     app.post('/api/v1/partner/me', (c) => c.json({ ok: true }));
@@ -688,8 +814,7 @@ describe('authMiddleware', () => {
       .mockReturnValueOnce(selectWithLimit([unenrolledUser]) as any)
       // exact live partner membership
       .mockReturnValueOnce(selectWithLimit([unenrolledUser]) as any)
-      // forceMfa=false → gate passes
-      .mockReturnValueOnce(selectWithJoinLimit([{ forceMfa: false }]) as any);
+      ;
 
     const res = await app.request('/api/v1/partner/me', {
       method: 'POST',
@@ -725,10 +850,7 @@ describe('authMiddleware', () => {
     expect(res.status).toBe(200);
   });
 
-  // Kill-switch: MFA_FORCE_FOR_PARTNER_ADMIN=false disables the gate
-  // even for users in force_mfa roles, and short-circuits BEFORE the
-  // role lookup so a misconfigured DB can't fail the request either.
-  it('skips the gate entirely when MFA_FORCE_FOR_PARTNER_ADMIN=false', async () => {
+  it('does not let the legacy role kill-switch override live required policy', async () => {
     const prev = process.env.MFA_FORCE_FOR_PARTNER_ADMIN;
     process.env.MFA_FORCE_FOR_PARTNER_ADMIN = 'false';
     try {
@@ -740,6 +862,11 @@ describe('authMiddleware', () => {
         ...basePayload,
         scope: 'partner',
         orgId: null
+      });
+      vi.mocked(resolveEffectiveMfaPolicy).mockResolvedValue({
+        required: true,
+        allowedMethods: new Set(['totp', 'sms', 'passkey', 'recovery_code']),
+        sources: ['role'],
       });
 
       vi.mocked(db.select)
@@ -753,7 +880,7 @@ describe('authMiddleware', () => {
         headers: { Authorization: 'Bearer token' }
       });
 
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(428);
     } finally {
       if (prev === undefined) delete process.env.MFA_FORCE_FOR_PARTNER_ADMIN;
       else process.env.MFA_FORCE_FOR_PARTNER_ADMIN = prev;
@@ -1148,7 +1275,10 @@ describe('requireMfa', () => {
   it('allows when token.mfa is true', async () => {
     const app = new Hono();
     app.use(async (c: any, next: any) => {
-      c.set('auth', { ...baseAuth, token: { ...basePayload, mfa: true } });
+      c.set('auth', {
+        ...baseAuth,
+        token: { ...basePayload, mfa: true, amr: ['password', 'totp'] },
+      });
       await next();
     });
     app.use(requireMfa());
@@ -1159,6 +1289,23 @@ describe('requireMfa', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toEqual({ ok: true });
+  });
+
+  it('rejects an inconsistent legacy mfa=true bit without factor AMR', async () => {
+    const app = new Hono();
+    app.use(async (c: any, next: any) => {
+      c.set('auth', {
+        ...baseAuth,
+        token: { ...basePayload, mfa: true, amr: ['password'] },
+      });
+      await next();
+    });
+    app.use(requireMfa());
+    app.get('/test', (c) => c.json({ ok: true }));
+
+    const res = await app.request('/test');
+
+    expect(res.status).toBe(403);
   });
 });
 

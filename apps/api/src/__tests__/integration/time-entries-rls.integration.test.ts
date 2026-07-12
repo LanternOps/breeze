@@ -596,6 +596,7 @@ describe('moveOrg org_id rewrite — real driver (spec §6)', () => {
       partnerId: partnerA.id,
       scope: 'partner',
       mfa: true,           // satisfies requireMfa() step-up
+      amr: ['password', 'totp'],
     });
 
     const app = new Hono();

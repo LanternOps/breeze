@@ -42,6 +42,7 @@ async function mfaHeaders(env: TestEnvironment): Promise<Record<string, string>>
     partnerId: env.partner.id,
     scope: 'organization',
     mfa: true,
+    amr: ['password', 'totp'],
   });
   return { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
 }

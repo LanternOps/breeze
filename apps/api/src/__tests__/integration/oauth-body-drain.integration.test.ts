@@ -165,6 +165,7 @@ describe.skipIf(!SHOULD_RUN)('OAuth pre-handler body-drain regressions', () => {
       partnerId: partner.id,
       scope: 'partner',
       mfa: false,
+      amr: ['password'],
     });
 
     // DCR
@@ -276,6 +277,7 @@ describe.skipIf(!SHOULD_RUN)('OAuth pre-handler body-drain regressions', () => {
       partnerId: partner.id,
       scope: 'partner',
       mfa: false,
+      amr: ['password'],
     });
 
     const redirectUri = 'https://example.com/cb-revoke';
@@ -401,6 +403,7 @@ describe.skipIf(!SHOULD_RUN)('OAuth pre-handler body-drain regressions', () => {
       partnerId: partner.id,
       scope: 'partner',
       mfa: false,
+      amr: ['password'],
     });
 
     const redirectUri = 'https://example.com/cb-jwt-revoke';

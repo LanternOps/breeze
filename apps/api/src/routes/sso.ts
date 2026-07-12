@@ -1834,7 +1834,8 @@ ssoRoutes.get('/callback', async (c) => {
         orgId: null,
         partnerId: providerPartnerId,
         scope: 'partner' as const,
-        mfa: ssoMfa
+        mfa: ssoMfa,
+        amr: ['sso']
       };
     } else {
       // System context required: same class of bug as the "Get provider"
@@ -1879,9 +1880,10 @@ ssoRoutes.get('/callback', async (c) => {
         email: user.email,
         roleId: orgUser.roleId,
         orgId: provider.orgId!,
-        partnerId: null,
+        partnerId: user.partnerId,
         scope: 'organization' as const,
-        mfa: ssoMfa
+        mfa: ssoMfa,
+        amr: ['sso']
       };
     }
 

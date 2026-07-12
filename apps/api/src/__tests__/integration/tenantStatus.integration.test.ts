@@ -91,7 +91,8 @@ async function mintOrgScopedToken(opts: {
     ae: user.authEpoch,
     me: user.mfaEpoch,
     sid: `test-session:${user.id}`,
-    mfa: false
+    mfa: false,
+    amr: ['password'],
   };
   return createAccessToken(payload);
 }
@@ -111,7 +112,8 @@ async function mintPartnerScopedToken(partnerId: string): Promise<string> {
     ae: user.authEpoch,
     me: user.mfaEpoch,
     sid: `test-session:${user.id}`,
-    mfa: false
+    mfa: false,
+    amr: ['password'],
   };
   return createAccessToken(payload);
 }

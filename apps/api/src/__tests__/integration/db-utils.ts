@@ -383,7 +383,8 @@ export async function setupTestEnvironment(
     ae: user.authEpoch,
     me: user.mfaEpoch,
     sid: `test-session:${user.id}`,
-    mfa: false
+    mfa: false,
+    amr: ['password'],
   };
   const token = await createAccessToken(tokenPayload);
 
