@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 
@@ -70,6 +70,13 @@ describe('ConfigPolicyDetailPage — org-only feature gating on partner-wide pol
   beforeEach(async () => {
     vi.clearAllMocks();
     await i18n.changeLanguage('en');
+    // Tab clicks now persist to window.location.hash, so reset it between tests
+    // to keep each one starting on the Overview tab (a leaked #backup etc. would
+    // pre-select that tab and relabel the OverflowTabs "More" button).
+    window.location.hash = '';
+  });
+  afterEach(() => {
+    window.location.hash = '';
   });
 
   it('keeps the breadcrumb route literal while translating its label in pt-BR', async () => {
@@ -181,5 +188,36 @@ describe('ConfigPolicyDetailPage — org-only feature gating on partner-wide pol
     openFeatureTab('Backup');
 
     expect(screen.queryByRole('button', { name: /Remove configuration/i })).not.toBeInTheDocument();
+  });
+});
+
+// Tabs are deep-linkable via the URL hash (feature-tab id === FeatureType key),
+// so a shared link / the contextual help button lands on the right tab.
+describe('ConfigPolicyDetailPage — URL hash deep-linking', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    await i18n.changeLanguage('en');
+    window.location.hash = '';
+  });
+  afterEach(() => {
+    window.location.hash = '';
+  });
+
+  it('selects a feature tab from the initial hash (#patch)', async () => {
+    window.location.hash = '#patch';
+    mockPolicy({ orgId: 'org-1', partnerId: null });
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+
+    await screen.findByRole('heading', { name: 'Test Policy' });
+    expect(screen.getByTestId('patch-tab-editor')).toBeInTheDocument();
+  });
+
+  it('writes the tab id to the hash when a tab is selected', async () => {
+    mockPolicy({ orgId: 'org-1', partnerId: null });
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+
+    await screen.findByRole('heading', { name: 'Test Policy' });
+    openFeatureTab('Backup');
+    expect(window.location.hash).toBe('#backup');
   });
 });

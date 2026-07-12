@@ -320,4 +320,42 @@ describe('getDocsForPath', () => {
       expect(result.url).toContain('/features/mcp-server/');
     });
   });
+
+  describe('hash-aware per-tab docs', () => {
+    it('resolves a tab-specific doc when the hash matches a tab', () => {
+      const result = getDocsForPath('/software', '#policies');
+      expect(result.label).toBe('Software Policies');
+      expect(result.url).toBe(`${DOCS_BASE_URL}/features/software-policies/`);
+    });
+
+    it('accepts a hash without a leading # and only uses the first segment', () => {
+      const result = getDocsForPath('/software', 'policies/extra/segment');
+      expect(result.url).toContain('/features/software-policies/');
+    });
+
+    it('falls back to the page-level doc for an unknown hash', () => {
+      const result = getDocsForPath('/software', '#does-not-exist');
+      expect(result.label).toBe('Software');
+      expect(result.url).toContain('/features/software-inventory/');
+    });
+
+    it('falls back to the page-level doc when no hash is given', () => {
+      const result = getDocsForPath('/software');
+      expect(result.url).toContain('/features/software-inventory/');
+    });
+
+    it('ignores a hash on a path whose entry has no tabs map', () => {
+      const result = getDocsForPath('/alerts', '#anything');
+      expect(result.label).toBe('Alerts');
+      expect(result.url).toContain('/features/alerts/');
+    });
+  });
+
+  describe('previously-missing mappings', () => {
+    it('/dns-security now maps to DNS Security docs', () => {
+      const result = getDocsForPath('/dns-security');
+      expect(result.label).toBe('DNS Security');
+      expect(result.url).toContain('/features/dns-security/');
+    });
+  });
 });

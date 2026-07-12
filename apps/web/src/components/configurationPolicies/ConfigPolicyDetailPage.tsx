@@ -125,6 +125,23 @@ const featureTabIcons: Record<FeatureType, React.ReactNode> = {
 // though it's imported, wired into renderFeatureTab, and has a baseline. (#2004)
 // featureTypeParity.test.ts asserts this equals canonical minus the exclusions.
 export const FEATURE_TYPES = Object.keys(FEATURE_META) as FeatureType[];
+
+// Every tab id that may appear in the URL hash, so a deep link / the contextual
+// help button can select the right tab. The feature-tab id is the raw
+// FeatureType key (e.g. `alert_rule`).
+const VALID_TABS: Tab[] = [
+  "overview",
+  ...FEATURE_TYPES,
+  "compliance_status",
+  "assignments",
+];
+
+function tabFromHash(): Tab {
+  if (typeof window === "undefined") return "overview";
+  const hash = window.location.hash.replace(/^#/, "");
+  return (VALID_TABS as string[]).includes(hash) ? (hash as Tab) : "overview";
+}
+
 type ConfigPolicyDetailPageProps = {
   policyId?: string;
 };
@@ -133,7 +150,20 @@ export default function ConfigPolicyDetailPage({
 }: ConfigPolicyDetailPageProps) {
   useTranslation("policies");
   const statusConfig = createStatusConfig();
-  const [activeTab, setActiveTab] = useState<Tab>("overview");
+  const [activeTab, setActiveTab] = useState<Tab>(tabFromHash);
+
+  // Reflect the active tab in the URL hash so tabs are deep-linkable and the
+  // contextual help button resolves to the right per-feature doc.
+  const selectTab = useCallback((id: Tab) => {
+    if (typeof window !== "undefined") window.location.hash = id;
+    setActiveTab(id);
+  }, []);
+
+  useEffect(() => {
+    const onHashChange = () => setActiveTab(tabFromHash());
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
   const [policy, setPolicy] = useState<PolicyDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -487,7 +517,7 @@ export default function ConfigPolicyDetailPage({
       <OverflowTabs
         tabs={tabs}
         activeTab={activeTab}
-        onTabChange={(id) => setActiveTab(id as Tab)}
+        onTabChange={(id) => selectTab(id as Tab)}
       />
 
       {/* Overview Tab */}

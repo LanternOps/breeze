@@ -1,0 +1,112 @@
+---
+title: OneDrive Helper
+description: Silently sign users into OneDrive, enforce Files On-Demand and Known Folder Move, and auto-mount SharePoint libraries through a configuration policy.
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+The OneDrive Helper configures Microsoft OneDrive and SharePoint on your managed Windows devices. From a single configuration policy you can sign users in silently with their Windows (Entra) identity, turn on Files On-Demand, roll out Known Folder Move (KFM) for Desktop, Documents, and Pictures, and auto-mount specific SharePoint document libraries for targeted users. The Breeze agent applies the settings and reports back live OneDrive status, which you read on each device's **OneDrive** tab.
+
+OneDrive Helper is a **feature tab inside Configuration Policies** (feature key `onedrive_helper`). Like other policy features, it cascades through the policy hierarchy — a more specific assignment (site, group, device) overrides a broader one, and org-scoped policies can inherit from a partner-wide policy.
+
+---
+
+## Configure in a policy
+
+<Steps>
+1. Open **Configuration Policies**, create or edit a policy, and open the **OneDrive Helper** tab.
+
+2. Set the base toggles (silent sign-in, Files On-Demand, Known Folder Move) described below.
+
+3. If Known Folder Move is on, choose which folders to redirect and whether to block opt-out.
+
+4. Optionally add SharePoint libraries to auto-mount, and pick who each library targets.
+
+5. **Save**. The agent applies the settings on its next sync and begins reporting OneDrive status back to the device's OneDrive tab.
+</Steps>
+
+<Aside>
+  If the policy is linked to a shared feature policy, the tab shows the inherited settings. Use **Override** to set device-/scope-specific values, or **Revert** to fall back to the inherited configuration.
+</Aside>
+
+---
+
+## Settings
+
+### Silent account configuration
+Signs the user into OneDrive automatically with their Windows (Entra) identity, with no sign-in prompt. On by default.
+
+### Files On-Demand
+Keeps files online-only until they are opened, saving local disk space. On by default.
+
+### Known Folder Move (KFM)
+Silently redirects the user's **Desktop**, **Documents**, and **Pictures** folders into OneDrive. Off by default. When enabled, three sub-options appear:
+
+- **Redirected folders** — check any combination of Desktop, Documents, and Pictures to redirect (all three by default).
+- **Block opt-out** — prevents users from moving their known folders back out of OneDrive.
+- **Tenant association ID** — an optional tenant GUID that restricts KFM to accounts in that tenant. Leave blank to allow any tenant.
+
+### Restart OneDrive on change
+Restarts the OneDrive client after applying policy changes so they take effect immediately. On by default.
+
+---
+
+## SharePoint library auto-mount
+
+Under **SharePoint libraries**, choose **Add library** to map document libraries that should mount automatically for targeted users.
+
+The library picker first checks the organization's Microsoft 365 connection. If M365 is connected, it browses SharePoint document libraries through Microsoft Graph so you can search and select one. If M365 is not connected, you can still add a library by pasting its composite auto-mount ID manually.
+
+Each mapped library row has:
+
+- **Enabled** — toggle the mapping on or off without removing it.
+- **Targeting** — who receives the mount:
+  - **Everyone** — all users on devices in scope.
+  - **Entra (Graph) group** — members of an Entra group. Requires a **Group ID** (Entra group object ID) or a **Group name**.
+  - **Local / AD group** — members of a local or Active Directory group. Requires a **Group name**.
+
+<Aside type="caution">
+  A library with a targeting group but no group ID or group name is invalid and blocks **Save** until you fill it in. Entra (Graph) group targeting needs a group ID *or* a group name; Local / AD group targeting needs a group name.
+</Aside>
+
+---
+
+## Check status on a device
+
+Open a device and select the **OneDrive** tab (`#onedrive`) to see what the agent last reported. Status appears after the agent's next heartbeat once a policy applies. The header shows chips for:
+
+- **Signed in** / **Not signed in**
+- **Files On-Demand: On / Off**
+- **OneDrive** client version
+- **Reported** — how long ago the agent last reported
+
+Below the header:
+
+- **Known Folder Move** — each of Desktop, Documents, and Pictures shows **Redirected**, **Not redirected**, or **Unknown**.
+- **Entitled libraries** — the SharePoint libraries the policy entitles the device to (shown as a readable host/path; hover for the full composite value).
+- **Mounted paths** — the library paths OneDrive has actually mounted on disk.
+- **Drift** — any library where the reported state does not match the policy, with the reason.
+
+<Aside>
+  A comparison between **Entitled libraries** and **Mounted paths**, plus any **Drift** entries, is the quickest way to confirm that a targeted library actually mounted on the device.
+</Aside>
+
+---
+
+## Troubleshooting
+
+**No OneDrive state on the device tab.** The agent reports OneDrive state on its next heartbeat *after* a policy applies. If the tab shows "No OneDrive state reported yet," confirm the policy is assigned to the device and give the agent a sync cycle to report.
+
+**User is not signed in.** Confirm **Silent account configuration** is on in the policy, that the device is Entra-joined (silent sign-in uses the Windows identity), and check the device's OneDrive client version — a very old client may not honor silent config.
+
+**Library entitled but not mounted (Drift).** Check the library's **Targeting** — the user must be in the targeted Entra or local/AD group. Verify the SharePoint composite ID resolved correctly, and confirm the M365 connection was healthy when the library was added.
+
+**"Add library" can't browse SharePoint.** The picker only browses Graph when the organization's Microsoft 365 connection is active. If it is disconnected, either connect M365 or add the library by pasting its composite auto-mount ID manually.
+
+---
+
+## Related
+
+- [Configuration Policies](/features/configuration-policies/) — how policies cascade, are assigned, and inherited
+- [Devices](/features/devices/) — the device detail view where the OneDrive tab lives
+- [Sensitive Data](/features/sensitive-data/) — visibility into where regulated data lives, including cloud-synced files

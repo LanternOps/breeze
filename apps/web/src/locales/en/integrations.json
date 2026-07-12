@@ -258,7 +258,8 @@
     "distributorIntegrationsPax8AndTDSYNNEXAreAvailable": "Distributor integrations (Pax8 and TD SYNNEX) are available to partner accounts only. ",
     "accountingIntegrationsAreAvailableToPartnerAccountsOnly": "Accounting integrations are available to partner accounts only. ",
     "theUniFiNetworkIntegrationIsAvailableToPartner": "The UniFi network integration is available to partner accounts only. ",
-    "psa": "PSA"
+    "psa": "PSA",
+    "viewNameDocumentation": "View {{name}} documentation"
   },
   "linkSubscriptionPicker": {
     "couldNotLoadContractsForThisOrganizationClose": "Could not load contracts for this organization. Close and retry.",

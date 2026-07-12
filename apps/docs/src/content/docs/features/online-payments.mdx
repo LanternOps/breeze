@@ -19,19 +19,21 @@ You connect your Stripe account to Breeze once. After that, any issued invoice c
 
 ## Connecting Stripe
 
-Connecting Stripe is a one-time authorization, done per partner.
+Connecting Stripe is a one-time setup, done once per partner. You paste a Stripe **secret key** from your Stripe dashboard, and Breeze uses it to create checkout sessions and read payment status directly against your account.
 
 <Steps>
-1. Go to **Settings → Billing**.
-2. In the **Online payments** section, click **Connect Stripe**.
-3. Authorize Breeze on Stripe's screen and you're returned to billing settings, now showing as connected.
+1. Go to **Integrations → Accounting → Payments**.
+2. In your [Stripe dashboard](https://dashboard.stripe.com/apikeys), copy a secret key -- a standard secret key (`sk_live…` / `sk_test…`) or a restricted key (`rk_live…`).
+3. Paste it into the **Online payments** card and click **Save key**. The card then shows your masked Stripe account, the key's last 4 digits, and a **Live** / **Test mode** badge.
 </Steps>
 
-The billing settings show your current connection status and whether you're in live or test mode. Connecting and disconnecting Stripe require multi-factor authentication.
+The card shows your current connection status and whether the key is live or test mode. Saving a key and disconnecting are sensitive billing actions -- both require billing management permission and multi-factor authentication.
 
 <Aside>
   One Stripe account connects per MSP partner. Until Stripe is connected, invoices show a quiet prompt to connect rather than a payment link.
 </Aside>
+
+See [Accounting & Payments Integrations](/features/accounting-integrations/) for the full connection walkthrough.
 
 ## Sending a Payment Link
 
