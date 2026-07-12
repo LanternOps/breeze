@@ -54,6 +54,12 @@ export interface ReconcilablePartner {
   deletedAt?: Date | string | null;
 }
 
+export interface PartnerActivationStatusMetadata {
+  message?: string;
+  actionUrl?: string;
+  actionLabel?: string;
+}
+
 /**
  * True iff a `pending` partner has independently met BOTH activation
  * preconditions and should be flipped to `active`. Pure — no I/O — so it is
@@ -91,21 +97,31 @@ export async function activatePartnerRow(
   tx: Pick<typeof db, 'update'>,
   partnerId: string,
   now: Date = new Date(),
+  statusMetadata?: PartnerActivationStatusMetadata,
 ): Promise<boolean> {
+  const clearedSettings = sql`jsonb_set(
+    jsonb_set(
+      jsonb_set(
+        COALESCE(${partners.settings}, '{}'::jsonb),
+        '{statusMessage}', 'null'::jsonb
+      ),
+      '{statusActionUrl}', 'null'::jsonb
+    ),
+    '{statusActionLabel}', 'null'::jsonb
+  )`;
+  const statusSettings: Record<string, string> = {};
+  if (statusMetadata?.message) statusSettings.statusMessage = statusMetadata.message;
+  if (statusMetadata?.actionUrl) statusSettings.statusActionUrl = statusMetadata.actionUrl;
+  if (statusMetadata?.actionLabel) statusSettings.statusActionLabel = statusMetadata.actionLabel;
+  const settings = Object.keys(statusSettings).length > 0
+    ? sql`${clearedSettings} || ${JSON.stringify(statusSettings)}::jsonb`
+    : clearedSettings;
+
   const activated = await tx
     .update(partners)
     .set({
       status: 'active' as const,
-      settings: sql`jsonb_set(
-        jsonb_set(
-          jsonb_set(
-            COALESCE(${partners.settings}, '{}'::jsonb),
-            '{statusMessage}', 'null'::jsonb
-          ),
-          '{statusActionUrl}', 'null'::jsonb
-        ),
-        '{statusActionLabel}', 'null'::jsonb
-      )`,
+      settings,
       updatedAt: now,
     })
     .where(sql`${partners.id} = ${partnerId} AND ${partners.status} = 'pending'`)
@@ -128,8 +144,9 @@ export async function activatePendingPartnerAndInvalidateSessions(
   tx: AuthLifecycleTransaction,
   partnerId: string,
   now: Date = new Date(),
+  statusMetadata?: PartnerActivationStatusMetadata,
 ): Promise<PartnerActivationResult> {
-  if (!(await activatePartnerRow(tx, partnerId, now))) {
+  if (!(await activatePartnerRow(tx, partnerId, now, statusMetadata))) {
     return { activated: false, userIds: [] };
   }
 

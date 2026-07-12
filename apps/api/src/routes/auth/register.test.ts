@@ -1,7 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../../db', () => ({
-  db: { select: vi.fn() },
+  db: {
+    select: vi.fn(),
+    update: vi.fn(() => ({
+      set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+    })),
+  },
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
@@ -27,6 +32,19 @@ vi.mock('../../services/partnerCreate', () => ({
 
 vi.mock('../../services/partnerHooks', () => ({
   dispatchHook: vi.fn(async () => null),
+}));
+
+vi.mock('../../services/partnerActivation', () => ({
+  activatePendingPartnerAndInvalidateSessions: vi.fn(async () => ({
+    activated: true,
+    userIds: ['u-1'],
+  })),
+}));
+
+vi.mock('../../services/authLifecycle', () => ({
+  withAuthLifecycleSystemTransaction: vi.fn(
+    async (fn: (tx: object) => Promise<unknown>) => fn({ scope: 'system-tx' }),
+  ),
 }));
 
 vi.mock('../../services/auditEvents', () => ({
@@ -88,6 +106,10 @@ import { createPartner } from '../../services/partnerCreate';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { createAuditLog } from '../../services/auditService';
 import { captureException } from '../../services/sentry';
+import { dispatchHook } from '../../services/partnerHooks';
+import { issueUserSession } from '../../services';
+import { activatePendingPartnerAndInvalidateSessions } from '../../services/partnerActivation';
+import { setRefreshTokenCookie } from './helpers';
 
 function selectChain(rows: unknown[]) {
   return {
@@ -183,6 +205,118 @@ describe('/register-partner partner status by deployment mode', () => {
     expect(createPartner).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'active' }),
     );
+  });
+});
+
+describe('/register-partner hook activation session rotation', () => {
+  const originalFlag = process.env.IS_HOSTED;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.IS_HOSTED = 'true';
+    vi.mocked(createPartner).mockResolvedValue({
+      partnerId: 'p-1',
+      orgId: 'o-1',
+      adminUserId: 'u-1',
+      adminRoleId: 'r-1',
+      siteId: 's-1',
+      mcpOrigin: false,
+    });
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectChain([]) as any)
+      .mockReturnValueOnce(selectChain([{
+        id: 'p-1', name: 'Acme Co', slug: 'acme-co', plan: 'starter', status: 'pending',
+      }]) as any)
+      .mockReturnValueOnce(selectChain([{
+        id: 'u-1', email: 'admin@acme.test', name: 'Admin User', mfaEnabled: false,
+      }]) as any);
+    vi.mocked(issueUserSession).mockReset();
+    vi.mocked(issueUserSession)
+      .mockResolvedValueOnce({
+        accessToken: 'pre-hook-access',
+        refreshToken: 'pre-hook-refresh',
+        refreshJti: 'pre-hook-jti',
+        expiresInSeconds: 900,
+        familyId: 'pre-hook-family',
+      })
+      .mockResolvedValueOnce({
+        accessToken: 'post-hook-access',
+        refreshToken: 'post-hook-refresh',
+        refreshJti: 'post-hook-jti',
+        expiresInSeconds: 900,
+        familyId: 'post-hook-family',
+      });
+  });
+
+  afterEach(() => {
+    if (originalFlag === undefined) delete process.env.IS_HOSTED;
+    else process.env.IS_HOSTED = originalFlag;
+  });
+
+  it('atomically activates, revokes the pre-hook family, and returns a fresh session', async () => {
+    vi.mocked(dispatchHook).mockResolvedValueOnce({
+      status: 'active',
+      message: 'Ready',
+      actionUrl: '/welcome',
+      actionLabel: 'Continue',
+    });
+
+    const res = await postRegisterPartner(validBody);
+
+    expect(res.status).toBe(200);
+    expect(activatePendingPartnerAndInvalidateSessions).toHaveBeenCalledWith(
+      { scope: 'system-tx' },
+      'p-1',
+      expect.any(Date),
+      {
+        message: 'Ready',
+        actionUrl: '/welcome',
+        actionLabel: 'Continue',
+      },
+    );
+    expect(db.update).not.toHaveBeenCalled();
+    expect(issueUserSession).toHaveBeenCalledTimes(2);
+    expect(
+      vi.mocked(activatePendingPartnerAndInvalidateSessions).mock.invocationCallOrder[0],
+    ).toBeLessThan(vi.mocked(issueUserSession).mock.invocationCallOrder[1]!);
+    expect(setRefreshTokenCookie).toHaveBeenCalledTimes(1);
+    expect(setRefreshTokenCookie).toHaveBeenCalledWith(expect.anything(), 'post-hook-refresh');
+    expect(await res.json()).toMatchObject({
+      partner: { status: 'active' },
+      tokens: { accessToken: 'post-hook-access' },
+    });
+  });
+
+  it('rolls back activation failure and issues no fresh post-activation session', async () => {
+    vi.mocked(dispatchHook).mockResolvedValueOnce({ status: 'active' });
+    vi.mocked(activatePendingPartnerAndInvalidateSessions)
+      .mockRejectedValueOnce(new Error('family invalidation failed'));
+
+    const res = await postRegisterPartner(validBody);
+
+    expect(res.status).toBe(500);
+    expect(issueUserSession).toHaveBeenCalledTimes(1);
+    expect(setRefreshTokenCookie).not.toHaveBeenCalled();
+    expect(await res.json()).toEqual({ error: 'Registration failed. Please try again.' });
+  });
+
+  it('keeps a pending hook on the original session without activation or rotation', async () => {
+    vi.mocked(dispatchHook).mockResolvedValueOnce({
+      status: 'pending',
+      message: 'Finish verification',
+    });
+
+    const res = await postRegisterPartner(validBody);
+
+    expect(res.status).toBe(200);
+    expect(activatePendingPartnerAndInvalidateSessions).not.toHaveBeenCalled();
+    expect(issueUserSession).toHaveBeenCalledTimes(1);
+    expect(setRefreshTokenCookie).toHaveBeenCalledTimes(1);
+    expect(setRefreshTokenCookie).toHaveBeenCalledWith(expect.anything(), 'pre-hook-refresh');
+    expect(await res.json()).toMatchObject({
+      partner: { status: 'pending' },
+      tokens: { accessToken: 'pre-hook-access' },
+    });
   });
 });
 

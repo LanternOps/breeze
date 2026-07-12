@@ -137,6 +137,33 @@ describe('activatePartnerRow', () => {
     expect(revokeAllUserSessionFamilies).not.toHaveBeenCalled();
   });
 
+  it('applies hook status metadata in the guarded activation update', async () => {
+    const setSpy = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: 'p-1' }]),
+      }),
+    });
+    const tx = { update: vi.fn().mockReturnValue({ set: setSpy }) } as any;
+    const metadata = {
+      message: 'Ready',
+      actionUrl: '/welcome',
+      actionLabel: 'Continue',
+    };
+
+    await activatePartnerRow(tx, 'p-1', new Date('2026-06-13T01:00:00Z'), metadata);
+
+    const settingsSql = setSpy.mock.calls[0]![0]!.settings as {
+      queryChunks?: unknown[];
+    };
+    expect(settingsSql.queryChunks).toEqual(expect.arrayContaining([
+      JSON.stringify({
+        statusMessage: 'Ready',
+        statusActionUrl: '/welcome',
+        statusActionLabel: 'Continue',
+      }),
+    ]));
+  });
+
   it('advances every partner tenant user auth epoch and revokes families after activation', async () => {
     const rowsByTable = new Map<unknown, unknown[]>([
       [organizations, [{ id: 'org-1' }]],

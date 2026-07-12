@@ -189,7 +189,11 @@ describe('transactional authentication lifecycle', () => {
     await insertFamily(user.id, familyId);
 
     const result = await withAuthLifecycleSystemTransaction((tx) =>
-      activatePendingPartnerAndInvalidateSessions(tx, partner.id)
+      activatePendingPartnerAndInvalidateSessions(tx, partner.id, new Date(), {
+        message: 'Ready',
+        actionUrl: '/welcome',
+        actionLabel: 'Continue',
+      })
     );
 
     expect(result).toEqual({ activated: true, userIds: [user.id] });
@@ -200,6 +204,11 @@ describe('transactional authentication lifecycle', () => {
       .from(refreshTokenFamilies)
       .where(eq(refreshTokenFamilies.familyId, familyId));
     expect(partnerAfter?.status).toBe('active');
+    expect(partnerAfter?.settings).toMatchObject({
+      statusMessage: 'Ready',
+      statusActionUrl: '/welcome',
+      statusActionLabel: 'Continue',
+    });
     expect(userAfter?.authEpoch).toBe(2);
     expect(familyAfter?.revokedReason).toBe('partner-activated');
   });

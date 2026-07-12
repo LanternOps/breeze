@@ -21,6 +21,8 @@ import { captureException } from '../../services/sentry';
 import { generateVerificationToken } from '../../services/emailVerification';
 import { getEmailService } from '../../services/email';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
+import { activatePendingPartnerAndInvalidateSessions } from '../../services/partnerActivation';
+import { withAuthLifecycleSystemTransaction } from '../../services/authLifecycle';
 import {
   runWithSystemDbAccess,
   getClientRateLimitKey,
@@ -178,6 +180,7 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
       | 'post-create-fetch'
       | 'token-creation'
       | 'hook-dispatch'
+      | 'post-activation-token-creation'
       | 'response-build';
     let phase: RegisterPhase = 'create-partner';
     let partnerIdForLog: string | undefined;
@@ -234,7 +237,7 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
       // MFA is vacuously satisfied when the user hasn't enrolled in MFA
       const mfaSatisfied = !(ENABLE_2FA && newUser.mfaEnabled);
 
-      const tokens = await issueUserSession({
+      const sessionIdentity = {
         userId: newUser.id,
         email: newUser.email,
         roleId: result.adminRoleId,
@@ -242,9 +245,8 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
         partnerId: newPartner.id,
         scope: 'partner',
         mfa: mfaSatisfied
-      });
-
-      setRefreshTokenCookie(c, tokens.refreshToken);
+      } as const;
+      let tokens = await issueUserSession(sessionIdentity);
 
       // Email verification — best-effort send. Failures must not fail the
       // signup, but the result needs to be surfaced to the client so the
@@ -302,30 +304,54 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
       // If hook overrides the partner status (e.g. to 'pending'), apply it
       const VALID_STATUSES = ['pending', 'active', 'suspended', 'churned'] as const;
       let effectiveStatus: PartnerStatus = newPartner.status;
+      let rotateSessionAfterActivation = false;
 
       if (hookResponse?.status && hookResponse.status !== newPartner.status) {
         if (!VALID_STATUSES.includes(hookResponse.status as any)) {
           console.error(`[Registration] Hook returned invalid status '${hookResponse.status}' for partner ${newPartner.id}; ignoring`);
         } else {
+          const isPendingActivation =
+            newPartner.status === 'pending' && hookResponse.status === 'active';
           try {
-            const updateSet: Record<string, unknown> = {
-              status: hookResponse.status as typeof newPartner.status,
-            };
+            if (isPendingActivation) {
+              const statusMetadata = {
+                ...(hookResponse.message ? { message: hookResponse.message } : {}),
+                ...(hookResponse.actionUrl ? { actionUrl: hookResponse.actionUrl } : {}),
+                ...(hookResponse.actionLabel ? { actionLabel: hookResponse.actionLabel } : {}),
+              };
+              const activation = await withAuthLifecycleSystemTransaction((tx) =>
+                activatePendingPartnerAndInvalidateSessions(
+                  tx,
+                  newPartner.id,
+                  new Date(),
+                  statusMetadata,
+                )
+              );
+              if (!activation.activated) {
+                throw new Error('Pending partner activation did not update the partner row');
+              }
+              effectiveStatus = 'active';
+              rotateSessionAfterActivation = true;
+            } else {
+              const updateSet: Record<string, unknown> = {
+                status: hookResponse.status as typeof newPartner.status,
+              };
 
-            // Apply optional status message fields from hook response
-            if (hookResponse.message || hookResponse.actionUrl || hookResponse.actionLabel) {
-              const msgSettings: Record<string, string | null> = {};
-              if (hookResponse.message) msgSettings.statusMessage = hookResponse.message;
-              if (hookResponse.actionUrl) msgSettings.statusActionUrl = hookResponse.actionUrl;
-              if (hookResponse.actionLabel) msgSettings.statusActionLabel = hookResponse.actionLabel;
-              updateSet.settings = sql`COALESCE(${partners.settings}, '{}'::jsonb) || ${JSON.stringify(msgSettings)}::jsonb`;
+              // Apply optional status message fields from hook response
+              if (hookResponse.message || hookResponse.actionUrl || hookResponse.actionLabel) {
+                const msgSettings: Record<string, string | null> = {};
+                if (hookResponse.message) msgSettings.statusMessage = hookResponse.message;
+                if (hookResponse.actionUrl) msgSettings.statusActionUrl = hookResponse.actionUrl;
+                if (hookResponse.actionLabel) msgSettings.statusActionLabel = hookResponse.actionLabel;
+                updateSet.settings = sql`COALESCE(${partners.settings}, '{}'::jsonb) || ${JSON.stringify(msgSettings)}::jsonb`;
+              }
+
+              await db
+                .update(partners)
+                .set(updateSet)
+                .where(eq(partners.id, newPartner.id));
+              effectiveStatus = hookResponse.status as PartnerStatus;
             }
-
-            await db
-              .update(partners)
-              .set(updateSet)
-              .where(eq(partners.id, newPartner.id));
-            effectiveStatus = hookResponse.status as PartnerStatus;
           } catch (statusErr) {
             console.error('[register-partner] hook-status update failed', {
               partnerId: newPartner.id,
@@ -352,14 +378,27 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
               result: 'failure',
               errorMessage: statusErr instanceof Error ? statusErr.message : String(statusErr),
             });
+            if (isPendingActivation) {
+              throw statusErr;
+            }
           }
         }
+      }
+
+      if (rotateSessionAfterActivation) {
+        phase = 'post-activation-token-creation';
+        // The initial pair was minted while the partner was pending and was
+        // revoked by the activation transaction. Mint only after commit so
+        // the response/cookie carry live post-activation epochs.
+        tokens = await issueUserSession(sessionIdentity);
       }
 
       phase = 'response-build';
 
       // Only allow relative redirects from hooks to prevent open redirect
       const redirectUrl = hookResponse?.redirectUrl?.startsWith('/') ? hookResponse.redirectUrl : undefined;
+
+      setRefreshTokenCookie(c, tokens.refreshToken);
 
       return c.json({
         user: {
