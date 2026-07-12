@@ -125,9 +125,19 @@ async function lockActiveMailboxGeneration(
   return rows.length === 1;
 }
 
+export interface ProcessInboundEmailDependencies {
+  /**
+   * Transaction-local observation point used by the real-Postgres concurrency
+   * regression. Production callers omit it. Keeping the hook on the invocation
+   * (rather than in mutable module state) makes concurrent workers independent.
+   */
+  afterMailboxGenerationLock?: () => Promise<void>;
+}
+
 export async function processInboundEmail(
   n: NormalizedInboundEmail,
   mailboxGeneration?: M365MailboxGenerationContext,
+  dependencies: ProcessInboundEmailDependencies = {},
 ): Promise<void> {
   // partnerId is tracked outside the try so the durable-failed log records whatever
   // tenant was resolved before the failure (may be null if resolution itself failed).
@@ -147,6 +157,7 @@ export async function processInboundEmail(
       // same transaction that performs ticket/comment writes. A disable that won
       // first rotates the generation; a lock acquired here first makes disable wait.
       if (n.provider !== 'm365' || !await lockActiveMailboxGeneration(mailboxGeneration)) return;
+      await dependencies.afterMailboxGenerationLock?.();
       partnerId = mailboxGeneration.partnerId;
     } else {
       partnerId = n.resolvedPartnerId ?? await resolvePartnerByRecipient(n.to);

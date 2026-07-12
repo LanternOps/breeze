@@ -12,7 +12,7 @@
 import './setup';
 import { describe, it, expect } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { withSystemDbAccessContext } from '../../db';
 import {
   ticketComments,
@@ -138,6 +138,117 @@ describe('M365 inbound → ticket (real DB)', () => {
     ));
     expect(rows).toHaveLength(1);
     expect(rows[0]?.parseStatus).toBe('created');
+  });
+
+  runDb('holds the generation row lock in the ingestion transaction until ticket creation commits', async () => {
+    const db = getTestDb() as any;
+    const suffix = `${Date.now()}-${Math.floor(performance.now())}`;
+    const tenantId = randomUUID();
+    const microsoftOid = randomUUID();
+    const customerEmail = `lock-first-${suffix}@known.test`;
+    const mailboxAddress = `support-lock-first-${suffix}@example.com`;
+
+    const seeded = await withSystemDbAccessContext(async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+      await db.insert(portalUsers).values({ orgId: org.id, email: customerEmail, name: 'Customer' });
+      await db.insert(ticketMailboxTenantOwnerships).values({
+        tenantId,
+        partnerId: partner.id,
+        verifiedMicrosoftOid: microsoftOid,
+      });
+      const [connection] = await db.insert(ticketMailboxConnections).values({
+        partnerId: partner.id,
+        tenantId,
+        mailboxAddress,
+        status: 'connected',
+      }).returning({
+        id: ticketMailboxConnections.id,
+        consentAttemptId: ticketMailboxConnections.consentAttemptId,
+      });
+      return { partnerId: partner.id, orgId: org.id, connection: connection! };
+    });
+
+    const msg: GraphMessage = {
+      id: `lock-first-${suffix}`,
+      internetMessageId: `<lock-first-${suffix}@known.test>`,
+      subject: `Lock-first generation ${suffix}`,
+      from: { emailAddress: { address: customerEmail, name: 'Customer' } },
+      toRecipients: [{ emailAddress: { address: mailboxAddress } }],
+      body: { contentType: 'text', content: 'serialize this ingestion' },
+      bodyPreview: 'serialize this ingestion',
+      hasAttachments: false,
+      internetMessageHeaders: [
+        { name: 'Authentication-Results', value: 'example.com; spf=pass; dkim=pass; dmarc=pass' },
+      ],
+    };
+    const normalized = normalizeGraphMessage(msg, seeded.partnerId, mailboxAddress);
+    const generation = {
+      connectionId: seeded.connection.id,
+      partnerId: seeded.partnerId,
+      tenantId,
+      consentAttemptId: seeded.connection.consentAttemptId,
+    };
+    let releaseLock!: () => void;
+    const holdAfterLock = new Promise<void>((resolve) => { releaseLock = resolve; });
+    let lockAcquired!: () => void;
+    const acquired = new Promise<void>((resolve) => { lockAcquired = resolve; });
+    const completionOrder: string[] = [];
+
+    const ingestion = withSystemDbAccessContext(() => processInboundEmail(
+      normalized,
+      generation,
+      {
+        afterMailboxGenerationLock: async () => {
+          lockAcquired();
+          await holdAfterLock;
+        },
+      },
+    )).then(() => { completionOrder.push('ingestion'); });
+    await acquired;
+
+    const disable = withSystemDbAccessContext(() =>
+      disableConnection(seeded.connection.id, seeded.partnerId),
+    ).then((result) => {
+      completionOrder.push('disable');
+      return result;
+    });
+    try {
+      await expect.poll(async () => {
+        const blocked = await getTestDb().execute(sql`
+          SELECT count(*)::int AS count
+          FROM pg_stat_activity
+          WHERE datname = current_database()
+            AND wait_event_type = 'Lock'
+            AND cardinality(pg_blocking_pids(pid)) > 0
+            AND query ILIKE '%ticket_mailbox_connections%'
+        `) as unknown as Array<{ count: number }>;
+        return blocked[0]?.count ?? 0;
+      }, { timeout: 5_000, interval: 25 }).toBeGreaterThan(0);
+      expect(completionOrder).toEqual([]);
+    } finally {
+      releaseLock();
+    }
+
+    await ingestion;
+    await expect(disable).resolves.toBe(true);
+    expect(completionOrder).toEqual(['ingestion', 'disable']);
+
+    const inboundRows = await db.select().from(ticketEmailInbound).where(and(
+      eq(ticketEmailInbound.partnerId, seeded.partnerId),
+      eq(ticketEmailInbound.providerMessageId, msg.id),
+    ));
+    const ticketRows = await db.select().from(tickets).where(and(
+      eq(tickets.orgId, seeded.orgId),
+      eq(tickets.subject, msg.subject ?? ''),
+    ));
+    const [connection] = await db.select({ status: ticketMailboxConnections.status })
+      .from(ticketMailboxConnections)
+      .where(eq(ticketMailboxConnections.id, seeded.connection.id));
+    expect(inboundRows).toHaveLength(1);
+    expect(inboundRows[0]?.parseStatus).toBe('created');
+    expect(ticketRows).toHaveLength(1);
+    expect(connection?.status).toBe('disabled');
   });
 
   runDb('discards a queued generation after disable rotates it without ticket or comment writes', async () => {

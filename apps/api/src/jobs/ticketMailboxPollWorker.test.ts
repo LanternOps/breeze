@@ -148,4 +148,31 @@ describe('runMailboxSweep', () => {
     expect(updateDeltaCursor).not.toHaveBeenCalled();
     expect(setConnectedMailboxStatus).not.toHaveBeenCalled();
   });
+
+  it('does not mark read, enqueue remaining messages, or advance the cursor when disable wins during enqueue', async () => {
+    let releaseEnqueue!: () => void;
+    const enqueuePaused = new Promise<void>((resolve) => { releaseEnqueue = resolve; });
+    vi.mocked(listConnectedMailboxes).mockResolvedValue([conn()] as any);
+    vi.mocked(listInboxDelta).mockResolvedValue({
+      messages: [{ id: 'm1' }, { id: 'm2' }],
+      deltaLink: 'stale-delta',
+    } as any);
+    vi.mocked(enqueueInboundEmail).mockReturnValueOnce(enqueuePaused);
+    vi.mocked(isConnectedMailboxSnapshotCurrent)
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false);
+
+    const sweep = runMailboxSweep();
+    await vi.waitFor(() => expect(enqueueInboundEmail).toHaveBeenCalledOnce());
+    // The lifecycle disable commits while the first message is being enqueued.
+    // The worker must recheck the exact generation before the irreversible
+    // Microsoft markRead side effect and before handling another message.
+    releaseEnqueue();
+    await sweep;
+
+    expect(isConnectedMailboxSnapshotCurrent).toHaveBeenCalledTimes(2);
+    expect(markRead).not.toHaveBeenCalled();
+    expect(enqueueInboundEmail).toHaveBeenCalledTimes(1);
+    expect(updateDeltaCursor).not.toHaveBeenCalled();
+  });
 });

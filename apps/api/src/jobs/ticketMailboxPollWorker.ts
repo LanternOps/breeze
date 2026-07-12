@@ -58,6 +58,11 @@ async function sweepOne(c: Awaited<ReturnType<typeof listConnectedMailboxes>>[nu
         tenantId: c.tenantId,
         consentAttemptId: c.consentAttemptId,
       });
+      // Enqueue can overlap a lifecycle disable/re-consent. Recheck the exact
+      // generation immediately before the irreversible Microsoft markRead side
+      // effect. A stale result also stops this page so no later message or cursor
+      // can be produced from the obsolete snapshot.
+      if (!await isConnectedMailboxSnapshotCurrent(c)) return;
       await markRead(token, c.mailboxAddress, msg.id).catch((e) => {
         console.warn('[mailboxPoll] mark-read failed', { id: msg.id, err: e instanceof Error ? e.message : e });
       });
