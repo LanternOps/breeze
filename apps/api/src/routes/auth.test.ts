@@ -87,6 +87,27 @@ vi.mock('../services/twilio', () => ({
   }))
 }));
 
+// SR2-20: the real './auth/helpers' (used unmocked elsewhere in this suite)
+// calls validateStepUpGrant/consumeStepUpGrant for its existing-factor
+// step-up gate, and mfa.ts's new POST /mfa/step-up calls mintStepUpGrant.
+// Mocked here so individual tests control grant behaviour without Redis.
+vi.mock('../services/mfaStepUpGrant', () => ({
+  mintStepUpGrant: vi.fn(),
+  validateStepUpGrant: vi.fn(),
+  consumeStepUpGrant: vi.fn(),
+}));
+
+// mfa.ts's POST /mfa/step-up passkey branch calls verifyStepUpPasskeyAssertion
+// (exported from ./auth/passkeys). Keep the REAL module (passkeyRoutes is
+// mounted for real under authRoutes) and only override that one helper.
+vi.mock('./auth/passkeys', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./auth/passkeys')>();
+  return {
+    ...actual,
+    verifyStepUpPasskeyAssertion: vi.fn(),
+  };
+});
+
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => ({
@@ -255,7 +276,9 @@ import {
 import { db } from '../db';
 import { runPostCommitCleanup } from '../services/authLifecycle';
 import { createAuditLogAsync } from '../services/auditService';
-import { hashRecoveryCode } from './auth/helpers';
+import { hashRecoveryCode, encryptMfaSecret } from './auth/helpers';
+import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant } from '../services/mfaStepUpGrant';
+import { verifyStepUpPasskeyAssertion } from './auth/passkeys';
 
 // SR2-08: stub `db.transaction` so advanceUserEpochs/revokeAllRefreshFamilies
 // (kept REAL, see the authLifecycle mock above) run against a fake `tx`
@@ -1473,6 +1496,74 @@ describe('auth routes', () => {
     });
   });
 
+  // SR2-20: adding a factor to an ALREADY-PROTECTED account additionally
+  // requires a fresh existing-factor step-up grant. A no-factor account's
+  // initial enrollment (default db.select mock = []) stays password-only,
+  // which the SR2-24 test above already covers.
+  describe('POST /auth/mfa/verify — setup confirmation requires existing-factor step-up when already protected (SR2-20)', () => {
+    function mockPendingSetup() {
+      const mockRedis = {
+        get: vi.fn().mockResolvedValue(JSON.stringify({
+          secret: 'SETUPSECRET123',
+          recoveryCodes: ['CODE-0001', 'CODE-0002']
+        })),
+        del: vi.fn().mockResolvedValue(1),
+        setex: vi.fn(),
+      };
+      vi.mocked(getRedis).mockReturnValue(mockRedis as any);
+      vi.mocked(consumeMFAToken).mockResolvedValue(true);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(undefined)
+        })
+      } as any);
+    }
+
+    it('rejects with 403 when no step-up grant is presented', async () => {
+      mockPendingSetup();
+      // userIsMfaProtected: account already has an active factor.
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ mfaEnabled: true, passkeyCount: 0 }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/auth/mfa/verify', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: '123456' })
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body).toMatchObject({ error: 'existing_factor_step_up_required' });
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('succeeds with a valid (consumed) step-up grant', async () => {
+      mockPendingSetup();
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ mfaEnabled: true, passkeyCount: 0 }])
+          })
+        })
+      } as any);
+      vi.mocked(consumeStepUpGrant).mockResolvedValueOnce(true);
+
+      const res = await app.request('/auth/mfa/verify', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: '123456', stepUpGrantId: 'grant-1' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(consumeStepUpGrant).toHaveBeenCalledWith('grant-1', expect.objectContaining({ userId: 'user-123' }));
+    });
+  });
+
   describe('POST /auth/refresh', () => {
     it('should refresh tokens successfully', async () => {
       vi.mocked(verifyToken).mockResolvedValue({
@@ -2324,6 +2415,97 @@ describe('auth routes', () => {
       expect(verifyMFAToken).not.toHaveBeenCalled();
     });
 
+    // SR2-20: adding a factor to an ALREADY-PROTECTED account additionally
+    // requires a fresh existing-factor step-up grant.
+    it('POST /auth/mfa/enable rejects with 403 when already protected and no step-up grant is presented', async () => {
+      vi.mocked(verifyPassword).mockResolvedValue(true);
+      // Password-reprompt select runs first, then userIsMfaProtected's select
+      // (account already protected).
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash' }])
+            })
+          })
+        } as any)
+        .mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ mfaEnabled: true, passkeyCount: 0 }])
+            })
+          })
+        } as any);
+
+      const res = await app.request('/auth/mfa/enable', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer valid-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: '123456', currentPassword: 'OldStrongPass123' })
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body).toMatchObject({ error: 'existing_factor_step_up_required' });
+      // Never reaches the setup-data lookup / factor write.
+      expect(consumeMFAToken).not.toHaveBeenCalled();
+    });
+
+    it('POST /auth/mfa/enable succeeds with a valid step-up grant when already protected', async () => {
+      const setupRecoveryCodes = ['CODE-0001', 'CODE-0002'];
+      const mockRedis = {
+        get: vi.fn().mockResolvedValue(JSON.stringify({
+          secret: 'MFASECRET123',
+          recoveryCodes: setupRecoveryCodes
+        })),
+        setex: vi.fn(),
+        del: vi.fn().mockResolvedValue(1)
+      };
+      vi.mocked(getRedis).mockReturnValue(mockRedis as any);
+      vi.mocked(consumeMFAToken).mockResolvedValue(true);
+      vi.mocked(verifyPassword).mockResolvedValue(true);
+      vi.mocked(consumeStepUpGrant).mockResolvedValueOnce(true);
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash' }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ mfaEnabled: true, passkeyCount: 0 }])
+            })
+          })
+        } as any)
+        .mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn(() => Object.assign(Promise.resolve(undefined), {
+            returning: vi.fn().mockResolvedValue([{ id: 'user-1' }])
+          }))
+        })
+      } as any);
+
+      const res = await app.request('/auth/mfa/enable', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer valid-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: '123456', currentPassword: 'OldStrongPass123', stepUpGrantId: 'grant-1' })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.success).toBe(true);
+      expect(consumeStepUpGrant).toHaveBeenCalledWith('grant-1', expect.objectContaining({ userId: 'user-123' }));
+    });
+
     it('POST /auth/mfa/enable should reject missing currentPassword (G1)', async () => {
       const res = await app.request('/auth/mfa/enable', {
         method: 'POST',
@@ -2503,6 +2685,68 @@ describe('auth routes', () => {
       });
 
       expect(res.status).toBe(401);
+    });
+  });
+
+  // SR2-20: POST /auth/mfa/step-up proves an EXISTING factor and mints a
+  // short-lived grant. The passkey branch (I2) exists specifically so a
+  // passkey-only user — who has no TOTP/SMS fallback — is never locked out
+  // of adding a second factor.
+  describe('POST /auth/mfa/step-up', () => {
+    it('mints a grant for a passkey-only user via method: passkey (I2)', async () => {
+      vi.mocked(verifyStepUpPasskeyAssertion).mockResolvedValueOnce(true);
+      vi.mocked(mintStepUpGrant).mockResolvedValueOnce('grant-abc');
+
+      const res = await app.request('/auth/mfa/step-up', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer valid-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ method: 'passkey', credential: { id: 'credential-1', response: {} } })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toEqual({ stepUpGrantId: 'grant-abc' });
+      expect(verifyStepUpPasskeyAssertion).toHaveBeenCalledWith('user-123', { id: 'credential-1', response: {} });
+      expect(mintStepUpGrant).toHaveBeenCalledWith(expect.objectContaining({
+        userId: 'user-123',
+        operation: 'add_factor',
+        sid: 'family-123',
+      }));
+    });
+
+    it('returns 401 without minting a grant when the passkey assertion does not verify', async () => {
+      vi.mocked(verifyStepUpPasskeyAssertion).mockResolvedValueOnce(false);
+
+      const res = await app.request('/auth/mfa/step-up', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer valid-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ method: 'passkey', credential: { id: 'credential-1', response: {} } })
+      });
+
+      expect(res.status).toBe(401);
+      expect(mintStepUpGrant).not.toHaveBeenCalled();
+    });
+
+    it('mints a grant for a valid TOTP code', async () => {
+      vi.mocked(consumeMFAToken).mockResolvedValueOnce(true);
+      vi.mocked(mintStepUpGrant).mockResolvedValueOnce('grant-totp');
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ mfaSecret: encryptMfaSecret('PLAINTEXTSECRET') }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/auth/mfa/step-up', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer valid-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ method: 'totp', code: '123456' })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toEqual({ stepUpGrantId: 'grant-totp' });
     });
   });
 

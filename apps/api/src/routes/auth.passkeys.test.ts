@@ -144,6 +144,15 @@ vi.mock('../services/passwordResetEligibility', () => ({
   }),
 }));
 
+// SR2-20: the real './helpers' (used unmocked elsewhere in this suite) calls
+// validateStepUpGrant/consumeStepUpGrant for its existing-factor step-up gate.
+// Mocked here so individual tests control grant validity without touching Redis.
+vi.mock('../services/mfaStepUpGrant', () => ({
+  mintStepUpGrant: vi.fn(),
+  validateStepUpGrant: vi.fn(),
+  consumeStepUpGrant: vi.fn(),
+}));
+
 vi.mock('../services/ipAllowlist', () => ({
   enforceIpAllowlist: vi.fn().mockResolvedValue({ allowed: true }),
   IP_NOT_ALLOWED_BODY: { error: 'IP address is not allowed' },
@@ -296,7 +305,9 @@ vi.mock('../middleware/auth', () => ({
       user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
       orgId: 'org-123',
       partnerId: 'partner-123',
-      token: { mfa: authState.mfaSatisfied },
+      // sid: SR2-20's enforceExistingFactorStepUp binds the grant to the
+      // caller's session id; without it the gate fails closed (503).
+      token: { mfa: authState.mfaSatisfied, sid: 'session-123' },
     });
     return next();
   }),
@@ -308,6 +319,7 @@ import { createTokenPair, getRedis, getUserEpochs, rateLimiter, verifyPassword }
 import { PasskeyChallengeError } from '../services/passkeys';
 import { withSystemDbAccessContext } from '../db';
 import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
+import { validateStepUpGrant, consumeStepUpGrant } from '../services/mfaStepUpGrant';
 
 const user = {
   id: 'user-123',
@@ -465,6 +477,63 @@ describe('passkey MFA auth routes', () => {
         user: expect.objectContaining({ id: 'user-123', email: 'test@example.com' }),
       }),
     );
+  });
+
+  // SR2-20: adding a factor to an ALREADY-PROTECTED account additionally
+  // requires a fresh existing-factor step-up grant; a no-factor account's
+  // initial enrollment stays password-only (no grant needed).
+  describe('SR2-20 existing-factor step-up gate on passkey registration', () => {
+    it('rejects register/options on an already-protected account with no grant', async () => {
+      vi.mocked(verifyPassword).mockResolvedValueOnce(true);
+      dbState.selectQueue.push([{ passwordHash: '$argon2id$hash' }]);
+      dbState.selectQueue.push([{ mfaEnabled: true, passkeyCount: 0 }]);
+
+      const res = await app.request('/auth/passkeys/register/options', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+        body: JSON.stringify({ currentPassword: 'correct-password' }),
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body).toMatchObject({ error: 'existing_factor_step_up_required' });
+      expect(passkeyMocks.generatePasskeyRegistrationOptions).not.toHaveBeenCalled();
+    });
+
+    it('allows register/options on an already-protected account with a valid grant', async () => {
+      vi.mocked(verifyPassword).mockResolvedValueOnce(true);
+      dbState.selectQueue.push([{ passwordHash: '$argon2id$hash' }]);
+      dbState.selectQueue.push([{ mfaEnabled: true, passkeyCount: 0 }]);
+      dbState.selectQueue.push([]); // listActivePasskeys
+      vi.mocked(validateStepUpGrant).mockResolvedValueOnce(true);
+
+      const res = await app.request('/auth/passkeys/register/options', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+        body: JSON.stringify({ currentPassword: 'correct-password', stepUpGrantId: 'grant-1' }),
+      });
+
+      expect(res.status).toBe(200);
+      // Non-consuming: register/options validates, register/verify consumes.
+      expect(validateStepUpGrant).toHaveBeenCalledWith('grant-1', expect.objectContaining({ userId: 'user-123' }));
+      expect(consumeStepUpGrant).not.toHaveBeenCalled();
+    });
+
+    it('allows register/options on a no-factor account with no grant (initial enrollment stays password-only)', async () => {
+      vi.mocked(verifyPassword).mockResolvedValueOnce(true);
+      dbState.selectQueue.push([{ passwordHash: '$argon2id$hash' }]);
+      dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]);
+      dbState.selectQueue.push([]); // listActivePasskeys
+
+      const res = await app.request('/auth/passkeys/register/options', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+        body: JSON.stringify({ currentPassword: 'correct-password' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(validateStepUpGrant).not.toHaveBeenCalled();
+    });
   });
 
   it('rejects invalid or expired passkey registration challenges', async () => {
@@ -1029,13 +1098,18 @@ describe('passkey MFA auth routes', () => {
 
   // (f) register/verify must NOT clobber an existing TOTP/SMS factor's method.
   it('does not overwrite an existing TOTP factor method when registering a passkey', async () => {
-    // Current MFA select returns an existing TOTP factor.
+    // SR2-20: this account is already MFA-protected (has TOTP), so
+    // register/verify requires a fresh existing-factor step-up grant.
+    // Query order: userIsMfaProtected (gate) first, then the transaction's
+    // own "current MFA" read (hasExistingFactor check) second.
+    dbState.selectQueue.push([{ mfaEnabled: true, passkeyCount: 0 }]);
     dbState.selectQueue.push([{ mfaSecret: 'enc-secret', mfaMethod: 'totp' }]);
+    vi.mocked(consumeStepUpGrant).mockResolvedValueOnce(true);
 
     const res = await app.request('/auth/passkeys/register/verify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
-      body: JSON.stringify({ credential: { id: 'credential-1', response: {} } }),
+      body: JSON.stringify({ credential: { id: 'credential-1', response: {} }, stepUpGrantId: 'grant-1' }),
     });
 
     expect(res.status).toBe(200);
@@ -1050,7 +1124,25 @@ describe('passkey MFA auth routes', () => {
     expect(userUpdate).not.toHaveProperty('mfaMethod');
   });
 
+  it('rejects registering a passkey on an already-protected account without a step-up grant', async () => {
+    dbState.selectQueue.push([{ mfaEnabled: true, passkeyCount: 0 }]);
+
+    const res = await app.request('/auth/passkeys/register/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+      body: JSON.stringify({ credential: { id: 'credential-1', response: {} } }),
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body).toMatchObject({ error: 'existing_factor_step_up_required' });
+    expect(dbState.updateSets).toHaveLength(0);
+  });
+
   it('makes passkey the primary MFA method when the user has no existing factor', async () => {
+    // SR2-20: no-factor account — initial enrollment stays password-only, no
+    // step-up grant required.
+    dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]);
     dbState.selectQueue.push([{ mfaSecret: null, mfaMethod: null }]);
 
     const res = await app.request('/auth/passkeys/register/verify', {

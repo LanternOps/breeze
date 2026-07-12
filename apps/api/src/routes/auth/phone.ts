@@ -24,7 +24,8 @@ import {
   hashRecoveryCodes,
   resolveUserAuditOrgId,
   writeAuthAudit,
-  requireCurrentPasswordStepUp
+  requireCurrentPasswordStepUp,
+  enforceExistingFactorStepUp
 } from './helpers';
 
 const { db, withSystemDbAccessContext } = dbModule;
@@ -205,10 +206,15 @@ phoneRoutes.post('/mfa/sms/enable', authMiddleware, zValidator('json', smsMfaEna
   }
 
   const auth = c.get('auth');
-  const { currentPassword } = c.req.valid('json');
+  const { currentPassword, stepUpGrantId } = c.req.valid('json');
 
   const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'mfa:pwd');
   if (passwordError) return passwordError;
+
+  // SR2-20: adding a factor to an ALREADY-PROTECTED account additionally
+  // requires a fresh existing-factor proof (no-op for initial enrollment).
+  const stepUpError = await enforceExistingFactorStepUp(c, auth, stepUpGrantId, { consume: true });
+  if (stepUpError) return stepUpError;
 
   const [user] = await db
     .select({

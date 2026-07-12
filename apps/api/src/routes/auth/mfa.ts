@@ -21,10 +21,12 @@ import {
 import { getTwilioService } from '../../services/twilio';
 import { readMobileDeviceId } from '../../services/mobileDeviceBinding';
 import { authMiddleware } from '../../middleware/auth';
-import { ENABLE_2FA, mfaVerifySchema, mfaEnableSchema } from './schemas';
+import { ENABLE_2FA, mfaVerifySchema, mfaEnableSchema, mfaStepUpSchema } from './schemas';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
 import { invalidateMfaAssuranceAfterFactorChange } from '../../services/mfaAssurance';
 import { TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
+import { mintStepUpGrant } from '../../services/mfaStepUpGrant';
+import { verifyStepUpPasskeyAssertion } from './passkeys';
 import {
   getClientIP,
   setRefreshTokenCookie,
@@ -42,6 +44,7 @@ import {
   auditLogin,
   userRequiresSetup,
   requireCurrentPasswordStepUp,
+  enforceExistingFactorStepUp,
   parsePendingMfa,
   evaluatePendingMfa
 } from './helpers';
@@ -56,7 +59,10 @@ const passwordOnlySchema = z.object({
   currentPassword: z.string().min(1).max(256)
 });
 const mfaEnableWithPasswordSchema = mfaEnableSchema.extend({
-  currentPassword: z.string().min(1).max(256)
+  currentPassword: z.string().min(1).max(256),
+  // SR2-20: existing-factor step-up grant required when the account is
+  // already MFA-protected (see enforceExistingFactorStepUp in ./helpers).
+  stepUpGrantId: z.string().optional()
 });
 const mfaDisableSchema = mfaVerifySchema.extend({
   currentPassword: z.string().min(1).max(256)
@@ -409,6 +415,11 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
     return c.json({ error: 'Invalid MFA code' }, 401);
   }
 
+  // SR2-20: adding a factor to an ALREADY-PROTECTED account additionally
+  // requires a fresh existing-factor proof (no-op for initial enrollment).
+  const stepUpError = await enforceExistingFactorStepUp(c, auth, c.req.valid('json').stepUpGrantId, { consume: true });
+  if (stepUpError) return stepUpError;
+
   // SR2-07/SR2-19: fold the factor write into the atomic epoch-bump +
   // refresh-family-revoke transaction, then best-effort post-commit cleanup +
   // remote-session teardown — enabling MFA is a security-relevant factor
@@ -572,11 +583,16 @@ mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableWithPa
   }
 
   const auth = c.get('auth');
-  const { code, currentPassword } = c.req.valid('json');
+  const { code, currentPassword, stepUpGrantId } = c.req.valid('json');
 
   // Re-verify password before flipping mfaEnabled=true on the user row.
   const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'mfa:pwd');
   if (passwordError) return passwordError;
+
+  // SR2-20: adding a factor to an ALREADY-PROTECTED account additionally
+  // requires a fresh existing-factor proof (no-op for initial enrollment).
+  const stepUpError = await enforceExistingFactorStepUp(c, auth, stepUpGrantId, { consume: true });
+  if (stepUpError) return stepUpError;
 
   const redis = getRedis();
 
@@ -650,6 +666,79 @@ mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableWithPa
   });
 
   return c.json({ success: true, recoveryCodes, message: 'MFA enabled successfully' });
+});
+
+// SR2-20: existing-factor step-up. Proves an EXISTING MFA factor (TOTP, SMS,
+// or passkey — a discriminated union on `method` so a passkey-only user is
+// never locked out) and mints a short-lived single-use grant, which the
+// caller then presents as `stepUpGrantId` to a factor-ADDITION endpoint
+// (`/mfa/enable`, setup-confirm, `/mfa/sms/enable`, `/passkeys/register/*`)
+// on an already-protected account. The passkey branch expects the client to
+// have already called `POST /auth/mfa/step-up/options` (passkeys.ts) to get
+// a fresh WebAuthn challenge.
+mfaRoutes.post('/mfa/step-up', authMiddleware, zValidator('json', mfaStepUpSchema), async (c) => {
+  if (!ENABLE_2FA) {
+    return mfaDisabledResponse(c);
+  }
+
+  const auth = c.get('auth');
+  const body = c.req.valid('json');
+
+  let ok = false;
+  if (body.method === 'totp') {
+    const [u] = await db.select({ mfaSecret: users.mfaSecret }).from(users).where(eq(users.id, auth.user.id)).limit(1);
+    const secret = u?.mfaSecret ? decryptMfaSecret(u.mfaSecret) : null;
+    ok = !!secret && await consumeMFAToken(secret, body.code, auth.user.id);
+  } else if (body.method === 'sms') {
+    const [u] = await db.select({ phoneNumber: users.phoneNumber }).from(users).where(eq(users.id, auth.user.id)).limit(1);
+    const twilio = getTwilioService();
+    if (!twilio || !u?.phoneNumber) return c.json({ error: 'SMS not available' }, 400);
+    const r = await twilio.checkVerificationCode(u.phoneNumber, body.code);
+    if (r.serviceError) return c.json({ error: 'SMS verification temporarily unavailable' }, 502);
+    ok = r.valid;
+  } else {
+    // passkey — client must have already called POST /auth/mfa/step-up/options.
+    ok = await verifyStepUpPasskeyAssertion(auth.user.id, body.credential);
+  }
+
+  if (!ok) {
+    writeAuthAudit(c, {
+      orgId: auth.orgId ?? undefined,
+      action: 'auth.mfa.stepup.failed',
+      result: 'failure',
+      reason: 'invalid_factor',
+      userId: auth.user.id,
+      email: auth.user.email,
+      details: { method: body.method }
+    });
+    return c.json({ error: 'Invalid credentials' }, 401);
+  }
+
+  const epochs = await getUserEpochs(auth.user.id);
+  if (!epochs || !auth.token.sid) {
+    return c.json({ error: 'Service temporarily unavailable' }, 503);
+  }
+  const grantId = await mintStepUpGrant({
+    userId: auth.user.id,
+    operation: 'add_factor',
+    authEpoch: epochs.authEpoch,
+    mfaEpoch: epochs.mfaEpoch,
+    sid: auth.token.sid
+  });
+  if (!grantId) {
+    return c.json({ error: 'Service temporarily unavailable' }, 503);
+  }
+
+  writeAuthAudit(c, {
+    orgId: auth.orgId ?? undefined,
+    action: 'auth.mfa.stepup.granted',
+    result: 'success',
+    userId: auth.user.id,
+    email: auth.user.email,
+    details: { method: body.method, operation: 'add_factor' }
+  });
+
+  return c.json({ stepUpGrantId: grantId });
 });
 
 // Generate new MFA recovery codes for the authenticated user

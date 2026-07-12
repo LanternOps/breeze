@@ -115,13 +115,17 @@ vi.mock('./helpers', () => ({
   resolveUserAuditOrgId: vi.fn(async () => 'org-1'),
   writeAuthAudit: vi.fn(),
   requireCurrentPasswordStepUp: vi.fn(async () => null),
+  // SR2-20: default = "not already protected" (initial enrollment), matching
+  // this suite's default account state. Individual tests override via
+  // mockResolvedValueOnce to exercise the already-protected gate.
+  enforceExistingFactorStepUp: vi.fn(async () => null),
 }));
 
 import { phoneRoutes } from './phone';
 import { db } from '../../db';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
 import { getTwilioService } from '../../services/twilio';
-import { writeAuthAudit } from './helpers';
+import { writeAuthAudit, enforceExistingFactorStepUp } from './helpers';
 
 function selectChain(rows: unknown[]) {
   return {
@@ -193,6 +197,57 @@ describe('phone routes', () => {
       const body = await res.json();
       expect(body.success).toBe(true);
       expect(db.update).toHaveBeenCalled();
+    });
+
+    // SR2-20: adding SMS as a NEW factor on an ALREADY-PROTECTED account
+    // additionally requires a fresh existing-factor step-up grant.
+    it('rejects with 403 when the account is already protected and no step-up grant is presented', async () => {
+      mockVerifiedUnenrolledUser();
+      vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
+        required: false,
+        allowedMethods: { totp: true, sms: true, passkey: true },
+        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true },
+      });
+      vi.mocked(enforceExistingFactorStepUp).mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: 'existing_factor_step_up_required', stepUpUrl: '/auth/mfa/step-up' }), {
+          status: 403,
+        }) as any
+      );
+
+      const res = await app.request('/auth/mfa/sms/enable', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentPassword: 'correct-password' }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('allows enabling SMS MFA on an already-protected account when a valid step-up grant is presented', async () => {
+      mockVerifiedUnenrolledUser();
+      vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
+        required: false,
+        allowedMethods: { totp: true, sms: true, passkey: true },
+        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true },
+      });
+      vi.mocked(enforceExistingFactorStepUp).mockResolvedValueOnce(null);
+
+      const res = await app.request('/auth/mfa/sms/enable', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentPassword: 'correct-password', stepUpGrantId: 'grant-1' }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.success).toBe(true);
+      expect(enforceExistingFactorStepUp).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        'grant-1',
+        { consume: true }
+      );
     });
   });
 

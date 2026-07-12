@@ -31,6 +31,7 @@ import { ENABLE_2FA } from './schemas';
 import {
   auditLogin,
   evaluatePendingMfa,
+  enforceExistingFactorStepUp,
   getClientIP,
   mfaDisabledResponse,
   parsePendingMfa,
@@ -61,11 +62,15 @@ const webAuthnCredentialSchema = z
 const passkeyNameSchema = z.string().trim().min(1).max(255);
 const registerOptionsSchema = z.object({
   currentPassword: z.string().min(1).max(256),
-  name: passkeyNameSchema.optional()
+  name: passkeyNameSchema.optional(),
+  // SR2-20: existing-factor step-up grant required when the account is
+  // already MFA-protected (see enforceExistingFactorStepUp in ./helpers).
+  stepUpGrantId: z.string().optional()
 });
 const registerVerifySchema = z.object({
   credential: webAuthnCredentialSchema,
-  name: passkeyNameSchema.optional()
+  name: passkeyNameSchema.optional(),
+  stepUpGrantId: z.string().optional()
 });
 const passkeyMfaOptionsSchema = z.object({
   tempToken: z.string().min(1)
@@ -111,10 +116,16 @@ passkeyRoutes.post('/passkeys/register/options', authMiddleware, zValidator('jso
   }
 
   const auth = c.get('auth');
-  const { currentPassword } = c.req.valid('json');
+  const { currentPassword, stepUpGrantId } = c.req.valid('json');
 
   const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'passkey:pwd');
   if (passwordError) return passwordError;
+
+  // SR2-20: adding a factor to an ALREADY-PROTECTED account additionally
+  // requires a fresh existing-factor proof. Non-consuming here — the SAME
+  // grant is consumed at /passkeys/register/verify below.
+  const stepUpError = await enforceExistingFactorStepUp(c, auth, stepUpGrantId, { consume: false });
+  if (stepUpError) return stepUpError;
 
   const existingPasskeys = await listActivePasskeys(auth.user.id);
   const options = await generatePasskeyRegistrationOptions({
@@ -131,7 +142,7 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
   }
 
   const auth = c.get('auth');
-  const { credential, name } = c.req.valid('json');
+  const { credential, name, stepUpGrantId } = c.req.valid('json');
 
   let verification;
   try {
@@ -160,6 +171,12 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
   }
 
   const fields = registrationInfoToPasskeyFields(verification, credential);
+
+  // SR2-20: adding a factor to an ALREADY-PROTECTED account additionally
+  // requires a fresh existing-factor proof. Single-use consume — this is the
+  // terminal factor write.
+  const stepUpError = await enforceExistingFactorStepUp(c, auth, stepUpGrantId, { consume: true });
+  if (stepUpError) return stepUpError;
 
   // SR2-07/SR2-19: the insert AND the users.mfaEnabled flip are folded into
   // ONE transaction with the epoch bump + refresh-family revoke — registering
@@ -234,6 +251,74 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
     passkey: toPublicPasskey(inserted)
   });
 });
+
+// SR2-20: authenticated passkey step-up challenge. Mirrors /mfa/passkey/options
+// (the login-time challenge issuer below), but keyed on the LOGGED-IN user
+// rather than a pre-auth login tempToken — this lets a passkey-only user
+// prove their existing factor to mint a step-up grant (POST /auth/mfa/step-up)
+// without a TOTP/SMS fallback, avoiding a lockout.
+passkeyRoutes.post('/mfa/step-up/options', authMiddleware, async (c) => {
+  if (!ENABLE_2FA) {
+    return mfaDisabledResponse(c);
+  }
+
+  const auth = c.get('auth');
+  const passkeys = await withSystemDbAccessContext(() => listActivePasskeys(auth.user.id));
+  if (passkeys.length === 0) {
+    return c.json({ error: 'No passkeys are registered for this account' }, 400);
+  }
+
+  const options = await generatePasskeyAuthenticationOptions({
+    userId: auth.user.id,
+    passkeys: passkeys.map(toStoredCredential)
+  });
+
+  return c.json({ options });
+});
+
+/**
+ * Verify a WebAuthn assertion as proof of an existing passkey factor for the
+ * SR2-20 step-up flow. Loads the caller-owned passkey, verifies against the
+ * stored authentication challenge (from POST /auth/mfa/step-up/options
+ * above), persists the new signature counter (clone detection), and returns
+ * whether it verified. Reused by mfa.ts's POST /auth/mfa/step-up passkey
+ * branch — keeps all WebAuthn machinery inside this module. Never throws on
+ * a challenge/ownership problem (returns false); other errors propagate.
+ */
+export async function verifyStepUpPasskeyAssertion(userId: string, credential: { id?: string }): Promise<boolean> {
+  const [passkey] = await withSystemDbAccessContext(() =>
+    db
+      .select()
+      .from(userPasskeys)
+      .where(eq(userPasskeys.credentialId, credential?.id ?? ''))
+      .limit(1)
+  );
+  if (!passkey || passkey.userId !== userId || passkey.disabledAt) {
+    return false;
+  }
+
+  let verification;
+  try {
+    verification = await verifyPasskeyAuthentication({
+      userId,
+      response: credential as never,
+      passkey: toStoredCredential(passkey)
+    });
+  } catch (err) {
+    if (err instanceof PasskeyChallengeError) return false;
+    throw err;
+  }
+  if (!verification.verified) return false;
+
+  const updateFields = authenticationInfoToPasskeyUpdateFields(verification);
+  await withSystemDbAccessContext(() =>
+    db
+      .update(userPasskeys)
+      .set({ counter: updateFields.counter, lastUsedAt: updateFields.lastUsedAt, updatedAt: new Date() })
+      .where(eq(userPasskeys.id, passkey.id))
+  );
+  return true;
+}
 
 passkeyRoutes.post('/mfa/passkey/options', zValidator('json', passkeyMfaOptionsSchema), async (c) => {
   if (!ENABLE_2FA) {
