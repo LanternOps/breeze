@@ -2,15 +2,26 @@
 // Extension sub-apps mount on the outer app. Middleware added to the `api`
 // instance via api.use('*') does not apply to them, and org-scoped fallback
 // audit cannot attribute extension routes. Extensions MUST apply
-// ctx.authMiddleware and write their own audit entries for mutations.
+// ctx.authMiddleware or ctx.agentAuthMiddleware themselves. Core injects the
+// ALS-bound database, column-bound secrets, and async audit capability.
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Hono } from 'hono';
-import type { BreezeExtension, ExtensionContext, AiToolLike } from '@breeze/extension-api';
+import type {
+  AiToolLike,
+  BreezeExtension,
+  ExtensionContext,
+  ExtensionDatabase,
+} from '@breeze/extension-api';
 import { discoverExtensions } from './discovery';
 import { aiTools } from '../services/aiTools';
 import { authMiddleware } from '../middleware/auth';
+import { agentAuthMiddleware } from '../middleware/agentAuth';
+import { db } from '../db';
+import { createAuditLogAsync } from '../services/auditService';
+import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
+import { registerGlobalRateLimitSkipPrefix } from '../middleware/globalRateLimit';
 
 async function loadEntry(dir: string, entry: string): Promise<BreezeExtension> {
   const manifestEntry = path.join(dir, entry);
@@ -37,11 +48,26 @@ export async function mountExtensions(app: Hono, root?: string): Promise<void> {
 
   for (const d of discovered) {
     const ext = await loadEntry(d.dir, d.manifest.entry);
+    if (d.manifest.agentRoutes === true) {
+      registerGlobalRateLimitSkipPrefix(`/api/v1/${d.manifest.routeNamespace}/agent/`);
+    }
     const ctx: ExtensionContext = {
       mountRoute: (subApp) => {
         app.route(`/api/v1/${d.manifest.routeNamespace}`, subApp);
       },
       authMiddleware,
+      agentAuthMiddleware,
+      db: db as unknown as ExtensionDatabase,
+      secrets: {
+        encryptForColumn: (table, column, plaintext) =>
+          encryptSecret(plaintext, { aad: `${table}.${column}` }) ?? '',
+        decryptForColumn: (table, column, ciphertext) =>
+          decryptForColumn(table, column, ciphertext) ?? '',
+      },
+      audit: (event) => createAuditLogAsync({
+        ...event,
+        initiatedBy: event.actorType === 'agent' ? 'agent' : 'manual',
+      }),
       aiTools: new Proxy(aiTools as Map<string, AiToolLike>, {
         get(target, prop, receiver) {
           if (prop === 'set') {
