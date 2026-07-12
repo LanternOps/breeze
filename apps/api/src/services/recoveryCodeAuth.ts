@@ -279,6 +279,10 @@ export async function completeRecoveryCodeLogin(input: {
       // Preserve the fail-closed response even if compensating family
       // revocation itself is unavailable. The family remains user-owned and
       // absolute-expiry bounded; no token was returned to the caller.
+      console.error(
+        '[recovery-code-auth] compensation failed',
+        { event: 'recovery_bind_compensation_failed' },
+      );
     }
     throw new RecoveryCodeUnavailableError();
   }

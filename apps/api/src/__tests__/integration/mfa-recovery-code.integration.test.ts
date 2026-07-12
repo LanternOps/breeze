@@ -1,6 +1,6 @@
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, gte, sql } from 'drizzle-orm';
 import './setup';
 import { getTestDb } from './setup';
 import { assignUserToPartner, createPartner, createRole, createUser } from './db-utils';
@@ -10,6 +10,7 @@ import { createPendingMfa } from '../../services/mfaAssurance';
 import { mintRefreshTokenFamily } from '../../services/refreshTokenFamily';
 import { closeRedis, getRedis } from '../../services/redis';
 import { verifyToken } from '../../services/jwt';
+import * as userSessionService from '../../services/userSession';
 import { auditLogs, refreshTokenFamilies, users } from '../../db/schema';
 
 describe('single-use recovery-code login against real PostgreSQL and Redis', () => {
@@ -43,8 +44,10 @@ describe('single-use recovery-code login against real PostgreSQL and Redis', () 
       scope: 'partner',
       policyRequired: false,
       policySources: [],
-      allowedMethods: new Set(['totp', 'sms', 'passkey', 'recovery_code']),
-      enrolledMethods: new Set(['totp', 'recovery_code']),
+      allowedMethods: new Set<'totp' | 'sms' | 'passkey' | 'recovery_code'>([
+        'totp', 'sms', 'passkey', 'recovery_code',
+      ]),
+      enrolledMethods: new Set<'totp' | 'recovery_code'>(['totp', 'recovery_code']),
       primaryAuthenticationMethod: 'password',
       configuredMfaMethod: 'totp',
       primaryMfaMethod: 'totp',
@@ -131,6 +134,84 @@ describe('single-use recovery-code login against real PostgreSQL and Redis', () 
       mfaRecoveryCodes: [hashRecoveryCode(code)],
     }).where(eq(users.id, created.id)).returning();
     if (!user) throw new Error('Failed to seed malformed recovery user');
+    const pendingInput = {
+      userId: user.id, authEpoch: user.authEpoch, mfaEpoch: user.mfaEpoch,
+      expectedStatus: 'active', roleId: role.id, orgId: null, partnerId: partner.id,
+      scope: 'partner', policyRequired: false, policySources: [],
+      allowedMethods: new Set<'totp' | 'sms' | 'passkey' | 'recovery_code'>([
+        'totp', 'sms', 'passkey', 'recovery_code',
+      ]),
+      enrolledMethods: new Set<'totp' | 'recovery_code'>(['totp', 'recovery_code']),
+      primaryAuthenticationMethod: 'password', configuredMfaMethod: 'totp', primaryMfaMethod: 'totp',
+    } as const;
+    const [malformedToken, wrongToken, successToken] = await Promise.all([
+      createPendingMfa(pendingInput), createPendingMfa(pendingInput), createPendingMfa(pendingInput),
+    ]);
+    const auditWindowStart = new Date();
+    const app = new Hono().route('/auth', authRoutes);
+    const malformed = await app.request('/auth/mfa/verify', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tempToken: malformedToken, method: 'recovery_code' }),
+    });
+    expect(malformed.status).toBe(401);
+    expect(await getRedis()!.exists(`mfa:pending:${malformedToken}`)).toBe(0);
+    const malformedRetry = await app.request('/auth/mfa/verify', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tempToken: malformedToken, method: 'recovery_code', code }),
+    });
+    expect(malformedRetry.status).toBe(401);
+    const wrongCode = 'NOPE-0000';
+    const wrong = await app.request('/auth/mfa/verify', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tempToken: wrongToken, method: 'recovery_code', code: wrongCode }),
+    });
+    expect(wrong.status).toBe(401);
+    const success = await app.request('/auth/mfa/verify', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tempToken: successToken, method: 'recovery_code', code }),
+    });
+    expect(success.status).toBe(200);
+    const replay = await app.request('/auth/mfa/verify', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tempToken: successToken, method: 'recovery_code', code }),
+    });
+    expect(replay.status).toBe(401);
+    const [afterUser] = await tdb.select().from(users).where(eq(users.id, user.id));
+    expect(afterUser?.mfaRecoveryCodes).toEqual([]);
+    let failureAudits: Array<typeof auditLogs.$inferSelect> = [];
+    for (let attempt = 0; attempt < 100 && failureAudits.length < 4; attempt += 1) {
+      failureAudits = await tdb.select().from(auditLogs)
+        .where(and(
+          eq(auditLogs.action, 'user.login.failed'),
+          gte(auditLogs.timestamp, auditWindowStart),
+        ));
+      if (failureAudits.length < 4) await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    expect(failureAudits).toHaveLength(4);
+    expect(failureAudits.map((audit) => (audit.details as any)?.reason).sort()).toEqual([
+      'mfa_invalid_recovery_code', 'mfa_invalid_recovery_code',
+      'mfa_invalid_recovery_code', 'mfa_malformed_recovery_code',
+    ]);
+    expect(failureAudits.every((audit) => (audit.details as any)?.method === 'recovery_code')).toBe(true);
+    const auditJson = JSON.stringify(failureAudits);
+    expect(auditJson).not.toContain(code);
+    expect(auditJson).not.toContain(wrongCode);
+    expect(auditJson).not.toContain(hashRecoveryCode(code));
+  });
+
+  it('revokes the newly owned family when post-commit binding fails', async () => {
+    const tdb = getTestDb();
+    const partner = await createPartner();
+    const role = await createRole({ scope: 'partner', partnerId: partner.id });
+    const created = await createUser({ partnerId: partner.id, mfaEnabled: true });
+    await assignUserToPartner(created.id, partner.id, role.id, 'all');
+    const code = 'BIND-FAIL';
+    const [user] = await tdb.update(users).set({
+      mfaMethod: 'totp', mfaSecret: 'integration-encrypted-secret',
+      mfaRecoveryCodes: [hashRecoveryCode(code)],
+    }).where(eq(users.id, created.id)).returning();
+    if (!user) throw new Error('Failed to seed bind-failure user');
+    const oldFamilyId = await tdb.transaction((tx) => mintRefreshTokenFamily(user.id, { tx }));
     const tempToken = await createPendingMfa({
       userId: user.id, authEpoch: user.authEpoch, mfaEpoch: user.mfaEpoch,
       expectedStatus: 'active', roleId: role.id, orgId: null, partnerId: partner.id,
@@ -139,31 +220,32 @@ describe('single-use recovery-code login against real PostgreSQL and Redis', () 
       enrolledMethods: new Set(['totp', 'recovery_code']),
       primaryAuthenticationMethod: 'password', configuredMfaMethod: 'totp', primaryMfaMethod: 'totp',
     });
-    const app = new Hono().route('/auth', authRoutes);
-    const malformed = await app.request('/auth/mfa/verify', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tempToken, method: 'recovery_code' }),
-    });
-    expect(malformed.status).toBe(401);
-    expect(await getRedis()!.exists(`mfa:pending:${tempToken}`)).toBe(0);
-    const retry = await app.request('/auth/mfa/verify', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tempToken, method: 'recovery_code', code }),
-    });
-    expect(retry.status).toBe(401);
-    const [afterUser] = await tdb.select().from(users).where(eq(users.id, user.id));
-    expect(afterUser?.mfaRecoveryCodes).toEqual([hashRecoveryCode(code)]);
-    let audit: typeof auditLogs.$inferSelect | undefined;
-    for (let attempt = 0; attempt < 100 && !audit; attempt += 1) {
-      [audit] = await tdb.select().from(auditLogs).where(eq(auditLogs.actorId, user.id));
-      if (!audit) await new Promise<void>((resolve) => setImmediate(resolve));
+    const bindFault = vi.spyOn(userSessionService, 'bindIssuedUserSession')
+      .mockRejectedValueOnce(new Error('injected bind failure'));
+    let response: Response;
+    try {
+      response = await new Hono().route('/auth', authRoutes).request('/auth/mfa/verify', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tempToken, method: 'recovery_code', code }),
+      });
+    } finally {
+      bindFault.mockRestore();
     }
-    expect(audit?.action).toBe('user.login.failed');
-    expect(audit?.details).toMatchObject({
-      method: 'recovery_code', reason: 'mfa_malformed_recovery_code',
-    });
-    expect(JSON.stringify(audit)).not.toContain(code);
-    expect(JSON.stringify(audit)).not.toContain(hashRecoveryCode(code));
+    expect(response!.status).toBe(503);
+    expect(response!.headers.get('set-cookie')).toBeNull();
+    expect(await response!.json()).not.toHaveProperty('tokens');
+    const families = await tdb.select().from(refreshTokenFamilies)
+      .where(eq(refreshTokenFamilies.userId, user.id));
+    expect(families).toHaveLength(2);
+    expect(families.find((family) => family.familyId === oldFamilyId)?.revokedAt).not.toBeNull();
+    const replacement = families.find((family) => family.familyId !== oldFamilyId);
+    expect(replacement?.userId).toBe(user.id);
+    expect(replacement?.revokedAt).not.toBeNull();
+    const audits = await tdb.select().from(auditLogs).where(and(
+      eq(auditLogs.action, 'user.login'),
+      eq(auditLogs.actorId, user.id),
+    ));
+    expect(audits).toEqual([]);
   });
 
   it('burns pending state and issues no token when the durable mutation rolls back', async () => {

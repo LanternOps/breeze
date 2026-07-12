@@ -252,6 +252,28 @@ describe('recovery-code authentication', () => {
     );
   });
 
+  it('emits bounded telemetry when bind and compensating revocation both fail', async () => {
+    const telemetry = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    bindIssuedUserSession.mockRejectedValueOnce(new Error('sensitive bind detail'));
+    revokeUserSessionFamily.mockRejectedValueOnce(new Error('sensitive database detail'));
+
+    await expect(completeRecoveryCodeLogin({
+      tempToken: 'pending-token', code: 'ABCD-EF12',
+    })).rejects.toBeInstanceOf(RecoveryCodeUnavailableError);
+
+    expect(telemetry).toHaveBeenCalledWith(
+      '[recovery-code-auth] compensation failed',
+      { event: 'recovery_bind_compensation_failed' },
+    );
+    const serialized = JSON.stringify(telemetry.mock.calls);
+    expect(serialized).not.toContain('ABCD-EF12');
+    expect(serialized).not.toContain('sensitive bind detail');
+    expect(serialized).not.toContain('sensitive database detail');
+    expect(serialized).not.toContain('access');
+    expect(serialized).not.toContain('refresh');
+    telemetry.mockRestore();
+  });
+
   it('does no database work when atomic Redis consumption is unavailable', async () => {
     consumePendingMfa.mockRejectedValueOnce(new PendingMfaUnavailableError());
 
@@ -312,5 +334,25 @@ describe('recovery-code authentication', () => {
     await expect(completeRecoveryCodeLogin({
       tempToken: 'pending-token', code: 'ABCD-EF12',
     })).resolves.toMatchObject({ mfaEpoch: 8 });
+  });
+
+  it.each([
+    ['organization', {
+      roleId: 'org-role', orgId: 'org-1', partnerId: 'partner-1', scope: 'organization',
+    }],
+    ['system', {
+      roleId: 'system-role', orgId: null, partnerId: null, scope: 'system',
+    }],
+  ] as const)('propagates exact %s authority into the owned session', async (_name, authority) => {
+    state.pending = { ...state.pending, ...authority };
+
+    await completeRecoveryCodeLogin({ tempToken: 'pending-token', code: 'ABCD-EF12' });
+
+    expect(resolveEffectiveMfaPolicy).toHaveBeenCalledWith(expect.objectContaining(authority));
+    expect(issueUserSession).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 'user-1',
+      ...authority,
+      amr: ['password', 'recovery_code'],
+    }), { tx: state.tx });
   });
 });
