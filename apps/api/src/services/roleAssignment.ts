@@ -17,7 +17,10 @@ import {
  * routes/sso.ts both consume this module.
  *
  * Every returned message string is byte-identical to the pre-extraction
- * behavior — routes/users.test.ts asserts on them.
+ * behavior. routes/users.test.ts only asserts on the resulting HTTP status
+ * (403) and that db.update was never called for the rejected assignment — it
+ * does not pin any message string. The actual byte-identity safety net is
+ * roleAssignment.test.ts, which asserts on the returned strings directly.
  *
  * DB CONTEXT: these functions use the ambient `db`. routes/users.ts calls them
  * inside the authenticated request's RLS context (correct). A caller with NO
@@ -171,26 +174,20 @@ export async function checkRoleStructure(
 }
 
 /**
- * Full ceiling check against an ALREADY-RESOLVED caller permission set. Returns
- * an error message string, or null when the role is assignable.
- *
- * `precomputedRolePermissions` lets a caller that has already walked the
- * role's effective permissions (validateAssignableRole's short-circuit check
- * does exactly that) pass the result straight through instead of paying for a
- * second recursive role walk. This is the "thread the resolved array in as an
- * optional 3rd arg" escape hatch — required, not cosmetic: without it,
- * validateAssignableRole issues one extra pair of db.select calls per
- * invocation, which desyncs the exact call-count the existing
- * routes/users.test.ts mock queues assume (a mocked test asserting a specific
- * sequence of `db.select` return values), turning an expected 403 into a 500.
+ * Ceiling check body, shared by `checkRolePermissionCeiling` and
+ * `validateAssignableRole`. Kept module-private (not exported) so nothing
+ * outside this file can substitute a `rolePermissions` array that doesn't
+ * match what the role actually carries — see `checkRolePermissionCeiling`'s
+ * docstring for why that matters. `rolePermissions` is always the real,
+ * freshly (or singly) resolved effective-permissions array for `role`, never
+ * caller-supplied.
  */
-export async function checkRolePermissionCeiling(
+async function applyCeiling(
   callerPermissions: UserPermissions | null,
   role: Pick<AssignableRoleRow, 'id' | 'isSystem'>,
-  precomputedRolePermissions?: Array<{ resource: string; action: string }>
+  rolePermissions: Array<{ resource: string; action: string }>
 ): Promise<string | null> {
-  const rolePermissionsForAssignment = precomputedRolePermissions ?? await getEffectiveRolePermissions(role.id);
-  if (rolePermissionsForAssignment.length === 0) {
+  if (rolePermissions.length === 0) {
     return null;
   }
 
@@ -198,7 +195,7 @@ export async function checkRolePermissionCeiling(
     return 'No permissions found';
   }
 
-  for (const permission of rolePermissionsForAssignment) {
+  for (const permission of rolePermissions) {
     if (permission.resource === '*' || permission.action === '*') {
       if (!role.isSystem) {
         return 'Custom roles with wildcard permissions cannot be assigned';
@@ -222,6 +219,27 @@ export async function checkRolePermissionCeiling(
 }
 
 /**
+ * Full ceiling check against an ALREADY-RESOLVED caller permission set. Walks
+ * the role's effective permissions itself — there is deliberately no
+ * caller-supplied override for that walk. (An earlier revision took an
+ * optional `precomputedRolePermissions` 3rd arg; it was removed because it let
+ * a caller short-circuit the ceiling with an unvalidated array — e.g. an empty
+ * array would report ANY role, including a wildcard system role, as
+ * assignable without ever reading its real permissions, and it did so before
+ * the null-caller guard even ran. `validateAssignableRole` still gets the
+ * single-walk sharing it needs for the I7 short-circuit and to keep the
+ * db.select call count/ordering routes/users.test.ts's mock queues assume —
+ * it does so via the private `applyCeiling` helper below, not through this
+ * exported function's signature.)
+ */
+export async function checkRolePermissionCeiling(
+  callerPermissions: UserPermissions | null,
+  role: Pick<AssignableRoleRow, 'id' | 'isSystem'>
+): Promise<string | null> {
+  return applyCeiling(callerPermissions, role, await getEffectiveRolePermissions(role.id));
+}
+
+/**
  * Behavior-preserving façade retained for routes/users.ts.
  *
  * ORDER IS LOAD-BEARING. The original resolved the ROLE's effective permissions
@@ -242,5 +260,5 @@ export async function validateAssignableRole(
     return null; // no caller resolution — matches the original's side effects exactly
   }
   const callerPermissions = await getCallerPermissions(c, auth);
-  return checkRolePermissionCeiling(callerPermissions, role, rolePermissionsForAssignment);
+  return applyCeiling(callerPermissions, role, rolePermissionsForAssignment);
 }
