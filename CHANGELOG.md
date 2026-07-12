@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Authentication sessions now use database-backed lifecycle state. Upgrading intentionally requires every user to sign in again. New session families have a fixed 30-day absolute lifetime that refresh cannot extend, and offboarding, membership or role changes, account or tenant status changes, and logout invalidate affected sessions immediately.
+
 ## [0.67.1] - 2026-05-26
 
 ### Critical for v0.67.0 self-hosters
