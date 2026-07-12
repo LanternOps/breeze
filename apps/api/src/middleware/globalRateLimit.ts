@@ -21,8 +21,19 @@ const SKIP_PATHS = new Set(['/health', '/ready']);
 // so exclude them from the global per-IP limit.  Without this, agent heartbeats
 // and telemetry consume the same IP bucket as the dashboard UI — especially
 // problematic in development where everything originates from localhost.
-const SKIP_PREFIXES = ['/api/v1/agents/', '/api/v1/helper/'];
+const BUILT_IN_SKIP_PREFIXES = ['/api/v1/agents/', '/api/v1/helper/'];
+const skipPrefixes: string[] = [...BUILT_IN_SKIP_PREFIXES];
 const MAX_IN_MEMORY_ENTRIES = 100_000;
+
+export function registerGlobalRateLimitSkipPrefix(prefix: string): void {
+  if (!skipPrefixes.includes(prefix)) {
+    skipPrefixes.push(prefix);
+  }
+}
+
+export function __resetSkipPrefixesForTests(): void {
+  skipPrefixes.splice(0, skipPrefixes.length, ...BUILT_IN_SKIP_PREFIXES);
+}
 
 // ---------------------------------------------------------------------------
 // In-memory fallback rate limiter (used when Redis is unavailable)
@@ -68,7 +79,7 @@ export function globalRateLimit(options?: GlobalRateLimitOptions): MiddlewareHan
     }
 
     // Skip agent routes — they have dedicated per-agent rate limiting
-    if (SKIP_PREFIXES.some(prefix => c.req.path.startsWith(prefix))) {
+    if (skipPrefixes.some(prefix => c.req.path.startsWith(prefix))) {
       return next();
     }
 
