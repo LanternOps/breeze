@@ -712,17 +712,33 @@ ssoRoutes.delete(
   // tenant-scoped context, BOTH of these silently delete 0 rows — and neither FK
   // cascades, so the sso_providers delete below then dies with FK violation
   // 23503. Provider cleanup is a legitimate system operation: run it as one.
-  await runOutsideDbContext(() =>
+  //
+  // All three deletes — sessions, identities, and the provider row itself —
+  // must run inside this SAME system-context invocation (not just the same
+  // request handler). This route's handler already runs inside one request
+  // transaction (see middleware/auth.ts), but that transaction lives on a
+  // different pooled connection than a nested withSystemDbAccessContext call.
+  // If the provider delete were left outside this wrap (in the request
+  // transaction) while the cleanup deletes ran here, a rollback of the
+  // request transaction (e.g. the `!deleted` 404 below, a deadlock, or a
+  // statement timeout) would leave the already-committed cleanup deletes
+  // unrecoverable while the provider row survived — orphaning every user's
+  // SSO identity link for a provider that never actually got deleted. Doing
+  // the provider delete here also means it no longer gets RLS as a second
+  // line of defense — that's acceptable because the row's visibility AND the
+  // caller's authority over it were already proven under RLS above (the
+  // select + canWriteProviderRow check).
+  const deleted = await runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
       await db.delete(ssoSessions).where(eq(ssoSessions.providerId, providerId));
       await db.delete(userSsoIdentities).where(eq(userSsoIdentities.providerId, providerId));
+      const [row] = await db
+        .delete(ssoProviders)
+        .where(eq(ssoProviders.id, providerId))
+        .returning();
+      return row;
     })
   );
-
-  const [deleted] = await db
-    .delete(ssoProviders)
-    .where(eq(ssoProviders.id, providerId))
-    .returning();
 
   if (!deleted) {
     return c.json({ error: 'Provider not found' }, 404);

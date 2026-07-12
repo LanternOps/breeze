@@ -747,6 +747,79 @@ describe('sso routes', () => {
     // context, not the caller's tenant-scoped context.
     expect(runOutsideDbContext).toHaveBeenCalled();
     expect(withSystemDbAccessContext).toHaveBeenCalled();
+    // Atomicity: all three deletes must be issued from inside ONE
+    // withSystemDbAccessContext invocation, not the cleanup pair in one call
+    // and the provider delete in a second (which would put the provider
+    // delete back in the request transaction on a different connection).
+    //
+    // NOTE: withSystemDbAccessContext is called a SECOND time on this happy
+    // path too — but that second call is the unrelated writeRouteAudit ->
+    // createAuditLogAsync fire-and-forget audit-log write (see
+    // services/auditService.ts), not a second provider-cleanup wrap. So a
+    // bare `toHaveBeenCalledTimes(1)` assertion would be wrong here; instead
+    // assert that all three delete() calls landed inside the FIRST
+    // withSystemDbAccessContext invocation, before any subsequent one fired.
+    // The mock harness can prove this grouping via invocation order, but it
+    // cannot observe connection/transaction boundaries directly — that
+    // cross-connection guarantee is left to the Task 8 integration suite
+    // against a real Postgres.
+    const deleteCallOrders = vi.mocked(db.delete).mock.invocationCallOrder;
+    const systemCtxCallOrders = vi.mocked(withSystemDbAccessContext).mock.invocationCallOrder;
+    const secondSystemCtxCallOrder = systemCtxCallOrders[1];
+    expect(deleteCallOrders).toHaveLength(3);
+    if (secondSystemCtxCallOrder !== undefined) {
+      expect(deleteCallOrders.every((order) => order < secondSystemCtxCallOrder)).toBe(true);
+    }
+  });
+
+  // Atomicity regression guard (SR2-11): the provider delete must live in the
+  // SAME withSystemDbAccessContext call as the sso_sessions/user_sso_identities
+  // cleanup. Before this fix, the provider delete ran separately in the
+  // caller's request transaction — so a concurrent-delete 404 here (or a
+  // thrown error) would roll back the request transaction while the cleanup
+  // deletes, already committed on a different connection, stayed gone
+  // forever. This proves the 404 path is reached via the single wrapped call
+  // and that no second withSystemDbAccessContext invocation was made to
+  // salvage/duplicate the provider delete. Unlike the happy-path test above,
+  // `toHaveBeenCalledTimes(1)` IS a valid assertion here: the 404 branch
+  // returns before writeRouteAudit (and its own unrelated
+  // withSystemDbAccessContext call) is ever reached.
+  it('returns 404 without a second system-context call when the provider delete finds no row (concurrent-delete race)', async () => {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID, orgId: ORG_UUID }])
+        })
+      })
+    } as any);
+
+    // sso_sessions and user_sso_identities cleanup succeed, but by the time
+    // the provider delete runs (still inside the same system-context call),
+    // a concurrent request has already removed the row — .returning() comes
+    // back empty.
+    vi.mocked(db.delete)
+      .mockReturnValueOnce({ where: vi.fn().mockResolvedValue(undefined) } as any)
+      .mockReturnValueOnce({ where: vi.fn().mockResolvedValue(undefined) } as any)
+      .mockReturnValueOnce({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([])
+        })
+      } as any);
+
+    const res = await app.request(`/sso/providers/${PROVIDER_UUID}`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.error).toBe('Provider not found');
+
+    // All three deletes were still attempted inside the one wrapped call —
+    // the handler doesn't short-circuit the cleanup deletes early, and it
+    // doesn't retry/fall back into a second system-context invocation.
+    expect(db.delete).toHaveBeenCalledTimes(3);
+    expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
   });
 
   it('rejects testing non-OIDC providers', async () => {
