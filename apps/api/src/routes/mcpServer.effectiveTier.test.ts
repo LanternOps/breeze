@@ -36,6 +36,12 @@ vi.mock('../middleware/bearerTokenAuth', () => ({
 
 vi.mock('./mcpExecutionOrg', () => ({
   resolveMcpExecutionOrgId: () => 'org-1',
+  // Task 6 routed the ordinary Tier 3 path through resolveMcpExecutionContext +
+  // McpExecutionOrgError (replacing the bare resolveMcpExecutionOrgId call). This
+  // mock must export both or the route's execution-org resolution throws before
+  // the ledger/tier assertions below can run.
+  resolveMcpExecutionContext: async () => ({ orgId: 'org-1' }),
+  McpExecutionOrgError: class McpExecutionOrgError extends Error {},
 }));
 
 // Keep the REAL checkGuardrails (the unit under test for FIX 1 — per-action

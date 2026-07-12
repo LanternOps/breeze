@@ -97,6 +97,18 @@ vi.mock('../services/rate-limit', () => ({
 }));
 vi.mock('../modules/mcpInvites', () => ({ initMcpBootstrap: () => ({ unauthTools: [], authTools: [] }) }));
 
+// Task 6 made handleToolsCall resolve the authoritative execution org via
+// resolveMcpExecutionContext for EVERY tool (not just device tools). Mock it to
+// a fixed safe org so these tier-1 wiring tests exercise executeTool + the
+// per-tool audit sink; the resolver's own tenancy logic is covered in
+// mcpExecutionOrg's dedicated suites. McpExecutionOrgError must be a real class
+// for the route's `instanceof` guard.
+vi.mock('./mcpExecutionOrg', () => ({
+  resolveMcpExecutionOrgId: () => 'org-1',
+  resolveMcpExecutionContext: async () => ({ orgId: 'org-1' }),
+  McpExecutionOrgError: class McpExecutionOrgError extends Error {},
+}));
+
 const ENV = ['MCP_OAUTH_ENABLED', 'IS_HOSTED', 'OAUTH_ISSUER'] as const;
 const clearEnv = () => { for (const key of ENV) delete process.env[key]; };
 

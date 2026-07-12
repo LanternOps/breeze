@@ -239,6 +239,7 @@ describe('MCP bootstrap carve-out', () => {
     vi.doUnmock('../modules/mcpInvites');
     vi.doUnmock('../middleware/apiKeyAuth');
     vi.doUnmock('../services/ipAllowlist');
+    vi.doUnmock('../services/mcpToolExecutionLedger');
   });
 
   it('no auth header → tools/list always returns 401 + WWW-Authenticate', async () => {
@@ -322,6 +323,19 @@ describe('MCP bootstrap carve-out', () => {
         unauthTools: [],
         authTools: [fakeAuthTool],
       }),
+    }));
+
+    // Bootstrap authTools now run through the shared Tier 3 ledger lifecycle
+    // (MCP-OAUTH-12), so this dispatch creates a ledger row. Scope the ledger
+    // stub to THIS test (a global mock would break the tier-3 tests below that
+    // assert the real ledger's insert values).
+    vi.doMock('../services/mcpToolExecutionLedger', () => ({
+      beginMcpToolExecutionLedger: vi.fn(async () => ({
+        executionId: 'exec-1',
+        sessionId: 'sess-1',
+        orgId: 'org-1',
+      })),
+      completeMcpToolExecutionLedger: vi.fn(async () => undefined),
     }));
 
     const mod = await import('./mcpServer');

@@ -512,9 +512,26 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   google_list_licenses: { resource: 'google', action: 'read' },
   google_assign_license: { resource: 'google', action: 'execute' },
   google_remove_license: { resource: 'google', action: 'execute' },
+
+  // Bootstrap authTools (MCP-OAUTH-11). These dispatch outside the main aiTools
+  // registry (see mcpServer.ts dispatchBootstrapAuthTool) but MUST still carry a
+  // product-RBAC mapping — enforced regardless of MCP_REQUIRE_EXECUTE_ADMIN. A
+  // registry-parity test (aiGuardrails.bootstrapParity.test.ts) fails if a future
+  // bootstrap tool omits an entry here. configure_defaults touches three product
+  // surfaces (device groups, alert rules, notification channels), so its extra
+  // permissions live in TOOL_EXTRA_PERMISSIONS below.
+  send_deployment_invites: { resource: 'devices', action: 'write' },
+  configure_defaults: { resource: 'organizations', action: 'write' },
 };
 
 const TOOL_EXTRA_PERMISSIONS: Record<string, { resource: string; action: string }[]> = {
+  // configure_defaults (MCP-OAUTH-11): primary organizations.write in
+  // TOOL_PERMISSIONS, plus these — it also creates a default device group and a
+  // baseline alert policy, so require devices.write AND alerts.write.
+  configure_defaults: [
+    { resource: 'devices', action: 'write' },
+    { resource: 'alerts', action: 'write' },
+  ],
   restore_snapshot: [{ resource: 'backup', action: 'read' }],
   restore_as_vm: [{ resource: 'backup', action: 'read' }],
   instant_boot_vm: [{ resource: 'backup', action: 'read' }],

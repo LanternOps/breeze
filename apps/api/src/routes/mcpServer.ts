@@ -879,6 +879,7 @@ async function handleToolsCall(
       scopes,
       apiKey,
       c,
+      sessionId,
     );
   }
 
@@ -983,113 +984,56 @@ async function handleToolsCall(
     console.error('[MCP] Failed to resolve execution org for tool:', toolName, err);
     return jsonRpcError(id, -32000, 'Unable to resolve execution organization');
   }
-  let ledgerHandle: McpToolExecutionLedgerHandle | null = null;
-  if (tier >= 3) {
-    if (!apiKey || !executionOrgId) {
-      return jsonRpcError(id, -32000, 'Unable to create MCP tool execution ledger');
-    }
+  // Shared Tier 3 lifecycle (MCP-OAUTH-12): ledger (fail closed) → handler →
+  // complete + uniform audit. The callback owns executeTool + the MCP response
+  // shape (including the image content-block special case) and classifies its
+  // own success/failure; the wrapper owns the ledger + audit for both outcomes.
+  const execute = async (): Promise<Tier3ExecutionOutcome> => {
     try {
-      ledgerHandle = await beginMcpToolExecutionLedger({
-        orgId: executionOrgId,
-        accessibleOrgIds: auth.accessibleOrgIds,
-        toolName,
-        tier,
-        toolInput,
-        transportSessionId: sessionId ?? null,
-        principal: {
-          apiKeyId: apiKey.id,
-          oauthGrantId: apiKey.oauthGrantId ?? null,
-          partnerId: auth.partnerId ?? apiKey.partnerId ?? null,
-          actorUserId: auth.user.id,
-        },
-      });
-    } catch (err) {
-      console.error('[MCP] Failed to create tool execution ledger:', toolName, err);
-      return jsonRpcError(id, -32000, 'Unable to create MCP tool execution ledger');
-    }
-  }
+      const result = await executeTool(toolName, toolInput, auth);
+      const safeResult = compactToolResultForChat(toolName, result);
 
-  const startedAt = Date.now();
-  try {
-    const result = await executeTool(toolName, toolInput, auth);
-    const safeResult = compactToolResultForChat(toolName, result);
-    if (ledgerHandle) {
-      await completeMcpToolExecutionLedger({
-        handle: ledgerHandle,
-        status: 'success',
-        durationMs: Date.now() - startedAt,
-        result: safeResult,
-      }).catch((err) => {
-        console.error('[MCP] Failed to complete tool execution ledger:', toolName, err);
-      });
-    }
-    writeMcpToolAuditEvent(c, {
-      apiKey,
-      auth,
-      sessionId,
-      orgId: executionOrgId,
-      toolName,
-      tier,
-      toolInput,
-      durationMs: Date.now() - startedAt,
-      status: 'success',
-      result: safeResult,
-    });
-
-    // If result contains imageBase64, return it as an MCP image content block
-    // so Claude can actually see the screenshot (instead of raw base64 in JSON text)
-    try {
-      const parsed = JSON.parse(result);
-      if (parsed.imageBase64 && typeof parsed.imageBase64 === 'string') {
-        const { imageBase64, ...metadata } = parsed;
-        const content: Array<Record<string, unknown>> = [
-          { type: 'image', data: imageBase64, mimeType: `image/${parsed.format || 'jpeg'}` },
-        ];
-        if (Object.keys(metadata).length > 0) {
-          content.push({ type: 'text', text: JSON.stringify(metadata) });
+      // If result contains imageBase64, return it as an MCP image content block
+      // so Claude can actually see the screenshot (instead of raw base64 in JSON text)
+      let response: JsonRpcResponse;
+      try {
+        const parsed = JSON.parse(result);
+        if (parsed.imageBase64 && typeof parsed.imageBase64 === 'string') {
+          const { imageBase64, ...metadata } = parsed;
+          const content: Array<Record<string, unknown>> = [
+            { type: 'image', data: imageBase64, mimeType: `image/${parsed.format || 'jpeg'}` },
+          ];
+          if (Object.keys(metadata).length > 0) {
+            content.push({ type: 'text', text: JSON.stringify(metadata) });
+          }
+          response = jsonRpcResult(id, { content });
+        } else {
+          response = jsonRpcResult(id, { content: [{ type: 'text', text: safeResult }] });
         }
-        return jsonRpcResult(id, { content });
+      } catch (err) {
+        if (!(err instanceof SyntaxError)) {
+          console.error('[MCP] Unexpected error parsing vision response:', err);
+        }
+        // Not JSON or no imageBase64 — fall through to text
+        response = jsonRpcResult(id, { content: [{ type: 'text', text: safeResult }] });
       }
-    } catch (err) {
-      if (!(err instanceof SyntaxError)) {
-        console.error('[MCP] Unexpected error parsing vision response:', err);
-      }
-      // Not JSON or no imageBase64 — fall through to text
-    }
 
-    return jsonRpcResult(id, {
-      content: [{ type: 'text', text: safeResult }]
-    });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Tool execution failed';
-    const safeError = compactToolResultForChat(toolName, JSON.stringify({ error: message }));
-    if (ledgerHandle) {
-      await completeMcpToolExecutionLedger({
-        handle: ledgerHandle,
+      return { status: 'success', ledgerResult: safeResult, response };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Tool execution failed';
+      const safeError = compactToolResultForChat(toolName, JSON.stringify({ error: message }));
+      return {
         status: 'failure',
-        durationMs: Date.now() - startedAt,
         error: err,
-      }).catch((ledgerErr) => {
-        console.error('[MCP] Failed to fail tool execution ledger:', toolName, ledgerErr);
-      });
+        response: jsonRpcResult(id, { content: [{ type: 'text', text: safeError }], isError: true }),
+      };
     }
-    writeMcpToolAuditEvent(c, {
-      apiKey,
-      auth,
-      sessionId,
-      orgId: executionOrgId,
-      toolName,
-      tier,
-      toolInput,
-      durationMs: Date.now() - startedAt,
-      status: 'failure',
-      error: err,
-    });
-    return jsonRpcResult(id, {
-      content: [{ type: 'text', text: safeError }],
-      isError: true
-    });
-  }
+  };
+
+  return runTier3ToolLifecycle(
+    { id, c, auth, apiKey, sessionId, orgId: executionOrgId, toolName, tier, toolInput },
+    execute,
+  );
 }
 
 function writeMcpToolAuditEvent(
@@ -1143,6 +1087,170 @@ function writeMcpToolAuditEvent(
 }
 
 // ============================================
+// Shared Tier 3 execution lifecycle (MCP-OAUTH-12)
+// ============================================
+
+// Bootstrap tools are destructive tenant mutations (send invites / configure
+// defaults) and always run through the Tier 3 ledger + uniform audit.
+const BOOTSTRAP_TOOL_TIER = 3;
+
+interface Tier3LifecycleContext {
+  id: string | number;
+  c: Context | undefined;
+  auth: AuthContext;
+  apiKey: McpApiKeyContext | undefined;
+  sessionId: string | undefined;
+  /** Authoritative execution org (resolveMcpExecutionContext / bootstrap default). */
+  orgId: string | null;
+  toolName: string;
+  tier: number;
+  toolInput: Record<string, unknown>;
+}
+
+interface Tier3ExecutionOutcome {
+  status: 'success' | 'failure';
+  /**
+   * Summarized result string recorded on the ledger + uniform audit on SUCCESS.
+   * Mirrors the ordinary path, which records `result` on success and `error`
+   * (not result) on failure.
+   */
+  ledgerResult?: string;
+  /** On failure: an Error (thrown or a partial-failure marker) for errorClass/message. */
+  error?: unknown;
+  response: JsonRpcResponse;
+}
+
+/**
+ * Shared Tier 3 begin/execute/complete/audit lifecycle (MCP-OAUTH-12). Used by
+ * BOTH the ordinary tools/call path and the bootstrap authTool dispatch so the
+ * fail-closed ledger and uniform `mcp.tool.<name>` audit are identical for every
+ * Tier 3 mutation.
+ *
+ * Ordering (preserves Task 6's resolution → ledger → handler → complete+audit):
+ *   1. create the execution ledger BEFORE the mutation; fail CLOSED if creation
+ *      fails (the handler never runs without a durable ledger row);
+ *   2. run the `execute` callback (which owns path-specific response construction
+ *      AND classifies its own success/partial-failure/thrown-failure outcome);
+ *   3. complete the ledger with the outcome status + duration; and
+ *   4. write the uniform `mcp.tool.<name>` audit for BOTH outcomes.
+ *
+ * Tiers below 3 skip the ledger (as the ordinary path always has) but still emit
+ * the uniform audit. The wrapper NEVER skips the ledger for a Tier 3 tool because
+ * the principal is inconvenient — OAuth bearers already carry a synthetic
+ * `apiKey` context (`oauth:<jti>`), exactly like ordinary Tier 3 bearer calls.
+ */
+async function runTier3ToolLifecycle(
+  ctx: Tier3LifecycleContext,
+  execute: () => Promise<Tier3ExecutionOutcome>,
+): Promise<JsonRpcResponse> {
+  let ledgerHandle: McpToolExecutionLedgerHandle | null = null;
+  if (ctx.tier >= 3) {
+    if (!ctx.apiKey || !ctx.orgId) {
+      return jsonRpcError(ctx.id, -32000, 'Unable to create MCP tool execution ledger');
+    }
+    try {
+      ledgerHandle = await beginMcpToolExecutionLedger({
+        orgId: ctx.orgId,
+        accessibleOrgIds: ctx.auth.accessibleOrgIds,
+        toolName: ctx.toolName,
+        tier: ctx.tier,
+        toolInput: ctx.toolInput,
+        transportSessionId: ctx.sessionId ?? null,
+        principal: {
+          apiKeyId: ctx.apiKey.id,
+          oauthGrantId: ctx.apiKey.oauthGrantId ?? null,
+          partnerId: ctx.auth.partnerId ?? ctx.apiKey.partnerId ?? null,
+          actorUserId: ctx.auth.user.id,
+        },
+      });
+    } catch (err) {
+      console.error('[MCP] Failed to create tool execution ledger:', ctx.toolName, err);
+      return jsonRpcError(ctx.id, -32000, 'Unable to create MCP tool execution ledger');
+    }
+  }
+
+  const startedAt = Date.now();
+  let outcome: Tier3ExecutionOutcome;
+  try {
+    outcome = await execute();
+  } catch (err) {
+    // The execute callback is expected to classify its own outcome and never
+    // throw. This defensive net STILL completes the ledger + audit (never skip
+    // them) before surfacing a generic error.
+    console.error('[MCP] Unexpected throw from Tier 3 execute callback:', ctx.toolName, err);
+    const failureResponse = jsonRpcError(ctx.id, -32000, 'Tool execution failed');
+    await finalizeTier3ToolLifecycle(
+      ctx,
+      ledgerHandle,
+      { status: 'failure', error: err, response: failureResponse },
+      Date.now() - startedAt,
+    );
+    return failureResponse;
+  }
+
+  await finalizeTier3ToolLifecycle(ctx, ledgerHandle, outcome, Date.now() - startedAt);
+  return outcome.response;
+}
+
+async function finalizeTier3ToolLifecycle(
+  ctx: Tier3LifecycleContext,
+  ledgerHandle: McpToolExecutionLedgerHandle | null,
+  outcome: Tier3ExecutionOutcome,
+  durationMs: number,
+): Promise<void> {
+  if (ledgerHandle) {
+    await completeMcpToolExecutionLedger({
+      handle: ledgerHandle,
+      status: outcome.status,
+      durationMs,
+      result: outcome.status === 'success' ? outcome.ledgerResult : undefined,
+      error: outcome.status === 'failure' ? outcome.error : undefined,
+    }).catch((err) => {
+      console.error('[MCP] Failed to complete tool execution ledger:', ctx.toolName, err);
+    });
+  }
+  writeMcpToolAuditEvent(ctx.c, {
+    apiKey: ctx.apiKey,
+    auth: ctx.auth,
+    sessionId: ctx.sessionId,
+    orgId: ctx.orgId,
+    toolName: ctx.toolName,
+    tier: ctx.tier,
+    toolInput: ctx.toolInput,
+    durationMs,
+    status: outcome.status,
+    result: outcome.status === 'success' ? outcome.ledgerResult : undefined,
+    error: outcome.status === 'failure' ? outcome.error : undefined,
+  });
+}
+
+/**
+ * Bootstrap handlers return best-effort results: `send_deployment_invites`
+ * reports per-invite `failures`, `configure_defaults` reports per-step `errors`.
+ * A non-throwing result carrying any such entries is a PARTIAL FAILURE, not a
+ * success — classify it explicitly so the shared ledger/audit records the true
+ * outcome rather than treating every non-throw as success.
+ */
+function classifyBootstrapToolResult(result: unknown): 'success' | 'failure' {
+  if (result && typeof result === 'object') {
+    const r = result as Record<string, unknown>;
+    if (Array.isArray(r.failures) && r.failures.length > 0) return 'failure';
+    if (Array.isArray(r.errors) && r.errors.length > 0) return 'failure';
+  }
+  return 'success';
+}
+
+function bootstrapPartialFailureError(result: unknown): Error {
+  const r = (result && typeof result === 'object' ? result : {}) as Record<string, unknown>;
+  const failures = Array.isArray(r.failures) ? r.failures.length : 0;
+  const errors = Array.isArray(r.errors) ? r.errors.length : 0;
+  const parts: string[] = [];
+  if (failures > 0) parts.push(`${failures} recipient failure(s)`);
+  if (errors > 0) parts.push(`${errors} step error(s)`);
+  return new Error(`bootstrap partial failure: ${parts.join(', ') || 'unknown'}`);
+}
+
+// ============================================
 // Bootstrap authTool dispatch (authed path)
 // ============================================
 
@@ -1161,8 +1269,9 @@ async function dispatchBootstrapAuthTool(
   toolInput: Record<string, unknown>,
   auth: AuthContext,
   scopes: string[],
-  apiKey: { id: string; orgId: string | null } | undefined,
+  apiKey: McpApiKeyContext | undefined,
   c: Context | undefined,
+  sessionId: string | undefined,
 ): Promise<JsonRpcResponse> {
   const hasExecute = scopes.includes('ai:execute');
   const requireExecuteAdmin = shouldRequireExecuteAdminInProd();
@@ -1191,6 +1300,22 @@ async function dispatchBootstrapAuthTool(
       -32603,
       `Tool "${tool.definition.name}" is not in MCP_EXECUTE_TOOL_ALLOWLIST for production`,
     );
+  }
+
+  // Product RBAC (MCP-OAUTH-11): bootstrap authTools carry a TOOL_PERMISSIONS
+  // mapping and are gated exactly like ordinary tools/call tools. This applies
+  // REGARDLESS of MCP_REQUIRE_EXECUTE_ADMIN — that lever is an ADDITIONAL
+  // production gate above, not a replacement for product permissions. Checked
+  // BEFORE the Zod parse, the ledger, and the handler, so a denial never records
+  // a ledger row or mutates anything (reject precedes ledger).
+  try {
+    const permError = await checkToolPermission(tool.definition.name, toolInput, auth);
+    if (permError) {
+      return jsonRpcError(id, -32603, permError);
+    }
+  } catch (err) {
+    console.error('[MCP] Permission check failed for bootstrap tool:', tool.definition.name, err);
+    return jsonRpcError(id, -32000, 'Unable to verify permissions');
   }
 
   // Validate via the tool's own Zod schema (mirrors handleBootstrapToolsCall).
@@ -1250,24 +1375,58 @@ async function dispatchBootstrapAuthTool(
     },
   };
 
-  try {
-    const result = await tool.handler(parsed.data, bootstrapCtx);
-    return jsonRpcResult(id, {
-      content: [{ type: 'text', text: JSON.stringify(result) }],
-    });
-  } catch (err) {
-    if (err instanceof BootstrapError) {
-      return jsonRpcError(id, -32000, err.message, {
-        code: err.code,
-        remediation: err.remediation,
-      });
+  // Shared Tier 3 lifecycle (MCP-OAUTH-12): ledger (fail closed) → handler →
+  // complete + uniform `mcp.tool.<name>` audit. The handler's own business
+  // audits + dedup (per-invite events, configure_defaults audit, 24h dedupe)
+  // remain intact; this wraps them with the fail-closed ledger + uniform audit.
+  const execute = async (): Promise<Tier3ExecutionOutcome> => {
+    try {
+      const result = await tool.handler(parsed.data, bootstrapCtx);
+      const status = classifyBootstrapToolResult(result);
+      const resultText = JSON.stringify(result);
+      return {
+        status,
+        ledgerResult: resultText,
+        error: status === 'failure' ? bootstrapPartialFailureError(result) : undefined,
+        response: jsonRpcResult(id, { content: [{ type: 'text', text: resultText }] }),
+      };
+    } catch (err) {
+      if (err instanceof BootstrapError) {
+        return {
+          status: 'failure',
+          error: err,
+          response: jsonRpcError(id, -32000, err.message, {
+            code: err.code,
+            remediation: err.remediation,
+          }),
+        };
+      }
+      const message = err instanceof Error ? err.message : 'Tool execution failed';
+      return {
+        status: 'failure',
+        error: err,
+        response: jsonRpcResult(id, {
+          content: [{ type: 'text', text: JSON.stringify({ error: message }) }],
+          isError: true,
+        }),
+      };
     }
-    const message = err instanceof Error ? err.message : 'Tool execution failed';
-    return jsonRpcResult(id, {
-      content: [{ type: 'text', text: JSON.stringify({ error: message }) }],
-      isError: true,
-    });
-  }
+  };
+
+  return runTier3ToolLifecycle(
+    {
+      id,
+      c,
+      auth,
+      apiKey,
+      sessionId,
+      orgId: resolvedOrgId,
+      toolName: tool.definition.name,
+      tier: BOOTSTRAP_TOOL_TIER,
+      toolInput,
+    },
+    execute,
+  );
 }
 
 // ============================================
