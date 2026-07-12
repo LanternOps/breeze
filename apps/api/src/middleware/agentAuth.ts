@@ -24,8 +24,12 @@ export interface AgentAuthContext {
    * Used by rotate-token to compare-and-swap the rotation against the exact
    * hash that authenticated, so a superseded/racing token cannot mint durable
    * credentials. Never log or return this value.
+   *
+   * Optional at the type level so existing callers that build a partial agent
+   * context (tests, non-rotation routes) still typecheck; the real middleware
+   * ALWAYS populates it, and rotate-token fails closed if it is ever absent.
    */
-  authTokenHash: string;
+  authTokenHash?: string;
 }
 
 export type AgentCredentialRole = 'agent' | 'watchdog';

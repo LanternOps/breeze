@@ -30,6 +30,14 @@ tokenRoutes.post('/:id/rotate-token', async (c) => {
     );
   }
 
+  // The authenticating-token hash is required for the compare-and-swap below.
+  // The real agentAuthMiddleware always sets it; fail closed if it is ever
+  // absent rather than running an UPDATE that isn't bound to the caller's token.
+  const authTokenHash = agent.authTokenHash;
+  if (!authTokenHash) {
+    return c.json({ error: 'Missing authenticated token binding' }, 401);
+  }
+
   const [device] = await db
     .select({
       id: devices.id,
@@ -77,7 +85,7 @@ tokenRoutes.post('/:id/rotate-token', async (c) => {
     rotatedRows = await db
       .update(devices)
       .set({
-        previousTokenHash: agent.authTokenHash,
+        previousTokenHash: authTokenHash,
         previousTokenExpiresAt,
         agentTokenHash,
         tokenIssuedAt: rotatedAt,
@@ -94,7 +102,7 @@ tokenRoutes.post('/:id/rotate-token', async (c) => {
       .where(
         and(
           eq(devices.id, device.id),
-          eq(devices.agentTokenHash, agent.authTokenHash)
+          eq(devices.agentTokenHash, authTokenHash)
         )
       )
       .returning({ id: devices.id });

@@ -2069,7 +2069,7 @@ describe('POST /agents/:id/heartbeat — terminal-status guard (#2230)', () => {
     // The first devices update is the deviceUpdates write.
     const firstSet = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
     expect(firstSet.status).toBe('online');
-    expect(whereSpy.mock.calls[0]?.[0]).toEqual(
+    expect((whereSpy.mock.calls as any[])[0]?.[0]).toEqual(
       and(eq(devices.id, 'device-1'), notInArray(devices.status, ['decommissioned', 'quarantined'])),
     );
 
@@ -2157,13 +2157,13 @@ describe('POST /agents/:id/heartbeat — state-change audit (finding #10)', () =
 
     const calls = await auditCalls();
     expect(calls).toHaveLength(1);
-    const details = (calls[0][1] as { details: { changes: any[] } }).details;
+    const details = (calls[0]![1] as unknown as { details: { changes: any[] } }).details;
     expect(details.changes).toEqual([{ field: 'status', before: 'offline', after: 'online' }]);
     // Actor/resource shape mirrors the co-located threshold-scan audit.
-    expect(calls[0][1]).toMatchObject({
+    expect(calls[0]![1]).toMatchObject({
       orgId: 'org-1',
       actorType: 'agent',
-      actorId: 'agent-1',
+      actorId: 'device-1', // = the :id path param (agentId), mirroring the threshold-scan audit
       resourceType: 'device',
       resourceId: 'device-1',
     });
@@ -2176,7 +2176,7 @@ describe('POST /agents/:id/heartbeat — state-change audit (finding #10)', () =
 
     const calls = await auditCalls();
     expect(calls).toHaveLength(1);
-    const changes = (calls[0][1] as { details: { changes: any[] } }).details.changes;
+    const changes = (calls[0]![1] as unknown as { details: { changes: any[] } }).details.changes;
     expect(changes).toContainEqual({ field: 'hostname', before: 'host-1', after: 'renamed-host' });
   });
 
@@ -2185,7 +2185,7 @@ describe('POST /agents/:id/heartbeat — state-change audit (finding #10)', () =
     const resp = await beat({ ...minimalHeartbeatBody, serverUrl: 'https://new-cp.example.com' });
     expect(resp.status).toBe(200);
 
-    const changes = (await auditCalls())[0]?.[1] as { details: { changes: any[] } };
+    const changes = (await auditCalls())[0]?.[1] as unknown as { details: { changes: any[] } };
     expect(changes.details.changes).toContainEqual({
       field: 'agentServerUrl',
       before: 'https://cp.example.com',
@@ -2201,7 +2201,7 @@ describe('POST /agents/:id/heartbeat — state-change audit (finding #10)', () =
     });
     expect(resp.status).toBe(200);
 
-    const changes = ((await auditCalls())[0]?.[1] as { details: { changes: any[] } }).details.changes;
+    const changes = ((await auditCalls())[0]?.[1] as unknown as { details: { changes: any[] } }).details.changes;
     expect(changes).toContainEqual({
       field: 'tccPermissions',
       before: { screenRecording: 'granted' },
@@ -2217,7 +2217,7 @@ describe('POST /agents/:id/heartbeat — state-change audit (finding #10)', () =
     });
     expect(resp.status).toBe(200);
 
-    const changes = ((await auditCalls())[0]?.[1] as { details: { changes: any[] } }).details.changes;
+    const changes = ((await auditCalls())[0]?.[1] as unknown as { details: { changes: any[] } }).details.changes;
     expect(changes).toContainEqual({
       field: 'desktopAccess',
       before: { level: 'full' },
@@ -2236,7 +2236,7 @@ describe('POST /agents/:id/heartbeat — state-change audit (finding #10)', () =
     });
     expect(resp.status).toBe(200);
 
-    const changes = ((await auditCalls())[0]?.[1] as { details: { changes: any[] } }).details.changes;
+    const changes = ((await auditCalls())[0]?.[1] as unknown as { details: { changes: any[] } }).details.changes;
     expect(changes).toContainEqual({ field: 'mainAgentSilent', before: true, after: false });
   });
 
@@ -2266,7 +2266,7 @@ describe('POST /agents/:id/heartbeat — state-change audit (finding #10)', () =
 
     const calls = await auditCalls();
     expect(calls).toHaveLength(1); // ONE event, not three
-    const fields = (calls[0][1] as { details: { changes: any[] } }).details.changes.map((c) => c.field);
+    const fields = (calls[0]![1] as unknown as { details: { changes: any[] } }).details.changes.map((c) => c.field);
     expect(fields).toEqual(expect.arrayContaining(['status', 'hostname', 'agentServerUrl']));
   });
 });

@@ -218,7 +218,7 @@ describe('agent logs routes', () => {
 
       expect(res.status).toBe(201);
       expect(writeAuditEvent).toHaveBeenCalledTimes(1);
-      const [, event] = vi.mocked(writeAuditEvent).mock.calls[0];
+      const [, event] = vi.mocked(writeAuditEvent).mock.calls[0]!;
       expect(event).toMatchObject({
         orgId: ORG_ID,
         actorType: 'agent',
